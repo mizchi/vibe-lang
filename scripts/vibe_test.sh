@@ -260,10 +260,19 @@ vt_fail_detail() {
         close(fmfile)
       }
     }
-    # First __test_<name> frame = the failing test.
-    !seen_test && match($0, /__test_[A-Za-z0-9_]+/) {
-      seen_test = 1
-      failing = substr($0, RSTART + 7, RLENGTH - 7)
+    # First __test_<name> frame = the failing test. Quoted names keep
+    # spaces and Unicode in the wasm name section; cut at the frame
+    # delimiter (` (wasm:` on Node/V8, EOL on wasmtime), not at the
+    # first non-[A-Za-z0-9_] character (#1946).
+    !seen_test && match($0, /__test_/) {
+      rest = substr($0, RSTART + 7)
+      if (match(rest, / \(wasm:/)) {
+        failing = substr(rest, 1, RSTART - 1)
+      } else {
+        failing = rest
+        sub(/[[:space:]]+$/, "", failing)
+      }
+      if (failing != "") seen_test = 1
     }
     # First trap-reason line (backtrace frames never contain these markers;
     # strip anyhow chain numbering / runner prefixes).

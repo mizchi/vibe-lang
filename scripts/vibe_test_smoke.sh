@@ -22,6 +22,34 @@ fi
 
 echo "[vibe-test-smoke] ok (pass-file=0, fail-file!=0)"
 
+# #1946: a quoted test name must appear in full on FAIL. The runner used to
+# match `__test_[A-Za-z0-9_]+` and cut the name at the first space (and drop
+# Unicode). Exit status stays non-zero; the line is still `failing test: ...`.
+printf 'test "has a space" {\n  assert(false)\n}\n' > "$WORK/space_name_test.vibe"
+printf 'test "café 日本語" {\n  assert(false)\n}\n' > "$WORK/unicode_name_test.vibe"
+assert_full_failing_name() {
+  local src="$1" want="$2" out rc
+  out="$WORK/name_$(basename "$src" .vibe).out"
+  set +e
+  VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash "$ROOT_DIR/scripts/vibe_test.sh" "$src" >"$out" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    echo "[vibe-test-smoke] FAIL: '$want' did not fail (exit 0)" >&2
+    cat "$out" >&2
+    exit 1
+  fi
+  if ! rg -q --fixed-strings "failing test: $want" "$out"; then
+    echo "[vibe-test-smoke] FAIL: expected 'failing test: $want' in the FAIL output" >&2
+    cat "$out" >&2
+    exit 1
+  fi
+}
+assert_full_failing_name "$WORK/space_name_test.vibe" "has a space"
+assert_full_failing_name "$WORK/unicode_name_test.vibe" "café 日本語"
+echo "[vibe-test-smoke] ok (quoted test names preserved on FAIL)"
+
 # The seed-compiler notice. A green run through the committed seed says nothing
 # about a compiler change in this checkout, and the two are indistinguishable
 # from the result -- so the run has to say which compiler answered whenever the
