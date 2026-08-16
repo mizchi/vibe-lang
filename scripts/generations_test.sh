@@ -286,6 +286,8 @@ chmod +x "$FAIL_ROOT/fail_runner.sh"
 # report success, which is exactly what a repeat build gives it.
 printf 'stale-wasm-from-an-earlier-build\n' > "$FAIL_ROOT/out/stage1.wasm"
 printf 'stale-wasm-from-an-earlier-build\n' > "$FAIL_ROOT/out/stage2.wasm"
+# ...including its manifest, which is what `status` and compiler_gate.sh read.
+printf '{"result":{"stage2_distribution_candidate":true}}\n' > "$FAIL_ROOT/out/generation.json"
 
 set +e
 VIBE_PROJECT_ROOT="$FAIL_ROOT" \
@@ -313,6 +315,22 @@ if ! rg -q "synthetic compile error" "$FAIL_ROOT/fail.stderr"; then
 fi
 if [ -e "$FAIL_ROOT/out/stage1.wasm" ]; then
   echo "expected the stale artifact to be removed before compiling" >&2
+  exit 1
+fi
+# A failed build must not leave the previous build's verdict standing: the
+# manifest is written last, so without retracting it up front the directory
+# still answers "stage2 is a distribution candidate" for artifacts it no
+# longer has.
+if [ -e "$FAIL_ROOT/out/generation.json" ]; then
+  echo "expected the previous generation.json to be retracted before building" >&2
+  cat "$FAIL_ROOT/out/generation.json" >&2
+  exit 1
+fi
+fail_status_out="$(VIBE_PROJECT_ROOT="$FAIL_ROOT" bash "$SCRIPT" status \
+  --manifest "$FAIL_ROOT/bootstrap/seed.json" --out-dir "$FAIL_ROOT/out")"
+if ! echo "$fail_status_out" | rg -q "^generation\.status=not-built$"; then
+  echo "expected status to report not-built after a failed build" >&2
+  echo "$fail_status_out" >&2
   exit 1
 fi
 

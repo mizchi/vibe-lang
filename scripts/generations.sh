@@ -796,6 +796,24 @@ command_build() {
   local stage1="$out_dir/stage1.wasm"
   local stage2="$out_dir/stage2.wasm"
   local stage3="$out_dir/stage3.wasm"
+  # Retract the previous build's answer before producing a new one. The stage
+  # artifacts are deleted by the compile functions as they go, but the manifest
+  # is written only at the very end -- so a build that dies partway used to
+  # leave the PREVIOUS generation.json in place, still claiming
+  # `stage2_distribution_candidate=true` with hashes for artifacts that are now
+  # gone. That is not a cosmetic staleness: `status` reports from this file,
+  # and compiler_gate.sh picks the newest generation directory and reads its
+  # generation.json (scripts/compiler_gate.sh:108). Removing it first makes a
+  # failed build read as `generation.status=not-built` rather than as the
+  # previous build's success.
+  rm -f "$out_dir/generation.json"
+  # Same reasoning for a stage3 left by an earlier --stage3 run: this build is
+  # not producing one, and the manifest correctly reports stage3_equal_stage2
+  # as null, so an old stage3.wasm sitting next to a fresh stage2 can only
+  # mislead whoever looks in the directory.
+  if [ "$build_stage3" != "1" ]; then
+    rm -f "$stage3"
+  fi
   cp "$SEED_ARTIFACT_PATH" "$stage0"
   validate_wasm_if_available stage0 "$stage0"
   run_generation_compile "stage0(seed) -> stage1" "$stage0" "$entry" "$stage1" "$entry_name"
