@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   canonical_builtin_name,
+  collect_tvars,
   env_bind,
   env_bind_mut,
   env_lookup,
@@ -62,7 +63,7 @@ import ./checker_spawnable.vibe {
 }
 
 import ./checker_escape.vibe {
-  mut_binding_escapes, region_token_escapes_in_closure
+  expr_free_in, mut_binding_escapes
 }
 
 //# Functions
@@ -810,8 +811,21 @@ fn type_mentions_named(ty: Type, name: String) -> Bool {
     },
     CtArray(e) => type_mentions_named(e, name),
     CtOption(e) => type_mentions_named(e, name),
-    CtFn(ps, ret, _) => {
+    CtFn(ps, ret, eff) => {
       let mut found = type_mentions_named(ret, name)
+      match eff {
+        Some(row) => {
+          let labels = String::split(row, ",")
+          let mut ei = 0
+          while ei < Array::length(labels) {
+            if String::trim(Array::get(labels, ei)) == name {
+              found = true
+            }
+            ei = ei + 1
+          }
+        },
+        None => ()
+      }
       let mut i = 0
       while i < Array::length(ps) {
         if type_mentions_named(Array::get(ps, i), name) {
@@ -825,6 +839,93 @@ fn type_mentions_named(ty: Type, name: String) -> Bool {
     },
     CtForAll(_, _, body) => type_mentions_named(body, name),
     _ => false
+  }
+}
+
+fn merge_provenance_row(expected: Option[String], actual: Option[String]) -> Option[String] {
+  let labels = match expected {
+    Some(row) => for raw in String::split(row, ",") {
+      String::trim(raw)
+    },
+    None => array_empty()
+  }
+  match actual {
+    Some(row) => for raw in String::split(row, ",") {
+      let label = String::trim(raw)
+      if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[")) && !string_array_has(labels, label) {
+        Array::push(labels, label)
+      }
+    },
+    None => array_empty()
+  }
+  if Array::length(labels) == 0 {
+    None
+  } else {
+    Some(String::join(labels, ", "))
+  }
+}
+
+/// An explicit return annotation constrains the public shape but must not
+/// erase checker-only capture provenance synthesized on the returned value.
+fn merge_capture_provenance(expected: Type, actual: Type) -> Type {
+  match expected {
+    CtFn(eps, eret, eeff) => match actual {
+      CtFn(aps, aret, aeff) => {
+        let params = array_empty()
+        let mut i = 0
+        while i < Array::length(eps) {
+          if i < Array::length(aps) {
+            Array::push(params, merge_capture_provenance(Array::get(eps, i), Array::get(aps, i)))
+          } else {
+            Array::push(params, Array::get(eps, i))
+          }
+          i = i + 1
+        }
+        CtFn(params, merge_capture_provenance(eret, aret), merge_provenance_row(eeff, aeff))
+      },
+      _ => expected
+    },
+    CtArray(ee) => match actual {
+      CtArray(ae) => CtArray(merge_capture_provenance(ee, ae)),
+      _ => expected
+    },
+    CtOption(ee) => match actual {
+      CtOption(ae) => CtOption(merge_capture_provenance(ee, ae)),
+      _ => expected
+    },
+    CtTuple(es) => match actual {
+      CtTuple(as_) => {
+        let items = array_empty()
+        let mut i = 0
+        while i < Array::length(es) {
+          if i < Array::length(as_) {
+            Array::push(items, merge_capture_provenance(Array::get(es, i), Array::get(as_, i)))
+          } else {
+            Array::push(items, Array::get(es, i))
+          }
+          i = i + 1
+        }
+        CtTuple(items)
+      },
+      _ => expected
+    },
+    CtNamed(name, eargs) => match actual {
+      CtNamed(aname, aargs) => if name == aname {
+        let args = array_empty()
+        let mut i = 0
+        while i < Array::length(eargs) {
+          if i < Array::length(aargs) {
+            Array::push(args, merge_capture_provenance(Array::get(eargs, i), Array::get(aargs, i)))
+          } else {
+            Array::push(args, Array::get(eargs, i))
+          }
+          i = i + 1
+        }
+        CtNamed(name, args)
+      } else expected,
+      _ => expected
+    },
+    _ => expected
   }
 }
 
@@ -864,6 +965,161 @@ fn collect_env_bindings(env: TypeEnv, acc: Array[(String, Type)]) -> Unit {
       }
       collect_env_bindings(rest, acc)
     }
+  }
+}
+
+fn string_array_has(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    if Array::get(items, i) == wanted {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn collect_region_skolems(ty: Type, out: Array[String]) -> Unit {
+  match ty {
+    CtNamed(name, args) => {
+      if String::starts_with(name, "#region_") && !string_array_has(out, name) {
+        Array::push(out, name)
+      }
+      for arg in args {
+        collect_region_skolems(arg, out)
+      }
+      ()
+    },
+    CtFn(params, ret, eff) => {
+      for param in params {
+        collect_region_skolems(param, out)
+      }
+      collect_region_skolems(ret, out)
+      match eff {
+        Some(row) => {
+          for raw in String::split(row, ",") {
+            let label = String::trim(raw)
+            if String::starts_with(label, "#region_") && !string_array_has(out, label) {
+              Array::push(out, label)
+            }
+          }
+          ()
+        },
+        None => ()
+      }
+    },
+    CtArray(elem) => collect_region_skolems(elem, out),
+    CtOption(elem) => collect_region_skolems(elem, out),
+    CtTuple(items) => {
+      for item in items {
+        collect_region_skolems(item, out)
+      }
+      ()
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, field_ty) = field
+        collect_region_skolems(field_ty, out)
+      }
+      ()
+    },
+    CtForAll(_, _, body) => collect_region_skolems(body, out),
+    _ => ()
+  }
+}
+
+fn append_row_label(labels: Array[String], label: String) -> Unit {
+  if !string_array_has(labels, label) {
+    Array::push(labels, label)
+  }
+}
+
+/// Add closure-capture provenance to the checked row. The labels beginning
+/// with `#` are not effects and cannot be written by source; core/types keeps
+/// them through ordinary substitution while excluding them from effect-set
+/// compatibility. A captured inference variable is dependent provenance:
+/// `#capture[v]` resolves to `#region_n` only if call-site unification binds v
+/// to a region-tagged type. This is what makes helper functions structural
+/// rather than another literal-name pattern.
+fn closure_capture_row(effect: Option[String], body: Expr, env: TypeEnv, s: Subst) -> Option[String] {
+  let labels = match effect {
+    Some(row) => for raw in String::split(row, ",") {
+      String::trim(raw)
+    },
+    None => array_empty()
+  }
+  let bindings = array_empty()
+  collect_env_bindings(env, bindings)
+  let seen_names = array_empty()
+  let mut i = 0
+  while i < Array::length(bindings) {
+    let (name, raw_ty) = Array::get(bindings, i)
+    if !string_array_has(seen_names, name) {
+      Array::push(seen_names, name)
+      let ty = subst_apply(s, raw_ty)
+      match ty {
+        CtForAll(_, _, _) => (),
+        _ => {
+          let regions = array_empty()
+          collect_region_skolems(ty, regions)
+          let vars = collect_tvars(ty)
+          // Almost every visible binding in the compiler is concrete. Check
+          // the cheap type predicate BEFORE walking the closure body; doing
+          // one full free-variable traversal per imported binding makes
+          // self-compilation quadratic.
+          if (Array::length(regions) > 0 || Array::length(vars) > 0) && expr_free_in(body, name) {
+            for region_name in regions {
+              append_row_label(labels, region_name)
+            }
+            for var_id in vars {
+              append_row_label(labels, String::concat("#capture[", String::concat(__to_string(var_id), "]")))
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  if Array::length(labels) == 0 {
+    None
+  } else {
+    Some(String::join(labels, ", "))
+  }
+}
+
+fn type_mentions_active_region(ty: Type, env: TypeEnv) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(name, binding, rest) => if name == "__active_region__" {
+      match binding.ty {
+        CtNamed(region_name, _) => type_mentions_named(ty, region_name) || type_mentions_active_region(ty, rest),
+        _ => type_mentions_active_region(ty, rest)
+      }
+    } else {
+      type_mentions_active_region(ty, rest)
+    },
+    EnvTraitDef(_, _, _, _, rest, _, _) => type_mentions_active_region(ty, rest),
+    EnvTraitImpl(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvMutCell(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvTraitImplGen(_, _, _, _, rest) => type_mentions_active_region(ty, rest),
+    EnvTypeDefs(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvCached(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvFlat(_) => false
+  }
+}
+
+fn env_has_active_region(env: TypeEnv) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(name, _, rest) => name == "__active_region__" || env_has_active_region(rest),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_active_region(rest),
+    EnvTraitImpl(_, _, rest) => env_has_active_region(rest),
+    EnvMutCell(_, _, rest) => env_has_active_region(rest),
+    EnvTraitImplGen(_, _, _, _, rest) => env_has_active_region(rest),
+    EnvTypeDefs(_, _, rest) => env_has_active_region(rest),
+    EnvCached(_, _, rest) => env_has_active_region(rest),
+    EnvFlat(_) => false
   }
 }
 
@@ -1101,7 +1357,9 @@ fn effect_label_is_exempt(lbl: String) -> Bool {
   // opt-in and carries real information, so dropping it through a pure-typed
   // slot is exactly the #939 hole this check exists to catch. Nothing in the
   // codebase writes a kinded label, so no existing program changes verdict.
-  if (is_exception_effect_name(lbl) && String::length(exception_effect_kind(lbl)) == 0) || lbl == "Async" {
+  if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") {
+    true
+  } else if (is_exception_effect_name(lbl) && String::length(exception_effect_kind(lbl)) == 0) || lbl == "Async" {
     true
   } else if len == 1 {
     String::char_code_at(lbl, 0) >= 97 && String::char_code_at(lbl, 0) <= 122
@@ -5527,8 +5785,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           match Array::get(args, 0) {
             EFn(_, _, fn_params, _, _, fn_body) => if Array::length(fn_params) == 1 {
               let (binder_name, _) = Array::get(fn_params, 0)
-              let env_body = env_bind(env, binder_name, CtNamed(skolem_name, [
-              ]))
+              let region_ty = CtNamed(skolem_name, [
+              ])
+              let env_body = env_bind(env_bind(env, binder_name, region_ty), "__active_region__", region_ty)
               // The specialized region path checks the literal lambda body
               // directly. Preserve both structural edges from the outer call:
               // argument child 1, then EFn body child 0.
@@ -5539,19 +5798,6 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let zonked_ret = subst_apply(s1, body_ty)
               if type_mentions_named(zonked_ret, skolem_name) {
                 Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(callee_off, String::length(name))))
-              } else {
-                ()
-              }
-              // #1725: the type check above cannot see a region value that
-              // leaves inside a CLOSURE -- `region r { let l =
-              // MutList::empty(r); () -> Array[Int] { MutList::to_array(l) } }`
-              // has result type `() -> Array[Int]`, which mentions no skolem,
-              // because types do not record captures. Harmless while MutList
-              // is a checker-only phantom; a use-after-free once the arena
-              // releases at region end. See checker_escape.vibe for why this
-              // companion check is deliberately narrow.
-              if region_token_escapes_in_closure(fn_body, binder_name) {
-                Array::push(errors, String::concat("region escapes its scope: a closure returned from this region body captures a value built from the region's own token -- return `MutList::freeze(..)` / `MutList::to_array(..)` / `MutBytes::to_bytes(..)` instead of a closure over it", off_marker_len(callee_off, String::length(name))))
               } else {
                 ()
               }
@@ -6278,6 +6524,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     },
     EAssign(name, val, body) => {
       let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
+      if type_mentions_active_region(subst_apply(s1, vt), env) {
+        Array::push(errors, String::concat("region escapes its scope: an assignment stores a value that captures this region into an outer binding", off_marker(tail_expr_off(val))))
+      }
       // The assigned value must be assignable to the variable's type
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
       let s1b = match env_lookup(env, name) {
@@ -7309,11 +7558,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // returned. -1 (unlocated, as before) when the tail is a literal:
           // EInt/EString/EBool/EFloat carry no offset in the AST.
           let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
-          (subst_apply(ns, resolved_ret), ns)
+          (merge_capture_provenance(subst_apply(ns, resolved_ret), subst_apply(ns, bt)), ns)
         },
         None => (subst_apply(s2, bt), s2)
       }
-      (CtFn(param_types, final_ret, effect), s3, c2)
+      let checked_effect = if env_has_active_region(env) {
+        closure_capture_row(effect, body, env, s3)
+      } else {
+        effect
+      }
+      (CtFn(param_types, final_ret, checked_effect), s3, c2)
     },
     EBreak(opt) => {
       // `break` is only meaningful inside a loop. Loop bodies bind the
