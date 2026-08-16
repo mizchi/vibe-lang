@@ -95,9 +95,29 @@ try:
     print(json.load(open(sys.argv[1]))["seed"].get("source_commit", ""))
 except Exception:
     print("")' "$ROOT_DIR/bootstrap/seed.json" 2>/dev/null || true)"
-  # Only compiler/CLI sources matter here: a seed that is behind on docs or
-  # fixtures compiles this checkout's test files exactly as a current one would.
-  compiler_paths=(lib/@vibe/compiler lib/@vibe/cli)
+  # Over-approximate the compiler's inputs, for the reason
+  # scripts/ensure_generated.sh:117 already gives about its own fingerprint:
+  # the flatten walks cli_adapter.vibe's entire import closure, which reaches
+  # well past lib/@vibe/compiler. compiler_sources_manifest.tsv lists
+  # @vibe/ast, parser, core, cache, graph, json and lsp as compiler sources,
+  # so a change confined to lib/@vibe/parser/lexer.vibe is a compiler change
+  # that lib/@vibe/compiler|cli cannot see. Over-approximating costs an
+  # occasional notice on a library-only edit; under-approximating stays silent
+  # for exactly the case this notice exists to catch.
+  #
+  # No exclusion list. ensure_generated.sh needs one because it hashes the
+  # working tree directly; git does not, and the two things that would have
+  # been on it are already handled:
+  #
+  #   - the five build outputs are gitignored (.gitignore:57-61), so they
+  #     cannot show up as uncommitted;
+  #   - tests and benches would only ever inflate the commit count, and the
+  #     notice reports "you are ahead", not a precise figure.
+  #
+  # Measured over the current seed window, excluding them changes 44 to 44 --
+  # while narrowing to lib/@vibe/compiler|cli changes it to 42, which is the
+  # under-approximation this notice exists to avoid.
+  compiler_paths=(lib/@vibe lib/@vibex)
   behind=""
   if [ -n "$seed_src_commit" ] && \
     git -C "$ROOT_DIR" cat-file -e "$seed_src_commit^{commit}" 2>/dev/null; then
@@ -115,7 +135,7 @@ except Exception:
       [ -n "$gap" ] && gap="$gap and "
       gap="$gap$dirty uncommitted file(s)"
     fi
-    echo "[vibe-test] compiler: the committed seed -- $gap ahead of it under lib/@vibe/compiler|cli." >&2
+    echo "[vibe-test] compiler: the committed seed -- $gap ahead of it under lib/@vibe|@vibex." >&2
     echo "[vibe-test]   This run CANNOT observe those changes; a green result here says nothing about them." >&2
     echo "[vibe-test]   To test this checkout's compiler:" >&2
     echo "[vibe-test]     VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_\$(git rev-parse --short HEAD)/stage2.wasm" >&2

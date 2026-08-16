@@ -625,7 +625,7 @@ VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_$(git rev-parse --short HEA
 ```
 
 `vibe_test.sh` now prints a stderr notice whenever the checkout is ahead of the
-seed under `lib/@vibe/compiler|cli` and no explicit compiler was given
+seed under `lib/@vibe|@vibex` and no explicit compiler was given
 (suppressed by setting `VIBE_TEST_CLI_WASM`, or by
 `VIBE_TEST_QUIET_COMPILER_NOTE=1`). Pinned by `scripts/vibe_test_smoke.sh`
 (`pkf run test-vibe-test`).
