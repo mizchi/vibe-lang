@@ -1,0 +1,117 @@
+//# Imports
+
+// #1941 first locked agreement: a type-error range from `check_program` +
+// `offset_to_line_col` (the primitives `vibe check` / `locate_type_error`
+// use) and a `binding_occurrences` span (the primitive `vibe binding-at`
+// uses) must slice the same source token. Leftover: JSON 0..1, grep line:0,
+// synthetic 0:0.
+
+import ./binding_at.vibe {
+  binding_occurrences
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, offset_to_line_col, parse_program_located
+}
+
+//# Functions
+
+fn first_located_error(source: String) -> String {
+  handle {
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let _ = check_program(parse_program_located(tokens, starts, source))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+fn parse_uint(s: String) -> Int {
+  let len = String::length(s)
+  if len == 0 {
+    0 - 1
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < len {
+      let c = String::char_code_at(s, i)
+      if c >= 48 && c <= 57 {
+        acc = acc * 10 + (c - 48)
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// Decode `[@off=N]` / `[@off=N:M]` the same way `locate_type_error` does.
+/// Returns (start, end). end is -1 when the marker is start-only.
+fn parse_off_span(msg: String) -> (Int, Int) {
+  let key = " [@off="
+  let mi = String::index_of(msg, key)
+  if mi < 0 {
+    (0 - 1, 0 - 1)
+  } else {
+    let rest = String::substring(msg, mi + String::length(key), String::length(msg))
+    let close = String::index_of(rest, "]")
+    if close < 0 {
+      (0 - 1, 0 - 1)
+    } else {
+      let inner = String::substring(rest, 0, close)
+      let colon = String::index_of(inner, ":")
+      if colon < 0 {
+        (parse_uint(inner), 0 - 1)
+      } else {
+        (parse_uint(String::substring(inner, 0, colon)), parse_uint(String::substring(inner, colon + 1, String::length(inner))))
+      }
+    }
+  }
+}
+
+fn occ_contains(occ: Array[(Int, Int)], start: Int, endo: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(occ) {
+    let (s, e) = Array::get(occ, i)
+    if s == start && e == endo {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+//# Misc
+
+/// Identifier `quux` in this source is the first locked #1941 agreement.
+test "check and binding-at slice the same unknown identifier quux" {
+  let src = "let x = quux\n"
+  let token = "quux"
+  let start = String::index_of(src, token)
+  let endo = start + String::length(token)
+  assert(start >= 0)
+  assert(String::substring(src, start, endo) == token)
+  let msg = first_located_error(src)
+  assert(String::contains(msg, "unknown name: quux"))
+  let (off, off_end) = parse_off_span(msg)
+  assert(off == start)
+  assert(off_end == endo)
+  let (line, col) = offset_to_line_col(src, off)
+  assert(line > 0)
+  assert(col > 0)
+  let occ = binding_occurrences(src, line, col)
+  assert(occ_contains(occ, start, endo))
+}
