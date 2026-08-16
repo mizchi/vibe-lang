@@ -1516,6 +1516,76 @@ gate lane = `test_named_hoststreams_component_gate.sh` の close lane
 かつ drain-only component に close import が無いこと + closing component に
 guest import と adapter export が両方あることを .wat で確認）。
 
+#### 3.18.4 `HostStream` as a PARAMETER — the serve lane's request body (done, #1540)
+
+§3.18's `HostStream` came from a NAME: `host_stream_named("body")`. That is not
+enough for a `vibe serve` handler, where the body is an argument of the call,
+not something to go and fetch. Since #1540 scope 3/4 a `HostStream` can be a
+function PARAMETER.
+
+```vibe skip
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let mut out = ""
+  let mut go = true
+  while go {
+    let b = host_stream_next(body)
+    if b < 0 { go = false } else { out = String::concat(out, String::from_char_code(b)) }
+  }
+  "200\n\n\{out}"
+}
+```
+
+- **boundary**: `lc_wrap_host_stream_params` rewraps every parameter annotated
+  `HostStream` into the two-word cell `[3, handle]` on entry to the handler.
+  From there the read path is §3.18's, unchanged: `__hs_next` → a Suspend in
+  the stream band (`handle + 2048`) → `__entry_settle` → `vibe_hs_read_raw`.
+  No named getter is injected, so the compiled core imports
+  `vibe.host_stream_read` and nothing else — plus `vibe.host_stream_close` if
+  the handler stops reading early (§3.18.1).
+- **trampoline**: the canonical ABI flattens `stream<u8>` to one i32 handle
+  after the strings' (ptr, len) pairs, and the lift is async, so the core
+  function returns nothing — the result leaves through `task.return`.
+- **adapter**: `comp_generate_serve_stream_adapter_module` — §3.18's measured
+  read loop (BLOCKED / STREAM_READ = 2 / unjoin before dropping the set / the
+  two terminal shapes and the CLOSED latch), implemented with NO names at all.
+  It is deliberately not `comp_generate_hostfuture_adapter_core_module`: that
+  module's whole index layout is derived from the named future/stream counts,
+  so teaching it "no names, still a reader" moves every index four other lanes
+  depend on, and supplying a dummy name would reintroduce the
+  `[async-lower]<label>` component import #1796 ruled out as a composition
+  cycle. Every band is indexed by handle — a serve instance carries many
+  request tasks at once, and `stream.read` registers its landing address with
+  the canon BEFORE blocking, so a shared slot would let two producers write to
+  one address.
+- **CLI**: `serve_handler_takes_body_stream` picks the lane. `with Async` and
+  `body: HostStream` REQUIRE EACH OTHER — either alone is a diagnostic naming
+  the other, because Async alone has nothing to await and a HostStream alone
+  can never be read (reading suspends).
+- **adapter (Rust)**: `VIBE_HTTP_ADAPTER_BODY_STREAM=1` builds the variant
+  whose import is `handler(.., body: stream<u8>)`. There is no
+  `.collect().await` anywhere in it; the reader goes straight through.
+
+> **Known gap (#1924): reads in this lane must complete EAGERLY today.** Every
+> body the gate serves arrives buffered, so each `stream.read` returns a byte
+> without blocking. Two shapes trap in the guest with `uninitialized element`
+> inside the injected `__hs_next` — a chunked upload slow enough that a read
+> actually parks, and a handler that stops reading before end of stream. Both
+> are main's CPS lowering, not the adapter (which has no tables at all), and
+> both reproduce against the emitter as first committed. The named-host-stream
+> lane's delayed path parks correctly under the same compiler, so this is
+> specific to the serve lane rather than to parking in general.
+
+> **Pitfall (measured 2026-08-16): the `vibe.*` Int ABI is NOT "always tagged".**
+> §3.13/§3.18 say "i64 values are guest-tagged on the wire (the adapter
+> shifts)". That holds for THAT lane, whose core comes from the CLI's **RC
+> compile** (`enable_rc` on, `linked_compile`'s tag_mode 1 = `value << 1`).
+> `vibe serve`'s core comes from `compile_wasi_module_no_dce_impl`, which
+> passes `enable_rc` **off**, so an Int there is a plain i64. **One import
+> name, `vibe.host_stream_read`, with two value representations decided by the
+> compile mode.** Mixing them does not trap: every byte the handler reads is
+> silently doubled, which is how "abc" came back as `sum=588` instead of 294.
+> The serve lane's trampoline and adapter are both untagged.
+
 ### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
 
 `tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the

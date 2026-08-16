@@ -7,6 +7,7 @@ import @vibe/compiler/core {
   TypeExpr,
   bsearch_leftmost,
   builtin_allocates,
+  builtin_registry,
   bytebuf_push,
   canonical_builtin_name,
   is_exception_throw_operation,
@@ -1142,6 +1143,21 @@ export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String],
   }
 }
 
+/// True exactly when codegen's lambda lowering needs a heap environment.
+/// Keep allocation queries on this API instead of reimplementing capture
+/// rules: globals, let-rec self references, and enclosing-name shadowing are
+/// deliberately the same inputs compile_lambda uses.
+export fn lambda_has_captures(body: Expr, params: Array[(String, Option[TypeExpr])], fn_name_index: Array[String], self_name: String, encl: Array[String]) -> Bool {
+  let param_names = common_analysis_fresh_string_array()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    Array::push(param_names, name)
+    i = i + 1
+  }
+  Array::length(collect_free_vars_indexed_self(body, param_names, fn_name_index, self_name, encl)) > 0
+}
+
 /// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
 /// "" if `e` is not a projection. (ADR-0055 Stage 4: shared with compile_expr_tail
 /// so function-tail param drops can detect an escaping projection of a param.)
@@ -2072,6 +2088,23 @@ fn typed_alloc_copy_strings(items: Array[String]) -> Array[String] {
   Array::slice(items, 0, Array::length(items))
 }
 
+fn za_lambda_global_index(fn_names: Array[String], ctors: Array[String]) -> Array[String] {
+  let names = typed_alloc_copy_strings(fn_names)
+  let mut ci = 0
+  while ci < Array::length(ctors) {
+    Array::push(names, Array::get(ctors, ci))
+    ci = ci + 1
+  }
+  let registry = builtin_registry()
+  let mut bi = 0
+  while bi < Array::length(registry) {
+    let (name, _, _, _, _) = Array::get(registry, bi)
+    Array::push(names, name)
+    bi = bi + 1
+  }
+  sorted_names_of(names)
+}
+
 /// Classify source operators whose statically evident overload allocates on
 /// the linear backend. Lexical type facts survive package linking without
 /// relying on file-local offsets. Unknown arithmetic is conservatively
@@ -2142,7 +2175,11 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
     ERecord(_, _, _) => "record/struct literal",
     EMap(_) => "map literal",
     EStringInterp(_) => "string interpolation",
-    EFn(_, _, _, _, _, _) => "closure literal (allocates its environment)",
+    EFn(_, _, params, _, _, body) => if lambda_has_captures(body, params, za_lambda_global_index(fn_names, ctors), "", bound) {
+      "closure literal (allocates its environment)"
+    } else {
+      ""
+    },
     EIf(zc, zt, zf) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_first(za_walk(zt, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zf, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst))),
     ELet(zl_name, zv, zb, _) => {
       let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
@@ -2850,6 +2887,100 @@ fn bp_param_base_name(raw: String) -> String {
   }
 }
 
+/// Cheap worklist predicate for the bounded transitive borrow round. A false
+/// positive (for example a shadowed direct callee) only causes re-analysis;
+/// a false negative would lose an optimization, so inspect every AST child.
+fn bp_calls_round0_borrow(e: Expr, round0_names: Array[String]) -> Bool {
+  match e {
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EBool(_) => false,
+    EUnit => false,
+    EStringInterp(_) => false,
+    EIdent(_, _) => false,
+    ECall(callee, args, _) => {
+      let mut found = match callee {
+        EIdent(fname, _) => bsearch_leftmost(round0_names, fname) >= 0,
+        _ => bp_calls_round0_borrow(callee, round0_names)
+      }
+      let mut i = 0
+      while !found && i < Array::length(args) {
+        found = bp_calls_round0_borrow(Array::get(args, i), round0_names)
+        i = i + 1
+      }
+      found
+    },
+    ETuple(items) => bp_calls_round0_borrow_list(items, round0_names),
+    EArray(items) => bp_calls_round0_borrow_list(items, round0_names),
+    ERecord(_, fields, _) => bp_calls_round0_borrow_fields(fields, round0_names),
+    EMap(fields) => bp_calls_round0_borrow_fields(fields, round0_names),
+    EIf(c, t, f) => bp_calls_round0_borrow(c, round0_names) || bp_calls_round0_borrow(t, round0_names) || bp_calls_round0_borrow(f, round0_names),
+    ELet(_, v, b, _) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    ELetRec(_, v, b) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    ELetMut(_, v, b, _) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    EAssign(_, v, b) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    EAssignOp(_, _, v, b) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    ESeq(a, b) => bp_calls_round0_borrow(a, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    EMatch(scr, arms) => bp_calls_round0_borrow(scr, round0_names) || bp_calls_round0_borrow_arms(arms, round0_names),
+    EHandle(body, arms) => bp_calls_round0_borrow(body, round0_names) || bp_calls_round0_borrow_arms(arms, round0_names),
+    EWhile(c, b) => bp_calls_round0_borrow(c, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    ELoop(inits, b) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(inits) {
+        let (_, init) = Array::get(inits, i)
+        found = bp_calls_round0_borrow(init, round0_names)
+        i = i + 1
+      }
+      found || bp_calls_round0_borrow(b, round0_names)
+    },
+    EForIn(_, _, iter, b) => bp_calls_round0_borrow(iter, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    EBinOp(_, a, b) => bp_calls_round0_borrow(a, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    EUnaryOp(_, a) => bp_calls_round0_borrow(a, round0_names),
+    EFn(_, _, _, _, _, body) => bp_calls_round0_borrow(body, round0_names),
+    EDot(obj, _, _, _) => bp_calls_round0_borrow(obj, round0_names),
+    ELabeledArg(_, _, v) => bp_calls_round0_borrow(v, round0_names),
+    EReturn(v) => bp_calls_round0_borrow(v, round0_names),
+    EBreak(Some(v)) => bp_calls_round0_borrow(v, round0_names),
+    EBreak(None) => false,
+    EContinue(args) => bp_calls_round0_borrow_list(args, round0_names),
+    ESpread(v) => bp_calls_round0_borrow(v, round0_names)
+  }
+}
+
+fn bp_calls_round0_borrow_list(items: Array[Expr], round0_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    found = bp_calls_round0_borrow(Array::get(items, i), round0_names)
+    i = i + 1
+  }
+  found
+}
+
+fn bp_calls_round0_borrow_fields(fields: Array[(String, Expr)], round0_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, value) = Array::get(fields, i)
+    found = bp_calls_round0_borrow(value, round0_names)
+    i = i + 1
+  }
+  found
+}
+
+fn bp_calls_round0_borrow_arms(arms: Array[(Pat, Expr)], round0_names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    found = bp_calls_round0_borrow(body, round0_names)
+    i = i + 1
+  }
+  found
+}
+
 /// ADR-0092 borrow-inference: for every top-level fn, which of its
 /// parameters are only ever READ. Each such position's ABI flips to
 /// borrowed, program-wide and in lockstep: the caller's plan counts an
@@ -2883,9 +3014,14 @@ fn bp_param_base_name(raw: String) -> String {
 ///     conventional entry names: the host invokes them without consulting
 ///     the set either)
 ///
-/// `md_consume_count` is used WITHOUT a user borrow set on purpose: this
-/// computation must not consume its own output (a fixpoint would make each
-/// position's eligibility depend on positions still being decided).
+/// Round 0 uses `md_consume_count` without a user borrow set and exactly
+/// preserves the original conservative result. One bounded transitive round
+/// then reads that immutable snapshot through `md_consume_count_pre`; it never
+/// consumes masks being decided in the same round. Only bodies that actually
+/// call a round-0 borrowed function are revisited. A local callee shadow zeros
+/// that function's mask before counting, preserving the owned-call fallback.
+/// This deliberately stops after one extra layer: deeper closure is a possible
+/// future worklist extension, while every intermediate result stays sound.
 ///
 /// Returns the SORTED name array of fns with a non-zero mask and fills
 /// `out_masks` aligned to it, so a single `bsearch_leftmost` on the names
@@ -2899,8 +3035,7 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   let nonident_pos = array_empty()
   let _ = ca_walk_stmts_nonident_args(stmts, nonident_fns, nonident_pos)
   // Fold the (callee, position) pairs into one mask per callee of the
-  // positions that must STAY owned, so the per-function loop below is a
-  // single hash lookup instead of a scan of the whole pair list.
+  // positions that must STAY owned, so both rounds share the same index.
   let nonident: MutMap[String, Int] = MutMap::new_string()
   let mut ni = 0
   while ni < Array::length(nonident_fns) {
@@ -2917,8 +3052,6 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
     }
     ni = ni + 1
   }
-  // Same shape as compute_may_return_view_fns below: the set is complete
-  // before this loop starts and was then linearly scanned once per function.
   let valued_srt = sorted_names_of(valued)
   let excluded_srt = sorted_names_of(exclude)
   let names = array_empty()
@@ -2965,9 +3098,71 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
     }
     si = si + 1
   }
-  // Sort the names, then re-read each mask by name. Rebuilding the mask
-  // array from the SORTED names (rather than sorting two arrays in step)
-  // makes misalignment unrepresentable.
+  let round0_names = sorted_names_of(names)
+  let round0_masks: Array[Int] = [
+  ]
+  let mut rmi = 0
+  while rmi < Array::length(round0_names) {
+    Array::push(round0_masks, match MutMap::get(masks, Array::get(round0_names, rmi)) {
+      Some(m) => m,
+      None => 0
+    })
+    rmi = rmi + 1
+  }
+  // One transitive step captures most of the useful wrapper chains while
+  // keeping the analysis bounded. Read only the complete round-0 snapshot;
+  // updates land in `masks` for the final result and never feed this round.
+  si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, fname, _, fval) => match fval {
+        EFn(_, _, fps, _, _, fbody) => if bsearch_leftmost(valued_srt, fname) < 0 && bsearch_leftmost(excluded_srt, fname) < 0 && bp_calls_round0_borrow(fbody, round0_names) {
+          let owned_bits = match MutMap::get(nonident, fname) {
+            Some(m) => m,
+            None => 0
+          }
+          let prev_mask = match MutMap::get(masks, fname) {
+            Some(m) => m,
+            None => 0
+          }
+          let mut mask = prev_mask
+          let body_masks = md_shadow_zeroed_bmasks(fbody, round0_names, round0_masks)
+          let mut pi = 0
+          let np = Array::length(fps)
+          let lim = if np < bmask_max_param() {
+            np
+          } else {
+            bmask_max_param()
+          }
+          while pi < lim {
+            let (praw, _) = Array::get(fps, pi)
+            let pn = bp_param_base_name(praw)
+            if !bmask_has(mask, pi) && pn != "" && !bmask_has(owned_bits, pi) && md_consume_count_pre(fbody, pn, round0_names, body_masks) == 0 && !is_mut_captured_in(fbody, pn) {
+              mask = mask|(1<<pi)
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          if mask != prev_mask {
+            if prev_mask == 0 {
+              Array::push(names, fname)
+            } else {
+              ()
+            }
+            MutMap::set(masks, fname, mask)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
   let names_srt = sorted_names_of(names)
   let mut oi = 0
   while oi < Array::length(names_srt) {
@@ -3173,9 +3368,15 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
       true
     },
     ECall(callee, args, _) => {
+      let mut arg0_fresh = false
       let mut i = 0
       while i < Array::length(args) {
-        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let af = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        if i == 0 {
+          arg0_fresh = af
+        } else {
+          ()
+        }
         i = i + 1
       }
       match callee {
@@ -3191,6 +3392,34 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
           // uppercase, but a non-view builtin returns fresh too, so the
           // distinction does not matter here.)
           true
+        },
+        EFn(_, _, wfps, _, _, wbody) => {
+          // #1915: `let x: T = e` parses to the identity application
+          // `((__asc: T) -> __asc)(e)` (ascribe_wrap, parser_expr_dispatch.vibe)
+          // -- a checker-only ascription device, so the call's freshness is the
+          // argument's. Treating the non-ident callee as untrackable here put
+          // every function tail-returning an annotated fresh binding (`let out:
+          // Array[Int] = []; ...; out` -- the standard builder shape) into the
+          // may-return-view set, and every caller then leaked the owned result
+          // (view-call scope-end drop suppression, one object per call).
+          // Recognized structurally (single param returned unchanged), not by
+          // the `__asc` name, so a hand-written identity lambda gets the same
+          // precision; anything else stays untrackable as before.
+          let ident_ret = if Array::length(wfps) == 1 && Array::length(args) == 1 {
+            let (wpn, _) = Array::get(wfps, 0)
+            match wbody {
+              EIdent(bn, _) => bn == wpn,
+              _ => false
+            }
+          } else {
+            false
+          }
+          if ident_ret {
+            arg0_fresh
+          } else {
+            let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+            false
+          }
         },
         _ => {
           let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
@@ -3515,6 +3744,21 @@ export fn region_array_value_copy(value: Expr, tmp: String) -> Expr {
     EIdent(tmp, -1),
     EInt(0),
     ECall(EIdent("Array::length", -1), [
+      EIdent(tmp, -1)
+    ], -1)
+  ], -1), -1)
+}
+
+/// `MutBytes::to_bytes(mb)` -- the same exit for the Bytes half, for the same
+/// two reasons (an alias observes later pushes; with an arena the release
+/// dangles it). `Bytes::slice` allocates through `Bytes::new`, which is always
+/// a main-heap bump, so the escaping value never points into region storage.
+export fn region_mutbytes_exit_copy(arg: Expr) -> Expr {
+  let tmp = "__mutbytes_exit"
+  ELet(tmp, arg, ECall(EIdent("Bytes::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Bytes::length", -1), [
       EIdent(tmp, -1)
     ], -1)
   ], -1), -1)

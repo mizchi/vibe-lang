@@ -1,0 +1,420 @@
+//# Imports
+
+import ../lib/@vibe/ast {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ../lib/@vibe/parser {
+  BinderAuthorityNode,
+  BinderAuthorityNodeKind,
+  BinderAuthoritySlot,
+  BinderSemanticRole,
+  SourceBinder,
+  SyntheticBinderKind,
+  binder_authority_node_children,
+  binder_authority_node_kind,
+  binder_authority_node_slots,
+  binder_authority_slot_binder,
+  binder_authority_slot_role,
+  detach_stmts,
+  located_program_binder_authority_nodes,
+  located_program_binder_authority_program,
+  located_program_binder_authority_rows,
+  parse_source_located_with_binder_authority,
+  validate_program_binder_rows
+}
+
+//# Helpers
+
+fn expect_source_slot(slot: BinderAuthoritySlot, role_tag: Int, name: String, start: Int, end: Int, source: String) -> Unit {
+  let actual_role_tag = match binder_authority_slot_role(slot) {
+    StatementLetBinder => 1,
+    StatementLetMutBinder => 2,
+    StatementExternBinder => 3,
+    StatementImportBinder => 4,
+    StatementAliasBinder => 5,
+    StatementTypeBinder => 6,
+    StatementTypeParameterBinder => 7,
+    StatementEffectSetBinder => 8,
+    StatementResourceBinder => 9,
+    ExpressionLetBinder => 10,
+    ExpressionLetRecBinder => 11,
+    ExpressionLetMutBinder => 12,
+    ExpressionFunctionTypeParameterBinder => 13,
+    ExpressionFunctionParameterBinder => 14,
+    ExpressionForValueBinder => 15,
+    ExpressionForIndexBinder => 16,
+    PatternBinder => 17
+  }
+  inspect(actual_role_tag == role_tag, "true")
+  match binder_authority_slot_binder(slot) {
+    SourceToken(actual_name, actual_start, actual_end) => {
+      inspect(actual_name, name)
+      inspect(actual_start == start, "true")
+      inspect(actual_end == end, "true")
+      inspect(String::substring(source, actual_start, actual_end), name)
+    },
+    _ => inspect(false, "true")
+  }
+}
+
+fn count_synthetic_slots(node: BinderAuthorityNode) -> Int {
+  let mut count = 0
+  for slot in binder_authority_node_slots(node) {
+    match binder_authority_slot_binder(slot) {
+      Synthetic(_, _) => {
+        count = count + 1
+      },
+      _ => ()
+    }
+  }
+  for child in binder_authority_node_children(node) {
+    count = count + count_synthetic_slots(child)
+  }
+  count
+}
+
+fn kind_tag(kind: BinderAuthorityNodeKind) -> Int {
+  match kind {
+    AuthorityStmtLet => 1,
+    AuthorityStmtLetMut => 2,
+    AuthorityExprFn => 3,
+    AuthorityExprLet => 4,
+    AuthorityExprLetRec => 5,
+    AuthorityExprLetMut => 6,
+    AuthorityExprMatch => 7,
+    AuthorityExprHandle => 8,
+    AuthorityPatBind => 9,
+    AuthorityPatCtor => 10,
+    AuthorityExprIdent => 11,
+    AuthorityExprForIn => 12,
+    AuthorityStmtImport => 13,
+    AuthorityStmtTypeAlias => 14,
+    _ => 99
+  }
+}
+
+//# Tests
+
+test "paired roots preserve duplicate and nested slot identity with UTF-8 byte spans" {
+  let source = "// é\nlet x = 1\nlet x = (x) -> { let mut x = x; let rec x = () -> { x }; x }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let rows = located_program_binder_authority_rows(authority)
+      let roots = located_program_binder_authority_nodes(authority)
+      inspect(Array::length(rows), "5")
+      inspect(Array::length(roots), "2")
+      let first = Array::get(roots, 0)
+      let second = Array::get(roots, 1)
+      inspect(kind_tag(binder_authority_node_kind(first)), "1")
+      inspect(kind_tag(binder_authority_node_kind(second)), "1")
+      expect_source_slot(Array::get(binder_authority_node_slots(first), 0), 1, "x", 10, 11, source)
+      expect_source_slot(Array::get(binder_authority_node_slots(second), 0), 1, "x", 20, 21, source)
+      let fn_node = Array::get(binder_authority_node_children(second), 0)
+      inspect(kind_tag(binder_authority_node_kind(fn_node)), "3")
+      expect_source_slot(Array::get(binder_authority_node_slots(fn_node), 0), 14, "x", 25, 26, source)
+      let mut_node = Array::get(binder_authority_node_children(fn_node), 0)
+      inspect(kind_tag(binder_authority_node_kind(mut_node)), "6")
+      expect_source_slot(Array::get(binder_authority_node_slots(mut_node), 0), 12, "x", 41, 42, source)
+      let rec_node = Array::get(binder_authority_node_children(mut_node), 1)
+      inspect(kind_tag(binder_authority_node_kind(rec_node)), "5")
+      let recursive_slot = Array::get(binder_authority_node_slots(rec_node), 0)
+      expect_source_slot(recursive_slot, 11, "x", 56, 57, source)
+      // One parser slot is immutable data that future hoist/provisional/final
+      // semantic incarnations may reuse; reuse never appends compatibility rows.
+      expect_source_slot(recursive_slot, 11, "x", 56, 57, source)
+      inspect(Array::length(rows), "5")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "match handler and block-step patterns retain paired constructor roles" {
+  let source = "let run = (arg) -> { let value = arg; match value { Some(item) => handle { item } with Eff { Op(payload) => payload }, None => 0 } }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let roots = located_program_binder_authority_nodes(authority)
+      let stmt = Array::get(roots, 0)
+      let fn_node = Array::get(binder_authority_node_children(stmt), 0)
+      let let_node = Array::get(binder_authority_node_children(fn_node), 0)
+      let match_node = Array::get(binder_authority_node_children(let_node), 1)
+      inspect(kind_tag(binder_authority_node_kind(let_node)), "4")
+      inspect(kind_tag(binder_authority_node_kind(match_node)), "7")
+      // Match children are scrutinee, then ordered pattern/body pairs.
+      let some_pat = Array::get(binder_authority_node_children(match_node), 1)
+      inspect(kind_tag(binder_authority_node_kind(some_pat)), "10")
+      let item_pat = Array::get(binder_authority_node_children(some_pat), 0)
+      inspect(kind_tag(binder_authority_node_kind(item_pat)), "9")
+      expect_source_slot(Array::get(binder_authority_node_slots(item_pat), 0), 17, "item", 57, 61, source)
+      let handle_node = Array::get(binder_authority_node_children(match_node), 2)
+      inspect(kind_tag(binder_authority_node_kind(handle_node)), "8")
+      let op_pat = Array::get(binder_authority_node_children(handle_node), 1)
+      let payload_pat = Array::get(binder_authority_node_children(op_pat), 0)
+      expect_source_slot(Array::get(binder_authority_node_slots(payload_pat), 0), 17, "payload", 96, 103, source)
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "for-step children and distinct top-level statement roots stay explicitly paired" {
+  let for_source = "let f = (values) -> { for index, value in values { let inner = value; inner } }"
+  match parse_source_located_with_binder_authority(for_source) {
+    Some(authority) => {
+      let stmt = Array::get(located_program_binder_authority_nodes(authority), 0)
+      let fn_node = Array::get(binder_authority_node_children(stmt), 0)
+      let for_node = Array::get(binder_authority_node_children(fn_node), 0)
+      inspect(kind_tag(binder_authority_node_kind(for_node)), "12")
+      inspect(Array::length(binder_authority_node_children(for_node)), "2")
+      let slots = binder_authority_node_slots(for_node)
+      inspect(Array::length(slots), "2")
+      expect_source_slot(Array::get(slots, 0), 15, "value", 33, 38, for_source)
+      expect_source_slot(Array::get(slots, 1), 16, "index", 26, 31, for_source)
+      let body = Array::get(binder_authority_node_children(for_node), 1)
+      inspect(kind_tag(binder_authority_node_kind(body)), "4")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "distinct top-level statement root kinds stay explicitly paired" {
+  let roots_source = "import ./dep.vibe { Thing as Local }\ntype Box[T] = T\nlet mut state = 0"
+  match parse_source_located_with_binder_authority(roots_source) {
+    Some(authority) => {
+      let roots = located_program_binder_authority_nodes(authority)
+      inspect(Array::length(roots), "3")
+      inspect(kind_tag(binder_authority_node_kind(Array::get(roots, 0))), "13")
+      inspect(kind_tag(binder_authority_node_kind(Array::get(roots, 1))), "14")
+      inspect(kind_tag(binder_authority_node_kind(Array::get(roots, 2))), "2")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "forgeable sidecar nodes remain data and do not mint parser authority" {
+  let forged = BinderAuthorityNode::{
+    kind: AuthorityExprIdent,
+    slots: [
+      BinderAuthoritySlot::{
+        role: PatternBinder,
+        binder: SourceToken("forged", 0, 6)
+      }
+    ],
+    children: [
+    ]
+  }
+  inspect(kind_tag(binder_authority_node_kind(forged)), "11")
+  inspect(Array::length(binder_authority_node_slots(forged)), "1")
+  inspect(Array::length(binder_authority_node_children(forged)), "0")
+  // There is intentionally no resolver, AST scan, or authority-accepting API.
+}
+
+test "AST detachment traverses statement pattern type and expression families" {
+  let original: Array[Stmt] = [
+    SModule(true, "M", [
+      STypeAlias(true, "Box", [
+        "T"
+      ], TyApp("Pair", [
+        TyTuple([
+          TyName("T")
+        ])
+      ])),
+      SLetPat(PStruct("Pair", [
+        ("value", PCtor("Some", [
+          PBind("same")
+        ]))
+      ]), EFn([
+        "T"
+      ], [
+        ("T", [
+          "Bound"
+        ])
+      ], [
+        ("same", Some(TyTuple([
+          TyName("T")
+        ])))
+      ], Some(TyName("T")), None, ERecord("Pair", [
+        ("value", EMatch(EInt(1), [
+          (PBind("same"), EArray([
+            EInt(2)
+          ]))
+        ]))
+      ], [
+        TyName("T")
+      ])))
+    ])
+  ]
+  let detached = detach_stmts(original)
+  match Array::get(original, 0) {
+    SModule(_, _, stmts) => {
+      Array::truncate(stmts, 1)
+      match Array::get(stmts, 0) {
+        STypeAlias(_, _, params, TyApp(_, args)) => {
+          Array::truncate(params, 0)
+          Array::truncate(args, 0)
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    _ => inspect(false, "true")
+  }
+  Array::truncate(original, 0)
+  match Array::get(detached, 0) {
+    SModule(_, "M", stmts) => {
+      inspect(Array::length(stmts), "2")
+      match Array::get(stmts, 0) {
+        STypeAlias(_, "Box", params, TyApp("Pair", args)) => {
+          inspect(Array::length(params), "1")
+          inspect(Array::length(args), "1")
+        },
+        _ => inspect(false, "true")
+      }
+      match Array::get(stmts, 1) {
+        SLetPat(PStruct(_, fields), EFn(type_params, bounds, params, _, _, ERecord(_, expr_fields, type_args))) => {
+          inspect(Array::length(fields), "1")
+          inspect(Array::length(type_params), "1")
+          inspect(Array::length(bounds), "1")
+          inspect(Array::length(params), "1")
+          inspect(Array::length(expr_fields), "1")
+          inspect(Array::length(type_args), "1")
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    _ => inspect(false, "true")
+  }
+}
+
+test "aggregate program materialization recursively detaches params calls fields and arms" {
+  let source = "fn target(x: Int, y: Int) -> Int { 0 }\nfn main() -> Int { target(y=match 1 { same => same }, x=Pair::{ value: 1 }) }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let first = located_program_binder_authority_program(authority)
+      match Array::get(first, 0) {
+        SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => Array::set(params, 0, ("forged", None)),
+        _ => inspect(false, "true")
+      }
+      match Array::get(first, 1) {
+        SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => {
+          match Array::get(args, 0) {
+            ELabeledArg(_, _, EMatch(_, arms)) => Array::truncate(arms, 0),
+            _ => inspect(false, "true")
+          }
+          match Array::get(args, 1) {
+            ELabeledArg(_, _, ERecord(_, fields, _)) => Array::truncate(fields, 0),
+            _ => inspect(false, "true")
+          }
+          Array::set(args, 0, Array::get(args, 1))
+          Array::truncate(args, 1)
+        },
+        _ => inspect(false, "true")
+      }
+      let second = located_program_binder_authority_program(authority)
+      match Array::get(second, 0) {
+        SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => {
+          inspect(Array::get(params, 0).0, "x")
+          inspect(Array::length(params), "2")
+        },
+        _ => inspect(false, "true")
+      }
+      match Array::get(second, 1) {
+        SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(_, args, _))) => {
+          inspect(Array::length(args), "2")
+          match Array::get(args, 0) {
+            ELabeledArg("y", _, EMatch(_, arms)) => inspect(Array::length(arms), "1"),
+            _ => inspect(false, "true")
+          }
+          match Array::get(args, 1) {
+            ELabeledArg("x", _, ERecord(_, fields, _)) => inspect(Array::length(fields), "1"),
+            _ => inspect(false, "true")
+          }
+        },
+        _ => inspect(false, "true")
+      }
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "aggregate node materialization is recursively detached across repeated access" {
+  let source = "let f = (x) -> { let inner = x; inner }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let forged = BinderAuthorityNode::{
+        kind: AuthorityExprUnit,
+        slots: [
+        ],
+        children: [
+        ]
+      }
+      let first_roots = located_program_binder_authority_nodes(authority)
+      let first_root = Array::get(first_roots, 0)
+      Array::set(first_root.children, 0, forged)
+      let second_roots = located_program_binder_authority_nodes(authority)
+      let second_root = Array::get(second_roots, 0)
+      let second_fn = Array::get(second_root.children, 0)
+      inspect(kind_tag(second_fn.kind), "3")
+      let forged_slot = BinderAuthoritySlot::{
+        role: PatternBinder,
+        binder: SourceToken("forged", 0, 6)
+      }
+      Array::set(second_fn.slots, 0, forged_slot)
+      let third_roots = located_program_binder_authority_nodes(authority)
+      let third_fn = Array::get(Array::get(third_roots, 0).children, 0)
+      expect_source_slot(Array::get(third_fn.slots, 0), 14, "x", 9, 10, source)
+      Array::set(second_roots, 0, forged)
+      let fourth_roots = located_program_binder_authority_nodes(authority)
+      inspect(kind_tag(Array::get(fourth_roots, 0).kind), "1")
+    },
+    None => inspect(false, "true")
+  }
+}
+
+test "leaf accessors terminate on a forged self-aliased public node" {
+  let seed = BinderAuthorityNode::{
+    kind: AuthorityExprUnit,
+    slots: [
+    ],
+    children: [
+    ]
+  }
+  let child_cells = [
+    seed
+  ]
+  let cycle = BinderAuthorityNode::{
+    kind: AuthorityExprIdent,
+    slots: [
+    ],
+    children: child_cells
+  }
+  Array::set(child_cells, 0, cycle)
+  inspect(kind_tag(binder_authority_node_kind(cycle)), "11")
+  inspect(Array::length(binder_authority_node_slots(cycle)), "0")
+  inspect(Array::length(binder_authority_node_children(cycle)), "1")
+}
+
+test "approved represented synthetic slots remain compatible while unsupported synthetic topology fails closed" {
+  let source = "let f = () -> { let x: Int = 1; x }"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => {
+      let roots = located_program_binder_authority_nodes(authority)
+      inspect(Array::length(roots), "1")
+      inspect(count_synthetic_slots(Array::get(roots, 0)), "1")
+    },
+    None => inspect(false, "true")
+  }
+  // This is deliberately forged validator input, not parser authority. ELoop
+  // has synthetic binder topology with no supported final-AST sidecar branch.
+  let forged_program: Array[Stmt] = [
+    SLet(false, false, "f", None, ELoop([
+      ("i", EInt(0))
+    ], EUnit))
+  ]
+  inspect(validate_program_binder_rows(forged_program, [
+    SourceToken("f", 4, 5),
+    Synthetic("i", ParserSynthetic)
+  ], "let f = loop"), "false")
+  inspect(match parse_source_located_with_binder_authority("enum Choice { A; B }") {
+    Some(_) => true,
+    None => false
+  }, "false")
+}

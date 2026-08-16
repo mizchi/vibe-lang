@@ -62,7 +62,6 @@ Boundary enforcement is active in:
 `builtin_traits.vibe` provides the canonical trait-first API:
 
 - `cmp_eq`, `cmp_ne` for equality (`T: Eq`)
-- `hash_require` for hashability bounds (`T: Hash`)
 - `ord_min`, `ord_max`, `ord_clamp`, `ord_between` for ordering (`T: Ord`)
 - `num_add`, `num_sub`, `num_mul`, `num_div`, `num_abs`, `num_square`, `num_clamp`
 

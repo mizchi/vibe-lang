@@ -4,12 +4,13 @@ import ../compiler {
   check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
   compile_release_file_mode_uncached, compile_release_file_mode_uncached_profiled,
   write_linked_debug_build, strip_executable_wasm_env,
-  serve_handler_param_names, validate_serve_handler, wit_from_program,
+  serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler,
+  wit_from_program,
   lex, parse_program
 }
 
 import ../compiler/entry/source_compile/wasi_only {
-  comp_emit_component_wasm_string_handler
+  comp_emit_component_wasm_stream_handler, comp_emit_component_wasm_string_handler
 }
 
 //# Effects
@@ -671,7 +672,17 @@ export fn selfhost_cli_serve_args(args: Array[String]) -> Int with Exception + F
     // export alive. `__no_entry__` is the explicit sentinel — any other unknown
     // entry name is a compile error since ADR-0069.
     let core = compile_release_file_mode(input_path, "__no_entry__", "release")
-    let component = comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+    // #1540 scope 4: two lanes, chosen by the handler's own signature. A
+    // `body: HostStream` handler is async-lifted and takes the body as a
+    // component `stream<u8>`, so it sees the first byte before the last one
+    // has arrived; a String handler keeps the sync lift and the collected
+    // body. `validate_serve_handler` above has already rejected every other
+    // shape, so this is a two-way choice, not a guess.
+    let component = if serve_handler_takes_body_stream(entry_stmts) {
+      comp_emit_component_wasm_stream_handler(core, "handler", "handler", serve_handler_param_names())
+    } else {
+      comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+    }
     Fs::write_bytes(output_path, component)
     Fs::write_file(wit_output_path, wit_from_program(entry_stmts, entry_stmts, basename_without_vibe_suffix(input_path)))
     0

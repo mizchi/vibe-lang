@@ -31,7 +31,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/normalize {
-  desugar_inspect_calls, lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings
+  desugar_inspect_calls, lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings_fresh
 }
 
 import @vibe/compiler/perceus {
@@ -84,6 +84,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_region_arr_new_body,
   gen_region_bytes_new_body,
   gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
   gen_simd_scan_string_special_body,
   gen_simd_skip_ws_body,
   gen_sources_proper_body,
@@ -174,6 +175,7 @@ import @vibe/compiler/codegen/common_base {
   exn_msg_read_expr,
   expr_tag,
   fn_type_param_types,
+  forin_discard_pass,
   get_arm_body,
   get_arm_pat,
   get_ebinop_op,
@@ -3636,6 +3638,15 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
       }
     }
   }
+  // #1916: normalize discard-position `for` loops into the ESeq-head shape
+  // the linear lowering compiles without the comprehension result array.
+  // Last on purpose: every effect pass above sees the original tree, and by
+  // now the non-residual `for` shapes are already Unit-valued whiles (#1679).
+  if Array::length(errs) == 0 {
+    forin_discard_pass(stmts)
+  } else {
+    ()
+  }
   errs
 }
 
@@ -5104,7 +5115,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let simd_scan_alnum_idx = simd_skip_ws_idx + 1
   let simd_scan_alnum_str_idx = simd_scan_alnum_idx + 1
   let simd_scan_string_special_str_idx = simd_scan_alnum_str_idx + 1
-  let str_lex_diff_idx = simd_scan_string_special_str_idx + 1
+  let simd_scan_line_end_str_idx = simd_scan_string_special_str_idx + 1
+  let str_lex_diff_idx = simd_scan_line_end_str_idx + 1
   // #973: erased-generic `[T: Ord]`/`[T: Add]` runtime dispatch (see the doc
   // comment on gen_generic_rel_diff_body). Linear lane only -- desugar_trait_dicts
   // is only invoked from this file, so no gc-lane index is needed.
@@ -5598,6 +5610,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
         "simd_scan_alnum" => simd_scan_alnum_idx,
         "simd_scan_alnum_str" => simd_scan_alnum_str_idx,
         "simd_scan_string_special_str" => simd_scan_string_special_str_idx,
+        "simd_scan_line_end_str" => simd_scan_line_end_str_idx,
         // #746: backs String < > <= >= (desugar rewrites to str_lex_diff(a,b) <op> 0).
         "str_lex_diff" => str_lex_diff_idx,
         // #973: backs `<`/`>`/`<=`/`>=`/`+` on an erased `[T: Ord]`/`[T: Add]`
@@ -5896,6 +5909,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_simd_scan_alnum_body(enable_rc, false), 1, 3, 8)
   push_builtin(gen_simd_scan_alnum_body(enable_rc, true), 1, 3, 8)
   push_builtin(gen_simd_scan_string_special_body(enable_rc), 1, 3, 8)
+  push_builtin(gen_simd_scan_line_end_body(enable_rc), 1, 3, 8)
   push_builtin(gen_str_lex_diff_body(enable_rc), 7, 0, 4)
   push_builtin(gen_generic_rel_diff_body(enable_rc, str_lex_diff_idx), 0, 0, 4)
   push_builtin(gen_generic_add_body(enable_rc, str_concat_idx), 0, 0, 4)
@@ -5996,11 +6010,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     let pb_expr = if enable_rc {
       let pb_seen: Array[String] = [
       ]
-      lift_match_scrutinees(uniquify_shadowed_bindings(get_slet_expr(pb_stmt), Map::new(), uq_shadow_counter, pb_seen), m_scrut_counter)
+      lift_match_scrutinees(uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen), m_scrut_counter)
     } else {
       let pb_seen: Array[String] = [
       ]
-      uniquify_shadowed_bindings(get_slet_expr(pb_stmt), Map::new(), uq_shadow_counter, pb_seen)
+      uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen)
     }
     Array::push(planned_bodies, pb_expr)
     Array::push(lambda_bases, lambda_base_acc)
@@ -8500,6 +8514,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::set(gen_sec_names, simd_scan_alnum_idx - num_imported_funcs, "__rt_simd_scan_alnum")
   Array::set(gen_sec_names, simd_scan_alnum_str_idx - num_imported_funcs, "__rt_simd_scan_alnum_str")
   Array::set(gen_sec_names, simd_scan_string_special_str_idx - num_imported_funcs, "__rt_simd_scan_string_special_str")
+  Array::set(gen_sec_names, simd_scan_line_end_str_idx - num_imported_funcs, "__rt_simd_scan_line_end_str")
   Array::set(gen_sec_names, str_lex_diff_idx - num_imported_funcs, "__rt_str_lex_diff")
   Array::set(gen_sec_names, generic_rel_diff_idx - num_imported_funcs, "__rt_generic_rel_diff")
   Array::set(gen_sec_names, generic_add_idx - num_imported_funcs, "__rt_generic_add")

@@ -424,8 +424,24 @@ run_selfbuild_compile() {
   local out="$3"
   local node_flags="${VIBE_NODE_WASM_FLAGS:---experimental-wasm-exnref --stack-size=$NODE_STACK_SIZE}"
   local import_abi="${VIBE_IMPORT_ABI:-raw}"
+  # #1262: VIBE_BACKEND=gc selects the wasm-gc twin of the selfbuild export.
+  # The BACKEND IS PICKED HERE, not inside the wasm: making
+  # selfbuild_compile_stage2 read the env var would add `Env` to its effect
+  # row, which is load-bearing for its other callers (see the doc comment on
+  # selfbuild_compile_stage2_gc in lib/@vibe/compiler/compiler.vibe).
+  #
+  # This path does NOT yet succeed -- it reaches codegen and stops at the
+  # `vibe_process_exit_raw` host import. It exists so that stopping point is
+  # reproducible from the supported build path instead of from an ad-hoc
+  # invocation, which is how it previously got measured wrong: at node's
+  # DEFAULT stack size both lanes die in the type checker first, so a probe
+  # run without --stack-size cannot see any codegen-stage blocker at all.
+  local selfbuild_export="selfbuild_compile_stage2"
+  if [ "${VIBE_BACKEND:-}" = "gc" ]; then
+    selfbuild_export="selfbuild_compile_stage2_gc"
+  fi
   mkdir -p "$(dirname "$out")" "$(dirname "$SELFBUILD_OUT")"
-  echo "[selfhost-gen] $label (invoke selfbuild_compile_stage2)"
+  echo "[selfhost-gen] $label (invoke $selfbuild_export)"
   rm -f "$SELFBUILD_OUT"
   (
     cd "$PROJECT_ROOT"
@@ -433,7 +449,7 @@ run_selfbuild_compile() {
       VIBE_WASM_PRE_GROW_PAGES="${VIBE_WASM_PRE_GROW_PAGES:-$WASM_PRE_GROW_PAGES}" \
       VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE="${VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE:-$DISABLE_PERSISTENT_ARTIFACT_CACHE}" \
       VIBE_NODE_WASM_FLAGS="$node_flags" \
-      bash "$RUNNER_SCRIPT" --invoke selfbuild_compile_stage2 "$compiler"
+      bash "$RUNNER_SCRIPT" --invoke "$selfbuild_export" "$compiler"
   )
   [ -s "$SELFBUILD_OUT" ] || die "$label did not produce recursive output: $SELFBUILD_OUT"
   cp "$SELFBUILD_OUT" "$out"

@@ -223,12 +223,47 @@ import @vibe/compiler/codegen/wasm_emit {
 
 //# Functions
 
+/// #1899: a parameter's binding name, with the label marker removed.
+///
+/// `x~: Int` (labeled) and `x?: Int` (optional) reach codegen as the parameter
+/// names `x~` and `x?`; the body binds and refers to `x`. Every consumer that
+/// answers "what does this lambda bind" has to agree on that, or a name that IS
+/// bound looks free.
+///
+/// Deliberately file-local, and copied verbatim into compile_expr_tail.vibe
+/// rather than exported: a brand-new cross-file export and its first
+/// cross-file caller in the same commit are silently dropped by the
+/// merge/flatten tool (the gotcha `edp_strip_tilde` in
+/// codegen/common_base/inline_direct_perform.vibe records).
+fn strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
 export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], fn_body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  // #1899: the capture scan must be told the parameters under the SAME names
+  // the body uses. A labeled parameter is parsed as `x~` and an optional one as
+  // `x?` (parser_base.vibe's parse_one_param_with_binder_context), while the
+  // body refers to plain `x` -- and `lam_locals` / `norm_params` below already
+  // strip the marker for exactly that reason. Passing the raw name here instead
+  // made every labeled parameter miss, so the body's `x` was recorded as a FREE
+  // variable and captured from the enclosing scope, which is empty: the call
+  // returned 0, with no diagnostic, because capturing is a legal operation and
+  // nothing downstream can tell the capture was bogus.
   let param_names_arr = array_empty()
   let mut pi = 0
   while pi < Array::length(params) {
     let (pname, _) = Array::get(params, pi)
-    Array::push(param_names_arr, pname)
+    Array::push(param_names_arr, strip_param_label_marker(pname))
     pi = pi + 1
   }
   // #875 fix 2: consume the "currently-compiling let-rec closure's own name"

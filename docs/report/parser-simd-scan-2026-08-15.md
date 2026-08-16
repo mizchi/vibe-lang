@@ -59,7 +59,8 @@ Add specialized fused, unboxed scanners rather than exposing per-operation
    ordinary 16-byte chunks. Wire it into `skip_until_newline` with a scalar
    tail.
 2. `simd_scan_string_special_str(String, pos, len) -> Int` finds the next
-   quote, backslash, interpolation dollar, newline, or control byte. Keep the
+   quote, backslash (including the `\\{...}` interpolation introducer), or
+   ASCII control byte. Keep the
    existing scalar state machine for the returned sparse event.
 3. Teach the `#zero_alloc` call graph that these fused scalar-result builtins
    are allocation-free, using the builtin registry as the source of truth.
@@ -75,6 +76,46 @@ measured 42 ns p50 for the fused scanner versus 2,417 ns p50 for the scalar
 byte loop on the same local Wasmtime runner, with 0 B/op in both lanes. This
 only establishes that the primitive has enough headroom: lexer integration
 still has to include dispatch/setup cost and representative-source A/B data.
+
+## Lexer integration result
+
+After adopting the builtin in the bootstrap seed, `lex_string_go` uses it only
+when at least 16 bytes remain. Short strings therefore stay on the original
+scalar path, while quotes, escapes, interpolation introducers, control bytes,
+UTF-8 payloads, offsets, and diagnostics remain owned by the existing scalar
+state machine.
+
+After the scalar first-chunk guard from review, five same-runner measurements
+of `lexer_string_bench.vibe` (2,000 iterations, 200 warmups) gave scalar p50
+values of 122.7--123.7 us and hybrid p50 values of 105.2--109.6 us: an 11--15%
+reduction. Both implementations reported exactly 125,440 B/op. The
+keyword-heavy control lane stayed within run-to-run noise
+(scalar median p50 343.9 us, hybrid median p50 338.2 us) and remained exactly
+160,640 B/op.
+
+This clears the issue's 5% acceptance threshold without adding allocation or
+changing the short-input path. Line-comment scanning remains a separate
+experiment: its larger byte census does not justify coupling a second lexer
+change to the validated string slice.
+
+Issue #1902 starts that separate experiment with
+`simd_scan_line_end_str(String, Int, Int) -> Int`. Its linear and GC bodies
+share one generator and are pinned against a scalar LF oracle before any lexer
+integration. As with the string scanner, the primitive benchmark is evidence
+for headroom only; adopting it in `skip_until_newline` requires a new seed and
+representative comment-heavy A/B data.
+
+The isolated 1 KiB LF benchmark measured 42 ns p50 for the fused scanner and
+1,709 ns p50 for the scalar loop on the same local runner, with 0 B/op in both
+lanes. This roughly 41x primitive headroom is sufficient to proceed to the
+seed/integration phase; it is not yet a lexer-level result.
+
+After the seed bump, `skip_until_newline` keeps the first 16 comment bytes on
+the scalar path and hands longer runs to the fused scanner. A comment-heavy
+lexer workload improved from 252,708 ns to 189,584 ns p50 (about 25%) while
+remaining at 75,456 B/op. A short-comment control measured 66,792 ns on the
+scalar implementation and 65,917 ns after integration, with 30,464 B/op in
+both lanes, so the scalar prefix avoids a short-input regression.
 
 Do not start with a full classify/compress token tape. `Token` is still a rich
 enum and identifiers/string tokens materialize substrings, so making every

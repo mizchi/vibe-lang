@@ -14,6 +14,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
+# --- exit-status helpers -----------------------------------------------------
+#
+# This script runs under `set -euo pipefail`, so a command whose non-zero exit
+# is DATA rather than a failure must never be called bare. Written bare, the
+# script dies at that line and the carefully-worded FAIL branch below it is
+# unreachable -- the gate reports nothing about why it stopped.
+#
+# Two real instances of this were in the tree (#1262):
+#
+#   - the `vibe check @scope/pkg` section, whose FAIL branch exists precisely
+#     to avoid "a diagnostic-free failure", was itself made diagnostic-free;
+#   - the process-exit section, where SUCCESS is a non-zero status (7), was
+#     fully INVERTED: it died when the fixture was correct and sailed past when
+#     the lowering had regressed to a no-op. It passed only when broken.
+#
+# Use `gate_status` whenever the exit code is something you want to READ.
+# Use plain `cmd` when a non-zero status genuinely means "abort the gate".
+# `|| true` remains fine where the status is deliberately ignored and a later
+# check (output file exists, content matches) is what decides.
+
+# gate_status <var> <cmd...> -- run cmd, assign its exit status to <var>.
+# Never aborts, so the caller's own assertion is always reached.
+gate_status() {
+  local __var="$1"; shift
+  local __rc=0
+  "$@" >/dev/null 2>&1 || __rc=$?
+  printf -v "$__var" '%s' "$__rc"
+}
+
+# gate_status_out <var> <outfile> <cmd...> -- same, but keep stdout+stderr in
+# <outfile> so a FAIL branch can show what actually happened.
+gate_status_out() {
+  local __var="$1"; local __out="$2"; shift 2
+  local __rc=0
+  "$@" >"$__out" 2>&1 || __rc=$?
+  printf -v "$__var" '%s' "$__rc"
+}
+# -----------------------------------------------------------------------------
+
 echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
 
@@ -1130,14 +1169,14 @@ cat > "$cdir6f/consumer.vibe" <<EOF
 require @vibe/core 0.2.0 = $core_pin
 
 import @vibe/core {
-  sha1, encode_uleb128, read_uleb128, list_of3, list_sum, from_array, contains
+  sha1, encode_uleb128, read_uleb128, type List, from_array, contains
 }
 export let _start: () -> Int = () -> {
   assert(sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d")
   let buf = encode_uleb128(624485)
   let (v, _) = read_uleb128(buf, 0)
   assert(eq(v, 624485))
-  assert(eq(list_sum(list_of3(1, 2, 3)), 6))
+  assert(eq(List::sum(List::of3(1, 2, 3)), 6))
   let s = from_array(["a", "b"])
   assert(contains(s, "a"))
   assert(not(contains(s, "z")))
@@ -4078,6 +4117,27 @@ fi
 rm -rf "$sssdir"
 echo "[compiler-gate] fused SIMD string-special scan ok"
 
+# 40b3. String-native fused LF scan (#1902 Phase 1). The scalar oracle pins
+# short tails, exact chunk boundaries, UTF-8 byte offsets, non-zero starts,
+# LF, and EOF before the lexer adopts the builtin.
+echo "[compiler-gate] 40b3/40 fused SIMD line-end scan"
+sledir="_build/_gate_simd_line_end"
+rm -rf "$sledir"; mkdir -p "$sledir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/simd_scan_line_end_test.vibe" "$sledir/sle.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$sledir/sle.wasm" ]; then
+  echo "[compiler-gate] FAIL: SIMD line-end test did not compile" >&2
+  cat "$sledir/sle.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$sledir/sle.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: SIMD line-end test trapped" >&2; exit 1
+fi
+rm -rf "$sledir"
+echo "[compiler-gate] fused SIMD line-end scan ok"
+
 # 40c. Region capture (#629 step 2): a `let mut` captured by a closure inside a
 #      struct/record literal, projection, handler, loop, labeled arg, map literal
 #      or spread must still be heap-boxed (by-reference capture), not snapshotted.
@@ -4357,7 +4417,7 @@ if [ "$sh_out" != "42" ]; then
   exit 1
 fi
 echo "[compiler-gate] RC user-shadowed builtin name ok (#1746)"
-echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume)"
+echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume+builder-return)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
 VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -4374,8 +4434,8 @@ lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
   echo "[compiler-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
-if [ "$lk_result" != "3200280000" ]; then
-  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200280000)" >&2; exit 1
+if [ "$lk_result" != "3200340000" ]; then
+  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 3200340000)" >&2; exit 1
 fi
 if [ "$lk_used" -ge 2000 ]; then
   echo "[compiler-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
@@ -4708,6 +4768,206 @@ done
 rm -rf "$gcrgdir"
 echo "[compiler-gate] wasm-gc region ok (linear + gc snapshots; copy-out, nested, in-lambda)"
 
+# 40h-6b. ADR-0090 tier 2 (#1262): the ARENA on the gc lane -- and this section
+#         exists because the value assertions above cannot see it fail.
+#
+#         Measured, not asserted by value: an arena that quietly stops
+#         releasing still returns every correct number, so 40h-6 and
+#         region_arena_release_ok both stay green while the reclamation is
+#         gone. That is not hypothetical -- the first wiring of this arena was
+#         correct and reclaimed NOTHING (1,635,208 B, i.e. the pre-arena
+#         figure) because MutList storage came from the segment while every
+#         doubling regrow buffer still went to the main heap. Only this
+#         measurement caught it.
+#
+#         gc is direct-source-compile only, so no VIBE_FS_COMPILE here (it
+#         would silently force the linear lane -- see docs/wasm/
+#         code-size-linear-vs-gc.md).
+echo "[compiler-gate] 40h-6b/40 wasm-gc region arena reclamation (#1262)"
+gcardir="_build/_gate_gc_arena"
+rm -rf "$gcardir"; mkdir -p "$gcardir"
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_arena_bounded.vibe" "$gcardir/bounded.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$gcardir/bounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_arena_bounded.vibe did not compile on the gc backend (#1262)" >&2
+  cat "$gcardir/bounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! gcar_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcardir/bounded.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_arena_bounded.vibe got the wrong value on the gc backend (#1262)" >&2
+  echo "$gcar_out" >&2
+  exit 1
+fi
+gcar_delta="$(node scripts/region_arena_heap_delta.mjs "$gcardir/bounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from the gc region_arena_bounded.wasm (#1262)" >&2
+  exit 1
+}
+# Same bound as the linear section, and deliberately just as loose: it only
+# has to separate "releases" from "does not". Measured 3,208 B with the arena
+# against 1,635,208 B without, so anything near the bound means the regrow
+# lane or the watermark restore regressed.
+if [ "$gcar_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 gc regions grew the main bump heap by $gcar_delta B (want < 100000; ~3208 with the arena, 1635208 without) -- the gc arena stopped releasing (#1262)" >&2
+  exit 1
+fi
+# The Bytes half, measured separately. Not redundant with the Array probe
+# above: the two have INDEPENDENT regrow generators (gen_arr_push_body vs
+# gen_bytes_push_body / gen_bytes_append_body), so wiring one to the arena and
+# leaving the other on -1 is a real state -- and was the actual state of this
+# branch until review caught it (182,408 B here while the Array probe already
+# read 3,208 B).
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_bytes_arena_bounded.vibe" "$gcardir/bbounded.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$gcardir/bbounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe did not compile on the gc backend (#1262)" >&2
+  cat "$gcardir/bbounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! gcarb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcardir/bbounded.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe got the wrong value on the gc backend (#1262)" >&2
+  echo "$gcarb_out" >&2
+  exit 1
+fi
+gcarb_delta="$(node scripts/region_arena_heap_delta.mjs "$gcardir/bbounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from the gc region_bytes_arena_bounded.wasm (#1262)" >&2
+  exit 1
+}
+if [ "$gcarb_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 gc Bytes regions grew the main bump heap by $gcarb_delta B (want < 100000; ~8000 with the arena, 182408 with the regrow lane off) -- the gc Bytes arena stopped releasing (#1262)" >&2
+  exit 1
+fi
+rm -rf "$gcardir"
+echo "[compiler-gate] wasm-gc region arena ok (reclamation measured: Array ${gcar_delta} B, Bytes ${gcarb_delta} B over 200 regions)"
+
+# 40h-8. #1262: `Map::delete` on the gc lane.
+#
+#        Unlike the region / MutList / MutBytes lowerings, this one is not a
+#        shared AST rewrite -- linear emits wasm directly, so the gc arm is a
+#        hand-port. That makes lane AGREEMENT the thing worth gating: a port
+#        can look right and copy the wrong 8 bytes.
+#
+#        Expected values live in the fixture as `inspect(..)` snapshots (see
+#        40h-6 for why). This section runs that same block on both lanes.
+echo "[compiler-gate] 40h-8/40 wasm-gc Map::delete (#1262)"
+gcmddir="_build/_gate_gc_map_delete"
+rm -rf "$gcmddir"; mkdir -p "$gcmddir"
+gcmd_out=""
+for gcmd_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcmd_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_map_delete.vibe" "$gcmddir/$gcmd_be.snap.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gcmddir/$gcmd_be.snap.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_map_delete.vibe did not compile on the $gcmd_be backend (#1262)" >&2
+    cat "$gcmddir/$gcmd_be.snap.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcmddir/$gcmd_be.snap.wasm" >"$gcmddir/$gcmd_be.snap.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_map_delete.vibe's inspect snapshots did not hold on the $gcmd_be backend (#1262)" >&2
+    tail -20 "$gcmddir/$gcmd_be.snap.out" >&2
+    exit 1
+  fi
+  # The snapshots above already pin each case; this run exists so a lane that
+  # somehow satisfies them and still diverges at the entry point is caught.
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcmd_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_map_delete.vibe" "$gcmddir/$gcmd_be.wasm" main >/dev/null 2>&1
+  gcmd_got="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcmddir/$gcmd_be.wasm" 2>&1 | tail -1)"
+  if [ "$gcmd_be" = "linear" ]; then
+    gcmd_out="$gcmd_got"
+  elif [ "$gcmd_got" != "$gcmd_out" ]; then
+    echo "[compiler-gate] FAIL: gc Map::delete results disagree with linear: gc='$gcmd_got' linear='$gcmd_out' (#1262)" >&2
+    exit 1
+  fi
+done
+if [ -z "$gcmd_out" ]; then
+  echo "[compiler-gate] FAIL: gc_map_delete.vibe main produced no output on either lane (#1262)" >&2
+  exit 1
+fi
+rm -rf "$gcmddir"
+echo "[compiler-gate] wasm-gc Map::delete ok (linear + gc snapshots; middle-entry compaction, functional source, reuse)"
+
+# 40h-7. #1262: `Stdin::read_char` / `Stdin::read_stream` / `Int::parse` on the
+#        gc lane. The stdin pair was held back in #1823 because the harness
+#        fed neither lane any input, so both returned EOF and agreement proved
+#        nothing. The feed is VIBE_STDIN_BYTES (an env var, not piped stdin),
+#        so this section drives REAL input through both lanes and compares.
+#
+#        The fixture's own inspect snapshots carry the Int::parse expectations
+#        (they need no stdin); the stdin half needs a fed run, which a snapshot
+#        cannot express, so that part is compared lane-to-lane here.
+echo "[compiler-gate] 40h-7/40 wasm-gc stdin + Int::parse (#1262)"
+gcsidir="_build/_gate_gc_stdin"
+rm -rf "$gcsidir"; mkdir -p "$gcsidir"
+gcsi_out=""
+for gcsi_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcsi_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_stdin_int_parse.vibe" "$gcsidir/$gcsi_be.snap.wasm" __no_entry__ >/dev/null 2>&1
+  if [ ! -s "$gcsidir/$gcsi_be.snap.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_stdin_int_parse.vibe did not compile on the $gcsi_be backend (#1262)" >&2
+    cat "$gcsidir/$gcsi_be.snap.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcsidir/$gcsi_be.snap.wasm" >"$gcsidir/$gcsi_be.snap.out" 2>&1; then
+    echo "[compiler-gate] FAIL: gc_stdin_int_parse.vibe's inspect snapshots did not hold on the $gcsi_be backend (#1262)" >&2
+    tail -20 "$gcsidir/$gcsi_be.snap.out" >&2
+    exit 1
+  fi
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcsi_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_stdin_int_parse.vibe" "$gcsidir/$gcsi_be.wasm" main >/dev/null 2>&1
+  gcsi_got="$(VIBE_STDIN_BYTES=AB VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcsidir/$gcsi_be.wasm" 2>&1 | tail -1)"
+  if [ "$gcsi_be" = "linear" ]; then
+    gcsi_out="$gcsi_got"
+  elif [ "$gcsi_got" != "$gcsi_out" ]; then
+    echo "[compiler-gate] FAIL: gc stdin results disagree with linear: gc='$gcsi_got' linear='$gcsi_out' (#1262)" >&2
+    exit 1
+  fi
+done
+# 65,066 = two distinct bytes read in order (a cursor that never advanced
+# would give 65,065). Pinned so both lanes breaking the same way still fails.
+if [ "$gcsi_out" != "65066123452" ]; then
+  echo "[compiler-gate] FAIL: stdin probe returned '$gcsi_out' (want 65066123452) on both lanes (#1262)" >&2
+  exit 1
+fi
+rm -rf "$gcsidir"
+echo "[compiler-gate] wasm-gc stdin + Int::parse ok (linear + gc, real input via VIBE_STDIN_BYTES)"
+
+# 40h-9. #1262: `vibe_process_exit_raw` on the gc lane -- the gc self-build's
+#        stopping point. Every builtin LOWERING was already in place; the host
+#        import itself was missing, so codegen reached an unresolved name.
+#
+#        Checked as a PROCESS EXIT STATUS, not a returned value. A lowering
+#        that evaluated its argument and fell through would run the program to
+#        completion and exit 0, and no value assertion downstream of the call
+#        can see that -- the call is supposed to be the last thing that
+#        happens. 7 is picked because nothing else produces it: a trap exits
+#        134, an uncaught throw exits 1, a clean fallthrough exits 0.
+echo "[compiler-gate] 40h-9/40 wasm-gc process exit (#1262)"
+gcpedir="_build/_gate_gc_process_exit"
+rm -rf "$gcpedir"; mkdir -p "$gcpedir"
+for gcpe_be in linear gc; do
+  env -u VIBE_FS_COMPILE VIBE_BACKEND="$gcpe_be" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/gc_process_exit.vibe" "$gcpedir/$gcpe_be.wasm" main >/dev/null 2>&1
+  if [ ! -s "$gcpedir/$gcpe_be.wasm" ]; then
+    echo "[compiler-gate] FAIL: gc_process_exit.vibe did not compile on the $gcpe_be backend (#1262)" >&2
+    cat "$gcpedir/$gcpe_be.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  # SUCCESS here is a NON-ZERO status (7), so the exit code is DATA -- read it
+  # with gate_status (see the helper's header for what a bare call did).
+  gate_status gcpe_rc env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$gcpedir/$gcpe_be.wasm"
+  if [ "$gcpe_rc" -ne 7 ]; then
+    echo "[compiler-gate] FAIL: gc_process_exit.vibe exited $gcpe_rc on the $gcpe_be backend (want 7; 0 = the exit lowering is a no-op and the program fell through) (#1262)" >&2
+    exit 1
+  fi
+done
+rm -rf "$gcpedir"
+echo "[compiler-gate] wasm-gc process exit ok (linear + gc, exit status 7)"
+
 # #1295: String is a packed fat pointer, so the gc EForIn lowering must
 # normalize it to character codes before its shared Array iteration loop.
 echo "[compiler-gate] wasm-gc String for-in"
@@ -5013,7 +5273,9 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
     fixtures/struct_field_collision_test.vibe \
     fixtures/to_string_shadow_gc_test.vibe \
     fixtures/array_hof_parity_test.vibe \
-    fixtures/gc_builtin_parity_batch2_test.vibe; then
+    fixtures/gc_builtin_parity_batch2_test.vibe \
+    fixtures/gc_builtin_parity_batch3_test.vibe \
+    fixtures/gc_builtin_parity_batch4_test.vibe; then
   echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
   exit 1
 fi
@@ -5033,7 +5295,9 @@ echo "[compiler-gate] 40h8b/40 gc<->linear builtin lane parity (#1861)"
 if ! VIBE_TEST_CLI_WASM="$stage2_wasm" \
   bash scripts/vibe_test.sh \
     fixtures/array_hof_parity_test.vibe \
-    fixtures/gc_builtin_parity_batch2_test.vibe; then
+    fixtures/gc_builtin_parity_batch2_test.vibe \
+    fixtures/gc_builtin_parity_batch3_test.vibe \
+    fixtures/gc_builtin_parity_batch4_test.vibe; then
   echo "[compiler-gate] FAIL: a builtin parity fixture failed on the LINEAR lane." >&2
   echo "  It passed on gc just above, so this is the oracle disagreeing --" >&2
   echo "  the fixture's expectations are wrong, or linear regressed." >&2
@@ -11995,10 +12259,13 @@ fn main() -> Int {
   MutMap::size(m)
 }
 CHKPKG
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+# Read the status rather than calling bare: the FAIL branch below exists to
+# keep this surface from producing "a diagnostic-free failure", and under
+# errexit a bare call made that branch unreachable -- the exact thing it
+# guards against.
+gate_status chk_rc env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$chkpkgdir/entry.vibe" "$chkpkgdir/check.out" main >/dev/null 2>&1
-chk_rc=$?
+  "$chkpkgdir/entry.vibe" "$chkpkgdir/check.out" main
 # (a) it must SUCCEED. A crash here used to produce exit 1 with an empty
 # output AND an empty .diag -- indistinguishable from a diagnostic-free
 # failure, which is the one thing this surface must never be.

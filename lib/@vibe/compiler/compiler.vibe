@@ -65,6 +65,10 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   compile_source_wasi_only, compile_source_wasi_only_rc
 }
 
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
 import @vibe/compiler/entry/compiler/fs_compile {
   compile_file_fs,
   compile_file_fs_cached,
@@ -364,6 +368,39 @@ export fn selfbuild_compile_stage2() -> Bytes with Exception {
   compile_source_wasi_only(main_source, "selfbuild_entry")
 }
 
+/// #1262: the same selfbuild, through the wasm-gc backend.
+///
+/// This is a SEPARATE EXPORT rather than a `VIBE_BACKEND` branch inside
+/// `selfbuild_compile_stage2` on purpose. Reading the env var here would add
+/// `Env` to that function's effect row, and the row is load-bearing in three
+/// other places: `stage2_coverage_run.vibe` and `tests/s5_stage2_test.vibe`
+/// call it, and `selfbuild_run.vibe` compiles a module whose ENTRY is this
+/// name -- so the row change would propagate into a test block and into the
+/// entry's own host-import surface. The caller that sets `VIBE_BACKEND`
+/// already knows which backend it wants; making the wasm re-derive it would
+/// be a second copy of the same decision.
+///
+/// Reachability, measured (not assumed): this currently gets through type
+/// checking and into codegen, then stops at
+///   `vibe_process_exit_raw` (local, @gc_call) reached code generation
+///   unresolved
+/// which is a HOST IMPORT the gc lane gates out as a group (see the
+/// `host-import` rows of scripts/builtin_parity_classification.tsv), not a
+/// missing lowering. So this export exists to make that stopping point
+/// REPRODUCIBLE from the supported build path -- there was no such path
+/// before, which is exactly how a hand-rolled probe of mine ended up
+/// measuring the wrong thing (it ran with node's default stack, where BOTH
+/// lanes die in the type checker long before codegen). It is deliberately
+/// not wired into any gate: gating a build that does not yet succeed would
+/// be gating a known failure.
+export fn selfbuild_compile_stage2_gc() -> Bytes with Exception {
+  let main_source = selfbuild_runtime_entry_source()
+  if main_source == "" {
+    throw("selfbuild_runtime_entry_source is empty")
+  }
+  compile_source_gc_only(main_source, "selfbuild_entry")
+}
+
 export fn selfbuild_compile_cli_adapter() -> Bytes with Exception {
   build_cli_adapter_bytes()
 }
@@ -541,6 +578,7 @@ export {
   selfbuild_cli_env_entry,
   selfbuild_compile_cli_adapter,
   selfbuild_compile_stage2,
+  selfbuild_compile_stage2_gc,
   selfbuild_entry,
   selfbuild_probe_cli_cache_counts,
   selfbuild_probe_cli_file_cache_counts,

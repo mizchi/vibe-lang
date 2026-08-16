@@ -30,16 +30,30 @@ import ./token.vibe {
 }
 
 import ./parser_binder_context.vibe {
-  ParserBinderContext
+  ParserBinderContext,
+  SourceBinder,
+  SyntheticBinderKind,
+  binder_capture_append,
+  binder_capture_discard_segment,
+  binder_capture_insert_synthetic_at,
+  binder_capture_mark,
+  binder_capture_mark_ineligible,
+  binder_capture_source,
+  binder_capture_swap_segments,
+  binder_capture_take_from
 }
 
 //# Functions
+
+let no_dispatch_binder_rows: Array[SourceBinder] = [
+]
 
 /// Wrap `val` so that `((__asc: ty) -> __asc)(val)` forces `val` to have type
 /// `ty` (enforced by the call-argument check) while evaluating to `val` itself.
 /// Used to type-check a local `let x: T = e`, whose annotation `ELet` cannot
 /// store. Uses only EFn/ECall, so every downstream pass handles it unchanged.
-fn ascribe_wrap(val: Expr, ty: TypeExpr, context: Option[ParserBinderContext]) -> Expr {
+fn ascribe_wrap(val: Expr, ty: TypeExpr, capture_mark: Int, context: Option[ParserBinderContext]) -> Expr {
+  binder_capture_insert_synthetic_at(context, capture_mark, "__asc")
   let tparams = _no_tp()
   let tbounds = _no_tb()
   let params = [
@@ -137,6 +151,7 @@ fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, cont
         done = true
       },
       TIdent(name) => {
+        binder_capture_source(context, name, p, p)
         ArrayBuilder::push(names, name)
         p = p + 1
         match peek(tokens, p) {
@@ -189,11 +204,20 @@ fn parse_local_let_annotation_with_binder_context(tokens: Array[Token], pos: Int
 /// #789: attach a local generic-let's `[T]` binder to its (annotation-distributed)
 /// lambda, mirroring apply_generic_fn_annotation so the local function stays
 /// polymorphic. No-op when there are no type params or the value is not a lambda.
-fn apply_local_let_tp(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr, context: Option[ParserBinderContext]) -> Expr {
-  if Array::length(tps) > 0 {
+fn apply_local_let_tp(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr, annotation_mark: Int, value_mark: Int, context: Option[ParserBinderContext]) -> Expr {
+  let annotation_count = Array::length(tps)
+  if annotation_count > 0 {
     match val {
-      EFn(_, _, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, body),
-      _ => val
+      EFn(existing_tps, _, params, ret, eff, body) => {
+        // The annotation header supplies the final EFn header. A direct value
+        // generic-lambda header is later in the row log, so remove it first.
+        binder_capture_discard_segment(context, value_mark, value_mark + Array::length(existing_tps))
+        EFn(tps, tbs, params, ret, eff, body)
+      },
+      _ => {
+        binder_capture_discard_segment(context, annotation_mark, annotation_mark + annotation_count)
+        val
+      }
     }
   } else {
     val
@@ -220,7 +244,7 @@ enum BlockStep {
   StepAssign(String, Expr);
   StepAssignOp(String, String, Expr);
   StepPattern(Pat, Expr);
-  StepPatternElse(Pat, Expr, Expr);
+  StepPatternElse(Pat, Expr, Expr, Array[SourceBinder]);
   StepStructDestr(Pat, Expr);
   StepRecordDestr(Pat, Expr);
   StepBind(String, Expr)
@@ -260,30 +284,80 @@ fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context:
   }
 }
 
-/// #666: parse all match arms into `b` as (pattern, guard|EBool(true), body),
-/// setting hg[0] when any arm carries a guard. Arms are comma-separated, ending
-/// at `}` (optionally with a trailing comma).
-fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(Pat, Expr, Expr)], hg: Array[Bool], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> Int with Exception {
+/// #666: parse all match arms into `b` as (pattern, guard|EBool(true), body).
+/// A negative return encodes `-end - 1` when any arm carries a guard, avoiding
+/// an allocation-only mutable Bool cell on the ordinary no-capture path.
+fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(Pat, Expr, Expr)], row_b: Option[ArrayBuilder[(Array[SourceBinder], Array[SourceBinder], Array[SourceBinder])]], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> Int with Exception {
+  let pat_mark = binder_capture_mark(context)
   let (pat, pa) = parse_pattern_with_binder_context(tokens, pos, context)
+  let pat_rows = binder_capture_take_from(context, pat_mark)
+  let arm_has_guard = match peek(tokens, pa) {
+    TIf => true,
+    _ => false
+  }
+  let guard_mark = binder_capture_mark(context)
   let (arm_guard, after_g) = match peek(tokens, pa) {
-    TIf => {
-      Array::set(hg, 0, true)
-      parse_recur(tokens, pa + 1, 0, context)
-    },
+    TIf => parse_recur(tokens, pa + 1, 0, context),
     _ => (EBool(true), pa)
   }
+  let guard_rows = if arm_has_guard {
+    binder_capture_take_from(context, guard_mark)
+  } else {
+    no_dispatch_binder_rows
+  }
   let arrow = expect_tk(tokens, after_g, "=>")
+  let body_mark = binder_capture_mark(context)
   let (body, bn) = parse_recur(tokens, arrow, 0, context)
+  let body_rows = binder_capture_take_from(context, body_mark)
   ArrayBuilder::push(b, (pat, arm_guard, body))
-  match peek(tokens, bn) {
+  match row_b {
+    Some(rows) => ArrayBuilder::push(rows, (pat_rows, guard_rows, body_rows)),
+    None => ()
+  }
+  let encoded_end = match peek(tokens, bn) {
     TComma => match peek(tokens, bn + 1) {
       TRBrace => bn + 2,
-      _ => collect_match_arms(tokens, starts, bn + 1, b, hg, parse_recur, context)
+      _ => collect_match_arms(tokens, starts, bn + 1, b, row_b, parse_recur, context)
     },
     TRBrace => bn + 1,
-    // Comma-less arm separation: mirror the old parse_match_rest fall-through,
-    // which parsed the next arm's pattern without consuming a separator.
-    _ => collect_match_arms(tokens, starts, bn, b, hg, parse_recur, context)
+    _ => collect_match_arms(tokens, starts, bn, b, row_b, parse_recur, context)
+  }
+  if arm_has_guard && encoded_end >= 0 {
+    0 - encoded_end - 1
+  } else {
+    encoded_end
+  }
+}
+
+fn append_source_rows(out: ArrayBuilder[SourceBinder], rows: Array[SourceBinder]) -> Unit {
+  for row in rows {
+    ArrayBuilder::push(out, row)
+  }
+  ()
+}
+
+fn desugar_guarded_rows(arms: Array[(Pat, Expr, Expr)], rows: Array[(Array[SourceBinder], Array[SourceBinder], Array[SourceBinder])], i: Int) -> Array[SourceBinder] {
+  if i >= Array::length(arms) {
+    no_dispatch_binder_rows
+  } else {
+    let (_, arm_guard, _) = Array::get(arms, i)
+    let (pat_rows, guard_rows, body_rows) = Array::get(rows, i)
+    let rest = desugar_guarded_rows(arms, rows, i + 1)
+    let no_guard = match arm_guard {
+      EBool(bv) => bv,
+      _ => false
+    }
+    let out = ArrayBuilder::new()
+    append_source_rows(out, pat_rows)
+    if no_guard {
+      append_source_rows(out, body_rows)
+    } else {
+      append_source_rows(out, guard_rows)
+      append_source_rows(out, body_rows)
+      append_source_rows(out, rest)
+    }
+    append_source_rows(out, rest)
+    ArrayBuilder::freeze(out)
   }
 }
 
@@ -457,6 +531,83 @@ fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Ar
   (val_pair.0, skip_semi(tokens, val_pair.1))
 }
 
+fn remap_struct_destr_rows(pat: Pat, rows: Array[SourceBinder], context: Option[ParserBinderContext]) -> Array[SourceBinder] {
+  let out = ArrayBuilder::new()
+  let mut at = 0
+  match pat {
+    PStruct(_, fields) => for field in fields {
+      match field.1 {
+        PBind(_) => {
+          if at < Array::length(rows) {
+            ArrayBuilder::push(out, Array::get(rows, at))
+            at = at + 1
+          } else {
+            binder_capture_mark_ineligible(context)
+          }
+        },
+        PWild => (),
+        _ => binder_capture_mark_ineligible(context)
+      }
+    },
+    _ => binder_capture_mark_ineligible(context)
+  }
+  if at != Array::length(rows) {
+    binder_capture_mark_ineligible(context)
+  } else {
+    ()
+  }
+  ArrayBuilder::freeze(out)
+}
+
+fn remap_record_destr_rows(pat: Pat, rows: Array[SourceBinder], context: Option[ParserBinderContext]) -> Array[SourceBinder] {
+  let out = ArrayBuilder::new()
+  let mut at = 0
+  match pat {
+    PTuple(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        match Array::get(fields, i) {
+          PBind(_) => {
+            if at < Array::length(rows) {
+              ArrayBuilder::push(out, Array::get(rows, at))
+              at = at + 1
+            } else {
+              binder_capture_mark_ineligible(context)
+            }
+          },
+          PWild => (),
+          PTuple(sub) => {
+            ArrayBuilder::push(out, Synthetic(String::concat("__rec_sub_", __to_string(i)), ParserSynthetic))
+            for item in sub {
+              match item {
+                PBind(_) => {
+                  if at < Array::length(rows) {
+                    ArrayBuilder::push(out, Array::get(rows, at))
+                    at = at + 1
+                  } else {
+                    binder_capture_mark_ineligible(context)
+                  }
+                },
+                PWild => (),
+                _ => binder_capture_mark_ineligible(context)
+              }
+            }
+          },
+          _ => binder_capture_mark_ineligible(context)
+        }
+        i = i + 1
+      }
+    },
+    _ => binder_capture_mark_ineligible(context)
+  }
+  if at != Array::length(rows) {
+    binder_capture_mark_ineligible(context)
+  } else {
+    ()
+  }
+  ArrayBuilder::freeze(out)
+}
+
 fn apply_struct_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBinderContext]) -> Expr {
   let val_name = "__struct_destr"
   let mut desugar = rest
@@ -537,10 +688,17 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     // diverging fallback. Desugars to a two-arm match whose wildcard arm is
     // the else body; the checker unifies both arms, so a fallback that
     // `return`s / `break`s / `throw`s (or yields the same type) type-checks.
-    StepPatternElse(pat, val, alt) => EMatch(val, [
-      (pat, rest),
-      (PWild, alt)
-    ]),
+    StepPatternElse(pat, val, alt, alt_rows) => {
+      // Parsing sees the fallback before the rest of the block, but the final
+      // match visits the success continuation first. The fallback segment was
+      // retained while parsing; append it now, as reverse folding reaches the
+      // guard after the complete continuation has been captured.
+      binder_capture_append(context, alt_rows)
+      EMatch(val, [
+        (pat, rest),
+        (PWild, alt)
+      ])
+    },
     StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest, context),
     StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest, context),
     // `let* x = e` (railway bind, #635): short-circuit on the failure case,
@@ -630,7 +788,7 @@ fn expr_always_exits_guard(e: Expr) -> Bool {
 /// pattern's bindings scope over the REST of the block, and the else arm
 /// becomes the fallthrough. Scrutinee is evaluated exactly once (it is bound
 /// into the match's discriminant position, not re-parsed per arm).
-fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Pat, Expr, Expr, Int) with Exception {
+fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Pat, Expr, Expr, Array[SourceBinder], Int) with Exception {
   // Parse the scrutinee with the no-is variant, exactly as `if` does (mode
   // 21): otherwise a trailing `is pattern` collapses into a Bool match instead
   // of landing in the guard's pattern slot.
@@ -650,9 +808,11 @@ fn parse_guard_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
     _ => throw("guard: expected `else { .. }` after the pattern (#1283)")
   }
   let br = expect_tk(tokens, else_pos, "{")
+  let alt_mark = binder_capture_mark(context)
   let (alt, end) = parse_recur(tokens, br, 20, context)
+  let alt_rows = binder_capture_take_from(context, alt_mark)
   if expr_always_exits_guard(alt) {
-    (pat, scrut, alt, end)
+    (pat, scrut, alt, alt_rows, end)
   } else {
     throw("guard: the `else` block must leave the enclosing function on every path with `return` or a direct `throw(...)` -- that is exactly what makes the bound name safe to use in the rest of the block. Other `perform` operations and handled throws can return to the continuation. Use `if <scrutinee> is <pattern> { .. } else { .. }` when the fallback produces a value instead of exiting. (#1283)")
   }
@@ -726,6 +886,8 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
         match peek(tokens, next) {
           TRec => match peek(tokens, next + 1) {
             TIdent(name) => {
+              binder_capture_source(context, name, next + 1, next + 1)
+              let annotation_mark = binder_capture_mark(context)
               // #789: consume an optional `[T]` binder before the type, as for
               // the plain local let below.
               let (rtps, rtbs, rec_ann, eq_pos_r) = match peek(tokens, next + 2) {
@@ -740,6 +902,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 }
               }
               let eq = expect_tk(tokens, eq_pos_r, "=")
+              let value_mark = binder_capture_mark(context)
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
               if next_pos <= eq {
                 throw("internal parser error: block let-rec parser did not advance")
@@ -751,8 +914,11 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 // #789: re-attach a `[T]` binder to the distributed lambda.
                 let val2 = match rec_ann {
                   Some(the_type) => match distribute_local_fn_ann(the_type, val, context) {
-                    Some(distributed) => apply_local_let_tp(rtps, rtbs, distributed, context),
-                    None => val
+                    Some(distributed) => apply_local_let_tp(rtps, rtbs, distributed, annotation_mark, value_mark, context),
+                    None => {
+                      binder_capture_discard_segment(context, annotation_mark, annotation_mark + Array::length(rtps))
+                      val
+                    }
                   },
                   None => val
                 }
@@ -775,7 +941,9 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 },
                 _ => (None, next + 2)
               }
+              binder_capture_source(context, name, next + 1, next + 1)
               let eq = expect_tk(tokens, eq_pos_m, "=")
+              let value_mark = binder_capture_mark(context)
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
               if next_pos <= eq {
                 throw("internal parser error: block let-mut parser did not advance")
@@ -783,7 +951,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 let val2 = match m_ann {
                   Some(the_type) => match distribute_local_fn_ann(the_type, val, context) {
                     Some(distributed) => distributed,
-                    None => ascribe_wrap(val, the_type, context)
+                    None => ascribe_wrap(val, the_type, value_mark, context)
                   },
                   None => val
                 }
@@ -795,8 +963,12 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
           },
           TStar => match peek(tokens, next + 1) {
             TIdent(name) => {
+              let bind_mark = binder_capture_mark(context)
+              binder_capture_source(context, name, next + 1, next + 1)
+              let value_mark = binder_capture_mark(context)
               let eq = expect_tk(tokens, next + 2, "=")
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
+              binder_capture_swap_segments(context, bind_mark, value_mark)
               if next_pos <= eq {
                 throw("internal parser error: block let* parser did not advance")
               } else {
@@ -827,23 +999,34 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               _ => false
             }
             if next_is_struct_destr {
+              let pattern_mark = binder_capture_mark(context)
               let (pat, pn) = parse_pattern_with_binder_context(tokens, next, context)
+              let pattern_rows = binder_capture_take_from(context, pattern_mark)
               let eq = expect_tk(tokens, pn, "=")
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
+              binder_capture_insert_synthetic_at(context, pattern_mark, "__struct_destr")
+              binder_capture_append(context, remap_struct_destr_rows(pat, pattern_rows, context))
               ArrayBuilder::push(steps, StepStructDestr(pat, val))
               p = next_pos
             } else if next_is_record_destr {
+              let pattern_mark = binder_capture_mark(context)
               let (pat, pn) = parse_pattern_with_binder_context(tokens, next, context)
+              let pattern_rows = binder_capture_take_from(context, pattern_mark)
               let eq = expect_tk(tokens, pn, "=")
               let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
+              binder_capture_insert_synthetic_at(context, pattern_mark, "__rec_destr")
+              binder_capture_append(context, remap_record_destr_rows(pat, pattern_rows, context))
               ArrayBuilder::push(steps, StepRecordDestr(pat, val))
               p = next_pos
             } else {
               match after_name {
                 TLParen => {
+                  let pattern_mark = binder_capture_mark(context)
                   let (pat, pn) = parse_pattern_with_binder_context(tokens, next, context)
+                  let value_mark = binder_capture_mark(context)
                   let eq = expect_tk(tokens, pn, "=")
                   let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
+                  binder_capture_swap_segments(context, pattern_mark, value_mark)
                   if next_pos <= eq {
                     throw("internal parser error: block let-ctor-pat parser did not advance")
                   } else {
@@ -851,6 +1034,11 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   }
                 },
                 _ => {
+                  // ELet traversal visits its name before its value's EFn type
+                  // parameters. Capture the local name before parsing a generic
+                  // annotation, which is where `[T]` rows are collected.
+                  binder_capture_source(context, name, next, next)
+                  let annotation_mark = binder_capture_mark(context)
                   // #789: parse an optional `[T]` binder before the type so a
                   // local generic `let f: [T](T) -> T = ..` parses like top-level.
                   let (ltps, ltbs, ann_type, eq_pos) = match after_name {
@@ -865,6 +1053,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                     }
                   }
                   let eq = expect_tk(tokens, eq_pos, "=")
+                  let value_mark = binder_capture_mark(context)
                   let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
                   if next_pos <= eq {
                     throw("internal parser error: block let parser did not advance")
@@ -880,8 +1069,14 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                     // `[T]` binder is re-attached to the distributed lambda.
                     let val2 = match ann_type {
                       Some(the_type) => match distribute_local_fn_ann(the_type, val, context) {
-                        Some(distributed) => apply_local_let_tp(ltps, ltbs, distributed, context),
-                        None => ascribe_wrap(val, the_type, context)
+                        Some(distributed) => apply_local_let_tp(ltps, ltbs, distributed, annotation_mark, value_mark, context),
+                        None => {
+                          // Insert the wrapper at the still-current higher mark,
+                          // then remove the erased annotation segment below it.
+                          let wrapped = ascribe_wrap(val, the_type, value_mark, context)
+                          binder_capture_discard_segment(context, annotation_mark, annotation_mark + Array::length(ltps))
+                          wrapped
+                        }
                       },
                       None => val
                     }
@@ -893,9 +1088,12 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
             }
           },
           TLParen => {
+            let pattern_mark = binder_capture_mark(context)
             let (pat, pn) = parse_pattern_with_binder_context(tokens, next, context)
+            let value_mark = binder_capture_mark(context)
             let eq = expect_tk(tokens, pn, "=")
             let (val, next_pos) = parse_block_value_only(tokens, eq, parse_recur, context)
+            binder_capture_swap_segments(context, pattern_mark, value_mark)
             if next_pos <= eq {
               throw("internal parser error: block let-pat parser did not advance")
             } else {
@@ -911,8 +1109,8 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
       // same shape the retired let-else used, now with a divergence
       // requirement on the else arm that makes the binding unconditional.
       TGuard => {
-        let (gpat, gscrut, galt, gnext) = parse_guard_stmt(tokens, starts, p + 1, parse_recur, context)
-        ArrayBuilder::push(steps, StepPatternElse(gpat, gscrut, galt))
+        let (gpat, gscrut, galt, galt_rows, gnext) = parse_guard_stmt(tokens, starts, p + 1, parse_recur, context)
+        ArrayBuilder::push(steps, StepPatternElse(gpat, gscrut, galt, galt_rows))
         // A guard is a statement, so consume the separator the lexer's ASI
         // inserts after the else block's `}` — without this, the next
         // statement starts on a `;` the block loop has no arm for.
@@ -1077,6 +1275,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
       (EIf(cond, then_e, else_e), end_pos)
     }
   } else if mode == 22 {
+    let match_mark = binder_capture_mark(context)
     let (scrutinee, sn) = parse_recur(tokens, pos, 0, context)
     let br = expect_tk(tokens, sn, "{")
     match peek(tokens, br) {
@@ -1088,19 +1287,46 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
         // scrutinee) and desugar guards into nested EIf/EMatch. Otherwise emit
         // a plain EMatch.
         let ab = ArrayBuilder::new()
-        let hg = [
-          false
-        ]
-        let endpos = collect_match_arms(tokens, starts, br, ab, hg, parse_recur, context)
+        let row_b = match context {
+          Some(_) => Some(ArrayBuilder::new()),
+          None => None
+        }
+        let encoded_end = collect_match_arms(tokens, starts, br, ab, row_b, parse_recur, context)
+        let has_guard = encoded_end < 0
+        let endpos = if has_guard {
+          0 - encoded_end - 1
+        } else {
+          encoded_end
+        }
         let arms3 = ArrayBuilder::freeze(ab)
-        if Array::get(hg, 0) {
+        if has_guard {
+          match row_b {
+            Some(rows) => {
+              let arm_rows = ArrayBuilder::freeze(rows)
+              binder_capture_insert_synthetic_at(context, match_mark, "__mg")
+              binder_capture_append(context, desugar_guarded_rows(arms3, arm_rows, 0))
+            },
+            None => ()
+          }
           let final_arms = desugar_guarded(arms3, 0, EIdent("__mg", 0 - 1), context)
           (ELet("__mg", scrutinee, EMatch(EIdent("__mg", 0 - 1), final_arms), -1), endpos)
         } else {
+          let arm_rows = match row_b {
+            Some(rows) => Some(ArrayBuilder::freeze(rows)),
+            None => None
+          }
           let plain = ArrayBuilder::new()
           let mut k = 0
           while k < Array::length(arms3) {
             let (p, _, bd) = Array::get(arms3, k)
+            match arm_rows {
+              Some(rows) => {
+                let (pat_rows, _, body_rows) = Array::get(rows, k)
+                binder_capture_append(context, pat_rows)
+                binder_capture_append(context, body_rows)
+              },
+              None => ()
+            }
             ArrayBuilder::push(plain, (p, bd))
             k = k + 1
           }
@@ -1163,6 +1389,8 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
       TIdent(first_name) => match peek(tokens, start + 1) {
         TComma => match peek(tokens, start + 2) {
           TIdent(second_name) => {
+            binder_capture_source(context, second_name, start + 2, start + 2)
+            binder_capture_source(context, first_name, start, start)
             let ip = expect_tk(tokens, start + 3, "in")
             match parse_recur(tokens, ip, 0, context) {
               (iterable, after_iter) => {
@@ -1176,6 +1404,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
           _ => throw("expected value binding name after ','")
         },
         _ => {
+          binder_capture_source(context, first_name, start, start)
           let ip = expect_tk(tokens, start + 1, "in")
           match parse_recur(tokens, ip, 0, context) {
             (iterable, after_iter) => {
@@ -1204,6 +1433,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
       _ => throw("expected a binder name after 'taskgroup {'")
     }
     let arrow = expect_tk(tokens, gn, "=>")
+    binder_capture_source(context, gname, br, br)
     let (body, bn) = parse_recur(tokens, arrow, 0, context)
     let close = expect_tk(tokens, bn, "}")
     let tparams = _no_tp()
@@ -1227,6 +1457,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
       _ => throw("expected a region binder name after 'region'")
     }
     let br = expect_tk(tokens, rn, "{")
+    binder_capture_source(context, rname, pos, pos)
     // Mode 20 parses a full statement block (let/expr sequence) and
     // consumes the closing brace -- region bodies are blocks, not single
     // expressions.

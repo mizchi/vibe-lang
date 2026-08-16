@@ -7062,16 +7062,42 @@ fn emit_core_instance_from_exports_sorted(buf: Bytes, names: Array[String], sort
 /// index by one against the sync trampoline, which is why this is a separate
 /// generator rather than a flag on that one.
 fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_name: String) -> Bytes {
+  comp_generate_string_trampoline_packed_async_opt(string_param_count, export_name, false)
+}
+
+/// #1540 scope 3: the same trampoline, with an optional trailing STREAM
+/// parameter.
+///
+/// The canonical ABI flattens a `stream<u8>` param to ONE i32 handle after the
+/// strings' (ptr, len) pairs (measured: tools/wasip3_component_probe/
+/// http_body_read). vibe sees it as a `HostStream`, whose cell the lowering
+/// prelude builds from the bare handle -- so what the handler's core function
+/// wants in that slot is the handle as a TAGGED vibe Int.
+///
+/// Tagging is `<< 1`, because the host-stream adapter untags with `param >> 1`
+/// before using the handle. Getting it wrong hands every read a handle twice
+/// or half the real one -- a wrong answer, not a trap.
+fn comp_generate_string_trampoline_packed_async_opt(string_param_count: Int, export_name: String, stream_param: Bool) -> Bytes {
   let buf = bytebuf_new()
   emit_header(buf)
   // types: 0 = target_func (i64 x N+1) -> i64; 1 = canon_func (i32 x 2N) -> ();
   // 2 = cabi_realloc (i32,i32,i32,i32) -> i32; 3 = task.return (i32, i32) -> ()
   let type_sec = bytebuf_new()
   bytebuf_push_vec_header(type_sec, 4)
-  emit_func_type_raw(type_sec, comp_repeat_valtype(126, string_param_count + 1), [
+  let target_i64_count = if stream_param {
+    string_param_count + 2
+  } else {
+    string_param_count + 1
+  }
+  let canon_i32_count = if stream_param {
+    (string_param_count * 2) + 1
+  } else {
+    string_param_count * 2
+  }
+  emit_func_type_raw(type_sec, comp_repeat_valtype(126, target_i64_count), [
     126
   ])
-  emit_func_type_raw(type_sec, comp_repeat_valtype(127, string_param_count * 2), array_empty())
+  emit_func_type_raw(type_sec, comp_repeat_valtype(127, canon_i32_count), array_empty())
   emit_func_type_raw(type_sec, comp_repeat_valtype(127, 4), [
     127
   ])
@@ -7119,7 +7145,7 @@ fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_
   leb128_encode_u32(canon_body, 1)
   leb128_encode_u32(canon_body, 1)
   bytebuf_push(canon_body, 126)
-  let result_local = string_param_count * 2
+  let result_local = canon_i32_count
   let mut si = 0
   while si < string_param_count {
     // (extend_u(ptr) << 32) | extend_u(len)
@@ -7131,6 +7157,22 @@ fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_
     bytebuf_push(canon_body, 173)
     bytebuf_push(canon_body, 132)
     si = si + 1
+  }
+  if stream_param {
+    // The stream handle as a PLAIN i64 -- zero-extended, NOT tagged.
+    //
+    // `vibe.*` Int imports are usually described as "guest-tagged on the
+    // wire", and that is true of the lane those words were written for: the
+    // named-host-stream adapter talks to a core the CLI compiled with RC on,
+    // where an Int is `value << 1` (linked_compile's tag_mode). THIS lane's
+    // core is compiled by `compile_release_file_mode(.., "release")` ->
+    // `compile_wasi_module_no_dce_impl`, which passes enable_rc = false, so
+    // an Int here is a plain i64. Tagging the handle would hand the guest
+    // twice the handle it must hand back.
+    emit_local_get(canon_body, string_param_count * 2)
+    bytebuf_push(canon_body, 173)
+  } else {
+    ()
   }
   // Trailing closure-env argument (0 for a top-level function).
   emit_i64_const(canon_body, 0)
@@ -7153,6 +7195,16 @@ fn comp_generate_string_trampoline_packed_async(string_param_count: Int, export_
   bytebuf_push_buf(code_sec, comp_generate_bump_realloc_body())
   bytebuf_push_section(buf, 10, code_sec)
   bytebuf_to_bytes(buf)
+}
+
+/// #1540 scope 3: byte-shape fixture for the stream-parameter trampoline.
+///
+/// Exists because the stream slot cannot be checked any other way yet: nothing
+/// assembles this trampoline into a component until the host-stream adapter is
+/// wired into the serve lane, and by then a wrong tag would be a wrong ANSWER
+/// (every read seeing half or twice the real handle) rather than a trap.
+export fn comp_emit_stream_trampoline_fixture(string_param_count: Int) -> Bytes {
+  comp_generate_string_trampoline_packed_async_opt(string_param_count, "handler", true)
 }
 
 /// #1540: `<count>` copies of one core valtype -- the shape both trampolines
@@ -7191,10 +7243,32 @@ fn comp_generate_bump_realloc_body() -> Bytes {
   bytebuf_push(realloc_body, 107)
   bytebuf_push(realloc_body, 113)
   emit_local_set(realloc_body, 4)
-  // __heap_ptr = p + new_size
+  // __heap_ptr = p + new_size, ROUNDED UP TO 8.
+  //
+  // The rounding is the whole point, not tidiness. This allocator hands out
+  // space in the MAIN module's memory and writes back MAIN's `__heap_ptr`, and
+  // main's own allocator keeps that pointer 8-aligned -- it starts at 80 and
+  // every bump is `(x + 7) & -8`. vibe's value representation depends on that:
+  // pointers carry tags in their low bits (`obj | 1` for the effect-handler
+  // object the suspend lowering builds, a 2-bit tag on values), so an ODD heap
+  // pointer makes `ptr | 1` a no-op and the matching `& -2` hand back
+  // `ptr - 1`. The read that follows lands one byte off and the program
+  // dereferences garbage.
+  //
+  // Leaving `p + new_size` unrounded made that depend on the LENGTH OF THE
+  // LIFTED STRINGS: `vibe serve` lifts method/url/headers through here before
+  // the handler runs, so a request whose strings summed to an odd length
+  // corrupted the handler's first heap object and an even one did not. It
+  // looked like a bug about suspending stream reads (#1924) because a chunked
+  // upload and a buffered one send different `content-length` /
+  // `transfer-encoding` headers -- different lengths, different parity.
   emit_local_get(realloc_body, 4)
   emit_local_get(realloc_body, 3)
   emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 7)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 0 - 8)
+  bytebuf_push(realloc_body, 113)
   bytebuf_push(realloc_body, 36)
   leb128_encode_u32(realloc_body, 0)
   // if (__heap_ptr > memory.size << 16) memory.grow(pages needed)
@@ -7507,6 +7581,521 @@ fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Ar
   }
   emit_code_section(out, bodies)
   bytebuf_to_bytes(out)
+}
+
+/// #1540 scope 4: scratch layout for the serve lane's host-stream adapter.
+///
+/// These are addresses in a memhost page the adapter OWNS, not in the main
+/// module's memory. That is the whole reason the memhost exists here: the
+/// canons need a memory for the read landing slot and the wait payload, and
+/// the only other memory in this component is the vibe heap. Writing fixed
+/// addresses into that would corrupt whatever the program had there.
+///
+/// EVERY band is indexed by handle, because a serve component instance
+/// carries MANY request tasks at once. The load-bearing one is the read
+/// landing slot: `stream.read(h, addr, 1)` registers `addr` with the canon
+/// and then blocks, so the producer writes there whenever it delivers -- and
+/// two requests blocked on their own bodies would be handing the same address
+/// to two producers. That is the reason the named adapter bands its own slot
+/// (comp_hs_value_base), and it corrupts bodies silently rather than trapping.
+///
+/// Handles are capped at comp_hf_max_handles() (1023), so the three bands end
+/// at 16384, well inside the single page.
+
+/// One WORD per handle (the byte lands in its low end), indexed by handle * 4.
+let comp_ss_scratch_base = 0
+
+/// TWO words per handle, indexed by handle * 8: `waitable-set.wait` writes the
+/// event in the first and the status in the second. Unlike the slot above this
+/// one is written at RESUME time, with no suspension point between the wait
+/// returning and the load -- so sharing it would in fact be safe. It is banded
+/// anyway: the page is the adapter's own and 8 KiB of it is free, and a
+/// layout where one band is per-handle "because it must be" and its neighbour
+/// is shared "because the argument works out" is one refactor away from being
+/// wrong.
+let comp_ss_payload_base = 4096
+
+/// One word per handle, indexed by handle * 4 -- the CLOSED latch.
+let comp_ss_closed_base = 12288
+
+/// #1540 scope 4: `vibe.host_stream_read` for the serve lane.
+///
+/// The compiled handler imports `vibe.host_stream_read (i64) -> (i64)` -- and
+/// `vibe.host_stream_close` too if it stops reading early -- and nothing else
+/// (#1871 scope 3): the stream arrives as a parameter, so there is no named
+/// getter. This module exports both halves, unconditionally.
+///
+/// Deliberately NOT `comp_generate_hostfuture_adapter_core_module`, which
+/// implements the same function: that one emits it only when there is at least
+/// one NAMED stream, and its entire index layout is derived from the named
+/// future/stream counts. Teaching it "no names, still a reader" moves every
+/// index in a module four other lanes depend on, and supplying a dummy name
+/// would reintroduce the `[async-lower]<label>` component import that #1796
+/// ruled out as a composition cycle.
+///
+/// The loop is the measured one (tools/wasip3_component_probe/host_stream_value
+/// and http_body_read): BLOCKED is 0xffffffff, a completion packs
+/// `(amount << 4) | code`, the read wake event is 2, the wait payload's SECOND
+/// word is the status, and the end of the stream arrives EITHER as a
+/// zero-transfer code 1 OR riding along with the final byte. That second shape
+/// is why there is a latch: reading again after an inline close traps, so the
+/// close is recorded and settled on the NEXT call.
+///
+/// Values cross as PLAIN i64 -- no tag shift on either side, unlike the named
+/// adapter's half. Both are right for their own lane: an Int's representation
+/// is `enable_rc`'s (linked_compile's tag_mode), the named lane's core comes
+/// from the CLI's RC compile (`value << 1`), and this lane's comes from
+/// `compile_wasi_module_no_dce_impl` with enable_rc = false (plain i64).
+/// Mixing them is the whole failure mode this convention exists to avoid: it
+/// does not trap, it silently doubles every byte the handler reads.
+///
+/// So: the handle arrives untagged from the trampoline, the byte goes back
+/// untagged, and end of stream is a plain `-1` -- the value the injected
+/// `__hs_fin` latches on.
+fn comp_generate_serve_stream_adapter_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 = stream.read (h, ptr, n) -> status; 1 = (h) -> () for
+  // drop-readable and waitable-set.drop; 2 = () -> set; 3 = (a, b) -> () for
+  // waitable.join; 4 = (set, ptr) -> event; 5 = (i64) -> i64, the shape BOTH
+  // halves of the vibe-side surface share.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 6)
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 3), [
+    127
+  ])
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 1), array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    127
+  ])
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 2), array_empty())
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 2), [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 7)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][stream-read-0]body")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[stream-drop-readable-0]body")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    5,
+    5
+  ])
+  // Both halves of the surface, ALWAYS. `host_stream_close` is what a handler
+  // that stops reading early lowers to (`__hs_close` -> `vibe.host_stream_close`,
+  // spec §3.18.1), and a core that imports it cannot be instantiated against an
+  // adapter that does not export it. Emitting it unconditionally costs a few
+  // bytes in the components that never call it and keeps "take the first four
+  // bytes and hang up" from being a shape `vibe serve` refuses to compose.
+  let export_sec = bytebuf_new()
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "host_stream_read")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 6)
+  emit_name(export_sec, "host_stream_close")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 7)
+  bytebuf_push_section(out, 7, export_sec)
+  // param 0 = the handle (i64, untagged); locals (i32) 1 = handle, 2 = status,
+  // 3 = waitable set, 4 = event, 5 = the latch address, 6 = the read slot.
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 1)
+  // Same cap the named adapter enforces, for the same reason: the latch band
+  // is `handle * 4 + comp_ss_closed_base` in a ONE-page memory, so an
+  // unbounded handle would silently walk past the page instead of saying so.
+  // Trapping here names the limit; growing past it is a change to the band,
+  // not something to discover as an out-of-bounds store.
+  emit_local_get(b, 1)
+  emit_i32_const(b, comp_hf_max_handles())
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 2)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_closed_base)
+  emit_i32_add(b)
+  emit_local_set(b, 5)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 2)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_scratch_base)
+  emit_i32_add(b)
+  emit_local_set(b, 6)
+  // A latch set by a previous inline close: this call is the settle it was
+  // waiting for. Drop the readable end now and report the end of the stream.
+  emit_local_get(b, 5)
+  emit_i32_load(b, 2, 0)
+  emit_if_void(b)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 1)
+  emit_call(b, 1)
+  emit_i64_const(b, 0 - 1)
+  emit_return(b)
+  emit_end(b)
+  // One byte per call: the shape ByteStream::next needs, and the worst case
+  // for status handling.
+  emit_local_get(b, 1)
+  emit_local_get(b, 6)
+  emit_i32_const(b, 1)
+  emit_call(b, 0)
+  emit_local_set(b, 2)
+  emit_local_get(b, 2)
+  emit_i32_const(b, -1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  // BLOCKED: park until the producer delivers, then UNJOIN before dropping
+  // the set -- dropping one that still has members traps.
+  emit_call(b, 2)
+  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  emit_local_get(b, 3)
+  emit_call(b, 3)
+  emit_local_get(b, 3)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 3)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_payload_base)
+  emit_i32_add(b)
+  emit_call(b, 4)
+  emit_local_set(b, 4)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 0)
+  emit_call(b, 3)
+  emit_local_get(b, 3)
+  emit_call(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 3)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_payload_base + 4)
+  emit_i32_add(b)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 2)
+  emit_end(b)
+  // Nothing transferred = the end of the stream. Any zero-transfer code other
+  // than the measured CLOSED (1) is an assumption that moved: trap rather than
+  // report an end that may not be one.
+  emit_local_get(b, 2)
+  emit_i32_const(b, 4)
+  emit_i32_shr_u(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_i32_const(b, 1)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_call(b, 1)
+  emit_i64_const(b, 0 - 1)
+  emit_return(b)
+  emit_end(b)
+  // A byte landed. If the end came WITH it, latch that: reading again after
+  // the notification traps, so the drop happens on the next call instead.
+  emit_local_get(b, 2)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_i32_const(b, 1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 1)
+  emit_i32_store(b, 2, 0)
+  emit_end(b)
+  emit_local_get(b, 6)
+  emit_i32_load8_u(b, 0, 0)
+  bytebuf_push(b, 173)
+  // host_stream_close: release a readable end the handler stopped reading.
+  // No `stream.read` and no park -- dropping is synchronous. The guest's cell
+  // state gates the ONE call (`__hs_close` drops only from state 3 and closes
+  // the cell in the same step), which matters because a second
+  // `stream.drop-readable` on a dropped end traps host-side. Clearing the
+  // latch first keeps a pending inline-close from firing a second drop.
+  //
+  // Returns 0: the surface is `-> Unit`, but the raw ABI is uniformly
+  // `(i64) -> i64`, so the injected wrapper discards this.
+  let cb = bytebuf_new()
+  emit_local_get(cb, 0)
+  emit_i32_wrap_i64(cb)
+  emit_local_set(cb, 1)
+  emit_local_get(cb, 1)
+  emit_i32_const(cb, comp_hf_max_handles())
+  emit_i32_gt_u(cb)
+  emit_if_void(cb)
+  bytebuf_push(cb, 0)
+  emit_end(cb)
+  emit_local_get(cb, 1)
+  emit_i32_const(cb, 2)
+  emit_i32_shl(cb)
+  emit_i32_const(cb, comp_ss_closed_base)
+  emit_i32_add(cb)
+  emit_i32_const(cb, 0)
+  emit_i32_store(cb, 2, 0)
+  emit_local_get(cb, 1)
+  emit_call(cb, 1)
+  emit_i64_const(cb, 0)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  let fb = bytebuf_new()
+  leb128_encode_u32(fb, 1)
+  leb128_encode_u32(fb, 7)
+  bytebuf_push(fb, 127)
+  bytebuf_push_buf(fb, b)
+  bytebuf_push(fb, 11)
+  leb128_encode_u32(code_sec, bytebuf_length(fb))
+  bytebuf_push_buf(code_sec, fb)
+  let cfb = bytebuf_new()
+  leb128_encode_u32(cfb, 1)
+  leb128_encode_u32(cfb, 1)
+  bytebuf_push(cfb, 127)
+  bytebuf_push_buf(cfb, cb)
+  bytebuf_push(cfb, 11)
+  leb128_encode_u32(code_sec, bytebuf_length(cfb))
+  bytebuf_push_buf(code_sec, cfb)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
+
+/// #1540 scope 4: the serve component for a handler whose last parameter is a
+/// `HostStream` -- the request body, read without ever materializing it.
+///
+/// This is the join of everything the issue built: the async lift and string
+/// `task.return` of the sync-shaped async lane, the stream parameter's
+/// type-index encoding, the trampoline that tags the handle, and the adapter
+/// above that turns `vibe.host_stream_read` into real canon calls.
+///
+/// TWO memories, on purpose. The canons need one for the read landing slot and
+/// the wait payload; the only other memory here is the vibe heap, and fixed
+/// addresses in that would corrupt whatever the program had there. So the
+/// canons get a memhost page and `task.return` / the lift keep the MAIN memory,
+/// which is where the result string and the lowered params actually live.
+///
+/// Nothing here is a cycle: the adapter depends on the canons, main depends on
+/// the adapter, the trampoline depends on main -- and only the trampoline
+/// imports `[task-return]`, so the memory that canon needs (main's) exists
+/// before the instance that imports it.
+///
+/// Index layout, in emission order:
+///   core module    0 = main, 1 = trampoline, 2 = host stub, 3 = adapter,
+///                  4 = memhost
+///   core memory    0 = memhost page, 1 = main memory
+///   core func      0..5 = stream.read, drop-readable, ws.new, join, ws.wait,
+///                  ws.drop; 6 = adapter's host_stream_read,
+///                  7 = adapter's host_stream_close; 8 = main's target;
+///                  9 = task.return; 10 = canon_func, 11 = cabi_realloc
+///   core instance  0 = memhost, 1 = $root, 2 = adapter env, 3 = adapter,
+///                  4 = stub, 5 = vibe imports, 6 = main, 7 = tramp env,
+///                  8 = [export]$root, 9 = trampoline
+///   component type 0 = stream u8, 1 = the async functype
+export fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
+  let string_param_count = Array::length(param_names) - 1
+  comp_check_stream_handler_target(core_wasm, target_func_name, string_param_count)
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, core_wasm)
+  emit_core_module_section(buf, comp_generate_string_trampoline_packed_async_opt(string_param_count, export_name, true))
+  emit_core_module_section(buf, comp_generate_host_stub_module(array_empty(), array_empty()))
+  emit_core_module_section(buf, comp_generate_serve_stream_adapter_module())
+  emit_core_module_section(buf, comp_generate_memhost_module())
+  emit_core_instance_instantiate_section(buf, 4, array_empty())
+  emit_alias_section(buf, 0, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_comp_stream_type_section(buf, comp_valtype_u8)
+  emit_canon_stream_read(buf, 0, 0)
+  emit_canon_stream_drop_readable(buf, 0)
+  emit_canon_waitable_set_new(buf)
+  emit_canon_waitable_join(buf)
+  emit_canon_waitable_set_wait(buf, 0)
+  emit_canon_waitable_set_drop(buf)
+  emit_core_instance_from_exports_sorted(buf, [
+    "[async-lower][stream-read-0]body",
+    "[stream-drop-readable-0]body",
+    "[waitable-set-new]",
+    "[waitable-join]",
+    "[waitable-set-wait]",
+    "[waitable-set-drop]"
+  ], [
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func,
+    core_sort_func
+  ], [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ])
+  emit_core_instance_from_exports_sorted(buf, [
+    "memory"
+  ], [
+    core_sort_mem
+  ], [
+    0
+  ])
+  emit_core_instance_instantiate_args(buf, 3, [
+    "$root",
+    "env"
+  ], [
+    1,
+    2
+  ])
+  emit_core_instance_instantiate_section(buf, 2, array_empty())
+  emit_alias_section(buf, 3, [
+    "host_stream_read",
+    "host_stream_close"
+  ], [
+    core_sort_func,
+    core_sort_func
+  ])
+  // BOTH halves in the `vibe` instance. A handler that stops reading early
+  // lowers `host_stream_close` to a core import of that name, and a core
+  // instance cannot be given fewer bindings than it imports -- so leaving the
+  // close half out would make "read four bytes and hang up" a shape this lane
+  // refuses to compose. Handing over a binding the core never imports is free.
+  emit_core_instance_from_exports(buf, 1, [
+    2
+  ], [
+    "host_stream_read",
+    "host_stream_close"
+  ], [
+    6,
+    7
+  ])
+  emit_core_instance_instantiate_args(buf, 0, [
+    "wasi_snapshot_preview1",
+    "vibe"
+  ], [
+    4,
+    5
+  ])
+  emit_alias_section(buf, 6, [
+    target_func_name
+  ], [
+    core_sort_func
+  ])
+  emit_alias_section(buf, 6, [
+    "memory"
+  ], [
+    core_sort_mem
+  ])
+  emit_alias_section(buf, 6, [
+    "__heap_ptr"
+  ], [
+    core_sort_global
+  ])
+  // Memory 1 is main's: the result string the lift reads lives in the vibe
+  // heap, not in the memhost page the canons use.
+  emit_canon_task_return_opts(buf, comp_valtype_string, 1, true)
+  emit_core_instance_from_exports_sorted(buf, [
+    "target_func",
+    "__heap_ptr",
+    "memory"
+  ], [
+    core_sort_func,
+    core_sort_global,
+    core_sort_mem
+  ], [
+    8,
+    0,
+    1
+  ])
+  emit_core_instance_from_exports(buf, 1, [
+    1
+  ], [
+    String::concat("[task-return]", export_name)
+  ], [
+    9
+  ])
+  emit_core_instance_instantiate_args(buf, 1, [
+    "env",
+    "[export]$root"
+  ], [
+    7,
+    8
+  ])
+  emit_alias_section(buf, 9, [
+    "canon_func",
+    "cabi_realloc"
+  ], [
+    core_sort_func,
+    core_sort_func
+  ])
+  let comp_param_valtypes = new_int_array()
+  let mut pt = 0
+  while pt < string_param_count {
+    Array::push(comp_param_valtypes, comp_valtype_string)
+    pt = pt + 1
+  }
+  // The body param's valtype is the stream TYPE INDEX (0), not a primitive.
+  Array::push(comp_param_valtypes, 0)
+  emit_comp_async_functype_params(buf, param_names, comp_param_valtypes, comp_valtype_string)
+  emit_canon_lift_async_opts(buf, 10, 1, 1, 11, true)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+/// #1540 scope 4: the stream handler's target-export contract.
+///
+/// Same as the string handler's, plus one: the core signature carries an extra
+/// i64 for the stream handle. Every param is an i64 either way, so what this
+/// really pins is the COUNT -- and getting it wrong would hand the handler a
+/// shifted argument list rather than fail.
+fn comp_check_stream_handler_target(core_wasm: Bytes, target_func_name: String, string_param_count: Int) -> Unit with Exception {
+  comp_check_string_handler_target(core_wasm, target_func_name, string_param_count + 1)
 }
 
 /// #1540 scope 4: the ASYNC serve component -- same handler surface as

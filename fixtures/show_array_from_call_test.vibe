@@ -138,3 +138,148 @@ test "an annotated struct binding still reaches its own to_string" {
   let s: String = "hi"
   inspect(s, "hi")
 }
+
+// `for x in xs { .. }` is an EXPRESSION evaluating to the mapped array, and it
+// was the most common way to reach #1880 -- the form fixtures/for_in_*.vibe are
+// written in, and the one place an annotation cannot be attached, because the
+// value is rendered inline: `"\{for x in xs { .. }}"`.
+//
+// The element type is the BODY's, with the loop variable bound to the source's
+// element type. Both halves come from the same inference, so a source or body
+// this pass cannot type claims nothing and keeps the old rendering.
+
+test "for-in renders inline, with no annotation" {
+  inspect(for x in [
+    1,
+    2,
+    3
+  ] {
+    x * 2
+  }, "[2, 4, 6]")
+  inspect("\{for x in [
+    1,
+    2,
+    3
+  ] {
+    x * 2
+  }}", "[2, 4, 6]")
+}
+
+test "for-in body shapes that needed walking into" {
+  // A body with statements before its value (fixtures/for_in_break.vibe).
+  inspect(for x in [
+    1,
+    2,
+    3,
+    4,
+    5
+  ] {
+    if x == 4 {
+      break
+    } else {
+      ()
+    }
+    x * 10
+  }, "[10, 20, 30]")
+  // A body ending in a builtin call (fixtures/for_in_string.vibe).
+  inspect(for s in [
+    "hello",
+    "world"
+  ] {
+    String::length(s)
+  }, "[5, 5]")
+  // A body whose tail refers to its own `let` -- the binding has to be
+  // recorded, not just stepped over.
+  inspect(for x in [
+    1,
+    2
+  ] {
+    let y = x + 1
+    y * 2
+  }, "[4, 6]")
+}
+
+test "for-in over a binding, with an index, and nested" {
+  let xs = [
+    1,
+    2,
+    3
+  ]
+  inspect(for x in xs {
+    x + 1
+  }, "[2, 3, 4]")
+  inspect(for x, i in [
+    5,
+    6
+  ] {
+    x + i
+  }, "[5, 7]")
+  inspect(for x in [
+    1,
+    2
+  ] {
+    for y in [
+      3
+    ] {
+      x + y
+    }
+  }, "[[4], [5]]")
+}
+
+test "a body this pass cannot type claims nothing" {
+  // Not a regression to fix -- the point is that it does not claim a WRONG
+  // shape. A constructor body resolves through the ordinary syntax path.
+  inspect(for x in [
+    1,
+    2
+  ] {
+    Some(x)
+  }, "[Some(1), Some(2)]")
+}
+
+test "an inner let that cannot be typed masks the outer binding" {
+  // Codex review on PR #1896. When a loop-body `let` shadows an outer binding
+  // and its value cannot be classified, keeping the outer entry visible let
+  // the tail resolve to the OUTER type:
+  //
+  //   let y = "outer"
+  //   for x in [1, 2] { let y = Some(x)  y }   ->  [276, 288]
+  //
+  // -- pointers laid out inside a structurally-rendered array, because the
+  // loop was given shape `[String]`. Strictly worse than the bare pointer the
+  // same body produces with no outer `y` in scope: it looks like real output.
+  //
+  // Asserting the VALUES does not catch this: they were always the right
+  // Options. Red-checked -- a value-only version of this test passes with the
+  // fix reverted. The defect is in the RENDERING, so the assertion has to be
+  // about the rendered string.
+  //
+  // A bare pointer is not a fixed string, so what is pinned is the invariant
+  // rather than the output: IF this renders as an array, its elements must be
+  // the Options that were built. That fails on `[276, 288]`, passes on the
+  // unclaimed pointer, and would also pass if a later change makes the pass
+  // able to type this body properly -- pinning "must not be an array" would
+  // instead fail on that improvement.
+  let y = "outer"
+  assert_true(String::length(y) == 5)
+  let shadowed = for x in [
+    1,
+    2
+  ] {
+    let y = Some(x)
+    y
+  }
+  let rendered = __to_string(shadowed)
+  assert_true(!String::starts_with(rendered, "[") || rendered == "[Some(1), Some(2)]")
+  // The elements are checked too, so a fix that got the rendering right by
+  // building a different array would not pass.
+  assert_true(Array::length(shadowed) == 2)
+  match Array::get(shadowed, 0) {
+    Some(v) => inspect(v, "1"),
+    None => assert_true(false)
+  }
+  match Array::get(shadowed, 1) {
+    Some(v) => inspect(v, "2"),
+    None => assert_true(false)
+  }
+}

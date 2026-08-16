@@ -1,0 +1,61 @@
+// #1861 final two, closing `gc-unported` to zero.
+//
+// Both were spelling/shape problems, not missing implementations:
+//   - `Float::to_int` is an ALIAS of `Double::to_int`, which this lane already
+//     serves through the func table (gc_gen_double_to_int_body). The gc arm
+//     delegates rather than restating a lowering that hand-saturates NaN and
+//     out-of-range values (#997/#1050) -- a copy would be a second place to
+//     get that wrong.
+//   - `Map::values` is `Map::keys` reading the other half of each entry.
+//
+// Same both-lanes contract as the other parity fixtures: the gate runs this on
+// gc AND linear, because the property is that they agree.
+test "Map::values" {
+  let m = Map::from_pairs([
+    ("a", 10),
+    ("b", 20),
+    ("c", 30)
+  ])
+  let vs = Map::values(m)
+  assert_true(Array::length(vs) == 3)
+  // Order follows insertion, same as Map::keys.
+  assert_true(Array::get(vs, 0) == 10)
+  assert_true(Array::get(vs, 1) == 20)
+  assert_true(Array::get(vs, 2) == 30)
+  assert_true(Array::length(Map::values(Map::new())) == 0)
+}
+
+test "Map::values agrees with Map::keys positionally" {
+  let m = Map::from_pairs([
+    ("k1", 7),
+    ("k2", 8)
+  ])
+  let ks = Map::keys(m)
+  let vs = Map::values(m)
+  assert_true(Array::length(ks) == Array::length(vs))
+  assert_true(Array::get(ks, 0) == "k1")
+  assert_true(Array::get(vs, 0) == 7)
+  assert_true(Array::get(ks, 1) == "k2")
+  assert_true(Array::get(vs, 1) == 8)
+}
+
+test "Float::to_int is the Double::to_int alias" {
+  assert_true(Float::to_int(3.7) == 3)
+  assert_true(Float::to_int(0.0 - 3.7) == (0 - 3))
+  assert_true(Float::to_int(0.0) == 0)
+  // Same answer as the spelling it delegates to.
+  assert_true(Float::to_int(9.99) == Double::to_int(9.99))
+}
+
+test "inside a lambda body" {
+  let f = (m) -> {
+    Array::length(Map::values(m))
+  }
+  assert_true(f(Map::from_pairs([
+    ("x", 1)
+  ])) == 1)
+  let g = (d) -> {
+    Float::to_int(d)
+  }
+  assert_true(g(4.9) == 4)
+}

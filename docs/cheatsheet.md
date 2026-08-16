@@ -125,7 +125,7 @@ covers your scope:
 | Growable buffer (bytes / chars) | `Bytes` / `String` | immutable binding, mutable interior |
 | Growable array | `ArrayBuilder` → `Array::from_array_builder` | build-then-freeze; `Array::push` also works for growing an existing `Array` in place (#1285) |
 | Mutable cursor in a struct | `struct S { mut field: T }` + `r.field = v` | ADR-0052; same responsibility model as `Array[T]` field |
-| Cross-call / handler-mediated state | `effect Mut { ... } + handle ... with Mut` | ADR-0021; tail-resumptive is zero-cost |
+| Cross-call / handler-mediated state | declare your own effect, then `handle ... with <YourEffect>` | ADR-0050/0021; there is no builtin `Mut` effect. A `perform` **directly inside the handler body** is inline-eliminated; a call through an intervening function still goes through evidence-dict dispatch, measured at ~2× a captured `let mut` ([side-effect-consolidation.md §2.5](side-effect-consolidation.md)) |
 
 `Array::push(arr, v)` appends **in place**, and every reference to `arr`
 (alias, parameter, struct field, closure capture) observes the growth — the
@@ -430,8 +430,9 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 `List::length(xs)` when `xs`'s type is a USER type and the method is declared
 as a top-level fn in the **`Type::method` spelling** (`fn List::length(xs:
 List) -> Int`) — importing just the type is enough
-(`import ./list.vibe { List, list_of3 }` makes `list_of3(1,2,3) |> length`
-work). A BARE top-level `fn total(l: MyList)` is *not* a method: it keeps
+(`import ./list.vibe { List }` makes `List::of3(1,2,3) |> length`
+work — the companion call's return type drives the dispatch, #1908).
+A BARE top-level `fn total(l: MyList)` is *not* a method: it keeps
 normal call semantics (`total(l)`, and `l |> total` — the pipe is just a call),
 but `l.total()` does not resolve to it and reports a located
 ``no method `total` on `MyList` `` diagnostic (#953). A struct FIELD of the same
@@ -768,24 +769,28 @@ let arr2 = {
   ArrayBuilder::freeze(b)     // -> Array[Int]
 }
 
-// 汎用コンテナは @vibe/core — MutMap/MutSet (open addressing) と
-// MutSortedMap/MutSortedSet (AVL、keys/to_array 昇順、range(lo, hi) 両端 inclusive)。
-// 比較/ハッシュは関数を渡す explicit-dict 方式 + Int/String key 特化
-// (MutMap::new_int() / MutSortedSet::new_string() 等)。
-// 永続 (immutable) コレクションは @vibex/immut — 更新は常に新版を返し旧版不変
-// (構造共有、0.4.0 並行モデルの sendable データ):
+// General-purpose containers live in @vibe/core — MutMap/MutSet (open
+// addressing) and MutSortedMap/MutSortedSet (AVL; keys/to_array ascending,
+// range(lo, hi) inclusive on both ends). Comparison/hashing is
+// explicit-dict style (functions passed as arguments) plus Int/String key
+// specializations (MutMap::new_int() / MutSortedSet::new_string() etc).
+// Persistent (immutable) collections are @vibex/immut — updates always
+// return a new version, the old one stays intact (structural sharing;
+// sendable data for the 0.4.0 concurrency model):
 //   MapHamt[V] (HAMT, String key): empty/set/get/delete/size/keys/has_key
-//     旧名 ImmutMap は #deprecated エイリアス (ADR-0100 (3), #1262)
+//     the old name ImmutMap is a #deprecated alias (ADR-0100 (3), #1262)
 //   ImmutArray[T] (persistent vector): empty/push/get/set/length/from_array/to_array
 
-// **persistent map が要るなら `MapHamt`。builtin `Map` は小さい固定表向け** ——
-// `Map` は flat assoc list なので構築も参照も O(n²) に落ちる。n=1000 の実測で
-// `MapHamt` が 27.7× 速く 22× 確保が少ない (ADR-0100 (3) /
-// bench/bench_map_vs_immutmap.vibe)。同じ性質はコンパイラ内部でも踏んでいる (#799)。
+// **Need a persistent map? Use `MapHamt`. The builtin `Map` is for small
+// fixed tables** — `Map` is a flat assoc list, so both construction and
+// lookup degrade to O(n²). Measured at n=1000, `MapHamt` is 27.7× faster
+// with 22× fewer allocations (ADR-0100 (3) /
+// bench/bench_map_vs_immutmap.vibe). The compiler itself has hit the same
+// trap internally (#799).
 
-// 両端キュー / 優先度付きキューは @vibex/deque / @vibex/pqueue:
-//   Deque::new/push_back/pop_front (ring buffer、両端 O(1))
-//   PriorityQueue::new_int_min / new(cmp) (binary heap、cmp < 0 が先頭)
+// Deques / priority queues are @vibe/core (#1842, promoted from @vibex):
+//   Deque::new/push_back/pop_front (ring buffer, O(1) at both ends)
+//   PriorityQueue::new_int_min / new(cmp) (binary heap; cmp < 0 dequeues first)
 
 // Bytes — growable byte buffer
 let bytes_len = {
@@ -1400,20 +1405,22 @@ not part of this API.
 > `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
 > するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
 
-**SIMD スキャン** (`Bytes` / `String` 上を 16 バイト単位で走査。linear / gc 両対応):
+**SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
+the linear and GC backends):
 
-| 関数 | 意味 |
+| Function | Meaning |
 |---|---|
-| `simd_skip_ws(buf, pos, len) -> Int` | 空白でない最初の位置 |
-| `simd_scan_alnum(buf, pos, len) -> Int` | 識別子バイトの終端位置 |
-| `simd_scan_alnum_str(s, pos, len) -> Int` | 同上の `String` 版 |
-| `simd_scan_string_special_str(s, pos, len) -> Int` | quote / backslash / ASCII control byte の最初の位置 |
+| `simd_skip_ws(buf, pos, len) -> Int` | First position that is not whitespace |
+| `simd_scan_alnum(buf, pos, len) -> Int` | End of an identifier-byte run |
+| `simd_scan_alnum_str(s, pos, len) -> Int` | `String` version of the identifier scan |
+| `simd_scan_string_special_str(s, pos, len) -> Int` | First quote, backslash, or ASCII control byte |
+| `simd_scan_line_end_str(s, pos, len) -> Int` | First LF (`0x0a`) byte, or `len` if no LF exists |
 
-> SIMD は linear memory 上でのみ成立する。`v128.load` はメモリアドレスを取る
-> 命令で、wasm-gc の配列はアドレス可能なメモリではないため、`(array i8)` から
-> v128 へ一括ロードする命令が存在しない。**バイト処理を速くしたいデータは
-> linear memory (= `Bytes`) に置くこと。** `Bytes` は gc backend でも linear
-> memory 上にあるので、これらは両レーンで同じように使える。
+> SIMD requires linear memory: `v128.load` takes a memory address, while a
+> wasm-gc array is not addressable memory and has no bulk load from `(array
+> i8)` into a v128. **Keep byte-oriented hot data in linear memory (`Bytes`).**
+> `Bytes` remains linear-memory-backed on the GC backend, so these functions
+> behave the same in both lanes.
 
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->

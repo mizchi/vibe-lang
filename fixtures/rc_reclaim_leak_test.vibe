@@ -19,9 +19,14 @@
 // VIBE_RC=1 + VIBE_FS_COMPILE=1 (the `vibe run` path), measures __heap_ptr via
 // scripts/measure_selfhost_heap.mjs, and asserts heap_used stays below a small
 // bound. At N=20000 a leak would be hundreds of KB; reclamation keeps it tiny.
-enum Tree { Leaf(Int); Node(Tree, Tree) }
+enum Tree {
+  Leaf(Int);
+  Node(Tree, Tree)
+}
 
-struct Box { items: Array[Int] }
+struct Box {
+  items: Array[Int]
+}
 
 let sumt = (t: Tree) -> Int {
   match t {
@@ -61,13 +66,32 @@ let consume_in_loop = (a: Array[Int]) -> Int {
   s
 }
 
+// #1915 builder-return leak guard: the standard builder shape — an ANNOTATED
+// fresh binding (`let out: Array[Int] = []`; the ascription parses to an
+// identity application `((__asc: T) -> __asc)(e)`) returned by name — must not
+// land the function in the may-return-view set. Misclassified, every CALLER
+// suppresses the scope-end drop of the OWNED result and leaks one array per
+// call, scaling heap_used with N.
+let build_arr = (n: Int) -> Array[Int] {
+  let out: Array[Int] = [
+  ]
+  let mut j = 0
+  while j < n {
+    Array::push(out, j)
+    j = j + 1
+  }
+  out
+}
+
 let main = () -> Int {
   let mut total = 0
   let mut i = 0
   while i < 20000 {
     let t = (i, i + 1)
     let mut c = 0
-    let bump = () -> { c = c + 1 }
+    let bump = () -> {
+      c = c + 1
+    }
     bump()
     let tr = Node(Leaf(i), Leaf(i + 1))
     // #704 projection-ownership reclamation guard: `Array::get(b.items, _)`
@@ -75,7 +99,13 @@ let main = () -> Int {
     // must NOT be rc_dup'd at the call site (the builtin never drops it) — else
     // one reference leaks per iteration and heap scales with N. The struct `b`
     // and its array reclaim each iteration only when that dup is suppressed.
-    let b = Box::{ items: [i, i + 1, i + 2] }
+    let b = Box::{
+      items: [
+        i,
+        i + 1,
+        i + 2
+      ]
+    }
     let first = Array::get(b.items, 0)
     // #703 unused-matched-field guard (drives `ignore_children`, which binds but
     // never references the heap children — see its definition above).
@@ -90,15 +120,25 @@ let main = () -> Int {
     // #703-2 borrow-only matched-field guard: `xs` is bound and referenced, but
     // only as the borrowed arg0 of `Array::length` — never consumed. Its #702
     // dup must be suppressed (md_consumes) or the array leaks each iteration.
-    let blen = match Some([i, i + 1]) {
+    let blen = match Some([
+      i,
+      i + 1
+    ]) {
       Some(xs) => Array::length(xs),
       None => 0
     }
     // #706 leak guard (see consume_in_loop above): a fresh array literal
     // consumed 3x inside consume_in_loop's own while loop, unreachable after
     // this call returns.
-    let looped = consume_in_loop([i, i + 1, i + 2])
-    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped
+    let looped = consume_in_loop([
+      i,
+      i + 1,
+      i + 2
+    ])
+    // #1915 leak guard (see build_arr above): the returned builder array is
+    // owned by `built` and must be reclaimed at scope end each iteration.
+    let built = build_arr(3)
+    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built)
     i = i + 1
   }
   total

@@ -30,6 +30,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   packed_lines_to_array_expr,
+  region_mutbytes_exit_copy,
   region_mutlist_exit_copy
 }
 
@@ -53,6 +54,8 @@ import @vibe/compiler/codegen/common_base {
   emit_i32_sub,
   emit_i64_load,
   emit_i64_store,
+  emit_region_enter,
+  emit_region_exit,
   emit_str_ref,
   expr_tag,
   find_func_stmt,
@@ -573,17 +576,43 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // The token exists only for the checker's skolem escape scan; it has no
       // runtime representation, which is why passing 0 is not a placeholder
       // but the actual lowering.
+      //
+      // With tier 2 present (`gc_region_ptr_addr >= 0`) the body call is
+      // bracketed by the arena watermark save/restore -- the SAME two
+      // emitters the linear lane uses, now shared from common_base so the
+      // save/restore protocol cannot change on one lane only.
       if !source_is_bound && fname == "__region_run" && Array::length(args) == 1 {
-        return ce(buf, ECall(Array::get(args, 0), [
+        if ctx.gc_region_ptr_addr >= 0 {
+          emit_region_enter(buf, ctx.gc_region_ptr_addr)
+        } else {
+          ()
+        }
+        let region_r = ce(buf, ECall(Array::get(args, 0), [
           EInt(0)
         ], -1), local_names, next_local, ld)
+        // Emitted with the body's result already on the stack: every
+        // instruction in the exit consumes only its own operands, so the
+        // result rides through untouched.
+        if ctx.gc_region_ptr_addr >= 0 {
+          emit_region_exit(buf, ctx.gc_region_ptr_addr)
+        } else {
+          ()
+        }
+        return region_r
       } else {
         ()
       }
-      // Without an arena `MutList` storage IS an ArrayBuilder -- the region
-      // token is not evaluated (by construction it is the pure binder ident
-      // the parser emitted).
+      // With an arena the storage comes from the segment; without one
+      // `MutList` storage IS an ArrayBuilder, as before. Either way the region
+      // token is not evaluated -- by construction it is the pure binder ident
+      // the parser emitted.
       if !source_is_bound && fname == "MutList::empty" && Array::length(args) == 1 {
+        if ctx.gc_region_arr_new_func_idx >= 0 {
+          emit_call(buf, ctx.gc_region_arr_new_func_idx)
+          return next_local
+        } else {
+          ()
+        }
         let no_args = Array::slice([
           EInt(0)
         ], 0, 0)
@@ -608,6 +637,43 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       }
       if !source_is_bound && fname == "MutList::length" && Array::length(args) == 1 {
         return ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      // The Bytes half of the same tier. `MutBytes` storage IS a `Bytes`
+      // without an arena, so the operations are the Bytes ones under another
+      // spelling, and the exit copies for the same reason as MutList's.
+      if !source_is_bound && fname == "MutBytes::empty" && Array::length(args) == 1 {
+        if ctx.gc_region_bytes_new_func_idx >= 0 {
+          emit_call(buf, ctx.gc_region_bytes_new_func_idx)
+          return next_local
+        } else {
+          ()
+        }
+        let no_bytes_args = Array::slice([
+          EInt(0)
+        ], 0, 0)
+        return ce(buf, ECall(EIdent("Bytes::new", -1), no_bytes_args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::to_bytes" && Array::length(args) == 1 {
+        return ce(buf, region_mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::push" && Array::length(args) == 2 {
+        return ce(buf, ECall(EIdent("Bytes::push", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::append" && Array::length(args) == 2 {
+        return ce(buf, ECall(EIdent("Bytes::append", -1), args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::length" && Array::length(args) == 1 {
+        return ce(buf, ECall(EIdent("Bytes::length", -1), args, -1), local_names, next_local, ld)
       } else {
         ()
       }
@@ -1058,6 +1124,166 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_local_get(buf, obj_local)
         emit_call_resolved(buf, ctx, sl_idx)
         emit_end(buf)
+        nl
+      }
+      // #1861 third batch. These three are guarded with `!source_is_bound`,
+      // the same shape `__region_run` / `MutList::*` above already use, and the
+      // gc equivalent of the linear arms' `!prefer_bound_call`: a real binding
+      // of the name wins over the builtin spelling. That guard is why they can
+      // be ported at all -- without it a user's own `Path::to_string` would be
+      // hijacked, which is the reason the bare-name rows stay unported.
+      //
+      // All three emit nothing themselves; they rewrite the call into an AST
+      // the ordinary compiler already handles, so the two lanes cannot drift on
+      // what they mean.
+      // #1861 final two.
+      //
+      // `Float::to_int` is an ALIAS: the linear arm is
+      // `fname == "Double::to_int" || fname == "Float::to_int"`, and this lane
+      // already serves `Double::to_int` -- builtin_registry.vibe registers it
+      // in BOTH func tables and `gc_gen_double_to_int_body` is its body here.
+      // Only the second spelling was missing, so this delegates to the first
+      // rather than restating the lowering. That lowering is not trivial (it
+      // hand-saturates NaN and out-of-range instead of trunc'ing, #997/#1050),
+      // and a copy of it here would be a second place to get that wrong.
+      else if fname == "Float::to_int" && Array::length(args) == 1 {
+        ce(buf, ECall(EIdent("Double::to_int", -1), [
+          Array::get(args, 0)
+        ], -1), local_names, next_local, ld)
+      }
+      // `Map::values` is `Map::keys` reading the other half of each entry:
+      // same 16-byte stride, offset 16 instead of 8. Mirrors the gc Map::keys
+      // arm below rather than the linear Map::values arm, because the two
+      // differ (linear untags the receiver with `& -2` first; this lane's
+      // Map::keys does not) and the one that is known to work HERE is the
+      // right model.
+      else if fname == "Map::values" {
+        let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        let map_l = nl
+        let res_l = nl + 1
+        let cnt_l = nl + 2
+        let i_l = nl + 3
+        Array::push(local_names, "__values_map")
+        Array::push(local_names, "__values_res")
+        Array::push(local_names, "__values_cnt")
+        Array::push(local_names, "__values_i")
+        emit_local_set(buf, map_l)
+        emit_call_resolved(buf, ctx, arr_new_fi)
+        emit_local_set(buf, res_l)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, cnt_l)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_l)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_l)
+        emit_local_get(buf, cnt_l)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, res_l)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, i_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        emit_call_resolved(buf, ctx, arr_push_fi)
+        emit_local_get(buf, i_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_l)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_l)
+        nl + 4
+      }
+      else if !source_is_bound && fname == "Path::to_string" && Array::length(args) == 1 {
+        // #762: PathRef / DynamicPath wrap a raw String; to_string is identity.
+        ce(buf, Array::get(args, 0), local_names, next_local, ld)
+      }
+      else if !source_is_bound && fname == "Path::is_absolute" && Array::length(args) == 1 {
+        // #762: absolute iff the path begins with '/'. `eq(char_code_at(x, 0),
+        // 47)` avoids synthesizing a "/" string, which would not be in the
+        // string table.
+        ce(buf, ECall(EIdent("eq", -1), [
+          ECall(EIdent("String::char_code_at", -1), [
+            Array::get(args, 0),
+            EInt(0)
+          ], -1),
+          EInt(47)
+        ], -1), local_names, next_local, ld)
+      }
+      // Materialise the string's bytes into the Array backing a Stream[Int].
+      // `String::char_code_at` reads one byte (i32.load8_u), so this is
+      // byte-accurate.
+      //
+      // The linear twin builds this as SOURCE and lowers it through `ce`. That
+      // shape does not transfer, for two independent reasons, and both point
+      // the same way:
+      //
+      //   - it calls the bare builtins `lt` and `add`, which this lane does not
+      //     serve. They are the `gc-hijack-risk` rows, unported on purpose:
+      //     there is no `prefer_bound_call` here to stop a bare name capturing
+      //     a user's own binding (#832). Copying it verbatim died with
+      //     "`lt` (local, @gc_call) reached code generation unresolved".
+      //   - its binder names are FIXED (`__tb_s`, `__tb_arr`, `__tb_i`), which
+      //     the review-regressions lint rejects for exactly the reason the rule
+      //     exists: a literal synthetic binder can capture a user-authored name
+      //     of the same spelling.
+      //
+      // Emitting the loop directly avoids both. It also matches every other
+      // array-building arm in this file (Array::slice / concat / map): numbered
+      // locals, no synthesized names, nothing to collide with.
+      else if !source_is_bound && fname == "String::to_bytes" {
+        let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+        let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+        let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+        let (sc_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+        let str_local = next_local
+        let res_local = next_local + 1
+        let len_local = next_local + 2
+        let i_local = next_local + 3
+        Array::push(local_names, "__tb_str")
+        Array::push(local_names, "__tb_res")
+        Array::push(local_names, "__tb_len")
+        Array::push(local_names, "__tb_idx")
+        let mut nl = next_local + 4
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_local_set(buf, str_local)
+        emit_call_resolved(buf, ctx, an_idx)
+        emit_local_set(buf, res_local)
+        emit_local_get(buf, str_local)
+        emit_call_resolved(buf, ctx, sl_idx)
+        emit_local_set(buf, len_local)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, i_local)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, i_local)
+        emit_local_get(buf, len_local)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, res_local)
+        emit_local_get(buf, str_local)
+        emit_local_get(buf, i_local)
+        emit_call_resolved(buf, ctx, sc_idx)
+        emit_call_resolved(buf, ctx, ap_idx)
+        emit_local_get(buf, i_local)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, i_local)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, res_local)
         nl
       }
       // #1861 second batch: the `gc-unported` rows that needed no new
@@ -2431,6 +2657,139 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_local_get(buf, ms_new)
         nl + 7
       }
+      // #1262: `Map::delete` was the last builtin blocking the gc self-build.
+      // Unlike the MutList / MutBytes / region lowerings, this one is NOT an
+      // AST rewrite the two lanes can share -- linear emits wasm directly --
+      // so it is a port of expr/compile_call.vibe's arm rather than a call
+      // into common code. The four deltas from that twin, all mechanical:
+      //
+      //   1. no `-2` / i64.and untag of the map pointer. This lane leaves Ints
+      //      untagged, which is why Map::set / Map::get / Map::keys above read
+      //      the header straight off the operand. (Map::size DOES untag, which
+      //      is harmless -- the low bit is already 0 -- but it is the odd one
+      //      out; the allocate-and-copy sibling Map::set is the right model
+      //      for this arm.)
+      //   2. emit_call_resolved, not emit_call.
+      //   3. emit_heap_memory_grow_check, not emit_heap_grow_after_heap_set.
+      //   4. no trailing hash-index block: ctx has no map_build_index_func_idx
+      //      on this lane, so there is no index word to rebuild at offset 4.
+      //
+      // The algorithm is unchanged: copy every entry whose key does NOT match
+      // into a fresh block sized for the OLD count (an upper bound -- at most
+      // one entry goes away), then store the number actually copied as the new
+      // count. Entries move as raw i64 loads/stores, the same technique
+      // Map::set uses for the entries it preserves, so no retain is needed.
+      else if fname == "Map::delete" {
+        let (eq_fi_md, _, _) = resolve_func(ctx.func_table, "eq")
+        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+        let md_m = nl
+        let md_k = nl + 1
+        let md_cnt = nl + 2
+        let md_new = nl + 3
+        let md_i = nl + 4
+        let md_out = nl + 5
+        Array::push(local_names, "__md_map")
+        Array::push(local_names, "__md_key")
+        Array::push(local_names, "__md_cnt")
+        Array::push(local_names, "__md_new")
+        Array::push(local_names, "__md_idx")
+        Array::push(local_names, "__md_out")
+        emit_local_set(buf, md_k)
+        emit_local_set(buf, md_m)
+        emit_local_get(buf, md_m)
+        emit_i32_wrap_i64(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, md_cnt)
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, md_new)
+        emit_global_get(buf, 0)
+        emit_local_get(buf, md_cnt)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_add(buf)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_memory_grow_check(buf)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, md_i)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, md_out)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, md_i)
+        emit_local_get(buf, md_cnt)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, md_m)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, md_i)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_local_get(buf, md_k)
+        emit_call_resolved(buf, ctx, eq_fi_md)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_else(buf)
+        emit_local_get(buf, md_new)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, md_out)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, md_m)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, md_i)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_i64_store(buf, 3, 8)
+        emit_local_get(buf, md_new)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, md_out)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, md_m)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, md_i)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        emit_i64_store(buf, 3, 16)
+        emit_local_get(buf, md_out)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, md_out)
+        emit_end(buf)
+        emit_local_get(buf, md_i)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, md_i)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, md_new)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, md_out)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, md_new)
+        nl + 6
+      }
       else if fname == "Map::get" {
         let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
         let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
@@ -2499,7 +2858,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_end(buf)
         nl + 4
       }
-      else if fname == "Map::has_key" || fname == "map_has" {
+      // #1861: `Map::has` is the same operation under a second spelling -- the
+      // linear arm is literally `fname == "Map::has_key" || fname == "Map::has"`.
+      // It was a `gc-unported` row only because this alias was missing here,
+      // not because anything was unimplemented.
+      else if fname == "Map::has_key" || fname == "map_has" || fname == "Map::has" {
         let (eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
         let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         nl = ce(buf, Array::get(args, 1), local_names, nl, ld)

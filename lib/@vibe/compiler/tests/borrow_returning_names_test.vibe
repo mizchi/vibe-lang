@@ -1,0 +1,73 @@
+//# #1915 regression: compute_borrow_returning_names vs bare-ident branch
+//# tails. The #707 fallback accepted ANY bare ident inside an if/match branch
+//# tail as "safe to never drop" (designed for nullary-ctor sentinels like
+//# TEof), but the same shape is also the most common owned-return in the
+//# codebase (`let out: Array[Int] = []; ... if c { out } else { out }`), and
+//# a borrow-returning classification makes every caller skip the scope-end
+//# drop of an owned result -- one leaked object per call. The ident is now
+//# resolved through the wrapper-spine `let` bindings; only provably-owned
+//# bindings reject the function, everything ambiguous keeps the fallback.
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import @vibe/compiler/perceus {
+  compute_borrow_returning_names
+}
+
+fn borrow_set_of(src: String) -> Array[String] with Exception {
+  compute_borrow_returning_names(parse_program(lex(src)))
+}
+
+fn contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "builder returned through if branches is not borrow-returning" {
+  let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(out, i)\n    i = i + 1\n  }\n  if n >= 0 {\n    out\n  } else {\n    out\n  }\n}\n"
+  inspect(contains(borrow_set_of(src), "make"), "false")
+}
+
+test "owned-call binding returned through if branches is not borrow-returning" {
+  let src = "fn helper(n: Int) -> Array[Int] {\n  [1, 2, 3]\n}\n\nfn make(n: Int) -> Array[Int] {\n  let out = helper(n)\n  if n >= 0 {\n    out\n  } else {\n    out\n  }\n}\n"
+  inspect(contains(borrow_set_of(src), "make"), "false")
+}
+
+test "sentinel fallback around a borrowed access stays borrow-returning" {
+  // The #707 peek shape: a bounds-check guard around Array::get with a bare
+  // nullary-ctor identifier as the out-of-range fallback. The ident does not
+  // resolve to a spine binding, so the safe fallback must survive.
+  let src = "enum Tok {\n  TEof;\n  TInt(Int)\n}\n\nfn peek(tokens: Array[Tok], pos: Int) -> Tok {\n  if pos < Array::length(tokens) {\n    Array::get(tokens, pos)\n  } else {\n    TEof\n  }\n}\n"
+  inspect(contains(borrow_set_of(src), "peek"), "true")
+}
+
+test "mut binding reassigned to a view stays borrow-returning" {
+  // A `let mut` target is never resolved (its final value is flow-dependent);
+  // rejecting it here would make callers drop a genuinely borrowed result.
+  let src = "fn pick(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  let mut out = Array::get(a, 0)\n  if i > 0 {\n    out = Array::get(a, i)\n  } else {\n    ()\n  }\n  if i >= 0 {\n    out\n  } else {\n    out\n  }\n}\n"
+  inspect(contains(borrow_set_of(src), "pick"), "true")
+}
+
+test "borrowed-call binding returned through if branches stays borrow-returning" {
+  let src = "fn head(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  let v = Array::get(a, i)\n  if i >= 0 {\n    v\n  } else {\n    v\n  }\n}\n"
+  inspect(contains(borrow_set_of(src), "head"), "true")
+}
+
+test "MutList::get binding returned through if branches stays borrow-returning" {
+  // #1932 review: the `known` seed must carry the same builtins
+  // is_borrow_ret_fname hardcodes -- MutList::get was missing, which would
+  // classify this binding owned and make RC callers drop an interior view.
+  let src = "fn head(l: Array[Array[Int]], i: Int) -> Array[Int] {\n  let v = MutList::get(l, i)\n  if i >= 0 {\n    v\n  } else {\n    v\n  }\n}\n"
+  inspect(contains(borrow_set_of(src), "head"), "true")
+}

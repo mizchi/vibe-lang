@@ -22,5 +22,10 @@ VIBE_ARCH_LINT_PROJECT_ROOT="$PROJECT_ROOT" \
   VIBE_ARCH_LINT_ALLOWLIST="$ARCH_ALLOWLIST" \
   bash "$SCRIPT_DIR/lint_architecture_debt.sh"
 VIBE_LOCK_CHECK_ROOT="$STAGED_ROOT" bash "$SCRIPT_DIR/check_lock_clean.sh"
+# Docs cite file paths; files move. Run this against the staged tree so a
+# commit that renames a file and its citation together still passes, and one
+# that renames only the file does not.
+VIBE_DOC_CITATION_DOCS_ROOT="$STAGED_ROOT" \
+  bash "$SCRIPT_DIR/check_doc_path_citations.sh"
 
 echo "pre-commit: review-derived lint gates passed"
