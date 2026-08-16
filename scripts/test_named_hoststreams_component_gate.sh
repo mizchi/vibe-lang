@@ -100,9 +100,9 @@ echo "[named-hoststreams-component-gate] compiler: $COMPILER"
 echo "[named-hoststreams-component-gate] runner: $RUNNER"
 
 compile_fixture() {
-  local src="$1" out="$2"
+  local src="$1" out="$2" rc_mode="${3:-1}"
   rm -f "$out" "$out.diag"
-  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw VIBE_RC="$rc_mode" \
     bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
     "$COMPILER" "$src" "$out" run >/dev/null \
     || { echo "named hoststreams component gate FAILED: $src did not compile: $(cat "$out.diag" 2>/dev/null)" >&2; exit 1; }
@@ -138,8 +138,14 @@ let run: () -> Int with Async = () -> {
 EOF
 
 COMPONENT="$OUT_DIR/stream_sum.component.wasm"
-compile_fixture "$SRC" "$COMPONENT"
+compile_fixture "$SRC" "$COMPONENT" 1
 check_component_header "$COMPONENT"
+
+# #1930: the adapter consumes the compiled core's published value ABI. Before
+# the fix it always shifted as if RC were on, so RC=0 silently returned 84.
+RC0_COMPONENT="$OUT_DIR/stream_sum.rc0.component.wasm"
+compile_fixture "$SRC" "$RC0_COMPONENT" 0
+check_component_header "$RC0_COMPONENT"
 
 WIT="$OUT_DIR/stream_sum.wit"
 wasm-tools component wit "$COMPONENT" >"$WIT" 2>/dev/null \
@@ -153,16 +159,24 @@ if grep -Eq "^[[:space:]]*import get-future:" "$WIT"; then
 fi
 echo "[named-hoststreams-component-gate] wit: body is a stream<u8> import, no future machinery"
 
+run_stream_case() {
+  local label="$1" component="$2" stream_spec="$3" log="$4"
+  if ! VIBE_ASYNC_STREAMS="$stream_spec" timeout 60 "$RUNNER" "$component" >"$log" 2>&1; then
+    echo "named hoststreams component gate FAILED: $label did not exit 0" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+  local got
+  got="$(cat "$log")"
+  [ "$got" = "42" ] \
+    || { echo "named hoststreams component gate FAILED: $label expected 42, got: $got" >&2; exit 1; }
+}
+
 RESULT_LOG="$OUT_DIR/run.stream.log"
-if ! VIBE_ASYNC_STREAMS="body=10|15|17" timeout 60 "$RUNNER" "$COMPONENT" >"$RESULT_LOG" 2>&1; then
-  echo "named hoststreams component gate FAILED: viberun did not exit 0" >&2
-  cat "$RESULT_LOG" >&2
-  exit 1
-fi
-GOT="$(cat "$RESULT_LOG")"
-[ "$GOT" = "42" ] \
-  || { echo "named hoststreams component gate FAILED: expected 42 (10+15+17 to end of stream), got: $GOT" >&2; exit 1; }
-echo "[named-hoststreams-component-gate] stream path: 42 (all bytes delivered, end of stream recognized)"
+run_stream_case "RC=1 eager stream" "$COMPONENT" "body=10|15|17" "$RESULT_LOG"
+RC0_RESULT_LOG="$OUT_DIR/run.stream.rc0.log"
+run_stream_case "RC=0 eager stream" "$RC0_COMPONENT" "body=10|15|17" "$RC0_RESULT_LOG"
+echo "[named-hoststreams-component-gate] stream path: RC=1/0 both returned 42 (core/component ABI parity)"
 
 # --- the `for` surface (#1341) ------------------------------------------------
 # ADR-0089 D3's first connection item: `for b in <host stream>` instead of the
@@ -296,20 +310,16 @@ echo "[named-hoststreams-component-gate] projected for path: 42 (h.s reads bytes
 DELAY_MS="${VIBE_NAMED_HOSTSTREAMS_GATE_DELAY_MS:-60}"
 DELAYED_LOG="$OUT_DIR/run.stream.delayed.log"
 START_NS=$(date +%s%N)
-if ! VIBE_ASYNC_STREAMS="body=10|15|17@${DELAY_MS}" timeout 60 "$RUNNER" "$COMPONENT" >"$DELAYED_LOG" 2>&1; then
-  echo "named hoststreams component gate FAILED: delayed run did not exit 0 (park/unjoin or inline-close path)" >&2
-  cat "$DELAYED_LOG" >&2
-  exit 1
-fi
+run_stream_case "RC=1 parked stream" "$COMPONENT" "body=10|15|17@${DELAY_MS}" "$DELAYED_LOG"
 ELAPSED_MS=$(( ( $(date +%s%N) - START_NS ) / 1000000 ))
-[ "$(cat "$DELAYED_LOG")" = "42" ] \
-  || { echo "named hoststreams component gate FAILED: delayed run expected 42, got: $(cat "$DELAYED_LOG")" >&2; exit 1; }
 MIN_MS=$(( 3 * DELAY_MS * 8 / 10 ))
 if [ "$ELAPSED_MS" -lt "$MIN_MS" ]; then
   echo "named hoststreams component gate FAILED: returned in ${ELAPSED_MS}ms with a ${DELAY_MS}ms per-byte delay -- the reads cannot have genuinely parked" >&2
   exit 1
 fi
-echo "[named-hoststreams-component-gate] delayed path: 42 in ${ELAPSED_MS}ms (>= ${MIN_MS}: reads parked; inline close latched)"
+RC0_DELAYED_LOG="$OUT_DIR/run.stream.rc0.delayed.log"
+run_stream_case "RC=0 parked stream" "$RC0_COMPONENT" "body=10|15|17@${DELAY_MS}" "$RC0_DELAYED_LOG"
+echo "[named-hoststreams-component-gate] delayed path: RC=1/0 both returned 42; RC=1 took ${ELAPSED_MS}ms (>= ${MIN_MS}: reads parked; inline close latched)"
 
 # --- the mixed future + stream fixture ---------------------------------------
 MIXED_SRC="$OUT_DIR/mixed.vibe"

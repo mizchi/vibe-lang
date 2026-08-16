@@ -557,6 +557,62 @@ fn parse_core_imports(core_wasm: Bytes, out_module_names: Array[String], out_fun
   }
 }
 
+/// Read the value representation published by linked_compile. This is an ABI
+/// contract, not a hint: absence, malformed payloads, unsupported values, and
+/// conflicting declarations all fail before composition instead of guessing
+/// a convention and producing a plausible wrong value.
+fn comp_core_tag_mode(core_wasm: Bytes) -> Int with Exception {
+  let len = Bytes::length(core_wasm)
+  let mut i = 8
+  let mut found = 0 - 1
+  while i < len {
+    let sec_id = Bytes::get(core_wasm, i)
+    i = i + 1
+    let (sec_size, next_i) = read_uleb(core_wasm, i)
+    i = next_i
+    let sec_end = i + sec_size
+    if sec_end > len {
+      throw("component: malformed core section while reading vibe.tagmode")
+    } else {
+      if sec_id == 0 && read_name_string(core_wasm, i) == "vibe.tagmode" {
+        let payload = skip_name(core_wasm, i)
+        if payload + 4 != sec_end {
+          throw("component: malformed vibe.tagmode section (expected one i32 payload)")
+        } else {
+          let mode = Bytes::get(core_wasm, payload)|
+          (Bytes::get(core_wasm, payload + 1)<<8)|
+          (Bytes::get(core_wasm, payload + 2)<<16)|
+          (Bytes::get(core_wasm, payload + 3)<<24)
+          if mode != 0 && mode != 1 {
+            throw("component: unsupported vibe.tagmode {mode} (expected 0 or 1)")
+          } else if found >= 0 {
+            throw("component: duplicate or conflicting vibe.tagmode sections")
+          } else {
+            found = mode
+          }
+        }
+      } else {
+        ()
+      }
+      i = sec_end
+    }
+  }
+  if found < 0 {
+    throw("component: core is missing required vibe.tagmode section")
+  } else {
+    found
+  }
+}
+
+fn comp_require_tag_mode(core_wasm: Bytes, expected: Int, context: String) -> Unit with Exception {
+  let actual = comp_core_tag_mode(core_wasm)
+  if actual != expected {
+    throw("\{context}: core vibe.tagmode is \{actual}, expected \{expected}")
+  } else {
+    ()
+  }
+}
+
 fn build_import_plan(core_wasm: Bytes, out_import_names: Array[String], out_binding_func_names: Array[String], out_binding_func_indices: Array[Int], out_unique_module_names: Array[String], out_module_binding_counts: Array[Int], out_comp_params: Array[Array[Int]], out_comp_param_names: Array[Array[String]], out_comp_results: Array[Array[Int]]) -> Int {
   let imp_module_names = array_empty()
   let imp_func_names = array_empty()
@@ -5468,7 +5524,28 @@ fn comp_hostfuture_import_label(core_name: String) -> String {
 /// handle with no started read, non-FUTURE_READ wake) trap with
 /// `unreachable`: the adapter runs inside the lifted task, so the
 /// fixed-shape's task.return diagnostic bands are not available here.
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool) -> Bytes {
+/// Complete one scalar/handle conversion at the component boundary. Keeping
+/// the shift in these two helpers prevents a new return or handle path from
+/// spelling a subtly different value convention.
+fn comp_emit_encode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
+  if tag_mode == 1 {
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+  } else {
+    ()
+  }
+}
+
+fn comp_emit_decode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
+  if tag_mode == 1 {
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  } else {
+    ()
+  }
+}
+
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, tag_mode: Int) -> Bytes {
   // ADR-0089 Decision 3 (#1218): generalized again -- K host futures AND L
   // host streams (K + L >= 1, either may be 0). The future half is
   // byte-identical for L = 0 (every stream-specific type/import/func is
@@ -5743,11 +5820,10 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(get_body, 1)
     emit_i32_add(get_body)
     emit_i32_store(get_body, 2, 0)
-    // return the handle, tagged (i64.extend_i32_u = 0xad, << 1)
+    // Return the handle in the compiled core's value convention.
     emit_local_get(get_body, 1)
     bytebuf_push(get_body, 173)
-    emit_i64_const(get_body, 1)
-    emit_i64_shl(get_body)
+    comp_emit_encode_i64_value(get_body, tag_mode)
     bytebuf_push(get_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(get_body))
     bytebuf_push_buf(code_sec, get_body)
@@ -5764,10 +5840,9 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   leb128_encode_u32(wait_body, 1)
   leb128_encode_u32(wait_body, 5)
   bytebuf_push(wait_body, 127)
-  // fut = wrap(param >> 1); addr = HF_VALUE_BASE + fut * 4
+  // Decode the handle using the compiled core's value convention.
   emit_local_get(wait_body, 0)
-  emit_i64_const(wait_body, 1)
-  emit_i64_shr_s(wait_body)
+  comp_emit_decode_i64_value(wait_body, tag_mode)
   emit_i32_wrap_i64(wait_body)
   emit_local_set(wait_body, 1)
   emit_local_get(wait_body, 1)
@@ -5829,12 +5904,11 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_i32_add(wait_body)
   emit_i32_const(wait_body, 0)
   emit_i32_store(wait_body, 2, 0)
-  // return the value that landed in THIS handle's read buffer, tagged
+  // Return the value in the compiled core's value convention.
   emit_local_get(wait_body, 5)
   emit_i32_load(wait_body, 2, 0)
   bytebuf_push(wait_body, 173)
-  emit_i64_const(wait_body, 1)
-  emit_i64_shl(wait_body)
+  comp_emit_encode_i64_value(wait_body, tag_mode)
   bytebuf_push(wait_body, 11)
   if nnames > 0 {
     leb128_encode_u32(code_sec, Bytes::length(wait_body))
@@ -5881,7 +5955,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     // cleared when the readable end is dropped, so a fresh handle should
     // never see a stale one -- but the handle-table reuse discipline is the
     // runtime's, not ours, and a stale latch would silently truncate the
-    // new stream to zero bytes), then return the handle, tagged.
+    // new stream to zero bytes), then return the handle in the core's ABI.
     emit_local_get(sget_body, 1)
     emit_i32_const(sget_body, 2)
     emit_i32_shl(sget_body)
@@ -5891,8 +5965,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_store(sget_body, 2, 0)
     emit_local_get(sget_body, 1)
     bytebuf_push(sget_body, 173)
-    emit_i64_const(sget_body, 1)
-    emit_i64_shl(sget_body)
+    comp_emit_encode_i64_value(sget_body, tag_mode)
     bytebuf_push(sget_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(sget_body))
     bytebuf_push_buf(code_sec, sget_body)
@@ -5914,12 +5987,11 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     leb128_encode_u32(sread_body, 1)
     leb128_encode_u32(sread_body, 5)
     bytebuf_push(sread_body, 127)
-    // str = wrap(param >> 1); cap; addr = HS_VALUE_BASE + str * 4 (the
+    // Decode the handle using the core's ABI; cap; addr = HS_VALUE_BASE + str * 4 (the
     // stream band -- disjoint from the futures' value/state bands, see
     // comp_hs_value_base)
     emit_local_get(sread_body, 0)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shr_s(sread_body)
+    comp_emit_decode_i64_value(sread_body, tag_mode)
     emit_i32_wrap_i64(sread_body)
     emit_local_set(sread_body, 1)
     emit_local_get(sread_body, 1)
@@ -5956,8 +6028,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(sread_body, 1)
     emit_call(sread_body, sdrop_idx)
     emit_i64_const(sread_body, 0 - 1)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shl(sread_body)
+    comp_emit_encode_i64_value(sread_body, tag_mode)
     emit_return(sread_body)
     emit_end(sread_body)
     // st = stream.read(str, addr, 1)
@@ -6021,15 +6092,14 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(sread_body, 1)
     emit_call(sread_body, sdrop_idx)
     emit_i64_const(sread_body, 0 - 1)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shl(sread_body)
+    comp_emit_encode_i64_value(sread_body, tag_mode)
     emit_return(sread_body)
     emit_end(sread_body)
     // a byte landed at THIS handle's slot. If it arrived with the CLOSED
     // code (the INLINE terminal shape -- a per-item producer hands over its
     // last byte and drops in one completion), latch the closed flag but do
     // NOT drop the readable end yet: the next read settles the latch (see
-    // comp_hs_closed_base). Then return the byte, tagged.
+    // comp_hs_closed_base). Then return the byte in the core's ABI.
     emit_local_get(sread_body, 2)
     emit_i32_const(sread_body, 15)
     emit_i32_and(sread_body)
@@ -6047,8 +6117,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_local_get(sread_body, 5)
     emit_i32_load8_u(sread_body, 0, 0)
     bytebuf_push(sread_body, 173)
-    emit_i64_const(sread_body, 1)
-    emit_i64_shl(sread_body)
+    comp_emit_encode_i64_value(sread_body, tag_mode)
     bytebuf_push(sread_body, 11)
     leb128_encode_u32(code_sec, Bytes::length(sread_body))
     bytebuf_push_buf(code_sec, sread_body)
@@ -6076,8 +6145,7 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     leb128_encode_u32(sclose_body, 1)
     bytebuf_push(sclose_body, 127)
     emit_local_get(sclose_body, 0)
-    emit_i64_const(sclose_body, 1)
-    emit_i64_shr_s(sclose_body)
+    comp_emit_decode_i64_value(sclose_body, tag_mode)
     emit_i32_wrap_i64(sclose_body)
     emit_local_set(sclose_body, 1)
     emit_local_get(sclose_body, 1)
@@ -6550,6 +6618,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
+  let tag_mode = comp_core_tag_mode(main_core_wasm)
   let buf = bytebuf_new()
   emit_component_header(buf)
   // Component type indices, in emission order: the future pair (value type
@@ -6595,7 +6664,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, tag_mode))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   let memhost_inst = 0
@@ -7979,6 +8048,7 @@ fn comp_generate_serve_stream_adapter_module() -> Bytes {
 ///                  8 = [export]$root, 9 = trampoline
 ///   component type 0 = stream u8, 1 = the async functype
 export fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
+  comp_require_tag_mode(core_wasm, 0, "component(async-stream-handler)")
   let string_param_count = Array::length(param_names) - 1
   comp_check_stream_handler_target(core_wasm, target_func_name, string_param_count)
   let buf = bytebuf_new()

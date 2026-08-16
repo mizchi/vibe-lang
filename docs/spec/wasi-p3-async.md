@@ -1586,6 +1586,40 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
 > silently doubled, which is how "abc" came back as `sum=588` instead of 294.
 > The serve lane's trampoline and adapter are both untagged.
 
+#### 3.18.5 Core value ABI at component adapter boundaries (ADR-0105, #1930)
+
+The core function type `(i64) -> i64` does not identify how a vibe `Int` is
+represented. RC builds use one-bit tagged values (`n << 1`), while non-RC
+builds use plain i64 values. Applying the wrong convention does not necessarily
+trap: a stream byte can be doubled and still look valid.
+
+A core that imports a host-future getter or named host-stream getter MUST
+contain one `vibe.tagmode` custom section. A serve core whose validated,
+exported `handler` has the four-parameter `(String, String, String,
+HostStream) -> String with Async` signature MUST also contain the section,
+even when the handler never reads or closes its `HostStream` parameter and
+the file exports other Async helpers. An unrelated HostStream-typed export or
+ordinary/library entry does not select this adapter and emits no section, even
+when it calls the raw stream-read builtin. The payload is exactly one
+little-endian i32:
+
+- `0`: plain i64 values (`VIBE_RC=0`)
+- `1`: one-bit tagged values (`VIBE_RC=1`)
+
+The section is a required ABI declaration. A composer MUST reject a missing,
+truncated, malformed, unsupported, or conflicting declaration. It MUST NOT
+infer a default from the import name, function signature, or compiler version.
+
+The shared host-future/named-stream adapter accepts modes 0 and 1. It decodes
+every handle and encodes every returned future value, stream byte, and EOS
+sentinel according to that mode. The serve stream-parameter adapter accepts
+only mode 0 because its handler core is compiled through the non-RC serve
+pipeline; mode 1 is a composition error.
+
+Core modules that do not select either adapter omit `vibe.tagmode`. This keeps
+ordinary wasm byte-identical and prevents adapter-only metadata from becoming
+a global output-size cost.
+
 ### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
 
 `tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the
