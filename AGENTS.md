@@ -600,6 +600,46 @@ pkf run test-local -- --profile scheduled   # 全テスト (データ蓄積用)
 
 `pkf run test` は全テスト実行。commit 前の最終確認や CI 用。
 
+### Which compiler answered? — `vibe test` runs on the seed by default
+
+`scripts/vibe_test.sh` compiles with the **committed seed**
+(`cli_wasm="${VIBE_TEST_CLI_WASM:-$seed}"`), not with the compiler sources in
+your checkout. That default is right for library code and wrong for a change to
+the compiler, and **the two are indistinguishable from the result** — the file
+compiles, the tests run, and you get a confident answer about a compiler that
+does not contain your change.
+
+A measured instance, one file, `x - y` through a labeled-argument lambda:
+
+| compiler | result |
+|---|---:|
+| committed seed | 0 — a bug fixed in #1925 |
+| stage2 from the same checkout | -7 — the still-open half of #1899 |
+
+Neither run reports an error. So: **when you are testing a compiler change, pass
+the compiler explicitly.**
+
+```bash
+VIBE_TEST_CLI_WASM=_build/selfhost/generations/<gen>_$(git rev-parse --short HEAD)/stage2.wasm \
+  bash scripts/vibe_test.sh <file>
+```
+
+`vibe_test.sh` now prints a stderr notice whenever the checkout is ahead of the
+seed under `lib/@vibe/compiler|cli` and no explicit compiler was given
+(suppressed by setting `VIBE_TEST_CLI_WASM`, or by
+`VIBE_TEST_QUIET_COMPILER_NOTE=1`). Pinned by `scripts/vibe_test_smoke.sh`
+(`pkf run test-vibe-test`).
+
+Two related rules, both learned the same way:
+
+- **Establish the baseline before changing anything.** Run the failing case
+  first and confirm it reproduces *through the compiler you are about to
+  rebuild*. If it does not reproduce, you are measuring the wrong compiler, not
+  looking at a fixed bug.
+- **Never test argument order with a commutative operator.** `x + y` gives the
+  right answer whether or not arguments were reordered; use `x - y`. A
+  reordering bug survived a "fix verified" claim this way (#1899).
+
 ## Before Commit
 
 ```bash
