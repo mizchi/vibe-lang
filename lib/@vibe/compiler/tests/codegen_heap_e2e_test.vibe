@@ -61,6 +61,21 @@ test "heap e2e: captured let mut lambda reassignment then call" {
   assert_result(src, "main", "captured_mut_lambda", "6")
 }
 
+// #1967: `continue` in a collecting `for-in` used to `br` to the loop
+// header before `i = i + 1`, so an even element retried forever.
+// Increment after bind / before body so skip does not re-visit the same index.
+// Packed as 1 + 3*10 + 5*100 so a wrong collect (all five, or hang) cannot
+// accidentally match.
+test "heap e2e: for-in continue skips even collected values" {
+  let src = "let main: () -> Int = () -> {\n  let xs = for x in [1, 2, 3, 4, 5] {\n    if x % 2 == 0 { continue } else { }\n    x\n  }\n  Array::get(xs, 0) + Array::get(xs, 1) * 10 + Array::get(xs, 2) * 100\n}"
+  assert_result_all_backends(src, "main", "forin_continue_collect", "531")
+}
+
+test "heap e2e: for-in continue as a statement still advances" {
+  let src = "let main: () -> Int = () -> {\n  let mut n = 0\n  for x in [1, 2, 3, 4, 5] {\n    if x % 2 == 0 { continue } else { }\n    n = n + x\n  }\n  n\n}"
+  assert_result_all_backends(src, "main", "forin_continue_stmt", "9")
+}
+
 test "heap e2e: tuple field access" {
   let src = "let main: () -> Int = () -> {\n  let t = (3, 4)\n  t.0 + t.1\n}"
   assert_result(src, "main", "tuple", "7")
