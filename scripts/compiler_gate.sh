@@ -4708,6 +4708,79 @@ done
 rm -rf "$gcrgdir"
 echo "[compiler-gate] wasm-gc region ok (linear + gc snapshots; copy-out, nested, in-lambda)"
 
+# 40h-6b. ADR-0090 tier 2 (#1262): the ARENA on the gc lane -- and this section
+#         exists because the value assertions above cannot see it fail.
+#
+#         Measured, not asserted by value: an arena that quietly stops
+#         releasing still returns every correct number, so 40h-6 and
+#         region_arena_release_ok both stay green while the reclamation is
+#         gone. That is not hypothetical -- the first wiring of this arena was
+#         correct and reclaimed NOTHING (1,635,208 B, i.e. the pre-arena
+#         figure) because MutList storage came from the segment while every
+#         doubling regrow buffer still went to the main heap. Only this
+#         measurement caught it.
+#
+#         gc is direct-source-compile only, so no VIBE_FS_COMPILE here (it
+#         would silently force the linear lane -- see docs/wasm/
+#         code-size-linear-vs-gc.md).
+echo "[compiler-gate] 40h-6b/40 wasm-gc region arena reclamation (#1262)"
+gcardir="_build/_gate_gc_arena"
+rm -rf "$gcardir"; mkdir -p "$gcardir"
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_arena_bounded.vibe" "$gcardir/bounded.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$gcardir/bounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_arena_bounded.vibe did not compile on the gc backend (#1262)" >&2
+  cat "$gcardir/bounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! gcar_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcardir/bounded.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_arena_bounded.vibe got the wrong value on the gc backend (#1262)" >&2
+  echo "$gcar_out" >&2
+  exit 1
+fi
+gcar_delta="$(node scripts/region_arena_heap_delta.mjs "$gcardir/bounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from the gc region_arena_bounded.wasm (#1262)" >&2
+  exit 1
+}
+# Same bound as the linear section, and deliberately just as loose: it only
+# has to separate "releases" from "does not". Measured 3,208 B with the arena
+# against 1,635,208 B without, so anything near the bound means the regrow
+# lane or the watermark restore regressed.
+if [ "$gcar_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 gc regions grew the main bump heap by $gcar_delta B (want < 100000; ~3208 with the arena, 1635208 without) -- the gc arena stopped releasing (#1262)" >&2
+  exit 1
+fi
+# The Bytes half, measured separately. Not redundant with the Array probe
+# above: the two have INDEPENDENT regrow generators (gen_arr_push_body vs
+# gen_bytes_push_body / gen_bytes_append_body), so wiring one to the arena and
+# leaving the other on -1 is a real state -- and was the actual state of this
+# branch until review caught it (182,408 B here while the Array probe already
+# read 3,208 B).
+env -u VIBE_FS_COMPILE VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/region_bytes_arena_bounded.vibe" "$gcardir/bbounded.wasm" __no_entry__ >/dev/null 2>&1
+if [ ! -s "$gcardir/bbounded.wasm" ]; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe did not compile on the gc backend (#1262)" >&2
+  cat "$gcardir/bbounded.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! gcarb_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$gcardir/bbounded.wasm" 2>&1)"; then
+  echo "[compiler-gate] FAIL: region_bytes_arena_bounded.vibe got the wrong value on the gc backend (#1262)" >&2
+  echo "$gcarb_out" >&2
+  exit 1
+fi
+gcarb_delta="$(node scripts/region_arena_heap_delta.mjs "$gcardir/bbounded.wasm")" || {
+  echo "[compiler-gate] FAIL: could not read __heap_ptr from the gc region_bytes_arena_bounded.wasm (#1262)" >&2
+  exit 1
+}
+if [ "$gcarb_delta" -gt 100000 ]; then
+  echo "[compiler-gate] FAIL: 200 gc Bytes regions grew the main bump heap by $gcarb_delta B (want < 100000; ~8000 with the arena, 182408 with the regrow lane off) -- the gc Bytes arena stopped releasing (#1262)" >&2
+  exit 1
+fi
+rm -rf "$gcardir"
+echo "[compiler-gate] wasm-gc region arena ok (reclamation measured: Array ${gcar_delta} B, Bytes ${gcarb_delta} B over 200 regions)"
+
 # 40h-8. #1262: `Map::delete` on the gc lane.
 #
 #        Unlike the region / MutList / MutBytes lowerings, this one is not a
