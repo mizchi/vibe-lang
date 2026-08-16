@@ -13,7 +13,7 @@ import ./dispatch.vibe {
 }
 
 import ./entry.vibe {
-  run_cli_main_with_args
+  format_check_report, run_cli_main_with_args
 }
 
 //# Effects
@@ -673,4 +673,97 @@ test "selfhost cli check command writes profile tsv" {
   assert(String::contains(profile, "stage\telapsed_ms\telapsed_us"))
   assert(String::contains(profile, "type\t0\t0"))
   assert(String::contains(profile, "total\t0\t0"))
+}
+
+/// #1888: check throws a String payload (`Throw(e) => e` is String, same as
+/// the other dispatch_test handlers). `run_cli_main_with_args` is the
+/// production wrapper that used to drop that payload and exit 1 silently.
+test "cli_main nesting: check usage throw is a printable String and exits 1" {
+  let thrown = handle {
+    let _ = selfhost_cli_check_args([
+      "check"
+    ])
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(thrown == "check: expected <file...>")
+  let status = run_cli_main_with_args([
+    "check"
+  ])
+  assert(status == 1)
+}
+
+/// Same framing as `runtime/vibe` `emit_check_diagnostics`: `error: ` on a
+/// diagnostic start, `hint:` / leading whitespace indented so
+/// `grep -c '^error: '` stays an exact count.
+test "format_check_report prefixes diagnostic starts and indents hint continuations" {
+  assert(format_check_report("type mismatch") == "error: type mismatch")
+  assert(format_check_report("parse a\nparse b") == "error: parse a\nerror: parse b")
+  assert(format_check_report("effect row mismatch\nhint: add 'with Env' to 'f'") == "error: effect row mismatch\n  hint: add 'with Env' to 'f'")
+  assert(format_check_report("msg\n  more") == "error: msg\n    more")
+}
+
+/// #1888: the reported hole — type error through the production check path.
+test "cli_main nesting: check type error throws a diagnostic and exits 1" {
+  let main_path = "/tmp/vibe_selfhost_cli_check_type_error.vibe"
+  let source = "fn f() -> Int {\n  \"s\"\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let thrown = handle {
+    let _ = selfhost_cli_check_args([
+      "check",
+      main_path
+    ])
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(thrown != "OK")
+  assert(String::length(thrown) > 0)
+  let report = format_check_report(thrown)
+  assert(String::starts_with(report, "error: "))
+  assert(!String::starts_with(report, "error: error:"))
+  let status = run_cli_main_with_args([
+    "check",
+    main_path
+  ])
+  assert(status == 1)
+}
+
+/// #1888 review: a thrown check diagnostic that carries a `hint:`
+/// continuation must stay one `error: ` start (the installed-launcher
+/// contract pinned by scripts/test_vibe_cli_install.sh).
+test "cli_main nesting: check effect-row diagnostic frames hint as a continuation" {
+  let main_path = "/tmp/vibe_selfhost_cli_check_effect_hint.vibe"
+  let source = "fn leaky() -> String {\n  Env::get(\"HOME\")\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let thrown = handle {
+    let _ = selfhost_cli_check_args([
+      "check",
+      main_path
+    ])
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(thrown, "effect row mismatch"))
+  assert(String::contains(thrown, "hint: "))
+  let report = format_check_report(thrown)
+  assert(String::starts_with(report, "error: "))
+  assert(String::contains(report, "\n  hint: "))
+  let lines = String::split(report, "\n")
+  let mut error_starts = 0
+  let mut i = 0
+  while i < Array::length(lines) {
+    if String::starts_with(Array::get(lines, i), "error: ") {
+      error_starts = error_starts + 1
+    }
+    i = i + 1
+  }
+  assert(error_starts == 1)
+  let status = run_cli_main_with_args([
+    "check",
+    main_path
+  ])
+  assert(status == 1)
 }
