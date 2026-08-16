@@ -27,16 +27,17 @@ set -euo pipefail
 #   empty       a zero-length body ends the stream immediately: the reader
 #               must see end-of-stream on its FIRST read, not hang.
 #   isolation   two requests in flight at once each get their own body back.
-#
-# WHAT THIS GATE DOES NOT COVER, and why the line is here rather than in an
-# assertion (#1924): every request above delivers its body BUFFERED, so each
-# `stream.read` completes eagerly and the adapter's BLOCKED branch never runs.
-# A chunked upload that makes reads actually park, and a handler that stops
-# reading before end of stream, both trap in the guest today --
-# `uninitialized element` inside the injected `__hs_next`, which is main's CPS
-# lowering and not this adapter (the adapter has no tables). Both reproduce
-# against the committed emitter, so they are a pre-existing gap in the lane,
-# not something this gate can assert green. #1924 has the two reproductions.
+#   parking     a CHUNKED upload, delivered a byte at a time, so `stream.read`
+#               returns BLOCKED and the adapter's park branch actually runs.
+#               Every buffered case above completes eagerly and never enters it.
+#   parity      the same body under request strings of EVERY length mod 8.
+#               This is the one that looks pointless and is not: the lifted
+#               method/url/headers pass through the trampoline's `cabi_realloc`,
+#               which writes back MAIN's `__heap_ptr`, and vibe tags pointers in
+#               their low bits. An allocator that left that pointer odd
+#               corrupted the handler's first heap object -- so the lane worked
+#               or trapped depending on how long the URL was (#1924). A gate
+#               that only ever sends one URL cannot see that at all.
 #
 # Skips cleanly when cargo / wasm-tools / wac / wasmtime / curl are missing,
 # and fails instead under VIBE_P3_GATE_REQUIRE_TOOLS=1, matching the other P3
@@ -273,15 +274,67 @@ for n in a b; do
 done
 echo "[serve-body] two concurrent buffered requests each echo their own body"
 
+# The parking path. Buffered uploads complete every read eagerly, so nothing
+# above ever reaches the adapter's BLOCKED branch; a chunked upload fed a byte
+# at a time does. `-T -` rather than `--data-binary @-`: curl reads a
+# `--data-binary` body to the end before sending it, to compute Content-Length,
+# which buffers away the very thing under test.
+slow_feed() {
+  local text="$1" i=0
+  while [ "$i" -lt "${#text}" ]; do
+    printf '%s' "${text:$i:1}"
+    i=$((i + 1))
+    sleep 0.05
+  done
+}
+SLOW_BODY="0123456789"
+printf '\n%s' "$SLOW_BODY" >"$OUT_DIR/want-slow.bin"
+slow_feed "$SLOW_BODY" | curl -sS --max-time 60 -o "$OUT_DIR/got-slow.bin" -X POST -T - \
+  "http://$ADDR/echo" || true
+if ! cmp -s "$OUT_DIR/want-slow.bin" "$OUT_DIR/got-slow.bin"; then
+  echo "[serve-body] FAILED: a chunked body whose reads park did not echo byte-for-byte" >&2
+  cmp "$OUT_DIR/want-slow.bin" "$OUT_DIR/got-slow.bin" >&2 || true
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+echo "[serve-body] a chunked body whose reads park echoes byte-for-byte"
+
+# Request-string length parity: ONE string varies, by ONE byte per iteration.
+#
+# That is the whole design of this loop, and it is easy to get wrong. Padding
+# the URL and a header together advances the total by two each time, which
+# holds the parity FIXED and turns a sweep that looks like it covers eight
+# residues into one that covers four of the same parity -- it would pass, or
+# fail, uniformly against the pre-#1924 allocator instead of showing both.
+# Only the URL grows here, one byte at a time, so the lifted-string total takes
+# every residue mod 8 of what `cabi_realloc` leaves in `__heap_ptr`.
+for pad in 0 1 2 3 4 5 6 7; do
+  path="echo"
+  [ "$pad" = "0" ] || path="echo$(printf 'a%.0s' $(seq 1 "$pad"))"
+  code="$(curl -sS --max-time 20 -o "$OUT_DIR/got-pad$pad.bin" -w '%{http_code}' -X POST \
+    --data-binary 'abc' "http://$ADDR/$path" 2>&1 || true)"
+  if [ "$code" != "200" ]; then
+    echo "[serve-body] FAILED: url pad $pad returned '$code' (want 200) -- request-string length must not change the answer (#1924)" >&2
+    cat "$SERVE_LOG" >&2 || true
+    exit 1
+  fi
+  if ! cmp -s "$OUT_DIR/want-small.bin" "$OUT_DIR/got-pad$pad.bin"; then
+    echo "[serve-body] FAILED: url pad $pad did not echo its body byte-for-byte (#1924)" >&2
+    cmp "$OUT_DIR/want-small.bin" "$OUT_DIR/got-pad$pad.bin" >&2 || true
+    exit 1
+  fi
+done
+echo "[serve-body] the answer is the same for request strings of every length mod 8"
+
 stop_server
 
 # The other half of the adapter's surface, checked where it can be checked:
 # COMPOSITION. `host_stream_close` lowers to a `vibe.host_stream_close` core
 # import, and a core instance cannot be given fewer bindings than it imports --
 # so before the adapter exported both halves, a handler that stops reading
-# early could not be composed at all. Emitting the component and plugging it is
-# what proves that edge is satisfied; actually SERVING such a handler is
-# blocked on #1924, which is why this stops at the plug.
+# early could not be composed at all. Both are checked: the core really does
+# import the close half, and the handler then serves and answers with exactly
+# the bytes it chose to read.
 CLOSE_SRC="$OUT_DIR/close_handler.vibe"
 cat >"$CLOSE_SRC" <<'HEOF'
 export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
@@ -317,8 +370,22 @@ case "$CLOSE_CORE_WIT" in
     echo "[serve-body] FAILED: the early-closing handler's core does not import vibe.host_stream_close" >&2
     exit 1 ;;
 esac
-wac plug --plug "$CLOSE_COMPONENT" "$ADAPTER" -o "$OUT_DIR/close.serve.wasm"
-wasm-tools validate --features all "$OUT_DIR/close.serve.wasm" >/dev/null
-echo "[serve-body] a handler that closes the body early composes (both adapter halves bound)"
+serve_handler close "$CLOSE_SRC"
+printf '\nabcd' >"$OUT_DIR/want-close.bin"
+close_code="$(curl -sS --max-time 20 -o "$OUT_DIR/got-close.bin" -w '%{http_code}' -X POST \
+  --data-binary 'abcdefghij' "http://$ADDR/echo" || true)"
+if [ "$close_code" != "200" ]; then
+  echo "[serve-body] FAILED: the early-closing handler returned '$close_code' (want 200)" >&2
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$OUT_DIR/want-close.bin" "$OUT_DIR/got-close.bin"; then
+  echo "[serve-body] FAILED: the early-closing handler did not answer with its first 4 bytes" >&2
+  cmp "$OUT_DIR/want-close.bin" "$OUT_DIR/got-close.bin" >&2 || true
+  cat "$SERVE_LOG" >&2 || true
+  exit 1
+fi
+stop_server
+echo "[serve-body] a handler that reads 4 bytes and closes the body composes, serves, and answers abcd"
 
 echo "[serve-body] PASS: vibe serve hands the request body to the handler as a stream (#1540)"

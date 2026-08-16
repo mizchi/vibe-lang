@@ -7243,10 +7243,32 @@ fn comp_generate_bump_realloc_body() -> Bytes {
   bytebuf_push(realloc_body, 107)
   bytebuf_push(realloc_body, 113)
   emit_local_set(realloc_body, 4)
-  // __heap_ptr = p + new_size
+  // __heap_ptr = p + new_size, ROUNDED UP TO 8.
+  //
+  // The rounding is the whole point, not tidiness. This allocator hands out
+  // space in the MAIN module's memory and writes back MAIN's `__heap_ptr`, and
+  // main's own allocator keeps that pointer 8-aligned -- it starts at 80 and
+  // every bump is `(x + 7) & -8`. vibe's value representation depends on that:
+  // pointers carry tags in their low bits (`obj | 1` for the effect-handler
+  // object the suspend lowering builds, a 2-bit tag on values), so an ODD heap
+  // pointer makes `ptr | 1` a no-op and the matching `& -2` hand back
+  // `ptr - 1`. The read that follows lands one byte off and the program
+  // dereferences garbage.
+  //
+  // Leaving `p + new_size` unrounded made that depend on the LENGTH OF THE
+  // LIFTED STRINGS: `vibe serve` lifts method/url/headers through here before
+  // the handler runs, so a request whose strings summed to an odd length
+  // corrupted the handler's first heap object and an even one did not. It
+  // looked like a bug about suspending stream reads (#1924) because a chunked
+  // upload and a buffered one send different `content-length` /
+  // `transfer-encoding` headers -- different lengths, different parity.
   emit_local_get(realloc_body, 4)
   emit_local_get(realloc_body, 3)
   emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 7)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 0 - 8)
+  bytebuf_push(realloc_body, 113)
   bytebuf_push(realloc_body, 36)
   leb128_encode_u32(realloc_body, 0)
   // if (__heap_ptr > memory.size << 16) memory.grow(pages needed)
