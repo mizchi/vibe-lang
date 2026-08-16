@@ -2554,6 +2554,20 @@ fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Arr
 ///
 /// Scope is deliberately small: literals, a bound name, and arithmetic over
 /// them. Anything else is "" -- no claim.
+/// Shadow any outer binding of `name` with an explicit UNKNOWN.
+///
+/// `extend_var_types(.., None)` cannot do this -- it returns `var_types`
+/// unchanged, which is the behaviour being fixed. An empty-string entry is the
+/// masking convention this file already uses (`mask_stale_array_elem`), and it
+/// reads back as unknown here because `dtd_scalar_shape`'s `EIdent` arm returns
+/// the looked-up string as-is.
+fn dtd_mask_var_type(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
+  let out = array_empty()
+  push_all_var_types(out, var_types)
+  Array::push(out, (name, ""))
+  out
+}
+
 fn dtd_scalar_shape(e: Expr, var_types: Array[(String, String)]) -> String {
   match e {
     EInt(_) => "Int",
@@ -2592,7 +2606,26 @@ fn dtd_scalar_shape(e: Expr, var_types: Array[(String, String)]) -> String {
       let inner = if String::length(lty) > 0 {
         extend_var_types(var_types, lname, Some(lty))
       } else {
-        var_types
+        // A value this pass cannot classify must MASK any outer binding of the
+        // same name, not leave it visible. Passing `var_types` through was
+        // strictly worse than claiming nothing (Codex review on PR #1896):
+        //
+        //   let y = "outer"
+        //   for x in [1, 2] { let y = Some(x)
+        //     y }
+        //
+        // resolved the tail `y` to the OUTER String, so the loop got shape
+        // `[String]` and the renderer printed each `Some` as a string --
+        // `[276, 288]`, pointers laid out inside a structurally-rendered
+        // array. Without the outer binding the same body renders `192`, the
+        // old bare pointer. The stale answer is the more dangerous one: it
+        // looks like real output.
+        //
+        // Same hazard `mask_stale_array_elem` handles for the array sentinel,
+        // and the same reason `shape_bind` records even a non-composite: with
+        // `lookup_var_type` returning the LAST match, a shadowed entry stays
+        // the live answer unless something overwrites it.
+        dtd_mask_var_type(var_types, lname)
       }
       dtd_scalar_shape(rest, inner)
     },
