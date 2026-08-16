@@ -1349,7 +1349,11 @@ enum EdpReadQuery {
   RQLiteralNeeds((String, Array[String], Array[String], Int, Array[String]));
   RQTrigger;
   RQHandlesEffect(String);
-  RQNeedingValueArg(Array[String])
+  RQNeedingValueArg(Array[String]);
+  // #1916: does the tree contain any EForIn? Gates forin_discard_pass's
+  // per-statement rebuild without allocating (expr_children-based recursion
+  // allocates a children array per node, which defeats the pass's purpose).
+  RQContainsForIn
 }
 
 fn edp_rq_is_count(q: EdpReadQuery) -> Bool {
@@ -1679,6 +1683,10 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       } else {
         0
       },
+      _ => 0
+    },
+    RQContainsForIn => match e {
+      EForIn(_, _, _, _) => 1,
       _ => 0
     },
     RQNeedingValueArg(names) => match e {
@@ -14647,19 +14655,7 @@ fn awp_rewrite_arms(arms: Array[(Pat, Expr)], ctr: Array[Int]) -> Array[(Pat, Ex
 /// EHandle stays untouched (conservative -- its arms/body feed the Error
 /// handler codegen).
 fn fdp_has_forin(e: Expr) -> Bool {
-  match e {
-    EForIn(_, _, _, _) => true,
-    _ => {
-      let kids = expr_children(e)
-      let mut i = 0
-      let mut found = false
-      while !found && i < Array::length(kids) {
-        found = fdp_has_forin(Array::get(kids, i))
-        i = i + 1
-      }
-      found
-    }
-  }
+  edp_rq_fold(RQContainsForIn, e) > 0
 }
 
 fn fdp_ret_is_unit(ret: Option[TypeExpr]) -> Bool {
@@ -14671,6 +14667,17 @@ fn fdp_ret_is_unit(ret: Option[TypeExpr]) -> Bool {
 }
 
 fn fdp_expr(e: Expr, discard: Bool) -> Expr {
+  // Subtrees without any `for` need no wraps: share them instead of
+  // rebuilding (the rebuild's own allocation would otherwise rival the
+  // churn this pass removes).
+  if !fdp_has_forin(e) {
+    e
+  } else {
+    fdp_expr_rebuild(e, discard)
+  }
+}
+
+fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
   match e {
     EForIn(nm, idx, it, b) => {
       let it2 = fdp_expr(it, false)
