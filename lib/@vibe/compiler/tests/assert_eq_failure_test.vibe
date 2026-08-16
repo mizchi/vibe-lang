@@ -4,6 +4,10 @@ import @vibe/compiler/entry/source_compile {
   compile_source_wasi
 }
 
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
 //# Helpers
 
 fn bytes_contains(hay: Bytes, needle: String) -> Bool {
@@ -46,7 +50,7 @@ fn assert_compiled_eq_diag(bytes: Bytes) -> Unit {
 fn capture_failing_assert_eq(body: String) -> String with Exception + Fs + Process {
   let bytes = compile_assert_eq_main(body)
   Fs::write_bytes("_build/vibe_test/assert_eq_fail_probe.wasm", bytes)
-  let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh _build/vibe_test/assert_eq_fail_probe.wasm >/dev/null 2>_build/vibe_test/assert_eq_fail_probe.err || true'")
+  let _ = sh("bash -c 'scripts/run_wasm_vibe_host_runner.sh _build/vibe_test/assert_eq_fail_probe.wasm >_build/vibe_test/assert_eq_fail_probe.err 2>&1 || true'")
   Fs::read_file("_build/vibe_test/assert_eq_fail_probe.err")
 }
 
@@ -81,6 +85,11 @@ test "assert_eq failure compiles a fallback for an unrenderable value" {
 
 /// Same lowering, then execute it. `vibe test` keeps stderr and discards
 /// stdout, so the diagnostic has to land on stderr for `vt_fail_detail`.
+test "assert_eq lowering still compiles on the gc lane" {
+  let bytes = compile_source_gc_only("let main: () -> Int = () -> {\n  assert_eq(1, 1)\n  0\n}", "main")
+  assert(Bytes::length(bytes) > 8)
+}
+
 test "assert_eq failure prints expected and actual on stderr" {
   let err = capture_failing_assert_eq("assert_eq(1, 2)")
   inspect(String::contains(err, "assert_eq failed"), "true")

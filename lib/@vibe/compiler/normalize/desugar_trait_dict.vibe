@@ -5291,9 +5291,12 @@ fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String
   let actual_s = assert_eq_render(actual, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let expected_s = assert_eq_render(expected, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\n")))))
-  // Stderr, not stdout: `vibe test` discards stdout. Then trap so the
-  // existing `__test_` frame and `RuntimeError` path stay intact.
-  let fail = ESeq(ECall(EIdent("Stderr::write_stream", -1), [
+  // println, not Stderr::write_stream: the gc lane only reserves host
+  // imports when the source already used one, and flipping that on a
+  // SIMD-only file shifts every generated-body index (gc-gate
+  // simd_skip_ws_test). `vibe test` now keeps stdout on FAIL so the
+  // diagnostic still reaches vt_fail_detail.
+  let fail = ESeq(ECall(EIdent("println", -1), [
     msg
   ], -1), ECall(EIdent("assert_true", -1), [
     EBool(false)

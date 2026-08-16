@@ -383,13 +383,13 @@ vt_worker() {
   local run_err="$vt_results/$flat.err"
   if [ "$backend" = "gc" ]; then
     if timeout 60 wasmtime run -W gc=y,function-references=y,exceptions=y \
-        --invoke _start "$ROOT_DIR/$out_rel" >/dev/null 2>"$run_err"; then
+        --invoke _start "$ROOT_DIR/$out_rel" >"$run_err" 2>&1; then
       run_ok=1
     fi
   else
     if VIBE_COV_OUT="$cov_out" VIBE_PREOPEN_DIR="$ROOT_DIR" \
         bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-        --invoke _start "$out_rel" >/dev/null 2>"$run_err"; then
+        --invoke _start "$out_rel" >"$run_err" 2>&1; then
       run_ok=1
     fi
   fi
