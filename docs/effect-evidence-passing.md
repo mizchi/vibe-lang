@@ -1289,8 +1289,10 @@ operation・row-variable tail・capture-free local closure invocation へ
    (`effect_cps_mut_adr021.vibe`,
    `effect_cps_accumulate.vibe`,
    `effect_cps_product.vibe`,
-   `effect_cps_collect_array.vibe`,
-   `effect_generic_writer.vibe`) は**いずれも現行ビルドパスでは
+   `effect_cps_collect_array.vibe` — removed; the two-binder
+   `Op(v, k)` arm is snapshotted in
+   `lib/@vibe/compiler/tests/runtime_fixture_debt_diagnostics_test.vibe`)
+   は**いずれも現行ビルドパスでは
    コンパイルできない** -- historical/MoonBit-host 専用の遺物。
 3. `effect_multishot.vibe` は名前とは裏腹に、実際の multi-shot resume
    を検証する fixture ではなく、「現行実装では multi-shot は不可能」
@@ -1603,7 +1605,10 @@ wrapper 特殊化 (#1015) を積み重ねて Int/String/Bool/Float だけ個別�
 している状態)。修正は「バグ修正」ではなく「新しい dispatch 機構の設計」
 であり、このセッションのスコープには含めない。
 
-`fixtures/effect_row_open.vibe` (`{ Log | e }` という pipe 記法) がずっと
+`fixtures/effect_row_open.vibe` — removed; the stale `with Log | e`
+pipe spelling is snapshotted in
+`lib/@vibe/compiler/tests/runtime_fixture_debt_diagnostics_test.vibe`.
+(`{ Log | e }` という pipe 記法) がずっと
 「未実装の行多相構文」として挙げられてきたが、実際に調べると 2 段階の
 異なる話が混ざっていたことが分かった:
 
