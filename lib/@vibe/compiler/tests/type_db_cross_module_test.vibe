@@ -143,6 +143,13 @@ fn projected_checked_env(source: String, path: String, deps: Array[String], full
   check_program_with_projected_import_env_result(parse_program_with_path(path, source), import_env).final_env
 }
 
+test "imported helpers retain region dependency contracts" {
+  let dep_source = "export struct Slot { callback: () -> Array[Int] }\nexport fn unwrap(slot: Slot) -> () -> Array[Int] {\n  let callback = slot.callback\n  callback\n}"
+  let main_source = "import ./dep.vibe { Slot, unwrap }\nlet escaped = region r {\n  let values = MutList::empty(r)\n  unwrap(Slot::{ callback: () -> Array[Int] { MutList::to_array(values) } })\n}\nlet _ = escaped()"
+  let message = typecheck_db_pair_error(dep_source, main_source)
+  assert(String::contains(message, "region escapes its scope"))
+}
+
 fn assert_module_origin(env: TypeEnv, bound_name: String, expected_path: String, expected_source_name: String) -> Unit {
   match env_lookup_binding(env, bound_name) {
     Some(binding) => match binding.origin {

@@ -9504,11 +9504,14 @@ for r90_fixture in \
   fixtures/err_region_escape_local_callee.vibe \
   fixtures/err_region_escape_callback_defer.vibe \
   fixtures/err_region_escape_named_projection.vibe \
+  fixtures/err_region_escape_named_projection_alias.vibe \
   fixtures/err_region_escape_call_alias_write.vibe \
   fixtures/err_region_escape_inline_projection.vibe \
   fixtures/err_region_escape_inline_call_alias_write.vibe \
   fixtures/err_region_escape_aggregate_struct.vibe \
   fixtures/err_region_escape_callback_return.vibe \
+  fixtures/err_region_escape_early_return.vibe \
+  fixtures/err_region_escape_constructor_helper.vibe \
   fixtures/err_region_escape_bound_struct.vibe \
   fixtures/err_region_escape_mutmap_write.vibe \
   fixtures/err_region_escape_deque_write.vibe \
