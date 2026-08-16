@@ -425,8 +425,13 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 `List::length(xs)` when `xs`'s type is a USER type and the method is declared
 as a top-level fn in the **`Type::method` spelling** (`fn List::length(xs:
 List) -> Int`) — importing just the type is enough
-(`import ./list.vibe { List, list_of3 }` makes `list_of3(1,2,3) |> length`
-work). A BARE top-level `fn total(l: MyList)` is *not* a method: it keeps
+(`import ./list.vibe { List }` makes `xs |> length` work). The receiver
+must come from an ANNOTATED binding (`let xs: List[Int] = ...`): the
+dispatch heuristic reads `let x: T = ...` and param annotations, not a
+companion call's return type, so `List::of3(1,2,3) |> length` directly is
+`unknown name: length` (#1908; the indexed `for i, x in <companion call>`
+misses the iter protocol the same way). A BARE top-level
+`fn total(l: MyList)` is *not* a method: it keeps
 normal call semantics (`total(l)`, and `l |> total` — the pipe is just a call),
 but `l.total()` does not resolve to it and reports a located
 ``no method `total` on `MyList` `` diagnostic (#953). A struct FIELD of the same
