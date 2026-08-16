@@ -109,7 +109,9 @@ test "question-mark in a non-Option function names ? and the effective edit" {
 
 test "let-star in a non-Option function names let* and the effective edit" {
   let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { g(1) }\n")
-  let msg = first_check_error(src)
+  // Origin is the copied operand offset; the unlocated parse cannot tell
+  // a desugared `let*` from a user `match`. Use the located path.
+  let msg = first_located_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`"))
   assert(String::contains(msg, "Option-returning"))
@@ -168,7 +170,7 @@ test "mixed let* and ? in an Option-returning function checks clean" {
 
 test "mixed let* and ? in a non-Option function stay source-level" {
   let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  let* v = find(x)\n  let w = find(v + 1)?\n  w + 1\n}\nfn main() -> Int { g(1) }\n")
-  let msg = first_check_error(src)
+  let msg = first_located_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`") || String::contains(msg, "`?`"))
   assert(String::contains(msg, "Option-returning") || String::contains(msg, "unwraps an Option"))
@@ -190,7 +192,7 @@ test "? on a non-Option operand names ? not the lowered match" {
 
 test "let* on a non-Option operand names let* not the lowered match" {
   let src = "fn g(x: Int) -> Option[Int] {\n  let* v = x\n  Some(v)\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n"
-  let msg = first_check_error(src)
+  let msg = first_located_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`"))
   assert(String::contains(msg, "unwraps an Option"))
@@ -205,9 +207,20 @@ test "located user-written Some/None match is not reported as let*" {
   assert(!(String::contains(msg, "__try_")))
 }
 
+test "unlocated user-written Some/None match is not reported as let*" {
+  // `compile_source` uses parse_program (no offsets). The same shape as
+  // lowered `let*` must stay an ordinary match, or the compiler cannot
+  // compile itself (Codex review on #1999).
+  let src = String::concat(find_src(), "fn g(x: Int) -> Int {\n  match find(x) {\n    Some(v) => v + 1,\n    None => None\n  }\n}\nfn main() -> Int { g(1) }\n")
+  let msg = first_check_error(src)
+  assert(msg != "")
+  assert(!(String::contains(msg, "`let*`")))
+  assert(!(String::contains(msg, "__try_")))
+}
+
 test "let* whose success path is not an Option asks to wrap in Some" {
   let src = String::concat(find_src(), "fn g(x: Int) -> Option[Int] {\n  let* v = find(x)\n  v + 1\n}\nfn main() -> Int { match g(1) { Some(v) => v, None => -1 } }\n")
-  let msg = first_check_error(src)
+  let msg = first_located_error(src)
   assert_source_level(msg)
   assert(String::contains(msg, "`let*`"))
   assert(String::contains(msg, "Some"))
