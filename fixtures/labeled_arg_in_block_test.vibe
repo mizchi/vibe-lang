@@ -1,0 +1,52 @@
+// #1899: a lambda with LABELED parameters, bound by a `let` inside a block,
+// returned 0 from every call -- with no diagnostic.
+//
+// A labeled parameter reaches codegen named `x~` (parser_base.vibe's
+// parse_one_param_with_binder_context), while the body binds and refers to
+// plain `x`. compile_lambda strips that marker for the wasm locals and for
+// `norm_params`, but handed the RAW name to the capture scan, so the body's `x`
+// matched nothing bound, was recorded as a free variable, and got captured from
+// an enclosing scope that has no such binding. Capturing is a legal operation,
+// so nothing downstream could tell the capture was bogus: the program compiled,
+// ran, and returned 0.
+//
+// Top-level `let f = (x~: Int) -> ...` never showed it, because that becomes a
+// func-table function rather than a closure and does not take this path. Which
+// is why fixtures/labeled_arg_basic.vibe -- top-level, and declaring the right
+// answer in `__DATA__` -- could sit in the repository being correct and prove
+// nothing about the broken case.
+//
+// So these are all written INSIDE a test block on purpose. Moving any of them
+// to the top level makes it pass for the wrong reason.
+
+fn plain_in_block() -> Int {
+  let p = (x: Int, y: Int) -> Int {
+    x + y
+  }
+  p(10, 20)
+}
+
+let top_labeled = (x~: Int, y~: Int) -> Int {
+  x + y
+}
+
+test "labeled parameters bound in a block" {
+  let add = (x~: Int, y~: Int) -> Int {
+    x + y
+  }
+  // Both call forms: the bug was in the lambda, not in label reordering, so
+  // the positional call was equally broken.
+  inspect(add(x = 10, y = 20), "30")
+  inspect(add(10, 20), "30")
+  // The marker strip must not go the other way and swallow a REAL capture:
+  // `n` is genuinely free in this lambda and still has to ride the environment.
+  let n = 5
+  let with_capture = (x~: Int) -> Int {
+    x + n
+  }
+  inspect(with_capture(x = 10), "15")
+  // Unlabeled and top-level always worked; they are here so a future change
+  // that "fixes" the labeled case by breaking these cannot pass.
+  inspect(plain_in_block(), "30")
+  inspect(top_labeled(x = 10, y = 20), "30")
+}

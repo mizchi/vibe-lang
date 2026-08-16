@@ -250,6 +250,24 @@ import ./compile_match.vibe {
 /// tagged (n<<1), so `+`, `-`, `%` preserve the tag for free, but `*` yields
 /// ab<<2 (shift right once) and `/` yields a/b untagged (shift left once).
 /// The raw emit_assignop_op alone silently doubled `x *= 2` results under RC.
+/// #1899: local copy of compile_lambda.vibe's `strip_param_label_marker` --
+/// see its doc comment for why this is copied rather than imported. A labeled
+/// (`x~`) or optional (`x?`) parameter binds plain `x` in the body, and the
+/// capture scan has to be told the name the body actually uses.
+fn cet_strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
 fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
   if enable_rc && op == "*" {
     emit_i64_const(buf, 1)
@@ -1425,11 +1443,15 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     if is_efn(value) {
       let params = get_efn_params(value)
       let fn_body = get_efn_body(value)
+      // #1899: strip the label marker, exactly as compile_lambda does. This
+      // recomputation has to agree with its `captures` or self_cap_idx points
+      // at the wrong slot -- so fixing only one side is worse than fixing
+      // neither.
       let param_names_bp = array_empty()
       let mut bpi = 0
       while bpi < Array::length(params) {
         let (pn, _) = Array::get(params, bpi)
-        Array::push(param_names_bp, pn)
+        Array::push(param_names_bp, cet_strip_param_label_marker(pn))
         bpi = bpi + 1
       }
       // #875 fix 2: same force-include as compile_lambda's own capture
