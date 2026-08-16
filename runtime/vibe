@@ -912,10 +912,20 @@ case "$cmd" in
     # prerequisite of this step). Picking the wrong adapter does NOT fail at
     # composition: `wac plug` promotes the unsatisfiable edge to a root import
     # (#1796), so the mistake would surface as a mysterious runtime failure.
+    #
+    # Match the `handler` EXPORT LINE, not a bare substring of the file. The
+    # sidecar keeps the handler's own parameter names, so `request_body:
+    # HostStream` would print as `request-body: stream<u8>` and a substring
+    # search for `body:` would miss it -- and any OTHER exported function with
+    # a stream parameter would make a String handler match. The line for
+    # `handler` is the only thing that decides this.
     wit_sidecar="${out%.component.wasm}.wit"
     body_stream=0
-    if [ -f "$wit_sidecar" ] && grep -q 'body: stream<u8>' "$wit_sidecar"; then
-      body_stream=1
+    if [ -f "$wit_sidecar" ]; then
+      handler_export="$(grep -E '^[[:space:]]*export handler:' "$wit_sidecar" | head -1 || true)"
+      case "$handler_export" in
+        *'stream<u8>'*) body_stream=1 ;;
+      esac
     fi
     if [ -z "$adapter" ]; then
       if [ "$body_stream" = "1" ]; then

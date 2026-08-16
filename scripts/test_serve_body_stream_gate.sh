@@ -26,10 +26,17 @@ set -euo pipefail
 #               (the same trap #1860's review found in the probe gate).
 #   empty       a zero-length body ends the stream immediately: the reader
 #               must see end-of-stream on its FIRST read, not hang.
-#   isolation   two requests in flight at once each get their OWN body back.
-#               The adapter keeps per-handle state (the CLOSED latch), so a
-#               band shared between concurrent requests would show up here
-#               as one request seeing the other's bytes -- and nowhere else.
+#   isolation   two requests in flight at once each get their own body back.
+#
+# WHAT THIS GATE DOES NOT COVER, and why the line is here rather than in an
+# assertion (#1913): every request above delivers its body BUFFERED, so each
+# `stream.read` completes eagerly and the adapter's BLOCKED branch never runs.
+# A chunked upload that makes reads actually park, and a handler that stops
+# reading before end of stream, both trap in the guest today --
+# `uninitialized element` inside the injected `__hs_next`, which is main's CPS
+# lowering and not this adapter (the adapter has no tables). Both reproduce
+# against the committed emitter, so they are a pre-existing gap in the lane,
+# not something this gate can assert green. #1913 has the two reproductions.
 #
 # Skips cleanly when cargo / wasm-tools / wac / wasmtime / curl are missing,
 # and fails instead under VIBE_P3_GATE_REQUIRE_TOOLS=1, matching the other P3
@@ -115,59 +122,75 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
 }
 HEOF
 
-COMPONENT="$OUT_DIR/handler.component.wasm"
-echo "[serve-body] componentize through the CLI's own serve path"
-rm -f "$COMPONENT" "$COMPONENT.diag"
-env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
-  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
-  "${HANDLER_SRC#"$PROJECT_ROOT"/}" "${COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
-if [ ! -s "$COMPONENT" ]; then
-  echo "[serve-body] FAILED: the serve path produced no component" >&2
-  cat "$COMPONENT.diag" 2>/dev/null >&2 || true
-  exit 1
-fi
-wasm-tools validate --features all "$COMPONENT" >/dev/null
+# Componentize a handler through the CLI's own serve path, compose it, and
+# start serving it. Sets ADDR/SERVE_PID for the checks that follow.
+serve_handler() {
+  local tag="$1" src="$2"
+  local component="$OUT_DIR/$tag.component.wasm"
+  local composed="$OUT_DIR/$tag.serve.wasm"
+  SERVE_LOG="$OUT_DIR/$tag.serve.log"
+  rm -f "$component" "$component.diag"
+  env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+    "${src#"$PROJECT_ROOT"/}" "${component#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+  if [ ! -s "$component" ]; then
+    echo "[serve-body] FAILED: the serve path produced no component for $tag" >&2
+    cat "$component.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  wasm-tools validate --features all "$component" >/dev/null
 
-# The lane is identified by the exported functype, not by "it built": a
-# `stream<u8>` param and an async lift are what separate this from the String
-# handler the same CLI emits for a `body: String` signature. Checked on a
-# captured string rather than piped into `grep -q` -- grep exits on its first
-# match and `set -o pipefail` would report the SIGPIPE as a failed assertion.
-COMPONENT_WIT="$(wasm-tools component wit "$COMPONENT")"
-case "$COMPONENT_WIT" in
-  *'export handler: async func('*'body: stream<u8>'*) ;;
-  *)
-    echo "[serve-body] FAILED: the component does not export an async handler taking stream<u8>" >&2
-    printf '%s\n' "$COMPONENT_WIT" | head -20 >&2
-    exit 1 ;;
-esac
-echo "[serve-body] handler component: async func(.., body: stream<u8>) -> string"
+  # The lane is identified by the exported functype, not by "it built": a
+  # `stream<u8>` param and an async lift are what separate this from the String
+  # handler the same CLI emits for a `body: String` signature. Checked on a
+  # captured string rather than piped into `grep -q` -- grep exits on its first
+  # match and `set -o pipefail` would report the SIGPIPE as a failed assertion.
+  local wit
+  wit="$(wasm-tools component wit "$component")"
+  case "$wit" in
+    *'export handler: async func('*'stream<u8>'*) ;;
+    *)
+      echo "[serve-body] FAILED: $tag does not export an async handler taking stream<u8>" >&2
+      printf '%s\n' "$wit" | head -20 >&2
+      exit 1 ;;
+  esac
 
-COMPOSED="$OUT_DIR/handler.serve.wasm"
-wac plug --plug "$COMPONENT" "$ADAPTER" -o "$COMPOSED"
-wasm-tools validate --features all "$COMPOSED" >/dev/null
-echo "[serve-body] composed"
+  wac plug --plug "$component" "$ADAPTER" -o "$composed"
+  wasm-tools validate --features all "$composed" >/dev/null
 
-"$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$COMPOSED" >"$SERVE_LOG" 2>&1 &
-SERVE_PID=$!
-ready=0
-for _ in $(seq 1 40); do
-  if ! kill -0 "$SERVE_PID" 2>/dev/null; then
-    echo "[serve-body] FAILED: wasmtime exited before accepting requests" >&2
+  ADDR="${ADDR%:*}:$((${ADDR##*:} + 1))"
+  "$WASMTIME_BIN" serve "${WASM_FLAGS[@]}" --addr "$ADDR" "$composed" >"$SERVE_LOG" 2>&1 &
+  SERVE_PID=$!
+  local ready=0 _i
+  for _i in $(seq 1 40); do
+    if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+      echo "[serve-body] FAILED: wasmtime exited before accepting requests ($tag)" >&2
+      cat "$SERVE_LOG" >&2 || true
+      exit 1
+    fi
+    if curl -s -m 1 -o /dev/null "http://$ADDR/" 2>/dev/null; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [ "$ready" != "1" ]; then
+    echo "[serve-body] FAILED: wasmtime did not become ready at $ADDR ($tag)" >&2
     cat "$SERVE_LOG" >&2 || true
     exit 1
   fi
-  if curl -s -m 1 -o /dev/null "http://$ADDR/" 2>/dev/null; then
-    ready=1
-    break
+}
+
+stop_server() {
+  if [ -n "$SERVE_PID" ]; then
+    kill "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || true
+    SERVE_PID=""
   fi
-  sleep 0.25
-done
-if [ "$ready" != "1" ]; then
-  echo "[serve-body] FAILED: wasmtime did not become ready at $ADDR" >&2
-  cat "$SERVE_LOG" >&2 || true
-  exit 1
-fi
+}
+
+serve_handler echo "$HANDLER_SRC"
+echo "[serve-body] echo handler: async func(.., body: stream<u8>) -> string, composed and serving"
 
 # The adapter answers "STATUS\n<headers>\n\n<body>" and falls back to the whole
 # remainder when there is no header block, so the wire body is a leading "\n"
@@ -220,9 +243,11 @@ echo "[serve-body] a $(wc -c <"$OUT_DIR/large.bin")-byte body echoes byte-for-by
 post_and_compare empty "$OUT_DIR/empty.bin"
 echo "[serve-body] an empty body ends the stream on the first read"
 
-# Concurrency: two bodies in flight at once must not see each other. The
-# adapter's CLOSED latch is indexed by handle, so a lane that shared one slot
-# would answer here and pass every sequential check above.
+# Concurrency, buffered. This proves the per-request handle plumbing keeps two
+# in-flight requests apart; it does NOT prove the adapter's per-handle bands,
+# because buffered reads complete eagerly and the two requests are never parked
+# at the same time. The version of this check that DOES exercise that -- two
+# slow chunked uploads -- is blocked on #1913.
 printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' >"$OUT_DIR/conc-a.bin"
 printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >"$OUT_DIR/conc-b.bin"
 conc_pids=()
@@ -246,10 +271,54 @@ for n in a b; do
     exit 1
   fi
 done
-echo "[serve-body] two concurrent requests each echo their own body"
+echo "[serve-body] two concurrent buffered requests each echo their own body"
 
-kill "$SERVE_PID" 2>/dev/null || true
-wait "$SERVE_PID" 2>/dev/null || true
-SERVE_PID=""
+stop_server
+
+# The other half of the adapter's surface, checked where it can be checked:
+# COMPOSITION. `host_stream_close` lowers to a `vibe.host_stream_close` core
+# import, and a core instance cannot be given fewer bindings than it imports --
+# so before the adapter exported both halves, a handler that stops reading
+# early could not be composed at all. Emitting the component and plugging it is
+# what proves that edge is satisfied; actually SERVING such a handler is
+# blocked on #1913, which is why this stops at the plug.
+CLOSE_SRC="$OUT_DIR/close_handler.vibe"
+cat >"$CLOSE_SRC" <<'HEOF'
+export let handler = (method: String, url: String, headers: String, body: HostStream) -> String with Async {
+  let mut out = ""
+  let mut n = 0
+  while n < 4 {
+    let b = host_stream_next(body)
+    if b < 0 {
+      n = 4
+    } else {
+      out = String::concat(out, String::from_char_code(b))
+      n = n + 1
+    }
+  }
+  host_stream_close(body)
+  "200\n\n\{out}"
+}
+HEOF
+CLOSE_COMPONENT="$OUT_DIR/close.component.wasm"
+rm -f "$CLOSE_COMPONENT" "$CLOSE_COMPONENT.diag"
+env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$CLI_WASM" \
+  "${CLOSE_SRC#"$PROJECT_ROOT"/}" "${CLOSE_COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
+if [ ! -s "$CLOSE_COMPONENT" ]; then
+  echo "[serve-body] FAILED: an early-closing handler did not componentize" >&2
+  cat "$CLOSE_COMPONENT.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+CLOSE_CORE_WIT="$(wasm-tools print "$CLOSE_COMPONENT")"
+case "$CLOSE_CORE_WIT" in
+  *'(import "vibe" "host_stream_close"'*) ;;
+  *)
+    echo "[serve-body] FAILED: the early-closing handler's core does not import vibe.host_stream_close" >&2
+    exit 1 ;;
+esac
+wac plug --plug "$CLOSE_COMPONENT" "$ADAPTER" -o "$OUT_DIR/close.serve.wasm"
+wasm-tools validate --features all "$OUT_DIR/close.serve.wasm" >/dev/null
+echo "[serve-body] a handler that closes the body early composes (both adapter halves bound)"
 
 echo "[serve-body] PASS: vibe serve hands the request body to the handler as a stream (#1540)"
