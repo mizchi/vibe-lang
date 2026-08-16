@@ -50,32 +50,6 @@ fn sp_add_unique(arr: Array[String], v: String) -> Unit {
   }
 }
 
-fn sp_append_all(dst: Array[String], src: Array[String]) -> Unit {
-  let mut i = 0
-  while i < Array::length(src) {
-    Array::push(dst, Array::get(src, i))
-    i = i + 1
-  }
-}
-
-fn sp_clone_strings(items: Array[String]) -> Array[String] {
-  let out = sp_empty_strings()
-  sp_append_all(out, items)
-  out
-}
-
-fn sp_bound_with(bound: Array[String], extras: Array[String]) -> Array[String] {
-  let out = sp_clone_strings(bound)
-  sp_append_all(out, extras)
-  out
-}
-
-fn sp_bound_with_one(bound: Array[String], name: String) -> Array[String] {
-  let out = sp_clone_strings(bound)
-  Array::push(out, name)
-  out
-}
-
 fn sp_collect_pat_bindings(pat: Pat, out: Array[String]) -> Unit {
   match pat {
     PBind(name) => Array::push(out, name),
@@ -114,223 +88,119 @@ fn sp_collect_pat_bindings(pat: Pat, out: Array[String]) -> Unit {
 /// a directly-called local closure occupies an environment slot just like a
 /// closure passed as an argument. Builtins and top-level functions disappear
 /// later because they have no region-bearing local binding.
-fn sp_collect_free_vars(expr: Expr, bound: Array[String]) -> Array[String] {
-  let result = sp_empty_strings()
+
+fn sp_collect_free_vars_into(expr: Expr, bound: Array[String], out: Array[String]) -> Unit {
   match expr {
-    EIdent(name, _) => {
-      if sp_array_contains_str(bound, name) {
-        ()
-      } else {
-        sp_add_unique(result, name)
-      }
-      result
-    },
-    EInt(_) => result,
-    EFloat(_) => result,
-    EString(_) => result,
-    EBool(_) => result,
-    EUnit => result,
-    ELet(name, val, body, _) => {
-      sp_append_all(result, sp_collect_free_vars(val, bound))
-      sp_append_all(result, sp_collect_free_vars(body, sp_bound_with_one(bound, name)))
-      result
-    },
-    ELetRec(name, val, body) => {
-      let nb = sp_bound_with_one(bound, name)
-      sp_append_all(result, sp_collect_free_vars(val, nb))
-      sp_append_all(result, sp_collect_free_vars(body, nb))
-      result
-    },
-    ELetMut(name, val, body, _) => {
-      sp_append_all(result, sp_collect_free_vars(val, bound))
-      sp_append_all(result, sp_collect_free_vars(body, sp_bound_with_one(bound, name)))
-      result
-    },
-    EAssign(name, val, cont) => {
-      if sp_array_contains_str(bound, name) {
-        ()
-      } else {
-        sp_add_unique(result, name)
-      }
-      sp_append_all(result, sp_collect_free_vars(val, bound))
-      sp_append_all(result, sp_collect_free_vars(cont, bound))
-      result
-    },
-    EAssignOp(name, _, val, cont) => {
-      if sp_array_contains_str(bound, name) {
-        ()
-      } else {
-        sp_add_unique(result, name)
-      }
-      sp_append_all(result, sp_collect_free_vars(val, bound))
-      sp_append_all(result, sp_collect_free_vars(cont, bound))
-      result
-    },
-    EFn(_, _, params, _, _, body) => {
-      let pnames = sp_empty_strings()
-      let mut i = 0
-      while i < Array::length(params) {
-        let (pname, _) = Array::get(params, i)
-        Array::push(pnames, pname)
-        i = i + 1
-      }
-      sp_append_all(result, sp_collect_free_vars(body, sp_bound_with(bound, pnames)))
-      result
+    EIdent(name, _) => if !sp_array_contains_str(bound, name) {
+      sp_add_unique(out, name)
+    } else {
+      ()
     },
     ECall(callee, args, _) => {
       match callee {
-        EIdent(name, _) => if sp_array_contains_str(bound, "__include_bare_callees__") && !sp_array_contains_str(bound, name) {
-          sp_add_unique(result, name)
-        } else {
-          ()
-        },
-        _ => sp_append_all(result, sp_collect_free_vars(callee, bound))
+        EIdent(_, _) => (),
+        _ => sp_collect_free_vars_into(callee, bound, out)
       }
-      let mut i = 0
-      while i < Array::length(args) {
-        sp_append_all(result, sp_collect_free_vars(Array::get(args, i), bound))
-        i = i + 1
+      for arg in args {
+        sp_collect_free_vars_into(arg, bound, out)
       }
-      result
     },
-    EIf(cond, then_e, else_e) => {
-      sp_append_all(result, sp_collect_free_vars(cond, bound))
-      sp_append_all(result, sp_collect_free_vars(then_e, bound))
-      sp_append_all(result, sp_collect_free_vars(else_e, bound))
-      result
+    ELet(name, val, body, _) => {
+      sp_collect_free_vars_into(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      sp_collect_free_vars_into(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    ESeq(a, b) => {
-      sp_append_all(result, sp_collect_free_vars(a, bound))
-      sp_append_all(result, sp_collect_free_vars(b, bound))
-      result
+    ELetMut(name, val, body, _) => {
+      sp_collect_free_vars_into(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      sp_collect_free_vars_into(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    EBinOp(_, left, right) => {
-      sp_append_all(result, sp_collect_free_vars(left, bound))
-      sp_append_all(result, sp_collect_free_vars(right, bound))
-      result
+    ELetRec(name, val, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      sp_collect_free_vars_into(val, bound, out)
+      sp_collect_free_vars_into(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    EUnaryOp(_, operand) => {
-      sp_append_all(result, sp_collect_free_vars(operand, bound))
-      result
+    EAssign(name, val, cont) => {
+      if !sp_array_contains_str(bound, name) {
+        sp_add_unique(out, name)
+      }
+      sp_collect_free_vars_into(val, bound, out)
+      sp_collect_free_vars_into(cont, bound, out)
     },
-    EWhile(cond, body) => {
-      sp_append_all(result, sp_collect_free_vars(cond, bound))
-      sp_append_all(result, sp_collect_free_vars(body, bound))
-      result
+    EAssignOp(name, _, val, cont) => {
+      if !sp_array_contains_str(bound, name) {
+        sp_add_unique(out, name)
+      }
+      sp_collect_free_vars_into(val, bound, out)
+      sp_collect_free_vars_into(cont, bound, out)
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mark = Array::length(bound)
+      for param in params {
+        let (name, _) = param
+        Array::push(bound, name)
+      }
+      sp_collect_free_vars_into(body, bound, out)
+      Array::truncate(bound, mark)
     },
     ELoop(params, body) => {
-      let mut b2 = sp_clone_strings(bound)
-      let mut i = 0
-      while i < Array::length(params) {
-        let (name, init) = Array::get(params, i)
-        sp_append_all(result, sp_collect_free_vars(init, b2))
-        b2 = sp_bound_with_one(b2, name)
-        i = i + 1
+      let mark = Array::length(bound)
+      for param in params {
+        let (name, init) = param
+        sp_collect_free_vars_into(init, bound, out)
+        Array::push(bound, name)
       }
-      sp_append_all(result, sp_collect_free_vars(body, b2))
-      result
+      sp_collect_free_vars_into(body, bound, out)
+      Array::truncate(bound, mark)
     },
     EForIn(name, index_name, iter, body) => {
-      sp_append_all(result, sp_collect_free_vars(iter, bound))
-      let b2 = sp_bound_with_one(bound, name)
-      let b3 = match index_name {
-        Some(ixn) => sp_bound_with_one(b2, ixn),
-        None => b2
-      }
-      sp_append_all(result, sp_collect_free_vars(body, b3))
-      result
-    },
-    EMatch(scrut, arms) => {
-      sp_append_all(result, sp_collect_free_vars(scrut, bound))
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (pat, arm_body) = Array::get(arms, ai)
-        let pat_binds = sp_empty_strings()
-        sp_collect_pat_bindings(pat, pat_binds)
-        sp_append_all(result, sp_collect_free_vars(arm_body, sp_bound_with(bound, pat_binds)))
-        ai = ai + 1
-      }
-      result
-    },
-    EHandle(body, arms) => {
-      sp_append_all(result, sp_collect_free_vars(body, bound))
-      let mut ai = 0
-      while ai < Array::length(arms) {
-        let (pat, arm_body) = Array::get(arms, ai)
-        let pat_binds = sp_empty_strings()
-        sp_collect_pat_bindings(pat, pat_binds)
-        sp_append_all(result, sp_collect_free_vars(arm_body, sp_bound_with(bound, pat_binds)))
-        ai = ai + 1
-      }
-      result
-    },
-    ETuple(elems) => {
-      let mut i = 0
-      while i < Array::length(elems) {
-        sp_append_all(result, sp_collect_free_vars(Array::get(elems, i), bound))
-        i = i + 1
-      }
-      result
-    },
-    EArray(elems) => {
-      let mut i = 0
-      while i < Array::length(elems) {
-        sp_append_all(result, sp_collect_free_vars(Array::get(elems, i), bound))
-        i = i + 1
-      }
-      result
-    },
-    ERecord(_, fields, _) => {
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, fval) = Array::get(fields, i)
-        sp_append_all(result, sp_collect_free_vars(fval, bound))
-        i = i + 1
-      }
-      result
-    },
-    EDot(obj, _, _, _) => {
-      sp_append_all(result, sp_collect_free_vars(obj, bound))
-      result
-    },
-    EReturn(e) => {
-      sp_append_all(result, sp_collect_free_vars(e, bound))
-      result
-    },
-    ELabeledArg(_, _, e) => {
-      sp_append_all(result, sp_collect_free_vars(e, bound))
-      result
-    },
-    EBreak(opt) => {
-      match opt {
-        Some(e) => sp_append_all(result, sp_collect_free_vars(e, bound)),
+      sp_collect_free_vars_into(iter, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      match index_name {
+        Some(index) => Array::push(bound, index),
         None => ()
       }
-      result
+      sp_collect_free_vars_into(body, bound, out)
+      Array::truncate(bound, mark)
     },
-    EContinue(exprs) => {
-      let mut i = 0
-      while i < Array::length(exprs) {
-        sp_append_all(result, sp_collect_free_vars(Array::get(exprs, i), bound))
-        i = i + 1
+    EMatch(scrutinee, arms) => {
+      sp_collect_free_vars_into(scrutinee, bound, out)
+      for arm in arms {
+        let (pat, body) = arm
+        let mark = Array::length(bound)
+        sp_collect_pat_bindings(pat, bound)
+        sp_collect_free_vars_into(body, bound, out)
+        Array::truncate(bound, mark)
       }
-      result
     },
-    EMap(fields) => {
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, fval) = Array::get(fields, i)
-        sp_append_all(result, sp_collect_free_vars(fval, bound))
-        i = i + 1
+    EHandle(scrutinee, arms) => {
+      sp_collect_free_vars_into(scrutinee, bound, out)
+      for arm in arms {
+        let (pat, body) = arm
+        let mark = Array::length(bound)
+        sp_collect_pat_bindings(pat, bound)
+        sp_collect_free_vars_into(body, bound, out)
+        Array::truncate(bound, mark)
       }
-      result
     },
-    ESpread(e) => {
-      sp_append_all(result, sp_collect_free_vars(e, bound))
-      result
-    },
-    EStringInterp(_) => result
+    _ => for child in expr_children(expr) {
+      sp_collect_free_vars_into(child, bound, out)
+    }
   }
+  ()
+}
+
+fn sp_collect_free_vars(expr: Expr, bound: Array[String]) -> Array[String] {
+  let out = sp_empty_strings()
+  sp_collect_free_vars_into(expr, bound, out)
+  out
 }
 
 /// Free value names captured by a closure body. Capture provenance uses this
