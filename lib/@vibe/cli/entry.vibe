@@ -12,6 +12,55 @@ effect Profiler {
 
 //# Functions
 
+fn starts_with(value: String, prefix: String) -> Bool {
+  let prefix_len = String::length(prefix)
+  String::length(value) >= prefix_len && value[0: prefix_len] == prefix
+}
+
+fn is_check_report_continuation(line: String) -> Bool {
+  if starts_with(line, "hint: ") {
+    true
+  } else if String::length(line) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(line, 0)
+    c == ' ' || c == '\t'
+  }
+}
+
+/// Frame a thrown diagnostic the same way `runtime/vibe`'s
+/// `emit_check_diagnostics` does: `error: ` marks a diagnostic start, and
+/// `hint:` / leading-whitespace lines stay attached as indented
+/// continuations so `grep -c '^error: '` is an exact count (#1567 / #1888).
+export fn format_check_report(payload: String) -> String {
+  let lines = String::split(payload, "\n")
+  let n = Array::length(lines)
+  if n == 0 {
+    "error: "
+  } else {
+    let mut framed = Array::slice([
+      ""
+    ], 0, 0)
+    let mut i = 0
+    while i < n {
+      let line = Array::get(lines, i)
+      if i == n - 1 && line == "" {
+        ()
+      } else if is_check_report_continuation(line) {
+        Array::push(framed, String::concat("  ", line))
+      } else {
+        Array::push(framed, String::concat("error: ", line))
+      }
+      i = i + 1
+    }
+    if Array::length(framed) == 0 {
+      "error: "
+    } else {
+      String::join(framed, "\n")
+    }
+  }
+}
+
 /// Run the CLI for an explicit argv array, discharging the compile pipeline's
 /// Profiler and Error effects into a process exit code.
 ///
@@ -34,10 +83,11 @@ export fn run_cli_main_with_args(args: Array[String]) -> Int with Fs + Env {
       NowUs => resume(0)
     }
   } with Exception {
-    // #1888: print the thrown diagnostic (one line per payload) then exit 1.
-    // Dropping the String left `vibe check` silent on type/parse/arity errors.
+    // #1888: print the thrown diagnostic then exit 1. Frame it the same way
+    // `runtime/vibe` emit_check_diagnostics does (`error: ` on each start,
+    // `hint:` indented) so `grep -c '^error: '` stays an exact count.
     Throw(e) => {
-      println(e)
+      println(format_check_report(e))
       1
     }
   }
