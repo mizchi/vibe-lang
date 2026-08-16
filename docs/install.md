@@ -15,10 +15,10 @@ curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/insta
 Outside a checkout, the installer initializes a temporary repository and
 shallow-fetches the exact branch, tag, or reachable commit selected by
 `VIBE_INSTALL_REF` from `VIBE_INSTALL_REPO`, then safely reinvokes the matching
-`install/install.sh` from the detached checkout. Requirements:
-`git`, `bash`, `cargo` (the wasmtime runner builds from source); `node` is
-optional (used to self-build the newest compiler — without it the committed
-seed compiler is installed, which is always functional).
+`install/install.sh` from the detached checkout. Requirements: `git`, `bash`,
+`cargo` (unless `--runner` supplies a prebuilt runner), and Node.js for the
+default compiler seed acquisition/build path. Node.js is optional only when
+`--cli-wasm PATH` supplies an existing compiler wasm.
 
 ## Quick install (from a checkout)
 

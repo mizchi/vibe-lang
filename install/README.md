@@ -17,9 +17,12 @@ curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/insta
   | VIBE_INSTALL_REF=v1.0.0 bash
 ```
 
-The bootstrap requires Bash and Git. Outside a checkout it shallow-fetches the
-exact `VIBE_INSTALL_REF` (default `main`) from `VIBE_INSTALL_REPO` (default
-`https://github.com/mizchi/vibe-lang`), then reinvokes the installer from that
+The bootstrap requires Bash and Git. The default install also requires Node.js
+to acquire or build the gitignored compiler seed; Node.js is optional only when
+an existing compiler is supplied with `--cli-wasm PATH`. Outside a checkout it
+shallow-fetches the exact `VIBE_INSTALL_REF` (default `main`) from the configured
+`VIBE_INSTALL_REPO` (default `https://github.com/mizchi/vibe-lang`), then
+reinvokes the installer from that
 detached checkout. Branches, tags, and reachable commit IDs are supported. The
 temporary checkout is removed on success, failure, or a handled signal. A safe
 form of the selected ref becomes the default toolchain name unless `--toolchain`

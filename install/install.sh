@@ -25,7 +25,8 @@
 #   curl -fsSL URL | bash -s -- --ref v1.0.0 --no-modify-path
 #
 # Env overrides: VIBE_INSTALL_REPO, VIBE_INSTALL_REF, VIBE_HOME, VIBE_BIN_DIR.
-# Requirements: git and bash; cargo unless --runner points to a prebuilt runner.
+# Requirements: git and bash; Node.js unless --cli-wasm supplies the compiler;
+# cargo unless --runner points to a prebuilt runner.
 set -euo pipefail
 
 usage() {
@@ -50,6 +51,10 @@ Install options:
   --no-link              do not create an extra bin-dir symlink
   --no-modify-path       do not edit shell startup files
   --no-stdlib            do not install standard library packages
+
+Requirements:
+  Git and Bash; Node.js unless --cli-wasm supplies the compiler; Cargo unless
+  --runner supplies a prebuilt viberun executable.
 USAGE
 }
 
@@ -169,6 +174,14 @@ CLI_WASM_EXPLICIT=0
 
 say() { echo "[install] $*"; }
 die() { echo "[install] error: $*" >&2; exit 1; }
+
+# The seed wasm is a fetched/build cache rather than a tracked checkout file.
+# Both fresh compilation and seed acquisition use the Node bootstrap runner, so
+# do not pretend a default install can continue without Node. An explicitly
+# supplied compiler wasm remains a fully supported Node-free install path.
+if [ "$CLI_WASM_EXPLICIT" = "0" ] && ! command -v node >/dev/null 2>&1; then
+  die "Node.js is required to acquire or build the compiler; install Node.js or pass --cli-wasm PATH"
+fi
 
 validate_toolchain_name() {
   case "$1" in

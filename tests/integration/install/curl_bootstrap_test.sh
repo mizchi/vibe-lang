@@ -39,6 +39,34 @@ chmod +x "$runner"
 printf 'fake-wasm\n' > "$WORK/compiler.wasm"
 mkdir -p "$WORK/outside" "$WORK/tmp"
 
+# Default compiler acquisition needs Node because the seed wasm is a
+# gitignored fetched/build artifact. Fail before creating VIBE_HOME, while an
+# explicit compiler wasm keeps the supported Node-free installation path.
+node_less_bin="$WORK/node-less-bin"
+mkdir -p "$node_less_bin"
+for cmd in bash mkdir install chmod cat sed; do
+  ln -s "$(command -v "$cmd")" "$node_less_bin/$cmd"
+done
+node_error="$WORK/node-required.err"
+if PATH="$node_less_bin" VIBE_HOME="$WORK/node-required-home" \
+    /bin/bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
+      --runner "$runner" --no-stdlib --no-modify-path --no-link \
+      >/dev/null 2>"$node_error"; then
+  echo "default install unexpectedly succeeded without Node" >&2
+  exit 1
+fi
+grep -q 'Node.js is required.*--cli-wasm PATH' "$node_error"
+[ ! -e "$WORK/node-required-home" ] || {
+  echo "Node requirement was not checked before installation writes" >&2
+  exit 1
+}
+PATH="$node_less_bin" VIBE_HOME="$WORK/node-free-home" \
+  /bin/bash "$repo/install/install.sh" --__vibe-install-root "$repo" \
+    --toolchain node-free --runner "$runner" \
+    --cli-wasm "$WORK/compiler.wasm" \
+    --no-stdlib --no-modify-path --no-link >/dev/null
+[ -x "$WORK/node-free-home/toolchains/node-free/bin/vibe" ]
+
 assert_no_bootstrap_temp() {
   if find "$WORK/tmp" -maxdepth 1 -name 'vibe-install-*' -print -quit | grep -q .; then
     echo "curl bootstrap left a temporary checkout behind" >&2
