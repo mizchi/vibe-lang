@@ -48,6 +48,11 @@ assert_full_failing_name() {
 }
 assert_full_failing_name "$WORK/space_name_test.vibe" "has a space"
 assert_full_failing_name "$WORK/unicode_name_test.vibe" "café 日本語"
+# #1946 leftover: live file with a space in the quoted name, via assert_eq.
+# Decode of `%20` is pinned on canned dumps below; this run still has to
+# print the full source name and stay non-zero.
+printf 'test "has spaces" {\n  assert_eq(1, 0)\n}\n' > "$WORK/has_spaces_test.vibe"
+assert_full_failing_name "$WORK/has_spaces_test.vibe" "has spaces"
 echo "[vibe-test-smoke] ok (quoted test names preserved on FAIL)"
 
 # Guest stderr that happens to contain `__test_!!!` must not become the
@@ -97,6 +102,53 @@ error while executing at wasm backtrace:
    wasm trap: wasm `unreachable` instruction executed
 EOF
 echo "[vibe-test-smoke] ok (guest __test_ prefix is not the failing-test name)"
+
+# #1946 leftover: quoted names can appear percent-encoded in a frame
+# (`test "has spaces"` → `__test_has%20spaces`). The old
+# `__test_[A-Za-z0-9_]+` match stops at `%` and prints `has`. Both
+# condensers must decode `%XX` so the FAIL line shows the source name.
+# runtime/vibe is not sourceable (it is the user-facing launcher); extract
+# condense_test_trap the same way as vt_fail_detail.
+eval "$(sed -n '/^condense_test_trap() {/,/^}$/p' "$ROOT_DIR/runtime/vibe")"
+assert_canned_failing_name node_pct "has spaces" <<'EOF'
+RuntimeError: unreachable
+    at __test_has%20spaces (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+assert_canned_failing_name wasmtime_pct "has spaces" <<'EOF'
+error while executing at wasm backtrace:
+    0: 0x42 - <unknown>!__test_has%20spaces
+    1: 0x10 - <unknown>!_start
+   wasm trap: wasm `unreachable` instruction executed
+EOF
+assert_condense_failing_name() {
+  local label="$1" want="$2" errf out
+  errf="$WORK/canned_condense_${label}.err"
+  cat > "$errf"
+  out="$(condense_test_trap "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "failing test: $want"; then
+    echo "[vibe-test-smoke] FAIL: condense $label expected 'failing test: $want'" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_condense_failing_name node_space "has spaces" <<'EOF'
+RuntimeError: unreachable
+    at __test_has spaces (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+assert_condense_failing_name node_pct "has spaces" <<'EOF'
+RuntimeError: unreachable
+    at __test_has%20spaces (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+assert_condense_failing_name wasmtime_pct "has spaces" <<'EOF'
+error while executing at wasm backtrace:
+    0: 0x42 - <unknown>!__test_has%20spaces
+    1: 0x10 - <unknown>!_start
+   wasm trap: wasm `unreachable` instruction executed
+EOF
+echo "[vibe-test-smoke] ok (percent-encoded quoted names decode on FAIL)"
 
 # #1946 leftover: vt_fail_detail must surface the assert_eq diagnostic that
 # the guest writes to stderr (vibe test discards stdout).

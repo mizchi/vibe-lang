@@ -588,6 +588,34 @@ condense_test_trap() {
   [ -s "$errf" ] || return 0
   [ -f "$fm" ] || fm=""
   out="$(awk -v base="$base" -v fmfile="$fm" '
+    function hexval(c) {
+      if (c >= "0" && c <= "9") return c + 0
+      if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
+      if (c >= "a" && c <= "f") return index("abcdef", c) + 9
+      return -1
+    }
+    # Quoted names may appear percent-encoded (`has%20spaces`). Keep
+    # this decoder in lockstep with scripts/vibe_test.sh vt_fail_detail.
+    function pct_decode(s,    out, i, n, c, v1, v2) {
+      out = ""
+      n = length(s)
+      i = 1
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "%" && i + 2 <= n) {
+          v1 = hexval(substr(s, i + 1, 1))
+          v2 = hexval(substr(s, i + 2, 1))
+          if (v1 >= 0 && v2 >= 0) {
+            out = out sprintf("%c", v1 * 16 + v2)
+            i += 3
+            continue
+          }
+        }
+        out = out c
+        i++
+      }
+      return out
+    }
     BEGIN {
       if (fmfile != "") {
         while ((getline l < fmfile) > 0) {
@@ -597,9 +625,24 @@ condense_test_trap() {
         close(fmfile)
       }
     }
-    !seen_test && match($0, /__test_[A-Za-z0-9_]+/) {
-      seen_test = 1
-      failing = substr($0, RSTART + 7, RLENGTH - 7)
+    # First __test_<name> stack frame = the failing test. Quoted names
+    # keep spaces and Unicode in the wasm name section; some frames
+    # percent-encode those bytes (`has%20spaces`). Cut at the frame
+    # delimiter (` (wasm:` on Node/V8, EOL on wasmtime), not at the
+    # first non-[A-Za-z0-9_%] character (#1946). Guest stderr can
+    # contain `__test_` (e.g. `__test_!!!`); only Node `at ... (wasm:`
+    # and wasmtime `<unknown>!` frames count.
+    !seen_test && match($0, /at __test_/) {
+      rest = substr($0, RSTART + length("at __test_"))
+      if (match(rest, / \(wasm:/)) {
+        failing = substr(rest, 1, RSTART - 1)
+        if (failing != "") seen_test = 1
+      }
+    }
+    !seen_test && match($0, /<unknown>!__test_/) {
+      failing = substr($0, RSTART + length("<unknown>!__test_"))
+      sub(/[[:space:]]+$/, "", failing)
+      if (failing != "") seen_test = 1
     }
     $0 == "assert_eq failed" || $0 ~ /^  expected:/ || $0 ~ /^  actual:/ {
       ndiag++
@@ -626,7 +669,7 @@ condense_test_trap() {
       }
     }
     END {
-      if (failing != "") print "  failing test: " failing
+      if (failing != "") print "  failing test: " pct_decode(failing)
       for (i = 1; i <= ndiag; i++) print diags[i]
       if (reason != "")  print "  trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]

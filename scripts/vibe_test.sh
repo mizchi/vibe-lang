@@ -251,6 +251,34 @@ vt_fail_detail() {
   local errf="$1" fm="$2" base="$3"
   [ -s "$errf" ] || return 0
   awk -v base="$base" -v fmfile="$fm" '
+    function hexval(c) {
+      if (c >= "0" && c <= "9") return c + 0
+      if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
+      if (c >= "a" && c <= "f") return index("abcdef", c) + 9
+      return -1
+    }
+    # Quoted names may appear percent-encoded (`has%20spaces`). Keep
+    # this decoder in lockstep with runtime/vibe condense_test_trap.
+    function pct_decode(s,    out, i, n, c, v1, v2) {
+      out = ""
+      n = length(s)
+      i = 1
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "%" && i + 2 <= n) {
+          v1 = hexval(substr(s, i + 1, 1))
+          v2 = hexval(substr(s, i + 2, 1))
+          if (v1 >= 0 && v2 >= 0) {
+            out = out sprintf("%c", v1 * 16 + v2)
+            i += 3
+            continue
+          }
+        }
+        out = out c
+        i++
+      }
+      return out
+    }
     BEGIN {
       if (fmfile != "") {
         while ((getline l < fmfile) > 0) {
@@ -261,9 +289,10 @@ vt_fail_detail() {
       }
     }
     # First __test_<name> stack frame = the failing test. Quoted names
-    # keep spaces and Unicode in the wasm name section; cut at the
-    # frame delimiter (` (wasm:` on Node/V8, EOL on wasmtime), not at
-    # the first non-[A-Za-z0-9_] character (#1946). Guest stderr can
+    # keep spaces and Unicode in the wasm name section; some frames
+    # percent-encode those bytes (`has%20spaces`). Cut at the frame
+    # delimiter (` (wasm:` on Node/V8, EOL on wasmtime), not at the
+    # first non-[A-Za-z0-9_%] character (#1946). Guest stderr can
     # contain `__test_` (e.g. `__test_!!!`); only Node `at ... (wasm:`
     # and wasmtime `<unknown>!` frames count.
     !seen_test && match($0, /at __test_/) {
@@ -308,7 +337,7 @@ vt_fail_detail() {
       }
     }
     END {
-      if (failing != "") print "       failing test: " failing
+      if (failing != "") print "       failing test: " pct_decode(failing)
       for (i = 1; i <= ndiag; i++) print diags[i]
       if (reason != "")  print "       trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
