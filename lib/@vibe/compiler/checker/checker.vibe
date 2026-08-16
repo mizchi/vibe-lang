@@ -1813,7 +1813,7 @@ fn effect_label_is_exempt(lbl: String) -> Bool {
   // opt-in and carries real information, so dropping it through a pure-typed
   // slot is exactly the #939 hole this check exists to catch. Nothing in the
   // codebase writes a kinded label, so no existing program changes verdict.
-  if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") {
+  if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") || String::starts_with(lbl, "#param[") || String::starts_with(lbl, "#aliasparam[") || String::starts_with(lbl, "#fieldparam[") {
     true
   } else if (is_exception_effect_name(lbl) && String::length(exception_effect_kind(lbl)) == 0) || lbl == "Async" {
     true
@@ -2728,6 +2728,24 @@ fn param_marker_index(label: String) -> Option[Int] {
     }
   } else {
     None
+  }
+}
+
+/// Scalar / unit types cannot later mention a region, so a function that
+/// merely returns such a parameter must stay a pure `None` row. Attaching
+/// `#aliasparam` there made identity `(x: Int) -> x` look effectful and
+/// then fail #939 drop-checks (`inc` into a `with Logger` slot, Parallel::map).
+fn type_can_carry_region(ty: Type) -> Bool {
+  match ty {
+    CtFn(_, _, _) => true,
+    CtArray(_) => true,
+    CtOption(_) => true,
+    CtTuple(_) => true,
+    CtRecord(_) => true,
+    CtNamed(_, _) => true,
+    CtVar(_) => true,
+    CtForAll(_, _, _) => true,
+    _ => false
   }
 }
 
@@ -8518,13 +8536,40 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let capture_effect = closure_capture_row(effect, body, params, fn_env, s3)
       let checked_effect = match direct_result_param_index(body, params) {
-        Some(index) => merge_provenance_row(capture_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]")))),
+        Some(index) => {
+          let pty = if index >= 0 && index < Array::length(param_types) {
+            subst_apply(s3, Array::get(param_types, index))
+          } else {
+            CtUnit
+          }
+          if type_can_carry_region(pty) {
+            merge_provenance_row(capture_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]"))))
+          } else {
+            capture_effect
+          }
+        },
         None => capture_effect
       }
       let dependency_effect = match direct_result_field_param_index(body, params) {
-        Some(index) => merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]")))),
+        Some(index) => if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
+          subst_apply(s3, Array::get(param_types, index))
+        } else {
+          CtUnit
+        }) {
+          merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
+        } else {
+          checked_effect
+        },
         None => match direct_result_enum_payload_param_index(body, params, defs) {
-          Some(index) => merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]")))),
+          Some(index) => if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
+            subst_apply(s3, Array::get(param_types, index))
+          } else {
+            CtUnit
+          }) {
+            merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
+          } else {
+            checked_effect
+          },
           None => checked_effect
         }
       }
