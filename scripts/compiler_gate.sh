@@ -1130,14 +1130,14 @@ cat > "$cdir6f/consumer.vibe" <<EOF
 require @vibe/core 0.2.0 = $core_pin
 
 import @vibe/core {
-  sha1, encode_uleb128, read_uleb128, list_of3, list_sum, from_array, contains
+  sha1, encode_uleb128, read_uleb128, type List, from_array, contains
 }
 export let _start: () -> Int = () -> {
   assert(sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d")
   let buf = encode_uleb128(624485)
   let (v, _) = read_uleb128(buf, 0)
   assert(eq(v, 624485))
-  assert(eq(list_sum(list_of3(1, 2, 3)), 6))
+  assert(eq(List::sum(List::of3(1, 2, 3)), 6))
   let s = from_array(["a", "b"])
   assert(contains(s, "a"))
   assert(not(contains(s, "z")))
