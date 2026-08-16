@@ -4558,6 +4558,131 @@ fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, d
   }
 }
 
+/// #1938 follow-up: the enum a variant name belongs to, but ONLY when that
+/// enum declares no type parameters. `name` is either the qualified
+/// `Enum::Variant` or the bare `Variant`.
+///
+/// The parameter count is the whole question. A carrier with a type parameter
+/// records what it holds -- `Cell[T]::Of(f)` is `Cell[() -> Array[Int] with
+/// #region_5]`, `MutList[T, r]` names the region outright -- so the checker
+/// can still follow the value wherever it goes. A carrier with no parameter
+/// has nowhere to put that, and `Box::Hold(f) : Box` is where the region
+/// dependency stops being visible.
+fn monomorphic_enum_ctor_owner(name: String, defs: Array[TypeDef]) -> Option[String] {
+  let sep = String::index_of(name, "::")
+  let (qualifier, variant) = if sep >= 0 {
+    (String::substring(name, 0, sep), String::substring(name, sep + 2, String::length(name)))
+  } else {
+    ("", name)
+  }
+  if String::length(variant) == 0 {
+    None
+  } else {
+    let mut owner = None
+    for def in defs {
+      match def {
+        TDEnum(ename, eparams, variants) => if Array::length(eparams) == 0 && (String::length(qualifier) == 0 || qualifier == ename) {
+          for entry in variants {
+            let (vname, _) = entry
+            if vname == variant {
+              owner = Some(ename)
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    owner
+  }
+}
+
+/// #1938 follow-up: constructing a parameterless carrier out of a value that
+/// depends on the active region ERASES that dependency, so reject it here --
+/// the construction is the last point where it is still visible.
+///
+/// Measured on the provenance model this sits on: once the rider is gone,
+/// every later route is invisible. A `let` alias, a container, an assignment
+/// to an outer binding and a return all carry `Box` around with nothing left
+/// to check, and the type-level test that catches the same capture in a
+/// tuple, an array, an `Option` or a generic enum finds nothing to look at.
+/// Rejecting the escape instead of the erasure would mean rediscovering the
+/// dependency at each of those sites; rejecting the erasure needs one rule.
+///
+/// This over-approximates: a carrier that never leaves the region is refused
+/// too. The fix is to let it record what it holds -- give it a type parameter
+/// (`struct Slot[T] { f: T }`) or a region parameter in the style of
+/// `MutList[T, r]` -- which is the same shape the accepted carriers already
+/// have. Writing the field after construction (the value is region-local
+/// then) also stays legal.
+fn region_carrier_erasure_check(name: String, args: Array[Expr], callee_off: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+  if env_has_active_region(env) {
+    match monomorphic_enum_ctor_owner(name, defs) {
+      Some(ename) => {
+        let mut s1 = s
+        let mut c1 = c
+        let mut offender = 0 - 1
+        let mut ai = 0
+        while ai < Array::length(args) {
+          let arg = Array::get(args, ai)
+          let throwaway = array_empty()
+          let throwtab = array_empty()
+          let (arg_ty, ns, nc) = ce(arg, env, defs, s1, c1, throwaway, throwtab)
+          if offender < 0 && type_mentions_active_region(subst_apply(ns, arg_ty), env) {
+            offender = ai
+          } else {
+            ()
+          }
+          s1 = ns
+          c1 = nc
+          ai = ai + 1
+        }
+        if offender >= 0 {
+          // The argument's own offset when it has one; the constructor's
+          // otherwise. A diagnostic without `line:col` is a defect in this
+          // repository (#1567), and a literal lambda argument has no offset
+          // of its own.
+          let arg_off = region_erasure_off(Array::get(args, offender))
+          let located = if arg_off >= 0 {
+            off_marker(arg_off)
+          } else {
+            off_marker_len(callee_off, String::length(name))
+          }
+          Array::push(errors, String::concat(region_carrier_erasure_message(ename), located))
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// A literal lambda carries no offset of its own (`EFn` has no offset slot),
+/// and it is the most common thing to store into an erasing carrier. Fall
+/// through to the first offset inside its body so the diagnostic still points
+/// at source instead of nowhere (#1567).
+fn region_erasure_off(e: Expr) -> Int {
+  let off = tail_expr_off(e)
+  if off >= 0 {
+    off
+  } else {
+    match e {
+      EFn(_, _, _, _, _, body) => region_erasure_off(body),
+      _ => 0 - 1
+    }
+  }
+}
+
+fn region_carrier_erasure_message(carrier: String) -> String {
+  String::concat("`", String::concat(carrier, "` has no type parameter to record the region this value depends on, so storing it here erases the dependency: give the carrier a type parameter (like `MutList[T, r]`), or copy the value out first (`MutList::to_array`)"))
+}
+
 /// Nominal struct identity intentionally omits field types. Reconstruct only
 /// the tail record literal's local let environment so a region-return check can
 /// inspect the actual field values without changing the public nominal type.
@@ -5804,6 +5929,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         typed_occurrence_capture_skip_children(capture, 1)
         field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_expr)
         retaining_write_region_check(name, args, env, defs, s, c, errors, check_expr)
+        region_carrier_erasure_check(name, args, callee_off, env, defs, s, c, errors, check_expr)
         index_target_check(name, args, env, defs, s, c, errors, check_expr)
         if name == "perform" {
           if Array::length(args) == 1 {
@@ -8765,6 +8891,40 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         match find_typedef(defs, rn) {
           Some(td) => match td {
             TDStruct(_, dfields, _, s_tparams) => {
+              // #1938 follow-up: the struct half of
+              // region_carrier_erasure_check. A struct declared without type
+              // parameters has nowhere to record the region a field value
+              // depends on -- `Wrap::{ f: closure }` is `Wrap` -- so the
+              // dependency is refused at the literal, where it is still
+              // visible. A generic struct keeps it in the instantiated type
+              // argument and is left alone.
+              if Array::length(s_tparams) == 0 && env_has_active_region(env) {
+                let mut ri = 0
+                let mut erased = 0 - 1
+                while ri < Array::length(field_tys) {
+                  let (_, rfty) = Array::get(field_tys, ri)
+                  if erased < 0 && type_mentions_active_region(subst_apply(s1, rfty), env) {
+                    erased = ri
+                  } else {
+                    ()
+                  }
+                  ri = ri + 1
+                }
+                if erased >= 0 {
+                  let (_, erased_val) = Array::get(fields, erased)
+                  let rec_off = region_erasure_off(erased_val)
+                  let rec_located = if rec_off >= 0 {
+                    off_marker(rec_off)
+                  } else {
+                    ""
+                  }
+                  Array::push(errors, String::concat(region_carrier_erasure_message(rn), rec_located))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
               // Unknown literal fields (present in the literal, absent from
               // the declaration).
               let mut ui = 0
