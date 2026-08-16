@@ -471,209 +471,209 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
 /// allocated (the slot holds i64 0), the body value is dropped instead of
 /// pushed, and the loop's value is that 0.
 export fn compile_forin_loop(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, collect: Bool) -> Int with Exception {
-    let names_len_at_forin = Array::length(local_names)
-    let var_name = get_eforin_name(expr)
-    let iter_expr = get_eforin_iter(expr)
-    let body = get_eforin_body(expr)
-    // #715: mirror EWhile's (#706) loop-borrowed-names protection. The outer
-    // locals live at loop entry are re-consumed on every iteration via the
-    // back-edge (`br 0`), so a consuming use of one inside the body must dup
-    // to survive past the first iteration. Names declared inside the body
-    // (var_name, index_name, __forin_* temps) are appended past lb_base and
-    // never added here, matching EWhile.
-    let lb_base = Array::length(ctx.loop_borrowed_names)
-    if ctx.enable_rc {
-      let mut lbi = 0
-      while lbi < names_len_at_forin {
-        Array::push(ctx.loop_borrowed_names, Array::get(local_names, lbi))
-        lbi = lbi + 1
-      }
-    } else {
-      ()
+  let names_len_at_forin = Array::length(local_names)
+  let var_name = get_eforin_name(expr)
+  let iter_expr = get_eforin_iter(expr)
+  let body = get_eforin_body(expr)
+  // #715: mirror EWhile's (#706) loop-borrowed-names protection. The outer
+  // locals live at loop entry are re-consumed on every iteration via the
+  // back-edge (`br 0`), so a consuming use of one inside the body must dup
+  // to survive past the first iteration. Names declared inside the body
+  // (var_name, index_name, __forin_* temps) are appended past lb_base and
+  // never added here, matching EWhile.
+  let lb_base = Array::length(ctx.loop_borrowed_names)
+  if ctx.enable_rc {
+    let mut lbi = 0
+    while lbi < names_len_at_forin {
+      Array::push(ctx.loop_borrowed_names, Array::get(local_names, lbi))
+      lbi = lbi + 1
     }
-    let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
-    let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
-    let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
-    let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
-    let result_local = next_local
-    let arr_local = next_local + 1
-    let i_local = next_local + 2
-    Array::push(local_names, "__forin_res")
-    Array::push(local_names, "__forin_arr")
-    Array::push(local_names, "__forin_i")
-    if collect {
-      emit_call(buf, arr_new_fi)
-    } else {
-      emit_i64_const(buf, 0)
-    }
-    emit_local_set(buf, result_local)
-    let nl1pre = compile_expr(buf, iter_expr, local_names, next_local + 3, ctx, ld)
-    emit_local_set(buf, arr_local)
-    // #807: for-in over a String silently iterated zero times — the loop
-    // below reads `Array::length` from the value, but a String is an
-    // `(offset << 32) | length` fat pointer, not an array pointer. Array
-    // values (rc-tagged or not) are 32-bit heap pointers whose high 32 bits
-    // are zero, so dispatch on the high bits at runtime (same fat-pointer
-    // discrimination family as `__to_string`, ADR-0058) and materialize the
-    // string's bytes into a fresh Array[Int] of char codes before the shared
-    // array loop. The offset-0 interned string ("") misclassifies as an
-    // array whose length load reads zeroed memory — 0 iterations either way,
-    // so it stays correct. String offsets are < 2^31, so the arithmetic
-    // shift never sign-extends. Under RC the materialized array is not
-    // dropped at loop exit (same as the iterated value today).
-    let (str_len_fi, _, _) = resolve_func(ctx.func_table, "String::length")
-    let (str_ccat_fi, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
-    let conv_local = nl1pre
-    let j_local = nl1pre + 1
-    Array::push(local_names, "__forin_conv")
-    Array::push(local_names, "__forin_j")
-    let nl1 = nl1pre + 2
-    emit_local_get(buf, arr_local)
-    emit_i64_const(buf, 32)
-    emit_i64_shr_s(buf)
-    emit_i64_eqz(buf)
-    emit_if_void(buf)
-    emit_else(buf)
+  } else {
+    ()
+  }
+  let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+  let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+  let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+  let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+  let result_local = next_local
+  let arr_local = next_local + 1
+  let i_local = next_local + 2
+  Array::push(local_names, "__forin_res")
+  Array::push(local_names, "__forin_arr")
+  Array::push(local_names, "__forin_i")
+  if collect {
     emit_call(buf, arr_new_fi)
-    emit_local_set(buf, conv_local)
+  } else {
     emit_i64_const(buf, 0)
-    emit_local_set(buf, j_local)
-    emit_block_void(buf)
-    emit_loop_void(buf)
-    emit_local_get(buf, j_local)
-    emit_local_get(buf, arr_local)
-    emit_call(buf, str_len_fi)
-    if ctx.enable_rc {
-      emit_i64_const(buf, 1)
-      emit_i64_shr_s(buf)
-    } else {
-      ()
-    }
-    emit_i64_ge_s(buf)
-    emit_br_if(buf, 1)
-    emit_local_get(buf, conv_local)
-    emit_local_get(buf, arr_local)
-    emit_local_get(buf, j_local)
-    if ctx.enable_rc {
-      emit_i64_const(buf, 1)
-      emit_i64_shl(buf)
-    } else {
-      ()
-    }
-    emit_call(buf, str_ccat_fi)
-    emit_call(buf, arr_push_fi)
-    emit_local_get(buf, j_local)
+  }
+  emit_local_set(buf, result_local)
+  let nl1pre = compile_expr(buf, iter_expr, local_names, next_local + 3, ctx, ld)
+  emit_local_set(buf, arr_local)
+  // #807: for-in over a String silently iterated zero times — the loop
+  // below reads `Array::length` from the value, but a String is an
+  // `(offset << 32) | length` fat pointer, not an array pointer. Array
+  // values (rc-tagged or not) are 32-bit heap pointers whose high 32 bits
+  // are zero, so dispatch on the high bits at runtime (same fat-pointer
+  // discrimination family as `__to_string`, ADR-0058) and materialize the
+  // string's bytes into a fresh Array[Int] of char codes before the shared
+  // array loop. The offset-0 interned string ("") misclassifies as an
+  // array whose length load reads zeroed memory — 0 iterations either way,
+  // so it stays correct. String offsets are < 2^31, so the arithmetic
+  // shift never sign-extends. Under RC the materialized array is not
+  // dropped at loop exit (same as the iterated value today).
+  let (str_len_fi, _, _) = resolve_func(ctx.func_table, "String::length")
+  let (str_ccat_fi, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+  let conv_local = nl1pre
+  let j_local = nl1pre + 1
+  Array::push(local_names, "__forin_conv")
+  Array::push(local_names, "__forin_j")
+  let nl1 = nl1pre + 2
+  emit_local_get(buf, arr_local)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  emit_else(buf)
+  emit_call(buf, arr_new_fi)
+  emit_local_set(buf, conv_local)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, j_local)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, j_local)
+  emit_local_get(buf, arr_local)
+  emit_call(buf, str_len_fi)
+  if ctx.enable_rc {
     emit_i64_const(buf, 1)
-    emit_i64_add(buf)
-    emit_local_set(buf, j_local)
-    emit_br(buf, 0)
-    emit_end(buf)
-    emit_end(buf)
-    emit_local_get(buf, conv_local)
-    emit_local_set(buf, arr_local)
-    emit_end(buf)
-    emit_i64_const(buf, 0)
-    emit_local_set(buf, i_local)
-    emit_block_void(buf)
-    emit_loop_void(buf)
-    emit_local_get(buf, i_local)
-    emit_local_get(buf, arr_local)
-    emit_call(buf, arr_len_fi)
-    // `i_local` is a raw counter (init 0, step 1). Under RC `Array::length`
-    // returns a tagged Int (`len << 1`), so untag it to compare against the raw
-    // counter — otherwise the loop runs twice per element (#704). The index is
-    // re-tagged at the `Array::get` site below.
-    if ctx.enable_rc {
-      emit_i64_const(buf, 1)
-      emit_i64_shr_s(buf)
-    }
-    emit_i64_ge_s(buf)
-    emit_br_if(buf, 1)
-    // Indexed `for i, x in arr`: bind the loop counter to the user index name
-    // before the value var (gc backend parity — backend_expr.vibe). The counter
-    // `i_local` is a raw i64; under RC ints are `value << 1`, so shift to match
-    // the user-visible Int representation (same as EInt codegen).
-    let index_name = get_eforin_index(expr)
-    let var_local = match index_name {
-      Some(idx_name) => {
-        emit_local_get(buf, i_local)
-        if ctx.enable_rc {
-          emit_i64_const(buf, 1)
-          emit_i64_shl(buf)
-        }
-        emit_local_set(buf, nl1)
-        Array::push(local_names, idx_name)
-        nl1 + 1
-      },
-      None => nl1
-    }
-    emit_local_get(buf, arr_local)
-    emit_local_get(buf, i_local)
-    // Re-tag the raw counter to a vibe Int (`i << 1`) so `Array::get` (which
-    // untags its index under RC) reads the correct element (#704).
-    if ctx.enable_rc {
-      emit_i64_const(buf, 1)
-      emit_i64_shl(buf)
-    }
-    emit_call(buf, arr_get_fi)
-    emit_local_set(buf, var_local)
-    Array::push(local_names, var_name)
-    // #715: `var_name` is bound to `Array::get(arr, i)`'s result every
-    // iteration -- a BORROWED view into `arr_local`, exactly like a
-    // hand-written `let var_name = Array::get(arr, i)` (compile_expr_tail.vibe's
-    // is_borrow_ret handling, which deliberately leaves such a let untracked
-    // and instead dups at each owning consuming use via the loop_borrowed_names
-    // piggyback -- see its #708-follow-up comment). EForIn's implicit bind
-    // skipped that registration entirely, so a body that passes `var_name` to a
-    // function taking ownership of its argument (e.g. a self-recursive call
-    // like `resolve_type_expr(p, defs)`) let the callee drop a reference the
-    // array still owns -- a same-address free while `arr_local` still points at
-    // it, corrupting the free list once `arr_local` is later dropped or reread.
-    // Reuse the same ctx.loop_borrowed_names mechanism (cc_is_loop_borrowed_ident
-    // in compile_call.vibe) so owning uses of `var_name` inside `body` get the
-    // missing dup; the existing `Array::truncate(ctx.loop_borrowed_names, lb_base)`
-    // below already restores the outer state since this push lands after lb_base.
-    if ctx.enable_rc {
-      Array::push(ctx.loop_borrowed_names, var_name)
-    } else {
-      ()
-    }
-    let nl2 = var_local + 1
-    // Same innermost-loop ld reset as EWhile (see compile_expr_tail3).
-    let nl3 = compile_expr(buf, body, local_names, nl2, ctx, 0)
-    let body_val = nl3
-    Array::push(local_names, "__forin_val")
-    if collect {
-      emit_local_set(buf, body_val)
-      emit_local_get(buf, result_local)
-      emit_local_get(buf, body_val)
-      emit_call(buf, arr_push_fi)
-    } else {
-      // Discard form: the body value is not collected. A plain stack drop
-      // matches what ESeq does with a discarded head today (no rc release
-      // -- releasing here could double-free a borrowed body value).
-      emit_drop(buf)
-    }
-    emit_local_get(buf, i_local)
+    emit_i64_shr_s(buf)
+  } else {
+    ()
+  }
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, conv_local)
+  emit_local_get(buf, arr_local)
+  emit_local_get(buf, j_local)
+  if ctx.enable_rc {
     emit_i64_const(buf, 1)
-    emit_i64_add(buf)
-    emit_local_set(buf, i_local)
-    emit_br(buf, 0)
-    emit_end(buf)
-    emit_end(buf)
-    Array::truncate(ctx.loop_borrowed_names, lb_base)
+    emit_i64_shl(buf)
+  } else {
+    ()
+  }
+  emit_call(buf, str_ccat_fi)
+  emit_call(buf, arr_push_fi)
+  emit_local_get(buf, j_local)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, j_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_local_get(buf, conv_local)
+  emit_local_set(buf, arr_local)
+  emit_end(buf)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, i_local)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, i_local)
+  emit_local_get(buf, arr_local)
+  emit_call(buf, arr_len_fi)
+  // `i_local` is a raw counter (init 0, step 1). Under RC `Array::length`
+  // returns a tagged Int (`len << 1`), so untag it to compare against the raw
+  // counter — otherwise the loop runs twice per element (#704). The index is
+  // re-tagged at the `Array::get` site below.
+  if ctx.enable_rc {
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  }
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  // Indexed `for i, x in arr`: bind the loop counter to the user index name
+  // before the value var (gc backend parity — backend_expr.vibe). The counter
+  // `i_local` is a raw i64; under RC ints are `value << 1`, so shift to match
+  // the user-visible Int representation (same as EInt codegen).
+  let index_name = get_eforin_index(expr)
+  let var_local = match index_name {
+    Some(idx_name) => {
+      emit_local_get(buf, i_local)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
+      emit_local_set(buf, nl1)
+      Array::push(local_names, idx_name)
+      nl1 + 1
+    },
+    None => nl1
+  }
+  emit_local_get(buf, arr_local)
+  emit_local_get(buf, i_local)
+  // Re-tag the raw counter to a vibe Int (`i << 1`) so `Array::get` (which
+  // untags its index under RC) reads the correct element (#704).
+  if ctx.enable_rc {
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+  }
+  emit_call(buf, arr_get_fi)
+  emit_local_set(buf, var_local)
+  Array::push(local_names, var_name)
+  // #715: `var_name` is bound to `Array::get(arr, i)`'s result every
+  // iteration -- a BORROWED view into `arr_local`, exactly like a
+  // hand-written `let var_name = Array::get(arr, i)` (compile_expr_tail.vibe's
+  // is_borrow_ret handling, which deliberately leaves such a let untracked
+  // and instead dups at each owning consuming use via the loop_borrowed_names
+  // piggyback -- see its #708-follow-up comment). EForIn's implicit bind
+  // skipped that registration entirely, so a body that passes `var_name` to a
+  // function taking ownership of its argument (e.g. a self-recursive call
+  // like `resolve_type_expr(p, defs)`) let the callee drop a reference the
+  // array still owns -- a same-address free while `arr_local` still points at
+  // it, corrupting the free list once `arr_local` is later dropped or reread.
+  // Reuse the same ctx.loop_borrowed_names mechanism (cc_is_loop_borrowed_ident
+  // in compile_call.vibe) so owning uses of `var_name` inside `body` get the
+  // missing dup; the existing `Array::truncate(ctx.loop_borrowed_names, lb_base)`
+  // below already restores the outer state since this push lands after lb_base.
+  if ctx.enable_rc {
+    Array::push(ctx.loop_borrowed_names, var_name)
+  } else {
+    ()
+  }
+  let nl2 = var_local + 1
+  // Same innermost-loop ld reset as EWhile (see compile_expr_tail3).
+  let nl3 = compile_expr(buf, body, local_names, nl2, ctx, 0)
+  let body_val = nl3
+  Array::push(local_names, "__forin_val")
+  if collect {
+    emit_local_set(buf, body_val)
     emit_local_get(buf, result_local)
-    // Restore the outer scope. The loop's internal bindings (result/arr/i, the
-    // optional index name, the value name, and the body temp) must not leak into
-    // later identifier lookups, which scan local_names from the end and would
-    // otherwise resolve a shadowed outer var to a stale loop slot. Mirror
-    // compile_match: truncate back to the entry length, then pad with placeholders
-    // up to the high-water local count so slot numbering is preserved.
-    let final_nl = nl3 + 1
-    Array::truncate(local_names, names_len_at_forin)
-    while Array::length(local_names) < final_nl {
-      Array::push(local_names, "")
-    }
-    final_nl
+    emit_local_get(buf, body_val)
+    emit_call(buf, arr_push_fi)
+  } else {
+    // Discard form: the body value is not collected. A plain stack drop
+    // matches what ESeq does with a discarded head today (no rc release
+    // -- releasing here could double-free a borrowed body value).
+    emit_drop(buf)
+  }
+  emit_local_get(buf, i_local)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, i_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  Array::truncate(ctx.loop_borrowed_names, lb_base)
+  emit_local_get(buf, result_local)
+  // Restore the outer scope. The loop's internal bindings (result/arr/i, the
+  // optional index name, the value name, and the body temp) must not leak into
+  // later identifier lookups, which scan local_names from the end and would
+  // otherwise resolve a shadowed outer var to a stale loop slot. Mirror
+  // compile_match: truncate back to the entry length, then pad with placeholders
+  // up to the high-water local count so slot numbering is preserved.
+  let final_nl = nl3 + 1
+  Array::truncate(local_names, names_len_at_forin)
+  while Array::length(local_names) < final_nl {
+    Array::push(local_names, "")
+  }
+  final_nl
 }
 
