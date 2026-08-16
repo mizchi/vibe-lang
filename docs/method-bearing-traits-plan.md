@@ -7,8 +7,9 @@ implemented). Traits are no longer marker-only: `lib/@vibe/core/map.vibe`'s
 `trait Hash { hash_key(Self) -> String }` ships method-bearing impls and
 `derive(Hash)` generates `Type::hash_key` (#694). This document is kept as
 the design record; read statements about "current" compiler behavior as
-describing 2026-06, not today. (The duplicate marker `Hash` in
-`lib/@vibe/prelude/builtin_traits.vibe` is tracked by #1844.)
+describing 2026-06, not today. (The duplicate marker `Hash` that used to
+live in `lib/@vibe/prelude/builtin_traits.vibe` was removed by #1844 —
+@vibe/core's method-bearing `Hash` is the one definition.)
 
 ## Build gotcha (read before iterating on the compiler)
 
