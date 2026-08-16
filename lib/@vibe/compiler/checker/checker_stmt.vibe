@@ -84,7 +84,8 @@ import @vibe/compiler/normalize {
   desugar_labeled_args,
   desugar_railway_binds,
   erase_railway_origin_markers,
-  inject_trait_method_generics
+  inject_trait_method_generics,
+  unresolved_mut_labeled_calls
 }
 
 //# Types
@@ -2848,6 +2849,7 @@ fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows
 fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], errors: Array[String], pre_desugar: Bool) -> Unit {
   match stmt {
     SLet(_, _, _, _, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
+    SFnDecl(_, _, body, _, _) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
     SLetMut(_, _, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
     STest(_, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
     SBench(_, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
@@ -2873,6 +2875,11 @@ fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], erro
 /// validly-reordered fully-labeled call is not misjudged against its
 /// original call-site order.
 fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_desugar: Bool) -> Unit {
+  if pre_desugar {
+    ()
+  } else {
+    report_unresolved_mut_labeled_calls(errors)
+  }
   let tbl = collect_labeled_check_fns(stmts)
   if Array::length(tbl) == 0 {
     ()
@@ -2882,6 +2889,25 @@ fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_
       labeled_name_check_stmt(Array::get(stmts, i), tbl, errors, pre_desugar)
       i = i + 1
     }
+  }
+}
+
+/// #1994: a labeled call whose callee is a `let mut` binding that the program
+/// assigns lambdas with DIFFERENT parameter names. `desugar_labeled_args` walks
+/// past it -- there is no single declared order to reorder into -- and codegen
+/// then binds the arguments in written order, which is the right answer only
+/// when the written order happens to match whichever lambda runs. Report it
+/// here rather than let it compile: the walk in this file cannot find these on
+/// its own, because it validates against a table of top-level functions and
+/// deliberately skips every locally-bound callee.
+fn report_unresolved_mut_labeled_calls(errors: Array[String]) -> Unit {
+  let sites = unresolved_mut_labeled_calls()
+  let mut i = 0
+  while i < Array::length(sites) {
+    let (fname, off) = Array::get(sites, i)
+    let marker = labeled_name_marker(off, String::length(fname))
+    Array::push(errors, String::concat("cannot resolve labeled arguments for ", String::concat(fname, String::concat(": it is a `let mut` binding that is assigned lambdas with different parameter names, so a label does not name a position — call ", String::concat(fname, String::concat(" positionally, or give every lambda assigned to ", String::concat(fname, String::concat(" the same parameter names", marker))))))))
+    i = i + 1
   }
 }
 

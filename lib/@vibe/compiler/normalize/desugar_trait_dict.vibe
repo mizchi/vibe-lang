@@ -9833,6 +9833,265 @@ fn local_fn_tbl_truncate(mark: Int) -> Unit {
 }
 
 ///|
+/// A lambda's parameter labels, in declared order, or None for anything else.
+fn efn_param_labels(v: Expr) -> Option[Array[String]] {
+  match v {
+    EFn(_, _, params, _, _, _) => {
+      let labels = empty_str_array()
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        Array::push(labels, strip_label_tilde(pn))
+        i = i + 1
+      }
+      Some(labels)
+    },
+    _ => None
+  }
+}
+
+///|
+fn str_arrays_equal(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(a) {
+      if Array::get(a, i) != Array::get(b, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+///|
+fn params_bind_name(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    if strip_label_tilde(pn) == name {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+///|
+fn pat_binds_name(p: Pat, name: String) -> Bool {
+  let binders = empty_str_array()
+  collect_pat_binders(p, binders)
+  str_array_contains(binders, name)
+}
+
+///|
+/// The arms whose pattern does NOT take `name` over -- the only ones whose body
+/// can still assign to the binding being scanned.
+fn arms_not_binding(arms: Array[(Pat, Expr)], name: String, labels: Array[String]) -> Bool {
+  let mut i = 0
+  let mut broken = false
+  while i < Array::length(arms) {
+    let (p, body) = Array::get(arms, i)
+    if !broken && !pat_binds_name(p, name) && mut_binding_labels_broken(body, name, labels) {
+      broken = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  broken
+}
+
+///|
+fn loop_binds_broken(binds: Array[(String, Expr)], name: String, labels: Array[String]) -> Bool {
+  let mut i = 0
+  let mut broken = false
+  while i < Array::length(binds) {
+    let (_, init) = Array::get(binds, i)
+    if !broken && mut_binding_labels_broken(init, name, labels) {
+      broken = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  broken
+}
+
+///|
+fn loop_binds_name(binds: Array[(String, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(binds) {
+    let (bn, _) = Array::get(binds, i)
+    if bn == name {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+///|
+/// #1994: can every value `name` holds inside `body` be described by `labels`?
+///
+/// A `let mut` binding is the one local shape whose value is not its
+/// initializer, so the reason #1899/#1952 could register an immutable `let`
+/// from its initializer alone does not carry over: reassigning a lambda with
+/// DIFFERENT parameter names would leave a table that reorders a later call by
+/// stale names. Tracking that per call site needs flow analysis, since an
+/// assignment inside a branch or a loop reaches only its own continuation while
+/// a later call sits in a sibling subtree.
+///
+/// This asks the flow-INSENSITIVE question instead, which needs no analysis and
+/// is sound under every control flow: does the whole scope agree on the labels?
+/// It does when every assignment to `name` binds a lambda declaring the same
+/// parameter names in the same order -- reassignment is then invisible to
+/// argument reordering, and the initializer's labels describe every value the
+/// binding can hold. A non-lambda assigned, different names, or a compound
+/// assignment answers false, and the caller leaves the binding unregistered
+/// exactly as before.
+///
+/// An inner binding that takes the name over is NOT a break: an assignment
+/// inside its scope names the inner binding, not this one. The walk skips those
+/// subtrees rather than giving up on the whole scope, which is the difference
+/// between resolving and rejecting `let mut g = ..; g(x = 1, y = 2); let g = 5`.
+fn mut_binding_labels_stable(body: Expr, name: String, labels: Array[String]) -> Bool {
+  !mut_binding_labels_broken(body, name, labels)
+}
+
+///|
+fn mut_binding_labels_broken(e: Expr, name: String, labels: Array[String]) -> Bool {
+  match e {
+    // A binder's initializer is evaluated in the OUTER scope, so it is still
+    // scanned; only the subtree the new binding covers is skipped.
+    ELet(n, val, body, _) => mut_binding_labels_broken(val, name, labels) || (n != name && mut_binding_labels_broken(body, name, labels)),
+    ELetMut(n, val, body, _) => mut_binding_labels_broken(val, name, labels) || (n != name && mut_binding_labels_broken(body, name, labels)),
+    // `let rec` is in scope inside its own value, so both children are covered.
+    ELetRec(n, val, body) => n != name && (mut_binding_labels_broken(val, name, labels) || mut_binding_labels_broken(body, name, labels)),
+    EFn(_, _, params, _, _, body) => !params_bind_name(params, name) && mut_binding_labels_broken(body, name, labels),
+    EForIn(n, idx, iter, body) => {
+      let shadowed = n == name || match idx {
+        Some(ix) => ix == name,
+        None => false
+      }
+      mut_binding_labels_broken(iter, name, labels) || (!shadowed && mut_binding_labels_broken(body, name, labels))
+    },
+    ELoop(binds, body) => loop_binds_broken(binds, name, labels) || (!loop_binds_name(binds, name) && mut_binding_labels_broken(body, name, labels)),
+    EMatch(scrut, arms) => mut_binding_labels_broken(scrut, name, labels) || arms_not_binding(arms, name, labels),
+    EHandle(body, arms) => mut_binding_labels_broken(body, name, labels) || arms_not_binding(arms, name, labels),
+    EAssign(n, v, cont) => {
+      let here = if n == name {
+        match efn_param_labels(v) {
+          Some(assigned) => !str_arrays_equal(assigned, labels),
+          None => true
+        }
+      } else {
+        false
+      }
+      here || mut_binding_labels_broken(v, name, labels) || mut_binding_labels_broken(cont, name, labels)
+    },
+    EAssignOp(n, _, v, cont) => n == name || mut_binding_labels_broken(v, name, labels) || mut_binding_labels_broken(cont, name, labels),
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut broken = false
+      while i < Array::length(kids) {
+        if broken {
+          i = Array::length(kids)
+        } else {
+          if mut_binding_labels_broken(Array::get(kids, i), name, labels) {
+            broken = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+      }
+      broken
+    }
+  }
+}
+
+///|
+/// #1994: `let mut` lambda bindings whose scope does NOT agree on the labels,
+/// with the index the name occupies in `shadows` -- same innermost-binding
+/// discipline as `local_fn_tbl_cell` above. A labeled call to one of these has
+/// no resolution at all, so it must be reported rather than left to bind in
+/// written order, which is right only by luck.
+let unstable_mut_tbl_cell: Array[(String, Int)] = array_empty()
+
+///|
+fn unstable_mut_tbl_push(name: String, at: Int) -> Unit {
+  Array::push(unstable_mut_tbl_cell, (name, at))
+}
+
+///|
+fn unstable_mut_tbl_truncate(mark: Int) -> Unit {
+  Array::truncate(unstable_mut_tbl_cell, mark)
+}
+
+///|
+/// Call sites drained by the checker (`unresolved_mut_labeled_calls`), as
+/// (callee name, callee offset).
+let unresolved_mut_labeled_cell: Array[(String, Int)] = array_empty()
+
+///|
+/// The labeled calls this pass could not resolve because their callee is a
+/// `let mut` binding whose scope disagrees about its parameter names. Drained
+/// by `check_program` right after `desugar_labeled_args`, which is the only
+/// caller that owns a diagnostics channel; every other caller re-runs the pass
+/// and clears the cell at entry.
+export fn unresolved_mut_labeled_calls() -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(unresolved_mut_labeled_cell) {
+    Array::push(out, Array::get(unresolved_mut_labeled_cell, i))
+    i = i + 1
+  }
+  out
+}
+
+///|
+/// Is `fname`'s innermost binding an unstable `let mut` lambda?
+fn unstable_mut_tbl_lookup(fname: String, shadows: Array[String]) -> Bool {
+  let mut innermost = 0 - 1
+  let mut i = 0
+  while i < Array::length(shadows) {
+    if Array::get(shadows, i) == fname {
+      innermost = i
+    }
+    i = i + 1
+  }
+  if innermost < 0 {
+    false
+  } else {
+    let mut j = Array::length(unstable_mut_tbl_cell) - 1
+    let mut found = false
+    while j >= 0 {
+      let (n, at) = Array::get(unstable_mut_tbl_cell, j)
+      if n == fname && at == innermost {
+        found = true
+        j = 0 - 1
+      } else {
+        j = j - 1
+      }
+    }
+    found
+  }
+}
+
+///|
 /// The entry for `fname`, but only when it is still the innermost binding of
 /// that name. Returns (labels, optional flags).
 fn local_fn_tbl_lookup(fname: String, shadows: Array[String]) -> Option[(Array[String], Array[Bool])] {
@@ -10249,7 +10508,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       }
       let final_args = if any_labeled_arg {
         match callee {
-          EIdent(fname, _) => {
+          EIdent(fname, foff) => {
             // Where the labels come from is the ONLY thing shadowing changes
             // (#1899). A locally bound callee must not take the top-level
             // table -- but if the local binding is itself a labeled lambda, it
@@ -10257,7 +10516,18 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
             let labels_opt = if str_array_contains(shadows, fname) {
               match local_fn_tbl_lookup(fname, shadows) {
                 Some((labels, _)) => Some(labels),
-                None => None
+                None => {
+                  // #1994: a `let mut` lambda whose scope disagrees about its
+                  // parameter names. There is no order to reorder into, so
+                  // record the site for the checker instead of letting the
+                  // arguments bind in written order.
+                  if unstable_mut_tbl_lookup(fname, shadows) {
+                    Array::push(unresolved_mut_labeled_cell, (fname, foff))
+                  } else {
+                    ()
+                  }
+                  None
+                }
               }
             } else {
               lookup_param_labels(tbl, fname)
@@ -10351,9 +10621,11 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       let lmark = Array::length(local_fn_tbl_cell)
       let local_mark = optional_local_enter(name, v)
       Array::push(shadows, name)
-      // #1994: register the initializer, then `local_fn_tbl_replace` on
-      // sequential assign. A call after an assignment that sits in a
-      // sibling branch is still unresolved — that needs flow analysis.
+      // #1994: register the initializer. Sequential `g = (y~, x~) -> ...`
+      // updates the table in `local_fn_tbl_replace` (continuation-only, no
+      // flow). A flow-insensitive "any disagreeing assign rejects every
+      // labeled call" breaks existing sequential-update fixtures
+      // (`labeled_local_lambda_scope_test` / binder-authority).
       local_fn_tbl_push(name, v, mark)
       let rb = relabel_expr(b, tbl, shadows)
       Array::truncate(shadows, mark)
@@ -10475,6 +10747,10 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
 fn relabel_stmt(stmt: Stmt, tbl: Array[(String, Array[String])]) -> Stmt {
   match stmt {
     SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, relabel_expr(body, tbl, empty_str_array())),
+    // `fn name(..) { .. }` is SFnDecl, not SLet. Skipping it left every
+    // labeled call inside a `fn` body un-reordered, including the #1994
+    // `let mut` cases the diagnostic test writes as `fn main()`.
+    SFnDecl(ex, name, body, reqs, enss) => SFnDecl(ex, name, relabel_expr(body, tbl, empty_str_array()), reqs, enss),
     SLetMut(name, ty, body) => SLetMut(name, ty, relabel_expr(body, tbl, empty_str_array())),
     STest(name, body) => STest(name, relabel_expr(body, tbl, empty_str_array())),
     SBench(name, body) => SBench(name, relabel_expr(body, tbl, empty_str_array())),
@@ -10522,6 +10798,9 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
             // meaning between them. Only the SOURCE of the labels is
             // shadow-dependent (#1899); the reorder below, including the
             // binder-authority child remapping, is unchanged.
+            // The #1994 call-site record is deliberately not mirrored here: it
+            // is a diagnostics side channel drained by check_program, which
+            // runs the non-paired lane, and it changes no relabeling decision.
             let labels_opt = if str_array_contains(shadows, fname) {
               match local_fn_tbl_lookup(fname, shadows) {
                 Some((labels, _)) => Some(labels),
@@ -10949,6 +11228,7 @@ fn relabel_stmt_paired(stmt: Stmt, tbl: Array[(String, Array[String])], node: Bi
 fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, body) => dinsp_scan(body, 3, ""),
+    SFnDecl(_, _, body, _, _) => dinsp_scan(body, 3, ""),
     SLetMut(_, _, body) => dinsp_scan(body, 3, ""),
     STest(_, body) => dinsp_scan(body, 3, ""),
     SBench(_, body) => dinsp_scan(body, 3, ""),
@@ -11560,6 +11840,8 @@ export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
 export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
+  Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(unresolved_mut_labeled_cell, 0)
   let tbl = collect_fn_param_labels(stmts)
   // #1500: optional-parameter call sites are rewritten by the same walk (see
   // the ECall arm of relabel_expr). Unlike labeled arguments, an omitted
@@ -11590,11 +11872,14 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   optional_param_tbl_set(array_empty())
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
+  Array::truncate(unstable_mut_tbl_cell, 0)
 }
 
 fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityNode], poisoned: Array[Bool]) -> Unit {
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
+  Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(unresolved_mut_labeled_cell, 0)
   let tbl = collect_fn_param_labels(stmts)
   let opt_tbl = collect_optional_param_fns(stmts)
   optional_param_tbl_set(opt_tbl)
@@ -11623,6 +11908,7 @@ fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityN
   optional_param_tbl_set(array_empty())
   Array::truncate(optional_param_local_cell, 0)
   Array::truncate(local_fn_tbl_cell, 0)
+  Array::truncate(unstable_mut_tbl_cell, 0)
 }
 
 export fn normalize_labeled_args_with_binder_authority(source: LocatedProgramBinderAuthority) -> LabeledArgBinderAuthorityNormalization {

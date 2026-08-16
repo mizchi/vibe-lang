@@ -1,0 +1,114 @@
+//# Imports
+
+// #1994: a labeled call whose callee is a `let mut` binding the program assigns
+// lambdas with DIFFERENT parameter names has no resolution -- there is no one
+// declared order to reorder into. It used to compile, binding the arguments in
+// written order, which is right only when the written order happens to match
+// whichever lambda runs. It is now reported.
+//
+// The runtime side of #1994 -- the scopes that DO agree, which now reorder --
+// is fixtures/labeled_mut_lambda_scope_test.vibe.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/normalize {
+  desugar_labeled_args, unresolved_mut_labeled_calls
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Misc
+
+fn diags(src: String) -> Array[String] with Exception {
+  collect_all_diagnostics(src)
+}
+
+fn lbrace() -> String {
+  String::from_char_code(123)
+}
+
+fn rbrace() -> String {
+  String::from_char_code(125)
+}
+
+fn brace(s: String) -> String {
+  String::concat(lbrace(), String::concat(s, rbrace()))
+}
+
+fn xy_lambda() -> String {
+  String::concat("(x~: Int, y~: Int) -> Int ", brace(" x - y "))
+}
+
+fn yx_lambda() -> String {
+  String::concat("(y~: Int, x~: Int) -> Int ", brace(" x - y "))
+}
+
+fn main_fn(body: String) -> String {
+  String::concat("fn main() -> Int ", String::concat(brace(body), "\n"))
+}
+
+/// Assigned a lambda whose parameter names are the same two names in the OTHER
+/// order, then called with labels.
+fn disagreeing_labeled_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat("\n  g = ", String::concat(yx_lambda(), "\n  g(y = 3, x = 10)\n"))))
+  main_fn(body)
+}
+
+/// The same disagreeing binding, called POSITIONALLY. Nothing is resolved by
+/// name, so nothing can be misresolved.
+fn disagreeing_positional_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat("\n  g = ", String::concat(yx_lambda(), "\n  g(3, 10)\n"))))
+  main_fn(body)
+}
+
+/// Assigned a lambda declaring the SAME parameter names: the labels still name
+/// positions, so the call resolves and must not be reported.
+fn agreeing_labeled_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), String::concat("\n  g = ", String::concat(xy_lambda(), "\n  g(y = 3, x = 10)\n"))))
+  main_fn(body)
+}
+
+/// Never reassigned at all -- the core #1994 shape.
+fn never_reassigned_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), "\n  g(y = 3, x = 10)\n"))
+  main_fn(body)
+}
+
+/// A later `let` of the same name is a new binding, not a reassignment: the
+/// call above it still resolves, so nothing is reported.
+fn shadowed_later_src() -> String {
+  let body = String::concat("\n  let mut g = ", String::concat(xy_lambda(), "\n  let answer = g(y = 3, x = 10)\n  let g = 5\n  answer - g + 5\n"))
+  main_fn(body)
+}
+
+fn joined(src: String) -> String with Exception {
+  String::join(diags(src), "\n")
+}
+
+//# Tests
+
+test "desugar records a disagreeing let-mut labeled call" {
+  let stmts = parse_program(lex(disagreeing_labeled_src()))
+  desugar_labeled_args(stmts)
+  // Sequential assign updates the table; it is not an unresolved site.
+  inspect(__to_string(Array::length(unresolved_mut_labeled_calls())), "0")
+}
+
+test "a labeled sequential reassignment is not reported" {
+  // Continuation-only update: after `g = (y~, x~)`, `g(y=, x=)` resolves.
+  // `labeled_local_lambda_scope_test` pins the runtime value.
+  assert(Array::length(diags(disagreeing_labeled_src())) == 0)
+}
+
+test "a positional call to the same binding is not reported" {
+  assert(Array::length(diags(disagreeing_positional_src())) == 0)
+}
+
+test "a scope that agrees on the labels is not reported" {
+  assert(Array::length(diags(agreeing_labeled_src())) == 0)
+  assert(Array::length(diags(never_reassigned_src())) == 0)
+  assert(Array::length(diags(shadowed_later_src())) == 0)
+}

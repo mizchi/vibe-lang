@@ -1,0 +1,119 @@
+// #1994: a lambda bound by `let mut` got no parameter table, so a labeled call
+// to it was never reordered -- the arguments bound in WRITTEN order, with no
+// diagnostic. `let mut g = (x~: Int, y~: Int) -> Int { x - y }` called as
+// `g(y = 3, x = 10)` returned -7.
+//
+// #1899/#1952 gave block-local `let` bindings a table of their own but left the
+// mutable case out on purpose: a `let mut` can be reassigned to another
+// type-compatible lambda whose parameter NAMES differ (labels are not part of a
+// function's type), and a table built from the initializer would then reorder a
+// later call by stale names.
+//
+// The rule now is flow-insensitive and needs no analysis: register the
+// initializer's labels when the whole scope AGREES on them -- every assignment
+// to the name binds a lambda declaring the same parameter names in the same
+// order -- so reassignment is invisible to reordering. A scope that disagrees
+// stays unregistered and its labeled calls are rejected instead of compiled
+// (see labeled_mut_lambda_unstable_test.vibe).
+//
+// Everything here subtracts on purpose. `x + y` gives the right answer whether
+// or not the arguments were reordered, which is how the first half of #1899
+// survived a "fix verified" claim.
+
+// The core case: never reassigned, so the initializer describes every value the
+// binding can hold. This is the one that returned -7.
+fn mut_labels_no_reassign() -> Int {
+  let mut g = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  g(y = 3, x = 10)
+}
+
+// Reassigned to a lambda declaring the SAME parameter names: the labels are
+// still the labels, so the call reorders and the second lambda runs.
+fn mut_reassigned_same_names() -> Int {
+  let mut g = (x~: Int, y~: Int) -> Int {
+    100 + x - y
+  }
+  g = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  g(y = 3, x = 10)
+}
+
+// The assignment sits inside a branch, which is exactly the shape that makes
+// "invalidate the table when you walk an EAssign" unsound -- the walk reaches
+// the assignment whether or not the branch runs. Both answers here are only
+// reachable if the arguments were reordered (written order gives -7 / -8).
+fn mut_reassigned_in_branch(flip: Bool) -> Int {
+  let mut g = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  if flip {
+    g = (x~: Int, y~: Int) -> Int {
+      x - y - 1
+    }
+  } else {
+    ()
+  }
+  g(y = 3, x = 10)
+}
+
+// A positional call never depended on any of this, and must not start to.
+fn mut_positional() -> Int {
+  let mut g = (x~: Int, y~: Int) -> Int {
+    100 + x - y
+  }
+  g = (y~: Int, x~: Int) -> Int {
+    x - y
+  }
+  g(3, 10)
+}
+
+// An inner binding that takes the name over is NOT a reassignment: the scan
+// skips its scope rather than giving up on the whole `let mut`, so the call
+// before it still resolves.
+fn later_let_does_not_poison() -> Int {
+  let mut g = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  let answer = g(y = 3, x = 10)
+  let g = 5
+  answer - g + 5
+}
+
+// ...and inside that inner scope the INNER labels win. With the outer entry
+// leaking, this returns -7.
+fn inner_let_masks_mut() -> Int {
+  let mut g = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  let _warm = g(y = 3, x = 10)
+  let g = (y~: Int, x~: Int) -> Int {
+    x - y
+  }
+  g(y = 3, x = 10)
+}
+
+// Optional omitted args on `let mut` still fail on the committed seed
+// (`expected 2 args, got 1`). Keep them off this fixture so the labeled
+// reorder cases can run in the seed unit lane.
+
+// The immutable case from #1899/#1952, unchanged.
+fn immutable_control() -> Int {
+  let g = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  g(y = 3, x = 10)
+}
+
+test "labeled arguments on a `let mut` lambda" {
+  inspect(mut_labels_no_reassign(), "7")
+  inspect(mut_reassigned_same_names(), "7")
+  inspect(mut_reassigned_in_branch(false), "7")
+  inspect(mut_reassigned_in_branch(true), "6")
+  inspect(mut_positional(), "7")
+  inspect(later_let_does_not_poison(), "7")
+  inspect(inner_let_masks_mut(), "7")
+  inspect(immutable_control(), "7")
+}
