@@ -1,0 +1,120 @@
+// #1899 (second half) and #1952: a lambda bound by a `let` INSIDE a block got
+// no parameter table at all, so its labels were never reordered and its
+// omitted optional arguments were never filled in.
+//
+// `collect_fn_param_labels` and `collect_optional_param_fns` index top-level
+// statements only, and `relabel_expr`'s ECall arm bailed out for any callee in
+// `shadows`. The bail-out is right as far as "do not apply a top-level
+// function's labels to a local binding that merely shares its name" -- but it
+// left a local labeled lambda with nothing, and the two halves failed
+// differently: labels were applied in WRITTEN order with no diagnostic (P0),
+// while an omitted optional reached the checker as `function arity mismatch`
+// (P1).
+//
+// Everything here is written with SUBTRACTION on purpose. `x + y` gives the
+// right answer whether or not the arguments were reordered, which is how the
+// first half of #1899 survived a "fix verified" claim.
+
+fn block_local_labels() -> Int {
+  let s = (x~: Int, y~: Int) -> Int { x - y }
+  s(y = 3, x = 10)
+}
+
+fn block_local_optional() -> Int {
+  let o = (a: Int, b?: Int) -> Int {
+    match b {
+      Some(v) => a - v,
+      None => a
+    }
+  }
+  o(7)
+}
+
+fn block_local_optional_supplied() -> Int {
+  let o = (a: Int, b?: Int) -> Int {
+    match b {
+      Some(v) => a - v,
+      None => a
+    }
+  }
+  o(10, 3)
+}
+
+// A local lambda's labels must not leak onto an unrelated binding that reuses
+// its name. `s` in the match arm is a PATTERN BINDER: it has no entry of its
+// own, and the outer entry has to be rejected because it is no longer the
+// innermost binding of that name.
+//
+// This case is load-bearing and was measured: with the innermost-index check
+// removed from the lookup, it returns -7 instead of 7.
+fn mask_by_match_binder() -> Int {
+  let s = (x~: Int, y~: Int) -> Int { x - y }
+  match Some((x~: Int, y~: Int) -> Int { y - x }) {
+    Some(s) => s(y = 3, x = 10),
+    None => 0
+  }
+}
+
+// ...and the outer binding comes back into force once the masking one ends.
+fn restored_after_mask() -> Int {
+  let s = (x~: Int, y~: Int) -> Int { x - y }
+  let _masked = mask_by_match_binder()
+  s(y = 3, x = 10)
+}
+
+// A local binding shadowing a top-level function of the same name takes the
+// LOCAL labels, not the top-level table's.
+let dup = (x~: Int, y~: Int) -> Int { x - y }
+
+fn local_wins_over_top_level() -> Int {
+  let dup = (x~: Int, y~: Int) -> Int { y - x }
+  dup(y = 3, x = 10)
+}
+
+// A recursive local binding is in scope inside its own body, so the entry has
+// to be pushed before that body is walked.
+fn rec_labeled() -> Int {
+  let rec down = (n~: Int, acc~: Int) -> Int {
+    if n <= 0 {
+      acc
+    } else {
+      down(acc = acc + n, n = n - 1)
+    }
+  }
+  down(acc = 0, n = 4)
+}
+
+// The over-strip guard from #1925: `n` is genuinely free here and must still
+// ride the closure environment.
+fn real_capture() -> Int {
+  let n = 5
+  let f = (x~: Int) -> Int { x + n }
+  f(x = 10)
+}
+
+// Top level always worked. These are here so a future change that "fixes" the
+// local case by breaking the top-level one cannot pass.
+fn top_level_labels() -> Int {
+  dup(y = 3, x = 10)
+}
+
+fn top_level_optional(a: Int, b?: Int) -> Int {
+  match b {
+    Some(v) => a - v,
+    None => a
+  }
+}
+
+test "labeled and optional parameters on a block-local lambda" {
+  inspect(block_local_labels(), "7")
+  inspect(block_local_optional(), "7")
+  inspect(block_local_optional_supplied(), "7")
+  inspect(mask_by_match_binder(), "7")
+  inspect(restored_after_mask(), "7")
+  inspect(local_wins_over_top_level(), "-7")
+  inspect(rec_labeled(), "10")
+  inspect(real_capture(), "15")
+  inspect(top_level_labels(), "7")
+  inspect(top_level_optional(7), "7")
+  inspect(top_level_optional(10, 3), "7")
+}

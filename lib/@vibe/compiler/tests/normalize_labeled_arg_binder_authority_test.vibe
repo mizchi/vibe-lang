@@ -55,6 +55,16 @@ fn expect_no_authority(source: String) -> Unit with Exception {
   }
 }
 
+fn expect_authority(source: String) -> Unit with Exception {
+  match normalize_source(source) {
+    Some(result) => match labeled_arg_binder_authority_normalization_authority(result) {
+      Some(_) => inspect(true, "true"),
+      None => inspect(false, "true")
+    },
+    None => inspect(false, "true")
+  }
+}
+
 fn expect_ordinary_parity(source: String) -> Unit with Exception {
   match (parse_source_located_with_binder_authority(source), parse_source_located_with_binder_authority(source)) {
     (Some(ordinary_source), Some(paired_source)) => {
@@ -182,9 +192,29 @@ test "poison matrix is complete or none and ordinary output stays identical" {
 }
 
 test "lexical shadowing suppresses top-level resolution in every scoped lane" {
-  expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { let f = (y: Int) -> Int { y }; f(y=1) }")
+  // The invariant is that the TOP-LEVEL `f`'s parameter name never resolves a
+  // call to a local `f`. The first line used to be written as `f(y=1)`, which
+  // stopped distinguishing the two once a local lambda gained labels of its
+  // own (#1899): `y` is the LOCAL parameter, so a pass could resolve it
+  // correctly and still be recorded as suppression. `x=` is the top-level
+  // name, and the local binding has nothing to bind it to.
+  expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { let f = (y: Int) -> Int { y }; f(x=1) }")
   expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { match 1 { f => f(x=1) } }")
   expect_no_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { for f in [1] { f(x=1) }; 0 }")
+}
+
+test "a shadowing local lambda resolves against its OWN parameter names" {
+  // #1899: a shadowed callee used to get no parameter table at all, so this
+  // produced no authority even though the local binding declares `y`.
+  //
+  // Note this is not a new permission for unlabeled parameters: at top level a
+  // labeled argument has always resolved against a plain parameter, because
+  // collect_fn_param_labels records every parameter name (tilde-stripped)
+  // rather than only the marked ones. Measured on the pinned seed as well as
+  // on a current stage2. The local case is catching up with it.
+  expect_authority("fn f(x: Int) -> Int { x }\nfn main() -> Int { let f = (y: Int) -> Int { y }; f(y=1) }")
+  // A match binder and a for-in binder are not lambdas, so they still get no
+  // table -- they are covered as suppression above.
 }
 
 test "source and normalized programs are recursively detached" {
