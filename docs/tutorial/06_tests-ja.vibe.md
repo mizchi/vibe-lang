@@ -22,8 +22,8 @@ String も内容で比較されるので、連結・関数の返り値・変数�
 
 ```bash
 vibe test file_test.vibe             # 1 ファイル
-vibe test a_test.vibe b_test.vibe    # 複数ファイル (ディレクトリは渡せない —
-                                     # 引数はファイルのみ、glob はシェルで展開する)
+vibe test a_test.vibe b_test.vibe    # 複数ファイル
+vibe test tests/                     # ディレクトリ以下の *_test.vibe 全部
 ```
 
 ## CLI ツーリング

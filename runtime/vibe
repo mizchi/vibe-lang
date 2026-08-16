@@ -86,8 +86,9 @@
 #                                         canonicalize a source file in place
 #                                         (--check: exit 1 if not normalized;
 #                                          --stdout: print, don't write)
-#   vibe test    <file_test.vibe>...      compile + run test {} blocks
-#   vibe test --update <file_test.vibe>... auto-patch stale inspect(value,
+#   vibe test    <file_test.vibe|dir>...  compile + run test {} blocks
+#                                         (a directory expands to *_test.vibe)
+#   vibe test --update <file_test.vibe|dir>... auto-patch stale inspect(value,
 #                                         content) snapshots to the actual
 #                                         value on a failing run, then
 #                                         recompile+rerun (MoonBit
@@ -600,6 +601,10 @@ condense_test_trap() {
       seen_test = 1
       failing = substr($0, RSTART + 7, RLENGTH - 7)
     }
+    $0 == "assert_eq failed" || $0 ~ /^  expected:/ || $0 ~ /^  actual:/ {
+      ndiag++
+      diags[ndiag] = "  " $0
+    }
     !seen_reason && /RuntimeError:|wasm trap:/ {
       seen_reason = 1
       reason = $0
@@ -622,6 +627,7 @@ condense_test_trap() {
     }
     END {
       if (failing != "") print "  failing test: " failing
+      for (i = 1; i <= ndiag; i++) print diags[i]
       if (reason != "")  print "  trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }
@@ -1619,7 +1625,7 @@ case "$cmd" in
     esac
     ;;
   test)
-    # `vibe test [--no-cache] [--update] <file_test.vibe>...`
+    # `vibe test [--no-cache] [--update] [--jobs N] <file_test.vibe|dir>...`
     #
     # Pure-test result cache (#634, ADR-0026): a file whose `test {}` blocks are
     # all transitively effect-free is a deterministic function of its source +
@@ -1657,18 +1663,33 @@ case "$cmd" in
     [ "$jobs" -ge 1 ] || die "--jobs must be a positive integer, got: $jobs"
     # shellcheck disable=SC2086
     set -- $files
-    [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] [--update] [--jobs N] <file_test.vibe> [more_test.vibe...]"
-    # Codex review, PR #1175: validate every path up front and abort before
-    # running anything, rather than discovering a missing file mid-run. The
-    # original serial loop's own `[ -f "$src" ] || die ...` only fail-fast
-    # aborted from the missing file onward -- files earlier in the argument
-    # list had already compiled and run (potentially executing effectful
-    # tests) by the time a later typo'd path was discovered. Checking all
-    # paths first is strictly fail-faster than that, and gives the serial
-    # and parallel drivers below identical semantics for a bad invocation.
+    [ "$#" -ge 1 ] || die "usage: vibe test [--no-cache] [--update] [--jobs N] <file_test.vibe | dir> [more...]"
+    # Expand directories to every *_test.vibe under them (same as
+    # scripts/vibe_test.sh). Validate every path up front and abort before
+    # running anything, rather than discovering a missing file mid-run.
+    # The original serial loop's own `[ -f "$src" ] || die ...` only
+    # fail-fast aborted from the missing file onward -- files earlier in
+    # the argument list had already compiled and run (potentially
+    # executing effectful tests) by the time a later typo'd path was
+    # discovered. Checking all paths first is strictly fail-faster than
+    # that, and gives the serial and parallel drivers below identical
+    # semantics for a bad invocation.
+    _test_files=()
     for src in "$@"; do
-      [ -f "$src" ] || die "not found: $src"
+      if [ -d "$src" ]; then
+        while IFS= read -r f; do
+          _test_files+=("$f")
+        done < <(find "$src" -type f -name '*_test.vibe' | sort)
+      elif [ -f "$src" ]; then
+        _test_files+=("$src")
+      else
+        die "not found: $src"
+      fi
     done
+    if [ "${#_test_files[@]}" -eq 0 ]; then
+      die "vibe test: no test files found"
+    fi
+    set -- "${_test_files[@]}"
     tcache="${VIBE_TEST_CACHE:-$VIBE_HOME/cache/test}"
 
     # Runs one test file's compile+run+cache-check, printing its own ok/FAIL

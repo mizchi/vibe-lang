@@ -280,6 +280,10 @@ vt_fail_detail() {
     }
     # First trap-reason line (backtrace frames never contain these markers;
     # strip anyhow chain numbering / runner prefixes).
+    $0 == "assert_eq failed" || $0 ~ /^  expected:/ || $0 ~ /^  actual:/ {
+      ndiag++
+      diags[ndiag] = "       " $0
+    }
     !seen_reason && /RuntimeError:|wasm trap:/ {
       seen_reason = 1
       reason = $0
@@ -305,6 +309,7 @@ vt_fail_detail() {
     }
     END {
       if (failing != "") print "       failing test: " failing
+      for (i = 1; i <= ndiag; i++) print diags[i]
       if (reason != "")  print "       trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }

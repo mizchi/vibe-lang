@@ -22,8 +22,8 @@ concatenations, function results, and values reached through a variable.
 
 ```bash
 vibe test file_test.vibe             # one file
-vibe test a_test.vibe b_test.vibe    # several files (directories are not accepted --
-                                     # arguments are files only; let the shell expand globs)
+vibe test a_test.vibe b_test.vibe    # several files
+vibe test tests/                     # every *_test.vibe under a directory
 ```
 
 ## CLI tooling
