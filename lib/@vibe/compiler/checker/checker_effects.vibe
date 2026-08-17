@@ -24,6 +24,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   is_exception_label,
   is_exception_throw_operation,
+  provider_grade_covers,
   test_bench_default_effects,
   type_name_has_async_iterator_impl
 }
@@ -914,7 +915,8 @@ fn decl_authorizes_op(labels: Array[String], op_name: String) -> Bool {
     let mut i = 0
     let mut found = false
     while i < Array::length(labels) {
-      if exception_effect_labels_equal(Array::get(labels, i), op_name) {
+      let lab = Array::get(labels, i)
+      if exception_effect_labels_equal(lab, op_name) || provider_grade_covers(lab, op_name) {
         found = true
       }
       i = i + 1
@@ -1459,9 +1461,9 @@ fn authority_covers_operation(auth: String, emitted: String) -> Bool {
   if auth == emitted {
     true
   } else if String::index_of(auth, "::") < 0 && standard_provider_owns_operation(emitted) {
-    effect_name_of_op(emitted) == auth
+    effect_name_of_op(emitted) == auth || provider_grade_covers(auth, emitted)
   } else {
-    false
+    provider_grade_covers(auth, emitted)
   }
 }
 
@@ -1573,6 +1575,94 @@ fn raw_fn_effect_string(ty: Option[TypeExpr], body: Expr) -> String {
   }
 }
 
+fn push_unique_label(out: Array[String], lab: String) -> Unit {
+  if String::length(lab) == 0 || effect_row_has_label(Some(out), lab) {
+    ()
+  } else {
+    Array::push(out, lab)
+  }
+}
+
+fn collect_unhandled_entry_ops(root: Expr) -> Array[String] {
+  let out = no_str_labels()
+  let stack = array_empty()
+  Array::push(stack, (root, no_str_labels()))
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let (expr, discharged) = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match expr {
+      EHandle(body, arms) => {
+        let inner = labels_union(discharged, collect_handle_effects(arms))
+        Array::push(stack, (body, inner))
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, arm_body) = Array::get(arms, ai)
+          Array::push(stack, (arm_body, discharged))
+          ai = ai + 1
+        }
+      },
+      EFn(_, _, _, _, _, _) => (),
+      ECall(callee, args, _) => {
+        match callee {
+          EIdent(name, _) => {
+            if name == "perform" && Array::length(args) == 1 {
+              match Array::get(args, 0) {
+                ECall(op_callee, _, _) => match op_callee {
+                  EIdent(op_name, _) => {
+                    if label_is_handled(op_name, discharged) {
+                      ()
+                    } else {
+                      push_unique_label(out, op_name)
+                    }
+                  },
+                  _ => ()
+                },
+                EIdent(op_name, _) => {
+                  if label_is_handled(op_name, discharged) {
+                    ()
+                  } else {
+                    push_unique_label(out, op_name)
+                  }
+                },
+                _ => ()
+              }
+            } else {
+              match builtin_call_effect(name) {
+                Some(eff) => {
+                  let op_label = builtin_call_op_label(name, eff)
+                  if label_is_handled(op_label, discharged) || label_is_handled(eff, discharged) {
+                    ()
+                  } else {
+                    push_unique_label(out, op_label)
+                  }
+                },
+                None => ()
+              }
+            }
+          },
+          _ => ()
+        }
+        Array::push(stack, (callee, discharged))
+        let mut ai = 0
+        while ai < Array::length(args) {
+          Array::push(stack, (Array::get(args, ai), discharged))
+          ai = ai + 1
+        }
+      },
+      _ => {
+        let children = expr_children(expr)
+        let mut ci = 0
+        while ci < Array::length(children) {
+          Array::push(stack, (Array::get(children, ci), discharged))
+          ci = ci + 1
+        }
+      }
+    }
+  }
+  out
+}
+
 fn collect_expr_handle_effects(root: Expr) -> Array[String] {
   let out = no_str_labels()
   let stack = Array::slice([
@@ -1644,15 +1734,15 @@ fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], body: Exp
     if String::length(allows) > 0 {
       let emitted = effect_row_labels(effect_row_parse(Some(raw)))
       let auth = effect_row_labels(effect_row_parse(Some(allows)))
-      let handled = collect_expr_handle_effects(inspect_body)
+      let unhandled = collect_unhandled_entry_ops(inspect_body)
       let unresolved = entry_unresolved_labels(emitted)
       if Array::length(unresolved) > 0 {
         Array::push(errors, EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off))
       } else {
         let mut ui = 0
-        while ui < Array::length(emitted) {
-          let lab = Array::get(emitted, ui)
-          if label_is_handled(lab, handled) || label_is_authorized(lab, auth) {
+        while ui < Array::length(unhandled) {
+          let lab = Array::get(unhandled, ui)
+          if label_is_authorized(lab, auth) {
             ()
           } else {
             Array::push(errors, EEUnauthorizedEntryOperation(fn_name, lab, allows, off))
@@ -2329,7 +2419,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   // ADR-0071 defined and `perform Eff::Op` already had. Strictly
                   // a widening -- nothing that compiled before can start failing.
                   let op_label = builtin_call_op_label(name, eff)
-                  if !in_handle && !decl_authorizes_effect(declared, eff) && !decl_authorizes_effect(declared, op_label) {
+                  if !in_handle && !decl_authorizes_effect(declared, eff) && !decl_authorizes_effect(declared, op_label) && !decl_authorizes_op(declared, op_label) {
                     // Report the OPERATION, per ADR-0071's diagnostic contract:
                     // the fix-it should grant the one operation actually needed,
                     // not widen the row to the whole effect (same rule the
@@ -2968,7 +3058,7 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
       // parameters up on its own.
       let merged_params = merge_param_types_with_sig(ty, params)
       let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names)
-      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, effect_row_labels(effect_row_parse(eff))), false, fn_names, fn_effs, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
+      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff))), false, fn_names, fn_effs, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
     },
     _ => {
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so
