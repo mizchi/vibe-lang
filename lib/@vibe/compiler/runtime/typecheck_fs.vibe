@@ -3463,6 +3463,128 @@ fn parse_offset_digits(msg: String, start: Int, end: Int) -> Int {
     }
   }
 }
+/// Whole-word identifier character (ASCII letter / digit / underscore).
+fn loc_ident_char(c: Int) -> Bool {
+  c >= 97 && c <= 122 || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+
+fn loc_space_char(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn loc_skip_ws_back(source: String, off: Int) -> Int {
+  let mut i = off
+  while i > 0 && loc_space_char(String::char_code_at(source, i - 1)) {
+    i = i - 1
+  }
+  i
+}
+
+fn loc_word_at(source: String, off: Int, name: String) -> Bool {
+  let nlen = String::length(name)
+  let slen = String::length(source)
+  if nlen == 0 || off < 0 || off + nlen > slen {
+    false
+  } else if String::substring(source, off, off + nlen) != name {
+    false
+  } else {
+    let left_ok = off == 0 || !loc_ident_char(String::char_code_at(source, off - 1))
+    let right_ok = off + nlen == slen || !loc_ident_char(String::char_code_at(source, off + nlen))
+    left_ok && right_ok
+  }
+}
+
+fn loc_kw_before(source: String, off: Int, kw: String) -> Bool {
+  let i = loc_skip_ws_back(source, off)
+  let klen = String::length(kw)
+  if i < klen {
+    false
+  } else if String::substring(source, i - klen, i) != kw {
+    false
+  } else {
+    i - klen == 0 || !loc_ident_char(String::char_code_at(source, i - klen - 1))
+  }
+}
+
+/// Recover the source offset of a declaration name tagged `[@fn=name]`.
+/// Prefer `fn name`, then `let name` / `let mut name`, then the first
+/// whole-word occurrence. -1 when the name cannot be found.
+fn find_fn_anchor_off(source: String, name: String) -> Int {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    0 - 1
+  } else {
+    let slen = String::length(source)
+    let mut i = 0
+    let mut fn_off = 0 - 1
+    let mut let_off = 0 - 1
+    let mut first_off = 0 - 1
+    while i + nlen <= slen {
+      if loc_word_at(source, i, name) {
+        if first_off < 0 {
+          first_off = i
+        } else {
+          ()
+        }
+        if fn_off < 0 && loc_kw_before(source, i, "fn") {
+          fn_off = i
+        } else {
+          ()
+        }
+        if let_off < 0 {
+          if loc_kw_before(source, i, "let") {
+            let_off = i
+          } else if loc_kw_before(source, i, "mut") {
+            let before_name = loc_skip_ws_back(source, i)
+            if loc_kw_before(source, before_name - 3, "let") {
+              let_off = i
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + nlen
+      } else {
+        i = i + 1
+      }
+    }
+    if fn_off >= 0 {
+      fn_off
+    } else if let_off >= 0 {
+      let_off
+    } else {
+      first_off
+    }
+  }
+}
+
+/// Decode ` [@fn=name]` (the #1941 fallback when a return-type mismatch has
+/// no AST offset). Always strips the marker. When `name` is found in
+/// `source`, prefix the exact name span; otherwise fall through to the
+/// first-occurrence heuristic on the cleaned message.
+fn locate_fn_name_marker(source: String, msg: String, mi: Int) -> String {
+  let marker = " [@fn="
+  let inner_start = mi + String::length(marker)
+  let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+  if rel_end < 0 {
+    locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+  } else {
+    let close = inner_start + rel_end
+    let name = String::substring(msg, inner_start, close)
+    let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+    let off = find_fn_anchor_off(source, name)
+    if off >= 0 {
+      String::concat(offset_line_col_range_prefix(source, off, off + String::length(name)), stripped)
+    } else {
+      locate_type_error_heuristic(source, stripped)
+    }
+  }
+}
+
 /// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
 /// appended. If N is a valid in-range offset, prefix the stripped message with
 /// its exact `line:col`. Otherwise strip the marker and fall through to the
@@ -3471,8 +3593,13 @@ fn parse_offset_digits(msg: String, start: Int, end: Int) -> Int {
 export fn locate_type_error(source: String, msg: String) -> String {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
+  let fn_mi = String::index_of(msg, " [@fn=")
   if mi < 0 {
-    locate_type_error_heuristic(source, msg)
+    if fn_mi < 0 {
+      locate_type_error_heuristic(source, msg)
+    } else {
+      locate_fn_name_marker(source, msg, fn_mi)
+    }
   } else {
     let inner_start = mi + String::length(marker)
     let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")

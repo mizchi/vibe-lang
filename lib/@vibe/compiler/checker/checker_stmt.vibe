@@ -55,6 +55,7 @@ import @vibe/compiler/core {
 
 import ./checker.vibe {
   TypedOccurrenceRoleLaneCapture,
+  attach_unlocated_return_fn_marker,
   bind_function_dependency_contracts,
   check_assignable,
   check_expr,
@@ -1431,11 +1432,13 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     }
     let (new_env, s1, c1) = match stmt {
       SLet(_, is_rec, name, ann, val) => {
+        let err_before = Array::length(errors)
         let (vt, ns0, nc) = if is_rec {
           check_expr_capture(val, env_bind(env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         } else {
           check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
+        attach_unlocated_return_fn_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
         let (ns, t) = match ann {
@@ -1484,7 +1487,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // miscompiles cross-function references); reject it, but keep
         // checking/binding below for error recovery.
         Array::push(errors, top_level_reject_msg("top-level `let mut` bindings are not allowed; move it into fn main", val))
+        let err_before = Array::length(errors)
         let (vt, ns0, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        attach_unlocated_return_fn_marker(errors, err_before, name)
         let ns = match ann {
           Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
           None => ns0
