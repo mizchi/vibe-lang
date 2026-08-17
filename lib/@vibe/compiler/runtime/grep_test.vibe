@@ -289,3 +289,34 @@ test "grep typed filters fail closed when a structurally matching file is ill-ty
   let ok = "let good: Int = 42\nlet arr = [\n  1\n]\nlet n = Array::length(arr)\n"
   inspect(scan_where(ok, "Array::length($(x:exp))", "$x : Array[Int]"), "a.vibe:5:9: Array::length(arr)\t$x=arr\n")
 }
+
+// #1943: `throw(x)` parses to the same AST as `perform Exception::Throw(x)`,
+// and the printer re-sugars both (plus `Error::Throw`) back to `throw(x)`.
+// A pattern that names one keyword must keep only sites that spell that
+// keyword; a pattern that names neither still matches both.
+fn throw_perform_src() -> String {
+  "fn f() -> Int {\n  throw(\"e\")\n}\nfn g() -> Int {\n  perform Exception::Throw(\"e\")\n}\nfn h() -> Int {\n  perform Error::Throw(\"e\")\n}\n"
+}
+
+test "grep: `throw` matches only the source `throw` site" {
+  inspect(scan(throw_perform_src(), "throw($(x:exp))"), "a.vibe:2:3: throw(\"e\")\t$x=\"e\"\n")
+}
+
+test "grep: `perform Exception::Throw` matches only the `perform` site" {
+  inspect(scan(throw_perform_src(), "perform Exception::Throw($(x:exp))"), "a.vibe:5:3: throw(\"e\")\t$x=\"e\"\n")
+}
+
+test "grep: `perform $(op:exp)` matches `perform`, not `throw`" {
+  inspect(scan(throw_perform_src(), "perform $(op:exp)"), "a.vibe:5:3: throw(\"e\")\t$op=Exception::Throw(\"e\")\na.vibe:8:3: throw(\"e\")\t$op=Error::Throw(\"e\")\n")
+}
+
+test "grep: `$(x:exp)` still matches both `throw` and `perform`" {
+  let out = scan(throw_perform_src(), "$(x:exp)")
+  inspect(String::contains(out, "a.vibe:2:3:"), "1")
+  inspect(String::contains(out, "a.vibe:5:3:"), "1")
+  inspect(String::contains(out, "a.vibe:8:3:"), "1")
+}
+
+test "grep: `perform Error::Throw` matches only that perform spelling" {
+  inspect(scan(throw_perform_src(), "perform Error::Throw($(x:exp))"), "a.vibe:8:3: throw(\"e\")\t$x=\"e\"\n")
+}

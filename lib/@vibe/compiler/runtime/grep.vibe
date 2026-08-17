@@ -103,9 +103,15 @@ export struct GrepHit {
 /// A compiled pattern: the parsed template plus the metavariable names it
 /// declares, in source order (so `--where` can reject a name the pattern
 /// never captures instead of silently filtering nothing out).
+///
+/// `origin` is `"throw"` or `"perform"` when the pattern string's first
+/// identifier (after whitespace) is that keyword, else `""`. `throw(x)` and
+/// `perform Exception::Throw(x)` parse to the same AST, so a keyword-named
+/// pattern has to consult the source token at each hit (#1943).
 export struct GrepPattern {
   template: Expr;
-  vars: Array[String]
+  vars: Array[String];
+  origin: String
 }
 
 /// Everything the typed filters need about ONE file. `type_error` is "" when
@@ -317,6 +323,31 @@ fn grep_check_holes(items: Array[Expr]) -> Unit with Exception {
   }
 }
 
+/// The pattern string's first identifier after leading whitespace, when that
+/// identifier is `throw` or `perform`. Anything else — a metavar, a wrapping
+/// call, a different name — is `""` and does not filter hits.
+fn grep_pattern_origin(pattern: String) -> String {
+  let len = String::length(pattern)
+  let mut i = 0
+  while i < len && (String::char_code_at(pattern, i) == ' ' || String::char_code_at(pattern, i) == 9 || String::char_code_at(pattern, i) == 10 || String::char_code_at(pattern, i) == 13) {
+    i = i + 1
+  }
+  if i >= len || !grep_is_ident_char(String::char_code_at(pattern, i)) {
+    ""
+  } else {
+    let start = i
+    while i < len && grep_is_ident_char(String::char_code_at(pattern, i)) {
+      i = i + 1
+    }
+    let word = String::substring(pattern, start, i)
+    if word == "throw" || word == "perform" {
+      word
+    } else {
+      ""
+    }
+  }
+}
+
 /// Parse a pattern into its template expression. A pattern that parses to
 /// anything other than exactly one expression statement is rejected here with
 /// the shape it actually produced, rather than being matched against nothing.
@@ -340,7 +371,7 @@ export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
       SExpr(e) => {
         grep_validate_holes(e)
         GrepPattern::{
-          template: e, vars: vars
+          template: e, vars: vars, origin: grep_pattern_origin(pattern)
         }
       },
       _ => throw("grep pattern: must be a single EXPRESSION — declaration patterns (`fn`, top-level `let`, `enum`, ...) are not supported yet; use `vibe symbols` for declarations")
@@ -2044,12 +2075,60 @@ fn grep_render_json(ctx: GrepTyped, typed: Bool, hit: GrepHit, line: Int, col: I
 
 //# Functions — per-file driver
 
+/// Whole-word `throw` / `perform` at `offset`, or `""` when the bytes there
+/// are some other token (or the offset is unlocated).
+fn grep_source_keyword_at(source: String, offset: Int) -> String {
+  let len = String::length(source)
+  if offset < 0 || offset >= len {
+    ""
+  } else if offset > 0 && grep_is_ident_char(String::char_code_at(source, offset - 1)) {
+    ""
+  } else if grep_source_word_at(source, offset, "throw") {
+    "throw"
+  } else if grep_source_word_at(source, offset, "perform") {
+    "perform"
+  } else {
+    ""
+  }
+}
+
+fn grep_source_word_at(source: String, offset: Int, word: String) -> Bool {
+  let len = String::length(source)
+  let wlen = String::length(word)
+  if offset + wlen > len {
+    false
+  } else if String::substring(source, offset, offset + wlen) != word {
+    false
+  } else {
+    offset + wlen == len || !grep_is_ident_char(String::char_code_at(source, offset + wlen))
+  }
+}
+
+fn grep_keep_origin_hits(source: String, origin: String, hits: Array[GrepHit]) -> Array[GrepHit] {
+  if origin == "" {
+    hits
+  } else {
+    let kept = grep_empty_hits()
+    let mut i = 0
+    while i < Array::length(hits) {
+      let hit = Array::get(hits, i)
+      if grep_source_keyword_at(source, hit.offset) == origin {
+        Array::push(kept, hit)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    kept
+  }
+}
+
 export fn grep_file_hits(path: String, source: String, pat: GrepPattern) -> Array[GrepHit] with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
   let out = grep_empty_hits()
   grep_walk_stmts(stmts, pat, path, out)
-  out
+  grep_keep_origin_hits(source, pat.origin, out)
 }
 
 export fn grep_needs_typing(wheres: Array[String], where_rows: Array[String], only: String) -> Bool {
