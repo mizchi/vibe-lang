@@ -33,12 +33,10 @@ is a pointer.
 
 ## Chapter map
 
-See [SUMMARY.md](SUMMARY.md). The book is three parts plus an appendix:
+See [SUMMARY.md](SUMMARY.md). The parts follow *The Rust Programming
+Language*: a short getting-started plus a small program, then concepts,
+mutation (the ownership analog), data, packages, collections, effects,
+generics, concurrency, and tooling.
 
-1. **Getting started** — the original tour (`01`–`07`), plus install.
-2. **Language** — types, collections, mutation, generics, iteration, `==`,
-   and a small end-to-end program.
-3. **Systems** — capabilities, concurrency, the CLI, wasm, pitfalls.
-
-Start at [Getting started](src/01_getting_started.vibe.md) or jump to
-[Values and functions](src/01_values_functions.vibe.md).
+Start at [Installation and Hello, vibe](src/01_getting_started.vibe.md)
+or jump to [A small program](src/19_a_small_program.vibe.md).

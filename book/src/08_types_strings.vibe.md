@@ -4,13 +4,14 @@ Chapter 1 showed `Int`, `Double`, `Bool`, `String`, and `Char` as values.
 This chapter is the contract those types actually keep — the places people
 silently get a wrong answer if they guess from another language.
 
-## `Int` is tagged, not "a machine i64"
+## `Int` is 63-bit, not "a machine i64"
 
-A literal larger than `2305843009213693951` (`2^61-1`) is rejected as
-`IntLiteralOverflow`. That is a *source* limit, not the wrap point: the
-program below adds one and prints `2^61`. Arithmetic overflow wraps as
-two's complement on the tagged-int range, on every backend — do not
-assume wrapping at the literal maximum.
+ADR-0105 (#1877): the shipped representation uses **one** tag bit, so the
+honest width is 63. The range is `-2^62 .. 2^62-1`. A literal larger than
+`4611686018427387903` (`2^62-1`) is rejected as `IntLiteralOverflow`.
+Arithmetic overflow wraps as 63-bit two's complement on **every** backend
+— `max + 1` is `min`. Older text that said "62-bit / `2^61-1`" was
+describing a tag layout the compiler no longer uses.
 
 ```vibe run
 import @vibe/prelude {
@@ -18,7 +19,7 @@ import @vibe/prelude {
 }
 
 fn main with Stdout {
-  let max = 2305843009213693951
+  let max = 4611686018427387903
   stdout_write("max = \{max}\n")
   stdout_write("max + 1 = \{max + 1}\n")
   stdout_write("hex 0xFF = \{0xFF}\n")
@@ -29,8 +30,8 @@ fn main with Stdout {
 ```
 
 ```output
-max = 2305843009213693951
-max + 1 = 2305843009213693952
+max = 4611686018427387903
+max + 1 = -4611686018427387904
 hex 0xFF = 255
 1 << 4 = 16
 (-8) >> 1 = -4

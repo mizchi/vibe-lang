@@ -26,6 +26,21 @@ vibe test a_test.vibe b_test.vibe    # several files
 vibe test tests/                     # every *_test.vibe under a directory
 ```
 
+## `inspect` snapshots
+
+`inspect(value, "expected")` is the snapshot assertion. The expected
+string lives in the source. `vibe test --update` rewrites it. You do
+not import anything — the checker desugars the call before typing.
+
+```vibe
+test "a number" {
+  inspect(1 + 1, "2")
+}
+```
+
+New tests in this repository should use `inspect`, not a `__DATA__`
+sidecar and not a `.diag` file.
+
 ## CLI tooling
 
 ```bash

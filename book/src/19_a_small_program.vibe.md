@@ -1,8 +1,9 @@
-# 19 — A small program
+# 2 — A small program
 
-The Rust book pauses after the basics to write a guessing game. Here
-is the vibe equivalent: tally words in a list, using a struct, an
-`Option`, a `MutMap`, and a `fn` that says what it needs.
+The Rust book pauses after hello-world to write a guessing game. This
+chapter is that slot: tally words in a list, using a struct, an
+`Option`, a `MutMap`, and a `fn` that says what it needs. You have not
+seen every construct yet. That is the point.
 
 ```vibe run
 import @vibe/prelude {
@@ -96,4 +97,4 @@ A next step that is still a small program: turn `top_word` into a
 library function in its own file, export it, and import it from
 `fn main` the way [Modules](07_modules_packages.vibe.md) does.
 
-Next: [Capabilities](10_capabilities.vibe.md).
+Next: [Values and functions](01_values_functions.vibe.md).

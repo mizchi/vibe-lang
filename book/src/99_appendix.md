@@ -6,8 +6,8 @@ order they are usually useful.
 ## In this repository
 
 - [docs/cheatsheet.md](../../docs/cheatsheet.md) — one-page language
-  reference. If the book and the cheatsheet disagree, believe the
-  cheatsheet and file a book bug.
+  reference. If the book and the cheatsheet disagree, run a
+  `.vibe.md` block and believe the compiler.
 - [docs/install.md](../../docs/install.md) — installer, `VIBE_HOME`,
   the dispatcher.
 - [docs/cli-commands.md](../../docs/cli-commands.md) — every `vibe`

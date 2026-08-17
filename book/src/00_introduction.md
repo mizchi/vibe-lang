@@ -34,24 +34,42 @@ toolchain to work on vibe.
 
 ## How to read this book
 
-**Getting started** is the language tour that used to live in `docs/tutorial/`.
-It is still the fastest path from zero to "I can write a package."
+Two kinds of chapters, as in *The Rust Programming Language*: concept
+chapters, and a small project chapter.
 
-**Language** goes into the parts the tour only pointed at: byte strings,
-collections, mutation and escape, generics, iteration, and `==`.
+**Getting Started** installs the toolchain, writes hello, then builds a
+small program (the guessing-game slot). You can stop after that and still
+have written vibe.
 
-**Systems** is why vibe is not "another functional scripting language":
-capabilities, structured concurrency, the CLI as an editor query surface,
-and wasm as the representation rather than a backend you opt into.
+**Common Programming Concepts** is values, functions, control flow, and
+the actual contracts of `Int` / `String`.
+
+**Mutation and Regions** is vibe's ownership analog: `let mut` is local,
+escape is capture, regions tag scratch buffers.
+
+**Structuring Data** is structs, enums, `match`, `Option`, and the railway.
+
+**Growing Projects** is modules, `.vpkg` contracts, and `test` / `inspect`.
+
+**Common Collections** is `Array` / builders / `MutMap`, then iteration.
+
+**Effects and Authority** is the heart of the language: algebraic `handle`,
+then `allows` vs `with` for host capabilities.
+
+**Generic Programming** is traits, `derive`, and `==`.
+
+**Concurrent Programs** and **Tooling and Targets** are TaskGroup / Send
+and the CLI-as-IDE / wasm representation.
 
 Japanese translations of the original tour live in `book/ja/`. The English
 files are canonical; a pair must run the same programs (same `` ```output ``
 blocks). Later chapters are English-only for now.
 
-When an example is deliberately not runnable — rejected syntax, a not-yet
-implemented form — it is marked `` ```vibe skip `` with a reason. Never use
-`skip` to hide a broken example.
+When an example is deliberately not runnable — rejected syntax, a checker
+feature that codegen does not implement yet — it is marked
+`` ```vibe skip `` with a reason. Never use `skip` to hide a broken
+example.
 
 The [cheatsheet](../../docs/cheatsheet.md) is the one-page reference this
-book expands. If a sentence here and a sentence there disagree, the
-cheatsheet plus a failing `.vibe.md` block win — then we fix the book.
+book expands. If a sentence here and a sentence there disagree, a measured
+`.vibe.md` block wins — then we fix the book.

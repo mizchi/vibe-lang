@@ -145,6 +145,35 @@ inc(41) = 42
 scaled(x=4, y=2) = 42
 ```
 
+## 省略引数
+
+末尾の `name?: T` は省略できる。呼び出し側は素の `T` を書くか省略する。
+本体が見るのは `Option[T]`。
+
+```vibe run
+import @vibe/prelude {
+  stdout_write
+}
+
+fn greet(name: String, times?: Int) -> String {
+  let n = match times {
+    Some(v) => v,
+    None => 1
+  }
+  String::concat(name, String::concat(" x", __to_string(n)))
+}
+
+fn main with Stdout {
+  stdout_write(String::concat(greet("hi"), "\n"))
+  stdout_write(String::concat(greet("hi", 3), "\n"))
+}
+```
+
+```output
+hi x1
+hi x3
+```
+
 ## ラムダ短縮形とプレースホルダ
 
 ```vibe run

@@ -55,6 +55,66 @@ A function that only calls `greet` must itself mention `Stdout`. The
 capability does not appear by magic at `main` — it is inferred from
 calls and then checked against what you wrote.
 
+## `with` vs `allows`
+
+`with` is the row of **emitted operations** (algebraic / core ambient).
+`allows` is **provider authority**. They are not two spellings of the
+same set. `with Ask::Get allows Fs` does **not** authorize an unhandled
+`Ask::Get` — you still need a `handle`, or you add the op to `allows`
+(and then it is a capability, which `Ask::Get` is not).
+
+The parser stores the split as the emitted row plus a `#allows` marker,
+not as `with A + C`.
+
+```vibe run
+import @vibe/prelude {
+  stdout_write
+}
+
+fn main with () allows Stdout {
+  stdout_write("authority is a separate clause\n")
+}
+```
+
+```output
+authority is a separate clause
+```
+
+`Stdout` in a *split* signature belongs in `allows`. Writing
+`fn main() -> Int with Stdout allows Fs::read_file?` is rejected:
+"`Stdout` is a capability effect and must appear in the `allows`
+clause, not `with`". The hello-world `fn main with Stdout` is the
+**bare** form and stays legal.
+
+## Optional capability and `perform?`
+
+A trailing `?` on an `allows` item is the optional grade. A required
+`Fs::read_file("p")` is not authorized by `allows Fs::read_file?`.
+`perform? Fs::read_file("p")` is the optional perform: the checker
+types it as `Attempt[T, String]` (`NotGranted` / `Errored` / `Granted`)
+and only accepts it on an optional `allows`.
+
+Codegen does **not** lower `perform?` yet. Measured on this compiler:
+the example typechecks, then ICE
+(`perform?` reached code generation unresolved). Until that lands,
+keep it in `skip` — do not pretend it runs.
+
+```vibe skip
+// skip: checker accepts Attempt[String, String]; codegen does not bind perform?
+fn main() -> Int with () allows Stdout + Fs::read_file? {
+  let a = perform? Fs::read_file("config.json")
+  match a {
+    NotGranted => 0,
+    Errored(_) => 1,
+    Granted(_) => 2
+  }
+}
+```
+
+Non-TTY instantiate uses `preflight_instantiate`: a required capability
+missing from the host grant set aborts before `main` and names the
+`--allow-fs` flag. The TTY grant prompt is still runner work.
+
 ## Algebraic effects vs capabilities
 
 An `effect Ask { Get -> Int }` that you `perform` and `handle` is an

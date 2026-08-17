@@ -33,6 +33,19 @@ fn main with Exception {
 The diagnostic names the callee (`bump`) and its `line:col`. Fix: lift
 `bump` to a top-level `fn`.
 
+## `Int` width follows the tag bit
+
+`Int` is **63-bit** (one tag bit, ADR-0105). Literal max is
+`4611686018427387903`. `max + 1` wraps to `-4611686018427387904` on
+every backend. Text that still says `2^61-1` / 62-bit is stale.
+
+## `perform?` typechecks; codegen does not
+
+`perform? Fs::read_file(p)` is typed as `Attempt[T, String]` on
+`allows Fs::read_file?`. Compiling it ICE's:
+`perform?` reached code generation unresolved. Do not put a
+`` ```vibe run `` block around it until lowering exists.
+
 ## Interpolation needs a renderer
 
 A user struct interpolated with `\{x}` needs `derive(Show)` or
