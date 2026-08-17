@@ -314,7 +314,7 @@ trampoline を将来 `wasi:http/service` の
    `test_async_sleep_component_gate.sh` の主張。あわせて
    self-contained wrap が満たせない host import を **fail closed** に
    した — 以前は instantiate 不能な component を書いて exit 0 していた。
-   残り: TaskGroup 併用 (mixing guard reject のまま)。
+   残り: TaskGroup 併用 (mixing guard reject のまま — #2065)。**#2065 で実測**: convention の不一致は綴りだけで、boundary arm の `resume(v)` を名前に束縛すれば同じ handler が suspend-class になり guard は何も拒否しなくなる。露出するのは本当の壁のほうで、suspend-class boundary は entry body 全体の split 適格性を要求し、TaskGroup への入口は全部 `TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e)` = **row 変数の下の関数型パラメータ** を通る (#1727 の残り 1、健全性の線)。したがって依存は #1727 → #2065 であって park_kind ではない。
    **Decision 3 の named host streams も landed (spec §3.18)**: D3 終端
    probe (§3.17) の実測を受けて、`host_stream_named("body") ->
    HostStream` (pure、cell `[3, handle]`。当初は `Stream[Int]` だったが

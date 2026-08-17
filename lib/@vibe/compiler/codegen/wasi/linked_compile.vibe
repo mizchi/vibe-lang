@@ -986,9 +986,11 @@ fn lc_entry_declares_async(stmts: Array[Stmt], entry_name: String) -> Bool {
 ///      sleep) preserves the blocking semantics. A program that ALSO uses
 ///      suspend-class Async handlers (e.g. TaskGroup) under an
 ///      Async-carrying entry row is rejected by the existing
-///      convention-mixing guard -- handle Async yourself before the entry
-///      in that case (fixture err_async_boundary_mixed_convention pins the
-///      message).
+///      convention-mixing guard -- drop `Async` from the entry row and let
+///      TaskGroup discharge it, or keep the Async entry and skip the tasks
+///      (fixture err_async_boundary_mixed_convention pins the message; the
+///      guard's own comment records why the two cannot be reconciled short
+///      of #1727).
 ///
 /// Keyed on the entry row (like lc_wrap_entry_error_boundary): programs
 /// whose entry row has no `Async` -- including the `__no_entry__`
@@ -3091,8 +3093,25 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
   let hf_machinery = calls_host_future && !user_defines_host_future && entry_has_async
   let hs_machinery = calls_host_stream && !user_defines_host_stream && entry_has_async
+  // #2065: the old advice here was "handle Async inside the entry instead",
+  // which cannot be followed in the component lane -- an entry MUST carry
+  // `Async` for the async lift to be selected at all, so a user building an
+  // async component was told to do the one thing that would stop it being a
+  // component. Say what is actually true instead.
+  //
+  // Measured (#2065): the convention mismatch is NOT the blocker it looks
+  // like. The boundary arm is tail-resumptive only because it spells
+  // `resume(v)` in callee position; binding `resume` to a name first makes the
+  // same handler suspend-class (`scps_arm_refs_resume_value`), and then this
+  // guard has nothing to reject. What that exposes is the real wall: a
+  // suspend-class boundary requires the WHOLE entry body to be split-eligible,
+  // and every route into a TaskGroup goes through
+  // `TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e)` -- a
+  // function-typed parameter carrying a ROW VARIABLE, which is #1727's
+  // remaining gap 1 and a soundness line rather than an oversight. So the
+  // refusal stands; only its wording was wrong.
   if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && has_spawn_suspend {
-    "Async entry boundary and TaskGroup::spawn_suspend are mixing the step convention; handle Async inside the entry instead"
+    "the entry's Async boundary and TaskGroup::spawn_suspend are mixing the step convention for one effect. Either drop `Async` from the entry row and let TaskGroup discharge it (row-free entry + TaskGroup::run), or keep the Async entry and use `sleep`/`await` directly instead of spawning tasks. Both together need #1727 (a row-variable callee taking a function cannot be proven suspend-eligible), tracked in #2065"
   } else {
     // Keying (#1218, tightened after gate 19 regressed on the first cut):
     //

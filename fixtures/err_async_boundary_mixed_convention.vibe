@@ -7,6 +7,18 @@
 /// miscompile. The supported shapes are: row-free entry + TaskGroup (the
 /// library discharges Async itself), or Async-row entry without
 /// suspend-class handlers (sequential sleep via the boundary).
+///
+/// #2065 measured why the two cannot simply be reconciled. The convention
+/// mismatch is only a SPELLING: the boundary arm is tail-resumptive because it
+/// writes `resume(v)` in callee position, and binding `resume` to a name first
+/// makes the identical handler suspend-class -- at which point this guard has
+/// nothing to reject. What that uncovers is the real wall: a suspend-class
+/// boundary requires the whole entry body to be split-eligible, and every route
+/// into a TaskGroup runs through
+/// `TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e)` -- a
+/// function-typed parameter under a ROW VARIABLE, which #1727 records as a
+/// soundness line rather than a gap. So no program is unblocked by flipping the
+/// spelling, and this fixture stays a rejection until #1727 lands.
 import @vibe/concurrent {
   TaskGroup, TaskHandle
 }
