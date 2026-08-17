@@ -25,7 +25,7 @@ live spec 側を現行仕様だけに整理し直し、**当時の記録**をこ
 > `Task::spawn` 等を書くと `unknown name` でコンパイルが落ちる。撤去理由は
 > `spawn` が thunk を即時実行するため `spawn(f); spawn(g)` が常に `f` 完了後に
 > `g` を始めること——並行に見えて黙って直列化し、警告も失敗もしなかった。
-> 動く並行 surface は `lib/@vibex/concurrent`（`TaskGroup::spawn_suspend` /
+> 動く並行 surface は `lib/@vibe/concurrent`（`TaskGroup::spawn_suspend` /
 > `TaskHandle::join` / `sleep_wait`）。以下は撤去された surface の記録。
 
 - ~~`Task::spawn : (() -> T with Async) -> Task[T] with Async`~~ — 子タスク生成
@@ -181,7 +181,7 @@ M1a と同じ要領で、lexer/parser/core-Type を変えずに着地:
 | **M1b-3c-1c** | 真の interleaving spawn: 親の処理と並行して走る第2の guest 計算。**§3.11 で ABI 側の問いは解決**——`waitable-set.wait` の完了順ディスパッチだけで interleave し、別 task も poll executor も `context.get/set` も不要（§3.8 の予測を実機反証、負の対照付き gate で固定）。残るのは **await をまたぐ task 状態の表現＝ADR-0076 の CPS/suspend lowering** のみで、codegen 側に局所化された | mechanics done（#1230、`tools/wasip3_component_probe/interleaved_tasks/` + `scripts/test_interleaved_tasks_probe_gate.sh`）/ emitter・実ソース配線は未着手 |
 | **M1b-3c-3** | **本物の並行 await**（§3.10）: guest の計算は1本のまま、**複数の host 操作を同時に in-flight** にして待つ。canon 集合は M1b-3c-1b から不変——並行性を生むのは「どちらも待ち始める前に両方発行する」という操作順序だけ。`comp_emit_component_wasm_async_concurrent_awaits` + probe + gate（値 84 と **両側の wall-clock** で検証、2×1000ms が 1015ms = 1× スケール）。M1b-3c-1c（guest の計算が2本 interleave）とは別問題で、そちらは未解決のまま | done（#1230） |
 | **M1b-3c-2** | async component を **production runtime が駆動**できるようにする（§3.9）: `runtime/viberun` の wasmtime を 45→47.0.2 bump（同期パスはソース無改修）、component ヘッダ判別 + `instantiate_async`/`run_concurrent`/`call_concurrent`、`get-async` を `func_wrap_concurrent` + 実 suspend する tokio timer で実装。gate が probe 専用 Rust host バイナリ依存を脱却。**副産物**: eager-completion 時に subtask が生成されないのに `subtask.drop` していた実バグを発見・修正（emitter + probe WAT 両方）、gate が blocked/eager 両パスを検証 | done（#1230） |
-| **M-conc-1** | ~~`Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45）~~ | **retired (#1227)** — 黙って直列化するため撤去。動く surface は `lib/@vibex/concurrent` |
+| **M-conc-1** | ~~`Task[T]` codegen（synchronous eager model）: `spawn`（thunk を即時実行・closure type 9 で `call_indirect`）/`join`（identity）/`cancel`（drop→Unit）/`race`（先行値）を `compile_call` で lower。inlined async builtin の free-var capture バグ（nested lambda 内で `Task::join` 等を closure として捕捉）を `collect_free_vars_expr` で修正。gate に Task entry 追加（spawn/join/cancel/race → 42、wasmtime 45）~~ | **retired (#1227)** — 黙って直列化するため撤去。動く surface は `lib/@vibe/concurrent` |
 | **M-conc-2** | 真の subtask spawn（waitable-set / `future.cancel-*`）。M-conc-1 の surface は #1227 で撤去したので、置き換えではなく新規に載せる | 未着手 |
 | **M2a** | `Stream[T]` codegen（eager Array-backed model）: `map`/`fold` を inline `Array::map`/`Array::fold` へ remap、`empty`=`array_new`、`once`=`array_new`+`push`、`filter` を inline loop で emit。gate に Stream entry 追加（empty/once/map/filter/fold → 42、wasmtime 45） | done |
 | **M2b** | `Stream::next`（`Future[Option[T]]`、Option 構築 codegen）: 実 `Some`/`None` ctor を AST 合成して `ce` に委譲。gate の Option entry が Some/None 両経路を網羅（→ 42、wasmtime 45）。併載していた `Task::timeout` 分は #1227 の撤去で `Stream::next(Stream::once(1))` に差し替え | done |

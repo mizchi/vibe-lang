@@ -77,7 +77,7 @@ fi
 # Import-list items are sorted alphabetically (byte/codepoint order, so
 # uppercase sorts before lowercase) -- EXCEPT `type X` items, which sort as
 # their own group ahead of everything else regardless of their name's case
-# (not just cosmetic: lib/@vibex/concurrent/suspend_test.vibe hit a real
+# (not just cosmetic: lib/@vibe/concurrent/suspend_test.vibe hit a real
 # type-checker regression from a same-named type+namespace import pair
 # getting reordered relative to each other by a plain alphabetical sort).
 cat > "$WORK/sort.in.vibe" <<'EOF'

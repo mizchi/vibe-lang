@@ -419,7 +419,7 @@ regression lock:
 - compiler_gate 87 — `derive(Show)` enum / String / renderer 無し / 手書き
   formatter の4本。3本目が「#1374 より悪化していないこと」、4本目が
   「手書き formatter は補間でだけ走る」の pin
-- `@vibex/concurrent` の "a typed child throw is reported by kind" は
+- `@vibe/concurrent` の "a typed child throw is reported by kind" は
   `Failed("<SendError>")` から `Failed("Closed")` へ更新した (caller が switch
   したいのは変種名の方)
 - `suspend_test.vibe` の "result_wait propagates a cancelled sibling to the
@@ -452,8 +452,8 @@ regression lock:
 
 | slice | 対象 | row |
 | --- | --- | --- |
-| 1 (#1372) | `@vibex/concurrent` の stack-driving 5本 | `Exception[TaskError]` ほか |
-| 2 (#1401) | `@vibex/concurrent` の suspend lane 3本 | `Exception[SendError]` / `Exception[TaskError]` |
+| 1 (#1372) | `@vibe/concurrent` の stack-driving 5本 | `Exception[TaskError]` ほか |
+| 2 (#1401) | `@vibe/concurrent` の suspend lane 3本 | `Exception[SendError]` / `Exception[TaskError]` |
 | 3 | `@vibe/json` (accessor 11 + `parse` + `parse_message` + `RpcMessage::parse`) | **erased `Error`** |
 
 **slice 3 だけ erased `Error` なのは bootstrap の制約による**。`@vibe/json` の

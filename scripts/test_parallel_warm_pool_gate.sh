@@ -64,7 +64,7 @@ die() { echo "warm-pool gate FAILED: $*" >&2; fail=1; }
 # `VIBE_PLAN_MODULE_ORDER` CLI mode taking resolved edges as TSV -- is gone
 # (#1259). VIBE_MODULE_PLAN, which the coordinator actually calls, does the
 # discovery AND the ranking in one call, and the ordering rule itself is
-# pinned in-process by lib/@vibe/graph/module_order_test.vibe (diamond, ties
+# pinned in-process by lib/@vibe/compiler/module_graph/module_order_test.vibe (diamond, ties
 # sharing a rank, cycle rejection, visit-order invariance). What is left here
 # is the property only an out-of-process coordinator can violate.
 

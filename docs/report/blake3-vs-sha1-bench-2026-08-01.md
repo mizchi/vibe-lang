@@ -1,7 +1,7 @@
 # blake3 vs sha1 vs compact_string_fingerprint — bench (2026-08-01)
 
 キャッシュ/fingerprint 用ハッシュを sha1 から blake3 (または SIMD 化しやすい
-アルゴリズム) へ置き換える検討の一次計測。`lib/@vibex/blake3` に pure-vibe の
+アルゴリズム) へ置き換える検討の一次計測。`lib/@vibe/blake3` に pure-vibe の
 BLAKE3 (spec 完全準拠、公式テストベクタで検証済み — `blake3_test.vibe`) を
 実装し、`vibe bench` (linear backend, 1000 iters, viberun/wasmtime) で
 既存実装と比較した。
@@ -77,7 +77,7 @@ wasmtime で実測した (input = i % 251 pattern):
 3. **`i8x16.shuffle`** (16 lane-byte immediates) を WAT assembler に追加。
 
 これで BLAKE3 の 1-block full compression を flat WAT の kernel として
-`lib/@vibex/blake3/simd.vibe` に実装 (命令列は Python 生成器 +
+`lib/@vibe/blake3/simd.vibe` に実装 (命令列は Python 生成器 +
 命令レベルシミュレータで公式ベクタ全一致を検証してから出力。rows 方式、
 message schedule は各 round の 4 vector を m0..m3 から 2 入力 shuffle 木で
 直接 gather、diagonalize は r1/r2/r3 lane 回転)。`simd_test.vibe` が
@@ -149,8 +149,8 @@ vibe bench (net of baseline、同一 wasmtime):
 ```bash
 bash scripts/build_cli_wasm.sh            # dist/cli/vibe-cli.wasm
 bash install/install.sh --cli-wasm dist/cli/vibe-cli.wasm
-vibe test  lib/@vibex/blake3/blake3_test.vibe
-vibe bench lib/@vibex/blake3/blake3_bench.vibe
+vibe test  lib/@vibe/blake3/blake3_test.vibe
+vibe bench lib/@vibe/blake3/blake3_bench.vibe
 vibe bench lib/@vibe/core/sha1_bench.vibe
 vibe bench lib/@vibe/cache/cache_bench.vibe
 ```

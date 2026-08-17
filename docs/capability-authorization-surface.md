@@ -105,7 +105,7 @@ capability の「無ければフォールバックする」要求を、row item 
   `NotGranted | Failed(E) | Ok(T)` と定めていたが、`Ok` と `Failed` は**どちらも
   既に別 enum の constructor** だった — `Ok` は `@vibe/wit_runtime` の
   `Result[T, E]`(WIT `result<T,E>` への射影。#1324 が残した唯一の綴り)、`Failed`
-  は `@vibex/concurrent` の `TaskError`。constructor は merge 済みプログラム全体で
+  は `@vibe/concurrent` の `TaskError`。constructor は merge 済みプログラム全体で
   グローバルなので、名前を再利用すると1ファイル内で静かに隠れるのではなく、
   **両方を import するすべてのプログラムでもう一方の constructor を別型に
   すり替える**。実測: `Result` を import した状態で `Ok(T)` を宣言すると

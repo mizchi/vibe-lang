@@ -1,47 +1,50 @@
-name = @vibex/concurrent
+name = @vibe/concurrent
 version = 0.0.1
 description =
-  #|@vibex/concurrent — ADR-0068 shared-nothing structured concurrency,
+  #|@vibe/concurrent — ADR-0068 shared-nothing structured concurrency,
 deps = {}
 
 generated_hash =
 
-// @vibex/concurrent — ADR-0068 shared-nothing structured concurrency,
-// cooperative run-to-completion slice (docs/concurrency.md, ADR-0065
-// 実験 scope)。deferred spawn + FIFO deterministic scheduler。blocking
-// 操作 (join / send / recv / task-group close) が ready queue を呼び出し
-// スタック上で駆動する (thread-of-control borrowing)。継続 (ADR-0076
-// Phase 3 suspend IR) が入ったら内部を差し替え、surface は維持する。
+// @vibe/concurrent — ADR-0068 shared-nothing structured concurrency,
+// cooperative run-to-completion slice (docs/concurrency.md)。deferred
+// spawn + FIFO deterministic scheduler。blocking 操作 (join / send /
+// recv / task-group close) が ready queue を呼び出しスタック上で駆動する
+// (thread-of-control borrowing)。継続 (ADR-0076 Phase 3 suspend IR) が
+// 入ったら内部を差し替え、surface は維持する。
 //
 // `r` (#1081 step 3): a generative region tag. `TaskGroup::run` mints a
 // fresh, compiler-rigid region per call and rejects the call if the
 // nursery's own `TaskGroup[rg]`/`TaskHandle[r,_]`/`Sender[r,_]`/
 // `Receiver[r,_]` escapes via the body's RETURN VALUE. That is the ONLY
-// enforced guarantee today — do not rely on more than this:
+// return-escape guarantee today — do not rely on more than this:
 //   - an outer `let mut` capture (e.g. stashing an endpoint into an array
 //     bound before the nursery) is NOT caught: this checker generalizes
 //     `let`/`let mut` bindings, so each reference inside the body gets an
 //     independent, disconnected type instantiation the escape check cannot
 //     see (confirmed by direct test, not assumed).
-//   - `TaskGroup::spawn`/`::spawn_suspend` do NOT yet enforce `Spawnable[rg]`
-//     (same-region-endpoint-or-Send capture checking on spawn closures) —
-//     that check does not exist in the checker at all yet.
-//   - the check is matched by the LITERAL callee spelling `TaskGroup::run`
-//     (no general rank-2/`Region`-bound language feature yet), so a
-//     first-class alias (`let run = TaskGroup::run; run(...)`), a renamed
-//     import, or a higher-order wrapper function bypasses it entirely. A
-//     structural-shape match was tried and reverted (PR #1135 review): it
-//     false-matched unrelated code and regressed 20 unit tests.
+//   - `TaskGroup::spawn`/`::spawn_suspend` DO enforce `Spawnable[rg]`
+//     (same-region-endpoint-or-Send capture checking) when the callee is
+//     spelled literally (`checker/checker_spawnable.vibe`). A first-class
+//     alias, renamed import, or HOF wrapper bypasses it. `adopt` /
+//     `settle` are out of scope.
+//   - the `run` check is matched by the LITERAL callee spelling
+//     `TaskGroup::run` (no general rank-2/`Region`-bound language feature
+//     yet), so a first-class alias (`let run = TaskGroup::run; run(...)`),
+//     a renamed import, or a higher-order wrapper function bypasses it
+//     entirely. A structural-shape match was tried and reverted (PR #1135
+//     review): it false-matched unrelated code and regressed 20 unit tests.
 // See docs/concurrency.md's dated 実装ノート for the exact scope and the
 // still-open gaps.
 //
-// 未実装 (ADR-0068 実装順で後続): `Spawnable[rg]` capture check (spawn
-// closures)、外側 generalized let/let-mut capture の escape 検出、
-// `nursery { }` 構文糖衣、一般化された `Region` bound (現状は
-// `TaskGroup::run` の shape 直書き特殊扱い)、blocking API の
-// Async::suspend row、mid-run cancel 観測、message deep-copy (単一 heap
-// — immutable 値を送ること)、Task::yield。task handle の綴りは builtin
-// `Task::*` (退役予定の eager prototype) との衝突回避で `TaskHandle`。
+// 未実装 (ADR-0068 実装順で後続): 外側 generalized let/let-mut capture
+// の escape 検出、`nursery { }` 構文糖衣、一般化された `Region` bound
+// (現状は `TaskGroup::run` / `::spawn` の shape 直書き特殊扱い)、
+// alias/HOF 経由の Spawnable、adopt/settle の Spawnable、blocking API
+// の Async::suspend row、mid-run cancel 観測、message deep-copy (単一
+// heap — immutable 値を送ること)、Task::yield。task handle の綴りは
+// builtin `Task::*` (退役予定の eager prototype) との衝突回避で
+// `TaskHandle`。
 
 type TaskGroup[rg, e]
 type TaskHandle[rg, e, T]

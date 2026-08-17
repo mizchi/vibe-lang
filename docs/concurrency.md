@@ -20,7 +20,7 @@ shared-everything-threads の実験を扱う。両者が本書と衝突する場
 現在これらの名前は `unknown name` でコンパイルエラーになる。撤去済みの
 `Threads::*` probe と Int channel id API も同様に公開契約ではない。
 
-**現行の動く並行 surface は `lib/@vibex/concurrent`** である:
+**現行の動く並行 surface は `lib/@vibe/concurrent`** である:
 `TaskGroup::spawn_suspend` が suspend 可能なタスクを生成し、`TaskHandle::join`
 が結果を回収し、`sleep_wait`（#1253）は並行 sleep を直列化させず重ねる。本書が
 記述する `Task[r,T]` / nursery / typed channel はその上に載る v0.4.0 の目標形。
@@ -631,7 +631,7 @@ evidence を実際に委譲する段階は、ADR-0076 (#817) の evidence passin
 
 ### 実装ノート (2026-07-24): cooperative run-to-completion slice
 
-`lib/@vibex/concurrent/` に本仕様の最初の runtime slice を追加した。単一
+`lib/@vibe/concurrent/` に本仕様の最初の runtime slice を追加した。単一
 thread の決定的 FIFO scheduler で、`spawn` は deferred(eager prototype は
 契約外のまま)、blocking 操作 (join / send / recv / nursery close) が ready
 queue を呼び出しスタック上で駆動する run-to-completion 方式。継続を使わない
@@ -678,7 +678,7 @@ generic enum は TDEnum が payload を宣言時 fresh `CtVar` で保存する
 
 fixtures: `send_bound_structural.vibe`(positive, 実行 42)+
 `err_type_send_{array_bound,mut_struct_bound,closure_bound,user_impl}`、
-compiler gate 47/47。`@vibex/concurrent` の `TaskGroup::spawn` /
+compiler gate 47/47。`@vibe/concurrent` の `TaskGroup::spawn` /
 `Channel::bounded` / `Parallel::map` に `[T: Send]` bound を配線済み。
 未着手: spawn closure の capture 検査(`Spawnable`)、`Sender[r,T]` の
 同一 nursery 特例、region 生成性。
@@ -697,9 +697,9 @@ suspend → 外部から resume → 次の suspend → 完走のサイクルを 
 追記27/28。
 
 ### 実装ノート (2026-07-25 追記2): 3c — suspendable task
-(`@vibex/concurrent` への接続、run-to-completion 制約の部分解除)
+(`@vibe/concurrent` への接続、run-to-completion 制約の部分解除)
 
-Phase 3b (yield bubbling、追記29) を受けて、`@vibex/concurrent` に
+Phase 3b (yield bubbling、追記29) を受けて、`@vibe/concurrent` に
 suspendable task の第一スライスを実装した:
 
 - `TaskCell` に**継続 slot** (`mut cont: Option[(Int) -> Unit]`) と
@@ -837,7 +837,7 @@ choose する fresh var を返す `instantiate` しかなく、型に scope タ�
   `CtEnum("TaskError")` に解決される — `CtNamed` だと決め打っていた
   一箇所のバグで露呈)ため撤回し、リテラル一致に戻した。alias/rename/
   wrapper 経由のすり抜けは this slice の既知のギャップとして
-  `lib/@vibex/concurrent/index.vpkg` の `r` コメントに明記した。
+  `lib/@vibe/concurrent/index.vpkg` の `r` コメントに明記した。
 ### 実装ノート (2026-07-27 追記2): `Spawnable[r]` capture check (#1081 step 3 後半)
 
 上の「未着手のまま」で懸念していた不健全さ(`n` の region が spawn 呼び出し
@@ -943,7 +943,7 @@ nursery の capture は必ず異なる var id を持つ)。実装は
   → `=>` → body(mode 0、match arm の body と同じ規約 — 複文は
   `{ ... }` で自分から囲む必要がある)→ `}`)。
 - 現状は今日の手書き呼び出しと同様、呼び出し側が
-  `import @vibex/concurrent { TaskGroup }` を書く必要がある — この
+  `import @vibe/concurrent { TaskGroup }` を書く必要がある — この
   sugar 自体は import を暗黙に注入しない(そうする既存の仕組みがこの
   コンパイラに存在しないため、範囲外とした)。
 - fixtures/compiler_gate.sh 62/62: `region_ok_taskgroup_sugar.vibe`
@@ -953,7 +953,7 @@ nursery の capture は必ず異なる var id を持つ)。実装は
 
 ### 実装ノート (2026-08-03 追記): `Result` → 型付き `Exception[E]` (#1324 slice 1)
 
-ADR-0085 の型付き `Exception[E]` (#1344) を受けて、`@vibex/concurrent` の
+ADR-0085 の型付き `Exception[E]` (#1344) を受けて、`@vibe/concurrent` の
 公開 API のうち **suspend lane にないもの**を throw ベースへ移した。
 `Result` の二重ラップ (`Result[Result[T, TaskError], TaskError]`) が消え、
 成功パスが値そのものになる。
