@@ -53,6 +53,7 @@
 #   vibe doc-at  <file.vibe> <line> <col> print the `///` doc comment at a position (#854)
 #   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
 #   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END per line)
+#   vibe symbols --legend                 print KIND NAME table (LSP SymbolKind v1, 2026-08-17)
 #   vibe escapes [--strict] <file.vibe>   print the `let mut` bindings a closure
 #                                         captures -- the ones codegen boxes into
 #                                         a heap ref cell instead of a wasm local
@@ -286,8 +287,19 @@ tree_digest() {
 
 # Codex review (PR #1162): `context-pack` is pure shell (no wasm execution
 # at all -- see its case block below), so it must not be blocked by a
-# missing/unbuilt runner. Every other subcommand still requires it.
-if [ "${1:-help}" != "context-pack" ]; then
+# missing/unbuilt runner. `vibe symbols --legend|--help|-h` is the same:
+# a static KIND table / usage, no wasm (#1944). Every other subcommand
+# still requires the runner.
+need_runner=1
+case "${1:-help}" in
+  context-pack) need_runner=0 ;;
+  symbols)
+    case "${2:-}" in
+      --legend|--help|-h) need_runner=0 ;;
+    esac
+    ;;
+esac
+if [ "$need_runner" = 1 ]; then
   [ -x "$RUNNER" ] || die "runner not found or not executable: $RUNNER"
 fi
 
@@ -1289,11 +1301,38 @@ case "$cmd" in
     ;;
   symbols)
     # vibe symbols <file.vibe>
+    # vibe symbols --legend
     # Print the declaration outline, one `NAME KIND START END` per line (KIND =
     # LSP SymbolKind int, START/END = char offsets of the name). AST-accurate
     # (no line-regex scan): handles multi-line decls and module-nested symbols.
     # Empty output means the file declares no top-level symbols. Powers LSP
     # document-outline / go-to-definition.
+    # `--legend` prints the versioned KIND table (v1 / 2026-08-17): one
+    # `KIND NAME` per line, no decoration, never empty. `--help`/`-h` print
+    # usage plus a pointer at that table. Neither flag changes the file
+    # outline path below.
+    case "${1:-}" in
+      --legend)
+        printf '%s\n' \
+          '2 Module' \
+          '6 Method' \
+          '10 Enum' \
+          '11 Interface' \
+          '12 Function' \
+          '13 Variable' \
+          '23 Struct' \
+          '24 Event' \
+          '26 TypeParameter'
+        exit 0
+        ;;
+      --help|-h)
+        printf '%s\n' \
+          'usage: vibe symbols <file.vibe>' \
+          '       vibe symbols --legend' \
+          'KIND integers are LSP SymbolKind; print the table with `vibe symbols --legend`.'
+        exit 0
+        ;;
+    esac
     [ "$#" -ge 1 ] || die "usage: vibe symbols <file.vibe>"
     src="$1"
     [ -f "$src" ] || die "not found: $src"

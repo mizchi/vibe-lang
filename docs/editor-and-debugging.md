@@ -48,6 +48,7 @@ directly (useful for scripting or wiring a different editor):
 vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1-based (line,col)
 vibe binding-at <file.vibe> <line> <col>  # source spans (START END char offsets) of every occurrence of that binding
 vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END per line)
+vibe symbols --legend                     # KIND NAME table (LSP SymbolKind v1, 2026-08-17)
 vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
 vibe check --single-file <file.vibe>      # same, analysing the buffer ALONE (no FS import resolution)
 vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
@@ -68,6 +69,25 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   is outlined as the keyword `test`/`bench`. An `impl Trait for T` is one
   Method (6) named after `T` — the impl statement does not carry method
   children.
+- **SymbolKind legend v1 (2026-08-17).** `KIND` integers are LSP
+  [`SymbolKind`](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#symbolKind)
+  values. The machine-readable table is `vibe symbols --legend`: one
+  `KIND NAME` line per kind this command actually emits, no decoration,
+  never empty. `--help` / `-h` print usage and point at that table. A file
+  outline is unchanged when `--legend` is absent. Bump the version when a
+  KIND number is added or remapped; never reuse a number.
+
+  | KIND | LSP name | vibe declaration |
+  | --- | --- | --- |
+  | 2 | Module | `module` |
+  | 6 | Method | `impl Trait for T` (named after `T`) |
+  | 10 | Enum | `enum`, `suberror` |
+  | 11 | Interface | `trait` |
+  | 12 | Function | `fn`, `test`, `bench`, let-bound functions |
+  | 13 | Variable | other `let` / `let mut` |
+  | 23 | Struct | `struct` |
+  | 24 | Event | `effect` |
+  | 26 | TypeParameter | `type` alias |
 - **`--single-file` analyzes ONE file and does not follow its imports**, so on a
   file with imports it reports names it cannot see as undefined. A file that is
   perfectly valid under a plain `vibe check` can come back with

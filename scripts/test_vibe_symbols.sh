@@ -19,13 +19,35 @@ export VIBE_HOME="$WORK/home"
 export VIBE_BIN_DIR="$WORK/bin"
 unset RUST_BACKTRACE || true
 
-bash install/install.sh >/dev/null 2>&1
-VIBE="$VIBE_BIN_DIR/vibe"
-[ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
-
 pass=0; fail=0
 ok()   { echo "ok: $1"; pass=$((pass + 1)); }
 bad()  { echo "FAIL: $1" >&2; fail=$((fail + 1)); }
+
+# 0. #1944 leftover: `vibe symbols --legend` is launcher-only (no wasm).
+#    Pin the versioned KIND table (v1 / 2026-08-17) against the source
+#    launcher so a missing/wrong table fails in <1s without install.sh.
+#    One `KIND NAME` per line, no decoration, never empty.
+LAUNCHER="$ROOT_DIR/runtime/vibe"
+legend="$(bash "$LAUNCHER" symbols --legend)"
+expected=$'2 Module\n6 Method\n10 Enum\n11 Interface\n12 Function\n13 Variable\n23 Struct\n24 Event\n26 TypeParameter'
+if [ "$legend" = "$expected" ]; then
+  ok "symbols --legend prints KIND NAME table"
+else
+  bad "symbols --legend mismatch; got: $legend"
+fi
+
+help_out="$(bash "$LAUNCHER" symbols --help 2>&1 || true)"
+h_out="$(bash "$LAUNCHER" symbols -h 2>&1 || true)"
+if printf '%s\n' "$help_out" | grep -q -- '--legend' \
+   && printf '%s\n' "$h_out" | grep -q -- '--legend'; then
+  ok "symbols --help/-h point at --legend"
+else
+  bad "symbols --help/-h should mention --legend; got: $help_out / $h_out"
+fi
+
+bash install/install.sh >/dev/null 2>&1
+VIBE="$VIBE_BIN_DIR/vibe"
+[ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 
 # field(line, n) -> the n-th whitespace-separated field of a `NAME KIND START END`
 # row. `has_sym out name kind` asserts a row with that NAME and KIND exists.
