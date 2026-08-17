@@ -38,7 +38,7 @@ let join: (Array[String], String) -> String = (parts, sep) -> {
     StringBuilder::push(sb, part)
     first = false
   }
-  StringBuilder::freeze(sb)
+  StringBuilder::build(sb)
 }
 ```
 
