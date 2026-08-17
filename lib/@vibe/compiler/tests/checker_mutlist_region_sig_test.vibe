@@ -1,0 +1,37 @@
+// #1863: a helper can take a region-tagged MutList in its signature.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+test "#1863: helper signature accepts MutList[T, R] and a regionized call" {
+  let source = "fn push_name[R](xs: MutList[String, R], s: String) -> Unit {\n  MutList::push(xs, s)\n}\n\nfn main() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    push_name(xs, \"a\")\n    MutList::length(xs)\n  }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1863: a non-MutList argument is still rejected" {
+  let control = first_check_error("fn f(x: Array[Int]) -> Unit {\n  ()\n}\nfn main() -> Unit {\n  f(1)\n}\n")
+  assert(String::contains(control, "argument type mismatch"))
+  let source = "fn push_name[R](xs: MutList[String, R], s: String) -> Unit {\n  MutList::push(xs, s)\n}\n\nfn main() -> Unit {\n  push_name(1, \"a\")\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "argument type mismatch"))
+  assert(String::contains(msg, "push_name"))
+}
+
+test "#1863: helper-grown scratch stays in the region" {
+  let source = "fn grow[R](xs: MutList[Int, R], n: Int) -> Unit {\n  MutList::push(xs, n)\n  MutList::push(xs, n + 1)\n}\n\nfn main() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    grow(xs, 1)\n    MutList::length(xs)\n  }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
