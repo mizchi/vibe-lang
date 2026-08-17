@@ -482,9 +482,10 @@ fn bind_record_module_binder(st: BindState, name: String) -> Unit {
   }
 }
 
-/// Walk a statement. Top-level value bindings (SLet/SLetMut) introduce a
-/// module-level name (key 0 => grouped file-wide); we record the binder's located
-/// NAME and walk the body. SModule recurses.
+/// Walk a statement. Top-level value bindings (SLet/SLetMut) and type/decl
+/// names (SStruct/SEnum/STypeAlias/SFnDecl/STrait/SEffectDef) introduce a
+/// module-level name (key 0 => grouped file-wide); we record the binder's
+/// located NAME and walk any expression bodies. SModule recurses.
 fn bind_walk_stmt(st: BindState, stmt: Stmt) -> Unit {
   match stmt {
     SLet(_, _, name, _, body) => {
@@ -495,6 +496,19 @@ fn bind_walk_stmt(st: BindState, stmt: Stmt) -> Unit {
       bind_record_module_binder(st, name)
       bind_walk_expr(st, body)
     },
+    SStruct(_, name, _, _, _, _) => bind_record_module_binder(st, name),
+    SEnum(_, name, _, _, _) => bind_record_module_binder(st, name),
+    STypeAlias(_, name, _, _) => bind_record_module_binder(st, name),
+    // Default parse_program_located lowers SFnDecl to SLet; keep the arm so
+    // a preserving parse still records the name and walks contracts.
+    SFnDecl(_, name, fn_value, reqs, enss) => {
+      bind_record_module_binder(st, name)
+      bind_walk_expr(st, fn_value)
+      bind_walk_exprs(st, reqs)
+      bind_walk_exprs(st, enss)
+    },
+    STrait(_, name, _, _, _, _) => bind_record_module_binder(st, name),
+    SEffectDef(_, name, _, _) => bind_record_module_binder(st, name),
     STest(_, body) => bind_walk_expr(st, body),
     SBench(_, body) => bind_walk_expr(st, body),
     SExpr(e) => bind_walk_expr(st, e),

@@ -225,3 +225,59 @@ test "type-at: fn declaration name reports the function type" {
   inspect(type_at_source(src, 1, 4), "(Int, Int) -> Int")
   inspect(type_at_source(src, 1, 5), "(Int, Int) -> Int")
 }
+
+/// #1944 leftover: `doc_at_source` goes through `binding_occurrences`, and
+/// `bind_walk_stmt` only recorded `SLet` / `SLetMut`. Hovering a struct
+/// declaration name therefore produced zero occurrences and `""`.
+///   line 1 = "/// a 2-d point" (15 bytes + newline)
+///   line 2 = "struct Point { x: Int; y: Int }"
+///   `Point` starts at col 8 / offset 23.
+test "doc-at: hovering a struct declaration resolves its doc comment" {
+  let src = "/// a 2-d point\nstruct Point { x: Int; y: Int }\n"
+  inspect(doc_at_source(src, 2, 8), "a 2-d point")
+}
+
+test "binding-at: struct declaration name includes its declaration span" {
+  let src = "/// a 2-d point\nstruct Point { x: Int; y: Int }\n"
+  let occ = binding_occurrences(src, 2, 8)
+  assert(occ_contains(occ, 23, 28))
+}
+
+/// `enum` is `SEnum`, also dropped by `bind_walk_stmt`'s `_` arm.
+///   line 1 = "/// a color" (11 bytes + newline)
+///   line 2 = "enum Color { Red; Blue }"
+///   `Color` starts at col 6 / offset 17.
+test "doc-at: hovering an enum declaration resolves its doc comment" {
+  let src = "/// a color\nenum Color { Red; Blue }\n"
+  inspect(doc_at_source(src, 2, 6), "a color")
+}
+
+test "binding-at: enum declaration name includes its declaration span" {
+  let src = "/// a color\nenum Color { Red; Blue }\n"
+  let occ = binding_occurrences(src, 2, 6)
+  assert(occ_contains(occ, 17, 22))
+}
+
+/// `type` is `STypeAlias`.
+///   line 1 = "/// an id" (9 bytes + newline)
+///   line 2 = "type UserId = Int"
+///   `UserId` starts at col 6 / offset 15.
+test "doc-at: hovering a type alias declaration resolves its doc comment" {
+  let src = "/// an id\ntype UserId = Int\n"
+  inspect(doc_at_source(src, 2, 6), "an id")
+}
+
+test "binding-at: type alias declaration name includes its declaration span" {
+  let src = "/// an id\ntype UserId = Int\n"
+  let occ = binding_occurrences(src, 2, 6)
+  assert(occ_contains(occ, 15, 21))
+}
+
+/// `fn add(...)` is parsed as `SFnDecl` then lowered to `SLet` by
+/// `parse_program_located` (`lower_fn_decl_stmt`). Binding-at already
+/// recovers that `SLet`, so this should stay green without an `SFnDecl`
+/// arm. Pin it so a future parse-preserving change does not regress doc-at.
+test "doc-at: hovering a fn declaration resolves its doc comment" {
+  let src = "/// adds two numbers\nfn add(a: Int, b: Int) -> Int { a + b }\n"
+  inspect(doc_at_source(src, 2, 4), "adds two numbers")
+}
