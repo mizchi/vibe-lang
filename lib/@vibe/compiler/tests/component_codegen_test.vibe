@@ -13,6 +13,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_core_host_stream_names,
   comp_core_imports_host_future,
   comp_core_imports_host_stream,
+  comp_core_imports_sleep,
   comp_core_imports_stdin_provider,
   comp_emit_async_string_canon_fixture,
   comp_emit_async_string_component,
@@ -38,7 +39,8 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_memhost_realloc_fixture,
   comp_emit_stream_trampoline_fixture,
   comp_generate_string_trampoline,
-  comp_generate_string_trampoline_packed
+  comp_generate_string_trampoline_packed,
+  comp_reject_unsatisfiable_selfcontained_imports
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -1896,6 +1898,163 @@ test "component async hostfuture: two named host futures become two component im
   assert(component_bytes_contains(comp, "future-new") == 0)
   assert(component_bytes_contains(comp, "future-write") == 0)
   assert(component_bytes_contains(comp, "future-drop-writable") == 0)
+}
+
+// #1342: a stand-in for a compiled core whose `() -> Int with Async` entry
+// calls `sleep(ms)` -- the boundary settles the suspend through the row-free
+// `sleep_blocking`, which is a `vibe.sleep (i64) -> ()` host import. With
+// `with_future`, the same core also awaits a named host future, which is the
+// shape that proves the sleep half rides the SAME composition rather than
+// forcing a second one.
+fn build_main_i64_core_sleep(with_future: Bool) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 4)
+  emit_func_type_raw(tc, [
+    127,
+    127,
+    127,
+    127
+  ], [
+    127
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], [
+    126
+  ])
+  emit_func_type_raw(tc, [
+    126
+  ], array_empty())
+  emit_func_type_raw(tc, array_empty(), [
+    126
+  ])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, if with_future {
+    4
+  } else {
+    2
+  })
+  emit_name(ic, "wasi_snapshot_preview1")
+  emit_name(ic, "fd_write")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "vibe")
+  emit_name(ic, "sleep")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  if with_future {
+    emit_name(ic, "vibe")
+    emit_name(ic, "host_future_get$price")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 3)
+    emit_name(ic, "vibe")
+    emit_name(ic, "host_future_wait")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+  } else {
+    ()
+  }
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [
+    1
+  ])
+  emit_export_section(out, "run", if with_future {
+    4
+  } else {
+    2
+  })
+  let body = bytebuf_new()
+  emit_i64_const(body, 42)
+  emit_code_section(out, [
+    body
+  ])
+  bytebuf_to_bytes(out)
+}
+
+// #1342: `sleep` inside an async component. The host side is an `async
+// func(ms: u32) -> u32`, so unlike the future/stream halves the adapter gets a
+// SUBTASK back and parks on that -- hence `[subtask-drop]`, which no other
+// shape on this composition carries. Runtime proof (42 after a real host
+// timer, and a host future that keeps making progress DURING the sleep) lives
+// in scripts/test_async_sleep_component_gate.sh.
+test "component async sleep: vibe.sleep composes through the adapter (#1342)" {
+  let core = build_main_i64_core_sleep(false)
+  assert(comp_core_imports_sleep(core) == true)
+  assert(comp_core_imports_sleep(build_main_i64_core_p1()) == false)
+  // A sleep-only core has no future/stream imports at all, so this is also
+  // the case that used to fall into the self-contained wrap.
+  assert(comp_core_imports_host_future(core) == false)
+  assert(comp_core_imports_host_stream(core) == false)
+  let comp = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 1), "run")
+  assert(Bytes::get(comp, 0) == 0)
+  assert(Bytes::get(comp, 4) == 13)
+  // `sleep-for: async func(ms: u32) -> u32` -- one functype with a NAMED
+  // param, and no defined value type of its own:
+  // 07 09 01 43 01 02 6d 73 79 00 79
+  assert(bytes_contains_seq(comp, [
+    7,
+    9,
+    1,
+    67,
+    1,
+    2,
+    109,
+    115,
+    121,
+    0,
+    121
+  ]) == 1)
+  assert(component_bytes_contains(comp, "sleep-for") == 1)
+  assert(component_bytes_contains(comp, "[async-lower]sleep-for") == 1)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 1)
+  assert(component_bytes_contains(comp, "[waitable-set-wait]") == 1)
+  // No future or stream machinery: the program asked for neither, and an
+  // unused import is still an import the host has to satisfy.
+  assert(component_bytes_contains(comp, "get-future") == 0)
+  assert(component_bytes_contains(comp, "future-read") == 0)
+  assert(component_bytes_contains(comp, "stream-read") == 0)
+}
+
+// #1342: sleep and a named host future on ONE composition. The two halves are
+// independent -- adding sleep must not disturb the future's imports, canon
+// defs or adapter exports.
+test "component async sleep: rides the same composition as a host future (#1342)" {
+  let core = build_main_i64_core_sleep(true)
+  assert(comp_core_imports_sleep(core) == true)
+  assert(comp_core_imports_host_future(core) == true)
+  let comp = comp_emit_component_wasm_async_hostfuture(core_with_tag_mode(core, 1), "run")
+  assert(component_bytes_contains(comp, "sleep-for") == 1)
+  assert(component_bytes_contains(comp, "[subtask-drop]") == 1)
+  assert(component_bytes_contains(comp, "[async-lower]price") == 1)
+  assert(component_bytes_contains(comp, "[async-lower][future-read-0]price") == 1)
+  assert(component_bytes_contains(comp, "host_future_get$price") == 1)
+  assert(component_bytes_contains(comp, "host_future_wait") == 1)
+}
+
+// #1342: the self-contained wrap provides a preview1 fd_write stub and
+// nothing else. It used to emit a component for a core importing more than
+// that -- an artifact `wasm-tools validate` rejects with "missing module
+// instantiation argument named `vibe`" -- while the compiler exited 0.
+test "component async: an unprovided host import is rejected, not emitted (#1342)" {
+  let rejected = handle {
+    comp_reject_unsatisfiable_selfcontained_imports(build_main_i64_core_sleep(false))
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  assert(rejected)
+  // The two the composition really does provide stay accepted, so the guard
+  // cannot start rejecting the shapes it is meant to let through.
+  let accepted = handle {
+    comp_reject_unsatisfiable_selfcontained_imports(build_main_i64_core_p1())
+    true
+  } with Exception {
+    Throw(_) => false
+  }
+  assert(accepted)
 }
 
 // The anonymous surface still sniffs as exactly one name, so the step-4

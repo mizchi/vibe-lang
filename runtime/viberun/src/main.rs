@@ -823,6 +823,30 @@ fn run_async_component(path: &str) -> Result<i32> {
             },
         )
         .map_err(|e| format_err!("link get-after: {e}"))?;
+    // #1342: the timer behind a REAL program's `sleep(ms)`. Same shape as
+    // `get-after` -- an async func, so the wait folds into the guest's
+    // [async-lower] call and the adapter parks on the resulting subtask --
+    // but a separate name because this one appears in the WIT of components
+    // people actually build, where `get-after` would say nothing about what
+    // the import is for. Genuinely async (a tokio timer, never a blocking
+    // thread sleep): a blocking one would make the component's other
+    // in-flight host operations stop with it, which is the very thing
+    // `with Async` promises not to do.
+    linker
+        .root()
+        .func_wrap_concurrent(
+            "sleep-for",
+            move |_acc: &Accessor<StoreLimits>, (ms,): (u32,)| {
+                Box::pin(async move {
+                    let slept = scale(ms as u64);
+                    if slept > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(slept)).await;
+                    }
+                    Ok((ms,))
+                })
+            },
+        )
+        .map_err(|e| format_err!("link sleep-for: {e}"))?;
     // ADR-0089 D2 / step 4 (#1218): a host-supplied `future<u32>` VALUE --
     // `get-future: func() -> future<u32>`. Unlike `get-async` (an async func
     // whose wait folds into the [async-lower] call itself), this returns an
@@ -882,11 +906,14 @@ fn run_async_component(path: &str) -> Result<i32> {
             // component is even instantiated (measured). They are valid
             // component labels, so `host_future_named("get-future")` can ask
             // for one; say so plainly instead of surfacing a linker error.
-            if matches!(name.as_str(), "get-future" | "get-async" | "get-after") {
+            if matches!(
+                name.as_str(),
+                "get-future" | "get-async" | "get-after" | "sleep-for"
+            ) {
                 bail!(
                     "VIBE_ASYNC_FUTURES '{name}': that name is one of the runner's \
-                     built-in imports (get-future, get-async, get-after) and cannot be \
-                     redefined -- rename the host future"
+                     built-in imports (get-future, get-async, get-after, sleep-for) and \
+                     cannot be redefined -- rename the host future"
                 );
             }
             let value: u32 = val_s
@@ -955,11 +982,14 @@ fn run_async_component(path: &str) -> Result<i32> {
             // Same reserved set as VIBE_ASYNC_FUTURES: these root imports are
             // registered unconditionally above and the linker rejects
             // shadowing (measured on the future side, #1337 Codex review).
-            if matches!(name.as_str(), "get-future" | "get-async" | "get-after") {
+            if matches!(
+                name.as_str(),
+                "get-future" | "get-async" | "get-after" | "sleep-for"
+            ) {
                 bail!(
                     "VIBE_ASYNC_STREAMS '{name}': that name is one of the runner's \
-                     built-in imports (get-future, get-async, get-after) and cannot be \
-                     redefined -- rename the host stream"
+                     built-in imports (get-future, get-async, get-after, sleep-for) and \
+                     cannot be redefined -- rename the host stream"
                 );
             }
             let (bytes_s, delay_s) = match rest.split_once('@') {
