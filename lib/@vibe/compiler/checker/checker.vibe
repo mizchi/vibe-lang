@@ -3359,7 +3359,7 @@ fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "Bytes::to_array" || name == "Int64Array::make" {
     Some(CtArray(CtInt))
   }
-  else if name == "Map::keys" || name == "sh_lines" || name == "Lines::parse" {
+  else if name == "Map::keys" || name == "sh_lines" || name == "Lines::parse" || name == "String::split" {
     Some(CtArray(CtString))
   }
   else if name == "Array::slice" || name == "Array::concat" || name == "Array::filter" || name == "Array::reverse" || name == "Array::sort" || name == "FixedArray::make" {
@@ -8294,6 +8294,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         CtString => 1,
         CtNamed(nm, _) => if nm == "Map" || nm == "Stream" {
           1
+        } else if nm == "HostStream" {
+          0
         } else if type_name_has_iterator_impl(env, nm) {
           0
         } else match find_typedef(defs, nm) {
@@ -8329,6 +8331,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         Array::push(errors, String::concat("non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function", off_marker(railway_expr_off(iterable))))
       } else if collection_class < 0 && !discarded_root {
         Array::push(errors, String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
+      } else if collection_class < 0 {
+        // #1559: a rigid type parameter (`T`) as the iterand used to lower
+        // to the residual Array loop and trap. A still-open inference var
+        // is different — builtins such as `String::split` surface as a
+        // fresh var when their return is not yet in the env, and the
+        // compiler itself iterates those in statement position.
+        let rigid_param = match it_resolved {
+          CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs, nm) {
+            None => true,
+            Some(_) => false
+          },
+          CtForAll(_, _, _) => true,
+          _ => false
+        }
+        if rigid_param {
+          Array::push(errors, String::concat("cannot classify this `for` iterand; annotate it or pass a concrete Array, iterator, or pull closure", off_marker(railway_expr_off(iterable))))
+        } else {
+          ()
+        }
       } else {
         ()
       }
