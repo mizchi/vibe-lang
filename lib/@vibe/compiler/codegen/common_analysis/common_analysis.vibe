@@ -2163,7 +2163,22 @@ fn za_is_region_read_callee(name: String) -> Bool {
   name == "MutList::length" || name == "MutList::get" || name == "MutBytes::length"
 }
 
-fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Array[Expr], fn_params: Array[Array[String]], visited: Array[String], bound: Array[String], typed_table: Array[String], typed_subst: Array[String], za_mode: String, assume_names: Array[String]) -> String {
+fn za_mode_of(visited: Array[String]) -> String {
+  if Array::length(visited) == 0 {
+    ""
+  } else {
+    let head = Array::get(visited, 0)
+    if head == "@za:strict" {
+      "strict"
+    } else if head == "@za:assume" {
+      "assume"
+    } else {
+      ""
+    }
+  }
+}
+
+fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Array[Expr], fn_params: Array[Array[String]], visited: Array[String], bound: Array[String], typed_table: Array[String], typed_subst: Array[String]) -> String {
   match e {
     EInt(_) => "",
     EFloat(_) => "float literal (heap-boxed on the linear backend)",
@@ -2189,16 +2204,16 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
     } else {
       ""
     },
-    EIf(zc, zt, zf) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_first(za_walk(zt, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_walk(zf, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names))),
+    EIf(zc, zt, zf) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_first(za_walk(zt, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zf, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst))),
     ELet(zl_name, zv, zb, _) => {
-      let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)
+      let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
       let body_bound = typed_alloc_copy_strings(bound)
       let body_names = typed_alloc_copy_strings(typed_table)
       let body_kinds = typed_alloc_copy_strings(typed_subst)
       Array::push(body_bound, zl_name)
       Array::push(body_names, zl_name)
       Array::push(body_kinds, typed_alloc_expr_kind(zv, typed_table, typed_subst))
-      za_first(value_result, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds, za_mode, assume_names))
+      za_first(value_result, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds))
     },
     ELetRec(zlr_name, zv, zb) => {
       let body_bound = typed_alloc_copy_strings(bound)
@@ -2207,29 +2222,29 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       Array::push(body_bound, zlr_name)
       Array::push(body_names, zlr_name)
       Array::push(body_kinds, typed_alloc_expr_kind(zv, typed_table, typed_subst))
-      za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds, za_mode, assume_names), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds, za_mode, assume_names))
+      za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds))
     },
     ELetMut(zlm_name, zv, zb, _) => {
-      let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)
+      let value_result = za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
       let body_bound = typed_alloc_copy_strings(bound)
       let body_names = typed_alloc_copy_strings(typed_table)
       let body_kinds = typed_alloc_copy_strings(typed_subst)
       Array::push(body_bound, zlm_name)
       Array::push(body_names, zlm_name)
       Array::push(body_kinds, typed_alloc_expr_kind(zv, typed_table, typed_subst))
-      za_first(value_result, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds, za_mode, assume_names))
+      za_first(value_result, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, body_bound, body_names, body_kinds))
     },
-    EAssign(_, zv, zb) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)),
-    EAssignOp(_, _, zv, zb) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)),
-    ESeq(za, zb) => za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)),
+    EAssign(_, zv, zb) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
+    EAssignOp(_, _, zv, zb) => za_first(za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
+    ESeq(za, zb) => za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
     EMatch(scr, arms) => {
-      let mut r = za_walk(scr, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)
+      let mut r = za_walk(scr, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (arm_pat, arm_body) = Array::get(arms, ai)
         let _ = collect_pattern_bindings(arm_pat, bound)
         if r == "" {
-          r = za_walk(arm_body, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)
+          r = za_walk(arm_body, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
         } else {
           ()
         }
@@ -2238,7 +2253,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       r
     },
     EHandle(_, _) => "effect handler (allocates evidence)",
-    EWhile(zc, zb) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)),
+    EWhile(zc, zb) => za_first(za_walk(zc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)),
     ELoop(inits, zb) => {
       let mut r = ""
       let loop_bound = typed_alloc_copy_strings(bound)
@@ -2248,7 +2263,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       while li < Array::length(inits) {
         let (zloop_name, init_e) = Array::get(inits, li)
         if r == "" {
-          r = za_walk(init_e, ctors, fn_names, fn_bodies, fn_params, visited, loop_bound, loop_names, loop_kinds, za_mode, assume_names)
+          r = za_walk(init_e, ctors, fn_names, fn_bodies, fn_params, visited, loop_bound, loop_names, loop_kinds)
         } else {
           ()
         }
@@ -2258,7 +2273,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         Array::push(loop_kinds, init_kind)
         li = li + 1
       }
-      za_first(r, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, loop_bound, loop_names, loop_kinds, za_mode, assume_names))
+      za_first(r, za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, loop_bound, loop_names, loop_kinds))
     },
     EForIn(zfi_name, zfi_snd, zsrc, zb) => {
       Array::push(bound, zfi_name)
@@ -2266,7 +2281,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         Some(zfi_n2) => Array::push(bound, zfi_n2),
         None => ()
       }
-      za_first(za_walk(zsrc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names))
+      za_first(za_walk(zsrc, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst))
     },
     ECall(callee, cargs, _) => {
       let region_run = match callee {
@@ -2274,7 +2289,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         _ => false
       }
       if region_run {
-        if za_mode == "strict" {
+        if za_mode_of(visited) == "strict" {
           "region/arena allocation"
         } else if Array::length(cargs) == 1 {
           match Array::get(cargs, 0) {
@@ -2290,9 +2305,9 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
                 Array::push(region_kinds, "")
                 rpi = rpi + 1
               }
-              za_walk(rbody, ctors, fn_names, fn_bodies, fn_params, visited, region_bound, region_names, region_kinds, za_mode, assume_names)
+              za_walk(rbody, ctors, fn_names, fn_bodies, fn_params, visited, region_bound, region_names, region_kinds)
             },
-            other => za_walk(other, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)
+            other => za_walk(other, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
           }
         } else {
           ""
@@ -2302,7 +2317,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         let mut ci = 0
         while ci < Array::length(cargs) {
           if r == "" {
-            r = za_walk(Array::get(cargs, ci), ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)
+            r = za_walk(Array::get(cargs, ci), ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
           } else {
             ()
           }
@@ -2322,14 +2337,12 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
             } else if za_is_region_read_callee(cname) {
               ""
             } else if za_is_region_alloc_callee(cname) {
-              if za_mode == "strict" {
+              if za_mode_of(visited) == "strict" {
                 "region/arena allocation"
               } else {
                 ""
               }
             } else if za_safe_builtin(cname) {
-              ""
-            } else if array_contains_str(assume_names, cname) {
               ""
             } else {
               let mut fi = 0
@@ -2362,14 +2375,14 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
                     Array::push(callee_typed_kinds, za_param_fact_kind(callee_fact))
                     cbi = cbi + 1
                   }
-                  let inner = za_walk(Array::get(fn_bodies, fidx), ctors, fn_names, fn_bodies, fn_params, visited, callee_bound, callee_typed_names, callee_typed_kinds, za_mode, assume_names)
+                  let inner = za_walk(Array::get(fn_bodies, fidx), ctors, fn_names, fn_bodies, fn_params, visited, callee_bound, callee_typed_names, callee_typed_kinds)
                   if inner == "" {
                     ""
                   } else {
                     String::concat("call to '", String::concat(cname, String::concat("' which may allocate: ", inner)))
                   }
                 }
-              } else if za_mode == "assume" {
+              } else if za_mode_of(visited) == "assume" {
                 ""
               } else {
                 String::concat("call to '", String::concat(cname, "' (not proven allocation-free)"))
@@ -2380,13 +2393,13 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         }
       }
     },
-    EBinOp(_, za, zb) => za_first(za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)), typed_operator_alloc_kind(e, typed_table, typed_subst)),
-    EUnaryOp(_, za) => za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names), typed_operator_alloc_kind(e, typed_table, typed_subst)),
-    EDot(zobj, _, _, _) => za_walk(zobj, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names),
-    ELabeledArg(_, _, zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names),
-    EReturn(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names),
+    EBinOp(_, za, zb) => za_first(za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)), typed_operator_alloc_kind(e, typed_table, typed_subst)),
+    EUnaryOp(_, za) => za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), typed_operator_alloc_kind(e, typed_table, typed_subst)),
+    EDot(zobj, _, _, _) => za_walk(zobj, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
+    ELabeledArg(_, _, zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
+    EReturn(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
     EBreak(zo) => match zo {
-      Some(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names),
+      Some(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
       None => ""
     },
     EContinue(zvs) => {
@@ -2394,7 +2407,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       let mut vi = 0
       while vi < Array::length(zvs) {
         if r == "" {
-          r = za_walk(Array::get(zvs, vi), ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names)
+          r = za_walk(Array::get(zvs, vi), ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)
         } else {
           ()
         }
@@ -2402,7 +2415,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
       }
       r
     },
-    ESpread(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst, za_mode, assume_names),
+    ESpread(zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
     EUnit => ""
   }
 }
@@ -2522,6 +2535,18 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
         }
         if fidx2 >= 0 {
           let visited = array_empty()
+          if za_mode == "strict" {
+            Array::push(visited, "@za:strict")
+          } else if za_mode == "assume" {
+            Array::push(visited, "@za:assume")
+          } else {
+            Array::push(visited, "@za:")
+          }
+          let mut aj = 0
+          while aj < Array::length(assume_names) {
+            Array::push(visited, Array::get(assume_names, aj))
+            aj = aj + 1
+          }
           Array::push(visited, target_name)
           let seed_bound = array_empty()
           let seed_typed_names = array_empty()
@@ -2536,7 +2561,7 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
             Array::push(seed_typed_kinds, za_param_fact_kind(seed_fact))
             sbi = sbi + 1
           }
-          let r = za_walk(Array::get(fn_bodies, fidx2), ctors, fn_names, fn_bodies, fn_params, visited, seed_bound, seed_typed_names, seed_typed_kinds, za_mode, assume_names)
+          let r = za_walk(Array::get(fn_bodies, fidx2), ctors, fn_names, fn_bodies, fn_params, visited, seed_bound, seed_typed_names, seed_typed_kinds)
           if r != "" {
             msg = String::concat("zero_alloc: fn '", String::concat(target_name, String::concat("' may allocate: ", r)))
           } else {
