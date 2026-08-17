@@ -149,7 +149,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 |---|---|---|
 | bare name | persistent/functional — every "mutating" op returns a NEW value, the receiver is untouched | `Map[K, V]`, `StringSet` (conceptually `Set[String]`) |
 | `Mut-` prefix | a deliberate MUTABLE variant with the same conceptual API — ops return `Unit` and mutate in place | `MutMap`, `MutSet`, `MutSortedMap`, `MutSortedSet` |
-| `XBuilder` suffix | a mutable, growable builder; not meant to be held onto — call **`::build`** to get the persistent value | `ArrayBuilder`, `MapBuilder`, `StringBuilder` |
+| `XBuilder` suffix | a mutable, growable builder; not meant to be held onto — finish with the **implemented** terminal: **`::freeze`** for `ArrayBuilder`/`MapBuilder`, **`::build`** for `StringBuilder` | `ArrayBuilder`, `MapBuilder`, `StringBuilder` |
 | `Frozen-` prefix | immutable AND `Send`-eligible (structurally, when its element type is `Send`) — a narrower, stronger claim than plain persistence, tied to the structured-concurrency model (ADR-0068, #906) | `FrozenArray[T]` |
 
 **2軸を分離する** (ADR-0100 (3), #1262)。ADR-0082 は `Hash-` / `Sorted-` の
@@ -197,6 +197,9 @@ a bare-named persistent type for ordinary functional-update code.
 `freeze` は「Frozen-(persistent + `Send`)を産む動詞」に予約されていて、
 Builder の終端はそれではない —— 旧綴りの最悪例が
 `ArrayBuilder::freeze -> Array` で、**freeze の結果が可変**だった。
+**現行 surface の実装終端**はまだ `ArrayBuilder::freeze` / `MapBuilder::freeze`
+だけ。`StringBuilder` だけが `build` を公開する (`freeze` と同じ registry
+row の alias)。`ArrayBuilder::build` / `MapBuilder::build` は未実装。
 
 ```vibe
 fn greeting() -> String {
@@ -766,7 +769,7 @@ let mv = m["key"]
 let arr2 = {
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 1)
-  ArrayBuilder::freeze(b)     // -> Array[Int]
+  ArrayBuilder::freeze(b)     // implemented terminal; `build` is the planned/StringBuilder verb
 }
 
 // General-purpose containers live in @vibe/core — MutMap/MutSet (open
@@ -1644,7 +1647,7 @@ let arr = {
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 1)
   ArrayBuilder::push(b, 2)
-  ArrayBuilder::freeze(b)
+  ArrayBuilder::freeze(b)     // implemented terminal; `build` is the planned/StringBuilder verb
 }
 
 // for-in as map
