@@ -447,3 +447,42 @@ test "an opaque contract type MUST be defined by a sibling and stays accepted (#
   let errors = check_contract(decls, opaques, impls, type_defs)
   assert_eq(Array::length(errors), 0)
 }
+
+// Type aliases that exist only in index.vpkg never warned, so the old
+// spelling kept spreading. `#deprecated` on the contract row is the
+// marker `vibe check` can see — the parser has to skip it first.
+
+test "contract type alias may carry #deprecated" {
+  let src = "#deprecated(\"use MutMap\")\ntype HashMap[K, V] = MutMap[K, V]\nfn HashMap::new_string[V]() -> MutMap[String, V]"
+  let (decls, opaques, extra) = parse_contract_program(lex(src))
+  assert_eq(Array::length(decls), 1)
+  assert_eq(Array::length(opaques), 0)
+  assert_eq(Array::length(extra), 1)
+  let (dname, _) = Array::get(decls, 0)
+  assert_eq(dname, "HashMap::new_string")
+  match Array::get(extra, 0) {
+    STypeAlias(_, name, _, _) => assert_eq(name, "HashMap"),
+    _ => assert(false)
+  }
+}
+
+test "bare #deprecated in a contract is skipped the same way" {
+  let src = "#deprecated\ntype HashSet[T] = MutSet[T]"
+  let (_, _, extra) = parse_contract_program(lex(src))
+  assert_eq(Array::length(extra), 1)
+  match Array::get(extra, 0) {
+    STypeAlias(_, name, _, _) => assert_eq(name, "HashSet"),
+    _ => assert(false)
+  }
+}
+
+test "unknown # directive in a contract is rejected" {
+  let msg = handle {
+    let _ = parse_contract_program(lex("#nope\ntype X = Int"))
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "unsupported # directive"))
+  assert(String::contains(msg, "nope"))
+}

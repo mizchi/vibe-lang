@@ -1,7 +1,7 @@
 //# Imports
 
 import ../cli_support.vibe {
-  compile_release_file_mode, check_linked_file, verify_culprit_off_marker, verify_culprit_off_marker_fs_fail_closed, verify_culprit_off_marker_snapshot
+  compile_release_file_mode, check_linked_file, check_deprecated_warnings_from_source_groups, verify_culprit_off_marker, verify_culprit_off_marker_fs_fail_closed, verify_culprit_off_marker_snapshot
 }
 
 import @vibe/compiler/loader {
@@ -450,3 +450,34 @@ test "check_linked_file: tainted closure-param callee names the culprit, located
 // eligibility). Coverage lives in the gate instead --
 // fixtures/effect_closure_param_inert.vibe (+ _transitive) compile AND
 // execute through stage2 in compiler_gate lane 50.
+
+test "vpkg #deprecated type alias warns even when source_groups hold the facade" {
+  // The loader puts a generated facade in source_groups, not the on-disk
+  // vpkg. Markers on contract-only type aliases must still fire.
+  Fs::mkdir_p("/tmp/vibe_cli_support_dep_vpkg")
+  let vpkg_path = "/tmp/vibe_cli_support_dep_vpkg/index.vpkg"
+  let entry_path = "/tmp/vibe_cli_support_dep_vpkg_entry.vibe"
+  let vpkg_src = "#deprecated(\"use MutMap\")\ntype HashMap[K, V] = MutMap[K, V]\n"
+  let entry_src = "import ./index.vpkg {\n  HashMap\n}\nfn take(m: HashMap[String, Int]) -> Int {\n  1\n}\n"
+  let facade = "export type HashMap[K, V] = MutMap[K, V]\n"
+  Fs::write_bytes(vpkg_path, string_to_bytes(vpkg_src))
+  Fs::write_bytes(entry_path, string_to_bytes(entry_src))
+  let groups = [
+    ("g", [
+      (entry_path, entry_src),
+      (vpkg_path, facade)
+    ])
+  ]
+  let lines = check_deprecated_warnings_from_source_groups(entry_path, groups)
+  assert(Array::length(lines) > 0)
+  assert(String::contains(Array::get(lines, 0), "'HashMap' is deprecated: use MutMap"))
+}
+
+test "shipped HashMap type alias in core/index.vpkg is still a transparent alias" {
+  // The `#deprecated` directive cannot live in this file until a
+  // bootstrap bump (seed parse rejects `#`). The warning comes from
+  // the language table in deprecated_scan.vibe instead.
+  let src = Fs::read_file("lib/@vibe/core/index.vpkg")
+  assert(String::contains(src, "type HashMap[K, V] = MutMap[K, V]"))
+  assert(!String::contains(src, "#deprecated(\"use MutMap\")"))
+}

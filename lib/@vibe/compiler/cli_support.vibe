@@ -493,6 +493,10 @@ export fn check_deprecated_warnings_from_source_groups(input_path: String, sourc
   // every alias the ADR-0100 (3) collection rename shipped -- was invisible
   // here and the migration warning this function promises never appeared.
   let dep_sources = resolved_dep_sources(input_path, source_groups)
+  // A `.vpkg` reaches source_groups as a generated facade (and its type
+  // aliases as a materialized types module). `#deprecated` on a contract
+  // type alias lives only in the on-disk file, so re-read those paths.
+  append_raw_vpkg_dep_sources(input_path, source_groups, dep_sources)
   // Codex review (PR #1713, P2): the closure above is deliberately WIDE -- it
   // has to be, because a package publishes its markers from a sibling file the
   // entry never names. Wide marker COLLECTION plus a token-level scanner would
@@ -502,6 +506,27 @@ export fn check_deprecated_warnings_from_source_groups(input_path: String, sourc
   // name the entry actually IMPORTED. Markers the entry declares itself still
   // count unconditionally (a file deprecating its own helper needs no import).
   deprecated_warning_lines_visible(entry_source, dep_sources, Some(entry_imported_names(entry_stmts)))
+}
+
+/// Re-read every on-disk `.vpkg` in `groups` (except the entry itself) so
+/// `#deprecated` markers on contract-only type aliases are visible to the
+/// token scanner. The generated facade in `groups` does not preserve them.
+fn append_raw_vpkg_dep_sources(input_path: String, groups: Array[(String, Array[(String, String)])], out: Array[String]) -> Unit with Fs {
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_g, members) = Array::get(groups, gi)
+    let mut mi = 0
+    while mi < Array::length(members) {
+      let (path, _source) = Array::get(members, mi)
+      if path != input_path && String::ends_with(path, ".vpkg") && Fs::exists(path) {
+        Array::push(out, Fs::read_file(path))
+      } else {
+        ()
+      }
+      mi = mi + 1
+    }
+    gi = gi + 1
+  }
 }
 
 /// Every name the entry selects from an import / re-export, in source order.

@@ -139,11 +139,41 @@ test "the new MutMap spelling is silent" {
 }
 
 test "the deprecated TYPE alias warns from an annotation" {
-  // The type row is the half that could NOT be kept working across a module
-  // boundary (#1700). Within one module it still resolves, and the marker
-  // still fires -- so if #1700 is fixed, the warning is already in place.
+  // The type row lives only in index.vpkg. The scanner itself already
+  // honours a `#deprecated` on `type` — the remaining hole is that the
+  // contract parser used to reject the directive, so the shipped file
+  // could not carry it.
   let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
   assert(contains(first_warning(entry, collection_alias_dep()), "'HashMap' is deprecated: use MutMap"))
+}
+
+test "a vpkg-shaped type alias row warns the same way as an impl-file marker" {
+  let deps = [
+    "#deprecated(\"use MutMap\")\ntype HashMap[K, V] = MutMap[K, V]\nfn HashMap::new_string[V]() -> MutMap[String, V]"
+  ]
+  let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
+  assert(contains(first_warning(entry, deps), "'HashMap' is deprecated: use MutMap"))
+}
+
+test "legacy type alias HashMap warns from the language table" {
+  let entry = "fn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
+  assert(contains(first_warning(entry, no_deps()), "'HashMap' is deprecated: use MutMap"))
+}
+
+test "legacy type alias HashMap is silent when the entry did not import it" {
+  let entry = "fn HashMap::new_string() -> Int {\n  1\n}\nfn use_it() -> Int {\n  HashMap::new_string()\n}"
+  assert_eq(Array::length(deprecated_warning_lines_visible(entry, no_deps(), visible([
+    "MutMap"
+  ]))), 0)
+}
+
+test "legacy type alias HashMap warns when the entry imported the type" {
+  let entry = "import @vibe/core {\n  HashMap\n}\nfn take(m: HashMap[String, Int]) -> Int {\n  1\n}"
+  let lines = deprecated_warning_lines_visible(entry, no_deps(), visible([
+    "HashMap"
+  ]))
+  assert(Array::length(lines) > 0)
+  assert(contains(Array::get(lines, 0), "'HashMap' is deprecated: use MutMap"))
 }
 
 //# Visibility filter (Codex review, PR #1713, P2)
@@ -195,9 +225,9 @@ test "a marker the ENTRY declares needs no import to count" {
 }
 
 //# Shipped type aliases live only in the package contract (index.vpkg).
-//# Function aliases already carry `#deprecated` in the impl files; the type
-//# rows did not, so `let m: HashMap[String, Int] = ...` never warned and the
-//# old type spelling kept spreading.
+//# Function aliases already carry `#deprecated` in the impl files. The type
+//# rows cannot host the directive until a bootstrap bump, so the scanner
+//# honours the same names from a visibility-gated language table.
 
 //# Builtin old spellings (no declaration site).
 

@@ -296,6 +296,11 @@ export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Ar
   // Builtins have no `#deprecated` declaration site. Always honour the
   // language-level table (not gated on imports).
   append_builtin_deprecated(deprecated)
+  // Contract-only type aliases cannot carry `#deprecated` until a
+  // bootstrap bump (seed parse rejects `#` in index.vpkg). Honour the
+  // same names here, gated on the entry's imports — a file that never
+  // imported `HashMap` must not be told to rename its own type.
+  append_visible_legacy_types(deprecated, visible_names)
   let mut d = 0
   while d < Array::length(dep_sources) {
     let dep_marks = dep_empty_pairs()
@@ -318,6 +323,34 @@ export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Ar
     d = d + 1
   }
   deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated)
+}
+
+/// ADR-0100 (3) type aliases that live only in index.vpkg.
+fn append_legacy_type_deprecated(out: Array[(String, String)]) -> Unit {
+  Array::push(out, ("HashMap", "use MutMap"))
+  Array::push(out, ("HashSet", "use MutSet"))
+  Array::push(out, ("SortedMap", "use MutSortedMap"))
+  Array::push(out, ("SortedSet", "use MutSortedSet"))
+  Array::push(out, ("ImmutMap", "use MapHamt"))
+}
+
+fn append_visible_legacy_types(out: Array[(String, String)], visible_names: Option[Array[String]]) -> Unit {
+  let marks = dep_empty_pairs()
+  append_legacy_type_deprecated(marks)
+  let mut i = 0
+  while i < Array::length(marks) {
+    let (mname, mmsg) = Array::get(marks, i)
+    let keep = match visible_names {
+      None => true,
+      Some(names) => dep_names_contain(names, mname)
+    }
+    if keep {
+      Array::push(out, (mname, mmsg))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
 }
 
 fn dep_names_contain(names: Array[String], name: String) -> Bool {
