@@ -16,6 +16,23 @@ import ./theme.vibe {
 
 //# Functions
 
+fn is_chapter(e: SummaryEntry) -> Bool {
+  String::length(e.path) > 0
+}
+
+fn nav_neighbor(entries: Array[SummaryEntry], index: Int, step: Int) -> Option[SummaryEntry] {
+  let n = Array::length(entries)
+  let mut i = index + step
+  while i >= 0 && i < n {
+    let e = Array::get(entries, i)
+    if is_chapter(e) {
+      return Some(e)
+    }
+    i = i + step
+  }
+  None
+}
+
 export fn render_sidebar(entries: Array[SummaryEntry], current: String) -> String {
   let sb = StringBuilder::new()
   StringBuilder::push(sb, "<ol>\n")
@@ -23,25 +40,31 @@ export fn render_sidebar(entries: Array[SummaryEntry], current: String) -> Strin
   let mut i = 0
   while i < n {
     let e = Array::get(entries, i)
-    let href = html_name_for(e.path)
-    let here = if href == current {
-      " here"
+    if !is_chapter(e) {
+      StringBuilder::push(sb, "<li class=\"part\">")
+      StringBuilder::push(sb, escape_html(e.title))
+      StringBuilder::push(sb, "</li>\n")
     } else {
-      ""
+      let href = html_name_for(e.path)
+      let here = if href == current {
+        " here"
+      } else {
+        ""
+      }
+      let depth = if e.depth > 0 {
+        " depth-1"
+      } else {
+        ""
+      }
+      StringBuilder::push(sb, "<li class=\"")
+      StringBuilder::push(sb, depth)
+      StringBuilder::push(sb, here)
+      StringBuilder::push(sb, "\"><a href=\"")
+      StringBuilder::push(sb, escape_html(href))
+      StringBuilder::push(sb, "\">")
+      StringBuilder::push(sb, escape_html(e.title))
+      StringBuilder::push(sb, "</a></li>\n")
     }
-    let depth = if e.depth > 0 {
-      " depth-1"
-    } else {
-      ""
-    }
-    StringBuilder::push(sb, "<li class=\"")
-    StringBuilder::push(sb, depth)
-    StringBuilder::push(sb, here)
-    StringBuilder::push(sb, "\"><a href=\"")
-    StringBuilder::push(sb, escape_html(href))
-    StringBuilder::push(sb, "\">")
-    StringBuilder::push(sb, escape_html(e.title))
-    StringBuilder::push(sb, "</a></li>\n")
     i = i + 1
   }
   StringBuilder::push(sb, "</ol>\n")
@@ -72,16 +95,8 @@ export fn render_page(title: String, source: String, entries: Array[SummaryEntry
   } else {
     "index.html"
   }
-  let prev = if index > 0 {
-    Some(Array::get(entries, index - 1))
-  } else {
-    None
-  }
-  let next = if index + 1 < n {
-    Some(Array::get(entries, index + 1))
-  } else {
-    None
-  }
+  let prev = nav_neighbor(entries, index, 0 - 1)
+  let next = nav_neighbor(entries, index, 1)
   page_html(title, render_sidebar(entries, current), render_markdown(source), nav_link("Previous", prev), nav_link("Next", next))
 }
 

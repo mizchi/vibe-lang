@@ -2,7 +2,7 @@
 
 Previous: [04 Option](04_option.vibe.md)
 
-日本語版: [05_effects-ja.vibe.md](05_effects-ja.vibe.md)
+日本語版: [05_effects.vibe.md](../ja/05_effects.vibe.md)
 
 vibe is **pure by default**. A side effect is declared in the type's `with ...`
 row (the effect row) and propagates to the caller until a `handle` draws the

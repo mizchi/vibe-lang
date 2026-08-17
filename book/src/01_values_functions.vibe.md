@@ -7,7 +7,7 @@ block right after it is that run's output, pasted in (#1142). To refresh it
 locally, run
 `bash scripts/vibe_md.sh write book/src/01_values_functions.vibe.md`.
 
-日本語版: [01_values_functions-ja.vibe.md](01_values_functions-ja.vibe.md)
+日本語版: [01_values_functions.vibe.md](../ja/01_values_functions.vibe.md)
 
 ## Values and primitive types
 

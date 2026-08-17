@@ -1,10 +1,10 @@
 # 01 — 値と関数
 
 このチャプターは `.vibe.md` そのもの — 各 ` ```vibe run ` ブロックは
-`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md`)
+`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md`)
 で実際にコンパイル・実行され、直後の ` ```output ` ブロックは実行結果を
 そのまま埋め込んだもの (#1142)。手元で更新するときは
-`bash scripts/vibe_md.sh write docs/tutorial/01_values_functions-ja.vibe.md`。
+`bash scripts/vibe_md.sh write book/ja/01_values_functions.vibe.md`。
 
 English version: [01_values_functions.vibe.md](01_values_functions.vibe.md) (canonical)
 

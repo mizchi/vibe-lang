@@ -2,7 +2,7 @@
 
 Previous: [01 Values and functions](01_values_functions.vibe.md)
 
-日本語版: [02_control_flow-ja.vibe.md](02_control_flow-ja.vibe.md)
+日本語版: [02_control_flow.vibe.md](../ja/02_control_flow.vibe.md)
 
 ## `if` is an expression
 

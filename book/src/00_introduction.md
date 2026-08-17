@@ -34,16 +34,24 @@ toolchain to work on vibe.
 
 ## How to read this book
 
-Chapters 1–8 are the language tour that used to live in `docs/tutorial/`.
-They are still the fastest path from zero to "I can write a package."
-Chapters 9–14 go into mutation, capabilities, concurrency, the CLI, and
-wasm — the parts that make vibe's design different from a typical
-functional scripting language.
+**Getting started** is the language tour that used to live in `docs/tutorial/`.
+It is still the fastest path from zero to "I can write a package."
 
-Japanese translations of the tour chapters live in `book/ja/`. The English
+**Language** goes into the parts the tour only pointed at: byte strings,
+collections, mutation and escape, generics, iteration, and `==`.
+
+**Systems** is why vibe is not "another functional scripting language":
+capabilities, structured concurrency, the CLI as an editor query surface,
+and wasm as the representation rather than a backend you opt into.
+
+Japanese translations of the original tour live in `book/ja/`. The English
 files are canonical; a pair must run the same programs (same `` ```output ``
-blocks).
+blocks). Later chapters are English-only for now.
 
 When an example is deliberately not runnable — rejected syntax, a not-yet
 implemented form — it is marked `` ```vibe skip `` with a reason. Never use
 `skip` to hide a broken example.
+
+The [cheatsheet](../../docs/cheatsheet.md) is the one-page reference this
+book expands. If a sentence here and a sentence there disagree, the
+cheatsheet plus a failing `.vibe.md` block win — then we fix the book.

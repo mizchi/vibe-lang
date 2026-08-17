@@ -33,6 +33,12 @@ is a pointer.
 
 ## Chapter map
 
-See [SUMMARY.md](SUMMARY.md). Start at
-[Getting started](src/01_getting_started.vibe.md) or jump to
+See [SUMMARY.md](SUMMARY.md). The book is three parts plus an appendix:
+
+1. **Getting started** — the original tour (`01`–`07`), plus install.
+2. **Language** — types, collections, mutation, generics, iteration, `==`,
+   and a small end-to-end program.
+3. **Systems** — capabilities, concurrency, the CLI, wasm, pitfalls.
+
+Start at [Getting started](src/01_getting_started.vibe.md) or jump to
 [Values and functions](src/01_values_functions.vibe.md).

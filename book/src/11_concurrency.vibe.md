@@ -19,7 +19,9 @@ import or `let spawn = TaskGroup::spawn` bypasses that check. `adopt` /
 
 ```vibe skip
 // skip: contract sketch — see lib/@vibe/concurrent and fixtures/region_ok_basic.vibe
-import @vibe/concurrent { TaskGroup, TaskHandle }
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
 
 fn main with Exception {
   let answer = TaskGroup::run((n) -> {
@@ -31,6 +33,12 @@ fn main with Exception {
   // answer == 42
 }
 ```
+
+`Send` is judged structurally. Scalars, tuples, `Option` of Send parts,
+and `mut`-field-free structs/enums made of Send parts may cross a
+spawn. `Array` / `Bytes`, closures, and `mut`-field structs may not.
+`FrozenArray[T]` exists specifically as the Send-eligible array. A
+persistent `Map` is *not* automatically `Send`.
 
 ## Suspend vs blocking
 
@@ -47,3 +55,5 @@ Messages are values. The long-term semantics are a deep-copy snapshot
 across tasks. Today everything still shares one heap: send immutable
 data. Multithreading, when it lands, stays shared-nothing
 (`TaskGroup` + `Send` / region checks already describe that shape).
+
+Next: [The CLI as an IDE](12_cli.vibe.md).

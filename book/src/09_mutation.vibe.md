@@ -1,7 +1,20 @@
 # 09 — Mutation, regions, and escape
 
 vibe is pure by default. Mutation exists, but it is local and it does not
-show up on a function's public effect row.
+show up on a function's public effect row. There is no builtin `Mut`
+effect and no `Ref[T]`.
+
+## Pick the smallest mutation that fits
+
+- Local counter or accumulator: `let mut x = ...`. Block-scoped. Cannot
+  escape the function through `async` / `spawn`.
+- Growable bytes or text: `Bytes` / `StringBuilder`.
+- Growable array: `ArrayBuilder` then `freeze`, or `Array::push` on an
+  array you already hold.
+- A mutable cursor on a heap value: `struct S { mut field: T }` — wasm-gc
+  only (ADR-0052). Linear-memory builds do not have this.
+- Cross-call or handler-mediated state: declare an effect and `handle`
+  it. A `perform` *directly* in the handler body is inline-eliminated.
 
 ## `let mut` stays in the block
 
@@ -28,6 +41,31 @@ y = 2
 ```
 
 That is the ordinary case. Codegen keeps the binding as a wasm local.
+
+`Array::push` is the other ordinary case: the *binding* is immutable, the
+*interior* grows, and every alias sees it.
+
+```vibe run
+import @vibe/prelude {
+  stdout_write
+}
+
+fn grow(xs: Array[Int]) -> Unit {
+  Array::push(xs, 9)
+}
+
+fn main with Stdout {
+  let xs = [
+    1
+  ]
+  grow(xs)
+  stdout_write("length = \{Array::length(xs)}, last = \{Array::get(xs, 1)}\n")
+}
+```
+
+```output
+length = 2, last = 9
+```
 
 ## Escape is capture
 
@@ -59,3 +97,5 @@ a fresh region and rejects a nursery value escaping through the body's
 wasm-gc can represent `mut` fields on a struct (ADR-0052). Linear-memory
 builds do not. Prefer `let mut` locals unless you are on the gc backend
 and you need a heap cell.
+
+Next: [Generics](16_generics.vibe.md).

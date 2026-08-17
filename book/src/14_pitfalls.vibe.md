@@ -72,4 +72,22 @@ Structural `==` is landing (ADR-0097). Scalars, tuples, and many structs
 compare by value. Remaining reference equality: erased type variables
 (`[T: Eq]`), some function-return paths, empty literal bindings, and
 named arrays whose element type is not a scalar. When in doubt, write
-the comparison you mean.
+the comparison you mean. See [Equality](18_equality.vibe.md).
+
+## `fn` is a keyword
+
+`let fn = 1` is a parse error. `r#fn` is not an escape hatch. Rename
+the binding.
+
+## `for` does not always collect
+
+`let xs = for x in arr { x * 2 }` works for `Array`. A pull iterator in
+the same position is a located error. Accumulate with `ArrayBuilder`.
+
+## Double interpolation
+
+`"\{d}"` for a `Double` is only trustworthy when the checker can see
+the value is floatish. An unannotated helper result may print as an
+integer bit pattern. Annotate the parameter or write `d * 1.0`.
+
+Next: [Appendix](99_appendix.md).
