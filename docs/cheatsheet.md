@@ -925,7 +925,7 @@ higher-order effect evidence (#1536); do not treat `read_chunk` as directly
 iterable. This surface is component-only (linear/RC); GC, standalone core,
 `host_stream_named("stdin")`, and mixed named-provider composition are
 rejected. Legacy `stdin_stream(chunk_size)` is standalone-capable and
-unchanged.
+`#deprecated` (`use StdinStream::read_chunk`).
 
 **Naming.** Effect names are CamelCase. A standard provider builtin is a plain
 `Effect::snake_case` function call; a declared operation is CamelCase and is
