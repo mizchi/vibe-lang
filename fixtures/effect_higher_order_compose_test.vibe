@@ -1,0 +1,41 @@
+// #1973: was fixtures/effect_higher_order_compose.vibe + __DATA__.last "13".
+// Higher-order: compose two effect handlers into one runner
+effect Logger {
+  Log(String) -> Unit
+}
+
+effect Config {
+  Get(String) -> String
+}
+
+fn with_logger(f: () -> Int with Logger) -> Int {
+  handle {
+    f()
+  } with Logger {
+    Log(_msg) => resume(0)
+  }
+}
+
+fn with_config(f: () -> Int with Config) -> Int {
+  handle {
+    f()
+  } with Config {
+    Get(_key) => resume("default_value")
+  }
+}
+
+fn higher_order_compose() -> Int {
+  with_logger(() -> Int with Logger {
+    perform Logger::Log("starting")
+    let val = with_config(() -> Int with Config {
+      let v = perform Config::Get("app.name")
+      String::length(v)
+    })
+    perform Logger::Log("done")
+    val
+  })
+}
+
+test "composed Logger around Config handlers yield default_value length" {
+  inspect(higher_order_compose(), "13")
+}

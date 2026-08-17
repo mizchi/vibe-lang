@@ -129,7 +129,7 @@ lowering 戦略は `EPerform`/`EHandle` を消費する差し替え可能な pas
 
 初稿ではここを「呼び出し経路上に row variable が無ければ handler はコンパイル
 時に一意に決まり、evidence は完全に消える」と書いたが、これは誤りだった。
-`fixtures/effect_higher_order_swap.vibe` を精査すると反例になる: `compute`
+`fixtures/effect_higher_order_swap_test.vibe` を精査すると反例になる: `compute`
 (effect row は `with Env` — row variable を一切含まない具体的な row) は
 `with_ten(compute)` と `with_hundred(compute)` の**両方**から呼ばれ、
 呼び出し先ごとに**異なる**handler がインストールされる。つまり「row variable
@@ -316,7 +316,7 @@ dynamic-wind 相当の明示的な finalizer スタック機構 (`docs/pl-survey
   今日使えない。suspend 点 IR を用意しておけば WasmFX 到達後の
   lowering 追加は非破壊的にできるため、待つ理由がない。
 - **row variable の有無だけで static/dynamic を判定する** (初稿の誤り):
-  `fixtures/effect_higher_order_swap.vibe` が反例 — row variable を含まない
+  `fixtures/effect_higher_order_swap_test.vibe` が反例 — row variable を含まない
   具体的な effect row の関数 (`compute`) でも、呼び出しグラフ上で複数の
   異なる handler インストール経路の下に置かれうる。dict の要否は宣言された
   row の形ではなく呼び出しグラフの reachability で決まる (上記「evidence
@@ -2006,9 +2006,9 @@ row-var reject を踏まずに 3b がそのまま処理する (最初の reject 
 がこれで compile に成功して発覚)。reject を踏むのは non-trivial
 wrapper + capturing closure の組から。
 
-fixtures: `effect_resume_call_bubbling.vibe` (helper 途中 suspend +
+fixtures: `effect_resume_call_bubbling_test.vibe` (helper 途中 suspend +
 再帰 helper の多段 suspend + 2 site で enum 共有、want 3131365)、
-`effect_resume_rowvar_wrapper_normalized.vibe` (上記正規化の positive
+`effect_resume_rowvar_wrapper_normalized_test.vibe` (上記正規化の positive
 pin、want -95)、`err_effect_resume_store_ineligible.vibe` (non-trivial
 row-var callee reject)、`err_effect_resume_store_loop.vibe` (loop spine
 reject — #1230 / 追記36 で break を含むループの reject へ差し替え)。
@@ -2588,9 +2588,9 @@ body の中と、`ename` の `handle` の **body** の中だけ。そこ以外�
 `edp_alpha_rename_shadowed` 後に needing 名を shadow する binder を
 持ち込まない。
 
-fixtures: `effect_needing_value_escape_wrapped.vibe` (#1261 原型、want 42)、
+fixtures: `effect_needing_value_escape_wrapped_test.vibe` (#1261 原型、want 42)、
 `err_effect_needing_value_escape.vibe` (rescue 不能な形へ差し替え)、
-`effect_needing_value_annotated.vibe` (注釈済みの等価形、据え置き)。
+`effect_needing_value_annotated_test.vibe` (注釈済みの等価形、据え置き)。
 gate 50 更新。検証: stage2==stage3 fixpoint、compiler gate 73/73、
 unit battery 477/477。
 
@@ -2697,8 +2697,8 @@ scope 破壊が記録されている)。広げたのは naming 側だけで、ro
 perform しない literal は「ローカルの `let` に束縛されるが hoist はされない」
 — 手で `let g = ...` と書いたときと同じ形に落ちる。
 
-fixtures: `effect_iife_needing_call.vibe` (素の IIFE、want 142)、
-`effect_trivial_wrapper_needing_call.vibe` (#1070 経由で IIFE になる形、
+fixtures: `effect_iife_needing_call_test.vibe` (素の IIFE、want 142)、
+`effect_trivial_wrapper_needing_call_test.vibe` (#1070 経由で IIFE になる形、
 want 142)。どちらも修正前の compiler では上記 hard error になることを確認済み。
 
 ### 追記40 (2026-08-08): row-free closure param の実引数フロー証明 (#1536 (a) v1)
@@ -2735,7 +2735,7 @@ suspend CPS split が「closure パラメータの呼び出し」を無条件拒
   `Stream::next` の retarget (#1536 残件)。
 
 fixtures: `effect_closure_param_inert.vibe` (want 5)、
-`effect_closure_param_inert_transitive.vibe` (委譲形、want 5)、
+`effect_closure_param_inert_transitive_test.vibe` (委譲形、want 5)、
 `err_effect_closure_param_taint.vibe` (1 site が perform する literal を渡す
 → 拒否維持)。これで `async_iter_find` / `_any` / `_all` が suspend body から
 呼べる。
@@ -2799,11 +2799,11 @@ suspend を抱えて HEAD に立つ形、代入 RHS 直書きの perform
 (`acc = perform ..` — cellify 後に call-arg 位置へ落ちる)、row 変数 callee、
 literal param。
 
-fixtures: `effect_for_await_suspend.vibe` (want 20; 逐次 2 loop で同名
-`__iter_*` の反復 float を pin)、`effect_seq_head_block_suspend.vibe`
+fixtures: `effect_for_await_suspend_test.vibe` (want 20; 逐次 2 loop で同名
+`__iter_*` の反復 float を pin)、`effect_seq_head_block_suspend_test.vibe`
 (want 1105; inner binder が outer 名を shadow し tail が outer を参照する形 —
 rename を外すと捕獲で黙って誤る、その P0 側を pin)、
-`effect_seq_head_reserved_name_collision.vibe` (want 3011; user code が
+`effect_seq_head_reserved_name_collision_test.vibe` (want 3011; user code が
 生成綴り `__scps_seq0_x` を文字どおり束縛/参照する形 — probe を外した対照
 実験では 1015 に化ける)。実害側は
 `async_iter_test.vibe` の suspend-class handle 内 terminals テスト。
@@ -2818,8 +2818,8 @@ rename を外すと捕獲で黙って誤る、その P0 側を pin)、
 match の pattern binder は tail の元の外側参照を捕獲し得るため、arm ごとに
 `__scps_match<site>_<arm>_<name>` を基底とする fresh name へ alpha-rename してから
 分配する。freshness は pattern・arm body・shared tail の全出現を probe する。
-`effect_seq_head_if_suspend.vibe` (want 41100) は condition 一回評価と branch-local
-shadow を、`effect_seq_head_match_suspend.vibe` (want 3200) は scrutinee 一回評価と
+`effect_seq_head_if_suspend_test.vibe` (want 41100) は condition 一回評価と branch-local
+shadow を、`effect_seq_head_match_suspend_test.vibe` (want 3200) は scrutinee 一回評価と
 pattern capture を pin する。
 
 ### 追記44 (2026-08-12): direct selection input を継続 spine に名前付けする (#1536 (a) v5)
