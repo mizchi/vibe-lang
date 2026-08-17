@@ -40,7 +40,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 ## Selfhost build / bootstrap
 - `compiler_gate.sh` — **sign-off** (seed→stage1→stage2→stage3
   fixpoint + compile/run validation); `pkf run test` / `release-check`
-- `gate.sh` / `trial_gate.sh` — operation gates
+- `gate.sh` — operation-gate hop onto `compiler_gate.sh`
 - `generations.sh` (+ `_test`) — stage build driver
 - `generate_bundle.sh` (+ `_test`) — regenerate `compiler_sources_bundle.vibe`
   / adapter bundles from compiler source
@@ -79,7 +79,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `scripts/coverage/` — supporting coverage assets (subdir)
 
 ## Bench
-- `bench_cmd_latency.sh`, `bench_http.sh`, `bench_regression.mjs`, `bench_rc.*`,
+- `bench_http.sh`, `bench_regression.mjs`, `bench_rc.*`,
   `bench_vibe_lsp.js`
 
 ## Check / lint / gate / repro
