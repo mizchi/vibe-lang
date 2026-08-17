@@ -16,6 +16,8 @@ import @vibe/compiler/core {
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_children,
+  effect_row_allows_text,
+  effect_row_emitted_text,
   is_entry_admitted_effect,
   is_entry_cache_safe_operation,
   is_entry_runtime_managed_effect,
@@ -74,6 +76,7 @@ export enum EffectError {
   // separate from concrete effects so the fix-it never suggests handling a
   // type-level row variable as though it were an effect declaration.
   EEUnresolvedEntryEffectRow(String, String, Int);
+  EEUnauthorizedEntryOperation(String, String, String, Int);
   EEProviderOperationCollision(String);
   EEAssignImmutable(String);
   // #1539: provider-owned stdin lifecycle operations cannot be transported as
@@ -173,6 +176,14 @@ export fn effect_error_to_string(err: EffectError) -> String {
     },
     EEUnresolvedEntryEffectRow(entry_name, variables, off) => {
       let body = String::concat("entry point '", String::concat(entry_name, String::concat("' has unresolved effect row { ", String::concat(variables, " }: entry rows must be concrete\nhint: close the entry row, or discharge each concrete effect with `handle` before it reaches the entry boundary"))))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
+    EEUnauthorizedEntryOperation(entry_name, operation, allows, off) => {
+      let body = String::concat("entry point '", String::concat(entry_name, String::concat("' emits unhandled `", String::concat(operation, String::concat("` that is not authorized by `allows ", String::concat(allows, "`\nhint: handle the operation, or add it to the `allows` clause"))))))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
@@ -730,7 +741,7 @@ fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
     None => None,
     Some(s) => {
       let labels = array_empty()
-      let raw = String::split(s, ",")
+      let raw = String::split(effect_row_emitted_text(s), ",")
       let mut i = 0
       while i < Array::length(raw) {
         let label = canonical_exception_effect_name(String::trim(Array::get(raw, i)))
@@ -1437,10 +1448,20 @@ fn entry_label_is_user_declared_operation(label: String) -> Bool {
   String::index_of(label, "::") > 0 && effect_row_has_label(Some(entry_user_effect_operations), label)
 }
 
-fn standard_provider_owns_operation(label: String) -> Bool {
+export fn standard_provider_owns_operation(label: String) -> Bool {
   match builtin_call_effect(label) {
     Some(owner) => is_entry_admitted_effect(owner) && label == canonical_builtin_name(label),
     None => false
+  }
+}
+
+fn authority_covers_operation(auth: String, emitted: String) -> Bool {
+  if auth == emitted {
+    true
+  } else if String::index_of(auth, "::") < 0 && standard_provider_owns_operation(emitted) {
+    effect_name_of_op(emitted) == auth
+  } else {
+    false
   }
 }
 
@@ -1542,25 +1563,116 @@ fn first_expr_offset(root: Expr) -> Int {
   first
 }
 
+fn raw_fn_effect_string(ty: Option[TypeExpr], body: Expr) -> String {
+  match ty {
+    Some(TyFn(_, _, Some(s))) => s,
+    _ => match body {
+      EFn(_, _, _, _, Some(s), _) => s,
+      _ => ""
+    }
+  }
+}
+
+fn collect_expr_handle_effects(root: Expr) -> Array[String] {
+  let out = no_str_labels()
+  let stack = Array::slice([
+    root
+  ], 0, 1)
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match expr {
+      EHandle(_, arms) => {
+        let discharged = collect_handle_effects(arms)
+        let mut i = 0
+        while i < Array::length(discharged) {
+          let lab = Array::get(discharged, i)
+          if effect_row_has_label(Some(out), lab) {
+            ()
+          } else {
+            Array::push(out, lab)
+          }
+          i = i + 1
+        }
+      },
+      _ => ()
+    }
+    let children = expr_children(expr)
+    let mut ci = 0
+    while ci < Array::length(children) {
+      Array::push(stack, Array::get(children, ci))
+      ci = ci + 1
+    }
+  }
+  out
+}
+
+fn label_is_handled(label: String, handled: Array[String]) -> Bool {
+  if effect_row_has_label(Some(handled), label) {
+    true
+  } else {
+    let base = effect_name_of_op(label)
+    effect_row_has_label(Some(handled), base)
+  }
+}
+
+fn label_is_authorized(label: String, auth: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = false
+  while i < Array::length(auth) {
+    if authority_covers_operation(Array::get(auth, i), label) {
+      ok = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
 fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], body: Expr) -> Array[EffectError] {
   let errors = array_empty()
   if is_program_entry_name(fn_name) {
-    let labels = fn_binding_effects(ty, body)
-    let unresolved = entry_unresolved_labels(labels)
-    let bad = entry_unadmitted_labels(labels)
-    if Array::length(unresolved) > 0 || Array::length(bad) > 0 {
-      let inspect_body = match body {
-        EFn(_, _, _, _, _, fbody) => fbody,
-        _ => body
-      }
-      let off = first_expr_offset(inspect_body)
+    let raw = raw_fn_effect_string(ty, body)
+    let allows = effect_row_allows_text(raw)
+    let inspect_body = match body {
+      EFn(_, _, _, _, _, fbody) => fbody,
+      _ => body
+    }
+    let off = first_expr_offset(inspect_body)
+    if String::length(allows) > 0 {
+      let emitted = effect_row_labels(effect_row_parse(Some(raw)))
+      let auth = effect_row_labels(effect_row_parse(Some(allows)))
+      let handled = collect_expr_handle_effects(inspect_body)
+      let unresolved = entry_unresolved_labels(emitted)
       if Array::length(unresolved) > 0 {
         Array::push(errors, EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off))
       } else {
-        Array::push(errors, EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
+        let mut ui = 0
+        while ui < Array::length(emitted) {
+          let lab = Array::get(emitted, ui)
+          if label_is_handled(lab, handled) || label_is_authorized(lab, auth) {
+            ()
+          } else {
+            Array::push(errors, EEUnauthorizedEntryOperation(fn_name, lab, allows, off))
+          }
+          ui = ui + 1
+        }
       }
     } else {
-      ()
+      let labels = fn_binding_effects(ty, body)
+      let unresolved = entry_unresolved_labels(labels)
+      let bad = entry_unadmitted_labels(labels)
+      if Array::length(unresolved) > 0 || Array::length(bad) > 0 {
+        if Array::length(unresolved) > 0 {
+          Array::push(errors, EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off))
+        } else {
+          Array::push(errors, EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
+        }
+      } else {
+        ()
+      }
     }
   } else {
     ()
@@ -1646,7 +1758,7 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
 fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
   let sig = sig_type_effect_labels(ty)
   match body {
-    EFn(_, _, _, _, eff, _) => labels_union(sig, effect_row_labels(effect_row_parse(eff))),
+    EFn(_, _, _, _, eff, _) => labels_union(sig, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff))),
     _ => sig
   }
 }
@@ -2427,11 +2539,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let body_declared = labels_union(declared, discharged)
         // Unknown wildcard arms stay conservative for the legacy surface,
         // but a structurally empty handler must not gain that permission.
-        let body_in_handle = if Array::length(arms) > 0 && Array::length(discharged) == 0 {
-          true
-        } else {
-          in_handle
-        }
+        let body_in_handle = in_handle || Array::length(discharged) > 0 || (Array::length(arms) > 0 && Array::length(discharged) == 0)
         Array::push(stack, (body, body_declared, body_in_handle, ov_names, ov_effs, kinds))
         let mut ai = 0
         while ai < Array::length(arms) {
@@ -2612,9 +2720,23 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
   errors
 }
 
+fn effect_row_allows_labels(eff: Option[String]) -> Array[String] {
+  match eff {
+    None => no_str_labels(),
+    Some(s) => {
+      let allows = effect_row_allows_text(s)
+      if String::length(allows) == 0 {
+        no_str_labels()
+      } else {
+        effect_row_labels(effect_row_parse(Some(allows)))
+      }
+    }
+  }
+}
+
 fn sig_type_effect_labels(topt: Option[TypeExpr]) -> Array[String] {
   match topt {
-    Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
+    Some(TyFn(_, _, eff)) => labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff)),
     _ => effect_row_labels(effect_row_parse(None))
   }
 }
