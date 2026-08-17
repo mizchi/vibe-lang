@@ -20,6 +20,20 @@ bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # 実行して ```output
 pkf run vibe-md-tutorial                                # check を task 化したもの
 ```
 
+## 最初のプログラム（インストールした toolchain だけ）
+
+リポジトリの `lib/` なしで、**インストールした toolchain だけで**動く
+コピー＆ペースト用のプログラムは [docs/install.md](../install.md) と同じ
+ホスト組み込みの hello です:
+
+```bash
+echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
+vibe run hello.vibex        # -> 42
+```
+
+各章の `import @vibe/prelude` はリポジトリまたは pin 済みパッケージが必要で、
+素のインストールにはそのパッケージは含まれません。
+
 | 章 | テーマ |
 | --- | --- |
 | [01 値と関数](01_values_functions-ja.vibe.md) | let / mut / 基本型 / 文字列補間 / fn / ラムダ |
