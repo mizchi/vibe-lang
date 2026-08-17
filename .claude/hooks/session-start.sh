@@ -171,6 +171,16 @@ fi
 if [ -f "$PROJECT_DIR/scripts/ensure_generated.sh" ]; then
   if (cd "$PROJECT_DIR" && bash scripts/ensure_generated.sh >/dev/null 2>&1); then
     echo "[session-start] generated compiler artifacts ready"
+    # #1988: `runtime/vibe` does not run in remote sessions (no bin/viberun).
+    # Persist a host-runner invoker only after a real grep probe succeeds, so
+    # we never hand review-lint a lying VIBE_REVIEW_LINT_GREP_BIN.
+    GREP_BIN="$PROJECT_DIR/scripts/vibe_grep_bin.sh"
+    if [ -f "$GREP_BIN" ] && bash "$GREP_BIN" --probe >/dev/null 2>&1; then
+      persist_env "VIBE_REVIEW_LINT_GREP_BIN=$GREP_BIN"
+      echo "[session-start] review-lint grep: $GREP_BIN"
+    else
+      echo "[session-start] WARNING: vibe grep probe failed; leaving VIBE_REVIEW_LINT_GREP_BIN unset (review AST tier will skip)" >&2
+    fi
   else
     echo "[session-start] WARNING: ensure_generated.sh failed; run it manually before building" >&2
   fi
