@@ -104,19 +104,37 @@ fn sym_let_kind(body: Expr) -> Int {
   }
 }
 
+/// Stable outline name for a test/bench: the quoted name, or the keyword when
+/// the parser handed back an empty string (unnamed `test { }` / `bench { }`
+/// are rejected; `test ""` is the stand-in). Omitting would leave a hole.
+fn sym_block_name(name: String, keyword: String) -> String {
+  if String::length(name) == 0 {
+    keyword
+  } else {
+    name
+  }
+}
+
 /// Emit the symbol for one statement within the window [floor, hi). SModule emits
 /// the module name (kind 2 = Module) then recurses into its body, threading the
 /// SAME advancing floor so nested declarations are located in source order.
+/// Tests/benches use Function (12) -- LSP has no Test kind. An `impl Trait for T`
+/// is one Method (6) named after T: SImpl carries no method children
+/// (`parse_program_spans` skips the body).
 fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], source: String, stmt: Stmt, floor: Array[Int], hi: Int) -> Unit {
   match stmt {
     SLet(_, _, name, _, body) => sym_emit(out, source, name, sym_let_kind(body), floor, hi),
+    SFnDecl(_, name, _, _, _) => sym_emit(out, source, name, 12, floor, hi),
     SLetMut(name, _, _) => sym_emit(out, source, name, 13, floor, hi),
     SEnum(_, name, _, _, _) => sym_emit(out, source, name, 10, floor, hi),
     SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
     SStruct(_, name, _, _, _, _) => sym_emit(out, source, name, 23, floor, hi),
     STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
     STrait(_, name, _, _, _, _) => sym_emit(out, source, name, 11, floor, hi),
+    SImpl(_, _, _, type_name) => sym_emit(out, source, type_name, 6, floor, hi),
     SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
+    STest(name, _) => sym_emit(out, source, sym_block_name(name, "test"), 12, floor, hi),
+    SBench(name, _) => sym_emit(out, source, sym_block_name(name, "bench"), 12, floor, hi),
     SModule(_, name, body) => {
       sym_emit(out, source, name, 2, floor, hi)
       let mut j = 0

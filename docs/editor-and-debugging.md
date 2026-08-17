@@ -28,7 +28,7 @@ the `vibe lsp` command. It provides:
 | --- | --- |
 | **Diagnostics** | Parser error-recovery surfaces *all* top-level syntax errors at once (not just the first), plus the located type error for a clean parse. |
 | **Hover** | Typed hover — shows the inferred type of the identifier under the cursor, including locals and parameters (per-node type table). |
-| **Document symbols** | AST-accurate outline (`vibe symbols`) — functions, values, structs, enums, traits, type aliases, effects, and module-nested declarations, with correct `SymbolKind`s. Handles multi-line declarations; ignores names in strings/comments. |
+| **Document symbols** | AST-accurate outline (`vibe symbols`) — functions, values, structs, enums, traits, type aliases, effects, tests, benches, impls, and module-nested declarations, with correct `SymbolKind`s. Handles multi-line declarations; ignores names in strings/comments. Tests/benches are Function (12); `impl Trait for T` is one Method (6) named after `T`. |
 | **Go to definition** | AST-accurate declaration span (`vibe symbols`), with a line-regex fallback for older compilers. |
 | **References / Rename** | AST-accurate via scope-aware binding occurrences (no string/comment false matches; distinguishes shadowed bindings). |
 | **Completion** | Identifier and member completion. |
@@ -64,7 +64,10 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   `START END` are char offsets of the declaration name. Because it walks the
   parsed AST (not a line regex) it handles multi-line declarations and
   module-nested symbols and never reports a name that only appears in a string
-  or comment.
+  or comment. Tests and benches are Function (12). An empty test/bench name
+  is outlined as the keyword `test`/`bench`. An `impl Trait for T` is one
+  Method (6) named after `T` — the impl statement does not carry method
+  children.
 - **`--single-file` analyzes ONE file and does not follow its imports**, so on a
   file with imports it reports names it cannot see as undefined. A file that is
   perfectly valid under a plain `vibe check` can come back with
