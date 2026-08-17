@@ -95,6 +95,18 @@ else
   bad "symbols should report 'main' as function(12); got: $out_ef"
 fi
 
+# 7. #1944: test / bench / impl are outlined (Function 12 / Function 12 /
+#    Method 6 named after the impl target).
+tb="$WORK/testbench.vibe"
+printf 'fn add(a: Int, b: Int) -> Int { a + b }\ntest "adds" { let _ = add(1, 2) }\nbench "once" { let _ = add(1, 1) }\ntrait Show { }\nstruct Point { x: Int }\nimpl Show for Point { }\n' > "$tb"
+out_tb="$("$VIBE" symbols "$tb" 2>/dev/null || true)"
+if has_sym "$out_tb" add 12 && has_sym "$out_tb" adds 12 && has_sym "$out_tb" once 12 \
+   && has_sym "$out_tb" Show 11 && has_sym "$out_tb" Point 23 && has_sym "$out_tb" Point 6; then
+  ok "symbols lists fn/test/bench/impl with correct kinds"
+else
+  bad "symbols should find add/adds/once/Show/Point+impl; got: $out_tb"
+fi
+
 echo "----"
 echo "passed: $pass, failed: $fail"
 [ "$fail" -eq 0 ]

@@ -13,11 +13,68 @@ import ./symbol_spans.vibe {
 
 //# Functions
 
+fn sym_has(syms: Array[(String, Int, Int, Int)], name: String, kind: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(syms) {
+    let (n, k, _, _) = Array::get(syms, i)
+    if n == name && k == kind {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn sym_fmt(syms: Array[(String, Int, Int, Int)]) -> String {
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(syms) {
+    let (n, k, _, _) = Array::get(syms, i)
+    if i > 0 {
+      StringBuilder::push(acc, ", ")
+    } else {
+      ()
+    }
+    StringBuilder::push(acc, n)
+    StringBuilder::push(acc, " ")
+    StringBuilder::push(acc, __to_string(k))
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
 //# Misc
 
 test "symbol_spans: a clean file returns its declarations" {
   let syms = symbol_spans("export fn f(x: Int) -> Int { x + 1 }\n")
   assert(Array::length(syms) == 1)
+  assert(sym_has(syms, "f", 12))
+}
+
+test "symbol_spans: fn, named test, and named bench are outlined (#1944)" {
+  let src = "fn add(a: Int, b: Int) -> Int { a + b }\ntest \"adds\" { let _ = add(1, 2) }\nbench \"once\" { let _ = add(1, 1) }\n"
+  let syms = symbol_spans(src)
+  inspect(sym_fmt(syms), "add 12, adds 12, once 12")
+  assert(sym_has(syms, "add", 12))
+  assert(sym_has(syms, "adds", 12))
+  assert(sym_has(syms, "once", 12))
+}
+
+test "symbol_spans: empty test/bench names emit the keyword so outline is not empty (#1944)" {
+  // The parser rejects unnamed `test { }` / `bench { }` (needs a string
+  // literal). An empty string is the stable stand-in for that missing name.
+  let src = "test \"\" { let _ = 1 }\nbench \"\" { let _ = 1 }\n"
+  let syms = symbol_spans(src)
+  inspect(sym_fmt(syms), "test 12, bench 12")
+}
+
+test "symbol_spans: impl is one Method symbol named after the target type (#1944)" {
+  let src = "trait Show { }\nstruct Point { x: Int }\nimpl Show for Point { }\n"
+  let syms = symbol_spans(src)
+  inspect(sym_fmt(syms), "Show 11, Point 23, Point 6")
 }
 
 test "symbol_spans: a genuinely empty (comments-only) file returns an empty list, not an error" {
