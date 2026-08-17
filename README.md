@@ -58,11 +58,12 @@ fn main with Stdout {
 }
 ```
 
-New to the language? Start with the runnable tour:
-[docs/tutorial/](docs/tutorial/README.md) — every chapter is a `*.vibe.md`
+New to the language? Start with **[The Vibe Book](book/README.md)**
+(`book/src/`) — a rust-book-shaped tour. Every chapter is a `*.vibe.md`
 executable doc (#1142): code blocks are compiled and run, and the printed
-output is embedded right in the markdown, so the examples and their results
-cannot drift apart.
+output is embedded right in the markdown. `bash scripts/vibe_book.sh`
+renders `_build/book/index.html`. The old `docs/tutorial/` path redirects
+there.
 
 ## Design policy
 
@@ -144,7 +145,7 @@ vendoring are covered in [docs/install.md](docs/install.md).
 Start here:
 - [docs/cheatsheet.md](docs/cheatsheet.md) — language cheatsheet, covers all
   implemented syntax/features
-- [docs/tutorial/](docs/tutorial/README.md) — runnable, CI-checked tour
+- [The Vibe Book](book/README.md) — rust-book-shaped tour (`book/src/*.vibe.md`)
 - [docs/vibe.md](docs/vibe.md) — language specification (normative for
   implemented behavior)
 

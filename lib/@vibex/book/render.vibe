@@ -1,0 +1,121 @@
+import @mizchi/markdown {
+  Block, parse
+}
+
+import ./html.vibe {
+  escape_html, highlight_vibe, render_inline, slugify
+}
+
+//# Functions
+
+export fn html_name_for(path: String) -> String {
+  let n = String::length(path)
+  let mut slash = 0 - 1
+  let mut i = 0
+  while i < n {
+    if String::char_code_at(path, i) == 47 {
+      slash = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let base = if slash >= 0 {
+    path[slash + 1: n]
+  } else {
+    path
+  }
+  let bn = String::length(base)
+  if bn > 8 && base[bn - 8: bn] == ".vibe.md" {
+    String::concat(base[0: bn - 8], ".html")
+  } else if bn > 3 && base[bn - 3: bn] == ".md" {
+    String::concat(base[0: bn - 3], ".html")
+  } else {
+    String::concat(base, ".html")
+  }
+}
+
+fn info_is_vibe(info: String) -> Bool {
+  let n = String::length(info)
+  if n >= 4 && info[0: 4] == "vibe" {
+    true
+  } else {
+    false
+  }
+}
+
+fn render_block(block: Block) -> String {
+  match block {
+    Heading(level, _, text) => {
+      let id = slugify(text)
+      let tag = String::concat("h", Int::to_string(level))
+      String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("<", tag), " id=\""), escape_html(id)), "\">"), render_inline(text)), String::concat(String::concat("</", tag), ">\n"))
+    },
+    Paragraph(text) => String::concat(String::concat("<p>", render_inline(text)), "</p>\n"),
+    FencedCode(_, info, code) => {
+      let body = if info_is_vibe(info) {
+        highlight_vibe(code)
+      } else {
+        escape_html(code)
+      }
+      let cls = if info_is_vibe(info) {
+        "hl vibe"
+      } else {
+        "hl"
+      }
+      String::concat(String::concat(String::concat(String::concat("<pre><code class=\"", cls), "\">"), body), "</code></pre>\n")
+    },
+    IndentedCode(code) => String::concat(String::concat("<pre><code>", escape_html(code)), "</code></pre>\n"),
+    Blockquote(inner) => {
+      let sb = StringBuilder::new()
+      StringBuilder::push(sb, "<blockquote>\n")
+      let mut i = 0
+      while i < Array::length(inner) {
+        StringBuilder::push(sb, render_block(Array::get(inner, i)))
+        i = i + 1
+      }
+      StringBuilder::push(sb, "</blockquote>\n")
+      StringBuilder::build(sb)
+    },
+    BulletList(_, items) => {
+      let sb = StringBuilder::new()
+      StringBuilder::push(sb, "<ul>\n")
+      let mut i = 0
+      while i < Array::length(items) {
+        StringBuilder::push(sb, "<li>")
+        StringBuilder::push(sb, render_inline(Array::get(items, i)))
+        StringBuilder::push(sb, "</li>\n")
+        i = i + 1
+      }
+      StringBuilder::push(sb, "</ul>\n")
+      StringBuilder::build(sb)
+    },
+    OrderedList(_, items) => {
+      let sb = StringBuilder::new()
+      StringBuilder::push(sb, "<ol>\n")
+      let mut i = 0
+      while i < Array::length(items) {
+        StringBuilder::push(sb, "<li>")
+        StringBuilder::push(sb, render_inline(Array::get(items, i)))
+        StringBuilder::push(sb, "</li>\n")
+        i = i + 1
+      }
+      StringBuilder::push(sb, "</ol>\n")
+      StringBuilder::build(sb)
+    },
+    ThematicBreak => "<hr />\n",
+    HtmlBlock(raw) => raw,
+    BlankLines(_) => ""
+  }
+}
+
+export fn render_markdown(source: String) -> String {
+  let doc = parse(source)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(doc.blocks) {
+    StringBuilder::push(sb, render_block(Array::get(doc.blocks, i)))
+    i = i + 1
+  }
+  StringBuilder::build(sb)
+}

@@ -1,0 +1,60 @@
+//# Imports
+
+import ./html.vibe {
+  escape_html, highlight_vibe, render_inline, slugify
+}
+
+import ./render.vibe {
+  html_name_for, render_markdown
+}
+
+import ./summary.vibe {
+  SummaryEntry, parse_summary
+}
+
+//# Misc
+
+test "escape_html encodes markup characters" {
+  assert(escape_html("a <b> & \"c\"") == "a &lt;b&gt; &amp; &quot;c&quot;")
+}
+
+test "slugify is a URL fragment" {
+  assert(slugify("Values and functions") == "values-and-functions")
+  assert(slugify("let mut is block-scoped") == "let-mut-is-block-scoped")
+}
+
+test "highlight_vibe wraps keywords and leaves strings alone" {
+  let out = highlight_vibe("let x = \"fn\"")
+  assert(String::contains(out, "class=\"kw\""))
+  assert(String::contains(out, "let"))
+  assert(String::contains(out, "&quot;fn&quot;") || String::contains(out, "\"fn\""))
+}
+
+test "render_inline handles code, links, and bold" {
+  let out = render_inline("see `let mut` and [the tour](ch02.html) plus **bold**")
+  assert(String::contains(out, "<code>let mut</code>"))
+  assert(String::contains(out, "href=\"ch02.html\""))
+  assert(String::contains(out, "<strong>bold</strong>"))
+}
+
+test "render_markdown emits headings with ids and fenced vibe" {
+  let src = "# Hello\n\nA paragraph.\n\n```vibe run\nlet x = 1\n```\n"
+  let html = render_markdown(src)
+  assert(String::contains(html, "id=\"hello\""))
+  assert(String::contains(html, "<h1 id="))
+  assert(String::contains(html, "class=\"hl vibe\""))
+  assert(String::contains(html, "let"))
+}
+
+test "parse_summary reads nested chapter links" {
+  let src = "# The Book\n\n[Intro](src/00.md)\n\n- [One](src/01.vibe.md)\n  - [Nested](src/01b.md)\n"
+  let entries = parse_summary(src)
+  assert(Array::length(entries) >= 2)
+  assert(Array::get(entries, 0).title == "Intro")
+  assert(Array::get(entries, 1).title == "One")
+}
+
+test "html_name_for strips directories and md suffixes" {
+  assert(html_name_for("src/02_values_functions.vibe.md") == "02_values_functions.html")
+  assert(html_name_for("00_introduction.md") == "00_introduction.html")
+}

@@ -1,0 +1,95 @@
+import @vibe/prelude {
+  Lines::parse
+}
+
+//# Types
+
+export struct SummaryEntry {
+  title: String;
+  path: String;
+  depth: Int
+}
+
+//# Functions
+
+fn count_leading_spaces(line: String) -> Int {
+  let n = String::length(line)
+  let mut i = 0
+  while i < n && String::char_code_at(line, i) == 32 {
+    i = i + 1
+  }
+  i
+}
+
+fn parse_link_line(line: String) -> Option[SummaryEntry] {
+  let n = String::length(line)
+  let spaces = count_leading_spaces(line)
+  let rest = line[spaces: n]
+  let depth = if spaces >= 2 {
+    1
+  } else {
+    0
+  }
+  let rest_n = String::length(rest)
+  if rest_n >= 1 && String::char_code_at(rest, 0) == 45 {
+    let after = String::trim(rest[1: rest_n])
+    parse_md_link(after, depth)
+  } else {
+    parse_md_link(String::trim(rest), 0)
+  }
+}
+
+fn parse_md_link(s: String, depth: Int) -> Option[SummaryEntry] {
+  let n = String::length(s)
+  if n < 4 || String::char_code_at(s, 0) != 91 {
+    None
+  } else {
+    let mut mid = 1
+    let mut found_mid = 0 - 1
+    while mid < n && found_mid < 0 {
+      if String::char_code_at(s, mid) == 93 {
+        found_mid = mid
+      } else {
+        mid = mid + 1
+      }
+    }
+    if found_mid < 0 || found_mid + 1 >= n || String::char_code_at(s, found_mid + 1) != 40 {
+      None
+    } else {
+      let mut end = found_mid + 2
+      let mut found_end = 0 - 1
+      while end < n && found_end < 0 {
+        if String::char_code_at(s, end) == 41 {
+          found_end = end
+        } else {
+          end = end + 1
+        }
+      }
+      if found_end < 0 {
+        None
+      } else {
+        Some(SummaryEntry::{
+          title: s[1: found_mid],
+          path: s[found_mid + 2: found_end],
+          depth: depth
+        })
+      }
+    }
+  }
+}
+
+export fn parse_summary(source: String) -> Array[SummaryEntry] {
+  let lines = Lines::parse(source)
+  let out: Array[SummaryEntry] = [
+  ]
+  let n = Array::length(lines)
+  let mut i = 0
+  while i < n {
+    match parse_link_line(Array::get(lines, i)) {
+      Some(entry) => Array::push(out, entry),
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}

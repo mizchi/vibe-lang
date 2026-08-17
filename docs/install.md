@@ -47,7 +47,7 @@ vibe run hello.vibex        # -> 42
 ```
 
 The tutorial's first program is this same host-builtin form; see
-[docs/tutorial/README.md](tutorial/README.md) (#1949).
+[The Vibe Book](../book/README.md) (`book/src/`) (#1949).
 
 ### Install layout (rustup-style toolchains, #755)
 
