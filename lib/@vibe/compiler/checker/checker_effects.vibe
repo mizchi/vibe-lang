@@ -91,7 +91,8 @@ export enum EffectError {
   // ADR-0102 / #1678: defense in depth for AST producers that bypass the
   // source parser. EHandle does not retain its source effect name, so this
   // diagnostic deliberately names the structural problem instead.
-  EEEmptyHandle
+  EEEmptyHandle;
+  EEPerformQuestionRequiresOptional(String, Int)
 }
 
 //# Functions
@@ -205,7 +206,15 @@ export fn effect_error_to_string(err: EffectError) -> String {
       let tail = String::concat(eff, "::..` and calls an opaque function value. A continuation captured by another handler carries THAT handler with it, so wrapping its invocation in a new `handle` does not switch handlers (non-scoped resumption is unsupported -- ADR-0089 Part A, #1347). Drive the continuation without the wrapping handle, or handle the effect where it is performed")
       String::concat("handle of effect '", String::concat(eff, String::concat("' can never fire: this body reaches no `perform ", tail)))
     },
-    EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect"
+    EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect",
+    EEPerformQuestionRequiresOptional(operation, off) => {
+      let body = String::concat("`perform?` requires optional `allows ", String::concat(operation, "?`; write that grade, or use plain `perform`"))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    }
   }
 }
 
@@ -1516,6 +1525,84 @@ export fn freeze_binding_lock(labels: Array[String]) -> Array[(String, String)] 
   out
 }
 
+fn host_grant_covers(host_granted: Array[String], core: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(host_granted) && !found {
+    let g = Array::get(host_granted, i)
+    if g == core {
+      found = true
+    } else if String::index_of(g, "::") < 0 && has_standard_host_provider(g) {
+      if core == g || effect_name_of_op(core) == g {
+        found = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn allow_flag_for_authority(core: String) -> String {
+  let provider = if String::index_of(core, "::") < 0 {
+    core
+  } else {
+    effect_name_of_op(core)
+  }
+  if provider == "Fs" {
+    "--allow-fs"
+  } else if provider == "Console" {
+    "--allow-console"
+  } else if provider == "Env" {
+    "--allow-env"
+  } else if provider == "Stdout" {
+    "--allow-stdout"
+  } else if provider == "Stdin" {
+    "--allow-stdin"
+  } else if provider == "Http" {
+    "--allow-http"
+  } else {
+    String::concat("--allow-", provider)
+  }
+}
+
+/// #1961 / ADR-0088 L3: non-TTY instantiate preflight.
+/// `host_granted` is what the composed host will actually inject this run.
+/// Required instantiate-authority labels missing from it abort before main,
+/// with the `--allow-*` spelling. Optional missing stay NotGranted; a
+/// granted optional becomes Granted. Labels that are not instantiate
+/// authority are dropped, same as freeze_binding_lock.
+export fn preflight_instantiate(labels: Array[String], host_granted: Array[String]) -> Array[(String, String)] with Exception {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let lab = Array::get(labels, i)
+    if is_instantiate_authority(lab) {
+      let core = strip_authority_grade(lab)
+      let granted = host_grant_covers(host_granted, core)
+      if authority_is_optional(lab) {
+        let status = if granted {
+          "Granted"
+        } else {
+          "NotGranted"
+        }
+        Array::push(out, (core, status))
+      } else if granted {
+        Array::push(out, (core, "Granted"))
+      } else {
+        throw(String::concat("instantiate preflight: required `", String::concat(core, String::concat("` is not granted; pass `", String::concat(allow_flag_for_authority(core), String::concat("` before main starts, or mark it optional (`allows ", String::concat(core, "?`)")))))))
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn authority_covers_operation(auth: String, emitted: String) -> Bool {
   if authority_is_optional(auth) {
     false
@@ -1525,6 +1612,37 @@ fn authority_covers_operation(auth: String, emitted: String) -> Bool {
     effect_name_of_op(emitted) == auth
   } else {
     false
+  }
+}
+
+fn decl_authorizes_optional_op(labels: Array[String], op_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) && !found {
+    let lab = Array::get(labels, i)
+    if authority_is_optional(lab) {
+      let core = strip_authority_grade(lab)
+      if core == op_name || core == effect_name_of_op(op_name) || authority_covers_operation(core, op_name) {
+        found = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn perform_question_op_name(arg: Expr) -> Option[String] {
+  match arg {
+    ECall(op_callee, _, _) => match op_callee {
+      EIdent(op_name, _) => Some(op_name),
+      _ => None
+    },
+    EIdent(op_name, _) => Some(op_name),
+    _ => None
   }
 }
 
@@ -1667,7 +1785,21 @@ fn collect_unhandled_entry_ops(root: Expr) -> Array[String] {
       ECall(callee, args, _) => {
         match callee {
           EIdent(name, _) => {
-            if name == "perform" && Array::length(args) == 1 {
+            if name == "perform?" && Array::length(args) == 1 {
+              // Optional perform does not emit a required unhandled op.
+              // Walk only the operation arguments so the inner builtin is
+              // not counted as a required host call.
+              match Array::get(args, 0) {
+                ECall(_, opargs, _) => {
+                  let mut oi = 0
+                  while oi < Array::length(opargs) {
+                    Array::push(stack, (Array::get(opargs, oi), discharged))
+                    oi = oi + 1
+                  }
+                },
+                _ => ()
+              }
+            } else if name == "perform" && Array::length(args) == 1 {
               match Array::get(args, 0) {
                 ECall(op_callee, _, _) => match op_callee {
                   EIdent(op_name, _) => {
@@ -1688,6 +1820,12 @@ fn collect_unhandled_entry_ops(root: Expr) -> Array[String] {
                 },
                 _ => ()
               }
+              Array::push(stack, (callee, discharged))
+              let mut ai = 0
+              while ai < Array::length(args) {
+                Array::push(stack, (Array::get(args, ai), discharged))
+                ai = ai + 1
+              }
             } else {
               match builtin_call_effect(name) {
                 Some(eff) => {
@@ -1700,15 +1838,22 @@ fn collect_unhandled_entry_ops(root: Expr) -> Array[String] {
                 },
                 None => ()
               }
+              Array::push(stack, (callee, discharged))
+              let mut pai = 0
+              while pai < Array::length(args) {
+                Array::push(stack, (Array::get(args, pai), discharged))
+                pai = pai + 1
+              }
             }
           },
-          _ => ()
-        }
-        Array::push(stack, (callee, discharged))
-        let mut ai = 0
-        while ai < Array::length(args) {
-          Array::push(stack, (Array::get(args, ai), discharged))
-          ai = ai + 1
+          _ => {
+            Array::push(stack, (callee, discharged))
+            let mut ai = 0
+            while ai < Array::length(args) {
+              Array::push(stack, (Array::get(args, ai), discharged))
+              ai = ai + 1
+            }
+          }
         }
       },
       _ => {
@@ -2453,7 +2598,26 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // Some([]) means a pure local binding; only None may fall through
             // to the module-level function table.
             let lexical_callee = lookup_fn_effs(ov_names, ov_effs, name)
-            if name == "perform" && Array::length(args) == 1 {
+            if name == "perform?" && Array::length(args) == 1 {
+              match perform_question_op_name(Array::get(args, 0)) {
+                Some(op_name) => if decl_authorizes_optional_op(declared, op_name) {
+                  ()
+                } else {
+                  Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
+                },
+                None => ()
+              }
+              match Array::get(args, 0) {
+                ECall(_, opargs, _) => {
+                  let mut oi = 0
+                  while oi < Array::length(opargs) {
+                    Array::push(stack, (Array::get(opargs, oi), declared, in_handle, ov_names, ov_effs, kinds))
+                    oi = oi + 1
+                  }
+                },
+                _ => ()
+              }
+            } else if name == "perform" && Array::length(args) == 1 {
               match Array::get(args, 0) {
                 ECall(op_callee, opargs, _) => match op_callee {
                   EIdent(op_name, _) => {
@@ -2653,11 +2817,25 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           },
           _ => ()
         }
-        Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
-        let mut ai = 0
-        while ai < Array::length(args) {
-          Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs, kinds))
-          ai = ai + 1
+        match callee {
+          EIdent(cname, _) => if cname == "perform?" {
+            ()
+          } else {
+            Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
+            let mut ai = 0
+            while ai < Array::length(args) {
+              Array::push(stack, (Array::get(args, ai), declared, in_handle, ov_names, ov_effs, kinds))
+              ai = ai + 1
+            }
+          },
+          _ => {
+            Array::push(stack, (callee, declared, in_handle, ov_names, ov_effs, kinds))
+            let mut bi = 0
+            while bi < Array::length(args) {
+              Array::push(stack, (Array::get(args, bi), declared, in_handle, ov_names, ov_effs, kinds))
+              bi = bi + 1
+            }
+          }
         }
       },
       EFn(_, _, params, _, effect, body) => {

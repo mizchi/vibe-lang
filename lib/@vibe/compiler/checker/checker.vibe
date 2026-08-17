@@ -1709,6 +1709,12 @@ fn head_kind(t: Type) -> Int {
     CtRecord(_) => 14,
     CtNamed(name, _) => if name == "MutList" {
       15
+    } else if name == "Attempt" {
+      // #1961 / ADR-0088: `perform?` yields `Attempt[T, E]`, a compiler-owned
+      // named type. Kind 0 would let `fn main() -> String { perform? ... }`
+      // unify-fail and then be swallowed — `type_no_named` is false and
+      // `nominal_name_of` treats a still-open `T` as non-concrete.
+      16
     } else {
       0
     },
@@ -2188,10 +2194,10 @@ fn nominal_name_of(t: Type) -> Option[String] {
     CtOption(_) => Some("Option"),
     CtEnum(n) => Some(n),
     CtStruct(n) => Some(n),
-    CtNamed(n, _) => if n == "HostStream" {
-      // Compiler-owned and always concrete despite the nullary CtNamed shape.
-      // This makes HostStream conflict with #1539's internal StdinStream
-      // identity instead of passing through the generic-name tolerance.
+    CtNamed(n, _) => if n == "HostStream" || n == "Attempt" {
+      // Compiler-owned and always concrete despite an open type argument
+      // (`HostStream` is nullary; `Attempt[T, E]` may still hold a fresh
+      // var for T when the inner capability has no declared signature).
       Some(n)
     } else if type_fully_concrete(t) {
       Some(n)
@@ -3341,7 +3347,7 @@ fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "Bytes::new" || name == "Bytes::concat" || name == "Bytes::slice" || name == "Bytes::from_array" || name == "Fs::read_bytes" {
     Some(CtBytes)
   }
-  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::foreach" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::mkdir_p" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::rename" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
+  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::truncate" || name == "Array::foreach" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::mkdir_p" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::rename" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
     Some(CtUnit)
   }
   else if name == "Double::from_i64_bits" || name == "Int::to_double" || name == "Double::to_float" || name == "Float::to_double" {
@@ -3353,7 +3359,7 @@ fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "Bytes::to_array" || name == "Int64Array::make" {
     Some(CtArray(CtInt))
   }
-  else if name == "Map::keys" || name == "sh_lines" || name == "Lines::parse" {
+  else if name == "Map::keys" || name == "sh_lines" || name == "Lines::parse" || name == "String::split" {
     Some(CtArray(CtString))
   }
   else if name == "Array::slice" || name == "Array::concat" || name == "Array::filter" || name == "Array::reverse" || name == "Array::sort" || name == "FixedArray::make" {
@@ -4548,7 +4554,7 @@ fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Ar
 /// beside their canonical spelling.
 fn retaining_write_argument_mask(source_name: String) -> Int {
   let name = canonical_builtin_name(source_name)
-  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "MutList::push" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
+  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::push" || name == "MutList::truncate" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
     1
   } else if name == "Array::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "__set_field" {
     2
@@ -5838,8 +5844,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_expr)
         retaining_write_region_check(name, args, env, defs, s, c, errors, check_expr)
         index_target_check(name, args, env, defs, s, c, errors, check_expr)
-        if name == "perform" {
-          if Array::length(args) == 1 {
+        if name == "perform" || name == "perform?" {
+          let (pty, ps, pc) = if Array::length(args) == 1 {
             match Array::get(args, 0) {
               ECall(op_callee, opargs, _) => {
                 // #640 Stage 2: `throw(x)` parses to this exact shape
@@ -6021,6 +6027,32 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             }
           } else {
             (CtUnknown, s, c)
+          }
+          if name == "perform?" {
+            let attempt_t = if Array::length(args) == 1 {
+              match Array::get(args, 0) {
+                ECall(op_callee, _, _) => match op_callee {
+                  EIdent(op_qname, _) => match direct_builtin_return(canonical_builtin_name(op_qname)) {
+                    Some(bt) => bt,
+                    None => pty
+                  },
+                  _ => pty
+                },
+                EIdent(op_qname, _) => match direct_builtin_return(canonical_builtin_name(op_qname)) {
+                  Some(bt) => bt,
+                  None => pty
+                },
+                _ => pty
+              }
+            } else {
+              pty
+            }
+            (CtNamed("Attempt", [
+              attempt_t,
+              CtString
+            ]), ps, pc)
+          } else {
+            (pty, ps, pc)
           }
         } else if name == "resume" {
           let alen = Array::length(args)
@@ -6319,6 +6351,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // ADR-0090 / #1770: scalar in-region read, escape-free.
           let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if name == "MutList::truncate" && Array::length(args) == 2 {
+          // #1863: stack-pop idiom for helper-grown region scratch.
+          // Same layout as Array::truncate; the list stays in the region.
+          let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (len_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          match subst_apply(s2, len_ty) {
+            CtInt => (),
+            CtVar(_) => (),
+            CtUnknown => (),
+            other => Array::push(errors, String::concat(String::concat("MutList::truncate expects an Int length, got ", type_to_string(other)), off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
         } else if name == "MutBytes::empty" && Array::length(args) == 1 {
           // ADR-0090 MutBytes: region-bound byte buffer, same checker-only
           // phantom technique as MutList::empty above. Bytes has no element
@@ -8250,6 +8294,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         CtString => 1,
         CtNamed(nm, _) => if nm == "Map" || nm == "Stream" {
           1
+        } else if nm == "HostStream" {
+          0
         } else if type_name_has_iterator_impl(env, nm) {
           0
         } else match find_typedef(defs, nm) {
@@ -8285,6 +8331,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         Array::push(errors, String::concat("non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function", off_marker(railway_expr_off(iterable))))
       } else if collection_class < 0 && !discarded_root {
         Array::push(errors, String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
+      } else if collection_class < 0 {
+        // #1559: a rigid type parameter (`T`) as the iterand used to lower
+        // to the residual Array loop and trap. A still-open inference var
+        // is different — builtins such as `String::split` surface as a
+        // fresh var when their return is not yet in the env, and the
+        // compiler itself iterates those in statement position.
+        let rigid_param = match it_resolved {
+          CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs, nm) {
+            None => true,
+            Some(_) => false
+          },
+          CtForAll(_, _, _) => true,
+          _ => false
+        }
+        if rigid_param {
+          Array::push(errors, String::concat("cannot classify this `for` iterand; annotate it or pass a concrete Array, iterator, or pull closure", off_marker(railway_expr_off(iterable))))
+        } else {
+          ()
+        }
       } else {
         ()
       }

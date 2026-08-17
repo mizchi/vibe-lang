@@ -35,3 +35,20 @@ test "#1863: helper-grown scratch stays in the region" {
   let source = "fn grow[R](xs: MutList[Int, R], n: Int) -> Unit {\n  MutList::push(xs, n)\n  MutList::push(xs, n + 1)\n}\n\nfn main() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    grow(xs, 1)\n    MutList::length(xs)\n  }\n}\n"
   assert_eq(first_check_error(source), "")
 }
+
+test "#1863: helper signature accepts MutList[T, r] with a region row" {
+  let source = "fn fill(l: MutList[Int, r]) -> Unit with r {\n  MutList::push(l, 1)\n}\n\nfn main() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    fill(xs)\n    MutList::length(xs)\n  }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1863: helper can truncate region-tagged scratch" {
+  let source = "fn shrink[R](xs: MutList[Int, R], n: Int) -> Unit {\n  MutList::truncate(xs, n)\n}\n\nfn main() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    MutList::push(xs, 1)\n    MutList::push(xs, 2)\n    shrink(xs, 1)\n    MutList::length(xs)\n  }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1863: MutList::truncate rejects a non-Int length" {
+  let source = "fn shrink[R](xs: MutList[Int, R], n: String) -> Unit {\n  MutList::truncate(xs, n)\n}\n\nfn main() -> Unit {\n  region r {\n    let xs = MutList::empty(r)\n    shrink(xs, \"x\")\n    ()\n  }\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "MutList::truncate"))
+  assert(String::contains(msg, "Int"))
+}

@@ -1,7 +1,7 @@
 //# Entry-boundary effect admission (#1683)
 
 import @vibe/compiler/checker {
-  check_program, freeze_binding_lock, is_instantiate_authority, standard_provider_owns_operation
+  check_program, freeze_binding_lock, is_instantiate_authority, preflight_instantiate, standard_provider_owns_operation
 }
 
 import @vibe/compiler/syntax {
@@ -166,6 +166,66 @@ test "#1961: required allows still authorizes the required operation" {
   assert_eq(first_check_error(source), "")
 }
 
+test "#1961: instantiate preflight rejects a required op the host did not grant" {
+  let msg = handle {
+    let _ = preflight_instantiate([
+      "Fs::read_file"
+    ], [
+    ])
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "Fs::read_file"))
+  assert(String::contains(msg, "preflight"))
+  assert(String::contains(msg, "--allow-fs"))
+}
+
+test "#1961: instantiate preflight grants a required op the host provides" {
+  let lock = preflight_instantiate([
+    "Fs::read_file"
+  ], [
+    "Fs::read_file"
+  ])
+  assert_eq(Array::length(lock), 1)
+  let (name, status) = Array::get(lock, 0)
+  assert_eq(name, "Fs::read_file")
+  assert_eq(status, "Granted")
+}
+
+test "#1961: instantiate preflight leaves optional NotGranted without a host grant" {
+  let lock = preflight_instantiate([
+    "Fs::read_file?"
+  ], [
+  ])
+  assert_eq(Array::length(lock), 1)
+  let (name, status) = Array::get(lock, 0)
+  assert_eq(name, "Fs::read_file")
+  assert_eq(status, "NotGranted")
+}
+
+test "#1961: instantiate preflight can grant optional when the host provides it" {
+  let lock = preflight_instantiate([
+    "Console::write_stream?"
+  ], [
+    "Console::write_stream"
+  ])
+  assert_eq(Array::length(lock), 1)
+  let (name, status) = Array::get(lock, 0)
+  assert_eq(name, "Console::write_stream")
+  assert_eq(status, "Granted")
+}
+
+test "#1961: instantiate preflight drops labels that are not instantiate authority" {
+  let lock = preflight_instantiate([
+    "Console::Get",
+    "Ask::Get"
+  ], [
+    "Console"
+  ])
+  assert_eq(Array::length(lock), 0)
+}
+
 test "#1961: BindingLock freeze is Granted for required and NotGranted for optional" {
   let lock = freeze_binding_lock([
     "Fs::read_file",
@@ -201,6 +261,44 @@ test "#1961: allows Console::write_stream does not grant console input" {
   assert(String::contains(msg, "Console::read_stream"))
   assert(String::contains(msg, "allows"))
   assert(String::contains(msg, "authorized"))
+}
+
+test "#1961: ::-less user Console::Get is not a host-provider impersonation" {
+  let source = "effect Console { Get() -> Int }\nfn main() -> Int with Console::Get {\n  perform Console::Get()\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Console::Get"))
+  assert(String::contains(msg, "handle"))
+  assert(!String::contains(msg, "collides with a registry-owned host provider operation"))
+}
+
+test "#1961: lexically handled ::-less user Console needs no provider" {
+  let source = "effect Console { Get() -> Int }\nfn main() -> Int {\n  handle { perform Console::Get() } with Console { Get() => resume(1) }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: perform? on optional allows typechecks as Attempt" {
+  let source = "fn main() -> Int with () allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: perform? cannot be used as the operation result type" {
+  let source = "fn main() -> String with () allows Fs::read_file? {\n  perform? Fs::read_file(\"x\")\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "return type mismatch"))
+  assert(String::contains(msg, "Attempt"))
+}
+
+test "#1961: perform? cannot unify with a scalar let-binding" {
+  let source = "fn main() -> Int with () allows Fs::read_file? {\n  let s: String = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Attempt"))
+}
+
+test "#1961: perform? on a required allows is rejected" {
+  let source = "fn main() -> Int with () allows Fs::read_file {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "perform?"))
+  assert(String::contains(msg, "optional"))
 }
 
 test "#1961: transcript of handled / unhandled / impersonation diagnostics" {
