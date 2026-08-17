@@ -35,6 +35,17 @@ import @vibe/parser {
   located_program_binder_authority_program
 }
 
+import ./desugar_array_spread.vibe {
+  desugar_array_spread
+}
+
+// Array-literal spread lives in desugar_array_spread.vibe (#1849).
+// Re-export so `import ./desugar_trait_dict.vibe { desugar_array_spread }`
+// still resolves.
+export ./desugar_array_spread.vibe {
+  desugar_array_spread
+}
+
 //# Functions
 
 enum StoredNormalizedBinderAuthority {
@@ -12088,167 +12099,6 @@ export fn normalize_labeled_args_with_binder_authority(source: LocatedProgramBin
   }
   LabeledArgBinderAuthorityNormalization::{
     stored: StoredLabeledArgBinderAuthorityNormalizationValue(program, normalized)
-  }
-}
-
-///|
-/// #790: lower array-literal spreads `[a, ...xs, b]` into an `Array::concat` chain
-/// of segments (`Array::concat(Array::concat([a], xs), [b])`). The parser accepts
-/// `...expr` inside an array literal (ESpread), but the active desugar pipeline
-/// never lowered it, so codegen reached ESpread and threw "unsupported expression
-/// in codegen". Ported from the legacy desugar.vibe (spread-only; no other legacy
-/// transforms). `das_arms` is mutually recursive with `das_expr`.
-fn das_expr(expr: Expr) -> Expr {
-  match expr {
-    EArray(elems) => {
-      let mut has_spread = false
-      let mut si0 = 0
-      while si0 < Array::length(elems) {
-        match Array::get(elems, si0) {
-          ESpread(_) => {
-            has_spread = true
-          },
-          _ => ()
-        }
-        si0 = si0 + 1
-      }
-      if has_spread {
-        let segments = array_empty()
-        let mut buf = empty_expr_array()
-        let mut si = 0
-        while si < Array::length(elems) {
-          let elem = Array::get(elems, si)
-          match elem {
-            ESpread(inner) => {
-              if Array::length(buf) > 0 {
-                Array::push(segments, EArray(for e in buf {
-                  das_expr(e)
-                }))
-                buf = empty_expr_array()
-              } else {
-                ()
-              }
-              Array::push(segments, das_expr(inner))
-            },
-            _ => Array::push(buf, elem)
-          }
-          si = si + 1
-        }
-        if Array::length(buf) > 0 {
-          Array::push(segments, EArray(for e in buf {
-            das_expr(e)
-          }))
-        } else {
-          ()
-        }
-        let mut acc = Array::get(segments, 0)
-        let mut fi = 1
-        while fi < Array::length(segments) {
-          acc = ECall(EIdent("Array::concat", 0 - 1), [
-            acc,
-            Array::get(segments, fi)
-          ], 0 - 1)
-          fi = fi + 1
-        }
-        acc
-      } else {
-        EArray(for e in elems {
-          das_expr(e)
-        })
-      }
-    },
-    ETuple(es) => ETuple(for e in es {
-      das_expr(e)
-    }),
-    ERecord(rn, fs, targs) => {
-      let out = array_empty()
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, das_expr(v)))
-        i = i + 1
-      }
-      ERecord(rn, out, targs)
-    },
-    EMap(fs) => {
-      let out = array_empty()
-      let mut i = 0
-      while i < Array::length(fs) {
-        let (k, v) = Array::get(fs, i)
-        Array::push(out, (k, das_expr(v)))
-        i = i + 1
-      }
-      EMap(out)
-    },
-    EIf(c, t, e) => EIf(das_expr(c), das_expr(t), das_expr(e)),
-    ELet(n, v, b, soff) => ELet(n, das_expr(v), das_expr(b), soff),
-    ELetRec(n, v, b) => ELetRec(n, das_expr(v), das_expr(b)),
-    ELetMut(n, v, b, soff) => ELetMut(n, das_expr(v), das_expr(b), soff),
-    EAssign(n, v, c) => EAssign(n, das_expr(v), das_expr(c)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, das_expr(v), das_expr(c)),
-    ESeq(a, b) => ESeq(das_expr(a), das_expr(b)),
-    EMatch(s, arms) => EMatch(das_expr(s), das_arms(arms)),
-    EHandle(s, arms) => EHandle(das_expr(s), das_arms(arms)),
-    EWhile(c, b) => EWhile(das_expr(c), das_expr(b)),
-    ELoop(params, b) => ELoop(for param in params {
-      let (name, init) = param
-      (name, das_expr(init))
-    }, das_expr(b)),
-    EForIn(n, idxn, it, b) => EForIn(n, idxn, das_expr(it), das_expr(b)),
-    ECall(callee, args, off) => ECall(das_expr(callee), for a in args {
-      das_expr(a)
-    }, off),
-    EBinOp(op, l, r) => EBinOp(op, das_expr(l), das_expr(r)),
-    EUnaryOp(op, e) => EUnaryOp(op, das_expr(e)),
-    EFn(tp, tb, params, rt, eff, body) => EFn(tp, tb, params, rt, eff, das_expr(body)),
-    EDot(o, f, off, fdoff) => EDot(das_expr(o), f, off, fdoff),
-    ELabeledArg(l, m, e) => ELabeledArg(l, m, das_expr(e)),
-    EReturn(e) => EReturn(das_expr(e)),
-    EBreak(opt) => match opt {
-      Some(e) => EBreak(Some(das_expr(e))),
-      None => expr
-    },
-    EContinue(es) => EContinue(for e in es {
-      das_expr(e)
-    }),
-    ESpread(inner) => ESpread(das_expr(inner)),
-    _ => expr
-  }
-}
-
-///|
-fn das_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
-  let out = array_empty()
-  let mut i = 0
-  while i < Array::length(arms) {
-    let (p, b) = Array::get(arms, i)
-    Array::push(out, (p, das_expr(b)))
-    i = i + 1
-  }
-  out
-}
-
-///|
-fn das_stmt(stmt: Stmt) -> Stmt {
-  match stmt {
-    SLet(ex, rc, name, ty, body) => SLet(ex, rc, name, ty, das_expr(body)),
-    SLetMut(name, ty, body) => SLetMut(name, ty, das_expr(body)),
-    STest(name, body) => STest(name, das_expr(body)),
-    SBench(name, body) => SBench(name, das_expr(body)),
-    SExpr(e) => SExpr(das_expr(e)),
-    SLetPat(pat, e) => SLetPat(pat, das_expr(e)),
-    _ => stmt
-  }
-}
-
-///|
-/// In-place lowering of array-literal spreads across the whole program (#790).
-export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
-  let n = Array::length(stmts)
-  let mut i = 0
-  while i < n {
-    Array::set(stmts, i, das_stmt(Array::get(stmts, i)))
-    i = i + 1
   }
 }
 

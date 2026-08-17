@@ -1,0 +1,108 @@
+// Normalize-facing lock for `desugar_array_spread` (#1849). The kitchen-sink
+// file used to own this pass; the test imports the package contract so a
+// missing implementation fails to compile.
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/normalize {
+  desugar_array_spread
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn parse(source: String) -> Array[Stmt] with Exception {
+  parse_program(lex(source))
+}
+
+fn expr_has_spread(expr: Expr) -> Bool {
+  match expr {
+    ESpread(_) => true,
+    EArray(es) => {
+      let mut hit = false
+      for e in es {
+        if expr_has_spread(e) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    ECall(c, args, _) => {
+      let mut hit = expr_has_spread(c)
+      for a in args {
+        if expr_has_spread(a) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn expr_calls(expr: Expr, name: String) -> Bool {
+  match expr {
+    ECall(EIdent(n, _), args, _) => {
+      let mut hit = n == name
+      for a in args {
+        if expr_calls(a, name) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    ECall(c, args, _) => {
+      let mut hit = expr_calls(c, name)
+      for a in args {
+        if expr_calls(a, name) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    EArray(es) => {
+      let mut hit = false
+      for e in es {
+        if expr_calls(e, name) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn let_body(stmt: Stmt) -> Expr {
+  match stmt {
+    SLet(_, _, _, _, e) => e,
+    _ => EUnit
+  }
+}
+
+test "desugar_array_spread is a no-op without a spread" {
+  let stmts = parse("let xs = [1, 2]")
+  desugar_array_spread(stmts)
+  assert_eq(Array::length(stmts), 1)
+}
+
+test "desugar_array_spread lowers ...xs into Array::concat" {
+  let stmts = parse("let xs = [1, 2]\nlet ys = [0, ...xs, 3]")
+  desugar_array_spread(stmts)
+  let body = let_body(Array::get(stmts, 1))
+  assert(!expr_has_spread(body))
+  assert(expr_calls(body, "Array::concat"))
+}

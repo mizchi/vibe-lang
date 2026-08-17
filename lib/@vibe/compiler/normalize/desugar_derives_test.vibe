@@ -1,0 +1,52 @@
+// Normalize-facing lock for `desugar_derives` (#1849). The kitchen-sink file
+// used to own this pass; the test imports the package contract so a missing
+// implementation fails to compile rather than silently skipping generation.
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/normalize {
+  desugar_derives
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn parse(source: String) -> Array[Stmt] with Exception {
+  parse_program(lex(source))
+}
+
+fn has_top_level_fn(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, n, _, _) => if n == name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+test "desugar_derives emits Point::equals for a struct" {
+  let stmts = parse("struct Point { x: Int; y: Int } derive(Eq)")
+  desugar_derives(stmts)
+  assert(has_top_level_fn(stmts, "Point::equals"))
+}
+
+test "desugar_derives emits Point::to_string for derive(Show)" {
+  let stmts = parse("struct Point { x: Int; y: Int } derive(Show)")
+  desugar_derives(stmts)
+  assert(has_top_level_fn(stmts, "Point::to_string"))
+}
+
+test "desugar_derives emits Color::equals for an enum" {
+  let stmts = parse("enum Color { Red; Green; Blue } derive(Eq)")
+  desugar_derives(stmts)
+  assert(has_top_level_fn(stmts, "Color::equals"))
+}
