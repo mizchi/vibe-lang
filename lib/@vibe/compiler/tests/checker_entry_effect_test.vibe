@@ -113,6 +113,23 @@ test "#1961: lexically handled emit does not need allows authority" {
   assert_eq(first_check_error(source), "")
 }
 
+test "#1961: a handle that does not enclose the perform is not lexical" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  let x = perform Ask::Get()\n  handle { 0 } with Ask { Get() => resume(1) }\n  x\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "emits unhandled `Ask::Get`"))
+  assert(String::contains(msg, "not authorized by `allows Fs`"))
+}
+
+test "#1961: allows Console::write_stream does not grant console input" {
+  let out_ok = "fn main() -> Unit with () allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\n"
+  let in_bad = "fn main() -> String with () allows Console::write_stream {\n  Console::read_stream(0)\n}\n"
+  assert_eq(first_check_error(out_ok), "")
+  let msg = first_check_error(in_bad)
+  assert(String::contains(msg, "Console::read_stream"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+}
+
 test "#1961: transcript of handled / unhandled / impersonation diagnostics" {
   let handled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
   let unhandled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
