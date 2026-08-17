@@ -1,7 +1,7 @@
 //# Entry-boundary effect admission (#1683)
 
 import @vibe/compiler/checker {
-  check_program, freeze_binding_lock, is_instantiate_authority, standard_provider_owns_operation
+  check_program, freeze_binding_lock, is_instantiate_authority, preflight_instantiate, standard_provider_owns_operation
 }
 
 import @vibe/compiler/syntax {
@@ -164,6 +164,64 @@ test "#1961: optional allows does not authorize a required operation" {
 test "#1961: required allows still authorizes the required operation" {
   let source = "fn main() -> String with () allows Fs::read_file {\n  Fs::read_file(\"x\")\n}\n"
   assert_eq(first_check_error(source), "")
+}
+
+test "#1961: instantiate preflight rejects a required op the host did not grant" {
+  let msg = handle {
+    let _ = preflight_instantiate([
+      "Fs::read_file"
+    ], [])
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "Fs::read_file"))
+  assert(String::contains(msg, "preflight"))
+  assert(String::contains(msg, "--allow-fs"))
+}
+
+test "#1961: instantiate preflight grants a required op the host provides" {
+  let lock = preflight_instantiate([
+    "Fs::read_file"
+  ], [
+    "Fs::read_file"
+  ])
+  assert_eq(Array::length(lock), 1)
+  let (name, status) = Array::get(lock, 0)
+  assert_eq(name, "Fs::read_file")
+  assert_eq(status, "Granted")
+}
+
+test "#1961: instantiate preflight leaves optional NotGranted without a host grant" {
+  let lock = preflight_instantiate([
+    "Fs::read_file?"
+  ], [])
+  assert_eq(Array::length(lock), 1)
+  let (name, status) = Array::get(lock, 0)
+  assert_eq(name, "Fs::read_file")
+  assert_eq(status, "NotGranted")
+}
+
+test "#1961: instantiate preflight can grant optional when the host provides it" {
+  let lock = preflight_instantiate([
+    "Console::write_stream?"
+  ], [
+    "Console::write_stream"
+  ])
+  assert_eq(Array::length(lock), 1)
+  let (name, status) = Array::get(lock, 0)
+  assert_eq(name, "Console::write_stream")
+  assert_eq(status, "Granted")
+}
+
+test "#1961: instantiate preflight drops labels that are not instantiate authority" {
+  let lock = preflight_instantiate([
+    "Console::Get",
+    "Ask::Get"
+  ], [
+    "Console"
+  ])
+  assert_eq(Array::length(lock), 0)
 }
 
 test "#1961: BindingLock freeze is Granted for required and NotGranted for optional" {

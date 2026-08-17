@@ -1525,6 +1525,84 @@ export fn freeze_binding_lock(labels: Array[String]) -> Array[(String, String)] 
   out
 }
 
+fn host_grant_covers(host_granted: Array[String], core: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(host_granted) && !found {
+    let g = Array::get(host_granted, i)
+    if g == core {
+      found = true
+    } else if String::index_of(g, "::") < 0 && has_standard_host_provider(g) {
+      if core == g || effect_name_of_op(core) == g {
+        found = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn allow_flag_for_authority(core: String) -> String {
+  let provider = if String::index_of(core, "::") < 0 {
+    core
+  } else {
+    effect_name_of_op(core)
+  }
+  if provider == "Fs" {
+    "--allow-fs"
+  } else if provider == "Console" {
+    "--allow-console"
+  } else if provider == "Env" {
+    "--allow-env"
+  } else if provider == "Stdout" {
+    "--allow-stdout"
+  } else if provider == "Stdin" {
+    "--allow-stdin"
+  } else if provider == "Http" {
+    "--allow-http"
+  } else {
+    String::concat("--allow-", provider)
+  }
+}
+
+/// #1961 / ADR-0088 L3: non-TTY instantiate preflight.
+/// `host_granted` is what the composed host will actually inject this run.
+/// Required instantiate-authority labels missing from it abort before main,
+/// with the `--allow-*` spelling. Optional missing stay NotGranted; a
+/// granted optional becomes Granted. Labels that are not instantiate
+/// authority are dropped, same as freeze_binding_lock.
+export fn preflight_instantiate(labels: Array[String], host_granted: Array[String]) -> Array[(String, String)] with Exception {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let lab = Array::get(labels, i)
+    if is_instantiate_authority(lab) {
+      let core = strip_authority_grade(lab)
+      let granted = host_grant_covers(host_granted, core)
+      if authority_is_optional(lab) {
+        let status = if granted {
+          "Granted"
+        } else {
+          "NotGranted"
+        }
+        Array::push(out, (core, status))
+      } else if granted {
+        Array::push(out, (core, "Granted"))
+      } else {
+        throw(String::concat("instantiate preflight: required `", String::concat(core, String::concat("` is not granted; pass `", String::concat(allow_flag_for_authority(core), String::concat("` before main starts, or mark it optional (`allows ", String::concat(core, "?`)")))))))
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn authority_covers_operation(auth: String, emitted: String) -> Bool {
   if authority_is_optional(auth) {
     false
