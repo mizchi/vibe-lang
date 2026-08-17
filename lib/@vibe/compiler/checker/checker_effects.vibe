@@ -9,6 +9,8 @@ import @vibe/compiler/core {
   TypeExpr,
   canonical_builtin_name,
   canonical_exception_effect_name,
+  effect_row_allows_text,
+  effect_row_emitted_text,
   entry_cache_safe_effects,
   env_lookup,
   exception_effect_labels_equal,
@@ -16,8 +18,6 @@ import @vibe/compiler/core {
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_children,
-  effect_row_allows_text,
-  effect_row_emitted_text,
   is_entry_admitted_effect,
   is_entry_cache_safe_operation,
   is_entry_runtime_managed_effect,
@@ -2288,7 +2288,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // sibling operation of the same effect is already
                     // authorized at operation granularity, e.g. `with {
                     // Ask::Other }` + a bare `perform Ask::Get`).
-                    if is_program_entry_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                    if is_program_entry_name(fn_name) && !in_handle && !entry_allows_authority() && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
                       Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
                     } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
                       Array::push(errors, make_contextual_row_error(fn_name, declared, [
@@ -2306,7 +2306,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 // above, just without an args list to look past.
                 EIdent(op_name, _) => {
                   let eff = effect_name_of_op(op_name)
-                  if is_program_entry_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                  if is_program_entry_name(fn_name) && !in_handle && !entry_allows_authority() && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
                     Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
                   } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                     Array::push(errors, make_contextual_row_error(fn_name, declared, [
@@ -2539,7 +2539,15 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let body_declared = labels_union(declared, discharged)
         // Unknown wildcard arms stay conservative for the legacy surface,
         // but a structurally empty handler must not gain that permission.
-        let body_in_handle = in_handle || Array::length(discharged) > 0 || (Array::length(arms) > 0 && Array::length(discharged) == 0)
+        // Known discharge stays out of `in_handle`: that flag also skips the
+        // undeclared-effect check, so treating `handle Ask` as "inside a
+        // handle" lets `Logger` leak through (#626 criterion 2). Discharge
+        // of the named effect is already in `body_declared`.
+        let body_in_handle = if Array::length(arms) > 0 && Array::length(discharged) == 0 {
+          true
+        } else {
+          in_handle
+        }
         Array::push(stack, (body, body_declared, body_in_handle, ov_names, ov_effs, kinds))
         let mut ai = 0
         while ai < Array::length(arms) {
@@ -2835,6 +2843,26 @@ fn current_ret_fn_rows() -> Array[String] {
   }
 }
 
+// #1961: when an entry row has `allows`, `check_entry_declared_effects`
+// already owns unhandled ⊆ authorized (handlers subtracted). The perform
+// walk must not also emit EEUndischargedEntryEffect for those ops — that
+// check cannot see lexical discharge without setting `in_handle`, which
+// would reopen #626 criterion 2.
+let entry_allows_authority_cell = array_empty()
+
+fn set_entry_allows_authority(on: Bool) -> Unit {
+  Array::truncate(entry_allows_authority_cell, 0)
+  Array::push(entry_allows_authority_cell, if on {
+    1
+  } else {
+    0
+  })
+}
+
+fn entry_allows_authority() -> Bool {
+  Array::length(entry_allows_authority_cell) > 0 && Array::get(entry_allows_authority_cell, 0) == 1
+}
+
 /// #1451 (struct-field position): rows declared by a STRUCT FIELD's type, keyed
 /// `Struct::field`. Same defect as the return position and the same cause -- a
 /// closure literal stored into
@@ -2921,6 +2949,7 @@ export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], r
 
 fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   let sig_labels = sig_type_effect_labels(ty)
+  set_entry_allows_authority(is_program_entry_name(fn_name) && String::length(effect_row_allows_text(raw_fn_effect_string(ty, body))) > 0)
   match body {
     // #885: build the callback-parameter overlay for THIS binding's own
     // function value from its (possibly untyped, see merge_param_types_with_sig)
