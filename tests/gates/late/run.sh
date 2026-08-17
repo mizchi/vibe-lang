@@ -1031,8 +1031,28 @@ scps_run_expect() {
     exit 1
   fi
 }
+# #1571: fixtures that own their expectation as an `inspect` test block
+# compile AS-IS -- no `__DATA__` strip, no temp copy, and no expected value
+# in shell. Entry is `__no_entry__`, which synthesizes the test-block
+# runner; a mismatch prints inspect's own actual/expected and fails the run.
+scps_run_inspect() {
+  local fixture="$1" tag="$2"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "fixtures/$fixture" "$scpsdir/$tag.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ ! -s "$scpsdir/$tag.wasm" ]; then
+    echo "[compiler-gate] FAIL: $fixture did not compile -- Phase 3a suspend lowering regressed" >&2
+    cat "$scpsdir/$tag.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! scps_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$scpsdir/$tag.wasm" 2>&1)"; then
+    echo "[compiler-gate] FAIL: $fixture tests failed -- Phase 3a suspend lowering regressed" >&2
+    echo "$scps_out" >&2
+    exit 1
+  fi
+}
 scps_run_expect "effect_resume_store_scheduler.vibe" "10230" "sched"
-scps_run_expect "effect_resume_value_postprocess.vibe" "1017" "post"
+scps_run_inspect "effect_resume_value_postprocess.vibe" "post"
 # Phase 3b yield bubbling now lives in
 # fixtures/effect_resume_call_bubbling_test.vibe (#1973).
 # Trivial row-var wrapper pin now lives in
@@ -1040,15 +1060,15 @@ scps_run_expect "effect_resume_value_postprocess.vibe" "1017" "post"
 # #1230 loop widening: `while` + `let mut` on the spine. 101020383 decodes
 # as r0=100/r1=101/r2=102/r3=183 -- the 183 is the pin that both `acc` and
 # `i` survived every suspend/resume round trip through their cells.
-scps_run_expect "effect_resume_store_loop.vibe" "101020383" "loop"
+scps_run_inspect "effect_resume_store_loop.vibe" "loop"
 # #1263 Codex P1: a non-suspending loop AHEAD of a suspending one must stay
 # iterative. The 200000-iteration prefix would blow the wasm call stack if it
 # were converted to the recursive lp() shape (rewrite_self_tail_calls runs
 # before suspend_cps_pass, so nothing flattens it back).
-scps_run_expect "effect_resume_store_loop_prefix.vibe" "20000112" "loopprefix"
+scps_run_inspect "effect_resume_store_loop_prefix.vibe" "loopprefix"
 # #1263 Codex P2: a nested closure is a control-flow boundary -- its `return`
 # targets the closure, not the loop being converted, so it must not reject.
-scps_run_expect "effect_resume_store_loop_nested_return.vibe" "112" "loopnestedret"
+scps_run_inspect "effect_resume_store_loop_nested_return.vibe" "loopnestedret"
 # one-shot violation: must NOT produce a value; the failure output carries
 # the one-shot stderr diagnostic before the assert trap.
 sed '/^_start()$/d' fixtures/effect_resume_one_shot_trap.vibe > "$scpsdir/once.vibe"
