@@ -1013,24 +1013,6 @@ echo "[compiler-gate] RC branch+loop mixed-consume over-drop (#1085) ok"
 echo "[compiler-gate] 50/50 ADR-0076 Phase 3a first-class resume (suspend CPS)"
 scpsdir="_build/_gate_scps"
 rm -rf "$scpsdir"; mkdir -p "$scpsdir"
-scps_run_expect() {
-  local fixture="$1" want="$2" tag="$3"
-  sed '/^_start()$/d; /^__DATA__$/,$d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
-  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$scpsdir/$tag.vibe" "$scpsdir/$tag.wasm" _start >/dev/null 2>&1 || true
-  if [ ! -s "$scpsdir/$tag.wasm" ]; then
-    echo "[compiler-gate] FAIL: $fixture did not compile -- Phase 3a suspend lowering regressed" >&2
-    cat "$scpsdir/$tag.wasm.diag" 2>/dev/null >&2 || true
-    exit 1
-  fi
-  local out
-  out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$scpsdir/$tag.wasm" 2>/dev/null | tail -1)"
-  if [ "$out" != "$want" ]; then
-    echo "[compiler-gate] FAIL: $fixture got '$out' (want $want)" >&2
-    exit 1
-  fi
-}
 # #1571: fixtures that own their expectation as an `inspect` test block
 # compile AS-IS -- no `__DATA__` strip, no temp copy, and no expected value
 # in shell. Entry is `__no_entry__`, which synthesizes the test-block
@@ -1119,8 +1101,8 @@ scps_run_inspect "effect_stream_next_suspend_retarget.vibe" "streamnext"
 # #1723: a local pure closure shadows a top-level function whose callback
 # parameter carries the suspend effect. The prepass must leave the literal on
 # the plain convention; Done-wrapping it returns a step pointer instead of 8.
-scps_run_expect "effect_scps_param_shadow_test.vibe" "8" "localparamshadow"
-scps_run_expect "effect_scps_top_level_alias_test.vibe" "7" "toplevelalias"
+scps_run_inspect "effect_scps_param_shadow_test.vibe" "localparamshadow"
+scps_run_inspect "effect_scps_top_level_alias_test.vibe" "toplevelalias"
 # #1723 / #1803 P2 follow-up: effect_row_local_shadow_test.vibe's "unshadowed
 # effectful call" control sits inside `handle`, where the missing-effect
 # diagnostic is suppressed (in_handle), so it cannot pin "still charged when
@@ -1137,8 +1119,8 @@ scps_check_reject "err_effect_unshadowed_row_charged.vibe" "effect row mismatch 
 # #1536 direct selection input: a recognized direct perform is first named on
 # the CPS spine, evaluates once, then selects a branch/arm whose continuation
 # runs once.
-scps_run_expect "effect_seq_head_if_condition_suspend.vibe" "3210" "seqheadifcond"
-scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadmatchscrut"
+scps_run_inspect "effect_seq_head_if_condition_suspend.vibe" "seqheadifcond"
+scps_run_inspect "effect_seq_head_match_scrutinee_suspend.vibe" "seqheadmatchscrut"
 # Tail selection input pin now lives in
 # fixtures/effect_tail_selection_input_suspend_test.vibe (#1973).
 # #1536 direct plain-assignment RHS: name the resumed value on the CPS spine,
@@ -1146,7 +1128,7 @@ scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadma
 scps_run_inspect "effect_assignment_rhs_suspend.vibe" "assignrhs"
 # #1536 direct while condition: resume into the existing recursive loop
 # closure once per condition check.
-scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
+scps_run_inspect "effect_while_condition_suspend.vibe" "whilecond"
 # #1536 (a) v8: COMPOUND inputs -- an operand, a call argument, a constructor
 # payload, a comparison in a condition. The suspension is named on the spine and
 # everything the original evaluated before it is named in order ahead of it, so
