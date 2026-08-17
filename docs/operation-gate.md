@@ -65,7 +65,9 @@ that syntax, then migrate the source.
 ### Perceus / RC codegen
 
 `pkf run test` (`compiler_gate.sh`) is the pre-commit main check, but it is
-not the full RC net. Step 40d measures leaks; step 40f runs `VIBE_RC=shadow`
+not the full RC net. The script is a thin aggregator over independently
+runnable lanes in `tests/gates/` (#1849 / #2001); `COMPILER_GATE_LANE=mid`
+runs the section-40 family alone. Step 40d measures leaks; step 40f runs `VIBE_RC=shadow`
 on the #715 shape corpus; step 40f2 smokes three checked-artifact tests.
 A dup/drop *under*-provision (the first cut of #1964) still reproduced the
 compiler byte-identically and stayed green on the previously existing steps

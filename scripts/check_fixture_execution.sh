@@ -36,7 +36,7 @@
 #      is manifest-driven by necessity (each row carries an expected VERDICT --
 #      ok / reject / debt-*; a glob cannot supply that), so the invariant there
 #      is exhaustiveness, checked separately below.
-#   3. Some file under scripts/ lib/ examples/ .github/ names it. That is a
+#   3. Some file under scripts/ tests/ lib/ examples/ .github/ names it. That is a
 #      bespoke check -- a gate asserting one specific value or diagnostic, or a
 #      vibe test driving the fixture as data.
 #   4. scripts/fixture_execution_exceptions.txt lists it, with a reason.
@@ -155,7 +155,7 @@ while IFS= read -r f; do
   # explicit lookup below or not at all.
   if grep -rqF --exclude="$(basename "${BASH_SOURCE[0]}")" \
       --exclude="$(basename "$EXCEPTIONS_FILE")" \
-      -- "$(basename "$f")" scripts lib examples .github 2>/dev/null; then
+      -- "$(basename "$f")" scripts tests lib examples .github 2>/dev/null; then
     [ "$mode" = "list" ] && printf '%s\tbespoke-reference\n' "$f"
     accounted=$((accounted + 1)); continue
   fi

@@ -11,16 +11,16 @@ on:
 # ->stage3 selfbuild with the stage2==stage3 fixpoint and per-stage compile/run
 # validation. No MoonBit toolchain is installed or used.
 #
-# Wall-time layout (2026-07 rework, target: required checks green < 5min):
-#   - compiler-gate      (~2.5min) gate script + KPI + normalize smoke
-#   - unit-tests 0..3    (~3min)   weight-balanced shards of the 467-file
-#                                  battery; each shard self-builds stage2 from
-#                                  the committed flat module source (~20-30s,
-#                                  cached across runs on the same source)
-#                                  instead of waiting on compiler-gate
-#   - coverage-suite     main-only, its own job (used to run INSIDE
-#                                  compiler-gate and double its wall time)
-#   - wasi-p3-gate       needs compiler-gate's stage2 artifact (unchanged)
+# Wall-time layout (#1849 / #2001: compiler_gate.sh is a thin aggregator):
+#   - compiler-gate           bootstrap lane (selfbuild + fixpoint) + KPI /
+#                             docs tooling that needs this job's generation
+#   - compiler-gate-lanes     early/mid/late fixture lanes; each shard
+#                             self-builds stage2 from the committed flat
+#                             module source (cached, same as unit-tests)
+#                             so they start at t=0
+#   - unit-tests 0..3         weight-balanced shards of the unit battery
+#   - coverage-suite          main-only, its own job
+#   - wasi-p3-gate            needs compiler-gate's stage2 artifact
 # All jobs start at t=0; nothing on the required path serializes behind
 # another job.
 jobs:
@@ -81,7 +81,13 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Compiler gate
+      - name: Compiler gate (bootstrap + fixpoint)
+        # Fixture lanes run as compiler-gate-lanes (matrix) so they do not
+        # sit on this job's critical path. This job keeps the seed->stage3
+        # fixpoint, the incremental oracles that consume the just-built
+        # generation, and the docs/KPI steps below.
+        env:
+          COMPILER_GATE_LANE: bootstrap
         run: bash scripts/compiler_gate.sh
       - name: Install ripgrep
         # The lint step below probes and filters with `rg`. Only structural-lint
@@ -231,6 +237,72 @@ jobs:
           path: _build/ci-artifacts/stage2.wasm
           if-no-files-found: error
 
+  # Fixture lanes extracted from compiler_gate.sh (#1849 / #2001). Each
+  # shard builds its own stage2 from the committed flat module source —
+  # the same cache key as unit-tests — so they start at t=0 and do not
+  # wait for the bootstrap job's fixpoint. Coverage is fail-closed:
+  # ci-required requires this matrix, and an empty/unknown lane fails
+  # the dispatcher rather than running nothing.
+  compiler-gate-lanes:
+    name: compiler-gate (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [early, mid, late]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Generated compiler artifacts (fingerprint)
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Cache stage2 (keyed on seed + flat module source)
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 from committed flat module source
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Compiler-gate lane ${{ matrix.lane }}
+        env:
+          COMPILER_GATE_LANE: ${{ matrix.lane }}
+          VIBE_STAGE2_WASM: ${{ github.workspace }}/_build/_ci_shard_gen/stage2.wasm
+        run: bash scripts/compiler_gate.sh
+
   # vibe-fmt lint (scripts/check_vibe_fmt.sh): every lib/**/*.vibe and
   # lib/**/*.vpkg file must be a fixpoint of the selfhost formatter unless
   # grandfathered in scripts/vibe_fmt_allowlist.txt (ratchet, mirrors
@@ -304,6 +376,8 @@ jobs:
         run: bash scripts/lint_architecture_debt.sh
       - name: review-regressions lint self-test
         run: bash scripts/lint_review_regressions_test.sh
+      - name: compiler-gate registry self-test
+        run: bash scripts/check_gate_registry_test.sh
       - name: doc path-citation lint self-test
         run: bash scripts/check_doc_path_citations_test.sh
       - name: doc path-citation lint
@@ -798,7 +872,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
+    needs: [compiler-gate, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -806,6 +880,10 @@ jobs:
         run: |
           if [ "${{ needs.compiler-gate.result }}" != "success" ]; then
             echo "::error::compiler-gate did not succeed (${{ needs.compiler-gate.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-gate-lanes.result }}" != "success" ]; then
+            echo "::error::compiler-gate-lanes did not succeed (${{ needs.compiler-gate-lanes.result }})"
             exit 1
           fi
           if [ "${{ needs.unit-tests.result }}" != "success" ]; then
