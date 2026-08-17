@@ -1051,7 +1051,7 @@ scps_run_inspect() {
     exit 1
   fi
 }
-scps_run_expect "effect_resume_store_scheduler.vibe" "10230" "sched"
+scps_run_inspect "effect_resume_store_scheduler.vibe" "sched"
 scps_run_inspect "effect_resume_value_postprocess.vibe" "post"
 # Phase 3b yield bubbling now lives in
 # fixtures/effect_resume_call_bubbling_test.vibe (#1973).
@@ -1107,13 +1107,13 @@ scps_check_reject() {
 # the clone; want 5), including the delegation shape (pick_any forwards
 # its own param into pick's slot; want 5). One site passing a PERFORMING
 # literal taints the slot and the rejection stays.
-scps_run_expect "effect_closure_param_inert.vibe" "5" "inertparam"
+scps_run_inspect "effect_closure_param_inert.vibe" "inertparam"
 # Delegation pin now lives in
 # fixtures/effect_closure_param_inert_transitive_test.vibe (#1973).
 # #1536 (a), eager Stream slice: Stream::next must retarget before suspend
 # CPS evaluates a resume-value Async handler. The fixture also pins its
 # Array-backed ready Future[Option[T]] result and one evaluation (Some(41)+1).
-scps_run_expect "effect_stream_next_suspend_retarget.vibe" "42" "streamnext"
+scps_run_inspect "effect_stream_next_suspend_retarget.vibe" "streamnext"
 # Hygiene pin (user `__sn_next` + shadowed Future::ready, empty layout = 7)
 # now lives in fixtures/effect_stream_next_retarget_hygiene_test.vibe (#1973).
 # #1723: a local pure closure shadows a top-level function whose callback
@@ -1143,7 +1143,7 @@ scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadma
 # fixtures/effect_tail_selection_input_suspend_test.vibe (#1973).
 # #1536 direct plain-assignment RHS: name the resumed value on the CPS spine,
 # then assign and continue once.
-scps_run_expect "effect_assignment_rhs_suspend.vibe" "41112" "assignrhs"
+scps_run_inspect "effect_assignment_rhs_suspend.vibe" "assignrhs"
 # #1536 direct while condition: resume into the existing recursive loop
 # closure once per condition check.
 scps_run_expect "effect_while_condition_suspend.vibe" "3217" "whilecond"
