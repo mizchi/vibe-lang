@@ -4,7 +4,10 @@ A book-shaped tour of vibe, in the spirit of *The Rust Programming Language*.
 Every runnable example is a `` ```vibe run `` block in a `.vibe.md` file and
 is checked by `scripts/vibe_md.sh`. The HTML site is built by
 `lib/@vibex/book`, a small static site generator with a rust-book-like
-sidebar and a tiny keyword highlighter (no external highlighter crate).
+sidebar. Fences tagged `vibe`, `vibe run`, or `.vibe`, and standalone
+`.vibe` chapters listed in `SUMMARY.md`, are highlighted by a small
+scanner (keywords from the lexer, PascalCase types, numbers, `@pkg`
+paths, `#directives`). No external highlighter crate.
 
 ```bash
 # prove the examples
@@ -18,8 +21,10 @@ pkf run book
 
 Open `_build/book/index.html` in a browser. On `main`,
 `.github/workflows/book-pages.yml` rebuilds this tree and deploys it to
-GitHub Pages (`https://mizchi.github.io/vibe-lang/`). The first time,
-set the repo Pages source to **GitHub Actions**.
+GitHub Pages (`https://mizchi.github.io/vibe-lang/`). The repo Pages
+source is already **GitHub Actions**. This replaces the old playground
+artifact at that URL; the playground still lives in `playground/`
+(`pkf run playground-dev`).
 
 ## Layout
 
