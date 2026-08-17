@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Differential fuzzing harness for the selfhost vibe compiler.
 #
-#   bash fuzz/run_fuzz.sh [--seeds A..B] [--cli path/to/stage2.wasm] [--jobs N]
-#   bash fuzz/run_fuzz.sh --mutate [--seeds A..B]   # parser-robustness mode
+#   bash tests/fuzz/run_fuzz.sh [--seeds A..B] [--cli path/to/stage2.wasm] [--jobs N]
+#   bash tests/fuzz/run_fuzz.sh --mutate [--seeds A..B]   # parser-robustness mode
 #
 # Seeds run with up to --jobs concurrent OS processes (default: nproc, capped
 # at 8) via a bash job-slot pool -- real parallelism (each seed is its own
@@ -16,7 +16,7 @@
 # reproduces the original strictly-sequential ordering exactly.
 #
 # Generative mode (default), per seed:
-#   1. fuzz/gen_program.py emits a well-typed, trap-free-by-construction
+#   1. tests/fuzz/gen_program.py emits a well-typed, trap-free-by-construction
 #      program (single.vibe) plus an FS-linked split (defs.vibe+main.vibe).
 #   2. Compile single.vibe on three backends: bump (VIBE_RC=0), RC
 #      (VIBE_RC=1), wasm-gc (VIBE_BACKEND=gc); compile the split via
@@ -33,7 +33,7 @@
 # hang (a parse/type error diag is the expected rejection path).
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 
 SEEDS="1..50"
@@ -80,13 +80,14 @@ RUNNER="bash scripts/run_wasm_vibe_host_runner.sh"
 CTIMEOUT=90
 RTIMEOUT=20
 
-# compile/run_linear/run_gc/classify are shared with fuzz/classify.sh (used
-# by fuzz/reduce.py) via fuzz/lib_oracle.sh -- see that file for the single
-# source of truth on what counts as a finding. The FS lane also receives a
-# per-seed VIBE_BUILD_CACHE_DIR from lib_oracle.sh, so its persistent compiler
-# cache is not shared between these concurrent workers.
-# shellcheck source=fuzz/lib_oracle.sh
-source "$ROOT/fuzz/lib_oracle.sh"
+# compile/run_linear/run_gc/classify are shared with tests/fuzz/classify.sh
+# (used by tests/fuzz/reduce.py) via tests/fuzz/lib_oracle.sh -- see that
+# file for the single source of truth on what counts as a finding. The FS
+# lane also receives a per-seed VIBE_BUILD_CACHE_DIR from lib_oracle.sh, so
+# its persistent compiler cache is not shared between these concurrent
+# workers. Generated work/findings stay in _build/fuzz/.
+# shellcheck source=tests/fuzz/lib_oracle.sh
+source "$ROOT/tests/fuzz/lib_oracle.sh"
 
 record() { # seed class dir note
   local seed="$1" class="$2" dir="$3" note="$4"
@@ -103,7 +104,7 @@ run_seed() { # seed -- runs entirely in its own background subshell/process
   local seed="$1"
   local dir="$WORK/s$seed"
   rm -rf "$dir"; mkdir -p "$dir"
-  python3 fuzz/gen_program.py "$seed" "$dir" $GENMODE
+  python3 tests/fuzz/gen_program.py "$seed" "$dir" $GENMODE
 
   if [ "$MODE" = "mutate" ]; then
     # parser robustness: mutate bytes; only compiler trap/hang is a finding

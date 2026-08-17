@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared compile/run/classify helpers for the fuzz harness.
 #
-# Both fuzz/run_fuzz.sh (the seed-sweeping differential fuzzer) and
-# fuzz/classify.sh (a single-candidate CLI used by fuzz/reduce.py) source
+# Both tests/fuzz/run_fuzz.sh (the seed-sweeping differential fuzzer) and
+# tests/fuzz/classify.sh (a single-candidate CLI used by tests/fuzz/reduce.py) source
 # this file so the "what counts as a finding" logic lives in exactly one
 # place. Factored out of run_fuzz.sh in #765 so the delta-debugging
 # reducer can replay the identical oracle per candidate instead of

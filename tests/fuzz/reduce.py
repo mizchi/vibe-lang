@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Delta-debugging test-case reducer for fuzz findings (#765 task 2).
 
-Given a failing seed (regenerated via fuzz/gen_program.py) or a raw .vibe
-file, and the finding class it produced (see fuzz/run_fuzz.sh /
-fuzz/lib_oracle.sh for the exact vocabulary: MISMATCH, COMPILE_CRASH,
+Given a failing seed (regenerated via tests/fuzz/gen_program.py) or a raw
+.vibe file, and the finding class it produced (see tests/fuzz/run_fuzz.sh /
+tests/fuzz/lib_oracle.sh for the exact vocabulary: MISMATCH, COMPILE_CRASH,
 RUN_TRAP, COMPILE_HANG, RUN_HANG, COMPILE_DIAG), minimizes the program
 while checking, after every candidate edit, that the SAME finding class
-still reproduces -- via fuzz/classify.sh, the same oracle fuzz/run_fuzz.sh
-uses per seed (both share fuzz/lib_oracle.sh), so "still reproduces" means
-exactly what run_fuzz.sh would have recorded.
+still reproduces -- via tests/fuzz/classify.sh, the same oracle
+tests/fuzz/run_fuzz.sh uses per seed (both share tests/fuzz/lib_oracle.sh),
+so "still reproduces" means exactly what run_fuzz.sh would have recorded.
 
 Two reduction passes (CLIR paper's "diagnostic-driven hierarchical
 test-case reduction" / semantic substitution, ported to vibe's line-
@@ -46,11 +46,11 @@ oracle will just never see the fs lane so such a finding would test as
 the minimized single-file program's decls into defs.vibe/main.vibe).
 
 Usage:
-  python3 fuzz/reduce.py <seed-or-path.vibe> --class CLASS [--cli PATH] [--out PATH] [--budget N]
+  python3 tests/fuzz/reduce.py <seed-or-path.vibe> --class CLASS [--cli PATH] [--out PATH] [--budget N]
 
 Examples:
-  python3 fuzz/reduce.py 217 --class MISMATCH
-  python3 fuzz/reduce.py _build/fuzz/findings/seed_217_MISMATCH/single.vibe \\
+  python3 tests/fuzz/reduce.py 217 --class MISMATCH
+  python3 tests/fuzz/reduce.py _build/fuzz/findings/seed_217_MISMATCH/single.vibe \\
       --class MISMATCH --cli _build/selfhost/generations/init/stage2.wasm
 """
 import argparse
@@ -62,7 +62,7 @@ import tempfile
 from pathlib import Path
 
 FUZZ_DIR = Path(__file__).resolve().parent
-ROOT_DIR = FUZZ_DIR.parent
+ROOT_DIR = FUZZ_DIR.parent.parent
 GEN_PROGRAM = FUZZ_DIR / "gen_program.py"
 CLASSIFY_SH = FUZZ_DIR / "classify.sh"
 
@@ -79,8 +79,8 @@ INT_RE = re.compile(r'(?<![\w.])\d+(?![\w.])')
 # ---------- oracle plumbing ----------
 
 class Oracle:
-    """Wraps fuzz/classify.sh: writes a candidate to workdir/single.vibe and
-    reports whether it still reproduces the target finding class."""
+    """Wraps tests/fuzz/classify.sh: writes a candidate to workdir/single.vibe
+    and reports whether it still reproduces the target finding class."""
 
     def __init__(self, workdir, target_cls, cli, budget, timeout=180):
         self.workdir = Path(workdir)
@@ -131,7 +131,7 @@ def split_depth0_chunks(lines):
     (relative to the start of this list). Each top-level decl (struct/
     enum/let/fn) -- or, one level down, each statement/nested block --
     becomes one chunk. Assumes no unbalanced `{`/`}` hides inside string
-    literals or comments, true of fuzz/gen_program.py's own output and of
+    literals or comments, true of tests/fuzz/gen_program.py's own output and of
     ordinary vibe source without brace characters embedded in string
     bodies (string interpolation's `\\{expr}` is itself a balanced brace
     pair, so it doesn't violate this)."""

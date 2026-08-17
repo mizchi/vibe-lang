@@ -1,5 +1,7 @@
 # fuzz — selfhost compiler differential fuzzing
 
+Source lives at `tests/fuzz/`; generated work/findings stay in `_build/fuzz/`.
+
 生成型の差分ファジングで compiler のバグ(miscompile / crash / hang /
 backend・lane 間 divergence)を洗い出すハーネス。#722(struct field の
 型盲目 first-match 解決)級のバグを、修正前 compiler に対して 8 seeds 中
@@ -16,27 +18,27 @@ HEAD に対して liveness-aware 生成(default/`--liveness-bias 0.85`/
 
 ```bash
 # 生成型差分モード(default): seed A..B。liveness-aware bias は default で有効
-bash fuzz/run_fuzz.sh --seeds 1..300
+bash tests/fuzz/run_fuzz.sh --seeds 1..300
 
 # 旧来の生成のみ(liveness-aware bias を無効化、#765 前の挙動)
-bash fuzz/run_fuzz.sh --classic --seeds 1..300
+bash tests/fuzz/run_fuzz.sh --classic --seeds 1..300
 
 # liveness-aware bias を明示指定(0.0..1.0、テスト用。--classic と併用不可)
-bash fuzz/run_fuzz.sh --liveness-bias 0.85 --seeds 1..300
+bash tests/fuzz/run_fuzz.sh --liveness-bias 0.85 --seeds 1..300
 
 # parser 頑健性(byte mutation)モード: diag 以外の落ち方(trap/hang)だけが finding
-bash fuzz/run_fuzz.sh --mutate --seeds 1..300
+bash tests/fuzz/run_fuzz.sh --mutate --seeds 1..300
 
 # CLI (stage2) を明示指定(default: 最新 generation の stage2.wasm)
-bash fuzz/run_fuzz.sh --seeds 1..50 --cli _build/selfhost/generations/<gen>/stage2.wasm
+bash tests/fuzz/run_fuzz.sh --seeds 1..50 --cli _build/selfhost/generations/<gen>/stage2.wasm
 ```
 
 findings は `_build/fuzz/findings/seed_<seed>_<class>/`(入力 + ログ +
 note.txt)に保存され、`_build/fuzz/failing_seeds.txt` に一覧が残る。
-seed 決定論なので `python3 fuzz/gen_program.py <seed> <dir>` で再生成できる
+seed 決定論なので `python3 tests/fuzz/gen_program.py <seed> <dir>` で再生成できる
 (liveness bias 込み。`--classic` で bias 無効、`--liveness-bias=X` で明示指定)。
 
-見つけた finding は `fuzz/reduce.py` で自動最小化できる(下記)。
+見つけた finding は `tests/fuzz/reduce.py` で自動最小化できる(下記)。
 
 ## 何を比較するか(oracle)
 
@@ -55,7 +57,7 @@ seed 決定論なので `python3 fuzz/gen_program.py <seed> <dir>` で再生成�
 timeout(COMPILE_HANG / RUN_HANG)、lane 間の結果不一致(MISMATCH)も
 finding。
 
-## 生成器の設計(fuzz/gen_program.py)
+## 生成器の設計(tests/fuzz/gen_program.py)
 
 - **trap-free by construction**: 全算術を `& 1048575` でマスク(小さく
   非負に保つ)、除数は `1 + (e & 15)`、shift 量は `& 15`、配列 index は
@@ -96,7 +98,7 @@ finding。
 - 期待値 oracle は持たない(差分のみ)。生成器と compiler の意味論の
   二重実装ズレで偽陽性を出さないため。
 
-## 自動 test-case reducer(fuzz/reduce.py, #765)
+## 自動 test-case reducer(tests/fuzz/reduce.py, #765)
 
 MISMATCH/trap/diag 等の finding を、**同じ finding class を保ったまま**
 自動最小化する delta-debugging ツール(CLIR 論文の「診断駆動の階層的
@@ -104,14 +106,14 @@ test-case reduction / semantic substitution」の移植)。
 
 ```bash
 # seed から直接: 失敗した seed を再生成して最小化
-python3 fuzz/reduce.py 217 --class MISMATCH
+python3 tests/fuzz/reduce.py 217 --class MISMATCH
 
 # 既存の finding ファイルから
-python3 fuzz/reduce.py _build/fuzz/findings/seed_217_MISMATCH/single.vibe \
+python3 tests/fuzz/reduce.py _build/fuzz/findings/seed_217_MISMATCH/single.vibe \
   --class MISMATCH --cli _build/selfhost/generations/<gen>/stage2.wasm
 ```
 
-- oracle は `fuzz/classify.sh`(`fuzz/lib_oracle.sh` 経由で
+- oracle は `tests/fuzz/classify.sh`(`tests/fuzz/lib_oracle.sh` 経由で
   `run_fuzz.sh` と完全に同じ compile/run/finding-class 判定ロジックを
   共有)。「class が同じか」だけを見るので、finding class は
   `--class` で指定する(`MISMATCH` / `COMPILE_CRASH` / `COMPILE_HANG` /
