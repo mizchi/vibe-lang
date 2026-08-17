@@ -7826,14 +7826,10 @@ scps_run_expect() {
 }
 scps_run_expect "effect_resume_store_scheduler.vibe" "10230" "sched"
 scps_run_expect "effect_resume_value_postprocess.vibe" "1017" "post"
-# Phase 3b yield bubbling: a suspend-class handle body calling row-carrying
-# helpers (incl. a recursive one) -- CPS clones + per-effect bubble
-# combinator, two sites sharing one step enum (want 3131365).
-scps_run_expect "effect_resume_call_bubbling.vibe" "3131365" "bubble"
-# trivial row-var wrapper + capture-free closure: normalized upstream
-# (#786 hoist + trivial-wrapper inlining) into a plain needing call the
-# clone/bubble machinery handles (want -95).
-scps_run_expect "effect_resume_rowvar_wrapper_normalized.vibe" "-95" "norm"
+# Phase 3b yield bubbling now lives in
+# fixtures/effect_resume_call_bubbling_test.vibe (#1973).
+# Trivial row-var wrapper pin now lives in
+# fixtures/effect_resume_rowvar_wrapper_normalized_test.vibe (#1973).
 # #1230 loop widening: `while` + `let mut` on the spine. 101020383 decodes
 # as r0=100/r1=101/r2=102/r3=183 -- the 183 is the pin that both `acc` and
 # `i` survived every suspend/resume round trip through their cells.
@@ -7885,7 +7881,8 @@ scps_check_reject() {
 # its own param into pick's slot; want 5). One site passing a PERFORMING
 # literal taints the slot and the rejection stays.
 scps_run_expect "effect_closure_param_inert.vibe" "5" "inertparam"
-scps_run_expect "effect_closure_param_inert_transitive.vibe" "5" "inertdeleg"
+# Delegation pin now lives in
+# fixtures/effect_closure_param_inert_transitive_test.vibe (#1973).
 # #1536 (a), eager Stream slice: Stream::next must retarget before suspend
 # CPS evaluates a resume-value Async handler. The fixture also pins its
 # Array-backed ready Future[Option[T]] result and one evaluation (Some(41)+1).
@@ -7904,31 +7901,19 @@ scps_run_expect "effect_scps_top_level_alias_test.vibe" "7" "toplevelalias"
 # shadow and no handler, the row lands on the caller and a row-free caller is
 # refused. The accepted twin is test 1 of effect_row_local_shadow_test.vibe.
 scps_check_reject "err_effect_unshadowed_row_charged.vibe" "effect row mismatch for 'caller': missing { Ask }" "unshadowedrow"
-# #1536 (a) v3 (let-floating): an async-iterator `for` in statement position
-# desugars to a let-chain in SEQUENCE HEAD position; scps_split_tail floats
-# it onto the continuation spine. Two sequential loops pin repeated floats
-# of the same __iter_* spellings.
-scps_run_expect "effect_for_await_suspend.vibe" "20" "forawaitsusp"
-# Shadow pin for the float's alpha-rename: an inner block binder shadows an
-# outer name the sequence TAIL references -- capture would print 8/wrong,
-# not 1105. Covers both the handle-body spine and a needing fn's clone.
-scps_run_expect "effect_seq_head_block_suspend.vibe" "1105" "seqheadshadow"
-# Codex P1 on #1607: user code literally spelling the generated
-# `__scps_seq<site>_<x>` target must not be captured -- the freshness
-# probe bumps past any occurrence in the floated continuation or the
-# tail. Control-measured: with the probe disabled this prints 1015.
-scps_run_expect "effect_seq_head_reserved_name_collision.vibe" "3011" "seqheadfresh"
-# #1536 (a) v4: suspendable if/match heads distribute the original sequence
-# tail into each selected branch. The runtime pins one evaluation of the
-# condition/scrutinee and capture-safe branch/pattern bindings.
-scps_run_expect "effect_seq_head_if_suspend.vibe" "41100" "seqheadif"
-scps_run_expect "effect_seq_head_match_suspend.vibe" "3200" "seqheadmatch"
+# #1536 (a) v3/v4 seq-head pins now live in inspect tests (#1973):
+# fixtures/effect_for_await_suspend_test.vibe,
+# fixtures/effect_seq_head_block_suspend_test.vibe,
+# fixtures/effect_seq_head_reserved_name_collision_test.vibe,
+# fixtures/effect_seq_head_if_suspend_test.vibe,
+# fixtures/effect_seq_head_match_suspend_test.vibe.
 # #1536 direct selection input: a recognized direct perform is first named on
 # the CPS spine, evaluates once, then selects a branch/arm whose continuation
 # runs once.
 scps_run_expect "effect_seq_head_if_condition_suspend.vibe" "3210" "seqheadifcond"
 scps_run_expect "effect_seq_head_match_scrutinee_suspend.vibe" "3210" "seqheadmatchscrut"
-scps_run_expect "effect_tail_selection_input_suspend.vibe" "3311" "tailselectinput"
+# Tail selection input pin now lives in
+# fixtures/effect_tail_selection_input_suspend_test.vibe (#1973).
 # #1536 direct plain-assignment RHS: name the resumed value on the CPS spine,
 # then assign and continue once.
 scps_run_expect "effect_assignment_rhs_suspend.vibe" "41112" "assignrhs"
@@ -8140,24 +8125,14 @@ scps_check_reject "err_effect_closure_param_capture_launder.vibe" "cannot see th
 # to a row-FREE fn-typed slot used to compile clean and trap at runtime with
 # a wasm signature mismatch. Reject it, and keep the annotated form working.
 scps_check_reject "err_effect_needing_value_escape.vibe" "passed as a VALUE into a slot whose type does not carry that row" "valesc"
-scps_run_expect "effect_needing_value_annotated.vibe" "42" "valann"
-scps_run_expect "effect_needing_value_escape_wrapped.vibe" "42" "valwrap"
-# #1380: the row-slot literal whose body CALLS a needing fn (rather than
-# performing inline). The type-directed sweep and the handle-site rewrite
-# each prepended an evidence dict to that call, so the callee got one
-# argument too many -- clean compile, module failed to instantiate.
-# The capture variant additionally blocks the hoist-to-top-level escape
-# hatch and mixes a perform with the call in one body.
-scps_run_expect "effect_needing_call_in_row_slot.vibe" "142" "callslot"
-scps_run_expect "effect_needing_call_in_row_slot_capture.vibe" "188" "callslotcap"
-# #1385: the same literal reached through an IIFE. dlh_hoist_expr only named
-# an IIFE'd literal when its body performed DIRECTLY, so one that discharges
-# the row by CALLING stayed anonymous -- and an opaque callee sinks the whole
-# effect's eligibility. The wrapper lane never types an IIFE: trivial-wrapper
-# inlining (#1070) makes one out of `apply0(lit)`, which is why only the
-# ZERO-argument slot was affected.
-scps_run_expect "effect_iife_needing_call.vibe" "142" "iifecall"
-scps_run_expect "effect_trivial_wrapper_needing_call.vibe" "142" "iifewrap"
+# Annotated / eta-wrapped needing-value pins now live in
+# fixtures/effect_needing_value_annotated_test.vibe and
+# fixtures/effect_needing_value_escape_wrapped_test.vibe (#1973).
+# #1380 / #1385 needing-call pins now live in
+# fixtures/effect_needing_call_in_row_slot_test.vibe,
+# fixtures/effect_needing_call_in_row_slot_capture_test.vibe,
+# fixtures/effect_iife_needing_call_test.vibe, and
+# fixtures/effect_trivial_wrapper_needing_call_test.vibe (#1973).
 rm -rf "$scpsdir"
 echo "[compiler-gate] ADR-0076 Phase 3a first-class resume ok"
 

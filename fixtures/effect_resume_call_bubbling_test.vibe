@@ -1,3 +1,4 @@
+// #1973: was fixtures/effect_resume_call_bubbling.vibe + __DATA__.last "3131365".
 // ADR-0076 Phase 3b (#817): yield bubbling -- a suspend-class handle
 // body may CALL a named top-level function whose concrete row carries
 // the handled effect. The callee gets a CPS clone (__scps_cps_*) whose
@@ -12,12 +13,12 @@ effect Async {
 
 let conts: Array[(Int) -> Int] = []
 
-let step2 = (x: Int) -> Int with Async {
+fn step2(x: Int) -> Int with Async {
   let b = perform Async::Suspend(x + 1)
   b * 2
 }
 
-let sumup = (n: Int) -> Int with Async {
+fn sumup(n: Int) -> Int with Async {
   if n == 0 {
     0
   } else {
@@ -27,8 +28,7 @@ let sumup = (n: Int) -> Int with Async {
   }
 }
 
-let _start = () -> Int {
-  // site A: direct suspend, then a suspend INSIDE a called helper.
+fn resume_call_bubbling() -> Int {
   let ra = handle {
     let a = perform Async::Suspend(1)
     let c = step2(a)
@@ -39,14 +39,9 @@ let _start = () -> Int {
       0 - t
     }
   }
-  // ra = -1 (direct suspend). Resuming a=10 runs into step2, which
-  // suspends with 11; resuming that with 100 finishes: 100*2 + 5 = 205.
   let ra2 = (Array::get(conts, 0))(10)
   let ra3 = (Array::get(conts, 1))(100)
   let val_a = (0 - ra) * 100000 + (0 - ra2) * 1000 + ra3
-  // val_a = 1*100000 + 11*1000 + 205 = 111205
-  // site B: recursion -- sumup(3) suspends at 3, 2, 1, then sums the
-  // resumed values 30 + 20 + 10 = 60.
   let rb = handle {
     sumup(3)
   } with Async {
@@ -59,10 +54,9 @@ let _start = () -> Int {
   let rb3 = (Array::get(conts, 3))(20)
   let rb4 = (Array::get(conts, 4))(10)
   let val_b = (0 - rb) * 1000000 + (0 - rb2) * 10000 + (0 - rb3) * 100 + rb4
-  // val_b = 3*1000000 + 2*10000 + 1*100 + 60 = 3020160
   val_a + val_b
 }
-_start()
 
-__DATA__
-{"last":"3131365"}
+test "yield bubbling across helper and recursive sites" {
+  inspect(resume_call_bubbling(), "3131365")
+}

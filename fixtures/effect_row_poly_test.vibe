@@ -1,0 +1,33 @@
+// #1973: was fixtures/effect_row_poly.vibe + __DATA__.last "14".
+// Row polymorphism: middleware handles Logger, forwards other effects
+effect Logger {
+  Log(String) -> Unit
+}
+
+effect Db {
+  Query(String) -> String
+}
+
+fn with_logging(f: () -> String with Logger + Db) -> String with Db {
+  handle {
+    f()
+  } with Logger {
+    Log(_msg) => resume(0)
+  }
+}
+
+fn row_poly() -> Int {
+  let result = handle {
+    with_logging(() -> String with Logger + Db {
+      perform Logger::Log("querying")
+      perform Db::Query("SELECT 1")
+    })
+  } with Db {
+    Query(_sql) => resume("result_from_db")
+  }
+  String::length(result)
+}
+
+test "Logger middleware forwards Db query result" {
+  inspect(row_poly(), "14")
+}
