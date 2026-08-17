@@ -1297,6 +1297,13 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # does take a function stays refused; that is what keeps this sound.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_rowvar_first_order_call_test.vibe
+# #1727 gap 1: the HIGHER-ORDER companion is admitted too when every
+# function-typed parameter receives a literal the pass proves inert -- the old
+# rule read the callee alone, but whether `e` can become the handled effect is
+# a property of what arrives at the call. The refusal still holds one step
+# past it: an argument that is a NAME (err_effect_rowvar_hof_call).
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_rowvar_hof_inert_literal_test.vibe
 scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvarhof"
 # #1536 boundary, measured 2026-08-14. Both of these are narrower than the
 # residual list implied, so they are pinned rather than described: a closure may

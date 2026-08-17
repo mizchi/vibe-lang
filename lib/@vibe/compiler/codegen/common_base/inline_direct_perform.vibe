@@ -8562,11 +8562,89 @@ fn scps_callee_first_order(ctx: (Array[Stmt], Array[(String, Array[(String, Arra
   found && ok
 }
 
+/// #1727 gap 1: the ARGUMENT side of the first-order rule above.
+///
+/// `scps_callee_first_order` refuses every callee that takes a function,
+/// because an argument could instantiate the callee's row variable to the
+/// handled effect. That is sound but it reads the callee alone -- and whether
+/// the variable can become `eff` is a property of what actually arrives HERE.
+/// When every function-typed parameter receives a literal this pass already
+/// proves inert for `eff` (`scps_is_inert_literal` -- no `eff` in its row, no
+/// row variable of its own, not a step literal, no tainted call in its body),
+/// the row variable cannot be instantiated to `eff` at this call site, so the
+/// call is E-free for the same reason a first-order one is.
+///
+/// Fails closed on everything else: a callee this pass cannot find, an
+/// untyped parameter, a missing argument, or a function-typed parameter
+/// receiving anything other than an inert literal -- a name, a call result, a
+/// field access. Those are the shapes whose row this pass cannot read, which
+/// is the same line `resolve_row_var_instantiation` draws on the checker side.
+fn scps_callee_fn_args_inert(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String, needing: Array[String]) -> Bool {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut found = false
+  let mut ok = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, params, _, _, _)) => if snm == name {
+        found = true
+        let mut all = true
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => if scps_ty_has_fn(t) {
+              if pi < Array::length(args) && scps_is_inert_literal(Array::get(args, pi), eff, needing, ctx) {
+                ()
+              } else {
+                all = false
+              }
+            } else {
+              ()
+            },
+            None => {
+              all = false
+            }
+          }
+          pi = pi + 1
+        }
+        ok = all
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found && ok
+}
+
+/// #1727 gap 1: `scps_named_call_ok` plus the argument-side widening above.
+/// Only reachable when the name-only rule already refused, and only admits the
+/// one clause it refused for -- a known function whose row does NOT carry
+/// `eff` but DOES carry a variable, called with provably inert functions.
+fn scps_named_call_with_args_ok(name: String, args: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+  if scps_named_call_ok(name, sctx, ctx, scope) {
+    true
+  } else {
+    let (eff, _, needing, _, _) = sctx
+    // A local binding keeps the lexical classification rule; only top-level
+    // functions have a declared row this can read.
+    if scps_local_class(scope, name) >= 0 {
+      false
+    } else {
+      let (is_fn, row) = scps_fn_row_of(ctx, name)
+      is_fn && !scps_row_contains(ctx, row, eff) && scps_row_has_var(row) && scps_callee_fn_args_inert(ctx, name, args, eff, needing)
+    }
+  }
+}
+
 /// A row item starting with a lowercase letter is a row VARIABLE (`with
 /// { e }` / `with X + e`): the variable can be instantiated to the
 /// migrated effect via a closure argument this pass cannot see, so such a
-/// callee is never "provably E-free". Effect names / effectset aliases /
-/// qualified ops are all capitalized or contain `::`.
+/// callee is never "provably E-free" from its declaration alone (the call
+/// site can still prove it -- see scps_callee_fn_args_inert). Effect names /
+/// effectset aliases / qualified ops are all capitalized or contain `::`.
 fn scps_row_has_var(row: String) -> Bool {
   if row == "" {
     false
@@ -9132,7 +9210,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
           },
           _ => false
         }
-      } else if scps_named_call_ok(nm, sctx, ctx, scope) {
+      } else if scps_named_call_with_args_ok(nm, args, sctx, ctx, scope) {
         scps_exprs_calls_ok(args, sctx, ctx, scope)
       } else {
         false
