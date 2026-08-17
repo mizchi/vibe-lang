@@ -13,6 +13,10 @@ import @vibe/compiler/core {
   Expr, Stmt, TypeExpr
 }
 
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
 //# Helpers
 
 fn no_strings() -> Array[String] {
@@ -135,6 +139,34 @@ test "#1961: WIT admits an exact owned host operation" {
   ]
   let wit = wit_from_program(stmts, stmts, "caps")
   assert(String::contains(wit, "host capability effect 'Console'"))
+}
+
+test "#1961: parsed Console::Get is not host-admitted by effect name" {
+  // Effect-name admission would take the Console prefix and emit
+  // `host capability effect 'Console'`. Identity admission must not.
+  let source = "export fn stats(n: Int) -> Int with Console::Get {\n  n\n}\n"
+  let stmts = parse_program(lex(source))
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(!String::contains(wit, "host capability effect 'Console'"))
+  assert(!String::contains(wit, "import console"))
+  assert(String::contains(wit, "export stats:"))
+}
+
+test "#1961: parsed Console::write_stream is host-admitted by identity" {
+  let source = "export fn stats(n: Int) -> Int with Console::write_stream {\n  n\n}\n"
+  let stmts = parse_program(lex(source))
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(String::contains(wit, "host capability effect 'Console'"))
+}
+
+test "#1961: parsed allows Console does not become a host import" {
+  // If allows were unioned into with, WIT would admit Console from
+  // `allows Console` even though the emitted row is only Ask::Get.
+  let source = "effect Ask { Get() -> Int }\nexport fn stats(n: Int) -> Int with Ask::Get allows Console {\n  n\n}\n"
+  let stmts = parse_program(lex(source))
+  let wit = wit_from_program(stmts, stmts, "caps")
+  assert(!String::contains(wit, "host capability effect 'Console'"))
+  assert(!String::contains(wit, "import console"))
 }
 
 test "validate_serve_handler: accepts the 4-string contract" {
