@@ -3417,6 +3417,68 @@ fn binder_first_slot(node: BinderAuthorityNode) -> Option[SourceBinder] {
   }
 }
 
+fn collect_pattern_binders(node: BinderAuthorityNode, out: Array[SourceBinder]) -> Unit {
+  let slots = binder_authority_node_slots(node)
+  let mut i = 0
+  while i < Array::length(slots) {
+    Array::push(out, binder_authority_slot_binder(Array::get(slots, i)))
+    i = i + 1
+  }
+  let children = binder_authority_node_children(node)
+  let mut j = 0
+  while j < Array::length(children) {
+    collect_pattern_binders(Array::get(children, j), out)
+    j = j + 1
+  }
+}
+
+fn walk_binder_match_like(head: Expr, arms: Array[(Pat, Expr)], node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> Bool {
+  let achildren = binder_authority_node_children(node)
+  let n = Array::length(arms)
+  if Array::length(achildren) != 1 + 2 * n {
+    false
+  } else {
+    let mut ok = walk_binder_expr(head, Array::get(achildren, 0), scope, out)
+    let mut i = 0
+    while i < n && ok {
+      let pat_node = Array::get(achildren, 1 + 2 * i)
+      let body_node = Array::get(achildren, 2 + 2 * i)
+      let (_, body) = Array::get(arms, i)
+      let binders = array_empty()
+      collect_pattern_binders(pat_node, binders)
+      let mut inner = scope
+      let mut bi = 0
+      while bi < Array::length(binders) {
+        inner = binder_scope_push(inner, Array::get(binders, bi))
+        bi = bi + 1
+      }
+      ok = walk_binder_expr(body, body_node, inner, out)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn walk_binder_for_in(iter: Expr, body: Expr, node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> Bool {
+  let achildren = binder_authority_node_children(node)
+  let slots = binder_authority_node_slots(node)
+  if Array::length(achildren) != 2 || Array::length(slots) == 0 {
+    false
+  } else {
+    if walk_binder_expr(iter, Array::get(achildren, 0), scope, out) {
+      let mut inner = scope
+      let mut i = 0
+      while i < Array::length(slots) {
+        inner = binder_scope_push(inner, binder_authority_slot_binder(Array::get(slots, i)))
+        i = i + 1
+      }
+      walk_binder_expr(body, Array::get(achildren, 1), inner, out)
+    } else {
+      false
+    }
+  }
+}
+
 fn walk_binder_expr(expr: Expr, node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> Bool {
   let children = expr_children(expr)
   let achildren = binder_authority_node_children(node)
@@ -3437,6 +3499,10 @@ fn walk_binder_expr(expr: Expr, node: BinderAuthorityNode, scope: Array[SourceBi
     ELetMut(_, _, _, _) => walk_binder_let_like(children, achildren, node, scope, out, false),
     ELetRec(_, _, _) => walk_binder_let_like(children, achildren, node, scope, out, true),
     EFn(_, _, _, _, _, _) => walk_binder_fn(children, achildren, node, scope, out),
+    EMatch(scrut, arms) => walk_binder_match_like(scrut, arms, node, scope, out),
+    EHandle(body, arms) => walk_binder_match_like(body, arms, node, scope, out),
+    EForIn(_, _, iter, body) => walk_binder_for_in(iter, body, node, scope, out),
+    ELoop(_, _) => false,
     _ => {
       if Array::length(children) != Array::length(achildren) {
         false
@@ -3533,6 +3599,32 @@ fn walk_binder_stmt(stmt: Stmt, node: BinderAuthorityNode, scope: Array[SourceBi
         (walk_binder_expr(value, Array::get(children, 0), scope, out), scope)
       }
     },
+    SImport(_, _) => {
+      let children = binder_authority_node_children(node)
+      if Array::length(children) != 0 {
+        (false, scope)
+      } else {
+        let slots = binder_authority_node_slots(node)
+        let mut next = scope
+        let mut i = 0
+        while i < Array::length(slots) {
+          next = binder_scope_push(next, binder_authority_slot_binder(Array::get(slots, i)))
+          i = i + 1
+        }
+        (true, next)
+      }
+    },
+    SAliasDecl(_, _) => match binder_first_slot(node) {
+      Some(binder) => {
+        let children = binder_authority_node_children(node)
+        if Array::length(children) != 0 {
+          (false, scope)
+        } else {
+          (true, binder_scope_push(scope, binder))
+        }
+      },
+      None => (false, scope)
+    },
     _ => (false, scope)
   }
 }
@@ -3543,7 +3635,6 @@ fn walk_binder_stmt(stmt: Stmt, node: BinderAuthorityNode, scope: Array[SourceBi
 /// are not claimed. Shape mismatch fails closed.
 export fn check_program_binder_occurrence_observation(authority: LocatedProgramBinderAuthority) -> Option[Array[(Int, Int, Int)]] with Exception {
   let program = located_program_binder_authority_program(authority)
-  let _checked = check_program(program)
   let roots = located_program_binder_authority_nodes(authority)
   if Array::length(roots) != Array::length(program) {
     None
