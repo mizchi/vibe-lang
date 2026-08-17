@@ -1,0 +1,100 @@
+//# #1957: checker occurrence provenance consumes parser binder authority
+
+import @vibe/compiler/checker {
+  check_program_binder_occurrence_observation
+}
+
+import @vibe/parser {
+  parse_source_located_with_binder_authority
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn find_offsets(source: String, needle: String) -> Array[Int] {
+  let out = array_empty()
+  let nlen = String::length(needle)
+  let slen = String::length(source)
+  let mut i = 0
+  while i + nlen <= slen {
+    if String::substring(source, i, i + nlen) == needle {
+      Array::push(out, i)
+      i = i + nlen
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+test "#1957: shadowed binders keep distinct authority identities" {
+  let source = "fn f() -> Int {\n  let x = 1\n  let x = x + 2\n  x\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let xs = find_offsets(source, "x")
+        // xs: paramless fn has let x, let x, rhs x, return x
+        assert(Array::length(xs) >= 4)
+        let first_def = Array::get(xs, 0)
+        let second_def = Array::get(xs, 1)
+        let rhs_use = Array::get(xs, 2)
+        let ret_use = Array::get(xs, 3)
+        let mut rhs_binder = 0 - 1
+        let mut ret_binder = 0 - 1
+        let mut i = 0
+        while i < Array::length(rows) {
+          let (use_off, start, _) = Array::get(rows, i)
+          if use_off == rhs_use {
+            rhs_binder = start
+          } else if use_off == ret_use {
+            ret_binder = start
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        assert_eq(rhs_binder, first_def)
+        assert_eq(ret_binder, second_def)
+        assert(rhs_binder != ret_binder)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: same name in two functions is not merged" {
+  let source = "fn a() -> Int {\n  let x = 1\n  x\n}\nfn b() -> Int {\n  let x = 2\n  x\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let xs = find_offsets(source, "x")
+        assert(Array::length(xs) >= 4)
+        let a_def = Array::get(xs, 0)
+        let a_use = Array::get(xs, 1)
+        let b_def = Array::get(xs, 2)
+        let b_use = Array::get(xs, 3)
+        let mut a_binder = 0 - 1
+        let mut b_binder = 0 - 1
+        let mut i = 0
+        while i < Array::length(rows) {
+          let (use_off, start, _) = Array::get(rows, i)
+          if use_off == a_use {
+            a_binder = start
+          } else if use_off == b_use {
+            b_binder = start
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        assert_eq(a_binder, a_def)
+        assert_eq(b_binder, b_def)
+        assert(a_binder != b_binder)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
