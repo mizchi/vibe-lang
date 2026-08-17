@@ -1085,23 +1085,13 @@ fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Excep
   }
 }
 
-/// #1345 / ADR-0088: the `?` GRADE suffix (`Fs::Read[Cfg]?` = Optional) is
-/// NOT parsed yet, on purpose.
+/// #1345 / ADR-0088 / #1961: `?` is the Optional grade and is legal only on
+/// an `allows` item (`allows Fs::read_file?`). The checker treats `Op?` as
+/// not authorizing a required perform/call. `?` is still rejected on the
+/// `with` row so it cannot become a second emitted-effect spelling.
 ///
-/// It was implemented and then pulled back out of this slice, because the
-/// checker has no grade model: it compares row items as opaque labels, so
-/// `Cfg::Read?` and `Cfg::Read` are two DIFFERENT effects to it. A function
-/// declaring the Optional form and performing the operation gets
-///
-///   declared { Cfg::Read? }, requires { Cfg::Read }
-///   hint: add 'with Cfg::Read + Cfg::Read?'
-///
-/// -- syntax that parses but produces a nonsense diagnostic is worse than
-/// syntax that does not parse. `?` belongs with the slice that gives it
-/// meaning (strict grade matching, `perform?` -> Attempt[T, E]).
-///
-/// `allows` is shipped as independent authority (#1961): `with A allows C`
-/// is stored as the emitted row plus a `#allows` marker, not as `with A + C`.
+/// `allows` is independent authority: `with A allows C` is stored as the
+/// emitted row plus a `#allows` marker, not as `with A + C`.
 
 /// #1429: the braceless row `A + B`. Items are separated by `+` and the row
 /// ends at the first token that is not `+` -- which is why the separator is
@@ -1112,12 +1102,28 @@ fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Excep
 /// with no lookahead. `+` is also already the language's "and another one"
 /// separator, in trait bounds (`[T: A + B]`).
 fn collect_effect_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with Exception {
-  let (item, after_item) = parse_effect_item(tokens, pos)
+  collect_effect_names_plus_grade(tokens, pos, acc, false)
+}
+
+fn collect_allows_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with Exception {
+  collect_effect_names_plus_grade(tokens, pos, acc, true)
+}
+
+fn collect_effect_names_plus_grade(tokens: Array[Token], pos: Int, acc: String, allow_optional: Bool) -> (String, Int) with Exception {
+  let (item0, after_item0) = parse_effect_item(tokens, pos)
+  let (item, after_item) = if allow_optional {
+    match peek(tokens, after_item0) {
+      TQuestion => (String::concat(item0, "?"), after_item0 + 1),
+      _ => (item0, after_item0)
+    }
+  } else {
+    (item0, after_item0)
+  }
   let new_acc = if String::length(acc) == 0 {
     item
   } else "\{acc}, \{item}"
   match peek(tokens, after_item) {
-    TPlus => collect_effect_names_plus(tokens, after_item + 1, new_acc),
+    TPlus => collect_effect_names_plus_grade(tokens, after_item + 1, new_acc, allow_optional),
     _ => (new_acc, after_item)
   }
 }
@@ -1272,7 +1278,7 @@ export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with
   let (row, after_row) = parse_effect_row_base(tokens, pos)
   match peek(tokens, after_row) {
     TIdent(kw) => if kw == "allows" {
-      let (caps, after_caps) = collect_effect_names_plus(tokens, after_row + 1, "")
+      let (caps, after_caps) = collect_allows_names_plus(tokens, after_row + 1, "")
       // ADR-0088 decision 1's classification check. It runs HERE, at parse
       // time, because this is the only place the split still exists: the two
       // clauses fold into one row on the next line and nothing downstream can

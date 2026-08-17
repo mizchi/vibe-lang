@@ -1,7 +1,7 @@
 //# Entry-boundary effect admission (#1683)
 
 import @vibe/compiler/checker {
-  check_program, is_instantiate_authority, standard_provider_owns_operation
+  check_program, freeze_binding_lock, is_instantiate_authority, standard_provider_owns_operation
 }
 
 import @vibe/compiler/syntax {
@@ -151,6 +151,46 @@ test "#1961: allows Console::Get cannot be frozen as instantiate authority" {
   assert(String::contains(msg, "Console::Get"))
   assert(String::contains(msg, "instantiate"))
   assert(!String::contains(msg, "host capability effect"))
+}
+
+test "#1961: optional allows does not authorize a required operation" {
+  let source = "fn main() -> String with () allows Fs::read_file? {\n  Fs::read_file(\"x\")\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Fs::read_file"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+}
+
+test "#1961: required allows still authorizes the required operation" {
+  let source = "fn main() -> String with () allows Fs::read_file {\n  Fs::read_file(\"x\")\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: BindingLock freeze is Granted for required and NotGranted for optional" {
+  let lock = freeze_binding_lock([
+    "Fs::read_file",
+    "Console::write_stream?"
+  ])
+  assert_eq(Array::length(lock), 2)
+  let mut saw_optional = false
+  let mut saw_required = false
+  let mut i = 0
+  while i < Array::length(lock) {
+    let (name, status) = Array::get(lock, i)
+    if name == "Console::write_stream" {
+      assert_eq(status, "NotGranted")
+      saw_optional = true
+    } else if name == "Fs::read_file" {
+      assert_eq(status, "Granted")
+      saw_required = true
+    } else {
+      assert(false)
+    }
+    i = i + 1
+  }
+  assert(saw_optional)
+  assert(saw_required)
+  assert(!is_instantiate_authority("Console::Get?"))
 }
 
 test "#1961: allows Console::write_stream does not grant console input" {

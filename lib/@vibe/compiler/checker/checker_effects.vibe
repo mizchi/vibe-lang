@@ -1468,16 +1468,58 @@ export fn standard_provider_owns_operation(label: String) -> Bool {
 /// A bare provider name (`Fs`) is authority for that namespace. A qualified
 /// label is authority only when it is an exact registry-owned operation
 /// (`Console::write_stream`). `Console::Get` is not frozen as host Console.
-export fn is_instantiate_authority(label: String) -> Bool {
-  if String::index_of(label, "::") < 0 {
-    has_standard_host_provider(label)
+fn strip_authority_grade(label: String) -> String {
+  let n = String::length(label)
+  if n > 0 && String::char_code_at(label, n - 1) == 63 {
+    String::substring(label, 0, n - 1)
   } else {
-    standard_provider_owns_operation(label)
+    label
   }
 }
 
+fn authority_is_optional(label: String) -> Bool {
+  let n = String::length(label)
+  n > 0 && String::char_code_at(label, n - 1) == 63
+}
+
+export fn is_instantiate_authority(label: String) -> Bool {
+  let core = strip_authority_grade(label)
+  if String::index_of(core, "::") < 0 {
+    has_standard_host_provider(core)
+  } else {
+    standard_provider_owns_operation(core)
+  }
+}
+
+/// #1961 / ADR-0088 L2: freeze optional resolution before run.
+/// Required owned operations are Granted; Optional ones are NotGranted
+/// (non-TTY instantiate default). Labels that are not instantiate
+/// authority are dropped — check_entry_declared_effects already rejects them.
+export fn freeze_binding_lock(labels: Array[String]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let lab = Array::get(labels, i)
+    if is_instantiate_authority(lab) {
+      let core = strip_authority_grade(lab)
+      let status = if authority_is_optional(lab) {
+        "NotGranted"
+      } else {
+        "Granted"
+      }
+      Array::push(out, (core, status))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn authority_covers_operation(auth: String, emitted: String) -> Bool {
-  if auth == emitted {
+  if authority_is_optional(auth) {
+    false
+  } else if auth == emitted {
     true
   } else if String::index_of(auth, "::") < 0 && standard_provider_owns_operation(emitted) {
     effect_name_of_op(emitted) == auth
