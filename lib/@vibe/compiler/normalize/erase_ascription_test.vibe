@@ -1,0 +1,63 @@
+// issue 1978: after erase, a local `let x: T = e` is no longer the
+// identity-wrapper call the parser built.
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  compute_may_return_view_fns
+}
+
+import ./erase_ascription.vibe {
+  erase_ascription_wrappers, has_ascription_wrapper
+}
+
+fn contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "parsed ascribed let is a wrapper before erase" {
+  let stmts = parse_program(lex("fn f() -> Int {\n  let x: Int = 1 + 2\n  x\n}\n"))
+  assert(has_ascription_wrapper(stmts))
+}
+
+test "erase peels the local-let ascription wrapper" {
+  let stmts = parse_program(lex("fn f() -> Int {\n  let x: Int = 1 + 2\n  x\n}\n"))
+  erase_ascription_wrappers(stmts)
+  assert(!has_ascription_wrapper(stmts))
+}
+
+test "unannotated let is not a wrapper" {
+  let stmts = parse_program(lex("fn f() -> Int {\n  let x = 1 + 2\n  x\n}\n"))
+  assert(!has_ascription_wrapper(stmts))
+}
+
+test "check_program erases the wrapper on the same stmts" {
+  let stmts = parse_program(lex("fn f() -> Int {\n  let x: Int = 1 + 2\n  x\n}\n"))
+  assert(has_ascription_wrapper(stmts))
+  let _ = check_program(stmts)
+  assert(!has_ascription_wrapper(stmts))
+}
+
+test "empty-literal annotated builder is not may-return-view after erase" {
+  let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(out, i)\n    i = i + 1\n  }\n  out\n}\n"
+  let stmts = parse_program(lex(src))
+  erase_ascription_wrappers(stmts)
+  assert(!has_ascription_wrapper(stmts))
+  inspect(contains(compute_may_return_view_fns(stmts), "make"), "false")
+}

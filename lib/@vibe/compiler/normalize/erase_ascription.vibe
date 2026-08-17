@@ -1,0 +1,245 @@
+// Peel the synthetic local-let ascription wrapper after checking (issue 1978).
+// `let x: T = e` parses to `((__asc: T) -> __asc)(e)`. The checker needs that
+// shape; every later pass and the emitted wasm should see `e`.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+
+fn asc_is_wrapper_name(name: String) -> Bool {
+  name == "__asc" || String::starts_with(name, "__shadow_") && String::ends_with(name, "___asc")
+}
+
+fn asc_wrapper_inner(callee: Expr, args: Array[Expr]) -> Option[Expr] {
+  if Array::length(args) != 1 {
+    None
+  } else {
+    match callee {
+      EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 {
+        match ret_ty {
+          Some(_) => None,
+          None => match effect {
+            Some(_) => None,
+            None => {
+              let (pname, _) = Array::get(params, 0)
+              if asc_is_wrapper_name(pname) {
+                match body {
+                  EIdent(bname, _) => if bname == pname {
+                    Some(Array::get(args, 0))
+                  } else {
+                    None
+                  },
+                  _ => None
+                }
+              } else {
+                None
+              }
+            }
+          }
+        }
+      } else {
+        None
+      },
+      _ => None
+    }
+  }
+}
+
+fn erase_asc_expr(e: Expr) -> Expr {
+  match e {
+    ECall(callee, args, off) => {
+      let callee2 = erase_asc_expr(callee)
+      let args2 = for a in args {
+        erase_asc_expr(a)
+      }
+      match asc_wrapper_inner(callee2, args2) {
+        Some(inner) => inner,
+        None => ECall(callee2, args2, off)
+      }
+    },
+    EFn(tp, tb, ps, ret, eff, body) => EFn(tp, tb, ps, ret, eff, erase_asc_expr(body)),
+    ELet(n, v, b, off) => ELet(n, erase_asc_expr(v), erase_asc_expr(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, erase_asc_expr(v), erase_asc_expr(b), off),
+    ELetRec(n, v, b) => ELetRec(n, erase_asc_expr(v), erase_asc_expr(b)),
+    EAssign(n, v, c) => EAssign(n, erase_asc_expr(v), erase_asc_expr(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, erase_asc_expr(v), erase_asc_expr(c)),
+    ESeq(a, b) => ESeq(erase_asc_expr(a), erase_asc_expr(b)),
+    EIf(c, t, e2) => EIf(erase_asc_expr(c), erase_asc_expr(t), erase_asc_expr(e2)),
+    EMatch(s, arms) => EMatch(erase_asc_expr(s), for arm in arms {
+      let (p, b) = arm
+      (p, erase_asc_expr(b))
+    }),
+    EHandle(b, arms) => EHandle(erase_asc_expr(b), for arm in arms {
+      let (p, ab) = arm
+      (p, erase_asc_expr(ab))
+    }),
+    EWhile(c, b) => EWhile(erase_asc_expr(c), erase_asc_expr(b)),
+    EForIn(n, ix, it, b) => EForIn(n, ix, erase_asc_expr(it), erase_asc_expr(b)),
+    ELoop(params, b) => ELoop(for param in params {
+      let (n, init) = param
+      (n, erase_asc_expr(init))
+    }, erase_asc_expr(b)),
+    EBinOp(op, l, r) => EBinOp(op, erase_asc_expr(l), erase_asc_expr(r)),
+    EUnaryOp(op, x) => EUnaryOp(op, erase_asc_expr(x)),
+    EDot(o, f, o1, o2) => EDot(erase_asc_expr(o), f, o1, o2),
+    EReturn(x) => EReturn(erase_asc_expr(x)),
+    EBreak(Some(x)) => EBreak(Some(erase_asc_expr(x))),
+    EBreak(None) => EBreak(None),
+    EContinue(args) => EContinue(for a in args {
+      erase_asc_expr(a)
+    }),
+    ETuple(xs) => ETuple(for x in xs {
+      erase_asc_expr(x)
+    }),
+    EArray(xs) => EArray(for x in xs {
+      erase_asc_expr(x)
+    }),
+    ERecord(n, fields, targs) => ERecord(n, for field in fields {
+      let (fnm, fv) = field
+      (fnm, erase_asc_expr(fv))
+    }, targs),
+    EMap(fields) => EMap(for field in fields {
+      let (fnm, fv) = field
+      (fnm, erase_asc_expr(fv))
+    }),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, erase_asc_expr(v)),
+    ESpread(x) => ESpread(erase_asc_expr(x)),
+    EStringInterp(_) => e,
+    EInt(_) => e,
+    EFloat(_) => e,
+    EString(_) => e,
+    EBool(_) => e,
+    EIdent(_, _) => e,
+    EUnit => e
+  }
+}
+
+fn erase_asc_has_expr(e: Expr) -> Bool {
+  match e {
+    ECall(callee, args, _) => match asc_wrapper_inner(callee, args) {
+      Some(_) => true,
+      None => erase_asc_has_expr(callee) || erase_asc_has_args(args)
+    },
+    EFn(_, _, _, _, _, body) => erase_asc_has_expr(body),
+    ELet(_, v, b, _) => erase_asc_has_expr(v) || erase_asc_has_expr(b),
+    ELetMut(_, v, b, _) => erase_asc_has_expr(v) || erase_asc_has_expr(b),
+    ELetRec(_, v, b) => erase_asc_has_expr(v) || erase_asc_has_expr(b),
+    EAssign(_, v, c) => erase_asc_has_expr(v) || erase_asc_has_expr(c),
+    EAssignOp(_, _, v, c) => erase_asc_has_expr(v) || erase_asc_has_expr(c),
+    ESeq(a, b) => erase_asc_has_expr(a) || erase_asc_has_expr(b),
+    EIf(c, t, e2) => erase_asc_has_expr(c) || erase_asc_has_expr(t) || erase_asc_has_expr(e2),
+    EMatch(s, arms) => erase_asc_has_expr(s) || erase_asc_has_arms(arms),
+    EHandle(b, arms) => erase_asc_has_expr(b) || erase_asc_has_arms(arms),
+    EWhile(c, b) => erase_asc_has_expr(c) || erase_asc_has_expr(b),
+    EForIn(_, _, it, b) => erase_asc_has_expr(it) || erase_asc_has_expr(b),
+    ELoop(params, b) => erase_asc_has_params(params) || erase_asc_has_expr(b),
+    EBinOp(_, l, r) => erase_asc_has_expr(l) || erase_asc_has_expr(r),
+    EUnaryOp(_, x) => erase_asc_has_expr(x),
+    EDot(o, _, _, _) => erase_asc_has_expr(o),
+    EReturn(x) => erase_asc_has_expr(x),
+    EBreak(Some(x)) => erase_asc_has_expr(x),
+    EBreak(None) => false,
+    EContinue(args) => erase_asc_has_args(args),
+    ETuple(xs) => erase_asc_has_args(xs),
+    EArray(xs) => erase_asc_has_args(xs),
+    ERecord(_, fields, _) => erase_asc_has_fields(fields),
+    EMap(fields) => erase_asc_has_fields(fields),
+    ELabeledArg(_, _, v) => erase_asc_has_expr(v),
+    ESpread(x) => erase_asc_has_expr(x),
+    _ => false
+  }
+}
+
+fn erase_asc_has_args(args: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(args) && !hit {
+    if erase_asc_has_expr(Array::get(args, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn erase_asc_has_arms(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) && !hit {
+    let (_, b) = Array::get(arms, i)
+    if erase_asc_has_expr(b) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn erase_asc_has_params(params: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(params) && !hit {
+    let (_, init) = Array::get(params, i)
+    if erase_asc_has_expr(init) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn erase_asc_has_fields(fields: Array[(String, Expr)]) -> Bool {
+  erase_asc_has_params(fields)
+}
+
+export fn has_ascription_wrapper(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(stmts) && !hit {
+    let st = Array::get(stmts, i)
+    let here = match st {
+      SLet(_, _, _, _, body) => erase_asc_has_expr(body),
+      SLetMut(_, _, body) => erase_asc_has_expr(body),
+      SExpr(e) => erase_asc_has_expr(e),
+      STest(_, body) => erase_asc_has_expr(body),
+      SBench(_, body) => erase_asc_has_expr(body),
+      SLetPat(_, body) => erase_asc_has_expr(body),
+      SModule(_, _, inner) => has_ascription_wrapper(inner),
+      _ => false
+    }
+    if here {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+export fn erase_ascription_wrappers(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let st = Array::get(stmts, i)
+    match st {
+      SLet(a, b, name, ty, body) => Array::set(stmts, i, SLet(a, b, name, ty, erase_asc_expr(body))),
+      SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, erase_asc_expr(body))),
+      SExpr(e) => Array::set(stmts, i, SExpr(erase_asc_expr(e))),
+      STest(name, body) => Array::set(stmts, i, STest(name, erase_asc_expr(body))),
+      SBench(name, body) => Array::set(stmts, i, SBench(name, erase_asc_expr(body))),
+      SLetPat(p, body) => Array::set(stmts, i, SLetPat(p, erase_asc_expr(body))),
+      SModule(exp, name, inner) => {
+        erase_ascription_wrappers(inner)
+        Array::set(stmts, i, SModule(exp, name, inner))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
