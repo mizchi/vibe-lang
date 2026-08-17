@@ -68,3 +68,21 @@ test "zero_alloc capture classification treats top-level functions as globals" {
   let source = "fn helper(n: Int) -> Int { n + 1 }\n#zero_alloc\nfn factory() -> (Int) -> Int {\n  (n: Int) -> Int { helper(n) }\n}\n"
   assert_eq(zero_alloc_check(parse_program(lex(source))), "")
 }
+
+test "zero_alloc default allows region arena but strict rejects it" {
+  let region_src = "fn use_region() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    MutList::push(xs, 1)\n    MutList::length(xs)\n  }\n}\n"
+  assert_eq(zero_alloc_check(parse_program(lex(String::concat("#zero_alloc\n", region_src)))), "")
+  let strict_msg = zero_alloc_check(parse_program(lex(String::concat("#zero_alloc(strict)\n", region_src))))
+  assert(String::contains(strict_msg, "zero_alloc"))
+  assert(String::contains(strict_msg, "region/arena allocation"))
+}
+
+test "zero_alloc assume is a caller trust boundary but fail-closed on its own body" {
+  let assume_ok = "#zero_alloc(assume)\nfn host_shim(x: Int) -> Int { x + 1 }\n#zero_alloc\nfn hot(x: Int) -> Int { host_shim(x) }\n"
+  assert_eq(zero_alloc_check(parse_program(lex(assume_ok))), "")
+  let assume_hides = "#zero_alloc(assume)\nfn dirty() -> Array[Int] {\n  [1, 2]\n}\n#zero_alloc\nfn hot() -> Array[Int] { dirty() }\n"
+  let hide_msg = zero_alloc_check(parse_program(lex(assume_hides)))
+  assert(String::contains(hide_msg, "zero_alloc"))
+  assert(String::contains(hide_msg, "dirty"))
+  assert(String::contains(hide_msg, "array literal"))
+}
