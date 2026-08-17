@@ -20,6 +20,20 @@ bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # run, and rewrite the `
 pkf run vibe-md-tutorial                                # the same check as a task
 ```
 
+## First program (installed toolchain)
+
+The copy/paste program that works with **only the installed toolchain** —
+no repository `lib/` — is the host-builtin hello from
+[docs/install.md](../install.md):
+
+```bash
+echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
+vibe run hello.vibex        # -> 42
+```
+
+`import @vibe/prelude` in the chapters below needs the repo or a pinned
+package. A fresh install does not ship that package.
+
 | Chapter | Topic |
 | --- | --- |
 | [01 Values and functions](01_values_functions.vibe.md) | let / mut / primitive types / interpolation / fn / lambdas |

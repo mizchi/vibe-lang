@@ -12,6 +12,11 @@ English version: [01_values_functions.vibe.md](01_values_functions.vibe.md) (can
 
 束縛は `let`。型注釈は省略できる (推論される)。
 
+`import @vibe/prelude` はリポジトリの `lib/` か pin 済みパッケージが必要です。
+ツリーの外では [install.md](../install.md) と同じホスト組み込み
+`Stdout::write_stream` を使います:
+`fn main with Stdout { Stdout::write_stream("42\n") }`。
+
 ```vibe run
 import @vibe/prelude {
   stdout_write
