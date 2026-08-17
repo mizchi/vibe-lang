@@ -47,7 +47,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt
+  Expr, Pat, Stmt, expr_children
 }
 
 import @vibe/core {
@@ -990,9 +990,69 @@ fn utl_drive(e: Expr) -> Expr {
   }
 }
 
-/// Split every eligible tuple `let mut` in `stmts` into scalar `let mut`s,
-/// IN PLACE. Run at both linear codegen entries, after the checker.
-export fn unbox_tuple_loop_params(stmts: Array[Stmt]) -> Unit {
+fn utl_tuple_arity_ok(e: Expr) -> Bool {
+  match e {
+    ETuple(elems) => {
+      let n = Array::length(elems)
+      n >= 2 && n <= 8
+    },
+    _ => false
+  }
+}
+
+fn has_unbox_tuple_candidate_expr(e: Expr) -> Bool {
+  match e {
+    ELetMut(_, init, body, _) => if utl_tuple_arity_ok(init) {
+      true
+    } else {
+      has_unbox_tuple_candidate_expr(init) || has_unbox_tuple_candidate_expr(body)
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut hit = false
+      while i < Array::length(kids) && !hit {
+        if has_unbox_tuple_candidate_expr(Array::get(kids, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    }
+  }
+}
+
+/// #1935: cheap candidate pre-scan. True iff some `ELetMut` is initialized
+/// with a 2..8-ary tuple (the only shape `utl_try` will consider). Must not
+/// false-negative: a missed candidate would skip the rewrite.
+export fn has_unbox_tuple_candidate(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(stmts) && !hit {
+    let st = Array::get(stmts, i)
+    let here = match st {
+      SLet(_, _, _, _, body) => has_unbox_tuple_candidate_expr(body),
+      SLetMut(_, _, body) => has_unbox_tuple_candidate_expr(body),
+      SExpr(e) => has_unbox_tuple_candidate_expr(e),
+      STest(_, body) => has_unbox_tuple_candidate_expr(body),
+      SBench(_, body) => has_unbox_tuple_candidate_expr(body),
+      SLetPat(_, body) => has_unbox_tuple_candidate_expr(body),
+      SModule(_, _, inner) => has_unbox_tuple_candidate(inner),
+      _ => false
+    }
+    if here {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn unbox_tuple_loop_params_drive(stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     let st = Array::get(stmts, i)
@@ -1004,11 +1064,22 @@ export fn unbox_tuple_loop_params(stmts: Array[Stmt]) -> Unit {
       SBench(name, body) => Array::set(stmts, i, SBench(name, utl_drive(body))),
       SLetPat(p, body) => Array::set(stmts, i, SLetPat(p, utl_drive(body))),
       SModule(exp, name, inner) => {
-        unbox_tuple_loop_params(inner)
+        unbox_tuple_loop_params_drive(inner)
         Array::set(stmts, i, SModule(exp, name, inner))
       },
       _ => ()
     }
     i = i + 1
+  }
+}
+
+/// Split every eligible tuple `let mut` in `stmts` into scalar `let mut`s,
+/// IN PLACE. Run at both linear codegen entries, after the checker.
+/// #1935: skip the walk when no 2..8-ary tuple `let mut` exists.
+export fn unbox_tuple_loop_params(stmts: Array[Stmt]) -> Unit {
+  if !has_unbox_tuple_candidate(stmts) {
+    ()
+  } else {
+    unbox_tuple_loop_params_drive(stmts)
   }
 }

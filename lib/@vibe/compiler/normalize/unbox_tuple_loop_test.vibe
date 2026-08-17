@@ -1,0 +1,110 @@
+// #1935: candidate pre-scan for tuple `let mut` unbox. False negatives
+// would skip a rewrite; these fixtures pin positive / negative / nested /
+// shadowing on the shipped walker.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+
+import ./unbox_tuple_loop.vibe {
+  has_unbox_tuple_candidate, unbox_tuple_loop_params
+}
+
+fn tuple2(a: Expr, b: Expr) -> Expr {
+  ETuple([
+    a,
+    b
+  ])
+}
+
+fn tuple_let_mut(name: String, body: Expr) -> Expr {
+  ELetMut(name, tuple2(EInt(0), EInt(1)), body, 0)
+}
+
+fn destr_body() -> Expr {
+  let arms: Array[(Pat, Expr)] = [
+    (PTuple([
+      PBind("a"),
+      PBind("b")
+    ]), EIdent("a", 0))
+  ]
+  EMatch(EIdent("s", 0), arms)
+}
+
+test "pre-scan negative: no let mut" {
+  let stmts: Array[Stmt] = [
+    SExpr(EInt(1))
+  ]
+  assert(!has_unbox_tuple_candidate(stmts))
+}
+
+test "pre-scan negative: scalar let mut" {
+  let stmts: Array[Stmt] = [
+    SExpr(ELetMut("n", EInt(0), EIdent("n", 0), 0))
+  ]
+  assert(!has_unbox_tuple_candidate(stmts))
+}
+
+test "pre-scan negative: arity-1 tuple is not an unbox candidate" {
+  let stmts: Array[Stmt] = [
+    SExpr(ELetMut("s", ETuple([
+      EInt(0)
+    ]), EIdent("s", 0), 0))
+  ]
+  assert(!has_unbox_tuple_candidate(stmts))
+}
+
+test "pre-scan positive: tuple let mut at statement root" {
+  let stmts: Array[Stmt] = [
+    SExpr(tuple_let_mut("s", destr_body()))
+  ]
+  assert(has_unbox_tuple_candidate(stmts))
+}
+
+test "pre-scan positive: nested inside a function body" {
+  let fn_e = EFn([
+  ], [
+  ], [
+  ], None, None, tuple_let_mut("s", destr_body()))
+  let stmts: Array[Stmt] = [
+    SExpr(fn_e)
+  ]
+  assert(has_unbox_tuple_candidate(stmts))
+}
+
+test "pre-scan positive: nested inside SModule" {
+  let inner: Array[Stmt] = [
+    SExpr(tuple_let_mut("s", destr_body()))
+  ]
+  let stmts: Array[Stmt] = [
+    SModule(false, "M", inner)
+  ]
+  assert(has_unbox_tuple_candidate(stmts))
+}
+
+test "pre-scan positive: inner scalar shadow does not hide an outer tuple candidate" {
+  let inner = ELetMut("s", EInt(9), EIdent("s", 0), 0)
+  let stmts: Array[Stmt] = [
+    SExpr(tuple_let_mut("s", inner))
+  ]
+  assert(has_unbox_tuple_candidate(stmts))
+}
+
+test "unbox still rewrites an eligible tuple let mut after the pre-scan" {
+  let stmts: Array[Stmt] = [
+    SExpr(tuple_let_mut("s", destr_body()))
+  ]
+  unbox_tuple_loop_params(stmts)
+  match Array::get(stmts, 0) {
+    SExpr(e) => match e {
+      ELetMut(name, init, _, _) => {
+        assert(name != "s" || match init {
+          ETuple(_) => false,
+          _ => true
+        })
+      },
+      _ => assert(true)
+    },
+    _ => assert(false)
+  }
+}
