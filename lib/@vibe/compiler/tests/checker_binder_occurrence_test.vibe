@@ -1,0 +1,261 @@
+//# #1957: checker occurrence provenance consumes parser binder authority
+
+import @vibe/compiler/checker {
+  check_program_binder_occurrence_observation
+}
+
+import @vibe/parser {
+  parse_source_located_with_binder_authority
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn find_offsets(source: String, needle: String) -> Array[Int] {
+  let out = array_empty()
+  let nlen = String::length(needle)
+  let slen = String::length(source)
+  let mut i = 0
+  while i + nlen <= slen {
+    if String::substring(source, i, i + nlen) == needle {
+      Array::push(out, i)
+      i = i + nlen
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn binder_start_for(rows: Array[(Int, Int, Int)], use_off: Int) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (off, start, _) = Array::get(rows, i)
+    if off == use_off {
+      found = start
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "#1957: shadowed binders keep distinct authority identities" {
+  let source = "fn f() -> Int {\n  let x = 1\n  let x = x + 2\n  x\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let xs = find_offsets(source, "x")
+        // xs: paramless fn has let x, let x, rhs x, return x
+        assert(Array::length(xs) >= 4)
+        let first_def = Array::get(xs, 0)
+        let second_def = Array::get(xs, 1)
+        let rhs_use = Array::get(xs, 2)
+        let ret_use = Array::get(xs, 3)
+        let mut rhs_binder = 0 - 1
+        let mut ret_binder = 0 - 1
+        let mut i = 0
+        while i < Array::length(rows) {
+          let (use_off, start, _) = Array::get(rows, i)
+          if use_off == rhs_use {
+            rhs_binder = start
+          } else if use_off == ret_use {
+            ret_binder = start
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        assert_eq(rhs_binder, first_def)
+        assert_eq(ret_binder, second_def)
+        assert(rhs_binder != ret_binder)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: same name in two functions is not merged" {
+  let source = "fn a() -> Int {\n  let x = 1\n  x\n}\nfn b() -> Int {\n  let x = 2\n  x\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let xs = find_offsets(source, "x")
+        assert(Array::length(xs) >= 4)
+        let a_def = Array::get(xs, 0)
+        let a_use = Array::get(xs, 1)
+        let b_def = Array::get(xs, 2)
+        let b_use = Array::get(xs, 3)
+        let mut a_binder = 0 - 1
+        let mut b_binder = 0 - 1
+        let mut i = 0
+        while i < Array::length(rows) {
+          let (use_off, start, _) = Array::get(rows, i)
+          if use_off == a_use {
+            a_binder = start
+          } else if use_off == b_use {
+            b_binder = start
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        assert_eq(a_binder, a_def)
+        assert_eq(b_binder, b_def)
+        assert(a_binder != b_binder)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: match pattern binders stay distinct from same-named lets" {
+  let source = "fn f() -> Int {\n  let x = 0\n  match 1 {\n    x => x\n  }\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let xs = find_offsets(source, "x")
+        assert(Array::length(xs) >= 3)
+        let let_def = Array::get(xs, 0)
+        let pat_def = Array::get(xs, 1)
+        let pat_use = Array::get(xs, 2)
+        assert_eq(binder_start_for(rows, pat_use), pat_def)
+        assert(binder_start_for(rows, pat_use) != let_def)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: handle payload binders are not merged by name" {
+  let source = "fn f() -> Int {\n  handle {\n    throw(\"x\")\n    0\n  } with Exception {\n    Throw(msg) => String::length(msg)\n  }\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let msgs = find_offsets(source, "msg")
+        assert(Array::length(msgs) >= 2)
+        let pat_def = Array::get(msgs, 0)
+        let pat_use = Array::get(msgs, 1)
+        assert_eq(binder_start_for(rows, pat_use), pat_def)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: for-in value and index binders stay distinct" {
+  let source = "fn f() -> Int {\n  let mut total = 0\n  for ix, val in [10, 20, 30] {\n    total = total + ix + val\n  }\n  total\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let vals = find_offsets(source, "val")
+        let ixs = find_offsets(source, "ix")
+        assert(Array::length(vals) >= 2)
+        assert(Array::length(ixs) >= 2)
+        let val_def = Array::get(vals, 0)
+        let val_use = Array::get(vals, 1)
+        let ix_def = Array::get(ixs, 0)
+        let ix_use = Array::get(ixs, 1)
+        assert_eq(binder_start_for(rows, val_use), val_def)
+        assert_eq(binder_start_for(rows, ix_use), ix_def)
+        assert(val_def != ix_def)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: generic type-param slots do not merge same-named value binders" {
+  let source = "fn a[T](x: T) -> T {\n  x\n}\nfn b(T: Int) -> Int {\n  T\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let xs = find_offsets(source, "x")
+        let ts = find_offsets(source, "T")
+        assert(Array::length(xs) >= 2)
+        assert(Array::length(ts) >= 5)
+        let x_def = Array::get(xs, 0)
+        let x_use = Array::get(xs, 1)
+        // T appears as a[T], x: T, -> T, b(T: Int), body T
+        let a_tparam = Array::get(ts, 0)
+        let b_param = Array::get(ts, 3)
+        let b_use = Array::get(ts, 4)
+        assert_eq(binder_start_for(rows, x_use), x_def)
+        assert_eq(binder_start_for(rows, b_use), b_param)
+        assert(b_param != a_tparam)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: imported names keep their import-slot identity" {
+  let source = "import @vibe/core { array_empty }\nfn f() -> Int {\n  let _u = array_empty\n  1\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let names = find_offsets(source, "array_empty")
+        assert(Array::length(names) >= 2)
+        let import_def = Array::get(names, 0)
+        let import_use = Array::get(names, 1)
+        assert_eq(binder_start_for(rows, import_use), import_def)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: loop-lowering source binders stay distinct from synthetic rows" {
+  let source = "fn f() -> Int {\n  loop (acc = 1) {\n    break acc\n  }\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let accs = find_offsets(source, "acc")
+        assert(Array::length(accs) >= 2)
+        let acc_def = Array::get(accs, 0)
+        let acc_use = Array::get(accs, 1)
+        assert_eq(binder_start_for(rows, acc_use), acc_def)
+        let mut i = 0
+        while i < Array::length(rows) {
+          let (_, start, end) = Array::get(rows, i)
+          assert(start >= 0)
+          assert(end > start)
+          i = i + 1
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: two lowered loops do not merge same-named parameters" {
+  let source = "fn f() -> Int {\n  let a = loop (acc = 1) { break acc }\n  let b = loop (acc = 2) { break acc }\n  a + b\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let accs = find_offsets(source, "acc")
+        assert(Array::length(accs) >= 4)
+        let a_def = Array::get(accs, 0)
+        let a_use = Array::get(accs, 1)
+        let b_def = Array::get(accs, 2)
+        let b_use = Array::get(accs, 3)
+        assert_eq(binder_start_for(rows, a_use), a_def)
+        assert_eq(binder_start_for(rows, b_use), b_def)
+        assert(a_def != b_def)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}

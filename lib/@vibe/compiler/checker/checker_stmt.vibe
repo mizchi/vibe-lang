@@ -36,6 +36,7 @@ import @vibe/compiler/core {
   env_flat_bindings,
   env_lookup_flat,
   env_type_defs,
+  expr_children,
   find_enum_typedef,
   find_typedef,
   generalize,
@@ -87,6 +88,17 @@ import @vibe/compiler/normalize {
   erase_railway_origin_markers,
   inject_trait_method_generics,
   unresolved_mut_labeled_calls
+}
+
+import @vibe/parser {
+  BinderAuthorityNode,
+  LocatedProgramBinderAuthority,
+  SourceBinder,
+  binder_authority_node_children,
+  binder_authority_node_slots,
+  binder_authority_slot_binder,
+  located_program_binder_authority_nodes,
+  located_program_binder_authority_program
 }
 
 //# Types
@@ -3363,6 +3375,286 @@ export fn check_program_with_env_typed_occurrence_expression_path_observation(st
   }
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(entries), false).checked_program
   typed_occurrence_expression_path_observation_from_capture(checked, entries)
+}
+
+fn binder_scope_lookup(scope: Array[SourceBinder], name: String) -> Option[SourceBinder] {
+  let mut i = Array::length(scope)
+  let mut found = None
+  while i > 0 && match found {
+    Some(_) => false,
+    None => true
+  } {
+    i = i - 1
+    let binder = Array::get(scope, i)
+    match binder {
+      SourceToken(n, _, _) => if n == name {
+        found = Some(binder)
+      } else {
+        ()
+      },
+      Synthetic(n, _) => if n == name {
+        found = Some(binder)
+      } else {
+        ()
+      }
+    }
+  }
+  found
+}
+
+fn binder_scope_push(scope: Array[SourceBinder], binder: SourceBinder) -> Array[SourceBinder] {
+  let next = Array::slice(scope, 0, Array::length(scope))
+  Array::push(next, binder)
+  next
+}
+
+fn binder_first_slot(node: BinderAuthorityNode) -> Option[SourceBinder] {
+  let slots = binder_authority_node_slots(node)
+  if Array::length(slots) == 0 {
+    None
+  } else {
+    Some(binder_authority_slot_binder(Array::get(slots, 0)))
+  }
+}
+
+fn collect_pattern_binders(node: BinderAuthorityNode, out: Array[SourceBinder]) -> Unit {
+  let slots = binder_authority_node_slots(node)
+  let mut i = 0
+  while i < Array::length(slots) {
+    Array::push(out, binder_authority_slot_binder(Array::get(slots, i)))
+    i = i + 1
+  }
+  let children = binder_authority_node_children(node)
+  let mut j = 0
+  while j < Array::length(children) {
+    collect_pattern_binders(Array::get(children, j), out)
+    j = j + 1
+  }
+}
+
+fn walk_binder_match_like(head: Expr, arms: Array[(Pat, Expr)], node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> Bool {
+  let achildren = binder_authority_node_children(node)
+  let n = Array::length(arms)
+  if Array::length(achildren) != 1 + 2 * n {
+    false
+  } else {
+    let mut ok = walk_binder_expr(head, Array::get(achildren, 0), scope, out)
+    let mut i = 0
+    while i < n && ok {
+      let pat_node = Array::get(achildren, 1 + 2 * i)
+      let body_node = Array::get(achildren, 2 + 2 * i)
+      let (_, body) = Array::get(arms, i)
+      let binders = array_empty()
+      collect_pattern_binders(pat_node, binders)
+      let mut inner = scope
+      let mut bi = 0
+      while bi < Array::length(binders) {
+        inner = binder_scope_push(inner, Array::get(binders, bi))
+        bi = bi + 1
+      }
+      ok = walk_binder_expr(body, body_node, inner, out)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn walk_binder_for_in(iter: Expr, body: Expr, node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> Bool {
+  let achildren = binder_authority_node_children(node)
+  let slots = binder_authority_node_slots(node)
+  if Array::length(achildren) != 2 || Array::length(slots) == 0 {
+    false
+  } else {
+    if walk_binder_expr(iter, Array::get(achildren, 0), scope, out) {
+      let mut inner = scope
+      let mut i = 0
+      while i < Array::length(slots) {
+        inner = binder_scope_push(inner, binder_authority_slot_binder(Array::get(slots, i)))
+        i = i + 1
+      }
+      walk_binder_expr(body, Array::get(achildren, 1), inner, out)
+    } else {
+      false
+    }
+  }
+}
+
+fn walk_binder_expr(expr: Expr, node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> Bool {
+  let children = expr_children(expr)
+  let achildren = binder_authority_node_children(node)
+  match expr {
+    EIdent(name, off) => match binder_scope_lookup(scope, name) {
+      Some(SourceToken(_, start, end)) => {
+        if off >= 0 {
+          Array::push(out, (off, start, end))
+        } else {
+          ()
+        }
+        true
+      },
+      Some(Synthetic(_, _)) => true,
+      None => true
+    },
+    ELet(_, _, _, _) => walk_binder_let_like(children, achildren, node, scope, out, false),
+    ELetMut(_, _, _, _) => walk_binder_let_like(children, achildren, node, scope, out, false),
+    ELetRec(_, _, _) => walk_binder_let_like(children, achildren, node, scope, out, true),
+    EFn(_, _, _, _, _, _) => walk_binder_fn(children, achildren, node, scope, out),
+    EMatch(scrut, arms) => walk_binder_match_like(scrut, arms, node, scope, out),
+    EHandle(body, arms) => walk_binder_match_like(body, arms, node, scope, out),
+    EForIn(_, _, iter, body) => walk_binder_for_in(iter, body, node, scope, out),
+    ELoop(_, _) => false,
+    _ => {
+      if Array::length(children) != Array::length(achildren) {
+        false
+      } else {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(children) && ok {
+          ok = walk_binder_expr(Array::get(children, i), Array::get(achildren, i), scope, out)
+          i = i + 1
+        }
+        ok
+      }
+    }
+  }
+}
+
+fn walk_binder_let_like(children: Array[Expr], achildren: Array[BinderAuthorityNode], node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)], recursive: Bool) -> Bool {
+  if Array::length(children) != 2 || Array::length(achildren) != 2 {
+    false
+  } else {
+    match binder_first_slot(node) {
+      Some(binder) => {
+        let inner = binder_scope_push(scope, binder)
+        let value_scope = if recursive {
+          inner
+        } else {
+          scope
+        }
+        walk_binder_expr(Array::get(children, 0), Array::get(achildren, 0), value_scope, out) && walk_binder_expr(Array::get(children, 1), Array::get(achildren, 1), inner, out)
+      },
+      None => false
+    }
+  }
+}
+
+fn walk_binder_fn(children: Array[Expr], achildren: Array[BinderAuthorityNode], node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> Bool {
+  if Array::length(children) == 0 || Array::length(achildren) != Array::length(children) {
+    false
+  } else {
+    let mut inner = scope
+    let slots = binder_authority_node_slots(node)
+    let mut si = 0
+    while si < Array::length(slots) {
+      inner = binder_scope_push(inner, binder_authority_slot_binder(Array::get(slots, si)))
+      si = si + 1
+    }
+    let mut i = 0
+    let mut ok = true
+    let last = Array::length(children) - 1
+    while i < Array::length(children) && ok {
+      let child_scope = if i == last {
+        inner
+      } else {
+        scope
+      }
+      ok = walk_binder_expr(Array::get(children, i), Array::get(achildren, i), child_scope, out)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn walk_binder_stmt(stmt: Stmt, node: BinderAuthorityNode, scope: Array[SourceBinder], out: Array[(Int, Int, Int)]) -> (Bool, Array[SourceBinder]) {
+  match stmt {
+    SLet(_, _, _, _, value) => match binder_first_slot(node) {
+      Some(binder) => {
+        let children = binder_authority_node_children(node)
+        if Array::length(children) != 1 {
+          (false, scope)
+        } else {
+          let ok = walk_binder_expr(value, Array::get(children, 0), scope, out)
+          (ok, binder_scope_push(scope, binder))
+        }
+      },
+      None => (false, scope)
+    },
+    SLetMut(_, _, value) => match binder_first_slot(node) {
+      Some(binder) => {
+        let children = binder_authority_node_children(node)
+        if Array::length(children) != 1 {
+          (false, scope)
+        } else {
+          let ok = walk_binder_expr(value, Array::get(children, 0), scope, out)
+          (ok, binder_scope_push(scope, binder))
+        }
+      },
+      None => (false, scope)
+    },
+    SExpr(value) => {
+      let children = binder_authority_node_children(node)
+      if Array::length(children) != 1 {
+        (false, scope)
+      } else {
+        (walk_binder_expr(value, Array::get(children, 0), scope, out), scope)
+      }
+    },
+    SImport(_, _) => {
+      let children = binder_authority_node_children(node)
+      if Array::length(children) != 0 {
+        (false, scope)
+      } else {
+        let slots = binder_authority_node_slots(node)
+        let mut next = scope
+        let mut i = 0
+        while i < Array::length(slots) {
+          next = binder_scope_push(next, binder_authority_slot_binder(Array::get(slots, i)))
+          i = i + 1
+        }
+        (true, next)
+      }
+    },
+    SAliasDecl(_, _) => match binder_first_slot(node) {
+      Some(binder) => {
+        let children = binder_authority_node_children(node)
+        if Array::length(children) != 0 {
+          (false, scope)
+        } else {
+          (true, binder_scope_push(scope, binder))
+        }
+      },
+      None => (false, scope)
+    },
+    _ => (false, scope)
+  }
+}
+
+/// #1957: checker occurrence provenance from validated parser authority.
+/// Each local identifier use is `(use_offset, binder_start, binder_end)`.
+/// Distinct binders with the same name stay distinct. Free/builtin names
+/// are not claimed. Shape mismatch fails closed.
+export fn check_program_binder_occurrence_observation(authority: LocatedProgramBinderAuthority) -> Option[Array[(Int, Int, Int)]] with Exception {
+  let program = located_program_binder_authority_program(authority)
+  let roots = located_program_binder_authority_nodes(authority)
+  if Array::length(roots) != Array::length(program) {
+    None
+  } else {
+    let out = array_empty()
+    let mut scope = array_empty()
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(program) && ok {
+      let walked = walk_binder_stmt(Array::get(program, i), Array::get(roots, i), scope, out)
+      ok = walked.0
+      scope = walked.1
+      i = i + 1
+    }
+    if ok {
+      Some(out)
+    } else {
+      None
+    }
+  }
 }
 
 /// With-env variant of the complete direct-primary return observation.
