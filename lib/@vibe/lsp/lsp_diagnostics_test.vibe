@@ -22,8 +22,9 @@
 // below requires the encoder to slice the same token #2024 locked.
 // Return-type mismatches on an offset-less literal (`EString`) now recover
 // the enclosing `fn` name instead of the synthetic `0:0-0:1` fallback.
-// Leftover on #1941: grep `line:0`; remaining unlocated type errors
-// (anonymous lambdas whose tail is a literal) still take the 0..1 fallback.
+// Remaining unlocated type errors (no `line L:` prefix) still need a valid
+// LSP range, but must mark it synthetic instead of looking like the first
+// character. Leftover on #1941: grep `line:0`.
 
 //# Imports
 
@@ -123,4 +124,31 @@ test "json diagnostics slice the same unknown identifier quux (#1941)" {
   assert(ec == endo)
   assert(String::substring(src, sc, ec) == token)
   assert(Json::string(Json::field(Json::index(parsed, 0), "message")) == "unknown name: quux")
+}
+
+/// `let x: Int = "s"` — the RHS is an `EString` with no AST offset, so
+/// `collect_all_diagnostics` emits no `line L:` prefix. Editors still need a
+/// valid range; the old fallback invented a plausible `0:0-0:1` (the first
+/// character). The range is now empty at the origin and `data.synthetic`
+/// marks it unavailable. Located diagnostics above must stay unchanged.
+test "unlocated type error uses an empty origin range marked synthetic (#1941)" {
+  let src = "let x: Int = \"s\""
+  inspect(lsp_diagnostics_json_string(src), "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},\"severity\":1,\"source\":\"vibe\",\"message\":\"binding type mismatch for x: expected Int, got String\",\"data\":{\"synthetic\":true}}]",)
+  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  assert(Json::length(parsed) == 1)
+  let diag = Json::index(parsed, 0)
+  let range = Json::field(diag, "range")
+  let rs = Json::field(range, "start")
+  let re = Json::field(range, "end")
+  let sl = Double::to_int(Json::number(Json::field(rs, "line")))
+  let sc = Double::to_int(Json::number(Json::field(rs, "character")))
+  let el = Double::to_int(Json::number(Json::field(re, "line")))
+  let ec = Double::to_int(Json::number(Json::field(re, "character")))
+  assert(sl == 0)
+  assert(sc == 0)
+  assert(el == 0)
+  assert(ec == 0)
+  let data = Json::field(diag, "data")
+  assert(Json::bool(Json::field(data, "synthetic")))
+  assert(Json::string(Json::field(diag, "message")) == "binding type mismatch for x: expected Int, got String")
 }

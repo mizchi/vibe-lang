@@ -618,17 +618,29 @@ fn lsp_parse_diag_line(source: String, msg: String) -> Json {
   }
 }
 
-/// Messages with no `line L:` prefix still land on `0..1`. Return-type
-/// mismatches on a named `fn` now carry a real span (#1941); remaining
-/// unlocated type errors (anonymous literal tails) still take this
-/// fallback. Leftover: an explicit synthetic/unavailable marker.
+/// Messages with no `line L:` prefix cannot claim a real source span.
+/// Editors still require a valid LSP range, so this uses an empty range at
+/// the origin (`0:0-0:0`) and marks `data.synthetic` so clients can tell it
+/// apart from a real first-character highlight. A structured effect-row
+/// fix already occupying `data` is kept: `synthetic` is merged in as a
+/// sibling field rather than replacing the payload.
+fn lsp_diag_fallback_data(msg: String) -> Json {
+  let fix = lsp_effect_row_mismatch_fix(msg)
+  match fix {
+    JObj(m) => JObj(Map::set(m, "synthetic", JBool(true))),
+    _ => JObj(Map::from_pairs([
+      ("synthetic", JBool(true))
+    ]))
+  }
+}
+
 fn lsp_diag_fallback(msg: String) -> Json {
   JObj(Map::from_pairs([
-    ("range", jrange(0, 0, 0, 1)),
+    ("range", jrange(0, 0, 0, 0)),
     ("severity", jnum_int(lsp_diag_severity(msg))),
     ("source", JStr("vibe")),
     ("message", JStr(msg)),
-    ("data", lsp_effect_row_mismatch_fix(msg))
+    ("data", lsp_diag_fallback_data(msg))
   ]))
 }
 
