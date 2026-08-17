@@ -204,3 +204,24 @@ test "doc-at: no identifier at position yields empty" {
   let src = "/// adds two numbers\nlet add = (a: Int, b: Int) -> Int { a + b }"
   assert(doc_at_source(src, 1, 1) == "")
 }
+
+/// #1941 leftover: hovering the callee identifier in `add(1, 2)` must report
+/// the function type, not the CallResult (`Int`) recorded at the same offset.
+/// `fn add(...)` is `SFnDecl` (lowered to `SLet` for the checker); the call
+/// site is an `EIdent` whose offset is also the `ECall` offset.
+test "type-at: call-site callee reports the function type, not the call result" {
+  let src = "fn add(a: Int, b: Int) -> Int { a + b }\nlet x = add(1, 2)\n"
+  // line 2 = "let x = add(1, 2)"; `add` starts at col 9.
+  inspect(type_at_source(src, 2, 9), "(Int, Int) -> Int")
+  inspect(type_at_source(src, 2, 10), "(Int, Int) -> Int")
+}
+
+/// #1941 leftover: hovering the declaration name of `fn add` must report the
+/// function type. Binder names are not `EIdent`s; `collect_binding_name_hits`
+/// has to recover `SFnDecl` the same way it recovers `SLet`.
+test "type-at: fn declaration name reports the function type" {
+  let src = "fn add(a: Int, b: Int) -> Int { a + b }\n"
+  // line 1 = "fn add(...)"; `add` starts at col 4.
+  inspect(type_at_source(src, 1, 4), "(Int, Int) -> Int")
+  inspect(type_at_source(src, 1, 5), "(Int, Int) -> Int")
+}
