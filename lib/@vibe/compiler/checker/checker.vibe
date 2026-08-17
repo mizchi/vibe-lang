@@ -3341,7 +3341,7 @@ fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "Bytes::new" || name == "Bytes::concat" || name == "Bytes::slice" || name == "Bytes::from_array" || name == "Fs::read_bytes" {
     Some(CtBytes)
   }
-  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::foreach" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::mkdir_p" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::rename" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
+  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::truncate" || name == "Array::foreach" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::mkdir_p" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::rename" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
     Some(CtUnit)
   }
   else if name == "Double::from_i64_bits" || name == "Int::to_double" || name == "Double::to_float" || name == "Float::to_double" {
@@ -4548,7 +4548,7 @@ fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Ar
 /// beside their canonical spelling.
 fn retaining_write_argument_mask(source_name: String) -> Int {
   let name = canonical_builtin_name(source_name)
-  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "MutList::push" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
+  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::push" || name == "MutList::truncate" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
     1
   } else if name == "Array::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "__set_field" {
     2
@@ -6319,6 +6319,18 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // ADR-0090 / #1770: scalar in-region read, escape-free.
           let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if name == "MutList::truncate" && Array::length(args) == 2 {
+          // #1863: stack-pop idiom for helper-grown region scratch.
+          // Same layout as Array::truncate; the list stays in the region.
+          let (_, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (len_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          match subst_apply(s2, len_ty) {
+            CtInt => (),
+            CtVar(_) => (),
+            CtUnknown => (),
+            other => Array::push(errors, String::concat(String::concat("MutList::truncate expects an Int length, got ", type_to_string(other)), off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
         } else if name == "MutBytes::empty" && Array::length(args) == 1 {
           // ADR-0090 MutBytes: region-bound byte buffer, same checker-only
           // phantom technique as MutList::empty above. Bytes has no element
