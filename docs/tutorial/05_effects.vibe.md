@@ -115,6 +115,44 @@ one-shot/tail-resumptive. For ordinary failure use `Exception`, and for local
 state consider `let mut` first. The criteria are in
 [Effects vs let mut](../guide/when-to-use-effects.md).
 
+## What a `handle` can see
+
+`handle { answer_of(...) }` above compiles because `answer_of` is a named
+top-level `fn`. Every `perform` a `handle` covers has to be statically visible
+to it: a direct `perform`, a call to a named top-level `fn`, or a closure
+literal that carries an effect-row annotation.
+
+A call through a local binding hides the perform. That shape type-checks and is
+still rejected — rewrite the call, not the types.
+
+```vibe skip
+// skip: ineligible handle — a local closure hides the perform from the handler
+effect Ask {
+  Once() -> Int
+}
+
+fn ask_once() -> Int with Ask {
+  perform Ask::Once()
+}
+
+fn main() -> Int {
+  let bump = (x: Int) -> Int { x + 1 }
+  handle { bump(ask_once()) } with Ask {
+    Once() => resume(41)
+  }
+}
+// error (measured with `vibe check`): handle of effect 'Ask' cannot be compiled
+// here. Every perform this handle covers has to be statically visible to it, so
+// the handled body may only: perform directly, call a named top-level `fn`, or
+// call a closure literal that carries an effect row annotation. A call through
+// a local binding or a closure parameter hides the perform and is what this
+// rejects (here: the call to 'bump') -- move the `handle` into the function
+// that performs, or replace the indirect call with a direct one.
+```
+
+The last sentence is the rewrite: move the `handle` into the function that
+performs, or replace `bump(...)` with a direct call (or a top-level `fn`).
+
 ## Effect polymorphism
 
 An effect row can be a variable, which is how you write a higher-order function
