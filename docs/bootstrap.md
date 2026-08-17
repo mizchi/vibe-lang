@@ -119,10 +119,8 @@ bootstrap bump は最低限、以下を満たす。
 > MoonBit host 時代の計測基盤に依存していて、host 退役 (#594) 以降は実行でき
 > ない**。2026-08-04 の bump で実際に確認した:
 >
-> - 前3者: `scripts/gate.sh --post-generation` は `scripts/trial_gate.sh`
->   経由で `compiler_gate.sh` へ redirect するだけになっている
->   (trial_gate.sh 冒頭が「host 比較の corpus parity / perf / RSS bench は
->   src/ と一緒に退役した」と書いている)。`release-gates` task も同じく
+> - 前3者: `scripts/gate.sh --post-generation` は `compiler_gate.sh` へ
+>   redirect するだけになっている。`release-gates` task も同じく
 >   `compiler_gate.sh` の alias。
 > - 最後の1つ: `scripts/test_moonrun_wt_daemon_parity.sh` は
 >   `_build/wasm/{opt,release,debug}/.../vibe_check_wasi.wasm` を探していたが、
