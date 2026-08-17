@@ -18,7 +18,7 @@ Run (repo root):
 ```bash
 env VIBE_RC=1 VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main <CLI.wasm> \
-  fuzz/findings/issue725/broken_pair_q10.vibe /tmp/out.wasm main
+  tests/fuzz/findings/issue725/broken_pair_q10.vibe /tmp/out.wasm main
 bash scripts/run_wasm_vibe_host_runner.sh --invoke main /tmp/out.wasm   # RC: OOB / wrong result
 ```
 
