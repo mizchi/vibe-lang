@@ -33,7 +33,7 @@ ALLOW=(
   lib/@vibex/argparse/parser_import_test.vibe
   lib/@vibex/jsonschema/validate_test.vibe
   lib/@vibe/core/math_test.vibe
-  lib/@vibex/scan/index_import_test.vibe
+  lib/@vibe/scan/index_import_test.vibe
 )
 
 RT="$ROOT_DIR/runtime/viberun/target/release/viberun"

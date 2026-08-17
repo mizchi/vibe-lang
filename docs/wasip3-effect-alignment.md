@@ -23,7 +23,7 @@ one-shot first-class `resume`)を既に採用しているため、本 ADR では
 
 wasip3 側の現状は、repo 内に**3つの分断された async スタック**がある:
 (1) `Future[T]`/`Stream[T]`/`Task[T]`/`await` は checker 上の phantom 型 +
-eager identity codegen で非同期性が無い、(2) `lib/@vibex/concurrent` の
+eager identity codegen で非同期性が無い、(2) `lib/@vibe/concurrent` の
 TaskGroup/park/wake/pump は実働する in-guest 協調スケジューラだが host との
 接点が blocking sleep のみ、(3) `component_codegen.vibe` の CM async emitter
 (`task.return`/`waitable-set.*`/async lift)は wasmtime 47 で byte 検証済み
@@ -90,7 +90,7 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
 ### 1. `Async` の統一 — 1つの operation、3つの backend
 
 builtin nominal `Async`(`await`/`sleep` 等の文字列 row)と
-`@vibex/concurrent` の宣言 `effect Async { Suspend(Int) -> Int }` の
+`@vibe/concurrent` の宣言 `effect Async { Suspend(Int) -> Int }` の
 **ラベル二重定義(host-row label pun)を解消**し、suspend operation を
 `Async::Suspend` の1つに統一する。`sleep` 等の builtin は perform 形へ寄せ、
 `sleep_blocking` 分裂を解消する。backend は3つ:

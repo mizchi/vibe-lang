@@ -42,7 +42,7 @@
 # compiler for it (VIBE_MODULE_PLAN, which also does the import resolution --
 # see phase 1) rather than re-deriving a topological sort here, so the
 # canonical order stays the one that is tested
-# (lib/@vibe/graph/module_order_test.vibe) and modelled
+# (lib/@vibe/compiler/module_graph/module_order_test.vibe) and modelled
 # (formal/VibeFormal/Compiler/Scheduler.lean) instead of a lookalike in shell
 # that could drift from it silently.
 #
@@ -114,7 +114,7 @@ export RUNNER COMPILER
 #
 # The ordering rule is unchanged: the plan mode calls plan_module_order
 # itself, so the canonical order is still the one that is tested
-# (lib/@vibe/graph/module_order_test.vibe) and modelled
+# (lib/@vibe/compiler/module_graph/module_order_test.vibe) and modelled
 # (formal/VibeFormal/Compiler/Scheduler.lean).
 #
 # The INGESTED source still matters for the same reason (#1168) -- a

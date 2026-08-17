@@ -2438,7 +2438,7 @@ rm -rf "$inspupddir"
 echo "[compiler-gate] inspect() snapshot auto-update mode ok"
 
 # 71/71. #1239 step 4(A): an import cycle is rejected by the coordinator-side
-#        upfront plan -- @vibe/graph's plan_module_order, wired into
+#        upfront plan -- @vibe/compiler/module_graph's plan_module_order, wired into
 #        runtime/typecheck_fs.vibe's ensure_fingerprint_fs_impl -- BEFORE any
 #        module is committed, rather than incidentally partway through the
 #        walk on whichever module the DFS happened to re-enter first.

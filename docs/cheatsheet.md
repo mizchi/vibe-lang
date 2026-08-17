@@ -1758,7 +1758,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   grouped in that order (a located error enforces the grouping); declared
   locals index past the params + closure-env slot. v128 locals are what let
   a kernel keep vector state across instructions (e.g. the BLAKE3 compress
-  in `lib/@vibex/blake3/simd.vibe`).
+  in `lib/@vibe/blake3/simd.vibe`).
 - **WAT text**: ordinary string literal(s) — the lexer has no raw/multiline
   strings; adjacent literals after `= wasm` are joined with newlines. `;;`
   line and `(; ;)` block comments work inside the text.

@@ -69,7 +69,7 @@ vibe には `fn` の色付けが無く、副作用は effect row で表す。し
 - `Async` を持つ計算を非 `Async` 文脈で使うと effect-escape 検査
   (`EEEffectfulCallOutsideEffect`) が落とす。
 - `effect Async { Suspend(Int) -> Int }` の**宣言は
-  `lib/@vibex/concurrent/concurrent.vibe`** にあり (#752 の「宣言が契約」方式)、
+  `lib/@vibe/concurrent/concurrent.vibe`** にあり (#752 の「宣言が契約」方式)、
   checker builtin の row ラベル `"Async"` と名前で一致する。だから
   `handle .. with Async` で discharge できる (`TaskGroup::spawn_suspend` が
   実際にそうしている)。**builtin の nominal row を handler が放電できない
@@ -112,7 +112,7 @@ __aw_poll(fut) -> Int with Async:
   Array::get(fut, 1)
 ```
 
-`Suspend` の payload 帯 (`@vibex/concurrent` の規約 + ADR-0089):
+`Suspend` の payload 帯 (`@vibe/concurrent` の規約 + ADR-0089):
 
 | payload | 意味 |
 |---|---|
@@ -281,7 +281,7 @@ handle) を足して**それらしい小さい数**を返していた (期待 42
 `spawn(f); spawn(g)` が常に直列化する — 並行に見えて黙って直列化し、警告も
 失敗もしなかったのが理由。
 
-動く並行 surface は `lib/@vibex/concurrent` (`TaskGroup::spawn_suspend` /
+動く並行 surface は `lib/@vibe/concurrent` (`TaskGroup::spawn_suspend` /
 `TaskHandle::join` / `sleep_wait`)。公開意味論の source of truth は
 [ADR-0068 詳細仕様](../concurrency.md)。真の subtask spawn
 (waitable-set / `future.cancel-*`) は M-conc-2 として未着手。
@@ -603,7 +603,7 @@ future を作る側は `Future::ready` / `Stream::next` の2つで、
 `suspend_cps_pass` / `evidence_dict_pass` が走り終わった後なので、pending future
 が要る `perform Async::Suspend(..)` を出しても discharge できる相手がいない。
 新パスは `desugar_trait_dicts` の直後（= async `for` が `await(..)` を生成した
-直後）かつ全 effect パスの**前**に走り、`@vibex/concurrent` の `Receiver::recv_wait`
+直後）かつ全 effect パスの**前**に走り、`@vibe/concurrent` の `Receiver::recv_wait`
 と同じ suspend-and-retry 形へ **spine に持ち上げて**展開する:
 
 ```
@@ -636,7 +636,7 @@ fixture は `fixtures/async_await_multi.vibe`（let-value / match scrutinee /
 クリアする ―― 逆順だと awaiter が「ready なのに値がまだ」を観測しうる）。
 これで `Future[T]` は ready / pending の両方を作れる。まだ未解決の future を
 await する側には continuation を park する driver が要る（in-tree では
-`@vibex/concurrent` の `spawn_suspend` の `handle .. with Async`）。fixture
+`@vibe/concurrent` の `spawn_suspend` の `handle .. with Async`）。fixture
 `fixtures/async_future_pending.vibe` は await 前に resolve する形で、表現と
 builtin 2本を pin している（スケジューリングは pin していない）。
 
@@ -1023,7 +1023,7 @@ park する」形が component lowering レベルで実現した:
   get-future が eager に完了しなかった / 1000+x = read が BLOCK しなかった /
   3000+ev = wait が FUTURE_READ 以外を返した。
 
-**in-guest scheduler との関係**: `@vibex/concurrent` の pump は linear
+**in-guest scheduler との関係**: `@vibe/concurrent` の pump は linear
 backend 上で動き host waitable を持たないため、Suspend payload の
 **>= 2 を waitable handle 用に予約**した上で in-guest では poller として
 park する（= 完了源が無いので deadlock trap に縮退。yield 扱いだと silent
@@ -1109,7 +1109,7 @@ landed。**意味論は不変** — 変わるのは「pump が待ち条件の変
 poller を毎ラウンド resume して再検査させる」無駄だけで、観測可能な結果・
 決定性・deadlock trap はすべて保存される。設計は「wake = 再開可能化」:
 
-1. **データ**（`lib/@vibex/concurrent`）: `TaskCell` に `direct_wait` flag
+1. **データ**（`lib/@vibe/concurrent`）: `TaskCell` に `direct_wait` flag
    と `waiters: Array[TaskCell]`、`Channel` に `waiters`。待つ側
    （`TaskHandle::result_wait` / `Sender::send_wait` / `Receiver::recv_wait`）
    は park 直前に**待ち先へ自分を登録**して `direct_wait` を立て、pump は

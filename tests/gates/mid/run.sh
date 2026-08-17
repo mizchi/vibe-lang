@@ -2705,7 +2705,7 @@ echo "[compiler-gate] closure-typed HOF parameter safety boundary ok (206)"
 # #1070 final sub-case (pure closure STORED through a by-value param,
 # outliving the callee frame): historically the 3rd stored closure corrupted
 # the RC heap (`unreachable` on a later read), and only an inline-store
-# workaround avoided it (@vibex/concurrent Nursery::spawn was the canary).
+# workaround avoided it (@vibe/concurrent Nursery::spawn was the canary).
 # Now fixed; pin BOTH RC lanes -- the corruption was RC bookkeeping, so the
 # bump lane alone cannot see a regression.
 cbvsdir="_build/_gate_closure_by_value_store"

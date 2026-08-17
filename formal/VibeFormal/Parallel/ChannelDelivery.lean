@@ -5,7 +5,7 @@ set_option autoImplicit false
 /-
 #1238 P1 (runtime protocol): the bounded channel's delivery guarantees.
 
-`lib/@vibex/concurrent` (#1081) ships a cooperative run-to-completion bounded
+`lib/@vibe/concurrent` (#1081) ships a cooperative run-to-completion bounded
 MPMC channel: capacity-0 rendezvous, per-sender FIFO, last-release close,
 drain-then-None. This slice models the two properties a user of that channel
 reasons with -- **no duplication** and **no loss** -- plus the close protocol

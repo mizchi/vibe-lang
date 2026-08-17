@@ -101,7 +101,7 @@ cd "$ROOT"
 # corpus again (224 -> 467 allowlisted files) and landed several large
 # subsystems in the compiler tree that every compiler test's merged program
 # now pulls into its denominator (#1086 checked-Error row + entry boundary,
-# #1090 threads/@vibex/concurrent + structural Send, #1091 LSP server
+# #1090 threads/@vibe/concurrent + structural Send, #1091 LSP server
 # completion/signatureHelp/workspaceSymbol, #1093/#1094 follow-ups):
 # functions 45,324/322,132 (14.07%), branches 122,370/1,928,107 (6.35%) on
 # main -- absolute hit counts at all-time highs (fn 34,710 -> 45,324,

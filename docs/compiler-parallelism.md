@@ -849,7 +849,7 @@ flags for the serial path, not a new one introduced here.
 > the compiler it had no production consumer left — only
 > `test_parallel_warm_pool_gate.sh`, which drove it for the
 > diamond/cycle/empty-graph cases. Those are properties of the ordering rule,
-> not of the process boundary, and `lib/@vibe/graph/module_order_test.vibe`
+> not of the process boundary, and `lib/@vibe/compiler/module_graph/module_order_test.vibe`
 > pins all of them in-process across 11 cases; the mode added a supported
 > env-var surface and a TSV parser that nothing called. Folding rather than
 > keeping: a coordinator that wants ranks wants discovery too, which is what
@@ -1071,7 +1071,7 @@ What would have to change, by layer:
   doesn't outlive its nursery scope — it says nothing about two concurrently
   running tasks touching the same value without synchronization, which is a
   different defect class (data races) that needs a different analysis.
-  `TaskCell`/`ResCell`/`Ring` in `lib/@vibex/concurrent/concurrent.vibe` are
+  `TaskCell`/`ResCell`/`Ring` in `lib/@vibe/concurrent/concurrent.vibe` are
   plain non-atomic cells today, built on the "only one task body executes at
   an instant" invariant; that invariant is exactly what real threads remove.
 - **Formal model.** `formal/`'s current proof target is schedule

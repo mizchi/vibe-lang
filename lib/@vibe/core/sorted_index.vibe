@@ -1,0 +1,117 @@
+import ./array.vibe {
+  array_empty
+}
+
+//# Functions
+
+// Sorted-name index utilities: the compiler's `Map` is a flat assoc list, so
+// `Map::get` / `Map::has_key` are O(entries) with an `eq` call per entry --
+// every "Map membership index" over a large name table is still a linear
+// scan. For per-ident lookups against thousands of names (fn tables, ctor
+// tables, fn_returns), a one-time stable sort + binary search turns each
+// lookup into ~log2(N) `String <` comparisons.
+//
+// Stability contract: sort_perm_by_names is a STABLE merge sort, and
+// bsearch_leftmost returns the LEFTMOST slot of an equal run -- together
+// they preserve linear-scan "first match wins" semantics for tables with
+// duplicate keys (results are byte-identical to the linear scan they
+// replace).
+
+/// Lexicographic String less-than. Keep this typed helper boundary instead of
+/// inlining `Array::get(xs, i) < Array::get(xs, j)`: #1184 showed that an
+/// untyped aggregate-origin operand can miss String relational lowering and
+/// silently use the wrong representation order.
+export fn str_lt(a: String, b: String) -> Bool {
+  a < b
+}
+
+/// Stable bottom-up merge sort. Returns the permutation `perm` such that
+/// names[perm[0]] <= names[perm[1]] <= ... (ties keep original order).
+export fn sort_perm_by_names(names: Array[String]) -> Array[Int] {
+  let n = Array::length(names)
+  let mut src = array_empty()
+  let mut i = 0
+  while i < n {
+    Array::push(src, i)
+    i = i + 1
+  }
+  let mut buf = Array::slice(src, 0, n)
+  let mut width = 1
+  while width < n {
+    let mut lo = 0
+    while lo < n {
+      let mid = if lo + width < n {
+        lo + width
+      } else {
+        n
+      }
+      let hi = if lo + width + width < n {
+        lo + width + width
+      } else {
+        n
+      }
+      let mut a = lo
+      let mut b = mid
+      let mut k = lo
+      while k < hi {
+        let take_left = if a >= mid {
+          false
+        } else if b >= hi {
+          true
+        } else {
+          // names[src[a]] <= names[src[b]] takes the left run: stable.
+          !str_lt(Array::get(names, Array::get(src, b)), Array::get(names, Array::get(src, a)))
+        }
+        if take_left {
+          Array::set(buf, k, Array::get(src, a))
+          a = a + 1
+        } else {
+          Array::set(buf, k, Array::get(src, b))
+          b = b + 1
+        }
+        k = k + 1
+      }
+      lo = hi
+    }
+    let tmp = src
+    src = buf
+    buf = tmp
+    width = width + width
+  }
+  src
+}
+
+export fn apply_perm_strings(names: Array[String], perm: Array[Int]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(perm) {
+    Array::push(out, Array::get(names, Array::get(perm, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// Convenience: names -> sorted copy (membership-only callers).
+export fn sorted_names_of(names: Array[String]) -> Array[String] {
+  apply_perm_strings(names, sort_perm_by_names(names))
+}
+
+/// Leftmost binary search over a SORTED name array. Returns the smallest slot
+/// holding `name`, or -1 when absent.
+export fn bsearch_leftmost(sorted: Array[String], name: String) -> Int {
+  let mut lo = 0
+  let mut hi = Array::length(sorted)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if str_lt(Array::get(sorted, mid), name) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  if lo < Array::length(sorted) && Array::get(sorted, lo) == name {
+    lo
+  } else {
+    -1
+  }
+}

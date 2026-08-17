@@ -16,11 +16,11 @@ discover() が自動で拾う (旧 allowlist は #1231 で撤廃、§2 手順 3 
 
 | 置き場所 | 用途 | 例 |
 | --- | --- | --- |
-| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vpkg` が境界かつ公開 API (legacy `index.vibei` は境界ではない、ADR-0070)。**境界強制 (#729)**: `index.vpkg` を持つディレクトリの内部ファイルは外部の owner から直接 import できず、契約 (ディレクトリ import) 経由のみ。compiler 本体からも `import ../../../lib/@vibe/<pkg> { ... }` で消費できる (#741, #766) | `lib/@vibe/core` (sha1 / leb128 / list / set / maps, #766), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753) |
-| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vpkg` 契約経由 | `lib/@vibe/json`, `lib/@vibe/module` |
-| `lib/@vibex/<pkg>/` | 実験・拡張層 (ADR-0065: @vibex = 仮想実験ユーザー scope)。安定したら `lib/@vibe/` へ昇格 | `lib/@vibex/fmt`, `lib/@vibex/regexp` |
+| `lib/@vibe/<pkg>/` | 契約パッケージ。`index.vpkg` が境界かつ公開 API (legacy `index.vibei` は境界ではない、ADR-0070)。**境界強制 (#729)**: `index.vpkg` を持つディレクトリの内部ファイルは外部の owner から直接 import できず、契約 (ディレクトリ import) 経由のみ。compiler 本体からも `import ../../../lib/@vibe/<pkg> { ... }` で消費できる (#741, #766) | `lib/@vibe/core` (sha1 / leb128 / list / set / maps / sorted_index, #766/#1353), `lib/@vibe/ast` (AST 透明型), `lib/@vibe/parser` (lexer/parser/printer, #753), `lib/@vibe/concurrent` / `semver` / `blake3` / `scan` (#1353 昇格) |
+| `lib/@vibe/<domain>/` | 標準ライブラリ層。directory import (`import ../json { ... }`) は `index.vpkg` 契約経由 | `lib/@vibe/json`, `lib/@vibe/module`, `lib/@vibe/cache` (portable fingerprint / envelope / path) |
+| `lib/@vibex/<pkg>/` | 実験・拡張層 (ADR-0065: @vibex = 仮想実験ユーザー scope)。安定したら `lib/@vibe/` へ昇格 | `lib/@vibex/fmt`, `lib/@vibex/regexp` (`url` は regexp/scan 依存が切れるまで実験のまま) |
 | `lib/@<user>/<pkg>/` | コンパイラ非関連の実ユーザー scope パッケージ (in-repo に置けるのは repo owner が支配する scope のみ) | `lib/@mizchi/markdown` |
-| `lib/@vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する) | — |
+| `lib/@vibe/compiler/` | compiler 本体のみ。ライブラリを置かない (共有したいものは `lib/@vibe/` に切り出して契約 import する)。compiler-only の incremental DB / import DAG は `compiler/incremental` と `compiler/module_graph`、header codec は `compiler/cache` (#1353) | — |
 
 新規の再利用可能なデータ構造・アルゴリズムは **`lib/@vibe/core` への追加を
 第一候補**にする (moonbitlang/core 方式のドメイン別ファイル + index.vpkg
