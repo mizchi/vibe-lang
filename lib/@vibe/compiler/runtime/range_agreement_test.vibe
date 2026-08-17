@@ -3,11 +3,16 @@
 // #1941 first locked agreement: a type-error range from `check_program` +
 // `offset_to_line_col` (the primitives `vibe check` / `locate_type_error`
 // use) and a `binding_occurrences` span (the primitive `vibe binding-at`
-// uses) must slice the same source token. Leftover: JSON 0..1, grep line:0,
-// synthetic 0:0.
+// uses) must slice the same source token. Return-type mismatches on a
+// literal tail now recover the `fn` name (not synthetic 0:0). Leftover:
+// grep `line:0`; remaining unlocated type errors still take 0..1.
 
 import ./binding_at.vibe {
   binding_occurrences
+}
+
+import ./typecheck_fs.vibe {
+  collect_all_diagnostics
 }
 
 import @vibe/compiler/checker {
@@ -114,4 +119,38 @@ test "check and binding-at slice the same unknown identifier quux" {
   assert(col > 0)
   let occ = binding_occurrences(src, line, col)
   assert(occ_contains(occ, start, endo))
+}
+
+/// `fn f() -> Int { "s" }` — the tail is an `EString` with no offset, so
+/// `tail_expr_off` is -1. The diagnostic must still carry `line L:C:` and
+/// must not claim column 1 unless that is truly the function name.
+test "return-type mismatch on a literal is located at the fn name (#1941)" {
+  let src = "fn f() -> Int { \"s\" }"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) == 1)
+  let msg = Array::get(diags, 0)
+  assert(String::contains(msg, "return type mismatch"))
+  assert(String::contains(msg, "line "))
+  assert(String::contains(msg, "line 1:1:") == false)
+  let name_off = String::index_of(src, "fn f") + 3
+  assert(String::substring(src, name_off, name_off + 1) == "f")
+  let (line, col) = offset_to_line_col(src, name_off)
+  let want = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), "-"))))
+  assert(String::contains(msg, want))
+}
+
+/// A preceding well-typed `fn` must not steal the range. First-`fn` scan
+/// would point at `ok`; the recovered name is `f`.
+test "return-type mismatch points at the culpable fn, not an earlier fn (#1941)" {
+  let src = "fn ok() -> Int { 1 }\nfn f() -> Int { \"s\" }"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) == 1)
+  let msg = Array::get(diags, 0)
+  assert(String::contains(msg, "return type mismatch"))
+  let name_off = String::index_of(src, "fn f") + 3
+  assert(String::substring(src, name_off, name_off + 1) == "f")
+  let (line, col) = offset_to_line_col(src, name_off)
+  let want = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), "-"))))
+  assert(String::contains(msg, want))
+  assert(String::contains(msg, "line 1:4:") == false)
 }

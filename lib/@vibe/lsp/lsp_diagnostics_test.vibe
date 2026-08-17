@@ -20,9 +20,10 @@
 // `line L:C-E:` from `[@off=N:M]`, but the JSON/LSP encoder used to treat
 // `C-E` as a non-numeric column and collapse to `0..1`. The quux test
 // below requires the encoder to slice the same token #2024 locked.
-// Leftover on #1941: grep `line:0`, synthetic `0:0` instead of an
-// unavailable marker, type-at on binders/callees. Return-type mismatches
-// still take the no-position fallback (the snapshot below).
+// Return-type mismatches on an offset-less literal (`EString`) now recover
+// the enclosing `fn` name instead of the synthetic `0:0-0:1` fallback.
+// Leftover on #1941: grep `line:0`; remaining unlocated type errors
+// (anonymous lambdas whose tail is a literal) still take the 0..1 fallback.
 
 //# Imports
 
@@ -50,13 +51,32 @@ test "lsp diagnostics: a parse error carries its position and error severity" {
   inspect(lsp_diagnostics_json_string("fn f( -> Int { 1 }"), "[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name token=->\",\"data\":null}]",)
 }
 
-test "lsp diagnostics: a message with no position falls back to the file start" {
-  // Type errors without `[@off=]` still carry no `line L:C:` prefix
-  // (#1567 leftover / #1941 synthetic 0:0). Unknown names like `quux`
-  // are located; this snapshot is the no-position fallback. Pinned as
-  // CURRENT behaviour, not as desired -- when those messages get a
-  // position this snapshot changes.
-  inspect(lsp_diagnostics_json_string("fn f() -> Int { \"s\" }"), "[{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
+test "lsp diagnostics: return-type mismatch on a literal points at the fn name (#1941)" {
+  // `tail_expr_off(EString)` is -1, so this used to take `lsp_diag_fallback`
+  // and lie as `0:0-0:1`. The checker now tags the enclosing `fn` name;
+  // `collect_all_diagnostics` emits `line L:C-E:` and JSON slices `f`.
+  let src = "fn f() -> Int { \"s\" }"
+  let token = "f"
+  let start = String::index_of(src, "fn f") + 3
+  let endo = start + String::length(token)
+  assert(start >= 0)
+  assert(String::substring(src, start, endo) == token)
+  inspect(lsp_diagnostics_json_string(src), "[{\"range\":{\"start\":{\"line\":0,\"character\":3},\"end\":{\"line\":0,\"character\":4}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
+  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  assert(Json::length(parsed) == 1)
+  let range = Json::field(Json::index(parsed, 0), "range")
+  let rs = Json::field(range, "start")
+  let re = Json::field(range, "end")
+  let sl = Double::to_int(Json::number(Json::field(rs, "line")))
+  let sc = Double::to_int(Json::number(Json::field(rs, "character")))
+  let el = Double::to_int(Json::number(Json::field(re, "line")))
+  let ec = Double::to_int(Json::number(Json::field(re, "character")))
+  assert(sl == 0)
+  assert(el == 0)
+  assert(sc == start)
+  assert(ec == endo)
+  assert(String::substring(src, sc, ec) == token)
+  assert(!(sl == 0 && sc == 0 && el == 0 && ec <= 1))
 }
 
 test "lsp diagnostics: columns are UTF-16 code units, not bytes (#1672)" {

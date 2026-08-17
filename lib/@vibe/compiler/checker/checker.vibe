@@ -106,6 +106,28 @@ fn off_marker_len(off: Int, len: Int) -> String {
   }
 }
 
+/// #1941: a return-type mismatch whose tail is a literal has no `[@off=]`
+/// (EInt/EString/EBool/EFloat carry no offset). Tag the enclosing binding
+/// name so `locate_type_error` can recover the `fn` / `let` name token
+/// instead of falling through to the synthetic `0:0` LSP range. Only
+/// rewrites errors that still have no side-channel marker. Exported for
+/// checker_stmt's top-level SLet path (the leftover `fn f() -> Int { "s" }`).
+export fn attach_unlocated_return_fn_marker(errors: Array[String], from: Int, name: String) -> Unit {
+  if String::length(name) == 0 {
+    ()
+  } else {
+    let n = Array::length(errors)
+    let mut i = from
+    while i < n {
+      let msg = Array::get(errors, i)
+      if String::starts_with(msg, "return type mismatch") && String::index_of(msg, " [@") < 0 {
+        Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
+      }
+      i = i + 1
+    }
+  }
+}
+
 /// ADR-0090 MutBytes: reject a known-wrong receiver head instead of letting
 /// codegen alias the op onto Bytes::* and reinterpret an arbitrary value as
 /// a buffer pointer (Codex review on #1801). Unresolved vars and CtUnknown
@@ -4345,7 +4367,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         cur = right
       },
       ELet(name, val, body, _) => {
+        let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        attach_unlocated_return_fn_marker(errors, err_before, name)
         // #938 value restriction: a builder is a MUTABLE container, so its
         // element var must stay un-quantified — generalizing
         // `CtNamed("ArrayBuilder", [v])` would re-instantiate a fresh v at
@@ -4371,7 +4395,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         cur = body
       },
       ELetMut(name, val, body, _) => {
+        let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        attach_unlocated_return_fn_marker(errors, err_before, name)
         // `loop` desugars to `let mut __loop_result = 0; while true { ...
         // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
         // the 0 is only a slot placeholder, but binding its CtInt here pinned
@@ -4400,7 +4426,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       },
       ELetRec(name, val, body) => {
         let (tv, c1b) = fresh_var(c1)
+        let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, env_bind(cenv, name, tv), defs, s1, c1b, errors, tytab, capture, lane)
+        attach_unlocated_return_fn_marker(errors, err_before, name)
         let s2 = match unify(tv, vt, ns) {
           Some(su) => su,
           None => ns
@@ -8621,8 +8649,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // effectful value flowing into a pure-typed slot) via
           // effect_row_dropped, so this loosens nothing that was load-bearing.
           // Anchor on the body's TAIL expression -- the value actually being
-          // returned. -1 (unlocated, as before) when the tail is a literal:
-          // EInt/EString/EBool/EFloat carry no offset in the AST.
+          // returned. -1 when the tail is a literal: EInt/EString/EBool/EFloat
+          // carry no offset in the AST. The enclosing SLet/ELet then tags
+          // the error with `[@fn=name]` so locate_type_error can recover the
+          // function name token (#1941) instead of a synthetic 0:0 range.
           let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
           (merge_capture_provenance(subst_apply(ns, resolved_ret), subst_apply(ns, bt)), ns)
         },
