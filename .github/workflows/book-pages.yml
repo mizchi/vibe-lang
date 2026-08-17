@@ -1,0 +1,72 @@
+# Deploy The Vibe Book to GitHub Pages.
+#
+# Build is seed-driven (same as scripts/vibe_book.sh default). The book
+# generator is ordinary vibe; it does not need a fresh stage2. Deploy only
+# from main so a PR cannot overwrite the live site. PRs still build the
+# artifact so a broken generator fails the PR.
+name: book-pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "book/**"
+      - "lib/@vibex/book/**"
+      - "scripts/vibe_book.sh"
+      - "scripts/vibe_book.vibex"
+      - ".github/workflows/book-pages.yml"
+  pull_request:
+    paths:
+      - "book/**"
+      - "lib/@vibex/book/**"
+      - "scripts/vibe_book.sh"
+      - "scripts/vibe_book.vibex"
+      - ".github/workflows/book-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: book-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build-book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Render book
+        run: bash scripts/vibe_book.sh
+      - name: Require index.html
+        run: test -s _build/book/index.html
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: _build/book
+
+  deploy:
+    name: deploy-pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -51,4 +51,6 @@ if [ "${VIBE_BOOK_NO_TOOL_CACHE:-0}" = "1" ] || [ ! -s "$tool" ]; then
   rm -f "$tool.diag" "$tool.funcmap"
 fi
 
-VIBE_PREOPEN_DIR="$ROOT_DIR" exec bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tool"
+VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$tool"
+# GitHub Pages would otherwise run Jekyll over the artifact.
+: > "$ROOT_DIR/_build/book/.nojekyll"

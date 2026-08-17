@@ -16,7 +16,10 @@ bash scripts/vibe_book.sh
 pkf run book
 ```
 
-Open `_build/book/index.html` in a browser.
+Open `_build/book/index.html` in a browser. On `main`,
+`.github/workflows/book-pages.yml` rebuilds this tree and deploys it to
+GitHub Pages (`https://mizchi.github.io/vibe-lang/`). The first time,
+set the repo Pages source to **GitHub Actions**.
 
 ## Layout
 
