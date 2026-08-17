@@ -215,15 +215,47 @@ test "#1957: imported names keep their import-slot identity" {
   }
 }
 
-test "#1957: loop lowering stays fail-closed and does not invent binder rows" {
-  let source = "fn f() -> Int {\n  loop acc = 1 {\n    break acc\n  }\n}\n"
-  let parsed = handle {
-    parse_source_located_with_binder_authority(source)
-  } with Exception {
-    Throw(_) => None
+test "#1957: loop-lowering source binders stay distinct from synthetic rows" {
+  let source = "fn f() -> Int {\n  loop (acc = 1) {\n    break acc\n  }\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let accs = find_offsets(source, "acc")
+        assert(Array::length(accs) >= 2)
+        let acc_def = Array::get(accs, 0)
+        let acc_use = Array::get(accs, 1)
+        assert_eq(binder_start_for(rows, acc_use), acc_def)
+        let mut i = 0
+        while i < Array::length(rows) {
+          let (_, start, end) = Array::get(rows, i)
+          assert(start >= 0)
+          assert(end > start)
+          i = i + 1
+        }
+      },
+      None => assert(false)
+    },
+    None => assert(false)
   }
-  match parsed {
-    Some(_) => assert(false),
-    None => assert(true)
+}
+
+test "#1957: two lowered loops do not merge same-named parameters" {
+  let source = "fn f() -> Int {\n  let a = loop (acc = 1) { break acc }\n  let b = loop (acc = 2) { break acc }\n  a + b\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let accs = find_offsets(source, "acc")
+        assert(Array::length(accs) >= 4)
+        let a_def = Array::get(accs, 0)
+        let a_use = Array::get(accs, 1)
+        let b_def = Array::get(accs, 2)
+        let b_use = Array::get(accs, 3)
+        assert_eq(binder_start_for(rows, a_use), a_def)
+        assert_eq(binder_start_for(rows, b_use), b_def)
+        assert(a_def != b_def)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
   }
 }
