@@ -1,0 +1,144 @@
+//# Imports
+
+import ./html.vibe {
+  escape_html, highlight_vibe, render_inline, slugify
+}
+
+import ./render.vibe {
+  html_name_for, render_markdown
+}
+
+import ./summary.vibe {
+  SummaryEntry, parse_summary
+}
+
+import ./book.vibe {
+  render_page, render_sidebar
+}
+
+//# Misc
+
+test "escape_html encodes markup characters" {
+  assert(escape_html("a <b> & \"c\"") == "a &lt;b&gt; &amp; &quot;c&quot;")
+}
+
+test "slugify is a URL fragment" {
+  assert(slugify("Values and functions") == "values-and-functions")
+  assert(slugify("let mut is block-scoped") == "let-mut-is-block-scoped")
+}
+
+test "highlight_vibe wraps keywords and leaves strings alone" {
+  let out = highlight_vibe("let x = \"fn\"")
+  assert(String::contains(out, "class=\"kw\""))
+  assert(String::contains(out, "let"))
+  assert(String::contains(out, "&quot;fn&quot;") || String::contains(out, "\"fn\""))
+}
+
+test "highlight_vibe marks numbers, types, and allows" {
+  let out = highlight_vibe("fn main with () allows Stdout {\n  let n: Int = 42\n  let h = 0xFF\n}")
+  assert(String::contains(out, "class=\"kw\">allows</span>"))
+  assert(String::contains(out, "class=\"ty\">Stdout</span>"))
+  assert(String::contains(out, "class=\"ty\">Int</span>"))
+  assert(String::contains(out, "class=\"num\">42</span>"))
+  assert(String::contains(out, "class=\"num\">0xFF</span>"))
+}
+
+test "highlight_vibe marks hash directives and derive" {
+  let out = highlight_vibe("#zero_alloc(strict)\nstruct P { x: Int } derive (Eq, Show)")
+  assert(String::contains(out, "class=\"dir\">#zero_alloc</span>") || String::contains(out, "class=\"dir\">#zero_alloc(strict)</span>"))
+  assert(String::contains(out, "class=\"kw\">derive</span>"))
+  assert(String::contains(out, "class=\"kw\">struct</span>"))
+}
+
+test "render_markdown highlights a ```vibe fence and a ```vibe run fence" {
+  let html = render_markdown("```vibe\nlet x = 1\n```\n\n```vibe run\nfn main() -> Int { 0 }\n```\n")
+  assert(String::contains(html, "class=\"hl vibe\""))
+  assert(String::contains(html, "class=\"kw\">let</span>"))
+  assert(String::contains(html, "class=\"kw\">fn</span>"))
+}
+
+test "render_markdown highlights a ```.vibe fence" {
+  let html = render_markdown("```.vibe\nexport fn f() -> Int { 1 }\n```\n")
+  assert(String::contains(html, "class=\"hl vibe\""))
+  assert(String::contains(html, "class=\"kw\">export</span>"))
+  assert(String::contains(html, "class=\"ty\">Int</span>"))
+}
+
+test "render_inline handles code, links, and bold" {
+  let out = render_inline("see `let mut` and [the tour](ch02.html) plus **bold**")
+  assert(String::contains(out, "<code>let mut</code>"))
+  assert(String::contains(out, "href=\"ch02.html\""))
+  assert(String::contains(out, "<strong>bold</strong>"))
+}
+
+test "render_markdown emits headings with ids and fenced vibe" {
+  let src = "# Hello\n\nA paragraph.\n\n```vibe run\nlet x = 1\n```\n"
+  let html = render_markdown(src)
+  assert(String::contains(html, "id=\"hello\""))
+  assert(String::contains(html, "<h1 id="))
+  assert(String::contains(html, "class=\"hl vibe\""))
+  assert(String::contains(html, "let"))
+}
+
+test "parse_summary reads nested chapter links" {
+  let src = "# The Book\n\n[Intro](src/00.md)\n\n- [One](src/01.vibe.md)\n  - [Nested](src/01b.md)\n"
+  let entries = parse_summary(src)
+  assert(Array::length(entries) >= 2)
+  assert(Array::get(entries, 0).title == "Intro")
+  assert(Array::get(entries, 1).title == "One")
+}
+
+test "html_name_for strips directories and md suffixes" {
+  assert(html_name_for("src/02_values_functions.vibe.md") == "02_values_functions.html")
+  assert(html_name_for("00_introduction.md") == "00_introduction.html")
+  assert(html_name_for("src/support/mathx.vibe") == "mathx.html")
+}
+
+test "highlight_vibe marks lexer keywords, packages, and floats" {
+  let out = highlight_vibe("import @vibe/prelude { stdout_write }\nmodule M { rec fn go() { 1.5f } }\ndeclare open example")
+  assert(String::contains(out, "class=\"kw\">import</span>"))
+  assert(String::contains(out, "class=\"kw\">module</span>"))
+  assert(String::contains(out, "class=\"kw\">rec</span>"))
+  assert(String::contains(out, "class=\"kw\">declare</span>"))
+  assert(String::contains(out, "class=\"kw\">open</span>"))
+  assert(String::contains(out, "class=\"kw\">example</span>"))
+  assert(String::contains(out, "class=\"ns\">@vibe/prelude</span>"))
+  assert(String::contains(out, "class=\"num\">1.5f</span>"))
+}
+
+test "render_page highlights a standalone .vibe chapter" {
+  let src = "## Getting started\n\n- [Helper](src/support/mathx.vibe)\n"
+  let entries = parse_summary(src)
+  let page = render_page("mathx", "export fn triple(x: Int) -> Int { x * 3 }\n", entries, 1)
+  assert(String::contains(page, "class=\"hl vibe\""))
+  assert(String::contains(page, "class=\"kw\">export</span>"))
+  assert(String::contains(page, "class=\"kw\">fn</span>"))
+  assert(String::contains(page, "class=\"ty\">Int</span>"))
+}
+
+test "parse_summary reads part headings as pathless entries" {
+  let src = "## Getting started\n\n- [One](src/01.md)\n- [Two](src/02.md)\n"
+  let entries = parse_summary(src)
+  assert(Array::length(entries) == 3)
+  assert(Array::get(entries, 0).title == "Getting started")
+  assert(Array::get(entries, 0).path == "")
+  assert(Array::get(entries, 1).title == "One")
+  assert(Array::get(entries, 1).path == "src/01.md")
+}
+
+test "sidebar prints parts without a href and nav skips them" {
+  let src = "## Language\n\n- [Types](src/a.md)\n- [Data](src/b.md)\n"
+  let entries = parse_summary(src)
+  let side = render_sidebar(entries, "a.html")
+  assert(String::contains(side, "class=\"part\""))
+  assert(String::contains(side, "Language"))
+  assert(!String::contains(side, "href=\"\""))
+  let page = render_page("Types", "# Types\n\nHi", entries, 1)
+  assert(String::contains(page, "Data"))
+  assert(String::contains(page, "Next"))
+}
+
+test "render_inline wraps a single-star span as italic" {
+  let out = render_inline("see *The Rust Book* today")
+  assert(String::contains(out, "<em>The Rust Book</em>"))
+}

@@ -1,23 +1,15 @@
-# vibe チュートリアル — 実行して学ぶ言語ツアー
+# vibe チュートリアルは The Vibe Book に移りました
 
-English version: [README.md](README.md) (canonical)
+正本は英語の [The Vibe Book](../../book/README.md) (`book/src/`)。
+日本語のツアー章は [book/ja/](../../book/ja/) にあります。各章はこれまで通り
+`*.vibe.md` で、`scripts/vibe_md.sh` が `` ```vibe run `` を実行し
+`` ```output `` と照合します。
 
-各章は `*.vibe.md` — markdown そのものが実行可能ドキュメント (#1142)。
-` ```vibe run ` ブロックは実際にコンパイル・実行され、直後の
-` ```output ` ブロックはその実行結果がそのまま埋め込まれている。
-読んだらすぐ実行結果が見える、が このチュートリアルの流儀。
+English: [README.md](README.md)
 
 ```bash
-# インストール (詳細: docs/install.md)
-curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
-. "$HOME/.vibe/env"
-
-# リポジトリを clone して検証・再生成
-git clone https://github.com/mizchi/vibe-lang && cd vibe-lang
-bash scripts/vibe_md.sh check docs/tutorial/01_values_functions.vibe.md
-bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md   # 全章を一括検証
-bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # 実行して ```output を書き直す
-pkf run vibe-md-tutorial                                # check を task 化したもの
+bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md
+pkf run vibe-md-tutorial
 ```
 
 ## 最初のプログラム（インストールした toolchain だけ）

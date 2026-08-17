@@ -46,13 +46,13 @@ vibe hash lib/@vibe/core
 
 ## このチュートリアル自身も実行可能ドキュメント
 
-この章まで含め `docs/tutorial/*.vibe.md` はすべて #1142 の `.vibe.md` 形式
+この章まで含め `book/src/*.vibe.md` と `book/ja/*.vibe.md` はすべて #1142 の `.vibe.md` 形式
 — ` ```vibe run ` ブロックは実際にコンパイル・実行され、直後の
 ` ```output ` は本物の実行結果。手元で検証・再生成するには:
 
 ```bash
-bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
-bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # 実行して output を書き直す
+bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
+bash scripts/vibe_md.sh write book/src/*.vibe.md book/ja/*.vibe.md   # 実行して output を書き直す
 pkf run vibe-md-tutorial                                # check のタスク化
 ```
 
