@@ -5545,7 +5545,29 @@ fn comp_emit_decode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
   }
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, tag_mode: Int) -> Bytes {
+/// #1342: the scratch slots the SLEEP half owns. Disjoint from slot 8 (the
+/// getters' async-lower results area) and 16 (their wait payload) on purpose:
+/// unlike a future getter, `sleep-for`'s async-lowered call does NOT complete
+/// before the adapter returns -- the subtask stays outstanding across the park
+/// -- so sharing slot 8 with a getter that ran first would let the timer's
+/// landing write stomp a handle the getter is still holding.
+fn comp_sleep_results_slot() -> Int {
+  24
+}
+
+fn comp_sleep_wait_payload_slot() -> Int {
+  32
+}
+
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int) -> Bytes {
+  // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
+  // other two: the host side is an `async func(ms) -> ms`, so its
+  // async-lowered call yields a SUBTASK rather than a future/stream handle,
+  // and the adapter parks on that subtask in the same `waitable-set.wait` the
+  // other halves use. Emitted only when the compiled core imports
+  // `vibe.sleep`, appended after everything else, so every pre-existing
+  // composition keeps its exact bytes.
+  //
   // ADR-0089 Decision 3 (#1218): generalized again -- K host futures AND L
   // host streams (K + L >= 1, either may be 0). The future half is
   // byte-identical for L = 0 (every stream-specific type/import/func is
@@ -5577,24 +5599,41 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   let sget_base = ws_base + 4
   let sread_idx = sget_base + nstreams
   let sdrop_idx = sget_base + nstreams + 1
-  let nfunc_imports = if nstreams > 0 {
+  let base_func_imports = if nstreams > 0 {
     sget_base + nstreams + 2
   } else {
     ws_base + 4
   }
+  // #1342: the sleep half's two imports come last, so adding them cannot
+  // shift any index above.
+  let sleep_lower_idx = base_func_imports
+  let subtask_drop_idx = base_func_imports + 1
+  let nfunc_imports = if want_sleep {
+    base_func_imports + 2
+  } else {
+    base_func_imports
+  }
   let out = bytebuf_new()
   emit_header(out)
   // types: 0 (i32)->(i32) async-lowered get-future; 1 (i32,i32)->(i32)
-  // future.read & ws_wait; 2 (i32)->() drop-readable/ws_drop; 3 ()->(i32)
-  // ws_new; 4 (i32,i32)->() waitable_join; 5 ()->(i64) host_future_get;
+  // future.read & ws_wait & the async-lowered sleep-for; 2 (i32)->()
+  // drop-readable/ws_drop/subtask.drop; 3 ()->(i32) ws_new;
+  // 4 (i32,i32)->() waitable_join; 5 ()->(i64) host_future_get;
   // 6 (i64)->(i64) host_future_wait; 7 (i32,i32,i32)->(i32) stream.read
-  // (only when streams are present).
-  let tc = bytebuf_new()
-  bytebuf_push_vec_header(tc, if nstreams > 0 {
+  // (only when streams are present). #1342 appends the sleep func's own
+  // (i64)->() LAST, so the indices above are unchanged by its presence.
+  let sleep_type_idx = if nstreams > 0 {
     8
   } else {
     7
-  })
+  }
+  let ntypes = if want_sleep {
+    sleep_type_idx + 1
+  } else {
+    sleep_type_idx
+  }
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, ntypes)
   emit_func_type_raw(tc, [
     127
   ], [
@@ -5635,10 +5674,18 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_sleep {
+    emit_func_type_raw(tc, [
+      126
+    ], array_empty())
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 1, tc)
   // imports: the future half (K getters + shared read/drop, K > 0 only),
   // the waitable quartet, the stream half (L getters + shared read/drop,
-  // L > 0 only), and the memhost memory.
+  // L > 0 only), the sleep half (async-lowered `sleep-for` + subtask.drop,
+  // #1342), and the memhost memory.
   let ic = bytebuf_new()
   bytebuf_push_vec_header(ic, nfunc_imports + 1)
   let mut imp_i = 0
@@ -5699,6 +5746,18 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  if want_sleep {
+    emit_name(ic, "$root")
+    emit_name(ic, "[async-lower]sleep-for")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+    emit_name(ic, "$root")
+    emit_name(ic, "[subtask-drop]")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
   emit_name(ic, "env")
   emit_name(ic, "memory")
   bytebuf_push(ic, 2)
@@ -5752,6 +5811,15 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     Array::push(fn_types, 6)
     Array::push(export_names, "host_stream_close")
     Array::push(export_indices, s_local_base + nstreams + 1)
+  } else {
+    ()
+  }
+  // #1342: `vibe.sleep`, appended after every other local func for the same
+  // reason its imports come last -- adding it shifts nothing.
+  if want_sleep {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, sleep_type_idx)
+    Array::push(export_names, "sleep")
   } else {
     ()
   }
@@ -6170,6 +6238,81 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   } else {
     ()
   }
+  // #1342: `sleep (i64) -> ()`. param 0 = ms in the core's value convention;
+  // locals (i32): 1=packed, 2=sub, 3=ws, 4=ev.
+  //
+  // The host side is an `async func(ms: u32) -> u32`, so the async-lowered
+  // call returns a PACKED status: low nibble = code, high bits = the subtask
+  // index. A real delay comes back not-RETURNED, and the adapter parks on
+  // that subtask in `waitable-set.wait` exactly as the future/stream halves
+  // park on their read -- the canonical ABI suspends the whole task, which is
+  // what makes this a genuine suspend rather than a busy wait.
+  //
+  // A zero (or already-elapsed) delay may complete EAGERLY instead, in which
+  // case no subtask exists: dropping one unconditionally is the bug §3.9
+  // records finding on the `$writer` epilogue, so the drop lives inside the
+  // parked branch.
+  if want_sleep {
+    let sleep_body = bytebuf_new()
+    leb128_encode_u32(sleep_body, 1)
+    leb128_encode_u32(sleep_body, 4)
+    bytebuf_push(sleep_body, 127)
+    // packed = sleep-for(ms, results slot)
+    emit_local_get(sleep_body, 0)
+    comp_emit_decode_i64_value(sleep_body, tag_mode)
+    emit_i32_wrap_i64(sleep_body)
+    emit_i32_const(sleep_body, comp_sleep_results_slot())
+    emit_call(sleep_body, sleep_lower_idx)
+    emit_local_set(sleep_body, 1)
+    // RETURNED (2) means the host answered without starting a subtask.
+    emit_local_get(sleep_body, 1)
+    emit_i32_const(sleep_body, 15)
+    emit_i32_and(sleep_body)
+    emit_i32_const(sleep_body, 2)
+    emit_i32_ne(sleep_body)
+    emit_if_void(sleep_body)
+    emit_local_get(sleep_body, 1)
+    emit_i32_const(sleep_body, 4)
+    emit_i32_shr_u(sleep_body)
+    emit_local_set(sleep_body, 2)
+    emit_call(sleep_body, ws_new_idx)
+    emit_local_set(sleep_body, 3)
+    emit_local_get(sleep_body, 2)
+    emit_local_get(sleep_body, 3)
+    emit_call(sleep_body, join_idx)
+    emit_local_get(sleep_body, 3)
+    emit_i32_const(sleep_body, comp_sleep_wait_payload_slot())
+    emit_call(sleep_body, ws_wait_idx)
+    emit_local_set(sleep_body, 4)
+    // The set holds exactly one waitable, so the wake must be SUBTASK (1)
+    // and the status in payload[1] must be RETURNED (2). Anything else is a
+    // contract violation this adapter cannot represent -- trap rather than
+    // return as if the sleep had elapsed.
+    emit_local_get(sleep_body, 4)
+    emit_i32_const(sleep_body, 1)
+    emit_i32_ne(sleep_body)
+    emit_if_void(sleep_body)
+    bytebuf_push(sleep_body, 0)
+    emit_end(sleep_body)
+    emit_i32_const(sleep_body, comp_sleep_wait_payload_slot() + 4)
+    emit_i32_load(sleep_body, 2, 0)
+    emit_i32_const(sleep_body, 2)
+    emit_i32_ne(sleep_body)
+    emit_if_void(sleep_body)
+    bytebuf_push(sleep_body, 0)
+    emit_end(sleep_body)
+    // Children before sets (the same teardown order the wait half uses).
+    emit_local_get(sleep_body, 2)
+    emit_call(sleep_body, subtask_drop_idx)
+    emit_local_get(sleep_body, 3)
+    emit_call(sleep_body, ws_drop_idx)
+    emit_end(sleep_body)
+    bytebuf_push(sleep_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sleep_body))
+    bytebuf_push_buf(code_sec, sleep_body)
+  } else {
+    ()
+  }
   bytebuf_push_section(out, 10, code_sec)
   bytebuf_to_bytes(out)
 }
@@ -6233,6 +6376,43 @@ fn comp_core_sig_is_p1_i64_i64(sig: Array[Int]) -> Bool {
 
 fn comp_core_sig_is_fd_write(sig: Array[Int]) -> Bool {
   Array::length(sig) == 7 && Array::get(sig, 0) == 4 && Array::get(sig, 1) == 127 && Array::get(sig, 2) == 127 && Array::get(sig, 3) == 127 && Array::get(sig, 4) == 127 && Array::get(sig, 5) == 1 && Array::get(sig, 6) == 127
+}
+
+/// #1342 routing key: the compiled core imports the blocking host sleep, so
+/// it needs the adapter's sleep half and cannot be composed self-contained.
+export fn comp_core_imports_sleep(core_wasm: Bytes) -> Bool {
+  comp_core_imports_func(core_wasm, "vibe", "sleep")
+}
+
+/// #1342: what the SELF-CONTAINED async wrap can actually satisfy.
+///
+/// That composition instantiates the compiled core with a preview1 fd_write
+/// stub and (when the exception boundary needs it) a trapping
+/// `vibe.stderr_write_stream`. Any other host import has no provider, and the
+/// component the wrap emits for one is not instantiable -- `wasm-tools
+/// validate` reports "missing module instantiation argument named `vibe`".
+/// The compiler used to write that artifact and exit 0, which is the worst
+/// available answer: a build that reports success and hands back a file the
+/// runtime rejects. Name the unsatisfiable import instead.
+export fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> Unit with Exception {
+  let modules = array_empty()
+  let names = array_empty()
+  let type_indices = new_int_array()
+  let type_sigs = array_empty()
+  let count = parse_core_imports(core_wasm, modules, names, type_indices, type_sigs)
+  let mut i = 0
+  while i < count {
+    let im = Array::get(modules, i)
+    let ifn = Array::get(names, i)
+    if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
+      ()
+    } else if im == "vibe" && ifn == "stderr_write_stream" {
+      ()
+    } else {
+      throw("component(async): core module uses host import '\{im}.\{ifn}', which nothing in this component provides -- an async component entry can use sleep, host futures and host streams; other host capabilities have no provider inside the component (#1342)")
+    }
+    i = i + 1
+  }
 }
 
 fn comp_is_stdin_provider_import_name(name: String) -> Bool {
@@ -6592,10 +6772,10 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     let ifn = Array::get(imp_names, ii)
     if im == "wasi_snapshot_preview1" && ifn == "fd_write" {
       ()
-    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close") {
+    } else if im == "vibe" && (comp_is_host_future_get_import(ifn) || ifn == "host_future_wait" || comp_is_host_stream_get_import(ifn) || ifn == "host_stream_read" || ifn == "host_stream_close" || ifn == "sleep") {
       ()
     } else {
-      throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write and the host-future/host-stream imports are satisfiable in this composition)")
+      throw("component(async-hostfuture): core module uses host import '\{im}.\{ifn}' (only fd_write, sleep and the host-future/host-stream imports are satisfiable in this composition)")
     }
     ii = ii + 1
   }
@@ -6613,8 +6793,13 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   let hs_wants_close = comp_core_imports_host_stream_close(main_core_wasm)
   let nhs = Array::length(hs_names)
   let nt = nhf + nhs
-  if nt == 0 {
-    throw("component(async-hostfuture): core module imports no vibe.host_future_get[$name] / vibe.host_stream_get$name (this wrap is keyed on those imports)")
+  // #1342: `vibe.sleep` keys this composition too. A sleep-only program used
+  // to land in the self-contained trampolined-p1 wrap, which has no `vibe`
+  // instance to satisfy it -- and emitted an unvalidatable component with a
+  // zero exit status rather than saying so.
+  let want_sleep = comp_core_imports_sleep(main_core_wasm)
+  if nt == 0 && !want_sleep {
+    throw("component(async-hostfuture): core module imports no vibe.host_future_get[$name] / vibe.host_stream_get$name / vibe.sleep (this wrap is keyed on those imports)")
   } else {
     ()
   }
@@ -6644,14 +6829,37 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
-  let export_functype_idx = if nhs > 0 {
-    stream_functype_idx + 1
+  // #1342: `sleep-for: async func(ms: u32) -> u32`. Unlike the future/stream
+  // imports this one takes a PARAM (the delay) and has no future value type of
+  // its own, so it is one functype and no defined type. Both halves may be
+  // absent, so count the emitted types rather than assuming a fixed offset.
+  let sleep_functype_idx = (if nhf > 0 {
+    2
   } else {
-    fut_functype_idx + 1
+    0
+  }) + (if nhs > 0 {
+    2
+  } else {
+    0
+  })
+  if want_sleep {
+    emit_comp_async_functype_params(buf, [
+      "ms"
+    ], [
+      comp_valtype_u32
+    ], comp_valtype_u32)
+  } else {
+    ()
+  }
+  let export_functype_idx = if want_sleep {
+    sleep_functype_idx + 1
+  } else {
+    sleep_functype_idx
   }
   // One component import per host future then per host stream, each kind in
   // its core module's declaration order, so component func index i is the
-  // import the composer's lowered core func i belongs to.
+  // import the composer's lowered core func i belongs to. `sleep-for` follows
+  // them, so it is component func index nt.
   let mut himp_i = 0
   while himp_i < nhf {
     emit_comp_import_section_typed(buf, comp_hostfuture_import_label(Array::get(hf_names, himp_i)), fut_functype_idx)
@@ -6662,9 +6870,19 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     emit_comp_import_section_typed(buf, comp_hoststream_import_label(Array::get(hs_names, simp_i)), stream_functype_idx)
     simp_i = simp_i + 1
   }
+  if want_sleep {
+    emit_comp_import_section_typed(buf, "sleep-for", sleep_functype_idx)
+  } else {
+    ()
+  }
+  let nimports = if want_sleep {
+    nt + 1
+  } else {
+    nt
+  }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, tag_mode))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
   let memhost_inst = 0
@@ -6708,6 +6926,19 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   if nhs > 0 {
     emit_canon_stream_read(buf, stream_type_idx, mem_alias_idx)
     emit_canon_stream_drop_readable(buf, stream_type_idx)
+  } else {
+    ()
+  }
+  // #1342: the sleep half's canon defs come after everything else, so a
+  // composition without sleep keeps its exact core func indices.
+  let sleep_lower_core_idx = if nhs > 0 {
+    stream_read_core_idx + 2
+  } else {
+    task_return_core_idx + 5
+  }
+  if want_sleep {
+    emit_canon_lower_async_section(buf, nt, mem_alias_idx)
+    emit_canon_subtask_drop(buf)
   } else {
     ()
   }
@@ -6757,6 +6988,14 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   } else {
     ()
   }
+  if want_sleep {
+    Array::push(root_export_names, "[async-lower]sleep-for")
+    Array::push(root_export_indices, sleep_lower_core_idx)
+    Array::push(root_export_names, "[subtask-drop]")
+    Array::push(root_export_indices, sleep_lower_core_idx + 1)
+  } else {
+    ()
+  }
   emit_core_instance_from_exports(buf, 1, [
     Array::length(root_export_names)
   ], root_export_names, root_export_indices)
@@ -6786,10 +7025,10 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     stub_inst,
     adapter_inst
   ])
-  let main_run_func_idx = if nhs > 0 {
-    stream_read_core_idx + 2
+  let main_run_func_idx = if want_sleep {
+    sleep_lower_core_idx + 2
   } else {
-    task_return_core_idx + 5
+    sleep_lower_core_idx
   }
   emit_alias_section(buf, main_inst, [
     "run"
@@ -6828,7 +7067,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
     core_sort_func
   ])
   emit_canon_lift_async_section(buf, tramp_run_func_idx, export_functype_idx)
-  emit_comp_export_section(buf, export_name, nt)
+  emit_comp_export_section(buf, export_name, nimports)
   bytebuf_to_bytes(buf)
 }
 

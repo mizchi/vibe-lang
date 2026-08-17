@@ -305,9 +305,16 @@ trampoline を将来 `wasi:http/service` の
    clock で示される (gate =
    `test_named_hostfutures_component_gate.sh`、host 側は viberun の
    `VIBE_ASYNC_FUTURES`)。
-   残り: component 内 sleep (adapter は vibe.sleep を
-   提供しない — composer が明確な診断で reject)、TaskGroup 併用
-   (mixing guard reject のまま)。
+   **component 内 sleep も landed (#1342, spec §3.18.6)**: `vibe.sleep` が
+   同じ adapter composition を key するようになり、component import
+   `sleep-for: async func(ms: u32) -> u32` を async-lower して返ってくる
+   **subtask** を `waitable-set.wait` で park する (future/stream の
+   getter/wait 対とは別形)。sleep の前に作った host future が sleep 中も
+   進むこと (delay D 同士で ~D、逐次なら ~2D) が gate =
+   `test_async_sleep_component_gate.sh` の主張。あわせて
+   self-contained wrap が満たせない host import を **fail closed** に
+   した — 以前は instantiate 不能な component を書いて exit 0 していた。
+   残り: TaskGroup 併用 (mixing guard reject のまま)。
    **Decision 3 の named host streams も landed (spec §3.18)**: D3 終端
    probe (§3.17) の実測を受けて、`host_stream_named("body") ->
    HostStream` (pure、cell `[3, handle]`。当初は `Stream[Int]` だったが

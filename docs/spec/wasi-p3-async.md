@@ -1096,8 +1096,8 @@ let run: () -> Int with Async = () -> {
 6. **駆動**: viberun `run_async_component` の既存 `get-future`
    FutureReader import（§3.13）がそのまま producer。
 
-制限（記録）: sleep を併用する component は従来どおり未対応（adapter は
-`vibe.sleep` を提供しない — composer が明確な診断で reject）。TaskGroup
+制限（記録）: sleep との併用は #1342 で解消した（adapter が `vibe.sleep` を
+提供する — §3.18.6）。TaskGroup
 （spawn_suspend）との併用は D1 以来の mixing guard が reject。in-guest
 pump backend では Suspend(handle+2) は poller 扱い → 完了源が無く
 deadlock trap（§3.13 の縮退規則）。
@@ -1586,15 +1586,16 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
 > silently doubled, which is how "abc" came back as `sum=588` instead of 294.
 > The serve lane's trampoline and adapter are both untagged.
 
-#### 3.18.5 Core value ABI at component adapter boundaries (ADR-0105, #1930)
+#### 3.18.5 Core value ABI at component adapter boundaries (ADR-0106, #1930)
 
 The core function type `(i64) -> i64` does not identify how a vibe `Int` is
 represented. RC builds use one-bit tagged values (`n << 1`), while non-RC
 builds use plain i64 values. Applying the wrong convention does not necessarily
 trap: a stream byte can be doubled and still look valid.
 
-A core that imports a host-future getter or named host-stream getter MUST
-contain one `vibe.tagmode` custom section. A serve core whose validated,
+A core that imports a host-future getter, a named host-stream getter, or (as of
+#1342) the host `sleep` under an async `run` entry MUST contain one
+`vibe.tagmode` custom section. A serve core whose validated,
 exported `handler` has the four-parameter `(String, String, String,
 HostStream) -> String with Async` signature MUST also contain the section,
 even when the handler never reads or closes its `HostStream` parameter and
@@ -1619,6 +1620,73 @@ pipeline; mode 1 is a composition error.
 Core modules that do not select either adapter omit `vibe.tagmode`. This keeps
 ordinary wasm byte-identical and prevents adapter-only metadata from becoming
 a global output-size cost.
+
+#### 3.18.6 `sleep` inside an async component (done, #1342)
+
+An `() -> Int with Async` entry that calls `sleep(ms)` had no working route.
+The boundary settles the suspend through `sleep_blocking`, which is a
+`vibe.sleep (i64) -> ()` core import; that core fell into the self-contained
+trampolined-p1 wrap, which instantiates it with a preview1 `fd_write` stub and
+no `vibe` instance at all. The composer emitted the component anyway and the
+compiler exited 0, so the failure surfaced only when something tried to load
+the artifact:
+
+```
+$ wasm-tools validate --features all sleep.component.wasm
+error: missing module instantiation argument named `vibe`
+```
+
+Two changes. First, `vibe.sleep` keys the adapter-backed composition — the same
+one host futures and host streams ride. Second, the self-contained wrap now
+proves its core's imports are satisfiable before emitting anything, and names
+the offending import when they are not.
+
+The sleep half is not a getter/wait pair like the other two. The host side is
+an `async func`, so its async-lowered call returns a packed status whose high
+bits hold a **subtask** rather than a future or stream handle:
+
+```
+import sleep-for: async func(ms: u32) -> u32     ; component import
+
+; adapter func `sleep (i64) -> ()`, exported to the compiled core as vibe.sleep
+packed = [async-lower]sleep-for(ms, 24)
+if (packed & 0xf) != RETURNED(2):                ; a real delay starts a subtask
+   sub = packed >> 4
+   waitable.join(sub, ws) -> waitable-set.wait(ws, 32)
+     ; the task genuinely suspends here; the wake carries
+     ; event SUBTASK(1) with status RETURNED(2) in payload[1]
+   subtask.drop(sub) -> waitable-set.drop(ws)
+```
+
+`subtask.drop` sits inside the parked branch: a zero (or already elapsed) delay
+can complete eagerly, and there is no subtask to drop then — dropping one
+unconditionally is the bug §3.9 records finding on the `$writer` epilogue.
+
+The sleep half's scratch slots (24 = async-lower results, 32 = wait payload)
+are disjoint from the getters' (8 and 16). The getters may share slot 8 because
+an async-lowered getter call completes before the next one starts; `sleep-for`
+does not — its subtask stays outstanding across the park.
+
+`sleep-for` is a viberun root import, linked from a tokio timer like every
+other suspend in that runner. Never a blocking thread sleep: the measurement
+that makes this lane worth having is that a host future created **before** the
+sleep keeps making progress **during** it. With delay D on both, the program
+
+```vibe skip
+let run: () -> Int with Async = () -> {
+  let a = host_future_named("price")
+  sleep(300)
+  await(a) + 2
+}
+```
+
+returns 42 in ~D. A blocking sleep would serialize it to ~2D. That bound, the
+`sleep-for` import, the plain-i64 (`VIBE_RC=0`) lane and the fail-closed
+rejection are all pinned by `scripts/test_async_sleep_component_gate.sh`.
+
+Everything else on that composition is byte-identical: the sleep functype,
+imports, canon defs and adapter func are all emitted last and only when the
+core imports `vibe.sleep`.
 
 ### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
 
@@ -1987,6 +2055,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 | 並行 await | 複数 host 操作を同時に in-flight (2×1000ms が 1015ms) | `test_concurrent_awaits_component_gate.sh` |
 | host stream の読み | `host_stream_named("body")` → `[3, handle]`、`host_stream_next` (1 byte / -1 = EOS) → `Suspend(handle+2048)` → adapter の per-read `stream.read` + park。`host_stream_close` で部分消費した readable end を解放 | `test_named_hoststreams_component_gate.sh` |
 | `for` からの host stream 消費 | iterand の型で await ループを選ぶ (#1366)。`{ Async }` 無しの row は reject | 同上 (`for` lane) |
+| component 内 sleep | `sleep(ms)` → `Suspend(-ms)` → boundary の `sleep_blocking` → adapter が `sleep-for: async func(ms: u32) -> u32` を async-lower し、返る **subtask** を `waitable-set.wait` で park (#1342、§3.18.6)。sleep 前に作った host future は sleep 中も進む (D 同士で ~D) | `test_async_sleep_component_gate.sh` |
 | WIT マッピング | `with Async` export → `async func`、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>` | `wit_gen_test` (D5 pin) |
 
 ### 6.2 残作業

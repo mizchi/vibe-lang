@@ -4392,6 +4392,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let hs_named_names = lc_collect_host_stream_names(stmts)
   let need_host_stream_read_builtin = Map::has_key(used_builtin_names, "vibe_hs_read_raw") || Array::length(hs_named_names) > 0
   let serve_handler_has_host_stream = lc_serve_handler_takes_host_stream(stmts, entry_name)
+  // #1342: an `() -> Int with Async` entry named `run` that sleeps is routed
+  // to the adapter-backed composition too (its `vibe.sleep` import is
+  // satisfied by the adapter's sleep half), so its core has to publish the
+  // value convention the adapter decodes the ms argument with (ADR-0106).
+  // Keyed on the same pair the router keys on, so an ordinary program that
+  // sleeps is not componentized and its bytes do not move.
+  let sleep_needs_component_adapter = need_sleep_builtin && entry_name == "run" && lc_entry_declares_async(stmts, entry_name)
   // ADR-0089 Decision 3 follow-up (#1218): the shared CLOSE half. Gated on
   // ACTUAL use (unlike the read half, which every named stream implies) so
   // a program that always drains to EOS reserves no extra import and its
@@ -7227,12 +7234,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     ()
   }
-  // Value ABI metadata consumed by the host-future/host-stream component
-  // adapter. A future/stream getter OR the validated serve handler signature
-  // selects that composer. A raw stream read alone does not: ordinary/library
-  // code may read a HostStream without being componentized. Ordinary core wasm
-  // therefore remains byte-identical. Payload: i32 LE tag_mode.
-  if need_host_future_builtin || serve_handler_has_host_stream || Array::length(hf_named_names) > 0 || Array::length(hs_named_names) > 0 {
+  // Value ABI metadata consumed by the host-future/host-stream/sleep component
+  // adapter. A future/stream getter, the validated serve handler signature, OR
+  // an async `run` entry that sleeps (#1342) selects that composer. A raw
+  // stream read alone does not: ordinary/library code may read a HostStream
+  // without being componentized. Ordinary core wasm therefore remains
+  // byte-identical. Payload: i32 LE tag_mode.
+  if need_host_future_builtin || serve_handler_has_host_stream || Array::length(hf_named_names) > 0 || Array::length(hs_named_names) > 0 || sleep_needs_component_adapter {
     let tm_content = bytebuf_new()
     let tm_name = "vibe.tagmode"
     leb128_encode_u32(tm_content, String::length(tm_name))
