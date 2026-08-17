@@ -1,7 +1,7 @@
 //# Entry-boundary effect admission (#1683)
 
 import @vibe/compiler/checker {
-  check_program
+  check_program, standard_provider_owns_operation
 }
 
 import @vibe/compiler/syntax {
@@ -89,6 +89,43 @@ test "#1961: a user effect cannot impersonate an exact host provider operation" 
   let msg = first_check_error(source)
   assert(String::contains(msg, "collides with a registry-owned host provider operation"))
   assert(String::contains(msg, "Fs::read_file"))
+}
+
+test "#1961: provider ownership is exact operation identity" {
+  assert(standard_provider_owns_operation("Console::write_stream"))
+  assert(standard_provider_owns_operation("Fs::read_file"))
+  assert(!standard_provider_owns_operation("Console::Get"))
+  assert(!standard_provider_owns_operation("Console"))
+  assert(!standard_provider_owns_operation("Fs"))
+  assert(!standard_provider_owns_operation("Ask::Get"))
+}
+
+test "#1961: allows is not a second spelling of with" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Ask::Get"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+}
+
+test "#1961: lexically handled emit does not need allows authority" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: transcript of handled / unhandled / impersonation diagnostics" {
+  let handled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  let unhandled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
+  let impersonation = "effect Fs { read_file(String) -> String }\nfn main() -> String with Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
+  let handled_msg = first_check_error(handled)
+  let unhandled_msg = first_check_error(unhandled)
+  let impersonation_msg = first_check_error(impersonation)
+  assert_eq(handled_msg, "")
+  assert(String::contains(unhandled_msg, "emits unhandled `Ask::Get`"))
+  assert(String::contains(unhandled_msg, "not authorized by `allows Fs`"))
+  assert(String::contains(unhandled_msg, "handle the operation, or add it to the `allows` clause"))
+  assert(String::contains(impersonation_msg, "collides with a registry-owned host provider operation"))
+  assert(String::contains(impersonation_msg, "Fs::read_file"))
 }
 
 test "#1683: an ordinary helper still receives the row-addition hint" {

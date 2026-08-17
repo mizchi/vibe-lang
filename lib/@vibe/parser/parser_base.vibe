@@ -1100,9 +1100,8 @@ fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Excep
 /// syntax that does not parse. `?` belongs with the slice that gives it
 /// meaning (strict grade matching, `perform?` -> Attempt[T, E]).
 ///
-/// `allows` is different and IS shipped here: it desugars to the same single
-/// row, so `with A allows C` behaves exactly as `with A + C` -- there is no
-/// half-implemented behaviour behind it.
+/// `allows` is shipped as independent authority (#1961): `with A allows C`
+/// is stored as the emitted row plus a `#allows` marker, not as `with A + C`.
 
 /// #1429: the braceless row `A + B`. Items are separated by `+` and the row
 /// ends at the first token that is not `+` -- which is why the separator is
@@ -1174,15 +1173,9 @@ fn parse_effect_row_base(tokens: Array[Token], pos: Int) -> (String, Int) with E
 /// no gain. The position is unambiguous because nothing else may follow a row:
 /// a declaration continues with `{`, a `let` with `=`, a type with `,`/`)`.
 ///
-/// The two clauses desugar to ONE row (`A ∪ C`), which is ADR-0088 decision 1:
-/// the split is a checked audit surface, not a second row representation, so
-/// contract hash and WIT projection stay invariant under the spelling.
-///
-/// KNOWN GAP (this slice is the parser only): because the split is erased at
-/// parse time, the printer renders `with A + C` and `vibe normalize` therefore
-/// ERASES an `allows` clause. For a clause whose whole purpose is to make the
-/// capability surface visible, that is wrong -- preserving it needs the split
-/// carried in the AST, which is a later slice.
+/// #1961: the clauses stay distinct. The emitted `with` row and the `allows`
+/// authority are stored as `emitted + "\\n#allows " + caps` so checker / WIT
+/// can recover both. They are not unioned into one row.
 ///
 /// The classification check (ADR-0088 decision 1) DOES run -- see
 /// check_allows_clause_items / check_split_with_clause_items below. Still
@@ -1289,14 +1282,12 @@ export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with
       // with the split.
       check_split_with_clause_items(row)
       check_allows_clause_items(caps)
-      let joined = if String::length(row) == 0 {
-        caps
-      } else if String::length(caps) == 0 {
+      let encoded = if String::length(caps) == 0 {
         row
       } else {
-        "\{row}, \{caps}"
+        String::concat(row, String::concat("\n#allows ", caps))
       }
-      (joined, after_caps)
+      (encoded, after_caps)
     } else {
       (row, after_row)
     },
