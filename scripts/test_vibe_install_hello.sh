@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # #1949: the documented first program must compile and run from a directory
 # that cannot see the repository lib/ tree. Host-builtin Stdout::write_stream
-# only — the installed toolchain does not ship @vibe/prelude.
+# only — this smoke does not install. The installed-toolchain prelude import
+# is pinned in tests/integration/install/install_test.sh.
 #
 # A full `vibe run hello.vibex` needs the install layout (viberun +
 # vibe-cli.wasm). This matches scripts/vibe_run_smoke.sh (seed compile +

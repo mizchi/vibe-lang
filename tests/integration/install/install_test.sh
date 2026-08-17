@@ -51,6 +51,9 @@ VIBE="$VIBE_BIN_DIR/vibe"
 # users to import it for a WIT-facing fallible export, so an installed
 # toolchain that lacks it makes documented code fail to resolve.
 [ -f "$VIBE_HOME/lib/@vibe/wit_runtime/index.vpkg" ] || { echo "FAIL: stdlib @vibe/wit_runtime not materialized" >&2; exit 1; }
+# @vibe/prelude is user-facing (#1949): chapter-01's first import form is
+# `import @vibe/prelude { stdout_write }`. A fresh install must ship it.
+[ -f "$VIBE_HOME/lib/@vibe/prelude/index.vpkg" ] || { echo "FAIL: stdlib @vibe/prelude not materialized" >&2; exit 1; }
 echo "ok: install produced launcher + .cwasm + default toolchain + stdlib"
 pass=$((pass + 1))
 
@@ -67,6 +70,16 @@ printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$proj/fail_test.vibe"
 check "vibe run hello" "42" "$(run_number "$proj/hello.vibex")"
 # run: multi-file import resolution
 check "vibe run app (import)" "42" "$(run_number "$proj/app.vibex")"
+
+# #1949: chapter-01 prelude import must work from a temp project with only
+# the installed toolchain. cd so repo lib/ is not the workspace lib, and
+# drop an inherited VIBE_LIB so resolution is $VIBE_HOME/lib.
+printf 'import @vibe/prelude {\n  stdout_write\n}\nfn main with Stdout {\n  stdout_write("42\\n")\n}\n' > "$proj/prelude_hello.vibex"
+(
+  cd "$proj"
+  unset VIBE_LIB || true
+  check "vibe run prelude import (no repo lib/)" "42" "$(run_number "$proj/prelude_hello.vibex")"
+)
 
 # compile: produces a wasm
 "$VIBE" compile "$proj/hello.vibex" -o "$proj/hello.wasm" >/dev/null 2>&1 || true

@@ -35,7 +35,8 @@ This will:
 3. AOT-compile it to `vibe-cli.cwasm` for this machine,
 4. install the launcher into the toolchain + the dispatcher onto your `PATH`,
 5. materialize the stdlib packages (`@vibe/core` / `@vibe/ast` /
-   `@vibe/parser`) into `$VIBE_HOME/lib`, hash-verified (`vibe hash`).
+   `@vibe/parser` / `@vibe/prelude` / `@vibe/wit_runtime`) into
+   `$VIBE_HOME/lib`, hash-verified (`vibe hash`).
 
 Then:
 
@@ -66,7 +67,7 @@ $VIBE_HOME/                 (default: ~/.vibe)
 │       ├── vibe-cli.cwasm  # host-specific AOT build (`vibe self update`)
 │       └── lsp_server.js…  # editor tooling
 ├── lib/
-│   └── @vibe/{core,ast,parser}/   # stdlib packages — the default VIBE_LIB
+│   └── @vibe/{core,ast,parser,prelude,wit_runtime}/   # stdlib packages — the default VIBE_LIB
 │                                  # resolution root (ADR-0065 #751), SHARED
 │                                  # across toolchains (content-addressed)
 └── cache/                  # package fetch cache (#754) — shared

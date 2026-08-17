@@ -31,8 +31,8 @@ echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
-`import @vibe/prelude` in the chapters below needs the repo or a pinned
-package. A fresh install does not ship that package.
+`import @vibe/prelude` in the chapters below resolves from an installed
+toolchain (`~/.vibe/lib`) as well as from the repository `lib/`.
 
 | Chapter | Topic |
 | --- | --- |

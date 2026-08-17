@@ -13,10 +13,8 @@ locally, run
 
 `let` binds. The type annotation is optional — it is inferred.
 
-`import @vibe/prelude` needs the repository `lib/` or a pinned package.
-Outside the tree, use the host builtin `Stdout::write_stream` as in
-[install.md](../install.md):
-`fn main with Stdout { Stdout::write_stream("42\n") }`.
+`import @vibe/prelude` is on an installed toolchain (`~/.vibe/lib`) as
+well as in the repository `lib/`.
 
 ```vibe run
 import @vibe/prelude {
