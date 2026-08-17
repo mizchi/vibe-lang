@@ -8332,9 +8332,24 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else if collection_class < 0 && !discarded_root {
         Array::push(errors, String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
       } else if collection_class < 0 {
-        // #1559: statement position used to fall through to the residual
-        // Array lowering and silently trap when `T` was not an array.
-        Array::push(errors, String::concat("cannot classify this `for` iterand; annotate it or pass a concrete Array, iterator, or pull closure", off_marker(railway_expr_off(iterable))))
+        // #1559: a rigid type parameter (`T`) as the iterand used to lower
+        // to the residual Array loop and trap. A still-open inference var
+        // is different — builtins such as `String::split` surface as a
+        // fresh var when their return is not yet in the env, and the
+        // compiler itself iterates those in statement position.
+        let rigid_param = match it_resolved {
+          CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs, nm) {
+            None => true,
+            Some(_) => false
+          },
+          CtForAll(_, _, _) => true,
+          _ => false
+        }
+        if rigid_param {
+          Array::push(errors, String::concat("cannot classify this `for` iterand; annotate it or pass a concrete Array, iterator, or pull closure", off_marker(railway_expr_off(iterable))))
+        } else {
+          ()
+        }
       } else {
         ()
       }
