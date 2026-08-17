@@ -245,6 +245,36 @@ export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String
         Array::push(stmts, stmt)
         pos = next
       },
+      // `#deprecated` is a token-level marker (`vibe check` scans the
+      // on-disk vpkg). The contract grammar has to skip it so type aliases
+      // that exist only here can carry the directive. Other `#` forms
+      // (`#cfg`, `#zero_alloc`) stay rejected — they have no contract
+      // meaning yet.
+      THash => {
+        match peek(tokens, pos + 1) {
+          TIdent(dname) => {
+            if dname == "deprecated" {
+              match peek(tokens, pos + 2) {
+                TLParen => match peek(tokens, pos + 3) {
+                  TString(_) => match peek(tokens, pos + 4) {
+                    TRParen => {
+                      pos = pos + 5
+                    },
+                    _ => throw("expected ')' after #deprecated message")
+                  },
+                  _ => throw("expected string message in #deprecated(...)")
+                },
+                _ => {
+                  pos = pos + 2
+                }
+              }
+            } else {
+              throw("unsupported # directive in a contract file: \{dname} (only #deprecated is allowed)")
+            }
+          },
+          _ => throw("expected directive name after '#' in a contract file")
+        }
+      },
       // #1280: `fn` lexes as TFn (reserved word), no longer TIdent("fn").
       TFn => {
         // where clauses on declarations parse but are not yet part of the

@@ -174,8 +174,9 @@ contract — this is a naming *rule*, not a per-type coincidence:
 旧綴りの**型注釈**も transparent alias として残る (#1700)。たとえば
 `let m: HashMap[String, Int] = HashMap::new_string()` は `@vibe/core` の
 `index.vpkg` 境界を越えて `MutMap[String, Int]` と同じ型になる。移行先は
-引き続き `Mut-` 名で、旧関数を使えば `vibe check` が警告する。型名だけを
-旧綴りにした場合は警告されないので、新規コードでは `Mut-` を直接書く。
+引き続き `Mut-` 名。型行に `#deprecated` を書くのは bootstrap bump 待ち
+(seed の契約パーサが `#` を拒む) なので、`vibe check` は言語側の表で
+同じ名前を警告する。`import { HashMap }` したファイルの注釈が対象。
 
 旧綴りの**関数**を使うと `vibe check` が移行先を名指しする `warning:` 行を
 出す (非致命、exit 0)。**これは #1262 follow-up で初めて実際に効くようになった**
