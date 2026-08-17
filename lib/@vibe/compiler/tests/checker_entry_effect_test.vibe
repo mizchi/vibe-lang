@@ -1,7 +1,7 @@
 //# Entry-boundary effect admission (#1683)
 
 import @vibe/compiler/checker {
-  check_program
+  check_program, freeze_binding_lock, is_instantiate_authority, standard_provider_owns_operation
 }
 
 import @vibe/compiler/syntax {
@@ -77,6 +77,145 @@ test "#1683: a user effect named Fs is not admitted as the host provider at _sta
   let source = "effect Fs { Custom() -> Int }\nfn _start() -> Int with Fs { perform Fs::Custom() }\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "entry point '_start' cannot discharge { Fs::Custom }"))
+}
+
+test "#1961: lexically handled operations require no provider" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: a user effect cannot impersonate an exact host provider operation" {
+  let source = "effect Fs { read_file(String) -> String }\nfn main() -> String with Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "collides with a registry-owned host provider operation"))
+  assert(String::contains(msg, "Fs::read_file"))
+}
+
+test "#1961: provider ownership is exact operation identity" {
+  assert(standard_provider_owns_operation("Console::write_stream"))
+  assert(standard_provider_owns_operation("Fs::read_file"))
+  assert(!standard_provider_owns_operation("Console::Get"))
+  assert(!standard_provider_owns_operation("Console"))
+  assert(!standard_provider_owns_operation("Fs"))
+  assert(!standard_provider_owns_operation("Ask::Get"))
+}
+
+test "#1961: allows is not a second spelling of with" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Ask::Get"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+}
+
+test "#1961: lexically handled emit does not need allows authority" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: a handle that does not enclose the perform is not lexical" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  let x = perform Ask::Get()\n  handle { 0 } with Ask { Get() => resume(1) }\n  x\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "emits unhandled `Ask::Get`"))
+  assert(String::contains(msg, "not authorized by `allows Fs`"))
+}
+
+test "#1961: allows authorizes operations on a non-entry function" {
+  let source = "fn helper() -> Unit with () allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\nfn main() -> Int { 0 }\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: allows on a non-entry function still rejects unauthorized ops" {
+  let source = "fn helper() -> String with () allows Console::write_stream {\n  Console::read_stream(0)\n}\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "helper"))
+  assert(String::contains(msg, "Console::read_stream"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+  assert(!String::contains(msg, "entry point"))
+}
+
+test "#1961: instantiate freeze uses exact operation identity" {
+  assert(is_instantiate_authority("Console::write_stream"))
+  assert(is_instantiate_authority("Fs::read_file"))
+  assert(is_instantiate_authority("Fs"))
+  assert(is_instantiate_authority("Stdout"))
+  assert(is_instantiate_authority("Console"))
+  assert(!is_instantiate_authority("Console::Get"))
+  assert(!is_instantiate_authority("Ask::Get"))
+}
+
+test "#1961: allows Console::Get cannot be frozen as instantiate authority" {
+  let source = "fn main() -> Int with () allows Console::Get {\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Console::Get"))
+  assert(String::contains(msg, "instantiate"))
+  assert(!String::contains(msg, "host capability effect"))
+}
+
+test "#1961: optional allows does not authorize a required operation" {
+  let source = "fn main() -> String with () allows Fs::read_file? {\n  Fs::read_file(\"x\")\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Fs::read_file"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+}
+
+test "#1961: required allows still authorizes the required operation" {
+  let source = "fn main() -> String with () allows Fs::read_file {\n  Fs::read_file(\"x\")\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: BindingLock freeze is Granted for required and NotGranted for optional" {
+  let lock = freeze_binding_lock([
+    "Fs::read_file",
+    "Console::write_stream?"
+  ])
+  assert_eq(Array::length(lock), 2)
+  let mut saw_optional = false
+  let mut saw_required = false
+  let mut i = 0
+  while i < Array::length(lock) {
+    let (name, status) = Array::get(lock, i)
+    if name == "Console::write_stream" {
+      assert_eq(status, "NotGranted")
+      saw_optional = true
+    } else if name == "Fs::read_file" {
+      assert_eq(status, "Granted")
+      saw_required = true
+    } else {
+      assert(false)
+    }
+    i = i + 1
+  }
+  assert(saw_optional)
+  assert(saw_required)
+  assert(!is_instantiate_authority("Console::Get?"))
+}
+
+test "#1961: allows Console::write_stream does not grant console input" {
+  let out_ok = "fn main() -> Unit with () allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\n"
+  let in_bad = "fn main() -> String with () allows Console::write_stream {\n  Console::read_stream(0)\n}\n"
+  assert_eq(first_check_error(out_ok), "")
+  let msg = first_check_error(in_bad)
+  assert(String::contains(msg, "Console::read_stream"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+}
+
+test "#1961: transcript of handled / unhandled / impersonation diagnostics" {
+  let handled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  let unhandled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
+  let impersonation = "effect Fs { read_file(String) -> String }\nfn main() -> String with Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
+  let handled_msg = first_check_error(handled)
+  let unhandled_msg = first_check_error(unhandled)
+  let impersonation_msg = first_check_error(impersonation)
+  assert_eq(handled_msg, "")
+  assert(String::contains(unhandled_msg, "emits unhandled `Ask::Get`"))
+  assert(String::contains(unhandled_msg, "not authorized by `allows Fs`"))
+  assert(String::contains(unhandled_msg, "handle the operation, or add it to the `allows` clause"))
+  assert(String::contains(impersonation_msg, "collides with a registry-owned host provider operation"))
+  assert(String::contains(impersonation_msg, "Fs::read_file"))
 }
 
 test "#1683: an ordinary helper still receives the row-addition hint" {

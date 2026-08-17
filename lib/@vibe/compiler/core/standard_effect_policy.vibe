@@ -202,3 +202,44 @@ export fn test_bench_default_effects() -> Array[String] {
 export fn entry_cache_safe_effects() -> Array[String] {
   copied_labels(entry_cache_safe_effect_labels)
 }
+
+/// #1961: cache safety is operation-specific. A broad `Console` row is
+/// unsafe because it includes input; exact captured-output operations
+/// remain safe. `Stdout` is output-only so the whole provider is safe.
+export fn is_entry_cache_safe_operation(label: String) -> Bool {
+  let effect = standard_policy_effect_name(label)
+  if is_entry_runtime_managed_effect(label) {
+    true
+  } else if effect == "Stdout" {
+    true
+  } else {
+    label == "Console::write_stream" || label == "Console::write_char"
+  }
+}
+
+/// Marker the parser stores between the emitted `with` row and the `allows`
+/// authority row. Same spelling as parser_base.encode.
+export fn effect_row_allows_marker() -> String {
+  "\n#allows "
+}
+
+export fn split_effect_row_authority(row: String) -> (String, String) {
+  let sep = effect_row_allows_marker()
+  let idx = String::index_of(row, sep)
+  if idx < 0 {
+    (row, "")
+  } else {
+    (String::substring(row, 0, idx), String::substring(row, idx + String::length(sep), String::length(row)))
+  }
+}
+
+export fn effect_row_emitted_text(row: String) -> String {
+  let (emitted, _) = split_effect_row_authority(row)
+  emitted
+}
+
+export fn effect_row_allows_text(row: String) -> String {
+  let (_, allows) = split_effect_row_authority(row)
+  allows
+}
+

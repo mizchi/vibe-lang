@@ -736,7 +736,17 @@ fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) 
         }
       } else if dname == "zero_alloc" {
         match peek(tokens, pos + 1) {
-          TLParen => throw("#zero_alloc does not accept arguments yet"),
+          TLParen => match peek(tokens, pos + 2) {
+            TIdent(mode) => match peek(tokens, pos + 3) {
+              TRParen => if mode == "strict" || mode == "assume" {
+                (dname, mode, pos + 4)
+              } else {
+                throw(String::concat("#zero_alloc unknown mode '", String::concat(mode, "'; use (strict) or (assume)")))
+              },
+              _ => throw("expected ')' after #zero_alloc mode")
+            },
+            _ => throw("expected #zero_alloc mode name (strict or assume)")
+          },
           _ => (dname, "", pos + 1)
         }
       } else if dname == "deprecated" {
@@ -821,6 +831,16 @@ fn require_zero_alloc_target(tokens: Array[Token], pos: Int) -> Unit with Except
   }
 }
 
+fn zero_alloc_marker_ident(mode: String) -> String {
+  if mode == "strict" {
+    "@zero_alloc_strict"
+  } else if mode == "assume" {
+    "@zero_alloc_assume"
+  } else {
+    "@zero_alloc"
+  }
+}
+
 /// Program parser that KEEPS `fn` declarations as SFnDecl (see
 /// parse_stmt_preserving) — used by the printer/normalize round-trip so
 /// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
@@ -842,7 +862,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
         let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
         if dname == "zero_alloc" {
           require_zero_alloc_target(tokens, dnext)
-          ArrayBuilder::push(b, SExpr(EIdent("@zero_alloc", 0)))
+          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), 0)))
           pos = dnext
         } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
           // enable directive consumed, or active #cfg: keep the next stmt.
@@ -1033,7 +1053,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
           } else {
             0
           }
-          ArrayBuilder::push(b, SExpr(EIdent("@zero_alloc", marker_offset)))
+          ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
           pos = dnext
         } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
           pos = dnext
@@ -1176,7 +1196,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             } else {
               0
             }
-            ArrayBuilder::push(b, SExpr(EIdent("@zero_alloc", marker_offset)))
+            ArrayBuilder::push(b, SExpr(EIdent(zero_alloc_marker_ident(flag), marker_offset)))
             dnext
           } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
             dnext

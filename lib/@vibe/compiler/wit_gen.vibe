@@ -1,7 +1,11 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, is_entry_runtime_managed_effect, is_exception_effect_name
+  Expr, Stmt, TypeExpr, effect_row_emitted_text, has_standard_host_provider, is_entry_runtime_managed_effect, is_exception_effect_name
+}
+
+import @vibe/compiler/checker {
+  standard_provider_owns_operation
 }
 
 import @vibe/core {
@@ -211,13 +215,24 @@ fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: 
 
 /// Split a parsed effect row ("A, B") into names. The parser joins the
 /// `with A + B` list with ", " (parser_base.vibe collect_effect_names).
+fn wit_is_host_provider_label(label: String) -> Bool {
+  if standard_provider_owns_operation(label) {
+    true
+  } else if String::index_of(label, "::") >= 0 {
+    false
+  } else {
+    has_standard_host_provider(label) && !is_entry_runtime_managed_effect(label)
+  }
+}
+
 fn wit_split_effect_row(row: String) -> Array[String] {
   let out = array_empty()
-  let len = String::length(row)
+  let emitted = effect_row_emitted_text(row)
+  let len = String::length(emitted)
   let mut piece = ""
   let mut i = 0
   while i < len {
-    let c = String::char_code_at(row, i)
+    let c = String::char_code_at(emitted, i)
     if c == 44 {
       if String::length(piece) > 0 {
         Array::push(out, piece)
@@ -652,32 +667,31 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
     let mut ei = 0
     while ei < Array::length(ex_effects) {
       let ename = Array::get(ex_effects, ei)
-      if !is_exception_effect_name(ename) {
-        let resolved = array_empty()
-        wit_resolve_effect_names_into(ename, wit_es_names, wit_es_members_list, resolved)
-        let mut ri = 0
-        while ri < Array::length(resolved) {
-          let rname = Array::get(resolved, ri)
-          // Standard entry/runtime handling produces no WIT world import.
-          // `Error`/`Exception[K]` escape through the entry boundary as a
-          // component trap rather than a provider requirement; `Async`
-          // surfaces through the export's `async func` lifting mode instead.
-          // core/standard_effect_policy.vibe centralizes this unchanged
-          // behavior for the checker and WIT generator.
-          //
-          // The deferred declaration-versus-provider inversion below
-          // (`def_idx < 0`) is intentionally unchanged: a declared `effect
-          // X { .. }` still maps to an interface while an undeclared label is
-          // treated as a host capability. This slice does not alter WIT
-          // mapping, provider selection, or handler semantics.
-          if is_entry_runtime_managed_effect(rname) {
-            ()
-          } else if !wit_array_contains(used_effects, rname) {
-            Array::push(used_effects, rname)
+      if !is_exception_effect_name(ename) && !is_entry_runtime_managed_effect(ename) {
+        if wit_is_host_provider_label(ename) {
+          let host = wit_effect_name_of(ename)
+          if !wit_array_contains(used_effects, host) {
+            Array::push(used_effects, host)
           } else {
             ()
           }
-          ri = ri + 1
+        } else {
+          let resolved = array_empty()
+          wit_resolve_effect_names_into(ename, wit_es_names, wit_es_members_list, resolved)
+          let mut ri = 0
+          while ri < Array::length(resolved) {
+            let rname = Array::get(resolved, ri)
+            if is_entry_runtime_managed_effect(rname) {
+              ()
+            } else if has_standard_host_provider(rname) && !wit_is_host_provider_label(ename) {
+              ()
+            } else if !wit_array_contains(used_effects, rname) {
+              Array::push(used_effects, rname)
+            } else {
+              ()
+            }
+            ri = ri + 1
+          }
         }
       } else {
         ()

@@ -881,10 +881,7 @@ test "#1429: `with ()` is the empty row and `with {}` is rejected" {
 
 //# #1345 / ADR-0088: the `allows` clause
 
-test "#1345: `allows` folds into the single row" {
-  // ADR-0088 decision 1: the split is a checked audit surface, not a second
-  // row representation, so `with A allows C` and `with A + C` are the SAME
-  // row and produce byte-identical output.
+test "#1961: `allows` is independent of `with`" {
   let split = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit allows Fs::read_file = (x) -> { x }")))
   } with Exception {
@@ -896,11 +893,10 @@ test "#1345: `allows` folds into the single row" {
     Throw(e) => String::concat("ERROR: ", e)
   }
   assert(!String::starts_with(split, "ERROR: "))
-  assert(split == flat)
-  // The corollary, and a known gap: the printer cannot render the clause
-  // back, so `vibe normalize` ERASES it. Pinned here so that whoever adds
-  // AST-level preservation sees this assertion flip.
-  assert(!String::contains(split, "allows"))
+  assert(split != flat)
+  assert(String::contains(split, "allows"))
+  assert(String::contains(split, "Log::Emit"))
+  assert(String::contains(split, "Fs::read_file"))
 }
 
 test "#1345: `with () allows C` is the capability-only row" {
@@ -910,7 +906,7 @@ test "#1345: `with () allows C` is the capability-only row" {
     Throw(e) => String::concat("ERROR: ", e)
   }
   assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "with Fs::read_file"))
+  assert(String::contains(out, "allows Fs::read_file"))
 }
 
 test "#1345: `allows` works in type position too" {
@@ -922,7 +918,7 @@ test "#1345: `allows` works in type position too" {
     Throw(e) => String::concat("ERROR: ", e)
   }
   assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "with Log::Emit + Fs::read_file"))
+  assert(String::contains(out, "allows Fs::read_file"))
 }
 
 test "#1345: `allows` is contextual, not reserved" {
@@ -1021,17 +1017,14 @@ test "#1345: classification uses the base effect name, and excludes Async" {
   assert(String::contains(async_cap, "not a capability effect"))
 }
 
-test "#1345: the `?` grade suffix does NOT parse yet" {
-  // Deliberately absent: the checker compares row items as opaque labels, so
-  // `Cfg::Read?` would be a different effect from `Cfg::Read` and a function
-  // declaring the Optional form would be told to declare BOTH. `?` ships with
-  // the slice that gives it meaning (strict grade matching / `perform?`).
+test "#1345: the `?` grade suffix parses on allows items" {
   let out = handle {
     print_program(parse_program(lex("let f: (Int) -> Int with () allows Fs::read_file? = (x) -> { x }")))
   } with Exception {
     Throw(e) => String::concat("ERROR: ", e)
   }
-  assert(String::starts_with(out, "ERROR: "))
+  assert(!String::starts_with(out, "ERROR: "))
+  assert(String::contains(out, "allows Fs::read_file?"))
 }
 
 test "#1429: a parenthesized non-empty row is rejected by name" {

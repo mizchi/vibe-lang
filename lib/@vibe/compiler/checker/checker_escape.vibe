@@ -30,6 +30,10 @@ import @vibe/compiler/core {
   Expr, Pat, TypeExpr
 }
 
+import @vibe/core {
+  array_empty
+}
+
 //# Functions
 
 /// True when `pat` binds `name` (and therefore shadows an outer `let mut` of
@@ -378,4 +382,51 @@ fn esc_scan(expr: Expr, name: String) -> Bool {
 /// inside it that shadows it, is correctly not this binding.
 export fn mut_binding_escapes(body: Expr, name: String) -> Bool {
   esc_scan(body, name)
+}
+
+//# #1951 Diag::Report — compiler-private diagnostic effect.
+//
+// One bounded slice (MutList::empty region-token) reports through this
+// effect. Handlers are local to these helpers: collect-all appends into the
+// caller-owned errors array, fail-fast returns the payload via resume.
+// No global sink, and checker.vibe does not wrap its giant functions in a
+// handle (that blew selfcompile heap).
+
+effect Diag {
+  Report(String) -> String
+}
+
+export fn diag_report_into(errors: Array[String], msg: String) -> Unit {
+  let _ = handle {
+    perform Diag::Report(msg)
+  } with Diag {
+    Report(m) => {
+      Array::push(errors, m)
+      resume(m)
+    }
+  }
+}
+
+export fn diag_collect_all(msg: String) -> Array[String] {
+  let out = array_empty()
+  diag_report_into(out, msg)
+  out
+}
+
+export fn diag_collect_all_many(msgs: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(msgs) {
+    diag_report_into(out, Array::get(msgs, i))
+    i = i + 1
+  }
+  out
+}
+
+export fn diag_fail_fast(msg: String) -> String {
+  handle {
+    perform Diag::Report(msg)
+  } with Diag {
+    Report(m) => resume(m)
+  }
 }

@@ -5,7 +5,7 @@ import ./lexer.vibe {
 }
 
 import ./parser.vibe {
-  parse_program, parse_program_located, parse_program_recovering
+  parse_program, parse_program_located, parse_program_preserving, parse_program_recovering, parse_program_spans
 }
 
 import @vibe/ast {
@@ -70,14 +70,49 @@ test "parse_program: legacy @zero_alloc remains accepted during migration" {
   assert(Array::length(stmts) == 2)
 }
 
-test "parse_program: unimplemented #zero_alloc arguments fail closed" {
+fn zero_alloc_marker_name(stmts: Array[Stmt]) -> String {
+  match Array::get(stmts, 0) {
+    SExpr(EIdent(name, _)) => name,
+    _ => ""
+  }
+}
+
+test "parse_program: #zero_alloc(strict) and (assume) become distinct markers" {
+  let strict_stmts = parse_program(lex("#zero_alloc(strict)\nfn hot(x: Int) -> Int { x + 1 }"))
+  let assume_stmts = parse_program(lex("#zero_alloc(assume)\nfn hot(x: Int) -> Int { x + 1 }"))
+  let bare_stmts = parse_program(lex("#zero_alloc\nfn hot(x: Int) -> Int { x + 1 }"))
+  assert_eq(zero_alloc_marker_name(strict_stmts), "@zero_alloc_strict")
+  assert_eq(zero_alloc_marker_name(assume_stmts), "@zero_alloc_assume")
+  assert_eq(zero_alloc_marker_name(bare_stmts), "@zero_alloc")
+}
+
+test "parse_program: unknown #zero_alloc mode fails closed" {
   let result = handle {
-    let _ = parse_program(lex("#zero_alloc(strict)\nfn hot(x: Int) -> Int { x + 1 }"))
+    let _ = parse_program(lex("#zero_alloc(loose)\nfn hot(x: Int) -> Int { x + 1 }"))
     "OK"
   } with Exception {
     Throw(e) => e
   }
-  assert(String::contains(result, "#zero_alloc does not accept arguments yet"))
+  assert(String::contains(result, "#zero_alloc unknown mode"))
+}
+
+test "parse surfaces agree on #zero_alloc(strict) marker" {
+  let src = "#zero_alloc(strict)\nfn hot(x: Int) -> Int { x + 1 }"
+  let tokens = lex(src)
+  let (otokens, starts, ends) = lex_with_offsets(src)
+  let via_program = zero_alloc_marker_name(parse_program(tokens))
+  let via_preserving = zero_alloc_marker_name(parse_program_preserving(tokens))
+  let via_located = zero_alloc_marker_name(parse_program_located(otokens, starts, src))
+  let (recovered, rec_errs) = parse_program_recovering(otokens, starts, src)
+  let via_recovering = zero_alloc_marker_name(recovered)
+  let (span_stmts, span_starts, _) = parse_program_spans(otokens, starts, ends)
+  assert_eq(via_program, "@zero_alloc_strict")
+  assert_eq(via_preserving, "@zero_alloc_strict")
+  assert_eq(via_located, "@zero_alloc_strict")
+  assert_eq(via_recovering, "@zero_alloc_strict")
+  assert_eq(Array::length(rec_errs), 0)
+  assert(Array::length(span_stmts) == 1)
+  assert(Array::get(span_starts, 0) == 0)
 }
 
 test "parse_program: multiple top-level statements" {
