@@ -1,7 +1,7 @@
 //# Entry-boundary effect admission (#1683)
 
 import @vibe/compiler/checker {
-  check_program, standard_provider_owns_operation
+  check_program, is_instantiate_authority, standard_provider_owns_operation
 }
 
 import @vibe/compiler/syntax {
@@ -118,6 +118,39 @@ test "#1961: a handle that does not enclose the perform is not lexical" {
   let msg = first_check_error(source)
   assert(String::contains(msg, "emits unhandled `Ask::Get`"))
   assert(String::contains(msg, "not authorized by `allows Fs`"))
+}
+
+test "#1961: allows authorizes operations on a non-entry function" {
+  let source = "fn helper() -> Unit with () allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\nfn main() -> Int { 0 }\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "#1961: allows on a non-entry function still rejects unauthorized ops" {
+  let source = "fn helper() -> String with () allows Console::write_stream {\n  Console::read_stream(0)\n}\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "helper"))
+  assert(String::contains(msg, "Console::read_stream"))
+  assert(String::contains(msg, "allows"))
+  assert(String::contains(msg, "authorized"))
+  assert(!String::contains(msg, "entry point"))
+}
+
+test "#1961: instantiate freeze uses exact operation identity" {
+  assert(is_instantiate_authority("Console::write_stream"))
+  assert(is_instantiate_authority("Fs::read_file"))
+  assert(is_instantiate_authority("Fs"))
+  assert(is_instantiate_authority("Stdout"))
+  assert(is_instantiate_authority("Console"))
+  assert(!is_instantiate_authority("Console::Get"))
+  assert(!is_instantiate_authority("Ask::Get"))
+}
+
+test "#1961: allows Console::Get cannot be frozen as instantiate authority" {
+  let source = "fn main() -> Int with () allows Console::Get {\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "Console::Get"))
+  assert(String::contains(msg, "instantiate"))
+  assert(!String::contains(msg, "host capability effect"))
 }
 
 test "#1961: allows Console::write_stream does not grant console input" {
