@@ -1,0 +1,33 @@
+// #1951: Diag::Report collect-all and fail-fast on the shipped checker
+// helpers, plus the MutList::empty accumulator slice.
+
+import @vibe/compiler/checker {
+  check_program, diag_collect_all, diag_fail_fast
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+test "#1951: collect-all and fail-fast agree on the payload" {
+  let msg = "MutList::empty requires the region token bound by `region r { ... }`"
+  let collected = diag_collect_all(msg)
+  assert_eq(Array::length(collected), 1)
+  assert_eq(Array::get(collected, 0), msg)
+  assert_eq(diag_fail_fast(msg), msg)
+}
+
+test "#1951: MutList::empty(0) still reports the same region-token diagnostic" {
+  let source = "fn main() -> Int {\n  let xs = MutList::empty(0)\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "MutList::empty requires the region token"))
+}

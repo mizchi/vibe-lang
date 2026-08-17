@@ -708,6 +708,35 @@ fn report_railway_after_arms(kind: Int, env: TypeEnv, s: Subst, result_ty: Type,
   }
 }
 
+// #1951: compiler-private diagnostic effect. User-effect payloads are
+// delivered only through a tail `resume` (an abortive arm binds the
+// empty string). Collect-all records then resumes; fail-fast resumes
+// the same payload as the handle result.
+effect Diag {
+  Report(String) -> String
+}
+
+export fn diag_collect_all(msg: String) -> Array[String] {
+  let out = array_empty()
+  let _ = handle {
+    perform Diag::Report(msg)
+  } with Diag {
+    Report(m) => {
+      Array::push(out, m)
+      resume(m)
+    }
+  }
+  out
+}
+
+export fn diag_fail_fast(msg: String) -> String {
+  handle {
+    perform Diag::Report(msg)
+  } with Diag {
+    Report(m) => resume(m)
+  }
+}
+
 fn type_is_ground(t: Type) -> Bool {
   match t {
     CtNamed(_, _) => false,
@@ -6248,7 +6277,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if is_region_token {
             ()
           } else {
-            Array::push(errors, String::concat("MutList::empty requires the region token bound by `region r { ... }` (the token is second-class and cannot be forged or passed through function parameters)", off_marker_len(callee_off, String::length(name))))
+            let token_msg = String::concat("MutList::empty requires the region token bound by `region r { ... }` (the token is second-class and cannot be forged or passed through function parameters)", off_marker_len(callee_off, String::length(name)))
+            let collected = diag_collect_all(token_msg)
+            let mut di = 0
+            while di < Array::length(collected) {
+              Array::push(errors, Array::get(collected, di))
+              di = di + 1
+            }
           }
           (tab_call_ty(tytab, call_off, CtNamed("MutList", Array::slice([
             CtUnknown,
