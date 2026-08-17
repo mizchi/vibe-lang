@@ -1,11 +1,10 @@
-// #1951: Diag::Report collect-all vs fail-fast payload contract.
-// A handle in checker.vibe blew selfcompile heap (1,165,374,504 >
-// 1,164,658,668), so the effect lives in this test and the MutList::empty
-// slice stays on the existing accumulator. Abortive `Report(m) => m` binds
-// the empty string; tail `resume(m)` delivers the payload.
+// #1951: shipped Diag::Report slice. Collect-all / fail-fast live in the
+// checker package. The MutList::empty region-token site reports through
+// Diag into the existing errors array (no global sink, no handle wrapped
+// around checker.vibe).
 
 import @vibe/compiler/checker {
-  check_program
+  check_program, diag_collect_all, diag_collect_all_many, diag_fail_fast
 }
 
 import @vibe/compiler/syntax {
@@ -25,32 +24,21 @@ fn first_check_error(source: String) -> String {
   }
 }
 
-effect Diag {
-  Report(String) -> String
-}
-
-fn diag_collect_all(msg: String) -> Array[String] {
-  let out = array_empty()
-  let _ = handle {
-    perform Diag::Report(msg)
-  } with Diag {
-    Report(m) => {
-      Array::push(out, m)
-      resume(m)
-    }
-  }
-  out
-}
-
-fn diag_fail_fast(msg: String) -> String {
-  handle {
-    perform Diag::Report(msg)
-  } with Diag {
-    Report(m) => resume(m)
+fn corpus_source(kind: String) -> String {
+  if kind == "empty0" {
+    "fn main() -> Int {\n  let xs = MutList::empty(0)\n  0\n}\n"
+  } else if kind == "empty1" {
+    "fn main() -> Int {\n  let xs = MutList::empty(1)\n  0\n}\n"
+  } else if kind == "str" {
+    "fn main() -> Int {\n  let xs = MutList::empty(\"x\")\n  0\n}\n"
+  } else if kind == "two" {
+    "fn main() -> Int {\n  let xs = MutList::empty(0)\n  let ys = MutList::empty(1)\n  0\n}\n"
+  } else {
+    "fn main() -> Int {\n  region r {\n    let xs = MutList::empty(r)\n    MutList::length(xs)\n  }\n}\n"
   }
 }
 
-test "#1951: collect-all and fail-fast agree on the payload" {
+test "#1951: collect-all and fail-fast agree on a payload" {
   let msg = "MutList::empty requires the region token bound by `region r { ... }`"
   let collected = diag_collect_all(msg)
   assert_eq(Array::length(collected), 1)
@@ -58,8 +46,41 @@ test "#1951: collect-all and fail-fast agree on the payload" {
   assert_eq(diag_fail_fast(msg), msg)
 }
 
-test "#1951: MutList::empty(0) still reports the region-token diagnostic" {
-  let source = "fn main() -> Int {\n  let xs = MutList::empty(0)\n  0\n}\n"
-  let msg = first_check_error(source)
-  assert(String::contains(msg, "MutList::empty requires the region token"))
+test "#1951: accumulator and Diag handler agree on the MutList corpus" {
+  let kinds = [
+    "empty0",
+    "empty1",
+    "str",
+    "two",
+    "ok"
+  ]
+  let acc = array_empty()
+  let mut i = 0
+  while i < Array::length(kinds) {
+    let kind = Array::get(kinds, i)
+    let src = corpus_source(kind)
+    let msg = first_check_error(src)
+    if kind == "ok" {
+      assert_eq(msg, "")
+    } else {
+      assert(String::contains(msg, "MutList::empty requires the region token"))
+      Array::push(acc, msg)
+    }
+    i = i + 1
+  }
+  let via_diag = diag_collect_all_many(acc)
+  assert_eq(Array::length(via_diag), Array::length(acc))
+  let mut j = 0
+  while j < Array::length(acc) {
+    assert_eq(Array::get(via_diag, j), Array::get(acc, j))
+    assert_eq(diag_fail_fast(Array::get(acc, j)), Array::get(acc, j))
+    j = j + 1
+  }
+}
+
+test "#1951: two MutList::empty forgeries keep source order in the first diagnostic" {
+  let two = first_check_error(corpus_source("two"))
+  let first = first_check_error(corpus_source("empty0"))
+  assert(String::contains(two, "MutList::empty requires the region token"))
+  assert_eq(two, first)
 }
