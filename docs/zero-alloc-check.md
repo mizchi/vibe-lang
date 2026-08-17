@@ -140,6 +140,10 @@ RC default のまま `#zero_alloc` は成立する。
   top-level fn 呼びは推移的に走査(visited set で再帰安全)。
   診断は `zero_alloc: fn 'X' may allocate: <site>`(経由呼び出しは
   `call to 'Y' which may allocate: ...` で連鎖)。
+  `zero_alloc_fn_summaries` は import merge 後の top-level fn ごとに
+  `(name, mode, site)` を返す (#1936)。`collect_merged_stmts` した
+  プログラムでも、imported assume は mode=`assume` で呼ぶ側から信頼され、
+  assume 本体の確保は fail-closed のままその行に残る。
 - **既知ギャップ(Phase 1 で許容)**: per-fn サマリの codegen 計装
   (ADR 本文 step 1 の「確保サイト計装」)は未着手 — 検査は lexical 型伝播を
   伴う AST 走査で先行。module body 内の fn、wasm-gc backend、

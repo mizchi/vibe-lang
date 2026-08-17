@@ -1,0 +1,93 @@
+// #1936: per-fn #zero_alloc summaries must survive collect_merged_stmts
+// (the shipped import-merge used by vibe check / FS compile).
+
+import @vibe/compiler/codegen/common_analysis {
+  zero_alloc_check, zero_alloc_fn_summaries
+}
+
+import @vibe/compiler/loader {
+  collect_merged_stmts
+}
+
+fn summary_mode(rows: Array[(String, String, String)], name: String) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(rows) {
+    let (n, mode, _) = Array::get(rows, i)
+    if n == name {
+      found = mode
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn summary_site(rows: Array[(String, String, String)], name: String) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(rows) {
+    let (n, _, site) = Array::get(rows, i)
+    if n == name {
+      found = site
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "#1936: imported allocator appears in per-fn summaries and the check diagnostic" {
+  let dep = "export fn dirty() -> Array[Int] {\n  [1, 2]\n}\n"
+  let main = "import ./dep.vibe { dirty }\n#zero_alloc\nfn hot() -> Array[Int] {\n  dirty()\n}\n"
+  let merged = collect_merged_stmts([
+    ("dep.vibe", dep),
+    ("main.vibe", main)
+  ])
+  let rows = zero_alloc_fn_summaries(merged)
+  assert_eq(summary_mode(rows, "dirty"), "")
+  assert(String::contains(summary_site(rows, "dirty"), "array literal"))
+  assert_eq(summary_mode(rows, "hot"), "bare")
+  assert(String::contains(summary_site(rows, "hot"), "dirty"))
+  assert(String::contains(summary_site(rows, "hot"), "array literal"))
+  let msg = zero_alloc_check(merged)
+  assert(String::contains(msg, "zero_alloc"))
+  assert(String::contains(msg, "hot"))
+  assert(String::contains(msg, "dirty"))
+  assert(String::contains(msg, "array literal"))
+}
+
+test "#1936: imported assume is a trusted summary and does not fail the importer" {
+  let dep = "#zero_alloc(assume)\nexport fn host_shim(x: Int) -> Int {\n  x + 1\n}\n"
+  let main = "import ./dep.vibe { host_shim }\n#zero_alloc\nfn hot(x: Int) -> Int {\n  host_shim(x)\n}\n"
+  let merged = collect_merged_stmts([
+    ("dep.vibe", dep),
+    ("main.vibe", main)
+  ])
+  let rows = zero_alloc_fn_summaries(merged)
+  assert_eq(summary_mode(rows, "host_shim"), "assume")
+  assert_eq(summary_site(rows, "host_shim"), "")
+  assert_eq(summary_mode(rows, "hot"), "bare")
+  assert_eq(summary_site(rows, "hot"), "")
+  assert_eq(zero_alloc_check(merged), "")
+}
+
+test "#1936: imported assume stays fail-closed on its own summary" {
+  let dep = "#zero_alloc(assume)\nexport fn dirty() -> Array[Int] {\n  [1, 2]\n}\n"
+  let main = "import ./dep.vibe { dirty }\n#zero_alloc\nfn hot() -> Array[Int] {\n  dirty()\n}\n"
+  let merged = collect_merged_stmts([
+    ("dep.vibe", dep),
+    ("main.vibe", main)
+  ])
+  let rows = zero_alloc_fn_summaries(merged)
+  assert_eq(summary_mode(rows, "dirty"), "assume")
+  assert(String::contains(summary_site(rows, "dirty"), "array literal"))
+  assert_eq(summary_mode(rows, "hot"), "bare")
+  assert_eq(summary_site(rows, "hot"), "")
+  let msg = zero_alloc_check(merged)
+  assert(String::contains(msg, "zero_alloc"))
+  assert(String::contains(msg, "dirty"))
+  assert(String::contains(msg, "array literal"))
+}

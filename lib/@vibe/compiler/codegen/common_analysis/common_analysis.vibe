@@ -2420,6 +2420,69 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
   }
 }
 
+fn za_stmt_marker_mode(stmt: Stmt) -> String {
+  match stmt {
+    SExpr(me) => match me {
+      EIdent(mname, _) => if mname == "@zero_alloc_strict" {
+        "strict"
+      } else if mname == "@zero_alloc_assume" {
+        "assume"
+      } else if String::starts_with(mname, "@zero_alloc") {
+        "bare"
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+fn za_eval_named_fn(name: String, mode: String, assume_names: Array[String], ctors: Array[String], fn_names: Array[String], fn_bodies: Array[Expr], fn_params: Array[Array[String]]) -> String {
+  let mut fidx = 0 - 1
+  let mut fi = 0
+  while fi < Array::length(fn_names) {
+    if Array::get(fn_names, fi) == name {
+      fidx = fi
+      fi = Array::length(fn_names)
+    } else {
+      fi = fi + 1
+    }
+  }
+  if fidx < 0 {
+    ""
+  } else {
+    let visited = array_empty()
+    if mode == "strict" {
+      Array::push(visited, "@za:strict")
+    } else if mode == "assume" {
+      Array::push(visited, "@za:assume")
+    } else {
+      Array::push(visited, "@za:")
+    }
+    let mut aj = 0
+    while aj < Array::length(assume_names) {
+      Array::push(visited, Array::get(assume_names, aj))
+      aj = aj + 1
+    }
+    Array::push(visited, name)
+    let seed_bound = array_empty()
+    let seed_typed_names = array_empty()
+    let seed_typed_kinds = array_empty()
+    let seed_ps = Array::get(fn_params, fidx)
+    let mut sbi = 0
+    while sbi < Array::length(seed_ps) {
+      let seed_fact = Array::get(seed_ps, sbi)
+      let seed_name = za_param_fact_name(seed_fact)
+      Array::push(seed_bound, seed_name)
+      Array::push(seed_typed_names, seed_name)
+      Array::push(seed_typed_kinds, za_param_fact_kind(seed_fact))
+      sbi = sbi + 1
+    }
+    za_walk(Array::get(fn_bodies, fidx), ctors, fn_names, fn_bodies, fn_params, visited, seed_bound, seed_typed_names, seed_typed_kinds)
+  }
+}
+
 /// ADR-0091 Phase 1: enforce `#zero_alloc` markers. The parser normalizes the
 /// canonical directive (and legacy `@zero_alloc`) to a top-level `SExpr`
 /// statement, which the linear backend drops, and it must IMMEDIATELY precede
@@ -2523,50 +2586,9 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
       if target_name == "" {
         msg = "zero_alloc: '#zero_alloc' must immediately precede a fn declaration"
       } else {
-        let mut fi2 = 0
-        let mut fidx2 = 0 - 1
-        while fi2 < Array::length(fn_names) {
-          if Array::get(fn_names, fi2) == target_name {
-            fidx2 = fi2
-            fi2 = Array::length(fn_names)
-          } else {
-            fi2 = fi2 + 1
-          }
-        }
-        if fidx2 >= 0 {
-          let visited = array_empty()
-          if za_mode == "strict" {
-            Array::push(visited, "@za:strict")
-          } else if za_mode == "assume" {
-            Array::push(visited, "@za:assume")
-          } else {
-            Array::push(visited, "@za:")
-          }
-          let mut aj = 0
-          while aj < Array::length(assume_names) {
-            Array::push(visited, Array::get(assume_names, aj))
-            aj = aj + 1
-          }
-          Array::push(visited, target_name)
-          let seed_bound = array_empty()
-          let seed_typed_names = array_empty()
-          let seed_typed_kinds = array_empty()
-          let seed_ps = Array::get(fn_params, fidx2)
-          let mut sbi = 0
-          while sbi < Array::length(seed_ps) {
-            let seed_fact = Array::get(seed_ps, sbi)
-            let seed_name = za_param_fact_name(seed_fact)
-            Array::push(seed_bound, seed_name)
-            Array::push(seed_typed_names, seed_name)
-            Array::push(seed_typed_kinds, za_param_fact_kind(seed_fact))
-            sbi = sbi + 1
-          }
-          let r = za_walk(Array::get(fn_bodies, fidx2), ctors, fn_names, fn_bodies, fn_params, visited, seed_bound, seed_typed_names, seed_typed_kinds)
-          if r != "" {
-            msg = String::concat("zero_alloc: fn '", String::concat(target_name, String::concat("' may allocate: ", r)))
-          } else {
-            ()
-          }
+        let r = za_eval_named_fn(target_name, za_mode, assume_names, ctors, fn_names, fn_bodies, fn_params)
+        if r != "" {
+          msg = String::concat("zero_alloc: fn '", String::concat(target_name, String::concat("' may allocate: ", r)))
         } else {
           ()
         }
@@ -2577,6 +2599,84 @@ export fn zero_alloc_check(stmts: Array[Stmt]) -> String {
     mi = mi + 1
   }
   msg
+}
+
+/// #1936: one row per top-level fn after import merge: (name, mode, site).
+/// mode is "" / "bare" / "strict" / "assume". site is empty when that fn is
+/// proven allocation-free under its own mode. Not called from the compile
+/// hot path — only walk every fn when a caller asks for the summary table.
+export fn zero_alloc_fn_summaries(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let fn_names = array_empty()
+  let fn_bodies = array_empty()
+  let fn_params = array_empty()
+  let fn_modes = array_empty()
+  let ctors = array_empty()
+  let assume_names = array_empty()
+  let mut si = 0
+  let mut prev_mode = ""
+  while si < Array::length(stmts) {
+    let stmt = Array::get(stmts, si)
+    let marker = za_stmt_marker_mode(stmt)
+    if marker != "" {
+      prev_mode = marker
+    } else {
+      match stmt {
+        SLet(_, _, lname, _, lval) => match lval {
+          EFn(_, _, efn_params, _, _, fb) => {
+            Array::push(fn_names, lname)
+            Array::push(fn_bodies, fb)
+            Array::push(fn_params, za_param_facts(efn_params))
+            Array::push(fn_modes, prev_mode)
+            if prev_mode == "assume" {
+              Array::push(assume_names, lname)
+            } else {
+              ()
+            }
+            prev_mode = ""
+          },
+          _ => {
+            prev_mode = ""
+          }
+        },
+        SEnum(_, _, _, variants, _) => {
+          prev_mode = ""
+          let mut vi = 0
+          while vi < Array::length(variants) {
+            let (vname, _) = Array::get(variants, vi)
+            Array::push(ctors, vname)
+            vi = vi + 1
+          }
+        },
+        SSuberror(_, _, sub_variants) => {
+          prev_mode = ""
+          let mut vi2 = 0
+          while vi2 < Array::length(sub_variants) {
+            let (vname2, _) = Array::get(sub_variants, vi2)
+            Array::push(ctors, vname2)
+            vi2 = vi2 + 1
+          }
+        },
+        SStruct(_, sname, _, _, _, _) => {
+          prev_mode = ""
+          Array::push(ctors, sname)
+        },
+        _ => {
+          prev_mode = ""
+        }
+      }
+    }
+    si = si + 1
+  }
+  let rows = array_empty()
+  let mut ri = 0
+  while ri < Array::length(fn_names) {
+    let name = Array::get(fn_names, ri)
+    let mode = Array::get(fn_modes, ri)
+    let site = za_eval_named_fn(name, mode, assume_names, ctors, fn_names, fn_bodies, fn_params)
+    Array::push(rows, (name, mode, site))
+    ri = ri + 1
+  }
+  rows
 }
 
 //# ADR-0092 borrow-inference slice 1: per-fn borrowed arg0
