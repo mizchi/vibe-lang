@@ -93,10 +93,14 @@ fn line_col_to_offset(source: String, line: Int, col: Int) -> Int {
   }
 }
 
-/// A located EIdent hit: name + source span [off, off + length(name)). `off` is
-/// -1 for synthetic / non-located idents (those are ignored by the search).
+/// A located identifier hit: name + source span [off, off + length(name)).
+/// `off` is -1 for synthetic / non-located idents (those are ignored).
+/// `CalleeHit` is an `EIdent` that is the callee of an `ECall` — the type
+/// table records CallResult at that same offset (`callee_offset`), so hover
+/// must not last-win the call result (#1941).
 enum IdentHit {
-  IdentHit(String, Int)
+  IdentHit(String, Int);
+  CalleeHit(String, Int)
 }
 
 fn empty_hits() -> Array[IdentHit] {
@@ -175,7 +179,17 @@ fn collect_expr(expr: Expr, acc: Array[IdentHit]) -> Unit {
       collect_expr(b, acc)
     },
     ECall(callee, args, _) => {
-      collect_expr(callee, acc)
+      // Named callees share their EIdent offset with the ECall (`callee_offset`
+      // in the parser). Mark them so type-at can prefer the function type
+      // over the CallResult the checker records at that offset (#1941).
+      match callee {
+        EIdent(name, off) => if off >= 0 {
+          Array::push(acc, CalleeHit(name, off))
+        } else {
+          ()
+        },
+        _ => collect_expr(callee, acc)
+      }
       collect_exprs(args, acc)
     },
     EBinOp(_, l, r) => {
@@ -245,6 +259,7 @@ fn collect_stmt(stmt: Stmt, acc: Array[IdentHit]) -> Unit {
   match stmt {
     SLet(_, _, _, _, body) => collect_expr(body, acc),
     SLetMut(_, _, body) => collect_expr(body, acc),
+    SFnDecl(_, _, body, _, _) => collect_expr(body, acc),
     STest(_, body) => collect_expr(body, acc),
     SBench(_, body) => collect_expr(body, acc),
     SExpr(e) => collect_expr(e, acc),
@@ -309,7 +324,9 @@ fn push_binding_name_hit(source: String, start: Int, end: Int, name: String, acc
 
 /// Add located hits for the NAMES of top-level (and module-body) value bindings,
 /// using each statement's source span (from parse_program_spans) to scope the
-/// whole-word search. Only SLet/SLetMut names are env-visible value bindings.
+/// whole-word search. SLet / SLetMut / SFnDecl names are env-visible value
+/// bindings (`fn f` is SFnDecl; the default parse entry lowers it to SLet, but
+/// a preserving parse still hands out SFnDecl — recover both, #1941).
 fn collect_binding_name_hits(stmts: Array[Stmt], span_start: Array[Int], span_end: Array[Int], source: String, acc: Array[IdentHit]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -326,9 +343,24 @@ fn collect_binding_name_hits(stmts: Array[Stmt], span_start: Array[Int], span_en
     match Array::get(stmts, i) {
       SLet(_, _, name, _, _) => push_binding_name_hit(source, start, end, name, acc),
       SLetMut(name, _, _) => push_binding_name_hit(source, start, end, name, acc),
+      SFnDecl(_, name, _, _, _) => push_binding_name_hit(source, start, end, name, acc),
       _ => ()
     }
     i = i + 1
+  }
+}
+
+fn hit_name_off(hit: IdentHit) -> (String, Int) {
+  match hit {
+    IdentHit(name, off) => (name, off),
+    CalleeHit(name, off) => (name, off)
+  }
+}
+
+fn hit_is_callee(hit: IdentHit) -> Bool {
+  match hit {
+    CalleeHit(_, _) => true,
+    IdentHit(_, _) => false
   }
 }
 
@@ -340,16 +372,13 @@ fn pick_ident_at(hits: Array[IdentHit], tgt: Int) -> String {
   let mut best_off = -1
   let mut i = 0
   while i < Array::length(hits) {
-    match Array::get(hits, i) {
-      IdentHit(name, off) => {
-        let span_end = off + String::length(name)
-        if off <= tgt && tgt < span_end && off > best_off {
-          best_name = name
-          best_off = off
-        } else {
-          ()
-        }
-      }
+    let (name, off) = hit_name_off(Array::get(hits, i))
+    let span_end = off + String::length(name)
+    if off <= tgt && tgt < span_end && off > best_off {
+      best_name = name
+      best_off = off
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -363,19 +392,36 @@ fn pick_ident_off(hits: Array[IdentHit], tgt: Int) -> Int {
   let mut best_off = -1
   let mut i = 0
   while i < Array::length(hits) {
-    match Array::get(hits, i) {
-      IdentHit(name, off) => {
-        let span_end = off + String::length(name)
-        if off <= tgt && tgt < span_end && off > best_off {
-          best_off = off
-        } else {
-          ()
-        }
-      }
+    let (name, off) = hit_name_off(Array::get(hits, i))
+    let span_end = off + String::length(name)
+    if off <= tgt && tgt < span_end && off > best_off {
+      best_off = off
+    } else {
+      ()
     }
     i = i + 1
   }
   best_off
+}
+
+/// True when the innermost hit covering `tgt` is a named call callee.
+fn pick_ident_is_callee(hits: Array[IdentHit], tgt: Int) -> Bool {
+  let mut best_off = -1
+  let mut best_callee = false
+  let mut i = 0
+  while i < Array::length(hits) {
+    let hit = Array::get(hits, i)
+    let (name, off) = hit_name_off(hit)
+    let span_end = off + String::length(name)
+    if off <= tgt && tgt < span_end && off > best_off {
+      best_off = off
+      best_callee = hit_is_callee(hit)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  best_callee
 }
 
 /// Look up the recorded type for source offset `off` in the per-node type table
@@ -399,10 +445,15 @@ fn tytab_lookup(table: Array[(Int, Type)], off: Int) -> Option[Type] {
 
 /// Locate the identifier at (line, col), typecheck the program, and return its
 /// inferred type as a string. Resolution order:
-///   1. per-node type table (covers LOCALS and PARAMETERS — names that live in
+///   1. named call callee: env lookup of the function. The checker records
+///      CallResult at the callee EIdent's own offset (`callee_offset` ==
+///      ident off), so a type-table last-wins would report `Int` for `add` in
+///      `add(1, 2)` instead of `(Int, Int) -> Int` (#1941). Same reason
+///      `vibe grep` never consults the offset table for a callee.
+///   2. per-node type table (covers LOCALS and PARAMETERS — names that live in
 ///      nested inference scopes and are gone from the returned TypeEnv);
-///   2. fall back to the top-level TypeEnv lookup (top-level / imported names,
-///      and let-binding definition sites whose offset is not an EIdent node).
+///   3. fall back to the top-level TypeEnv lookup (top-level / imported names,
+///      and let/fn-binding definition sites whose offset is not an EIdent node).
 /// Returns "" when the position is not over a located identifier, or the name
 /// resolves nowhere. Any failure is swallowed and yields "".
 export fn type_at_source(source: String, line: Int, col: Int) -> String {
@@ -420,8 +471,8 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
       let hits = empty_hits()
       // Identifier USES carry real offsets on their EIdent nodes.
       collect_stmts(stmts, hits)
-      // Identifier DEFINITIONS (let-binding names) carry none, so recover their
-      // source offset from each statement's span and the source text.
+      // Identifier DEFINITIONS (let / fn binding names) carry none, so recover
+      // their source offset from each statement's span and the source text.
       let (span_stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
       collect_binding_name_hits(span_stmts, span_start, span_end, source, hits)
       let name = pick_ident_at(hits, tgt)
@@ -429,21 +480,35 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
         ""
       } else {
         let chosen_off = pick_ident_off(hits, tgt)
-        // 1. per-node type table (locals + parameters).
-        let (table, final_s) = check_program_type_table(stmts)
-        let table_hit = if chosen_off >= 0 {
-          tytab_lookup(table, chosen_off)
+        let on_callee = pick_ident_is_callee(hits, tgt)
+        if on_callee {
+          let env = check_program(stmts)
+          match env_lookup(env, name) {
+            Some(t) => type_to_string(t),
+            None => {
+              // Local / parameter callee: not in the final env. The table's
+              // last-wins entry here is CallResult, which is the wrong type
+              // for the name — prefer empty over a confident wrong answer.
+              ""
+            }
+          }
         } else {
-          None
-        }
-        match table_hit {
-          Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
-          None => {
-            // 2. fall back to the top-level env (top-level / imported names).
-            let env = check_program(stmts)
-            match env_lookup(env, name) {
-              Some(t) => type_to_string(t),
-              None => ""
+          // 2. per-node type table (locals + parameters).
+          let (table, final_s) = check_program_type_table(stmts)
+          let table_hit = if chosen_off >= 0 {
+            tytab_lookup(table, chosen_off)
+          } else {
+            None
+          }
+          match table_hit {
+            Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
+            None => {
+              // 3. fall back to the top-level env (top-level / imported names).
+              let env = check_program(stmts)
+              match env_lookup(env, name) {
+                Some(t) => type_to_string(t),
+                None => ""
+              }
             }
           }
         }
