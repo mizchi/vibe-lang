@@ -40,9 +40,9 @@ fn hot(...) -> Int { ... }        // region/stack 確保も含めて全面禁止
 fn host_shim(...) -> Int { ... }  // 検査境界 (FFI/host import 相当)。呼ぶ側は信頼
 ```
 
-現行 Phase 1 が受理する canonical syntax は引数なしの `#zero_alloc` のみ。
-`strict` / `assume` は上記の予約設計であり、実装されるまでは parse error にする。
-旧 `@zero_alloc` は移行互換として当面受理するが、新規コードでは使わない。
+Phase 2 (#1936) は `#zero_alloc` / `#zero_alloc(strict)` / `#zero_alloc(assume)`
+を受理する。未知のモードは parse error。旧 `@zero_alloc` は移行互換として
+当面受理するが、新規コードでは使わない。
 
 - **既定は「一般 heap のみ禁止」**: region arena(ADR-0090)への確保と、
   将来の stack 化された確保は数えない(OxCaml の `stack_`/`local_` と同じ
@@ -123,8 +123,11 @@ RC default のまま `#zero_alloc` は成立する。
   この marker だけ ADR-0069 reject と名前解決を skip し、linear backend は
   top-level SExpr を従来どおり drop する。parser は直後が `fn` / `export fn`
   であることをファイル単位で検査し、marker はその宣言
-  (lowered: `SLet(_, _, name, _, EFn(..))`)に付く。`(strict)` / `(assume)`
-  修飾は未実装。
+  (lowered: `SLet(_, _, name, _, EFn(..))`)に付く。`(strict)` は
+  `@zero_alloc_strict`、`(assume)` は `@zero_alloc_assume` に正規化する。
+  assume の本体に見える確保 (配列リテラル等) は fail-closed で拒否し、
+  呼ぶ側だけが assume 関数を信頼する。strict は `__region_run` /
+  `MutList::*` の arena 確保も拒否する。
 - **検査**(`common_analysis.vibe::zero_alloc_check`、
   `compile_wasi_module_linked_impl` 冒頭で実行): AST レベルの保守的走査。
   確保扱い = ctor(enum variant / suberror / struct 名、呼び出しと裸 ident

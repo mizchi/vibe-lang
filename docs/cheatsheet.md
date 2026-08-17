@@ -1693,8 +1693,9 @@ fn add_one(x: Int) -> Int {
 }
 ```
 
-- The current form is bare `#zero_alloc`; argument forms such as `(strict)`
-  and `(assume)` are reserved but not implemented.
+- Modes: bare `#zero_alloc` (general heap only), `#zero_alloc(strict)`
+  (region/arena too), `#zero_alloc(assume)` (caller trust boundary;
+  inspectable source allocations in the assume body are still errors).
 - It applies to `fn` and `export fn`, and no other declaration.
 - Legacy `@zero_alloc` remains accepted for migration, but new code should use
   the `#` directive spelling shared with other declaration metadata.

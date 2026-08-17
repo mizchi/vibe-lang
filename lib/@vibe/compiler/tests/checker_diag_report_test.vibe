@@ -1,0 +1,65 @@
+// #1951: Diag::Report collect-all vs fail-fast payload contract.
+// A handle in checker.vibe blew selfcompile heap (1,165,374,504 >
+// 1,164,658,668), so the effect lives in this test and the MutList::empty
+// slice stays on the existing accumulator. Abortive `Report(m) => m` binds
+// the empty string; tail `resume(m)` delivers the payload.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+effect Diag {
+  Report(String) -> String
+}
+
+fn diag_collect_all(msg: String) -> Array[String] {
+  let out = array_empty()
+  let _ = handle {
+    perform Diag::Report(msg)
+  } with Diag {
+    Report(m) => {
+      Array::push(out, m)
+      resume(m)
+    }
+  }
+  out
+}
+
+fn diag_fail_fast(msg: String) -> String {
+  handle {
+    perform Diag::Report(msg)
+  } with Diag {
+    Report(m) => resume(m)
+  }
+}
+
+test "#1951: collect-all and fail-fast agree on the payload" {
+  let msg = "MutList::empty requires the region token bound by `region r { ... }`"
+  let collected = diag_collect_all(msg)
+  assert_eq(Array::length(collected), 1)
+  assert_eq(Array::get(collected, 0), msg)
+  assert_eq(diag_fail_fast(msg), msg)
+}
+
+test "#1951: MutList::empty(0) still reports the region-token diagnostic" {
+  let source = "fn main() -> Int {\n  let xs = MutList::empty(0)\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "MutList::empty requires the region token"))
+}

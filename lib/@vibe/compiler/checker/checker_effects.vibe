@@ -17,6 +17,7 @@ import @vibe/compiler/core {
   exception_throw_label_for_kind,
   expr_children,
   is_entry_admitted_effect,
+  is_entry_cache_safe_operation,
   is_entry_runtime_managed_effect,
   is_exception_effect_name,
   is_exception_label,
@@ -73,6 +74,7 @@ export enum EffectError {
   // separate from concrete effects so the fix-it never suggests handling a
   // type-level row variable as though it were an effect declaration.
   EEUnresolvedEntryEffectRow(String, String, Int);
+  EEProviderOperationCollision(String);
   EEAssignImmutable(String);
   // #1539: provider-owned stdin lifecycle operations cannot be transported as
   // values until generic higher-order effect flow is sound (#1536).
@@ -177,6 +179,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
         body
       }
     },
+    EEProviderOperationCollision(operation) => String::concat("user effect operation `", String::concat(operation, "` collides with a registry-owned host provider operation; rename the user operation so it cannot impersonate provider authority")),
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)")),
     EEStdinProviderValueReference(name) => String::concat("stdin provider operations are direct-call-only; wrap `", String::concat(name, "` in an explicitly effectful function")),
     EEHandleNeverFires(eff) => {
@@ -1404,19 +1407,48 @@ fn set_entry_user_effect_operations(stmts: Array[Stmt]) -> Unit {
   collect_entry_user_effect_operations(stmts, entry_user_effect_operations)
 }
 
+fn user_provider_collision_errors(stmts: Array[Stmt]) -> Array[EffectError] {
+  let errors = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, effect_name, _, operations) => {
+        let mut oi = 0
+        while oi < Array::length(operations) {
+          let (op_name, _, _) = Array::get(operations, oi)
+          let operation = String::concat(effect_name, String::concat("::", op_name))
+          if standard_provider_owns_operation(operation) {
+            Array::push(errors, EEProviderOperationCollision(operation))
+          } else {
+            ()
+          }
+          oi = oi + 1
+        }
+      },
+      SModule(_, _, body) => append_eff_errs(errors, user_provider_collision_errors(body)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  errors
+}
+
 fn entry_label_is_user_declared_operation(label: String) -> Bool {
   String::index_of(label, "::") > 0 && effect_row_has_label(Some(entry_user_effect_operations), label)
 }
 
 fn standard_provider_owns_operation(label: String) -> Bool {
   match builtin_call_effect(label) {
-    Some(owner) => is_entry_admitted_effect(owner),
+    Some(owner) => is_entry_admitted_effect(owner) && label == canonical_builtin_name(label),
     None => false
   }
 }
 
 fn entry_user_operation_requires_handler(label: String) -> Bool {
-  entry_label_is_user_declared_operation(label) && !standard_provider_owns_operation(label)
+  // #1961: a source-declared operation is algebraic even when its spelling
+  // matches a host provider. Exact collisions are rejected separately and
+  // never grant provider authority from the text of the perform.
+  entry_label_is_user_declared_operation(label)
 }
 
 fn entry_unresolved_labels(labels: Array[String]) -> Array[String] {
@@ -3084,7 +3116,7 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
   // what each throw site actually throws.
   set_throw_kind_table(env)
   set_entry_user_effect_operations(stmts)
-  let errors = array_empty()
+  let errors = user_provider_collision_errors(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -3674,7 +3706,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
       // deeper walk alone would miss.
       let declared_ok = match entry_declared {
         None => true,
-        Some(row) => array_is_subset_of_str(row, cache_safe_row)
+        Some(row) => labels_are_entry_cache_safe(row)
       }
       if !declared_ok {
         false
@@ -3714,6 +3746,20 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
 /// exception aliases), so a row variable stays a row variable and an
 /// unrelated effect stays unrelated: the conservative rejection above is
 /// unchanged.
+fn labels_are_entry_cache_safe(row: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(row) {
+    if !is_entry_cache_safe_operation(Array::get(row, i)) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
 fn array_is_subset_of_str(row: Array[String], safe: Array[String]) -> Bool {
   let mut i = 0
   let mut ok = true
