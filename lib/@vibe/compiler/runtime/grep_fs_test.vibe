@@ -1,0 +1,38 @@
+//# Imports
+
+// Filesystem-tier `vibe grep` (#1572 / #1943). Lives next to grep_fs.vibe
+// rather than in grep_test.vibe: this file has to import grep_fs, and
+// grep_fs imports typecheck_fs, whose `ModuleJob` is declared on the
+// package contract. grep_test.vibe stays on the no-Fs seam so it can
+// keep driving the pattern language as a plain sibling leaf import.
+
+import ./grep_fs.vibe {
+  grep_scan_fs_report
+}
+
+import @vibe/core {
+  array_empty, inspect
+}
+
+//# Functions
+
+fn no_strings() -> Array[String] {
+  array_empty()
+}
+
+//# Tests
+
+test "grep_scan_fs_report: unparseable file is skipped with a warning, not an abort (#1943)" {
+  // The unparseable file is first in directory order so a silent abort
+  // would drop the good file too. Empty stdout still means no matches;
+  // the skip itself belongs on the warning sidecar.
+  let dir = "_build/vibe_grep_unparsed_sweep"
+  let bad = String::concat(dir, "/a_unparsed.vibe")
+  let good = String::concat(dir, "/b_good.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_file(bad, "fn broken( {\n")
+  Fs::write_file(good, "let n = Array::length([1])\n")
+  let (hits, warn) = grep_scan_fs_report(dir, "Array::length($(x:exp))", no_strings(), no_strings(), "", false)
+  inspect(hits, String::concat(good, ":1:9: Array::length([1])\t$x=[1]\n"))
+  inspect(warn, String::concat("warning: grep: skipped `", String::concat(bad, "` because it could not be parsed\n")))
+}

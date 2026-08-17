@@ -232,11 +232,16 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
     let path = Array::get(files, i)
     let source = Fs::read_file(path)
     // A file that does not parse is not a match and not a failure: a repo
-    // sweep must not stop at the first work-in-progress file.
+    // sweep must not stop at the first work-in-progress file. Report the
+    // skip on the warning sidecar so empty stdout still means no matches,
+    // not silently skipped input (#1943).
     let hits = handle {
       grep_file_hits(path, source, pat)
     } with Exception {
-      Throw(_) => grep_empty_hits()
+      Throw(_) => {
+        Array::push(warnings, String::concat("warning: grep: skipped `", String::concat(path, "` because it could not be parsed")))
+        grep_empty_hits()
+      }
     }
     if Array::length(hits) > 0 {
       let ctx = if typed {
