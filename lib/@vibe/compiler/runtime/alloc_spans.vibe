@@ -230,9 +230,9 @@ fn alloc_hex_nibble(n: Int) -> String {
 }
 
 /// Encode an owner as one whitespace-free output field. Test and bench names
-/// are arbitrary string literals, so their lowered function names may contain
-/// spaces, newlines, tabs, or `%` itself. Percent-encoding those bytes keeps
-/// `FN KIND OFFSET` exactly three fields and remains reversible.
+/// are arbitrary string literals, so they may contain spaces, newlines, tabs,
+/// or `%` itself. Percent-encoding those bytes keeps `FN KIND OFFSET` exactly
+/// three fields and remains reversible.
 fn alloc_encode_owner(name: String) -> String {
   let out = StringBuilder::new()
   let mut i = 0
@@ -248,6 +248,16 @@ fn alloc_encode_owner(name: String) -> String {
     i = i + 1
   }
   StringBuilder::freeze(out)
+}
+
+/// Source owner for a test/bench: the quoted name, or the keyword when the
+/// parser handed back an empty string (same stand-in as symbols #2038).
+fn alloc_block_owner(name: String, keyword: String) -> String {
+  if String::length(name) == 0 {
+    alloc_encode_owner(keyword)
+  } else {
+    alloc_encode_owner(name)
+  }
 }
 
 /// The allocating-call name for `expr`, or "" when the call is not one.
@@ -560,9 +570,10 @@ export fn alloc_spans(source: String) -> Array[(String, String, Int)] with Excep
       // Tests and benches lower to real executable functions. In particular,
       // a bytes-per-op regression asks about the bench body itself, so
       // skipping SBench would turn an allocating benchmark into false-clean
-      // output. Keep the owner names identical to linked_compile's lowering.
-      STest(test_name, test_body) => alloc_walk_expr(out, alloc_encode_owner(String::concat("__test_", test_name)), test_body, stmt_off, alloc_context(ctors, global_index, array_empty())),
-      SBench(bench_name, bench_body) => alloc_walk_expr(out, alloc_encode_owner(String::concat("__bench_", bench_name)), bench_body, stmt_off, alloc_context(ctors, global_index, array_empty())),
+      // output. Owner is the source name (empty → keyword, same as symbols
+      // #2038), still percent-encoded so FN stays one field (#1944).
+      STest(test_name, test_body) => alloc_walk_expr(out, alloc_block_owner(test_name, "test"), test_body, stmt_off, alloc_context(ctors, global_index, array_empty())),
+      SBench(bench_name, bench_body) => alloc_walk_expr(out, alloc_block_owner(bench_name, "bench"), bench_body, stmt_off, alloc_context(ctors, global_index, array_empty())),
       _ => ()
     }
     i = i + 1
