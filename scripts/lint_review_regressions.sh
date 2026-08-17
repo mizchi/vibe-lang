@@ -231,10 +231,12 @@ if [ -n "$violations" ] || [ "$ast_tool_error" -eq 1 ]; then
   exit 1
 fi
 
-# Say which tiers ran. `ok` alone could not distinguish a clean scan from a
-# scan that never happened.
+# Say which tiers ran. `ok` must mean the AST tier actually ran. A skipped
+# AST tier is still exit 0 (remote sessions must be able to commit) but the
+# summary must not claim `ok` -- a caller grepping the last line has to be
+# able to tell this from a clean scan (#1988).
 if [ "$ast_skipped" -eq 1 ]; then
-  echo "review-regressions lint: ok (AST tier SKIPPED -- text tier only)"
+  echo "review-regressions lint: WARNING -- AST tier skipped (text tier only; this is not a clean scan)"
 else
   echo "review-regressions lint: ok"
 fi

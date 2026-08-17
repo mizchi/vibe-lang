@@ -347,14 +347,20 @@ fi
 
 # 1. The skip has to say so in the SUMMARY, not only on stderr. A caller that
 #    reads the last line (a human scanning hook output, a script) otherwise
-#    cannot tell the two apart.
+#    cannot tell the two apart. #1988: that line must not start with or equal
+#    `ok` -- empty/`ok` output means the AST tier actually ran.
 if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   "$CHECK_SCRIPT" >"$TMP_ROOT/skip-summary.out" 2>&1; then
   echo "review-regressions lint self-test: an unrunnable grep must still exit 0 by default" >&2
   exit 1
 fi
-if ! rg -q 'ok \(AST tier SKIPPED' "$TMP_ROOT/skip-summary.out"; then
-  echo "review-regressions lint self-test: a skipped AST tier reported a bare 'ok'" >&2
+if ! rg -q 'WARNING -- AST tier skipped \(text tier only; this is not a clean scan\)' "$TMP_ROOT/skip-summary.out"; then
+  echo "review-regressions lint self-test: a skipped AST tier did not print the WARNING summary" >&2
+  cat "$TMP_ROOT/skip-summary.out" >&2
+  exit 1
+fi
+if rg -q '^review-regressions lint: ok' "$TMP_ROOT/skip-summary.out"; then
+  echo "review-regressions lint self-test: a skipped AST tier still claimed ok" >&2
   cat "$TMP_ROOT/skip-summary.out" >&2
   exit 1
 fi
