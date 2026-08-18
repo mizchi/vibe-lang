@@ -24,13 +24,16 @@ You get a `vibe` dispatcher, a `viberun` host, and the stdlib under
 
 ## Hello
 
-A program is a `fn main` with an explicit effect row. `Stdout` is a
-capability: the function says it will write, and the runtime must grant it.
+A program is a `fn main` with an explicit effect row. The current tty
+capability is **`Console`**. This hello still says `Stdout` because the
+prelude helper `stdout_write` carries that **legacy** label (same host
+import as `Console::write_stream`; the two names do not authorize each
+other). See [Capabilities](10_capabilities.vibe.md).
 
-Two spellings are legal. The **bare** `with Stdout` is the usual hello.
-The **split** form `with () allows Stdout` says the same thing more
-loudly: nothing algebraic, one capability. Mixing a capability into
-`with` *after* you wrote `allows` is a parse error
+Two spellings are legal. The **bare** `with Stdout` is the usual hello
+for prelude helpers. The **split** form `with () allows Stdout` says the
+same thing more loudly: nothing algebraic, one capability. Mixing a
+capability into `with` *after* you wrote `allows` is a parse error
 (`Stdout` must appear in `allows`, not `with`).
 
 ```vibe run

@@ -55,6 +55,51 @@ A function that only calls `greet` must itself mention `Stdout`. The
 capability does not appear by magic at `main` — it is inferred from
 calls and then checked against what you wrote.
 
+`stdout_write` is a prelude helper on the **legacy** `Stdout` label.
+The current tty capability — the name a grant prompt should say — is
+`Console`. Both compile today; they share the host imports
+(`vibe.stdout_write_stream` and friends) and they do **not** authorize
+each other.
+
+## The current tty name is `Console`
+
+Six operations, one effect:
+
+| operation | legacy label | host import |
+|---|---|---|
+| `Console::write_stream` | `Stdout::write_stream` | `vibe.stdout_write_stream` |
+| `Console::write_char` | `Stdout::write_char` | `vibe.stdout_write_char` |
+| `Console::write_err_stream` | `Stderr::write_stream` | `vibe.stderr_write_stream` |
+| `Console::write_err_char` | `Stderr::write_char` | `vibe.stderr_write_char` |
+| `Console::read_stream` | `Stdin::read_stream` | `vibe.stdin_read_stream` |
+| `Console::read_char` | `Stdin::read_char` | `vibe.stdin_read_char` |
+
+`Stdin` / `Stdout` / `Stderr` stay accepted until the seed bump retires
+them. A row must name the label whose operation it calls:
+`with Stdout { Console::write_stream(...) }` is a row mismatch.
+
+`with Console` covers the six operations in the **row**. Instantiate
+grants stay per-operation: `allows Console::write_stream` does not
+grant `Console::read_stream` (#1496). Do not read the merge as one
+authority for read+write+stderr.
+
+```vibe run
+fn main with Console {
+  Console::write_stream("hello, console\n")
+}
+```
+
+```output
+hello, console
+```
+
+```vibe skip
+// skip: legacy Stdout does not authorize Console::* (distinct labels)
+fn main with Stdout {
+  Console::write_stream("no")
+}
+```
+
 ## `with` vs `allows`
 
 `with` is the row of **emitted operations** (algebraic / core ambient).
