@@ -1,0 +1,114 @@
+//# Collection wrapping: what stays on one line and what gets one item per
+// line (#2103, #2104).
+//
+// The two containers used to disagree in opposite directions. An array literal
+// was ALWAYS broken -- `[1]` became three lines and `[]` became two -- while a
+// struct body was never broken past its braces, so `struct P { x: Int; y: Int }`
+// came back as a wrapped brace with the fields still packed inside it. One
+// policy now covers both:
+//
+//   * a bracket literal fits on the line it starts on, or it goes one element
+//     per line. The formatter decides, because interior newlines inside
+//     brackets have never survived it (the newline pass swallows them), so
+//     there is no author choice to preserve.
+//   * a brace field list -- `struct N { .. }`, `N::{ .. }` -- keeps the line
+//     structure the author gave it, the way every other brace container does.
+//     Written on one line and short enough, it stays there; written broken, it
+//     is normalized to one field per line.
+
+//# Imports
+
+import ./format.vibe {
+  format_script
+}
+
+//# Tests
+
+test "a short array literal stays on one line" {
+  assert_eq(format_script("let xs = [1, 2, 3]\n"), "let xs = [1, 2, 3]\n")
+}
+
+test "a single-element array is not block structure" {
+  assert_eq(format_script("let ys = [1]\n"), "let ys = [1]\n")
+}
+
+test "an empty array literal never becomes two lines" {
+  assert_eq(format_script("let zs = []\n"), "let zs = []\n")
+}
+
+test "an array already written across lines is joined when it fits" {
+  assert_eq(format_script("let xs = [\n  1,\n  2\n]\n"), "let xs = [1, 2]\n")
+}
+
+test "an array wider than the column budget goes one element per line" {
+  // 11 seven-digit elements -- past max_collection_width joined.
+  let src =
+  "let long = [1111111, 2222222, 3333333, 4444444, 5555555, 6666666, 7777777, 8888888, 9999999, 1010101, 1212121]\n"
+  let want =
+  "let long = [\n  1111111,\n  2222222,\n  3333333,\n  4444444,\n  5555555,\n  6666666,\n  7777777,\n  8888888,\n  9999999,\n  1010101,\n  1212121\n]\n"
+  assert_eq(format_script(src), want)
+}
+
+test "an array holding a line comment stays broken" {
+  // Joining would put `2` inside the `//` comment -- corruption, not style.
+  assert_eq(format_script("let xs = [\n  1,\n  // why\n  2\n]\n"), "let xs = [\n  1,\n  // why\n  2\n]\n")
+}
+
+test "a one-line struct declaration keeps its braces on that line" {
+  assert_eq(format_script("struct Point { x: Int; y: Int }\n"), "struct Point { x: Int; y: Int }\n")
+}
+
+test "a broken struct declaration gets one field per line" {
+  let src = "struct Point {\n  x: Int; y: Int\n}\n"
+  assert_eq(format_script(src), "struct Point {\n  x: Int;\n  y: Int\n}\n")
+}
+
+test "a struct declaration too wide for one line is broken" {
+  let src =
+  "struct Big { alpha: Int; beta: String; gamma: Array[Int]; delta: Option[String]; epsilon: Bool }\n"
+  let want =
+  "struct Big {\n  alpha: Int;\n  beta: String;\n  gamma: Array[Int];\n  delta: Option[String];\n  epsilon: Bool\n}\n"
+  assert_eq(format_script(src), want)
+}
+
+test "a one-line struct literal stays on one line" {
+  let src = "fn mk() -> Point {\n  Point::{ x: 1, y: 2 }\n}\n"
+  assert_eq(format_script(src), src)
+}
+
+test "a broken struct literal gets one field per line" {
+  let src = "fn mk() -> Point {\n  Point::{\n    x: 1, y: 2\n  }\n}\n"
+  let want = "fn mk() -> Point {\n  Point::{\n    x: 1,\n    y: 2\n  }\n}\n"
+  assert_eq(format_script(src), want)
+}
+
+test "an empty struct literal has no interior space" {
+  assert_eq(format_script("let t = Thing::{}\n"), "let t = Thing::{}\n")
+}
+
+test "a field list with a doc comment is never joined" {
+  let src = "struct Doc {\n  /// documented\n  a: Int;\n  b: Int\n}\n"
+  assert_eq(format_script(src), src)
+}
+
+test "the wrapping decision is a fixpoint" {
+  // Every shape above in one file: format(format(x)) == format(x). The
+  // width/one-line answers are read off the token stream, so re-formatting
+  // this formatter's own output has to re-derive them unchanged.
+  let src =
+  "struct Point { x: Int; y: Int }\n\nfn mk() -> Array[Point] {\n  let a = [1, 2, 3]\n  let b = []\n  let p = Point::{ x: 1, y: 2 }\n  [p]\n}\n"
+  let once = format_script(src)
+  assert_eq(format_script(once), once)
+}
+
+test "a broken field list joined by an enclosing array keeps its closer space" {
+  // The array joins, so the struct literal inside it lands on one line even
+  // though the author had broken it. It must still read `.. text: "" }`, not
+  // `.. text: ""}` -- and the next run, which now sees a one-line field list,
+  // has to produce the same bytes.
+  let src = "fn f() -> Unit {\n  let out = [LTok::{\n    kind: 1, text: \"\"\n  }]\n}\n"
+  let want = "fn f() -> Unit {\n  let out = [LTok::{ kind: 1, text: \"\" }]\n}\n"
+  let got = format_script(src)
+  assert_eq(got, want)
+  assert_eq(format_script(got), want)
+}

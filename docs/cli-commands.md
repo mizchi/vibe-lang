@@ -244,6 +244,19 @@ vibe fmt <file...>
 vibe fmt --dry-run <file...>
 ```
 
+**Collection wrapping** (ADR-0107, #2103/#2104). A bracket literal is written
+on the line it starts on when the joined form ends at or before column 80 --
+`[1, 2, 3]`, `[1]`, `[]` -- and goes one element per line when it does not.
+The formatter decides that one alone: interior newlines inside brackets have
+never survived it, so there is no author choice to read there. A brace field
+list -- `struct N { .. }`, `N::{ .. }` -- keeps the line structure it was
+written with, like every other brace container: one line stays one line (if it
+fits), and a broken one is normalized to one field per line rather than left
+packed after the braces are split. A line comment anywhere inside pins the
+broken form, because joining would comment out the rest of the line. A broken
+struct declaration keeps its `;` separators -- a newline is not a field
+separator in the grammar.
+
 `.vpkg` package contracts are formatted too, through a separate path
 (`format_vpkg`, #1435). A `.vpkg` file is two languages stacked: the header
 (`name = @scope/pkg`, `version = x.y.z`, `description =` + `#|` block,
