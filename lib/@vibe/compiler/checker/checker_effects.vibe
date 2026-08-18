@@ -3371,6 +3371,36 @@ export fn check_perform_effects_expr(root: Expr, root_declared: Array[String], r
   check_perform_effects_expr_tx(root, root_declared, root_in_handle, no_str_labels(), no_ov_effs(), no_str_labels(), no_ov_effs())
 }
 
+/// #2107: the ambient test grant, for a `test` / `bench` body that has already
+/// been lowered to a function.
+///
+/// The wasm-gc lane rewrites `test "x" { .. }` into `let __test_x = () -> { .. }`
+/// BEFORE the check (entry/source_compile/gc_only) -- it has to, because a
+/// `handle` inside a test block is only eligible for the ADR-0076 direct-perform
+/// lowering once the block is a named top-level fn. The STest / SBench arms in
+/// check_perform_effects_stmt_tx therefore never see those bodies, and without
+/// this the identical source checks differently on the two lanes: on gc every
+/// assertion in a test wanted `with Stdout` from a function with no row to
+/// declare.
+///
+/// Keyed on the name because the alternative -- writing the row onto the
+/// synthesized function -- changes what CODEGEN reads, and the eligibility pass
+/// above reads exactly that. The two prefixes are compiler-synthesized and
+/// reserved; `cli_support.vibe`, `codegen/wasi/linked_compile.vibe` and
+/// `codegen/gc/backend_body.vibe` already key off them the same way. The test's
+/// own `with` row (#1508) is looked up under its original name, so
+/// `test "x" with Http` keeps widening the grant after lowering.
+fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
+  let n = String::length(fn_name)
+  if String::starts_with(fn_name, "__test_") {
+    test_ambient_effects(String::substring(fn_name, 7, n))
+  } else if String::starts_with(fn_name, "__bench_") {
+    test_ambient_effects(String::substring(fn_name, 8, n))
+  } else {
+    no_str_labels()
+  }
+}
+
 fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   let sig_labels = sig_type_effect_labels(ty)
   set_entry_allows_authority(is_program_entry_name(fn_name) && String::length(effect_row_allows_text(raw_fn_effect_string(ty, body))) > 0)
@@ -3392,7 +3422,7 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
       // parameters up on its own.
       let merged_params = merge_param_types_with_sig(ty, params)
       let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names)
-      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(sig_labels, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff))), false, fn_names, fn_effs, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
+      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff)))), false, fn_names, fn_effs, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
     },
     _ => {
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so

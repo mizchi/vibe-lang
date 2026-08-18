@@ -259,20 +259,21 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   let tokens = lex(source)
   let stmts = parse_program(tokens)
   expand_interp_stmts(stmts)
-  // #683 lowered test/bench blocks BEFORE the check, on the stated grounds
-  // that "pre-check rewriting is equivalent here". It is not, and #2107 is
-  // where that showed: the checker grants a `test` / `bench` body the standard
-  // test effect set (`test_ambient_effects`, keyed off the STest/SBench node),
-  // so lowering first hands the checker an ordinary row-free function and the
-  // grant never applies. Every assertion in a gc-lane test then wanted
-  // `with Stdout` from a function that has no row to declare -- a lane
-  // divergence with nothing to catch it until a builtin's row changed.
+  // #683: lower test/bench blocks BEFORE the check so the synthesized
+  // `__test_*` lets and the no-entry `_start` runner are type-checked like
+  // ordinary functions.
   //
-  // The linear lane checks STest bodies directly and rewrites inside codegen.
-  // Same order here: check first, lower after, so both lanes grant the same
-  // ambient row to the same code.
-  let _ = check_program(stmts)
+  // The order matters in both directions, so neither is free to change:
+  // lowering FIRST is what makes a `handle` written inside a test block
+  // eligible for the ADR-0076 direct-perform lowering (it wants a named
+  // top-level `fn`; `fixtures/effect_effectset_expansion.vibe` is that
+  // shape and compiles on this lane only for this reason), while the
+  // checker's ambient test-effect grant is keyed off the STest / SBench
+  // node this erases. #2107 closed the second half in the checker instead:
+  // `lowered_test_ambient_effects` recognizes these two prefixes, so the
+  // grant survives the lowering without changing what CODEGEN sees.
   let effective_entry = lower_test_blocks_gc(stmts, entry_name)
+  let _ = check_program(stmts)
   // #1015: MUST run before strip_generic_type_params below -- that pass
   // unconditionally zeroes every top-level generic fn's type_params/bounds
   // (erasure, not specific to `to_string`), so checking the Show-bounded
