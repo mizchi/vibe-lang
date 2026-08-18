@@ -2779,12 +2779,17 @@ for pp_rc in 0 1; do
     echo "[compiler-gate] FAIL: print primitives output '$pp_out' under VIBE_RC=$pp_rc (expected 'hello gate|fortytwo|42|A|'; #929/#930 regressed)" >&2; exit 1
   fi
 done
+# #2107: both rows are declared because both functions really do print --
+# `print` carries `Stdout` now that the checker holds the print builtins to
+# the row discipline. What this fixture pins is unchanged: the SOURCE
+# definition of `println` wins over the builtin lowering, so the program
+# prints "S" rather than "ignored".
 cat > "$ppdir/shadow.vibe" <<'EOF'
-fn println(s: String) -> Unit {
+fn println(s: String) -> Unit with Stdout {
   print("S\n")
 }
 
-fn main() -> Unit {
+fn main() -> Unit with Stdout {
   println("ignored")
 }
 EOF

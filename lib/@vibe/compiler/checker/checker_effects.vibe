@@ -1268,6 +1268,20 @@ fn builtin_call_op_label(name: String, eff: String) -> String {
   }
 }
 
+/// #2107: does a definition in the program own this name, making the builtin
+/// of the same name unreachable at this call site? A lexical binding (closure
+/// parameter, `let`) or a top-level function both shadow it, the same way
+/// codegen resolves a source definition ahead of its builtin lowering.
+fn source_definition_shadows_builtin(name: String, lexical_callee: Option[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Bool {
+  match lexical_callee {
+    Some(_) => true,
+    None => match lookup_fn_effs(fn_names, fn_effs, name) {
+      Some(_) => true,
+      None => false
+    }
+  }
+}
+
 /// The complete set of UNQUALIFIED builtins that carry an effect row, and the
 /// row each one carries. Everything else effectful in the registry is spelled
 /// `Effect::op`, which `builtin_call_effect` resolves through `lookup_builtin`;
@@ -2703,6 +2717,17 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 },
                 _ => ()
               }
+            } else if source_definition_shadows_builtin(name, lexical_callee, fn_names, fn_effs) {
+              // #2107: a source definition of this name wins, so the builtin's
+              // row is not the one to require -- the callee's OWN declared row
+              // is, and the transitive check below reads it. Codegen has the
+              // same rule for the print builtins (`cc_ft_has(ctx.func_table,
+              // fname)` in expr/compile_call.vibe, #929) and the gate pins it:
+              // `fn println(s: String) -> Unit { print("S\n") }` must compile
+              // and win over the builtin lowering. Without this the checker
+              // would demand `with Stdout` from callers of a user function that
+              // merely reuses the name.
+              ()
             } else {
               match builtin_call_effect(name) {
                 Some(eff) => {
