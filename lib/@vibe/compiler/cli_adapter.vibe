@@ -34,6 +34,8 @@ import @vibe/compiler/runtime {
   incremental_typecheck_telemetry_json,
   locate_type_error,
   module_plan_manifest_fs,
+  rc_classify_source,
+  rc_plan_source,
   run_module_job_dir,
   run_publish_env_cache_dir,
   set_collect_module_diagnostics,
@@ -1385,6 +1387,29 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         escape_spans(src)
       }
       Fs::write_bytes(output_path, adapter_string_to_bytes(join_escape_spans(esc)))
+      0
+    } with Exception {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  }
+  // `vibe rc-classify` / `vibe rc-plan` (issue 1981): the same classifier
+  // sets and Perceus plan linked_compile computes after
+  // effect_lowering_prelude. Empty output = nothing special. A thrown
+  // Error goes to the `.diag` sidecar so "the query broke" stays
+  // distinguishable from "no special sets / no actions".
+  if Env::get("VIBE_RC_CLASSIFY") == "1" {
+    return handle {
+      let src = Fs::read_file(input_path)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(rc_classify_source(src)))
+      0
+    } with Exception {
+      Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  }
+  if Env::get("VIBE_RC_PLAN") == "1" {
+    return handle {
+      let src = Fs::read_file(input_path)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(rc_plan_source(src, Env::get("VIBE_RC_PLAN_FN"))))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)

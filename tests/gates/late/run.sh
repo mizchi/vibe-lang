@@ -5176,6 +5176,7 @@ echo "[compiler-gate] desugar-emitted builtins resolve in both lanes ok"
 
 echo "[compiler-gate] 98/104 \`vibe grep\`'s typed filters resolve imports like \`vibe check\` (#1572)"
 bash "$ROOT_DIR/scripts/test_vibe_grep_help.sh"
+bash "$ROOT_DIR/scripts/test_vibe_rc_help.sh"
 # grep_test.vibe covers the pattern language and the filters through
 # grep_scan_source (no Fs). What only the REAL adapter mode exercises is the
 # filesystem tier: sweeping a directory, and resolving a capture's type through

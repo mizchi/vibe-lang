@@ -364,6 +364,13 @@ vibe escapes file.vibe
 # 常に既定の部分集合
 vibe escapes --strict file.vibe
 
+# RC classifier sets and Perceus plan (issue 1981). Same prelude +
+# compute_* / build_perceus_plan_with_params as linked_compile.
+# `NAME SET[,SET...]` / `FN BINDING ACTION COUNT`. Empty = nothing special.
+vibe rc-classify file.vibe
+vibe rc-plan file.vibe
+vibe rc-plan --fn make file.vibe
+
 # 解決済みの import closure (1行1パス、依存先が先、自分自身は除く。#988)。
 # ローダ自身の収集結果 = ビルドが実際にコンパイルする集合なので、実解決
 # (index.vibe facade・.vpkg contract とその兄弟実装・@scope/pkg の
