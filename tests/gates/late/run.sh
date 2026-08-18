@@ -4480,32 +4480,32 @@ res_case() {
 }
 res_case basic ok 'resource Posts : S3::Bucket
 
-fn main {
+fn main with Stdout {
   println("ok")
 }
 '
 res_case unqualified err 'resource Posts : Bucket
 
-fn main {
+fn main with Stdout {
   println("ok")
 }
 ' 'must be qualified'
 res_case duplicate err 'resource Posts : S3::Bucket
 resource Posts : S3::Table
 
-fn main {
+fn main with Stdout {
   println("ok")
 }
 ' 'already declared'
 res_case singleton err 'resource Home : Process::Root
 
-fn main {
+fn main with Stdout {
   println("ok")
 }
 ' 'singleton'
 res_case exported err 'export resource Posts : S3::Bucket
 
-fn main {
+fn main with Stdout {
   println("ok")
 }
 ' 'cannot be exported'
@@ -4514,7 +4514,7 @@ fn main {
 # position, so nothing that used the name breaks.
 res_case as_name ok 'let resource = 1
 
-fn main {
+fn main with Stdout {
   println("ok")
 }
 '
@@ -4759,7 +4759,7 @@ en_case() {
 #    no way to WRITE a qualified reference to an imported constructor.
 en_case qualified ok 'import ./dep.vibe { Box, Mk, Nil }
 
-fn main {
+fn main with Stdout {
   let b = Box::Mk(7)
   let r = match b {
     Mk(n) => n,
@@ -4774,7 +4774,7 @@ fn main {
 #    one: a hole in checking, not a message-quality complaint.
 en_case payload_checked err 'import ./dep.vibe { Box, Mk, Nil }
 
-fn main {
+fn main with Stdout {
   let b = Mk(7)
   match b {
     Mk(n) => println(String::concat(n, "!")),
@@ -4787,7 +4787,7 @@ fn main {
 #    variant trapped at runtime instead.
 en_case exhaustive err 'import ./dep.vibe { Box, Mk }
 
-fn main {
+fn main with Stdout {
   let b = Mk(7)
   let r = match b {
     Mk(n) => n
@@ -4803,7 +4803,7 @@ fn main {
 #    env_lookup that could not see the imported scheme.
 en_case parameterized ok 'import ./dep.vibe { Attempt, Got, Missed }
 
-fn main {
+fn main with Stdout {
   let a = Got(3)
   let r = match a {
     Got(v) => v,
@@ -4814,7 +4814,7 @@ fn main {
 '
 en_case parameterized_qualified ok 'import ./dep.vibe { Attempt, Got, Missed }
 
-fn main {
+fn main with Stdout {
   let a = Attempt::Got(3)
   let r = match a {
     Attempt::Got(v) => v,
@@ -4842,7 +4842,7 @@ fn second() -> String {
   }
 }
 
-fn main {
+fn main with Stdout {
   println(String::concat(__to_string(first()), second()))
 }
 '
@@ -4854,7 +4854,7 @@ fn main {
 #     `Box` is a real enum here, just not the one that owns `Missed`.
 en_case pattern_qualifier_wrong_enum err 'import ./dep.vibe { Attempt, Box, Got, Missed }
 
-fn main {
+fn main with Stdout {
   let a = Got(3)
   let r = match a {
     Got(v) => v,
@@ -4875,7 +4875,7 @@ fn shout(s: String) -> String with Log {
   s
 }
 
-fn main {
+fn main with Stdout {
   let r = handle {
     shout("hi")
   } with Log {
@@ -4898,7 +4898,7 @@ enum Color {
   Green
 }
 
-fn main {
+fn main with Stdout {
   let c = Red
   match c {
     Red => println("red"),
@@ -4917,7 +4917,7 @@ enum B {
   Mk(String)
 }
 
-fn main {
+fn main with Stdout {
   println("unreachable")
 }
 ' 'constructor name collision'
@@ -5394,14 +5394,14 @@ fi
 # the observable: the rewrite runs a snapshot assertion instead and traps.
 cat > "$inspdir/shadow_pat.vibe" <<'INSPP'
 enum Box {
-  B((Int, String) -> Unit)
+  B((Int, String) -> Unit with Stdout)
 }
 
-fn shout(v: Int, c: String) -> Unit {
+fn shout(v: Int, c: String) -> Unit with Stdout {
   println(c)
 }
 
-fn main() -> Int {
+fn main() -> Int with Stdout {
   match B(shout) {
     B(inspect) => {
       inspect(1, "SIDE EFFECT RAN")
