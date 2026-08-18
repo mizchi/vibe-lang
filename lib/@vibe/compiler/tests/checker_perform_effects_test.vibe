@@ -33,11 +33,7 @@ fn is_empty_handle_err(e: EffectError) -> Bool {
 /// `perform EffName::Op(arg)` reaches the checker as
 /// ECall(EIdent("perform"), [ECall(EIdent("EffName::Op"), [arg])]).
 fn perform_op(op: String, arg: Expr) -> Expr {
-  ECall(EIdent("perform", -1), [
-    ECall(EIdent(op, -1), [
-      arg
-    ], -1)
-  ], -1)
+  ECall(EIdent("perform", -1), [ECall(EIdent(op, -1), [arg], -1)], -1)
 }
 
 fn fn_with(effect: Option[String], body: Expr) -> Expr {
@@ -72,9 +68,7 @@ test "perform of a different declared effect still reports error" {
 
 test "perform inside a handle is allowed regardless of declaration" {
   let inner = perform_op("Console::Print", EString("hi"))
-  let handle_expr = EHandle(inner, [
-    (PBind("k"), EInt(0))
-  ])
+  let handle_expr = EHandle(inner, [(PBind("k"), EInt(0))])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }
@@ -103,9 +97,7 @@ test "explicitly pure callback lambda does not inherit outer effects" {
   // This closure is passed through a pure callback slot while the enclosing
   // lambda has Fs. Its explicit `with ()` must replace, not inherit, that row.
   let callback = fn_with(Some(""), perform_op("Fs::ReadFile", EString("p")))
-  let outer = fn_with(Some("Fs"), ECall(EIdent("apply_pure", -1), [
-    callback
-  ], -1))
+  let outer = fn_with(Some("Fs"), ECall(EIdent("apply_pure", -1), [callback], -1))
   let errors = check_perform_effects_expr(outer, no_labels(), false)
   assert(Array::length(errors) > 0)
 }
@@ -127,9 +119,7 @@ test "effect-variable declaration authorizes any perform" {
 
 test "SLet signature effect authorizes perform in its body" {
   let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
-  let sig = TyFn([
-    TyName("String")
-  ], TyName("String"), Some("Error, Fs"))
+  let sig = TyFn([TyName("String")], TyName("String"), Some("Error, Fs"))
   let stmt = SLet(false, false, "read", Some(sig), body)
   let errors = check_perform_effects_stmt(stmt)
   assert(eq(Array::length(errors), 0))
@@ -137,53 +127,37 @@ test "SLet signature effect authorizes perform in its body" {
 
 test "SLet without the effect flags perform in its body" {
   let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
-  let sig = TyFn([
-    TyName("String")
-  ], TyName("String"), Some("Error"))
+  let sig = TyFn([TyName("String")], TyName("String"), Some("Error"))
   let stmt = SLet(false, false, "read", Some(sig), body)
   let errors = check_perform_effects_stmt(stmt)
   assert(Array::length(errors) > 0)
 }
 
 test "calling an effectful builtin without the effect reports error" {
-  let call = ECall(EIdent("Fs::read_file", -1), [
-    EString("p")
-  ], -1)
+  let call = ECall(EIdent("Fs::read_file", -1), [EString("p")], -1)
   let errors = check_perform_effects_expr(call, no_labels(), false)
   assert(Array::length(errors) > 0)
 }
 
 test "calling an effectful builtin with the effect declared is OK" {
-  let call = ECall(EIdent("Fs::read_file", -1), [
-    EString("p")
-  ], -1)
-  let errors = check_perform_effects_expr(call, [
-    "Fs"
-  ], false)
+  let call = ECall(EIdent("Fs::read_file", -1), [EString("p")], -1)
+  let errors = check_perform_effects_expr(call, ["Fs"], false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "calling a pure builtin is never flagged" {
-  let call = ECall(EIdent("Array::length", -1), [
-    EIdent("xs", -1)
-  ], -1)
+  let call = ECall(EIdent("Array::length", -1), [EIdent("xs", -1)], -1)
   let errors = check_perform_effects_expr(call, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "effect checking visits non-call expression children" {
-  let fs_call = ECall(EIdent("Fs::read_file", -1), [
-    EString("p")
-  ], -1)
-  let map_expr = EMap([
-    ("value", fs_call)
-  ])
+  let fs_call = ECall(EIdent("Fs::read_file", -1), [EString("p")], -1)
+  let map_expr = EMap([("value", fs_call)])
   let labeled_expr = ELabeledArg("value", "v", fs_call)
   let spread_expr = ESpread(fs_call)
   let break_expr = EBreak(Some(fs_call))
-  let continue_expr = EContinue([
-    fs_call
-  ])
+  let continue_expr = EContinue([fs_call])
   assert(Array::length(check_perform_effects_expr(map_expr, no_labels(), false)) > 0)
   assert(Array::length(check_perform_effects_expr(labeled_expr, no_labels(), false)) > 0)
   assert(Array::length(check_perform_effects_expr(spread_expr, no_labels(), false)) > 0)
@@ -198,9 +172,7 @@ test "effect checking visits non-call expression children" {
 test "handle discharges its own effect for an undeclared perform" {
   let body = perform_op("Console::Print", EString("hi"))
   let handle_expr = EHandle(body, [
-    (PCtor("Console::Print", [
-      PBind("s")
-    ]), EInt(0))
+    (PCtor("Console::Print", [PBind("s")]), EInt(0))
   ])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
@@ -209,9 +181,7 @@ test "handle discharges its own effect for an undeclared perform" {
 test "handle does not discharge a different effect" {
   let body = perform_op("Logger::Log", EString("hi"))
   let handle_expr = EHandle(body, [
-    (PCtor("Console::Print", [
-      PBind("s")
-    ]), EInt(0))
+    (PCtor("Console::Print", [PBind("s")]), EInt(0))
   ])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   // #1961 must not set in_handle for a known discharge: that flag also
@@ -221,9 +191,7 @@ test "handle does not discharge a different effect" {
 
 test "handle with an unqualified arm stays conservative" {
   let body = perform_op("Logger::Log", EString("hi"))
-  let handle_expr = EHandle(body, [
-    (PBind("k"), EInt(0))
-  ])
+  let handle_expr = EHandle(body, [(PBind("k"), EInt(0))])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }
@@ -232,9 +200,7 @@ test "handle with an unqualified arm stays conservative" {
 
 test "row mismatch names the missing effect and suggests the augmented row" {
   let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
-  let sig = TyFn([
-    TyName("String")
-  ], TyName("String"), Some("Error"))
+  let sig = TyFn([TyName("String")], TyName("String"), Some("Error"))
   let stmt = SLet(false, false, "read", Some(sig), body)
   let errors = check_perform_effects_stmt(stmt)
   assert(Array::length(errors) > 0)
@@ -267,14 +233,9 @@ test "call-site mismatch aggregates, sorts, and blames the caller" {
   // hint targets the CALLER's declaration.
   let helper_body = fn_with(Some("Fs, Env"), EInt(1))
   let helper = SLet(false, false, "helper", None, helper_body)
-  let caller_body = fn_with(None, ECall(EIdent("helper", -1), [
-    EInt(0)
-  ], -1))
+  let caller_body = fn_with(None, ECall(EIdent("helper", -1), [EInt(0)], -1))
   let caller = SLet(false, false, "wrap", None, caller_body)
-  let errors = check_perform_effects_stmts([
-    helper,
-    caller
-  ])
+  let errors = check_perform_effects_stmts([helper, caller])
   assert(Array::length(errors) > 0)
   let msg = effect_error_to_string(Array::get(errors, 0))
   assert(String::contains(msg, "effect row mismatch for 'wrap': missing { Env, Fs }"))
@@ -292,9 +253,7 @@ test "call-site mismatch aggregates, sorts, and blames the caller" {
 test "calling a local closure leaks its declared row" {
   let closure = fn_with(Some("Env"), EInt(1))
   let body = ELet("f", closure, ECall(EIdent("f", -1), array_empty(), -1), -1)
-  let errors = check_perform_effects_expr(body, [
-    "Stdout"
-  ], false)
+  let errors = check_perform_effects_expr(body, ["Stdout"], false)
   assert(Array::length(errors) > 0)
   let msg = effect_error_to_string(Array::get(errors, 0))
   assert(String::contains(msg, "missing { Env }"))
@@ -303,10 +262,7 @@ test "calling a local closure leaks its declared row" {
 test "a caller declaring the local closure's row is OK" {
   let closure = fn_with(Some("Env"), EInt(1))
   let body = ELet("f", closure, ECall(EIdent("f", -1), array_empty(), -1), -1)
-  let errors = check_perform_effects_expr(body, [
-    "Stdout",
-    "Env"
-  ], false)
+  let errors = check_perform_effects_expr(body, ["Stdout", "Env"], false)
   assert(eq(Array::length(errors), 0))
 }
 
@@ -338,20 +294,14 @@ test "a pure local binding shadows a same-named effectful top-level fn (#1723)" 
   let top = SLet(false, false, "take", None, fn_with(Some("Ask"), EInt(0)))
   let pure = fn_with(None, EInt(8))
   let probe = SLet(false, false, "probe", None, fn_with(None, ELet("take", pure, ECall(EIdent("take", -1), array_empty(), -1), -1)))
-  let errors = check_perform_effects_stmts([
-    top,
-    probe
-  ])
+  let errors = check_perform_effects_stmts([top, probe])
   assert(eq(Array::length(errors), 0))
 }
 
 test "an unshadowed effectful top-level call is charged outside a handler (#1723 control)" {
   let top = SLet(false, false, "take", None, fn_with(Some("Ask"), EInt(0)))
   let probe = SLet(false, false, "probe", None, fn_with(None, ECall(EIdent("take", -1), array_empty(), -1)))
-  let errors = check_perform_effects_stmts([
-    top,
-    probe
-  ])
+  let errors = check_perform_effects_stmts([top, probe])
   assert(eq(Array::length(errors), 1))
   assert(String::contains(effect_error_to_string(Array::get(errors, 0)), "effect row mismatch for 'probe': missing { Ask }"))
 }
@@ -373,10 +323,7 @@ test "an effectful local binding shadows a same-named pure top-level fn (#1723)"
   let top = SLet(false, false, "take", None, fn_with(None, EInt(0)))
   let effectful = fn_with(Some("Ask"), EInt(8))
   let probe = SLet(false, false, "probe", None, fn_with(None, ELet("take", effectful, ECall(EIdent("take", -1), array_empty(), -1), -1)))
-  let errors = check_perform_effects_stmts([
-    top,
-    probe
-  ])
+  let errors = check_perform_effects_stmts([top, probe])
   assert(eq(Array::length(errors), 1))
   assert(String::contains(effect_error_to_string(Array::get(errors, 0)), "missing { Ask }"))
 }
@@ -387,10 +334,7 @@ test "top-level effect lookup resumes after a local shadow scope ends (#1723)" {
   let scoped_local = ELet("take", pure, ECall(EIdent("take", -1), array_empty(), -1), -1)
   let after_scope = ECall(EIdent("take", -1), array_empty(), -1)
   let probe = SLet(false, false, "probe", None, fn_with(None, ESeq(scoped_local, after_scope)))
-  let errors = check_perform_effects_stmts([
-    top,
-    probe
-  ])
+  let errors = check_perform_effects_stmts([top, probe])
   assert(eq(Array::length(errors), 1))
   assert(String::contains(effect_error_to_string(Array::get(errors, 0)), "missing { Ask }"))
 }
@@ -417,9 +361,7 @@ test "pattern and loop binders mask same-named top-level rows (#1723)" {
 test "a handle around the call discharges the local closure's row" {
   let closure = fn_with(Some("Env"), EInt(1))
   let call = ECall(EIdent("f", -1), array_empty(), -1)
-  let body = ELet("f", closure, EHandle(call, [
-    (PBind("k"), EInt(0))
-  ]), -1)
+  let body = ELet("f", closure, EHandle(call, [(PBind("k"), EInt(0))]), -1)
   let errors = check_perform_effects_expr(body, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }
@@ -449,11 +391,7 @@ test "calling a local closure bound with let mut leaks its declared row" {
 // this body calls an opaque value.
 
 fn yield_effect_def() -> Stmt {
-  SEffectDef(false, "Yield", array_empty(), [
-    ("Yield", [
-      TyName("Int")
-    ], TyUnit)
-  ])
+  SEffectDef(false, "Yield", array_empty(), [("Yield", [TyName("Int")], TyUnit)])
 }
 
 fn yield_producer() -> Stmt {
@@ -462,9 +400,7 @@ fn yield_producer() -> Stmt {
 
 fn yield_handle_over(body: Expr) -> Stmt {
   SLet(false, false, "drive", None, fn_with(None, EHandle(body, [
-    (PCtor("Yield::Yield", [
-      PBind("x")
-    ]), EInt(0))
+    (PCtor("Yield::Yield", [PBind("x")]), EInt(0))
   ])))
 }
 

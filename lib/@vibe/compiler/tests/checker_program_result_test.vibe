@@ -58,11 +58,7 @@ fn check_expr_occurrences(expr: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Arr
 }
 
 fn array_length_expr() -> Expr {
-  ECall(EIdent("Array::length", 1), [
-    EArray([
-      EInt(1)
-    ])
-  ], 10)
+  ECall(EIdent("Array::length", 1), [EArray([EInt(1)])], 10)
 }
 
 fn trait_header_params(env: TypeEnv, wanted: String) -> Array[String] {
@@ -87,9 +83,7 @@ fn trait_header_params(env: TypeEnv, wanted: String) -> Array[String] {
 
 test "check_program_result retains production outputs" {
   let stmts = [
-    SStruct(false, "Point", [
-      ("x", TyName("Int"))
-    ], array_empty(), array_empty(), array_empty()),
+    SStruct(false, "Point", [("x", TyName("Int"))], array_empty(), array_empty(), array_empty()),
     SLet(false, false, "value", None, array_length_expr())
   ]
   let checked = check_program_result(stmts)
@@ -127,29 +121,12 @@ test "checker final env retains ordered trait header params" {
 
 test "production result retains every typedef form and enum binder provenance" {
   let observation = check_program_type_defs_observation([
-    SEnum(false, "Choice", [
-      "A",
-      "B"
-    ], [
-      ("Only", [
-        TyName("B")
-      ])
-    ], array_empty()),
-    SStruct(false, "Box", [
-      ("value", TyName("T"))
-    ], array_empty(), [
-      "value"
-    ], [
+    SEnum(false, "Choice", ["A", "B"], [("Only", [TyName("B")])], array_empty()),
+    SStruct(false, "Box", [("value", TyName("T"))], array_empty(), ["value"], [
       "T"
     ]),
-    STypeAlias(false, "Wrapped", [
-      "T"
-    ], TyName("T")),
-    SEffectDef(false, "Reader", [
-      "T"
-    ], [
-      ("ask", array_empty(), TyName("T"))
-    ])
+    STypeAlias(false, "Wrapped", ["T"], TyName("T")),
+    SEffectDef(false, "Reader", ["T"], [("ask", array_empty(), TyName("T"))])
   ])
   let checked = observation.checked_program
   let type_def_binders = observation.type_def_binders
@@ -179,16 +156,8 @@ test "production result retains every typedef form and enum binder provenance" {
 test "check_program_with_env_result retains production outputs" {
   let initial_env = env_bind(EnvEmpty, "seed", CtInt)
   let stmts = [
-    SEnum(false, "Local", [
-      "T"
-    ], [
-      ("Wrap", [
-        TyName("T")
-      ])
-    ], array_empty()),
-    SStruct(false, "Record", [
-      ("value", TyName("Int"))
-    ], array_empty(), array_empty(), array_empty()),
+    SEnum(false, "Local", ["T"], [("Wrap", [TyName("T")])], array_empty()),
+    SStruct(false, "Record", [("value", TyName("Int"))], array_empty(), array_empty(), array_empty()),
     SLet(false, false, "copied", None, array_length_expr())
   ]
   let observation = check_program_with_env_type_defs_observation(stmts, initial_env)
@@ -216,9 +185,7 @@ test "check_program remains compatible with check_program_result" {
   let result_env = check_program_result([
     SLet(false, false, "value", None, EInt(1))
   ]).final_env
-  let legacy_env = check_program([
-    SLet(false, false, "value", None, EInt(1))
-  ])
+  let legacy_env = check_program([SLet(false, false, "value", None, EInt(1))])
   assert_int_binding(result_env, "value")
   assert_int_binding(legacy_env, "value")
 }
@@ -241,28 +208,17 @@ test "check_program_with_env remains compatible with its result variant" {
 // are structural only: they deliberately do not add role/provenance to this
 // legacy artifact.
 test "typed occurrences preserve identifier rows across env builtin and qualified ctor branches" {
-  let concat_type = CtFn([
-    CtString,
-    CtString
-  ], CtString, None)
+  let concat_type = CtFn([CtString, CtString], CtString, None)
   assert_typed_occurrences(check_expr_occurrences(ESeq(EIdent("x", 10), EIdent("String::concat", 20)), env_bind(EnvEmpty, "x", CtInt), array_empty()), [
     (10, CtInt),
     (20, concat_type)
   ])
   let checked = check_program_result([
-    SEnum(false, "Choice", array_empty(), [
-      ("Pick", array_empty())
-    ], array_empty()),
+    SEnum(false, "Choice", array_empty(), [("Pick", array_empty())], array_empty()),
     SLet(false, false, "picked", None, EIdent("Choice::Pick", 30))
   ])
-  assert_typed_occurrences(checked.typed_occurrences, [
-    (30, CtEnum("Choice"))
-  ])
-  let methods = [
-    ("show", [
-      TyName("Self")
-    ], TyName("String"))
-  ]
+  assert_typed_occurrences(checked.typed_occurrences, [(30, CtEnum("Choice"))])
+  let methods = [("show", [TyName("Self")], TyName("String"))]
   let trait_env = EnvTraitDef("Show", array_empty(), false, methods, env_bind(EnvEmpty, "T", CtVar(0)), array_empty(), array_empty())
   let trait_errors = array_empty()
   let trait_rows = array_empty()
@@ -270,22 +226,14 @@ test "typed occurrences preserve identifier rows across env builtin and qualifie
     "Show"
   ]), 1, trait_errors, trait_rows)
   assert(Array::length(trait_errors) == 0)
-  assert_typed_occurrences(trait_rows, [
-    (35, CtFn([
-      CtVar(0)
-    ], CtString, None))
-  ])
+  assert_typed_occurrences(trait_rows, [(35, CtFn([CtVar(0)], CtString, None))])
 }
 
 test "typed occurrences preserve nested call order and duplicate offsets" {
-  let fn_type = CtFn([
-    CtInt
-  ], CtInt, None)
+  let fn_type = CtFn([CtInt], CtInt, None)
   let env = env_bind(env_bind(EnvEmpty, "f", fn_type), "g", fn_type)
   assert_typed_occurrences(check_expr_occurrences(ECall(EIdent("f", 40), [
-    ECall(EIdent("g", 41), [
-      EInt(1)
-    ], 42)
+    ECall(EIdent("g", 41), [EInt(1)], 42)
   ], 43), env, array_empty()), [
     // ECall's generic callee check deliberately uses a synthetic EIdent;
     // only the nested and outer call-result rows are legacy occurrences.
@@ -299,11 +247,7 @@ test "typed occurrences preserve nested call order and duplicate offsets" {
 }
 
 test "typed occurrences preserve distinct and shared dot offsets" {
-  let defs = [
-    TDStruct("Box", [
-      ("value", CtInt)
-    ], array_empty(), array_empty())
-  ]
+  let defs = [TDStruct("Box", [("value", CtInt)], array_empty(), array_empty())]
   let env = env_bind(EnvEmpty, "box", CtStruct("Box"))
   assert_typed_occurrences(check_expr_occurrences(EDot(EIdent("box", 50), "value", 51, 52), env, defs), [
     (50, CtStruct("Box")),
@@ -317,18 +261,12 @@ test "typed occurrences preserve distinct and shared dot offsets" {
 }
 
 test "typed occurrences preserve synthetic negative-offset omission" {
-  let fn_type = CtFn([
-    CtInt
-  ], CtInt, None)
+  let fn_type = CtFn([CtInt], CtInt, None)
   let env = env_bind(env_bind(EnvEmpty, "f", fn_type), "x", CtInt)
   assert_typed_occurrences(check_expr_occurrences(ECall(EIdent("f", -1), [
     EIdent("x", -2)
   ], -3), env, array_empty()), array_empty())
-  let defs = [
-    TDStruct("Box", [
-      ("value", CtInt)
-    ], array_empty(), array_empty())
-  ]
+  let defs = [TDStruct("Box", [("value", CtInt)], array_empty(), array_empty())]
   let box_env = env_bind(EnvEmpty, "box", CtStruct("Box"))
   assert_typed_occurrences(check_expr_occurrences(EDot(EIdent("box", -4), "value", -5, -6), box_env, defs), array_empty())
 }

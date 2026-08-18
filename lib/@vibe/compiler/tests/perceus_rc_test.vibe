@@ -64,10 +64,7 @@ fn count_alias_dups(plan: Array[PerceusAction], name: String) -> Int {
 /// A heap binding only borrowed (field access) is dropped once at scope end.
 test "perceus: pure-borrow binding is dropped once" {
   // let t = (1, 2); t.0
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), EDot(EIdent("t", -1), "0", -1, -1), -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), EDot(EIdent("t", -1), "0", -1, -1), -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "t") == 1)
   assert(count_dups(plan, "t") == 0)
@@ -76,10 +73,7 @@ test "perceus: pure-borrow binding is dropped once" {
 /// A binding moved out as the body result is not dropped (ownership transfers).
 test "perceus: moved-out binding is not dropped" {
   // let t = (1, 2); t
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), EIdent("t", -1), -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), EIdent("t", -1), -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "t") == 0)
   assert(count_dups(plan, "t") == 0)
@@ -96,10 +90,7 @@ test "perceus: scalar binding is not dropped" {
 /// A binding consumed twice (into a tuple) dups once and is not dropped.
 test "perceus: binding used twice owning emits one dup" {
   // let t = (1, 2); (t, t)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), ETuple([
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), ETuple([
     EIdent("t", -1),
     EIdent("t", -1)
   ]), -1)
@@ -111,14 +102,8 @@ test "perceus: binding used twice owning emits one dup" {
 /// Calling a binding borrows it, so the closure value is dropped at scope end.
 test "perceus: called binding (closure) is borrowed and dropped" {
   // let g = (x){ x }; g(1)   — represented with an EFn value
-  let lam = EFn([
-  ], [
-  ], [
-    ("x", None)
-  ], None, None, EIdent("x", -1))
-  let body = ELet("g", lam, ECall(EIdent("g", -1), [
-    EInt(1)
-  ], -1), -1)
+  let lam = EFn([], [], [("x", None)], None, None, EIdent("x", -1))
+  let body = ELet("g", lam, ECall(EIdent("g", -1), [EInt(1)], -1), -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "g") == 1)
 }
@@ -126,14 +111,8 @@ test "perceus: called binding (closure) is borrowed and dropped" {
 /// Nested let where the inner borrows the outer: both dropped at their scopes.
 test "perceus: nested borrow drops both bindings" {
   // let t = (1, 2); let u = (t.0, 3); u.0
-  let inner = ELet("u", ETuple([
-    EDot(EIdent("t", -1), "0", -1, -1),
-    EInt(3)
-  ]), EDot(EIdent("u", -1), "0", -1, -1), -1)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), inner, -1)
+  let inner = ELet("u", ETuple([EDot(EIdent("t", -1), "0", -1, -1), EInt(3)]), EDot(EIdent("u", -1), "0", -1, -1), -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "t") == 1)
   assert(count_drops(plan, "u") == 1)
@@ -142,10 +121,7 @@ test "perceus: nested borrow drops both bindings" {
 /// An if/else with a branch-local heap binding drops it inside the branch scope.
 test "perceus: branch-local heap binding is dropped" {
   // let s = 0; if true { let t = (1,2); t.0 } else { 5 } ; (body result is the if)
-  let then_e = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), EDot(EIdent("t", -1), "0", -1, -1), -1)
+  let then_e = ELet("t", ETuple([EInt(1), EInt(2)]), EDot(EIdent("t", -1), "0", -1, -1), -1)
   let if_e = EIf(EBool(true), then_e, EInt(5))
   let plan = build_perceus_plan(if_e)
   assert(count_drops(plan, "t") == 1)
@@ -155,10 +131,7 @@ test "perceus: branch-local heap binding is dropped" {
 /// (structurally, via its ELet scope).
 test "perceus: while-body binding is dropped in the loop" {
   // while cond { let t = (1, 2); t.0 }
-  let loop_body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), EDot(EIdent("t", -1), "0", -1, -1), -1)
+  let loop_body = ELet("t", ETuple([EInt(1), EInt(2)]), EDot(EIdent("t", -1), "0", -1, -1), -1)
   let while_e = EWhile(EBool(true), loop_body)
   let plan = build_perceus_plan(while_e)
   assert(count_drops(plan, "t") == 1)
@@ -181,18 +154,9 @@ test "perceus: closure capture counts as an owning use" {
   // t is captured by g (owning use via capture) -> consumed into the closure
   // env, so t itself is not separately dropped; g is borrowed by the call and
   // dropped at scope end.
-  let lam = EFn([
-  ], [
-  ], [
-    ("x", None)
-  ], None, None, EBinOp("+", EDot(EIdent("t", -1), "0", -1, -1), EIdent("x", -1)))
-  let inner = ELet("g", lam, ECall(EIdent("g", -1), [
-    EInt(1)
-  ], -1), -1)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), inner, -1)
+  let lam = EFn([], [], [("x", None)], None, None, EBinOp("+", EDot(EIdent("t", -1), "0", -1, -1), EIdent("x", -1)))
+  let inner = ELet("g", lam, ECall(EIdent("g", -1), [EInt(1)], -1), -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "g") == 1)
   // t is moved into the closure env (its capture is the consuming use).
@@ -203,10 +167,7 @@ test "perceus: closure capture counts as an owning use" {
 /// first call's owned result is thrown away.
 test "perceus: discarded sequenced heap value is dropped" {
   // (1, 2) ; 7   -- the tuple value is discarded
-  let body = ESeq(ETuple([
-    EInt(1),
-    EInt(2)
-  ]), EInt(7))
+  let body = ESeq(ETuple([EInt(1), EInt(2)]), EInt(7))
   let plan = build_perceus_plan(body)
   // The discarded tuple is bound to a synthetic name and dropped.
   assert(count_all_drops(plan) == 1)
@@ -223,12 +184,7 @@ test "perceus: discarded scalar is not dropped" {
 /// A loop parameter that owns heap and is only borrowed is dropped at scope end.
 test "perceus: loop parameter heap is dropped" {
   // loop acc = (1, 2) { acc.0 }
-  let params: Array[(String, Expr)] = [
-    ("acc", ETuple([
-      EInt(1),
-      EInt(2)
-    ]))
-  ]
+  let params: Array[(String, Expr)] = [("acc", ETuple([EInt(1), EInt(2)]))]
   let lp = ELoop(params, EDot(EIdent("acc", -1), "0", -1, -1))
   let plan = build_perceus_plan(lp)
   assert(count_drops(plan, "acc") == 1)
@@ -237,14 +193,9 @@ test "perceus: loop parameter heap is dropped" {
 /// A match arm-local pattern binding that is only borrowed is dropped per arm.
 test "perceus: match arm pattern binding is dropped" {
   // match s { Some(p) => p.0, _ => 0 }
-  let arm1: (Pat, Expr) = (PCtor("Some", [
-    PBind("p")
-  ]), EDot(EIdent("p", -1), "0", -1, -1))
+  let arm1: (Pat, Expr) = (PCtor("Some", [PBind("p")]), EDot(EIdent("p", -1), "0", -1, -1))
   let arm2: (Pat, Expr) = (PWild, EInt(0))
-  let arms: Array[(Pat, Expr)] = [
-    arm1,
-    arm2
-  ]
+  let arms: Array[(Pat, Expr)] = [arm1, arm2]
   let m = EMatch(EIdent("s", -1), arms)
   let plan = build_perceus_plan(m)
   assert(count_drops(plan, "p") == 1)
@@ -254,12 +205,8 @@ test "perceus: match arm pattern binding is dropped" {
 /// pattern scope-end drop as the general EMatch path.
 test "perceus: single-arm match pattern binding is dropped" {
   // match s { Some(p) => p.0 }
-  let arm: (Pat, Expr) = (PCtor("Some", [
-    PBind("p")
-  ]), EDot(EIdent("p", -1), "0", -1, -1))
-  let m = EMatch(EIdent("s", -1), [
-    arm
-  ])
+  let arm: (Pat, Expr) = (PCtor("Some", [PBind("p")]), EDot(EIdent("p", -1), "0", -1, -1))
+  let m = EMatch(EIdent("s", -1), [arm])
   let plan = build_perceus_plan(m)
   assert(count_drops(plan, "p") == 1)
 }
@@ -269,13 +216,8 @@ test "perceus: single-arm match pattern binding is dropped" {
 /// enclosing scope must not emit a second drop.
 test "perceus: single-arm match consumes outer heap binding" {
   // let t = (1, 2); match 0 { _ => t }
-  let m = EMatch(EInt(0), [
-    (PWild, EIdent("t", -1))
-  ])
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), m, -1)
+  let m = EMatch(EInt(0), [(PWild, EIdent("t", -1))])
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), m, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "t") == 0)
   assert(count_dups(plan, "t") == 0)
@@ -287,15 +229,9 @@ test "perceus: single-arm match consumes outer heap binding" {
 test "perceus: single-arm match borrows then owns outer heap binding" {
   // let t = (1, 2); match 0 { _ => (t.0, t) }
   let m = EMatch(EInt(0), [
-    (PWild, ETuple([
-      EDot(EIdent("t", -1), "0", -1, -1),
-      EIdent("t", -1)
-    ]))
+    (PWild, ETuple([EDot(EIdent("t", -1), "0", -1, -1), EIdent("t", -1)]))
   ])
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), m, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), m, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "t") == 1)
   assert(count_dups(plan, "t") == 1)
@@ -308,9 +244,7 @@ test "perceus: nested single-arm matches preserve pattern drops" {
   let inner = EMatch(EIdent("p", -1), [
     (PBind("q"), EDot(EIdent("q", -1), "0", -1, -1))
   ])
-  let outer = EMatch(EIdent("s", -1), [
-    (PBind("p"), inner)
-  ])
+  let outer = EMatch(EIdent("s", -1), [(PBind("p"), inner)])
   let plan = build_perceus_plan(outer)
   assert(count_drops(plan, "p") == 1)
   assert(count_drops(plan, "q") == 1)
@@ -320,13 +254,9 @@ test "perceus: nested single-arm matches preserve pattern drops" {
 /// borrow, so an enclosing heap binding retains its ordinary scope-end drop.
 test "perceus: zero-arm match preserves outer heap drop" {
   // let t = (1, 2); match t { }
-  let empty_arms: Array[(Pat, Expr)] = [
-  ]
+  let empty_arms: Array[(Pat, Expr)] = []
   let m = EMatch(EIdent("t", -1), empty_arms)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), m, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), m, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "t") == 1)
   assert(count_dups(plan, "t") == 0)
@@ -338,18 +268,11 @@ test "perceus: zero-arm match preserves outer heap drop" {
 /// allocated then matched inside a loop.
 test "perceus: match scrutinee binding is borrowed and dropped" {
   // let e = A(5); match e { A(n) => n, _ => 0 }
-  let arm1: (Pat, Expr) = (PCtor("A", [
-    PBind("n")
-  ]), EIdent("n", -1))
+  let arm1: (Pat, Expr) = (PCtor("A", [PBind("n")]), EIdent("n", -1))
   let arm2: (Pat, Expr) = (PWild, EInt(0))
-  let arms: Array[(Pat, Expr)] = [
-    arm1,
-    arm2
-  ]
+  let arms: Array[(Pat, Expr)] = [arm1, arm2]
   let m = EMatch(EIdent("e", -1), arms)
-  let body = ELet("e", ECall(EIdent("A", -1), [
-    EInt(5)
-  ], -1), m, -1)
+  let body = ELet("e", ECall(EIdent("A", -1), [EInt(5)], -1), m, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "e") == 1)
   assert(count_dups(plan, "e") == 0)
@@ -360,10 +283,7 @@ test "perceus: match scrutinee binding is borrowed and dropped" {
 test "perceus: single alias takes ownership, no dup" {
   // let t = (1, 2); let a = t; a.0
   let inner = ELet("a", EIdent("t", -1), EDot(EIdent("a", -1), "0", -1, -1), -1)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), inner, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_alias_dups(plan, "a") == 0)
   assert(count_drops(plan, "a") == 1)
@@ -378,10 +298,7 @@ test "perceus: multi-alias dups all but the last" {
   let use2 = EBinOp("+", EDot(EIdent("a", -1), "0", -1, -1), EDot(EIdent("b", -1), "1", -1, -1))
   let innerb = ELet("b", EIdent("t", -1), use2, -1)
   let inner = ELet("a", EIdent("t", -1), innerb, -1)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), inner, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_alias_dups(plan, "a") == 1)
   assert(count_alias_dups(plan, "b") == 0)
@@ -395,15 +312,8 @@ test "perceus: multi-alias dups all but the last" {
 /// loop. (Array::get / length / set / push borrow their array arg, like __index.)
 test "perceus: array read via Array::get is borrowed and dropped" {
   // let a = [1, 2, 3]; Array::get(a, 0)
-  let getcall = ECall(EIdent("Array::get", -1), [
-    EIdent("a", -1),
-    EInt(0)
-  ], -1)
-  let body = ELet("a", EArray([
-    EInt(1),
-    EInt(2),
-    EInt(3)
-  ]), getcall, -1)
+  let getcall = ECall(EIdent("Array::get", -1), [EIdent("a", -1), EInt(0)], -1)
+  let body = ELet("a", EArray([EInt(1), EInt(2), EInt(3)]), getcall, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "a") == 1)
 }
@@ -411,12 +321,8 @@ test "perceus: array read via Array::get is borrowed and dropped" {
 /// A handler arm-local pattern binding that is only borrowed is dropped.
 test "perceus: handle arm pattern binding is dropped" {
   // handle comp { Op(v) => v.0 }
-  let arm1: (Pat, Expr) = (PCtor("Op", [
-    PBind("v")
-  ]), EDot(EIdent("v", -1), "0", -1, -1))
-  let arms: Array[(Pat, Expr)] = [
-    arm1
-  ]
+  let arm1: (Pat, Expr) = (PCtor("Op", [PBind("v")]), EDot(EIdent("v", -1), "0", -1, -1))
+  let arms: Array[(Pat, Expr)] = [arm1]
   let h = EHandle(EIdent("comp", -1), arms)
   let plan = build_perceus_plan(h)
   assert(count_drops(plan, "v") == 1)
@@ -434,10 +340,7 @@ test "perceus: unused alias with other remaining uses is elided (no dup, no drop
   let use_b = EDot(EIdent("b", -1), "0", -1, -1)
   let innerb = ELet("b", EIdent("t", -1), use_b, -1)
   let inner = ELet("a", EIdent("t", -1), innerb, -1)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), inner, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_alias_dups(plan, "a") == 0)
   assert(count_drops(plan, "a") == 0)
@@ -456,10 +359,7 @@ test "perceus: multi-alias dups all but the last (elision does not fire when use
   let use2 = EBinOp("+", EDot(EIdent("a", -1), "0", -1, -1), EDot(EIdent("b", -1), "1", -1, -1))
   let innerb = ELet("b", EIdent("t", -1), use2, -1)
   let inner = ELet("a", EIdent("t", -1), innerb, -1)
-  let body = ELet("t", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), inner, -1)
+  let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_alias_dups(plan, "a") == 1)
   assert(count_alias_dups(plan, "b") == 0)
@@ -477,14 +377,9 @@ test "perceus: multi-alias dups all but the last (elision does not fire when use
 /// `builder loop + if/else tail` shape.
 test "perceus: exclusive if-branch mentions merge to one dup" {
   // let out = (1, 2); match out { _ => 0 }; if true { out } else { out }
-  let borrow_use = EMatch(EIdent("out", -1), [
-    (PWild, EInt(0))
-  ])
+  let borrow_use = EMatch(EIdent("out", -1), [(PWild, EInt(0))])
   let tail = EIf(EBool(true), EIdent("out", -1), EIdent("out", -1))
-  let body = ELet("out", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), ESeq(borrow_use, tail), -1)
+  let body = ELet("out", ETuple([EInt(1), EInt(2)]), ESeq(borrow_use, tail), -1)
   let plan = build_perceus_plan(body)
   inspect(count_dups(plan, "out"), "1")
   inspect(count_drops(plan, "out"), "1")
@@ -493,17 +388,12 @@ test "perceus: exclusive if-branch mentions merge to one dup" {
 /// #1915 mechanism 3, match form: the same merge applies across match arms.
 test "perceus: exclusive match-arm mentions merge to one dup" {
   // let out = (1, 2); match out { _ => 0 }; match 1 { p => out, _ => out }
-  let borrow_use = EMatch(EIdent("out", -1), [
-    (PWild, EInt(0))
-  ])
+  let borrow_use = EMatch(EIdent("out", -1), [(PWild, EInt(0))])
   let tail = EMatch(EInt(1), [
     (PBind("p"), EIdent("out", -1)),
     (PWild, EIdent("out", -1))
   ])
-  let body = ELet("out", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), ESeq(borrow_use, tail), -1)
+  let body = ELet("out", ETuple([EInt(1), EInt(2)]), ESeq(borrow_use, tail), -1)
   let plan = build_perceus_plan(body)
   inspect(count_dups(plan, "out"), "1")
   inspect(count_drops(plan, "out"), "1")
@@ -515,22 +405,11 @@ test "perceus: exclusive match-arm mentions merge to one dup" {
 test "perceus: branch-local shadow keeps its dups through the merge" {
   // let out = (1, 2); match out { _ => 0 };
   // if true { let out = (3, 4); (out, out) } else { out }
-  let borrow_use = EMatch(EIdent("out", -1), [
-    (PWild, EInt(0))
-  ])
-  let shadow_body = ETuple([
-    EIdent("out", -1),
-    EIdent("out", -1)
-  ])
-  let then_e = ELet("out", ETuple([
-    EInt(3),
-    EInt(4)
-  ]), shadow_body, -1)
+  let borrow_use = EMatch(EIdent("out", -1), [(PWild, EInt(0))])
+  let shadow_body = ETuple([EIdent("out", -1), EIdent("out", -1)])
+  let then_e = ELet("out", ETuple([EInt(3), EInt(4)]), shadow_body, -1)
   let tail = EIf(EBool(true), then_e, EIdent("out", -1))
-  let body = ELet("out", ETuple([
-    EInt(1),
-    EInt(2)
-  ]), ESeq(borrow_use, tail), -1)
+  let body = ELet("out", ETuple([EInt(1), EInt(2)]), ESeq(borrow_use, tail), -1)
   let plan = build_perceus_plan(body)
   // One dup for the shadow's double use + one for the outer else mention.
   inspect(count_dups(plan, "out"), "2")

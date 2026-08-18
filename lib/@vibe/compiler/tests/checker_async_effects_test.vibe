@@ -26,9 +26,7 @@ fn async_fn(effect: Option[String], body: Expr) -> Expr {
 }
 
 fn await_call(arg: Expr) -> Expr {
-  ECall(EIdent("await", -1), [
-    arg
-  ], -1)
+  ECall(EIdent("await", -1), [arg], -1)
 }
 
 //# Misc
@@ -49,9 +47,7 @@ test "await inside Async context is OK" {
 }
 
 test "sleep outside Async context reports error" {
-  let call = ECall(EIdent("sleep", -1), [
-    EInt(10)
-  ], -1)
+  let call = ECall(EIdent("sleep", -1), [EInt(10)], -1)
   let errors = check_async_effects_expr(call, EnvEmpty, false)
   assert(Array::length(errors) > 0)
 }
@@ -76,15 +72,11 @@ test "Async row labels trim and dedupe before exact membership" {
 }
 
 test "Async checking visits map, labeled, spread, break, and continue children" {
-  let map_expr = EMap([
-    ("value", await_call(EIdent("f", -1)))
-  ])
+  let map_expr = EMap([("value", await_call(EIdent("f", -1)))])
   let labeled_expr = ELabeledArg("value", "v", await_call(EIdent("f", -1)))
   let spread_expr = ESpread(await_call(EIdent("f", -1)))
   let break_expr = EBreak(Some(await_call(EIdent("f", -1))))
-  let continue_expr = EContinue([
-    await_call(EIdent("f", -1))
-  ])
+  let continue_expr = EContinue([await_call(EIdent("f", -1))])
   assert(Array::length(check_async_effects_expr(map_expr, EnvEmpty, false)) > 0)
   assert(Array::length(check_async_effects_expr(labeled_expr, EnvEmpty, false)) > 0)
   assert(Array::length(check_async_effects_expr(spread_expr, EnvEmpty, false)) > 0)
@@ -108,12 +100,8 @@ test "calling an Async user function from sync context is allowed" {
   // Composition: a `with Async` helper bound in env is NOT a primitive, so
   // calling it outside an Async context is fine (its own await is checked in
   // its body). Only builtin async primitives require an Async context.
-  let env = env_bind(EnvEmpty, "my_async", CtFn([
-    CtInt
-  ], CtInt, Some("Async")))
-  let call = ECall(EIdent("my_async", -1), [
-    EInt(1)
-  ], -1)
+  let env = env_bind(EnvEmpty, "my_async", CtFn([CtInt], CtInt, Some("Async")))
+  let call = ECall(EIdent("my_async", -1), [EInt(1)], -1)
   let errors = check_async_effects_expr(call, env, false)
   assert(eq(Array::length(errors), 0))
 }
@@ -121,9 +109,7 @@ test "calling an Async user function from sync context is allowed" {
 test "SLet with Async signature makes body an Async context" {
   // `let f: (Int) -> Int with Async = (x) -> { await(x) }`
   let fn_body = async_fn(None, await_call(EIdent("x", -1)))
-  let sig = TyFn([
-    TyName("Int")
-  ], TyName("Int"), Some("Async"))
+  let sig = TyFn([TyName("Int")], TyName("Int"), Some("Async"))
   let stmt = SLet(false, false, "f", Some(sig), fn_body)
   let errors = check_async_effects_stmt(stmt, EnvEmpty)
   assert(eq(Array::length(errors), 0))
@@ -131,18 +117,14 @@ test "SLet with Async signature makes body an Async context" {
 
 test "SLet without Async signature flags await in body" {
   let fn_body = async_fn(None, await_call(EIdent("x", -1)))
-  let sig = TyFn([
-    TyName("Int")
-  ], TyName("Int"), None)
+  let sig = TyFn([TyName("Int")], TyName("Int"), None)
   let stmt = SLet(false, false, "f", Some(sig), fn_body)
   let errors = check_async_effects_stmt(stmt, EnvEmpty)
   assert(Array::length(errors) > 0)
 }
 
 test "pure non-async call outside Async context is OK" {
-  let call = ECall(EIdent("println", -1), [
-    EString("hi")
-  ], -1)
+  let call = ECall(EIdent("println", -1), [EString("hi")], -1)
   let errors = check_async_effects_expr(call, EnvEmpty, false)
   assert(eq(Array::length(errors), 0))
 }
@@ -154,13 +136,9 @@ test "pure non-async call outside Async context is OK" {
 // retarget on this same shape).
 
 test "handle with Async provides the async context for its body" {
-  let sleep_call = ECall(EIdent("sleep", -1), [
-    EInt(10)
-  ], -1)
+  let sleep_call = ECall(EIdent("sleep", -1), [EInt(10)], -1)
   let handled = EHandle(sleep_call, [
-    (PCtor("Async::Suspend", [
-      PBind("req")
-    ]), ECall(EIdent("resume", -1), [
+    (PCtor("Async::Suspend", [PBind("req")]), ECall(EIdent("resume", -1), [
       EInt(0)
     ], -1))
   ])
@@ -169,15 +147,9 @@ test "handle with Async provides the async context for its body" {
 }
 
 test "handle of a different effect does NOT provide the async context" {
-  let sleep_call = ECall(EIdent("sleep", -1), [
-    EInt(10)
-  ], -1)
+  let sleep_call = ECall(EIdent("sleep", -1), [EInt(10)], -1)
   let handled = EHandle(sleep_call, [
-    (PCtor("Log::Emit", [
-      PBind("m")
-    ]), ECall(EIdent("resume", -1), [
-      EInt(0)
-    ], -1))
+    (PCtor("Log::Emit", [PBind("m")]), ECall(EIdent("resume", -1), [EInt(0)], -1))
   ])
   let errors = check_async_effects_expr(handled, EnvEmpty, false)
   assert(Array::length(errors) > 0)
@@ -187,9 +159,7 @@ test "an Async handler arm's own body is NOT an async context" {
   // the arm runs OUTSIDE the handled computation; a primitive there still
   // needs its own context
   let handled = EHandle(EInt(1), [
-    (PCtor("Async::Suspend", [
-      PBind("req")
-    ]), ECall(EIdent("sleep", -1), [
+    (PCtor("Async::Suspend", [PBind("req")]), ECall(EIdent("sleep", -1), [
       EInt(5)
     ], -1))
   ])
@@ -205,26 +175,16 @@ test "an Async handler arm's own body is NOT an async context" {
 // nothing) -- which is exactly the bit the desugar switches on.
 
 fn iter_env(next_ret: TypeExpr, target: String) -> TypeEnv {
-  let methods = [
-    ("next", [
-      TyName("Self")
-    ], next_ret)
-  ]
+  let methods = [("next", [TyName("Self")], next_ret)]
   EnvTraitImpl("It", CtStruct(target), EnvTraitDef("It", array_empty(), false, methods, EnvEmpty, array_empty(), array_empty()))
 }
 
 fn async_iter_env() -> TypeEnv {
-  iter_env(TyApp("Future", [
-    TyApp("Option", [
-      TyName("Int")
-    ])
-  ]), "Chan")
+  iter_env(TyApp("Future", [TyApp("Option", [TyName("Int")])]), "Chan")
 }
 
 fn sync_iter_env() -> TypeEnv {
-  iter_env(TyApp("Option", [
-    TyName("Int")
-  ]), "Chan")
+  iter_env(TyApp("Option", [TyName("Int")]), "Chan")
 }
 
 fn chan_literal() -> Expr {
@@ -259,9 +219,7 @@ test "an Async-annotated lambda authorizes its async for loop" {
 
 test "handle with Async discharges an async for loop" {
   let handled = EHandle(for_over(chan_literal()), [
-    (PCtor("Async::Suspend", [
-      PBind("req")
-    ]), ECall(EIdent("resume", -1), [
+    (PCtor("Async::Suspend", [PBind("req")]), ECall(EIdent("resume", -1), [
       EInt(0)
     ], -1))
   ])
@@ -285,9 +243,7 @@ test "an async iterand reached through a call's return type is recognised" {
 }
 
 test "an async iterand reached through a typed parameter is recognised" {
-  let params = [
-    ("s", Some(TyName("Chan")))
-  ]
+  let params = [("s", Some(TyName("Chan")))]
   let fn_expr = EFn(array_empty(), array_empty(), params, None, None, for_over(EIdent("s", -1)))
   let errors = check_async_effects_expr(fn_expr, async_iter_env(), false)
   assert(Array::length(errors) > 0)
@@ -316,17 +272,9 @@ fn generic_async_iter_env() -> TypeEnv {
   // `impl [T] AIter for Iter[T]` is recorded as EnvTraitImplGen, which the
   // scan used to skip unconditionally.
   let methods = [
-    ("next", [
-      TyName("Self")
-    ], TyApp("Future", [
-      TyApp("Option", [
-        TyName("Int")
-      ])
-    ]))
+    ("next", [TyName("Self")], TyApp("Future", [TyApp("Option", [TyName("Int")])]))
   ]
-  EnvTraitImplGen("It", [
-    "T"
-  ], array_empty(), CtStruct("Iter"), EnvTraitDef("It", array_empty(), false, methods, EnvEmpty, array_empty(), array_empty()))
+  EnvTraitImplGen("It", ["T"], array_empty(), CtStruct("Iter"), EnvTraitDef("It", array_empty(), false, methods, EnvEmpty, array_empty(), array_empty()))
 }
 
 test "for over a GENERICALLY implemented async iterator requires Async" {
@@ -344,29 +292,19 @@ test "a generic async iterator inside an Async context is OK" {
 test "an ENUM async iterand keeps its head name" {
   // `enum Chan { Chan(Int) }` + `for x in Chan(3)`: the constructor's return
   // type is CtEnum, which the head-name helper used to discard.
-  let env = env_bind(iter_env(TyApp("Future", [
-    TyApp("Option", [
-      TyName("Int")
-    ])
-  ]), "Chan"), "Chan", CtFn([
+  let env = env_bind(iter_env(TyApp("Future", [TyApp("Option", [TyName("Int")])]), "Chan"), "Chan", CtFn([
     CtInt
   ], CtEnum("Chan"), None))
-  let call = ECall(EIdent("Chan", -1), [
-    EInt(3)
-  ], -1)
+  let call = ECall(EIdent("Chan", -1), [EInt(3)], -1)
   let errors = check_async_effects_expr(for_over(call), env, false)
   assert(Array::length(errors) > 0)
 }
 
 test "a SYNC enum iterator still requires nothing" {
-  let env = env_bind(iter_env(TyApp("Option", [
-    TyName("Int")
-  ]), "Chan"), "Chan", CtFn([
+  let env = env_bind(iter_env(TyApp("Option", [TyName("Int")]), "Chan"), "Chan", CtFn([
     CtInt
   ], CtEnum("Chan"), None))
-  let call = ECall(EIdent("Chan", -1), [
-    EInt(3)
-  ], -1)
+  let call = ECall(EIdent("Chan", -1), [EInt(3)], -1)
   let errors = check_async_effects_expr(for_over(call), env, false)
   assert(eq(Array::length(errors), 0))
 }
