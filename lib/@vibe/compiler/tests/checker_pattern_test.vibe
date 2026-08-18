@@ -60,16 +60,7 @@ fn any_error_contains(errors: Array[String], sub: String) -> Bool {
 
 /// #951 fixture: `enum E { A(Int); B(Int) }`.
 fn e_defs() -> Array[TypeDef] {
-  [
-    TDEnum("E", array_empty(), [
-      ("A", [
-        CtInt
-      ]),
-      ("B", [
-        CtInt
-      ])
-    ])
-  ]
+  [TDEnum("E", array_empty(), [("A", [CtInt]), ("B", [CtInt])])]
 }
 
 //# Misc
@@ -115,14 +106,8 @@ test "PBool does not add bindings" {
 }
 
 test "PTuple destructuring extracts element types" {
-  let scr_ty = CtTuple([
-    CtInt,
-    CtString
-  ])
-  let pat = PTuple([
-    PBind("a"),
-    PBind("b")
-  ])
+  let scr_ty = CtTuple([CtInt, CtString])
+  let pat = PTuple([PBind("a"), PBind("b")])
   let env = check_pattern(pat, scr_ty, EnvEmpty, empty_defs(), array_empty())
   match env_lookup(env, "a") {
     Some(ty) => assert(types_equal(ty, CtInt)),
@@ -135,10 +120,7 @@ test "PTuple destructuring extracts element types" {
 }
 
 test "PTuple with non-tuple scrutinee binds to unknown" {
-  let pat = PTuple([
-    PBind("a"),
-    PBind("b")
-  ])
+  let pat = PTuple([PBind("a"), PBind("b")])
   let env = check_pattern(pat, CtInt, EnvEmpty, empty_defs(), array_empty())
   match env_lookup(env, "a") {
     Some(ty) => assert(types_equal(ty, CtUnknown)),
@@ -148,16 +130,9 @@ test "PTuple with non-tuple scrutinee binds to unknown" {
 
 test "PCtor with known enum extracts payload types" {
   let defs = [
-    TDEnum("Option", array_empty(), [
-      ("Some", [
-        CtInt
-      ]),
-      ("None", no_args())
-    ])
+    TDEnum("Option", array_empty(), [("Some", [CtInt]), ("None", no_args())])
   ]
-  let pat = PCtor("Some", [
-    PBind("val")
-  ])
+  let pat = PCtor("Some", [PBind("val")])
   let env = check_pattern(pat, CtEnum("Option"), EnvEmpty, defs, array_empty())
   match env_lookup(env, "val") {
     Some(ty) => assert(types_equal(ty, CtInt)),
@@ -166,9 +141,7 @@ test "PCtor with known enum extracts payload types" {
 }
 
 test "PCtor with unknown constructor binds to unknown" {
-  let pat = PCtor("Unknown", [
-    PBind("x")
-  ])
+  let pat = PCtor("Unknown", [PBind("x")])
   let env = check_pattern(pat, CtUnknown, EnvEmpty, empty_defs(), array_empty())
   match env_lookup(env, "x") {
     Some(ty) => assert(types_equal(ty, CtUnknown)),
@@ -186,9 +159,7 @@ test "POr returns bindings from left" {
 }
 
 test "match with PBind resolves type in arm body" {
-  let expr = EMatch(EInt(1), [
-    (PBind("x"), EIdent("x", -1))
-  ])
+  let expr = EMatch(EInt(1), [(PBind("x"), EIdent("x", -1))])
   let ty = check(expr, EnvEmpty)
   assert(types_equal(ty, CtInt))
 }
@@ -205,24 +176,16 @@ test "match with multiple arms checks all" {
 }
 
 test "match with tuple pattern binds elements" {
-  let env = env_bind(EnvEmpty, "pair", CtTuple([
-    CtInt,
-    CtString
-  ]))
+  let env = env_bind(EnvEmpty, "pair", CtTuple([CtInt, CtString]))
   let expr = EMatch(EIdent("pair", -1), [
-    (PTuple([
-      PBind("a"),
-      PBind("b")
-    ]), EIdent("b", -1))
+    (PTuple([PBind("a"), PBind("b")]), EIdent("b", -1))
   ])
   let ty = check(expr, env)
   assert(types_equal(ty, CtString))
 }
 
 test "PCtor Some on CtOption extracts element type" {
-  let pat = PCtor("Some", [
-    PBind("val")
-  ])
+  let pat = PCtor("Some", [PBind("val")])
   let env = check_pattern(pat, CtOption(CtInt), EnvEmpty, empty_defs(), array_empty())
   match env_lookup(env, "val") {
     Some(ty) => assert(types_equal(ty, CtInt)),
@@ -243,9 +206,7 @@ test "PCtor None on CtOption binds nothing" {
 test "match CtOption Some arm resolves element" {
   let env = env_bind(EnvEmpty, "x", CtOption(CtInt))
   let expr = EMatch(EIdent("x", -1), [
-    (PCtor("Some", [
-      PBind("n")
-    ]), EIdent("n", -1)),
+    (PCtor("Some", [PBind("n")]), EIdent("n", -1)),
     (PCtor("None", empty_pats()), EInt(0))
   ])
   let ty = check(expr, env)
@@ -260,20 +221,12 @@ test "match CtOption Some arm resolves element" {
 // branches use the same name and type — with a located diagnostic instead.
 
 test "pat_has_unsupported_or_binding: same-name binding or-pattern is detected" {
-  let pat = POr(PCtor("A", [
-    PBind("v")
-  ]), PCtor("B", [
-    PBind("v")
-  ]))
+  let pat = POr(PCtor("A", [PBind("v")]), PCtor("B", [PBind("v")]))
   assert(pat_has_unsupported_or_binding(pat))
 }
 
 test "pat_has_unsupported_or_binding: differing-name binding or-pattern is detected" {
-  let pat = POr(PCtor("A", [
-    PBind("v")
-  ]), PCtor("B", [
-    PBind("w")
-  ]))
+  let pat = POr(PCtor("A", [PBind("v")]), PCtor("B", [PBind("w")]))
   assert(pat_has_unsupported_or_binding(pat))
 }
 
@@ -288,25 +241,15 @@ test "pat_has_unsupported_or_binding: nested inside a ctor arg is detected" {
   // `emit_pat_test`/`emit_sub_tests` recursion has the same binding gap at
   // any depth, so detection must recurse into PCtor/PTuple/PStruct args too.
   let pat = PCtor("Some", [
-    POr(PCtor("A", [
-      PBind("v")
-    ]), PCtor("B", [
-      PBind("v")
-    ]))
+    POr(PCtor("A", [PBind("v")]), PCtor("B", [PBind("v")]))
   ])
   assert(pat_has_unsupported_or_binding(pat))
 }
 
 test "#951 repro: `A(v) | B(v) => v` is rejected with a located diagnostic" {
   let env = env_bind(EnvEmpty, "e", CtEnum("E"))
-  let pat = POr(PCtor("A", [
-    PBind("v")
-  ]), PCtor("B", [
-    PBind("v")
-  ]))
-  let expr = EMatch(EIdent("e", -1), [
-    (pat, EIdent("v", -1))
-  ])
+  let pat = POr(PCtor("A", [PBind("v")]), PCtor("B", [PBind("v")]))
+  let expr = EMatch(EIdent("e", -1), [(pat, EIdent("v", -1))])
   let errors = check_with_errors(expr, env, e_defs())
   assert(Array::length(errors) > 0)
   assert(any_error_contains(errors, "or-pattern bindings are not supported yet"))
@@ -314,14 +257,8 @@ test "#951 repro: `A(v) | B(v) => v` is rejected with a located diagnostic" {
 
 test "#951: differing binding names across or-branches (`A(v) | B(w)`) is rejected" {
   let env = env_bind(EnvEmpty, "e", CtEnum("E"))
-  let pat = POr(PCtor("A", [
-    PBind("v")
-  ]), PCtor("B", [
-    PBind("w")
-  ]))
-  let expr = EMatch(EIdent("e", -1), [
-    (pat, EIdent("v", -1))
-  ])
+  let pat = POr(PCtor("A", [PBind("v")]), PCtor("B", [PBind("w")]))
+  let expr = EMatch(EIdent("e", -1), [(pat, EIdent("v", -1))])
   let errors = check_with_errors(expr, env, e_defs())
   assert(Array::length(errors) > 0)
   assert(any_error_contains(errors, "or-pattern bindings are not supported yet"))
@@ -332,14 +269,8 @@ test "#951: literal/block arm body still gets a located reject (scrutinee anchor
   // bodies (`A(v) | B(v) => { let w = v; w }`) and returns -1 — the reject
   // must then anchor on the match scrutinee instead of going unlocated.
   let env = env_bind(EnvEmpty, "e", CtEnum("E"))
-  let pat = POr(PCtor("A", [
-    PBind("v")
-  ]), PCtor("B", [
-    PBind("v")
-  ]))
-  let expr = EMatch(EIdent("e", 7), [
-    (pat, EInt(5))
-  ])
+  let pat = POr(PCtor("A", [PBind("v")]), PCtor("B", [PBind("v")]))
+  let expr = EMatch(EIdent("e", 7), [(pat, EInt(5))])
   let errors = check_with_errors(expr, env, e_defs())
   assert(Array::length(errors) > 0)
   assert(any_error_contains(errors, "or-pattern bindings are not supported yet"))
@@ -365,11 +296,7 @@ fn two_enum_defs() -> Array[TypeDef] {
       ("Red", array_empty()),
       ("Green", array_empty())
     ]),
-    TDEnum("Shape", array_empty(), [
-      ("Circle", [
-        CtInt
-      ])
-    ])
+    TDEnum("Shape", array_empty(), [("Circle", [CtInt])])
   ]
 }
 
@@ -391,9 +318,7 @@ test "#1455: a qualifier that owns the variant is accepted" {
 test "#1455: a qualifier naming the WRONG enum is rejected" {
   // The whole point of step 3: `Shape::Red` parses to the same PCtor("Red")
   // that the bare spelling does, so nothing downstream can catch it.
-  let errors = qualified_ref_errors([
-    ("Shape", "Red")
-  ], two_enum_defs())
+  let errors = qualified_ref_errors([("Shape", "Red")], two_enum_defs())
   assert_eq(Array::length(errors), 1)
   assert(any_error_contains(errors, "enum `Shape` has no variant `Red`"))
 }
@@ -410,10 +335,7 @@ test "#1455: a qualifier that is not an enum at all stays silent" {
 }
 
 test "#1455: every bad pair is reported, not just the first" {
-  let errors = qualified_ref_errors([
-    ("Color", "Circle"),
-    ("Shape", "Green")
-  ], two_enum_defs())
+  let errors = qualified_ref_errors([("Color", "Circle"), ("Shape", "Green")], two_enum_defs())
   assert_eq(Array::length(errors), 2)
   assert(any_error_contains(errors, "enum `Color` has no variant `Circle`"))
   assert(any_error_contains(errors, "enum `Shape` has no variant `Green`"))

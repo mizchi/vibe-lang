@@ -1078,10 +1078,7 @@ fn future_state_ready() -> Int {
 /// A ready `Future[T]` carrying `payload` — synthesized as ordinary source so
 /// the array follows the same (RC) value conventions as any other literal.
 fn future_ready_expr(payload: Expr) -> Expr {
-  EArray([
-    EInt(future_state_ready()),
-    payload
-  ])
+  EArray([EInt(future_state_ready()), payload])
 }
 
 /// ADR-0089 (c) (#1218): the raw-builtin name that carries a NAMED host
@@ -1143,10 +1140,7 @@ fn uninterned_string_expr(s: String, i: Int) -> Expr {
   if i >= String::length(s) - 1 {
     ch
   } else {
-    ECall(EIdent("String::concat", -1), [
-      ch,
-      uninterned_string_expr(s, i + 1)
-    ], -1)
+    ECall(EIdent("String::concat", -1), [ch, uninterned_string_expr(s, i + 1)], -1)
   }
 }
 
@@ -1197,9 +1191,7 @@ fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
 /// The value is bound to a temp first so an effectful argument
 /// (`MutList::freeze(make_list(r))`) is evaluated once, not twice.
 fn mutlist_exit_copy(arg: Expr) -> Expr {
-  array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [
-    arg
-  ], -1), "__mutlist_exit")
+  array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1), "__mutlist_exit")
 }
 
 /// ADR-0090 MutBytes: `MutBytes::to_bytes(mb)` -- the copy-out exit, for the
@@ -1213,9 +1205,7 @@ fn mutbytes_exit_copy(arg: Expr) -> Expr {
   ELet(tmp, arg, ECall(EIdent("Bytes::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
-    ECall(EIdent("Bytes::length", -1), [
-      EIdent(tmp, -1)
-    ], -1)
+    ECall(EIdent("Bytes::length", -1), [EIdent(tmp, -1)], -1)
   ], -1), -1)
 }
 
@@ -1226,9 +1216,7 @@ fn array_value_copy(value: Expr, tmp: String) -> Expr {
   ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
-    ECall(EIdent("Array::length", -1), [
-      EIdent(tmp, -1)
-    ], -1)
+    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1)
   ], -1), -1)
 }
 
@@ -1286,31 +1274,23 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_region_enter(buf, ctx.region_ptr_addr)
       if ctx.region_exn_tag >= 0 {
         emit_region_try_prologue(buf, ctx.region_exn_tag)
-        let r = ce(buf, ECall(Array::get(args, 0), [
-          EInt(0)
-        ], -1), local_names, next_local, ctx, region_try_body_ld(ld))
+        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, region_try_body_ld(ld))
         emit_region_try_epilogue(buf, ctx.region_ptr_addr, ctx.region_exn_tag)
         r
       } else {
-        let r = ce(buf, ECall(Array::get(args, 0), [
-          EInt(0)
-        ], -1), local_names, next_local, ctx, ld)
+        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, ld)
         emit_region_exit(buf, ctx.region_ptr_addr)
         r
       }
     } else {
-      ce(buf, ECall(Array::get(args, 0), [
-        EInt(0)
-      ], -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, ld)
     }
   } else if is_eident(callee) && get_eident_name(callee) == "MutList::empty" && Array::length(args) == 1 {
     if ctx.region_arr_new_func_idx >= 0 {
       emit_call(buf, ctx.region_arr_new_func_idx)
       next_local
     } else {
-      let no_args = Array::slice([
-        EInt(0)
-      ], 0, 0)
+      let no_args = Array::slice([EInt(0)], 0, 0)
       ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ctx, ld)
     }
   } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
@@ -1320,9 +1300,7 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       emit_call(buf, ctx.region_bytes_new_func_idx)
       next_local
     } else {
-      let no_args = Array::slice([
-        EInt(0)
-      ], 0, 0)
+      let no_args = Array::slice([EInt(0)], 0, 0)
       ce(buf, ECall(EIdent("Bytes::new", -1), no_args, -1), local_names, next_local, ctx, ld)
     }
   } else if is_eident(callee) && get_eident_name(callee) == "MutBytes::to_bytes" && Array::length(args) == 1 {
@@ -1696,9 +1674,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // allocating name comparison only runs for the rare 1-arg calls whose
       // argument is already known-classifiable -- functionally identical
       // result, far fewer StringBuilder allocations across a whole compile.
-      ce(buf, ECall(EIdent("__to_string", -1), [
-        Array::get(args, 0)
-      ], -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "not" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -1737,10 +1713,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // (a suspending source: host async import, spawned subtask) can be told
       // apart here without changing the representation again -- lowering that
       // arm to a suspend is M1b-3c.
-      ce(buf, ECall(EIdent("Array::get", -1), [
-        Array::get(args, 0),
-        EInt(1)
-      ], -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(EIdent("Array::get", -1), [Array::get(args, 0), EInt(1)], -1), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Future::ready" {
       // Future::ready(x) is the already-resolved future carrying x. See the
@@ -1752,10 +1725,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // await hoist (await_poll_pass) sees a non-zero state and suspends with
       // the poll-wait reason until someone calls Future::resolve on this same
       // array, so the producer decides when it completes.
-      ce(buf, EArray([
-        EInt(1),
-        EInt(0)
-      ]), local_names, next_local, ctx, ld)
+      ce(buf, EArray([EInt(1), EInt(0)]), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "host_future_get" {
       // ADR-0089 step 4 (#1218): a HOST-supplied future -- state 2 (the
@@ -1767,9 +1737,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // handle. Awaiting this cell parks with the reserved waitable payload
       // (handle + 2, __aw_poll's waitable arm) until the entry boundary
       // settles it via waitable-set.wait.
-      let no_args = Array::slice([
-        EInt(0)
-      ], 0, 0)
+      let no_args = Array::slice([EInt(0)], 0, 0)
       ce(buf, EArray([
         EInt(2),
         ECall(EIdent("vibe_hf_get_raw", -1), no_args, -1)
@@ -1797,9 +1765,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      let named_no_args = Array::slice([
-        EInt(0)
-      ], 0, 0)
+      let named_no_args = Array::slice([EInt(0)], 0, 0)
       ce(buf, EArray([
         EInt(2),
         ECall(EIdent(String::concat(cc_host_future_named_raw_prefix(), hf_name), -1), named_no_args, -1)
@@ -1827,9 +1793,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      let hs_no_args = Array::slice([
-        EInt(0)
-      ], 0, 0)
+      let hs_no_args = Array::slice([EInt(0)], 0, 0)
       ce(buf, EArray([
         EInt(3),
         ECall(EIdent(String::concat(cc_host_stream_named_raw_prefix(), hs_name), -1), hs_no_args, -1)
@@ -1873,11 +1837,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         EInt(1),
         Array::get(args, 1)
       ], -1)
-      let set_state = ECall(EIdent("Array::set", -1), [
-        fut,
-        EInt(0),
-        EInt(0)
-      ], -1)
+      let set_state = ECall(EIdent("Array::set", -1), [fut, EInt(0), EInt(0)], -1)
       let resolved = if func_table_index_of(ctx.func_table, "__aw_notify_resolve") >= 0 {
         ESeq(set_payload, ESeq(set_state, ECall(EIdent("__aw_notify_resolve", -1), [
           fut
@@ -1895,14 +1855,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let s_expr = Array::get(args, 0)
       let synth = ELet("__nx_s", s_expr, EIf(ECall(EIdent("lt", -1), [
         EInt(0),
-        ECall(EIdent("Array::length", -1), [
-          EIdent("__nx_s", -1)
-        ], -1)
+        ECall(EIdent("Array::length", -1), [EIdent("__nx_s", -1)], -1)
       ], -1), ECall(EIdent("Some", -1), [
-        ECall(EIdent("Array::get", -1), [
-          EIdent("__nx_s", -1),
-          EInt(0)
-        ], -1)
+        ECall(EIdent("Array::get", -1), [EIdent("__nx_s", -1), EInt(0)], -1)
       ], -1), ECall(EIdent("None", -1), array_empty(), -1)), -1)
       ce(buf, future_ready_expr(synth), local_names, next_local, ctx, ld)
     }
@@ -1928,9 +1883,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ], -1), EUnit))
       let synth = ELet("__tb_s", s_expr, ELetMut("__tb_arr", EArray(array_empty()), ELetMut("__tb_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
         EIdent("__tb_i", -1),
-        ECall(EIdent("String::length", -1), [
-          EIdent("__tb_s", -1)
-        ], -1)
+        ECall(EIdent("String::length", -1), [EIdent("__tb_s", -1)], -1)
       ], -1), loop_body), EIdent("__tb_arr", -1)), -1), -1), -1)
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
@@ -1960,9 +1913,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ], -1), EUnit))
       let synth = ELet("__ts_arr", bs_expr, ELetMut("__ts_parts", EArray(array_empty()), ELetMut("__ts_i", EInt(0), ESeq(EWhile(ECall(EIdent("lt", -1), [
         EIdent("__ts_i", -1),
-        ECall(EIdent("Array::length", -1), [
-          EIdent("__ts_arr", -1)
-        ], -1)
+        ECall(EIdent("Array::length", -1), [EIdent("__ts_arr", -1)], -1)
       ], -1), ts_body), ECall(EIdent("String::join", -1), [
         EIdent("__ts_parts", -1),
         EString("")
@@ -2547,9 +2498,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // process CWD via the `resolve_path` host import. The runtime op is
       // identical; the effect distinction (Path::ref pure, Path::resolve
       // `with Env`) lives in the checker's builtin signatures.
-      ce(buf, ECall(EIdent("resolve_path", -1), [
-        Array::get(args, 0)
-      ], -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(EIdent("resolve_path", -1), [Array::get(args, 0)], -1), local_names, next_local, ctx, ld)
     }
     else if !prefer_bound_call && fname == "Path::to_string" && Array::length(args) == 1 {
       // #762: PathRef / DynamicPath wrap a raw String; to_string is identity.
@@ -2560,10 +2509,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // avoids synthesizing a "/" string (which would not be in the string
       // table).
       ce(buf, ECall(EIdent("eq", -1), [
-        ECall(EIdent("String::char_code_at", -1), [
-          Array::get(args, 0),
-          EInt(0)
-        ], -1),
+        ECall(EIdent("String::char_code_at", -1), [Array::get(args, 0), EInt(0)], -1),
         EInt(47)
       ], -1), local_names, next_local, ctx, ld)
     }
@@ -2574,9 +2520,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // Cheatsheet-documented alias of the integer `__to_string` path (the
       // argument is Int by signature, so the string-pointer heuristic's int
       // route applies).
-      ce(buf, ECall(EIdent("__to_string", -1), [
-        Array::get(args, 0)
-      ], -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1), local_names, next_local, ctx, ld)
     }
     else if fname == "Fs::readdir" && Array::length(args) == 1 {
       // #729/#730: readdir's surface is Array[String], but the host import
@@ -2605,23 +2549,15 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // into the command string by `sh_lines_flag_cmd` (single-arg calls are
       // the common case and pass straight through unchanged).
       let sh_cmd = sh_lines_flag_cmd(Array::get(args, 0), args, 1)
-      ce(buf, ELet("__sh_out", ECall(EIdent("vibe_sh_lines_raw", -1), [
-        sh_cmd
-      ], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
+      ce(buf, ELet("__sh_out", ECall(EIdent("vibe_sh_lines_raw", -1), [sh_cmd], -1), EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
         EIdent("__sh_out", -1)
       ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
-        EArray([
-          ECall(EIdent("String::from_char_code", -1), [
-            EInt(10)
-          ], -1)
-        ]),
+        EArray([ECall(EIdent("String::from_char_code", -1), [EInt(10)], -1)]),
         EInt(0),
         EInt(0)
       ], -1), ECall(EIdent("String::split", -1), [
         EIdent("__sh_out", -1),
-        ECall(EIdent("String::from_char_code", -1), [
-          EInt(10)
-        ], -1)
+        ECall(EIdent("String::from_char_code", -1), [EInt(10)], -1)
       ], -1)), -1), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
@@ -3732,9 +3668,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
-      nl2 = ce(buf, ECall(EIdent("Some", -1), [
-        EIdent("__find_elem", -1)
-      ], -1), local_names, nl2, ctx, ld)
+      nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__find_elem", -1)], -1), local_names, nl2, ctx, ld)
       emit_local_set(buf, res_l)
       emit_br(buf, 2)
       emit_end(buf)
@@ -4769,9 +4703,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      nl2 = ce(buf, ECall(EIdent("Some", -1), [
-        EIdent("__mbg_val", -1)
-      ], -1), local_names, nl2, ctx, ld)
+      nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__mbg_val", -1)], -1), local_names, nl2, ctx, ld)
       emit_local_set(buf, res_l)
       emit_br(buf, 2)
       emit_end(buf)

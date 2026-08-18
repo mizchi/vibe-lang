@@ -243,12 +243,8 @@ test "db_typecheck_fs: re-exported enum type imports constructors" {
   Fs::write_bytes(index_path, string_to_bytes(index_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let ast_fp = build_test_fingerprint(ast_src, array_empty())
-  let index_fp = build_test_fingerprint(index_src, [
-    (ast_path, ast_fp)
-  ])
-  let main_fp = build_test_fingerprint(main_src, [
-    (index_path, index_fp)
-  ])
+  let index_fp = build_test_fingerprint(index_src, [(ast_path, ast_fp)])
+  let main_fp = build_test_fingerprint(main_src, [(index_path, index_fp)])
   remove_typecheck_fs_cache(ast_path, ast_src, ast_fp)
   remove_typecheck_fs_cache(index_path, index_src, index_fp)
   remove_typecheck_fs_cache(main_path, main_src, main_fp)
@@ -279,12 +275,8 @@ test "db_typecheck_fs: extensionless directory re-export imports enum constructo
   Fs::write_bytes(index_path, string_to_bytes(index_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let ast_fp = build_test_fingerprint(ast_src, array_empty())
-  let index_fp = build_test_fingerprint(index_src, [
-    (ast_path, ast_fp)
-  ])
-  let main_fp = build_test_fingerprint(main_src, [
-    (index_path, index_fp)
-  ])
+  let index_fp = build_test_fingerprint(index_src, [(ast_path, ast_fp)])
+  let main_fp = build_test_fingerprint(main_src, [(index_path, index_fp)])
   remove_typecheck_fs_cache(ast_path, ast_src, ast_fp)
   remove_typecheck_fs_cache(index_path, index_src, index_fp)
   remove_typecheck_fs_cache(main_path, main_src, main_fp)
@@ -305,9 +297,7 @@ test "projected checker root preserves direct alias re-export and companion orig
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let direct = 1\nexport let renamed = \"ok\"\nexport enum Choice { Pick(Int) }")
   let source = "import ./dep.vibe { direct, renamed as alias, Choice, Pick as ExplicitPick }\nexport ./dep.vibe { direct, renamed as forwarded }\nlet use_alias: String = alias\nlet use_direct: Int = direct"
-  let checked = projected_checked_env(source, "workspace/main.vibe", [
-    dep_path
-  ], [
+  let checked = projected_checked_env(source, "workspace/main.vibe", [dep_path], [
     (dep_path, dep_env)
   ])
   assert_module_origin(checked, "direct", dep_path, "direct")
@@ -335,10 +325,7 @@ test "projected checker root keeps path and source-order winners with cached pay
     first_path,
     second_path,
     first_path
-  ], [
-    (first_path, first_env),
-    (second_path, second_env)
-  ])
+  ], [(first_path, first_env), (second_path, second_env)])
   match (env_lookup(checked, "chosen"), env_lookup(checked, "clash")) {
     (Some(CtInt), Some(CtInt)) => (),
     _ => assert(false)
@@ -356,9 +343,7 @@ test "projected checker root local hoist shadows imports while generic replay st
   let stmts = parse_program_with_path("workspace/main.vibe", source)
   let import_env = projected_import_env_for_test(source, "workspace/main.vibe", [
     dep_path
-  ], [
-    (dep_path, dep_env)
-  ])
+  ], [(dep_path, dep_env)])
   let projected = check_program_with_projected_import_env_result(stmts, import_env).final_env
   match env_lookup(projected, "value") {
     Some(CtString) => (),
@@ -380,14 +365,10 @@ test "projected checker nested modules retain legacy import replay" {
   let source = "import ./dep.vibe { source as alias }"
   let import_env = projected_import_env_for_test(source, "workspace/main.vibe", [
     dep_path
-  ], [
-    (dep_path, dep_env)
-  ])
+  ], [(dep_path, dep_env)])
   let checked = check_program_with_projected_import_env_result([
     SModule(false, "Nested", [
-      SImport("./dep.vibe", [
-        ("source", Some("alias"))
-      ]),
+      SImport("./dep.vibe", [("source", Some("alias"))]),
       // Legacy nested replay shadows the projected String with CtUnknown, so
       // this remains accepted exactly as before. Inheriting root projected
       // mode would retain String and reject the annotation.
@@ -402,9 +383,7 @@ test "projected import origins are stripped by public and persistent surfaces" {
   let dep_env = checked_test_env("export let value = 1")
   let source = "export ./dep.vibe { value }"
   let stmts = parse_program_with_path("workspace/main.vibe", source)
-  let checked = projected_checked_env(source, "workspace/main.vibe", [
-    dep_path
-  ], [
+  let checked = projected_checked_env(source, "workspace/main.vibe", [dep_path], [
     (dep_path, dep_env)
   ])
   assert_module_origin(checked, "value", dep_path, "value")
@@ -425,9 +404,7 @@ test "projected checker alias retains source type for diagnostics" {
   let dep_env = checked_test_env("export let source = \"text\"")
   let source = "import ./dep.vibe { source as alias }\nlet wrong: Int = alias"
   let message = handle {
-    let _ = projected_checked_env(source, "workspace/main.vibe", [
-      dep_path
-    ], [
+    let _ = projected_checked_env(source, "workspace/main.vibe", [dep_path], [
       (dep_path, dep_env)
     ])
     ""
@@ -469,10 +446,7 @@ test "exact dep projection preserves duplicate order and cache first-match seman
   let int_env = checked_test_env("export let value = 1")
   let string_env = checked_test_env("export let value = \"first\"")
   let source = "import ./dep.vibe { value as imported }\nexport ./dep.vibe { value as reexported }"
-  let deps = [
-    dep_path,
-    dep_path
-  ]
+  let deps = [dep_path, dep_path]
   let first_int = projected_import_env_for_test(source, "workspace/main.vibe", deps, [
     (dep_path, int_env),
     (dep_path, string_env)
@@ -495,8 +469,7 @@ test "exact dep projection fails closed when a resolved row is missing" {
   let message = handle {
     let _ = projected_import_env_for_test("import ./dep.vibe { value }", "workspace/main.vibe", [
       "workspace/dep.vibe"
-    ], [
-    ])
+    ], [])
     ""
   } with Exception {
     Throw(msg) => msg
@@ -506,30 +479,15 @@ test "exact dep projection fails closed when a resolved row is missing" {
 
 test "exact dep projection gives explicit trait aliases precedence over selected values" {
   let dep_path = "workspace/dep.vibe"
-  let generic_value = CtForAll([
-    7
-  ], [
-    (7, [
-      "Marker"
-    ])
-  ], CtFn([
-    CtVar(7)
-  ], CtVar(7), None))
-  let dep_env = EnvTraitDef("Marker", [
-  ], false, [
-  ], EnvTraitImpl("Marker", CtInt, EnvBind("accept", env_value_binding(generic_value), EnvEmpty)), [
-  ], [
-  ])
+  let generic_value = CtForAll([7], [(7, ["Marker"])], CtFn([CtVar(7)], CtVar(7), None))
+  let dep_env = EnvTraitDef("Marker", [], false, [], EnvTraitImpl("Marker", CtInt, EnvBind("accept", env_value_binding(generic_value), EnvEmpty)), [
+  ], [])
   let value_first = projected_import_env_for_test("import ./dep.vibe { accept, trait Marker as Local }", "workspace/main.vibe", [
     dep_path
-  ], [
-    (dep_path, dep_env)
-  ])
+  ], [(dep_path, dep_env)])
   let trait_first = projected_import_env_for_test("import ./dep.vibe { trait Marker as Local, accept }", "workspace/main.vibe", [
     dep_path
-  ], [
-    (dep_path, dep_env)
-  ])
+  ], [(dep_path, dep_env)])
   assert(trait_defined(value_first, "Local"))
   assert(trait_defined(trait_first, "Local"))
   assert(!trait_defined(value_first, "Marker"))
@@ -548,9 +506,7 @@ test "db_typecheck_fs: missing imported trait impl fails cold and with a warm de
   Fs::write_bytes(dep_path, string_to_bytes(dep_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let main_fp = build_test_fingerprint(main_src, [
-    (dep_path, dep_fp)
-  ])
+  let main_fp = build_test_fingerprint(main_src, [(dep_path, dep_fp)])
   remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
   remove_typecheck_fs_cache(main_path, main_src, main_fp)
   let cold_error = typecheck_fs_pair_error(dep_path, dep_src, main_path, main_src)
@@ -599,9 +555,7 @@ test "db_typecheck_fs: selected generic impl bounds retain authority cold and wa
   Fs::write_bytes(dep_path, string_to_bytes(dep_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let main_fp = build_test_fingerprint(main_src, [
-    (dep_path, dep_fp)
-  ])
+  let main_fp = build_test_fingerprint(main_src, [(dep_path, dep_fp)])
   remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
   remove_typecheck_fs_cache(main_path, main_src, main_fp)
   let cold = db_typecheck_fs(db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src), main_path)
@@ -620,9 +574,7 @@ test "db_typecheck_fs: selected trait alias publishes only its projected authori
   Fs::write_bytes(dep_path, string_to_bytes(dep_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let main_fp = build_test_fingerprint(main_src, [
-    (dep_path, dep_fp)
-  ])
+  let main_fp = build_test_fingerprint(main_src, [(dep_path, dep_fp)])
   remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
   remove_typecheck_fs_cache(main_path, main_src, main_fp)
   let checked = db_typecheck_fs(db_set_source(db_set_source(db_new(), dep_path, dep_src), main_path, main_src), main_path)
@@ -720,9 +672,7 @@ test "db_typecheck_fs: one trait reached through a re-export module is not a con
   Fs::write_bytes(facade_path, string_to_bytes(facade_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let base_fp = build_test_fingerprint(base_src, array_empty())
-  let facade_fp = build_test_fingerprint(facade_src, [
-    (base_path, base_fp)
-  ])
+  let facade_fp = build_test_fingerprint(facade_src, [(base_path, base_fp)])
   remove_typecheck_fs_cache(base_path, base_src, base_fp)
   remove_typecheck_fs_cache(facade_path, facade_src, facade_fp)
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
@@ -751,9 +701,7 @@ test "db_typecheck_fs: a re-export that aliases the supertrait is still the same
   Fs::write_bytes(facade_path, string_to_bytes(facade_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let base_fp = build_test_fingerprint(base_src, array_empty())
-  let facade_fp = build_test_fingerprint(facade_src, [
-    (base_path, base_fp)
-  ])
+  let facade_fp = build_test_fingerprint(facade_src, [(base_path, base_fp)])
   remove_typecheck_fs_cache(base_path, base_src, base_fp)
   remove_typecheck_fs_cache(facade_path, facade_src, facade_fp)
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
@@ -983,10 +931,7 @@ fn typedef_surface_pair_error(dir: String, dep_src: String, main_src: String) ->
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
     (dep_path, dep_fp)
   ]))
-  export_surface_error([
-    dep_path,
-    main_path
-  ], main_path)
+  export_surface_error([dep_path, main_path], main_path)
 }
 
 test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)" {
@@ -1003,10 +948,7 @@ test "db_typecheck_fs: importing a private (non-export) name is reported (#1533)
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([
-    dep_path,
-    main_path
-  ], main_path)
+  let err = export_surface_error([dep_path, main_path], main_path)
   assert(String::contains(err, "imported name 'private_fn' is not exported by"))
 }
 
@@ -1024,10 +966,7 @@ test "db_typecheck_fs: the exported name from the same module imports cleanly (#
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([
-    dep_path,
-    main_path
-  ], main_path)
+  let err = export_surface_error([dep_path, main_path], main_path)
   assert(err == "")
 }
 
@@ -1044,19 +983,13 @@ test "db_typecheck_fs: a pass-through import is not on the middleman's surface (
   Fs::write_bytes(mid_path, string_to_bytes(mid_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let mid_fp = build_test_fingerprint(mid_src, [
-    (dep_path, dep_fp)
-  ])
+  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
   remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
   remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
     (mid_path, mid_fp)
   ]))
-  let err = export_surface_error([
-    dep_path,
-    mid_path,
-    main_path
-  ], main_path)
+  let err = export_surface_error([dep_path, mid_path, main_path], main_path)
   assert(String::contains(err, "imported name 'public_fn' is not exported by"))
   assert(String::contains(err, "mid.vibe"))
 }
@@ -1080,10 +1013,7 @@ test "db_typecheck_fs: a local parameter shadows a same-named import (#1583)" {
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
     (dep_path, dep_fp)
   ]))
-  let err = export_surface_error([
-    dep_path,
-    main_path
-  ], main_path)
+  let err = export_surface_error([dep_path, main_path], main_path)
   assert(err == "")
 }
 
@@ -1100,19 +1030,13 @@ test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 c
   Fs::write_bytes(mid_path, string_to_bytes(mid_src))
   Fs::write_bytes(main_path, string_to_bytes(main_src))
   let dep_fp = build_test_fingerprint(dep_src, array_empty())
-  let mid_fp = build_test_fingerprint(mid_src, [
-    (dep_path, dep_fp)
-  ])
+  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
   remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
   remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
   remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
     (mid_path, mid_fp)
   ]))
-  let err = export_surface_error([
-    dep_path,
-    mid_path,
-    main_path
-  ], main_path)
+  let err = export_surface_error([dep_path, mid_path, main_path], main_path)
   assert(err == "")
 }
 

@@ -26,10 +26,7 @@ fn no_ty() -> Option[TypeExpr] {
 
 test "detect_unused_imports flags a never-referenced named import" {
   let stmts = [
-    SImport("./map.vibe", [
-      ("Hash", None),
-      ("map_key_to_string", None)
-    ]),
+    SImport("./map.vibe", [("Hash", None), ("map_key_to_string", None)]),
     SLet(false, false, "main", no_ty(), ECall(EIdent("map_key_to_string", -1), [
       EInt(1)
     ], -1))
@@ -43,9 +40,7 @@ test "detect_unused_imports flags a never-referenced named import" {
 
 test "detect_unused_imports ignores a used named import" {
   let stmts = [
-    SImport("./map.vibe", [
-      ("Hash", None)
-    ]),
+    SImport("./map.vibe", [("Hash", None)]),
     SLet(false, false, "f", Some(TyName("Hash")), EIdent("some_hash_value", -1))
   ]
   let warnings = detect_unused_imports(stmts)
@@ -54,21 +49,15 @@ test "detect_unused_imports ignores a used named import" {
 
 test "detect_unused_imports respects an import alias as the local name" {
   let stmts = [
-    SImport("./map.vibe", [
-      ("map_key_to_string", Some("mkts"))
-    ]),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("mkts", -1), [
-      EInt(1)
-    ], -1))
+    SImport("./map.vibe", [("map_key_to_string", Some("mkts"))]),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("mkts", -1), [EInt(1)], -1))
   ]
   let warnings = detect_unused_imports(stmts)
   assert(eq(Array::length(warnings), 0))
 }
 
 test "detect_unused_imports flags a never-referenced package alias" {
-  let stmts = [
-    SAliasDecl("shell", "@vibe/shell")
-  ]
+  let stmts = [SAliasDecl("shell", "@vibe/shell")]
   let warnings = detect_unused_imports(stmts)
   assert(eq(Array::length(warnings), 1))
   let (kind, name, _) = Array::get(warnings, 0)
@@ -79,8 +68,7 @@ test "detect_unused_imports flags a never-referenced package alias" {
 test "detect_unused_imports ignores a package alias used via a qualified call" {
   let stmts = [
     SAliasDecl("shell", "@vibe/shell"),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("@shell::run", -1), [
-    ], -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("@shell::run", -1), [], -1))
   ]
   let warnings = detect_unused_imports(stmts)
   assert(eq(Array::length(warnings), 0))
@@ -92,12 +80,8 @@ test "detect_unused_imports ignores a package alias used via a qualified call" {
 // PARAMETER, never the import.
 test "detect_unused_imports still flags an import shadowed by a fn param" {
   let stmts = [
-    SImport("./map.vibe", [
-      ("map_key_to_string", None)
-    ]),
-    SLet(false, false, "main", no_ty(), EFn([
-    ], [
-    ], [
+    SImport("./map.vibe", [("map_key_to_string", None)]),
+    SLet(false, false, "main", no_ty(), EFn([], [], [
       ("map_key_to_string", no_ty())
     ], no_ty(), None, EIdent("map_key_to_string", -1)))
   ]
@@ -113,9 +97,7 @@ test "detect_unused_imports still flags an import shadowed by a fn param" {
 // only by the index must still be flagged.
 test "detect_unused_imports still flags an import shadowed by a for-loop index" {
   let stmts = [
-    SImport("./map.vibe", [
-      ("map_key_to_string", None)
-    ]),
+    SImport("./map.vibe", [("map_key_to_string", None)]),
     SLet(false, false, "main", no_ty(), EForIn("x", Some("map_key_to_string"), EArray([
       EInt(1)
     ]), EIdent("map_key_to_string", -1)))
@@ -132,13 +114,8 @@ test "detect_unused_imports still flags an import shadowed by a for-loop index" 
 // field values / explicit type args.
 test "detect_unused_imports counts an ERecord's own name as a reference" {
   let stmts = [
-    SImport("./model.vibe", [
-      ("User", None)
-    ]),
-    SLet(false, false, "main", no_ty(), ERecord("User", [
-      ("id", EInt(1))
-    ], [
-    ]))
+    SImport("./model.vibe", [("User", None)]),
+    SLet(false, false, "main", no_ty(), ERecord("User", [("id", EInt(1))], []))
   ]
   let warnings = detect_unused_imports(stmts)
   assert(eq(Array::length(warnings), 0))
@@ -148,24 +125,18 @@ test "detect_unbound_nonunit_returns flags a discarded non-Unit call" {
   // `foo(); 1` -- ESeq(ECall("foo", [], 5), EInt(1)); tytab records foo()'s
   // call offset (5) as CtInt (mirroring checker.vibe's tab_call_ty).
   let stmts = [
-    SLet(false, false, "main", no_ty(), ESeq(ECall(EIdent("foo", 0), [
-    ], 5), EInt(1)))
+    SLet(false, false, "main", no_ty(), ESeq(ECall(EIdent("foo", 0), [], 5), EInt(1)))
   ]
-  let tytab = [
-    (5, CtInt)
-  ]
+  let tytab = [(5, CtInt)]
   let warnings = detect_unbound_nonunit_returns(stmts, tytab, SubstEmpty)
   assert(eq(Array::length(warnings), 1))
 }
 
 test "detect_unbound_nonunit_returns ignores a discarded Unit call" {
   let stmts = [
-    SLet(false, false, "main", no_ty(), ESeq(ECall(EIdent("foo", 0), [
-    ], 5), EInt(1)))
+    SLet(false, false, "main", no_ty(), ESeq(ECall(EIdent("foo", 0), [], 5), EInt(1)))
   ]
-  let tytab = [
-    (5, CtUnit)
-  ]
+  let tytab = [(5, CtUnit)]
   let warnings = detect_unbound_nonunit_returns(stmts, tytab, SubstEmpty)
   assert(eq(Array::length(warnings), 0))
 }
@@ -174,12 +145,9 @@ test "detect_unbound_nonunit_returns ignores a let-bound (non-discarded) call" {
   // `let _ = foo()` is an ELet, never the left side of an ESeq, so it is
   // never a discard candidate regardless of foo()'s return type.
   let stmts = [
-    SLet(false, false, "main", no_ty(), ELet("_", ECall(EIdent("foo", 0), [
-    ], 5), EInt(1), -1))
+    SLet(false, false, "main", no_ty(), ELet("_", ECall(EIdent("foo", 0), [], 5), EInt(1), -1))
   ]
-  let tytab = [
-    (5, CtInt)
-  ]
+  let tytab = [(5, CtInt)]
   let warnings = detect_unbound_nonunit_returns(stmts, tytab, SubstEmpty)
   assert(eq(Array::length(warnings), 0))
 }
@@ -218,8 +186,7 @@ test "detect_unbound_nonunit_returns ignores a discarded if (no tytab entry)" {
   let stmts = [
     SLet(false, false, "main", no_ty(), ESeq(EIf(EBool(true), EInt(1), EInt(2)), EInt(0)))
   ]
-  let tytab = [
-  ]
+  let tytab = []
   let warnings = detect_unbound_nonunit_returns(stmts, tytab, SubstEmpty)
   assert(eq(Array::length(warnings), 0))
 }

@@ -126,8 +126,26 @@ let c_bracket_index = 8
 /// c_brace_record. A short import list still uses plain c_brace_block (one
 /// joined line), so this kind only exists to opt in to per-item newlines.
 let c_brace_import_wrap = 9
+/// Array literal that fits on the line it starts on (#2103): unlike
+/// c_bracket_array it neither indents nor forces one element per line, so
+/// `[1, 2, 3]` / `[]` stay written the way they read.
+let c_bracket_array_inline = 10
+/// `struct N { .. }` body / `N::{ .. }` literal that does NOT fit on one line
+/// (#2104): one field per line, like c_brace_record. Kept distinct from
+/// c_brace_record because a `:` inside a struct DECL body opens a type
+/// context (`x: Array[Int]`), which c_brace_record suppresses.
+let c_brace_struct = 11
+/// Same two containers when they DO fit: rendered entirely on one line.
+let c_brace_struct_inline = 12
 
 let max_import_list_width = 140
+
+/// Column budget for the one-line form of an array literal / struct body
+/// (#2103, #2104): a collection whose joined rendering would end past column
+/// 80 goes one item per line instead. Import lists keep their own, far wider
+/// budget (max_import_list_width) — an import list is a header, not an
+/// expression, and wrapping it early only pushes real code down the file.
+let max_collection_width = 80
 
 //# TypeDeclMode constants
 
@@ -492,21 +510,25 @@ fn lx_string(lx: LX) -> LTok {
     lx.pos = lx.pos + 1
     if bad_escape {
       LTok::{
-        kind: k_error, text: StringBuilder::freeze(buf)
+        kind: k_error,
+        text: StringBuilder::freeze(buf)
       }
     } else if has_interp {
       LTok::{
-        kind: k_string_interp, text: StringBuilder::freeze(raw)
+        kind: k_string_interp,
+        text: StringBuilder::freeze(raw)
       }
     } else {
       LTok::{
-        kind: k_string, text: StringBuilder::freeze(buf)
+        kind: k_string,
+        text: StringBuilder::freeze(buf)
       }
     }
   } else {
     let _ = start
     LTok::{
-      kind: k_error, text: StringBuilder::freeze(buf)
+      kind: k_error,
+      text: StringBuilder::freeze(buf)
     }
   }
 }
@@ -531,11 +553,13 @@ fn lx_raw_string(lx: LX) -> LTok {
   if lx_peek(lx) == '"' {
     lx.pos = lx.pos + 1
     LTok::{
-      kind: k_string, text: StringBuilder::freeze(buf)
+      kind: k_string,
+      text: StringBuilder::freeze(buf)
     }
   } else {
     LTok::{
-      kind: k_error, text: StringBuilder::freeze(buf)
+      kind: k_error,
+      text: StringBuilder::freeze(buf)
     }
   }
 }
@@ -546,14 +570,16 @@ fn lx_char(lx: LX) -> LTok {
   let c = lx_peek(lx)
   if c == -1 || c == '\n' {
     LTok::{
-      kind: k_error, text: "'"
+      kind: k_error,
+      text: "'"
     }
   } else if c == '\\' {
     lx.pos = lx.pos + 1
     let e = lx_peek(lx)
     if e == -1 {
       LTok::{
-        kind: k_error, text: "'"
+        kind: k_error,
+        text: "'"
       }
     } else {
       let decoded = if e == 'n' {
@@ -589,18 +615,21 @@ fn lx_char(lx: LX) -> LTok {
           lx.pos = lx.pos + 1
         }
         LTok::{
-          kind: k_error, text: "'"
+          kind: k_error,
+          text: "'"
         }
       } else {
         lx.pos = lx.pos + 1
         if lx_peek(lx) == '\'' {
           lx.pos = lx.pos + 1
           LTok::{
-            kind: k_char, text: String::from_char_code(decoded)
+            kind: k_char,
+            text: String::from_char_code(decoded)
           }
         } else {
           LTok::{
-            kind: k_error, text: "'"
+            kind: k_error,
+            text: "'"
           }
         }
       }
@@ -610,11 +639,13 @@ fn lx_char(lx: LX) -> LTok {
     if lx_peek(lx) == '\'' {
       lx.pos = lx.pos + 1
       LTok::{
-        kind: k_char, text: String::from_char_code(c)
+        kind: k_char,
+        text: String::from_char_code(c)
       }
     } else {
       LTok::{
-        kind: k_error, text: "'"
+        kind: k_error,
+        text: "'"
       }
     }
   }
@@ -674,7 +705,8 @@ fn lx_multiline_string(lx: LX) -> LTok {
     }
   }
   LTok::{
-    kind: k_string, text: StringBuilder::freeze(buf)
+    kind: k_string,
+    text: StringBuilder::freeze(buf)
   }
 }
 
@@ -682,7 +714,8 @@ fn lx_next(lx: LX) -> LTok {
   let c = lx_peek(lx)
   if c == -1 {
     LTok::{
-      kind: k_eof, text: ""
+      kind: k_eof,
+      text: ""
     }
   } else if is_ws_c(c) {
     let start = lx.pos
@@ -696,12 +729,14 @@ fn lx_next(lx: LX) -> LTok {
       }
     }
     LTok::{
-      kind: k_ws, text: String::substring(lx.input, start, lx.pos)
+      kind: k_ws,
+      text: String::substring(lx.input, start, lx.pos)
     }
   } else if c == '\n' {
     lx.pos = lx.pos + 1
     LTok::{
-      kind: k_newline, text: "\n"
+      kind: k_newline,
+      text: "\n"
     }
   } else if c == '"' {
     lx_string(lx)
@@ -717,11 +752,13 @@ fn lx_next(lx: LX) -> LTok {
     let body = raw_ident_body(text)
     if body != "" {
       LTok::{
-        kind: k_name, text: body
+        kind: k_name,
+        text: body
       }
     } else {
       LTok::{
-        kind: keyword_kind_for(text, lx), text: text
+        kind: keyword_kind_for(text, lx),
+        text: text
       }
     }
   } else if is_digit_c(c) {
@@ -741,7 +778,8 @@ fn lx_next(lx: LX) -> LTok {
         }
       }
       LTok::{
-        kind: k_int, text: String::substring(lx.input, start, lx.pos)
+        kind: k_int,
+        text: String::substring(lx.input, start, lx.pos)
       }
     } else {
       let mut going = true
@@ -794,11 +832,13 @@ fn lx_next(lx: LX) -> LTok {
       let text = String::substring(lx.input, start, lx.pos)
       if is_float {
         LTok::{
-          kind: k_float, text: text
+          kind: k_float,
+          text: text
         }
       } else {
         LTok::{
-          kind: k_int, text: text
+          kind: k_int,
+          text: text
         }
       }
     }
@@ -808,92 +848,109 @@ fn lx_next(lx: LX) -> LTok {
       let n = lx_peek(lx)
       if n == '>' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_arrow, text: "=>"
+          kind: k_arrow,
+          text: "=>"
         }
       }
       else if n == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_eqeq, text: "=="
+          kind: k_eqeq,
+          text: "=="
         }
       }
       else {
         LTok::{
-          kind: k_eq, text: "="
+          kind: k_eq,
+          text: "="
         }
       }
     } else if c == '-' {
       let n = lx_peek(lx)
       if n == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_minus_eq, text: "-="
+          kind: k_minus_eq,
+          text: "-="
         }
       }
       else if n == '>' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_thin_arrow, text: "->"
+          kind: k_thin_arrow,
+          text: "->"
         }
       }
       else {
         LTok::{
-          kind: k_minus, text: "-"
+          kind: k_minus,
+          text: "-"
         }
       }
     } else if c == ';' {
       LTok::{
-        kind: k_semicolon, text: ";"
+        kind: k_semicolon,
+        text: ";"
       }
     }
     else if c == '{' {
       LTok::{
-        kind: k_lbrace, text: "{"
+        kind: k_lbrace,
+        text: "{"
       }
     }
     else if c == '}' {
       LTok::{
-        kind: k_rbrace, text: "}"
+        kind: k_rbrace,
+        text: "}"
       }
     }
     else if c == '(' {
       LTok::{
-        kind: k_lparen, text: "("
+        kind: k_lparen,
+        text: "("
       }
     }
     else if c == ')' {
       LTok::{
-        kind: k_rparen, text: ")"
+        kind: k_rparen,
+        text: ")"
       }
     }
     else if c == '[' {
       LTok::{
-        kind: k_lbracket, text: "["
+        kind: k_lbracket,
+        text: "["
       }
     }
     else if c == ']' {
       LTok::{
-        kind: k_rbracket, text: "]"
+        kind: k_rbracket,
+        text: "]"
       }
     }
     else if c == ',' {
       LTok::{
-        kind: k_comma, text: ","
+        kind: k_comma,
+        text: ","
       }
     }
     else if c == ':' {
       if lx_peek(lx) == ':' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_double_colon, text: "::"
+          kind: k_double_colon,
+          text: "::"
         }
       }
       else {
         LTok::{
-          kind: k_colon, text: ":"
+          kind: k_colon,
+          text: ":"
         }
       }
     } else if c == '/' {
       let n = lx_peek(lx)
       if n == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_slash_eq, text: "/="
+          kind: k_slash_eq,
+          text: "/="
         }
       }
       else if n == '/' {
@@ -909,127 +966,150 @@ fn lx_next(lx: LX) -> LTok {
           }
         }
         LTok::{
-          kind: k_comment, text: String::substring(lx.input, start, lx.pos)
+          kind: k_comment,
+          text: String::substring(lx.input, start, lx.pos)
         }
       } else {
         LTok::{
-          kind: k_slash, text: "/"
+          kind: k_slash,
+          text: "/"
         }
       }
     } else if c == '+' {
       if lx_peek(lx) == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_plus_eq, text: "+="
+          kind: k_plus_eq,
+          text: "+="
         }
       }
       else {
         LTok::{
-          kind: k_plus, text: "+"
+          kind: k_plus,
+          text: "+"
         }
       }
     } else if c == '*' {
       if lx_peek(lx) == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_star_eq, text: "*="
+          kind: k_star_eq,
+          text: "*="
         }
       }
       else {
         LTok::{
-          kind: k_star, text: "*"
+          kind: k_star,
+          text: "*"
         }
       }
     } else if c == '%' {
       if lx_peek(lx) == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_percent_eq, text: "%="
+          kind: k_percent_eq,
+          text: "%="
         }
       }
       else {
         LTok::{
-          kind: k_percent, text: "%"
+          kind: k_percent,
+          text: "%"
         }
       }
     } else if c == '!' {
       if lx_peek(lx) == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_neq, text: "!="
+          kind: k_neq,
+          text: "!="
         }
       }
       else {
         LTok::{
-          kind: k_bang, text: "!"
+          kind: k_bang,
+          text: "!"
         }
       }
     } else if c == '?' {
       LTok::{
-        kind: k_question, text: "?"
+        kind: k_question,
+        text: "?"
       }
     }
     else if c == '<' {
       let n = lx_peek(lx)
       if n == '<' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_lshift, text: "<<"
+          kind: k_lshift,
+          text: "<<"
         }
       }
       else if n == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_lte, text: "<="
+          kind: k_lte,
+          text: "<="
         }
       }
       else {
         LTok::{
-          kind: k_lt, text: "<"
+          kind: k_lt,
+          text: "<"
         }
       }
     } else if c == '>' {
       let n = lx_peek(lx)
       if n == '>' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_rshift, text: ">>"
+          kind: k_rshift,
+          text: ">>"
         }
       }
       else if n == '=' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_gte, text: ">="
+          kind: k_gte,
+          text: ">="
         }
       }
       else {
         LTok::{
-          kind: k_gt, text: ">"
+          kind: k_gt,
+          text: ">"
         }
       }
     } else if c == '&' {
       if lx_peek(lx) == '&' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_and_and, text: "&&"
+          kind: k_and_and,
+          text: "&&"
         }
       }
       else {
         LTok::{
-          kind: k_bit_and, text: "&"
+          kind: k_bit_and,
+          text: "&"
         }
       }
     } else if c == '|' {
       let n = lx_peek(lx)
       if n == '|' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_or_or, text: "||"
+          kind: k_or_or,
+          text: "||"
         }
       }
       else if n == '>' {
         lx.pos = lx.pos + 1; LTok::{
-          kind: k_pipe_gt, text: "|>"
+          kind: k_pipe_gt,
+          text: "|>"
         }
       }
       else {
         LTok::{
-          kind: k_bit_or, text: "|"
+          kind: k_bit_or,
+          text: "|"
         }
       }
     } else if c == '^' {
       LTok::{
-        kind: k_bit_xor, text: "^"
+        kind: k_bit_xor,
+        text: "^"
       }
     }
     else if c == '.' {
@@ -1037,16 +1117,19 @@ fn lx_next(lx: LX) -> LTok {
       String::char_code_at(lx.input, lx.pos + 1) == '.' {
         lx.pos = lx.pos + 2
         LTok::{
-          kind: k_dotdotdot, text: "..."
+          kind: k_dotdotdot,
+          text: "..."
         }
       } else if lx.pos < lx.len && String::char_code_at(lx.input, lx.pos) == '.' {
         lx.pos = lx.pos + 1
         LTok::{
-          kind: k_dotdot, text: ".."
+          kind: k_dotdot,
+          text: ".."
         }
       } else {
         LTok::{
-          kind: k_dot, text: "."
+          kind: k_dot,
+          text: "."
         }
       }
     } else if c == '#' {
@@ -1065,7 +1148,8 @@ fn lx_next(lx: LX) -> LTok {
           }
         }
         LTok::{
-          kind: k_hash_ref, text: String::substring(lx.input, start, lx.pos)
+          kind: k_hash_ref,
+          text: String::substring(lx.input, start, lx.pos)
         }
       }
     } else if c == '@' {
@@ -1081,16 +1165,19 @@ fn lx_next(lx: LX) -> LTok {
           }
         }
         LTok::{
-          kind: k_name, text: String::substring(lx.input, start, lx.pos)
+          kind: k_name,
+          text: String::substring(lx.input, start, lx.pos)
         }
       } else {
         LTok::{
-          kind: k_error, text: String::from_char_code(c)
+          kind: k_error,
+          text: String::from_char_code(c)
         }
       }
     } else {
       LTok::{
-        kind: k_error, text: String::from_char_code(c)
+        kind: k_error,
+        text: String::from_char_code(c)
       }
     }
   }
@@ -1098,10 +1185,11 @@ fn lx_next(lx: LX) -> LTok {
 
 fn lex_lossless(src: String) -> Array[LTok] {
   let lx = LX::{
-    input: src, len: String::length(src), pos: 0
+    input: src,
+    len: String::length(src),
+    pos: 0
   }
-  let toks = [
-  ]
+  let toks = []
   let mut going = true
   while going {
     if lx.pos >= lx.len {
@@ -1111,7 +1199,8 @@ fn lex_lossless(src: String) -> Array[LTok] {
     }
   }
   Array::push(toks, LTok::{
-    kind: k_eof, text: ""
+    kind: k_eof,
+    text: ""
   })
   toks
 }
@@ -1167,12 +1256,21 @@ fn is_type_context_end(k: Int) -> Bool {
 
 fn container_indents(c: Int) -> Bool {
   c == c_brace_block || c == c_brace_record || c == c_brace_import_wrap ||
-  c == c_brace_match || c == c_brace_enum || c == c_bracket_array
+  c == c_brace_match || c == c_brace_enum || c == c_bracket_array ||
+  c == c_brace_struct
 }
 
 fn container_forces_list_newlines(c: Int) -> Bool {
   c == c_brace_record || c == c_brace_match || c == c_brace_import_wrap ||
-  c == c_brace_enum || c == c_bracket_array
+  c == c_brace_enum || c == c_bracket_array || c == c_brace_struct
+}
+
+/// Containers that render on the single line they start on. Nothing inside
+/// one may emit a newline — not the closer, not a separator, not a nested
+/// container — so every newline decision is suppressed while one is open
+/// (inline_depth in format_tokens).
+fn container_is_inline(c: Int) -> Bool {
+  c == c_bracket_array_inline || c == c_brace_struct_inline
 }
 
 //# Token stream queries (operate on parallel kinds/texts arrays)
@@ -1343,6 +1441,119 @@ fn import_list_should_wrap(toks: Array[LTok], open_idx: Int, base_col: Int) -> B
   } else {
     import_list_width(toks, open_idx, close, base_col) > max_import_list_width
   }
+}
+
+/// Rendered width of one token, close enough to drive a threshold (the exact
+/// rendering is still token_text_for_output's job). Quoted kinds pay for their
+/// delimiters; escapes inside them are not counted.
+fn approx_token_width(tok: LTok) -> Int {
+  let k = tok.kind
+  if k == k_string || k == k_string_interp || k == k_char {
+    String::length(tok.text) + 2
+  } else {
+    String::length(trim_ascii_ws(tok.text))
+  }
+}
+
+/// Coarse version of needs_space for the width estimate above: it may be off
+/// by a column on exotic pairs, which only shifts a wrap threshold, never the
+/// emitted spacing.
+fn approx_needs_space(prev_kind: Int, curr_kind: Int) -> Bool {
+  if prev_kind == k_none {
+    false
+  } else if curr_kind == k_rparen || curr_kind == k_rbracket || curr_kind == k_comma ||
+  curr_kind == k_semicolon || curr_kind == k_colon || curr_kind == k_dot ||
+  curr_kind == k_double_colon || curr_kind == k_lparen || curr_kind == k_lbracket {
+    false
+  } else if prev_kind == k_lparen || prev_kind == k_lbracket || prev_kind == k_dot ||
+  prev_kind == k_double_colon {
+    false
+  } else {
+    true
+  }
+}
+
+/// #2103/#2104: may the container opened at `open_idx` (matching closer at
+/// `close_idx`) be rendered on the line it starts on, starting at column
+/// `base_col`? Three ways to say no:
+///
+///  * the joined rendering would end past max_collection_width,
+///  * the span holds a `//` comment (joining would comment out the rest of
+///    the line — real corruption, not a style regression),
+///  * an interpolated-string token carries a raw newline, which no amount of
+///    joining can pull back onto one line.
+///
+/// Trivia is otherwise skipped, so the answer is a function of the token
+/// sequence alone: re-formatting this formatter's own output re-derives the
+/// same decision, which is what keeps `fmt` a fixpoint.
+fn collection_fits_inline(toks: Array[LTok], open_idx: Int, close_idx: Int, base_col: Int) -> Bool {
+  if close_idx <= open_idx {
+    false
+  } else {
+    let mut col = base_col
+    let mut i = open_idx + 1
+    let mut prev_kind = k_none
+    let mut ok = true
+    while ok && i <= close_idx {
+      let tok = Array::get(toks, i)
+      let k = tok.kind
+      if k == k_comment {
+        ok = false
+      } else if k == k_ws || k == k_newline {
+        i = i + 1
+      } else if k == k_string_interp && text_contains_newline(tok.text) {
+        ok = false
+      } else {
+        col = col + (if approx_needs_space(prev_kind, k) {
+          1
+        } else {
+          0
+        }) + approx_token_width(tok)
+        if col > max_collection_width {
+          ok = false
+        } else {
+          prev_kind = k
+          i = i + 1
+        }
+      }
+    }
+    ok
+  }
+}
+
+/// Did the author write this container across more than one line? Brace
+/// containers preserve the line structure they were given (a `{` block keeps
+/// one statement per source line), so a struct body's inline-vs-broken answer
+/// is the author's, not the formatter's: it only normalizes what a BROKEN
+/// field list looks like (one field per line) and stops forcing a break on a
+/// short one. Bracket containers have never preserved their interior breaks
+/// -- the newline pass swallows them -- so there is no author choice to read
+/// there and the width budget decides alone (#2103/#2104).
+fn span_has_newline(toks: Array[LTok], open_idx: Int, close_idx: Int) -> Bool {
+  let mut i = open_idx + 1
+  let mut found = false
+  while !found && i < close_idx {
+    if Array::get(toks, i).kind == k_newline {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn text_contains_newline(text: String) -> Bool {
+  let n = String::length(text)
+  let mut i = 0
+  let mut found = false
+  while !found && i < n {
+    if String::char_code_at(text, i) == 10 {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 fn find_matching_rbracket(toks: Array[LTok], start: Int) -> Int {
@@ -1683,35 +1894,36 @@ fn arr_pop_int(arr: Array[Int]) -> Int {
 //# The core formatter
 
 fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
-  let out = [
-  ]
+  let out = []
   let mut indent = 0
   let mut pending_newlines = 0
-  let container_stack = [
-  ]
-  let cpb_stack = [
-  ]
-  let cpb_bracket_stack = [
-  ]
+  let container_stack = []
+  let cpb_stack = []
+  let cpb_bracket_stack = []
   let mut paren_depth = 0
   let mut brace_depth = 0
   let mut bracket_depth = 0
-  let pm_paren = [
-  ]
-  let pm_brace = [
-  ]
-  let pm_bracket = [
-  ]
-  let tc_paren = [
-  ]
-  let tc_brace = [
-  ]
-  let tc_bracket = [
-  ]
+  let pm_paren = []
+  let pm_brace = []
+  let pm_bracket = []
+  let tc_paren = []
+  let tc_brace = []
+  let tc_bracket = []
   let mut type_decl_header = decl_none
   let mut type_decl_rhs_active = false
   let mut saw_newline = false
   let mut line_has_content = false
+  // #2103/#2104: column reached on the line being built, so a collection's
+  // fits-on-one-line question is asked at its real starting column rather
+  // than at its indent (an array at the end of `let xs = foo(a, [..])` starts
+  // far right of `indent * indent_size`).
+  let mut cur_col = 0
+  // How many inline containers are currently open. > 0 suppresses every
+  // newline decision, including those of containers nested inside.
+  let mut inline_depth = 0
+  // True between the `struct` keyword and the `{` that opens its body, so
+  // that body can be told apart from an ordinary brace block.
+  let mut struct_header = false
   let mut prev_prev_kind = k_none
   let mut prev_prev_text = ""
   let mut prev_kind = k_none
@@ -1741,14 +1953,17 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
           j = j + 1
         }
         pending_newlines = 0
-        Array::push(out, spaces(if indent <= 0 || indent_size <= 0 {
+        let pad = if indent <= 0 || indent_size <= 0 {
           0
         } else {
           indent * indent_size
-        }))
+        }
+        Array::push(out, spaces(pad))
+        cur_col = pad
         line_has_content = false
       }
       Array::push(out, comment_text)
+      cur_col = cur_col + String::length(comment_text)
       line_has_content = true
       prev_prev_kind = k_none
       prev_prev_text = ""
@@ -1800,7 +2015,8 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         } else {
           0
         }
-        if paren_depth > base_paren || bracket_depth > base_bracket || collapse_generic_break || in_effects_brace {
+        if paren_depth > base_paren || bracket_depth > base_bracket || collapse_generic_break ||
+        in_effects_brace || inline_depth > 0 {
           i = i + 1
         } else {
           let max_nl = if brace_depth == 0 {
@@ -1829,9 +2045,11 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         Array::truncate(tc_bracket, 0)
         type_decl_rhs_active = false
         type_decl_header = decl_none
+        struct_header = false
       }
       saw_newline = false
-      if pending_newlines == 0 && should_force_newline_before(kind, container_stack) {
+      if pending_newlines == 0 && inline_depth == 0 &&
+      should_force_newline_before(kind, container_stack) {
         pending_newlines = 1
       }
       let mut dedented_before = false
@@ -1851,11 +2069,13 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
           j = j + 1
         }
         pending_newlines = 0
-        Array::push(out, spaces(if indent <= 0 || indent_size <= 0 {
+        let pad = if indent <= 0 || indent_size <= 0 {
           0
         } else {
           indent * indent_size
-        }))
+        }
+        Array::push(out, spaces(pad))
+        cur_col = pad
         prev_prev_kind = k_none
         prev_prev_text = ""
         prev_kind = k_none
@@ -1882,18 +2102,37 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         i = i + 1
       } else {
         let curr_prefix = is_prefix_op(kind, prev_kind)
-        let effects_rbrace = kind == k_rbrace && Array::length(container_stack) > 0 &&
-        Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects
+        let closing_container = if kind == k_rbrace && Array::length(container_stack) > 0 {
+          Array::get(container_stack, Array::length(container_stack) - 1)
+        } else {
+          -1
+        }
+        let effects_rbrace = closing_container == c_brace_effects
+        // `Point::{ x: 1 }` / `struct P { x: Int }` close with a space, the
+        // way `with { .. }` already does; needs_space alone would emit
+        // `x: 1}` (its rule for a `}` never keeps a preceding space). The test
+        // is "this closer is being written inside an inline region", not "this
+        // container is the inline one": a brace the author had broken can end
+        // up on one line anyway when an enclosing bracket literal joined
+        // (`[LTok::{\n  kind: k, text: t\n}]` -> `[LTok::{ kind: k, text: t }]`),
+        // and keying off the container alone lost the space there -- which
+        // also cost the fixpoint, since the next run reclassified the
+        // now-single-line brace as inline and put the space back.
+        let inline_rbrace = kind == k_rbrace && inline_depth > 0 && prev_kind != k_lbrace
         if line_has_content &&
-        (effects_rbrace || needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe, path_active)) {
+        (effects_rbrace || inline_rbrace || needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe, path_active)) {
           Array::push(out, " ")
+          cur_col = cur_col + 1
         }
         Array::push(out, rendered_text)
+        cur_col = cur_col + String::length(rendered_text)
         line_has_content = true
         if kind == k_type {
           type_decl_header = decl_type_alias
         } else if kind == k_enum {
           type_decl_header = decl_enum
+        } else if kind == k_struct {
+          struct_header = true
         }
         if kind == k_colon && should_start_type_context_on_colon(container_stack) {
           Array::push(tc_paren, paren_depth)
@@ -1914,10 +2153,23 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
         if kind == k_lbrace || kind == k_lbracket {
           if kind == k_lbrace {
             let is_effects_brace = prev_text == "with"
+            // #2104: `struct N { .. }` and `N::{ .. }` are field lists, not
+            // statement blocks. Short ones stay on the line they start on;
+            // once broken, one field per line (c_brace_struct), instead of
+            // today's "break the braces, then pack the fields".
+            let struct_close = find_matching_rbrace(toks, i)
+            let struct_container = if !span_has_newline(toks, i, struct_close) &&
+            collection_fits_inline(toks, i, struct_close, cur_col + 1) {
+              c_brace_struct_inline
+            } else {
+              c_brace_struct
+            }
             let container = if type_decl_header == decl_enum {
               c_brace_enum
             } else if is_effects_brace {
               c_brace_effects
+            } else if struct_header {
+              struct_container
             } else {
               // is_match_brace
               let pml = Array::length(pm_paren)
@@ -1936,6 +2188,9 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
                 let _ = arr_pop_int(pm_brace)
                 let _ = arr_pop_int(pm_bracket)
                 c_brace_match
+              } else if prev_kind == k_double_colon {
+                // `Name::{ .. }` — a struct literal, never a block.
+                struct_container
               } else if brace_starts_import_list(toks, i) &&
               import_list_should_wrap(toks, i, (indent + 1) * indent_size) {
                 c_brace_import_wrap
@@ -1947,25 +2202,41 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
             if type_decl_header == decl_enum {
               type_decl_header = decl_none
             }
+            struct_header = false
             Array::push(container_stack, container)
             Array::push(cpb_stack, paren_depth)
             Array::push(cpb_bracket_stack, bracket_depth)
+            if container_is_inline(container) {
+              inline_depth = inline_depth + 1
+            }
             if container_indents(container) {
               indent = indent + 1
-              if pending_newlines == 0 {
+              if pending_newlines == 0 && inline_depth == 0 {
                 pending_newlines = 1
               }
             }
           } else {
             let generic_hint = prev_kind == k_impl || is_generic_param_bracket(toks, i)
-            let container = container_kind_for_bracket(prev_kind, Array::length(tc_paren) > 0 || type_decl_rhs_active, type_decl_header != decl_none, generic_hint)
+            let raw_container = container_kind_for_bracket(prev_kind, Array::length(tc_paren) > 0 || type_decl_rhs_active, type_decl_header != decl_none, generic_hint)
+            // #2103: an array literal that fits on the line it starts on is
+            // written there — `[1, 2, 3]`, `[]` — instead of one element per
+            // line unconditionally.
+            let container = if raw_container == c_bracket_array &&
+            collection_fits_inline(toks, i, find_matching_rbracket(toks, i), cur_col) {
+              c_bracket_array_inline
+            } else {
+              raw_container
+            }
             Array::push(container_stack, container)
             Array::push(cpb_stack, paren_depth)
             Array::push(cpb_bracket_stack, bracket_depth)
             bracket_depth = bracket_depth + 1
+            if container_is_inline(container) {
+              inline_depth = inline_depth + 1
+            }
             if container_indents(container) {
               indent = indent + 1
-              if pending_newlines == 0 {
+              if pending_newlines == 0 && inline_depth == 0 {
                 pending_newlines = 1
               }
             }
@@ -1990,10 +2261,13 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
             if Array::length(cpb_bracket_stack) > 0 {
               let _ = arr_pop_int(cpb_bracket_stack)
             }
-            let _ = arr_pop_int(container_stack)
+            let popped = arr_pop_int(container_stack)
+            if container_is_inline(popped) && inline_depth > 0 {
+              inline_depth = inline_depth - 1
+            }
           }
         } else if kind == k_comma || kind == k_semicolon {
-          if Array::length(container_stack) > 0 && Array::length(cpb_stack) > 0 &&
+          if inline_depth == 0 && Array::length(container_stack) > 0 && Array::length(cpb_stack) > 0 &&
           container_forces_list_newlines(Array::get(container_stack, Array::length(container_stack) - 1)) &&
           paren_depth == Array::get(cpb_stack, Array::length(cpb_stack) - 1) &&
           pending_newlines == 0 {
@@ -2075,10 +2349,8 @@ fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
 /// TOP-LEVEL commas into one Array[LTok] per item (trailing/empty items
 /// dropped). Import items never nest brackets/braces, so a flat scan is safe.
 fn split_import_items(toks: Array[LTok], start: Int, close_idx: Int) -> Array[Array[LTok]] {
-  let items = [
-  ]
-  let mut cur = [
-  ]
+  let items = []
+  let mut cur = []
   let mut i = start
   while i < close_idx {
     let k = Array::get(toks, i).kind
@@ -2086,8 +2358,7 @@ fn split_import_items(toks: Array[LTok], start: Int, close_idx: Int) -> Array[Ar
       if Array::length(cur) > 0 {
         Array::push(items, cur)
       }
-      cur = [
-      ]
+      cur = []
     } else if k == k_ws || k == k_newline || k == k_comment {
       ()
     } else {
@@ -2183,8 +2454,7 @@ fn insertion_sort_items(items: Array[Array[LTok]], keys: Array[String]) -> Unit 
 /// a comment, 0, or 1 items -- nothing meaningful to reorder, and dropping a
 /// comment while reordering would lose it (item tokens carry no trivia).
 fn reorder_import_lists(toks: Array[LTok]) -> Array[LTok] {
-  let out = [
-  ]
+  let out = []
   let n = Array::length(toks)
   let mut i = 0
   while i < n {
@@ -2212,8 +2482,7 @@ fn reorder_import_lists(toks: Array[LTok]) -> Array[LTok] {
           }
           i = close + 1
         } else {
-          let keys = [
-          ]
+          let keys = []
           let mut ii = 0
           while ii < m {
             Array::push(keys, item_key_text(Array::get(items, ii)))
@@ -2225,7 +2494,8 @@ fn reorder_import_lists(toks: Array[LTok]) -> Array[LTok] {
           while jj < m {
             if jj > 0 {
               Array::push(out, LTok::{
-                kind: k_comma, text: ","
+                kind: k_comma,
+                text: ","
               })
             }
             let item = Array::get(items, jj)
@@ -2274,11 +2544,7 @@ fn reorder_import_lists(toks: Array[LTok]) -> Array[LTok] {
 /// makes `vibe fmt` the fix-it the parser's error message points at, for code
 /// written against an older vibe.
 fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
-  let out = Array::slice([
-    LTok::{
-      kind: k_none, text: ""
-    }
-  ], 0, 0)
+  let out = Array::slice([LTok::{ kind: k_none, text: "" }], 0, 0)
   let n = Array::length(toks)
   let mut i = 0
   while i < n {
@@ -2311,7 +2577,8 @@ fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
           let inner = Array::get(toks, j)
           if inner.kind == k_comma {
             Array::push(out, LTok::{
-              kind: k_plus, text: "+"
+              kind: k_plus,
+              text: "+"
             })
           } else {
             Array::push(out, inner)
@@ -2320,10 +2587,12 @@ fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
         }
       } else {
         Array::push(out, LTok::{
-          kind: k_lparen, text: "("
+          kind: k_lparen,
+          text: "("
         })
         Array::push(out, LTok::{
-          kind: k_rparen, text: ")"
+          kind: k_rparen,
+          text: ")"
         })
       }
       i = close_i + 1
@@ -2356,11 +2625,7 @@ fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
 /// positions; a textual rewrite, or one that renamed every `Error` token,
 /// would have corrupted all of them.
 fn normalize_retired_effect_labels(toks: Array[LTok]) -> Array[LTok] {
-  let out = Array::slice([
-    LTok::{
-      kind: k_none, text: ""
-    }
-  ], 0, 0)
+  let out = Array::slice([LTok::{ kind: k_none, text: "" }], 0, 0)
   let n = Array::length(toks)
   let mut i = 0
   let mut item_start = false
@@ -2368,7 +2633,8 @@ fn normalize_retired_effect_labels(toks: Array[LTok]) -> Array[LTok] {
     let t = Array::get(toks, i)
     if item_start && t.kind == k_name && t.text == "Error" {
       Array::push(out, LTok::{
-        kind: k_name, text: "Exception"
+        kind: k_name,
+        text: "Exception"
       })
     } else {
       Array::push(out, t)
@@ -2467,9 +2733,7 @@ fn vp_trim(s: String) -> String {
 /// An Array[String] with nothing in it. Written this way (rather than `[]`)
 /// so the element type never depends on a push that a branch might skip.
 fn vp_empty_strings() -> Array[String] {
-  Array::slice([
-    ""
-  ], 0, 0)
+  Array::slice([""], 0, 0)
 }
 
 fn vp_split_lines(text: String) -> Array[String] {
@@ -2794,38 +3058,23 @@ fn vp_render_header(header: String) -> String {
     }
   }
   if seen_name {
-    Array::push(out, String::join([
-      "name = ",
-      name_v
-    ], ""))
+    Array::push(out, String::join(["name = ", name_v], ""))
   } else ()
   if seen_version {
     if version_eq {
-      Array::push(out, String::join([
-        "version = ",
-        version_v
-      ], ""))
+      Array::push(out, String::join(["version = ", version_v], ""))
     } else {
-      Array::push(out, String::join([
-        "version ",
-        version_v
-      ], ""))
+      Array::push(out, String::join(["version ", version_v], ""))
     }
   } else ()
   if seen_main {
-    Array::push(out, String::join([
-      "main = ",
-      main_v
-    ], ""))
+    Array::push(out, String::join(["main = ", main_v], ""))
   } else ()
   if seen_desc {
     Array::push(out, "description =")
     let mut d = 0
     while d < Array::length(desc) {
-      Array::push(out, String::join([
-        "  #|",
-        Array::get(desc, d)
-      ], ""))
+      Array::push(out, String::join(["  #|", Array::get(desc, d)], ""))
       d = d + 1
     }
   } else ()
@@ -2861,10 +3110,7 @@ fn vp_render_header(header: String) -> String {
     if String::length(hash_v) == 0 {
       Array::push(out, "generated_hash =")
     } else {
-      Array::push(out, String::join([
-        "generated_hash = ",
-        hash_v
-      ], ""))
+      Array::push(out, String::join(["generated_hash = ", hash_v], ""))
     }
   } else ()
   String::join(out, "\n")
@@ -2900,16 +3146,9 @@ export fn format_vpkg(src: String) -> String {
     let header = vp_render_header(String::substring(src, 0, end))
     let rest = vp_strip_leading_blanks(String::substring(src, end, String::length(src)))
     if String::length(rest) == 0 {
-      String::join([
-        header,
-        ""
-      ], "\n")
+      String::join([header, ""], "\n")
     } else {
-      String::join([
-        header,
-        "",
-        format_script(rest)
-      ], "\n")
+      String::join([header, "", format_script(rest)], "\n")
     }
   }
 }

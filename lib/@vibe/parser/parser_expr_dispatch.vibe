@@ -45,8 +45,7 @@ import ./parser_binder_context.vibe {
 
 //# Functions
 
-let no_dispatch_binder_rows: Array[SourceBinder] = [
-]
+let no_dispatch_binder_rows: Array[SourceBinder] = []
 
 /// Wrap `val` so that `((__asc: ty) -> __asc)(val)` forces `val` to have type
 /// `ty` (enforced by the call-argument check) while evaluating to `val` itself.
@@ -56,13 +55,9 @@ fn ascribe_wrap(val: Expr, ty: TypeExpr, capture_mark: Int, context: Option[Pars
   binder_capture_insert_synthetic_at(context, capture_mark, "__asc")
   let tparams = _no_tp()
   let tbounds = _no_tb()
-  let params = [
-    ("__asc", Some(ty))
-  ]
+  let params = [("__asc", Some(ty))]
   let lam = EFn(tparams, tbounds, params, None, None, EIdent("__asc", 0 - 1))
-  ECall(lam, [
-    val
-  ], 0 - 1)
+  ECall(lam, [val], 0 - 1)
 }
 
 /// #705: a local `let f: (A) -> R = (x) -> ..` must behave like the top-level
@@ -681,9 +676,7 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     StepLetRec(name, val) => ELetRec(name, val, rest),
     StepAssign(name, val) => EAssign(name, val, rest),
     StepAssignOp(name, op, val) => EAssignOp(name, op, val, rest),
-    StepPattern(pat, val) => EMatch(val, [
-      (pat, rest)
-    ]),
+    StepPattern(pat, val) => EMatch(val, [(pat, rest)]),
     // #760(1): `let PAT = val else { alt }` — bind on match, else run the
     // diverging fallback. Desugars to a two-arm match whose wildcard arm is
     // the else body; the checker unifies both arms, so a fallback that
@@ -694,10 +687,7 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
       // retained while parsing; append it now, as reverse folding reaches the
       // guard after the complete continuation has been captured.
       binder_capture_append(context, alt_rows)
-      EMatch(val, [
-        (pat, rest),
-        (PWild, alt)
-      ])
+      EMatch(val, [(pat, rest), (PWild, alt)])
     },
     StepStructDestr(pat, val) => apply_struct_destr(pat, val, rest, context),
     StepRecordDestr(pat, val) => apply_record_destr(pat, val, rest, context),
@@ -711,9 +701,7 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     // The continuation closure carries `x` + `rest` so `rest`'s scope is exact.
     StepBind(name, val, off) => ECall(EIdent("__try_bind", off), [
       val,
-      EFn(_no_tp(), _no_tb(), [
-        (name, None)
-      ], None, None, rest)
+      EFn(_no_tp(), _no_tb(), [(name, None)], None, None, rest)
     ], off)
   }
 }
@@ -1267,10 +1255,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
       _ => (EUnit, tn)
     }
     if is_mode {
-      (EMatch(cond, [
-        (is_pat_val, then_e),
-        (PWild, else_e)
-      ]), end_pos)
+      (EMatch(cond, [(is_pat_val, then_e), (PWild, else_e)]), end_pos)
     } else {
       (EIf(cond, then_e, else_e), end_pos)
     }
@@ -1438,12 +1423,8 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
     let close = expect_tk(tokens, bn, "}")
     let tparams = _no_tp()
     let tbounds = _no_tb()
-    let lam = EFn(tparams, tbounds, [
-      (gname, None)
-    ], None, None, body)
-    (ECall(EIdent("TaskGroup::run", off), [
-      lam
-    ], off), close)
+    let lam = EFn(tparams, tbounds, [(gname, None)], None, None, body)
+    (ECall(EIdent("TaskGroup::run", off), [lam], off), close)
   } else if mode == 27 {
     // ADR-0090 Phase 1: `region r { body }` lowers to
     // `__region_run((r) -> { body })`. `__region_run` is reserved internal
@@ -1464,12 +1445,8 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
     let (body, close) = parse_recur(tokens, br, 20, context)
     let tparams = _no_tp()
     let tbounds = _no_tb()
-    let lam = EFn(tparams, tbounds, [
-      (rname, None)
-    ], None, None, body)
-    (ECall(EIdent("__region_run", off), [
-      lam
-    ], off), close)
+    let lam = EFn(tparams, tbounds, [(rname, None)], None, None, body)
+    (ECall(EIdent("__region_run", off), [lam], off), close)
   } else {
     let actual = tk_name(peek(tokens, pos))
     throw("internal parser error: unknown parse mode \{mode} at #\{pos} token=\{actual}")
