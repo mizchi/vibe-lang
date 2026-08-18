@@ -5356,12 +5356,24 @@ fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String
   let actual_s = assert_eq_render(actual, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let expected_s = assert_eq_render(expected, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\n")))))
-  // println, not Stderr::write_stream: the gc lane only reserves host
+  // stdout, not Stderr::write_stream: the gc lane only reserves host
   // imports when the source already used one, and flipping that on a
   // SIMD-only file shifts every generated-body index (gc-gate
   // simd_skip_ws_test). `vibe test` now keeps stdout on FAIL so the
   // diagnostic still reaches vt_fail_detail.
-  let fail = ESeq(ECall(EIdent("println", -1), [msg], -1), ECall(EIdent("assert_true", -1), [
+  //
+  // #2107: `print_str`, not `println`. `println` carries `Stdout` now that
+  // the checker holds the print builtins to the row discipline, and this
+  // branch is SYNTHESIZED -- expanding it into `println` would mean every
+  // pure function containing an `assert_eq` acquires a capability it never
+  // asked for, which is the wrong reading of what this output is. An
+  // assertion's failure text is the harness reporting on its way to a trap,
+  // the same class as the runtime's own uncaught-exception message, and no
+  // row covers that either. `print_str` is the registry's codegen-internal
+  // printer (checker_visible=false, present in both lane tables), so it is
+  // unreachable from user source and carries no row by construction. The
+  // message already ends in "\n", which is the only thing `println` added.
+  let fail = ESeq(ECall(EIdent("print_str", -1), [msg], -1), ECall(EIdent("assert_true", -1), [
     EBool(false)
   ], -1))
   let cmp = rewrite_expr(EBinOp("==", actual, expected), gens, traits, struct_sets, dict_binds, vars2, fn_returns)
