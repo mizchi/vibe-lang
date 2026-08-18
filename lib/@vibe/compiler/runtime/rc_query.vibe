@@ -124,19 +124,37 @@ fn rcq_push_line(acc: StringBuilder, first: Array[Bool], line: String) -> Unit {
 /// set. Empty string = no special sets. Sets are the same four
 /// linked_compile threads into every Perceus plan: borrow_ret,
 /// borrow_param, view_ret, scalar_ret.
-export fn rc_classify_source(source: String) -> String with Exception {
-  let stmts = parse_program(lex(source))
-  rcq_run_prelude(stmts)
-  let borrow_ret = compute_borrow_returning_names(stmts)
-  let masks: Array[Int] = [
-  ]
-  let borrow_param = compute_borrow_param_user_fns(stmts, [
+fn rcq_entry_exclude() -> Array[String] {
+  [
     "main",
     "_start",
     "cli_main"
-  ], masks)
-  let view_ret = compute_may_return_view_fns(stmts)
-  let scalar_ret = compute_scalar_returning_names(stmts)
+  ]
+}
+
+/// Same classifier sets linked_compile threads into every Perceus plan,
+/// including the sorted_names_of wrapping the planner bsearch_leftmosts.
+fn rcq_borrow_ret(stmts: Array[Stmt]) -> Array[String] {
+  sorted_names_of(compute_borrow_returning_names(stmts))
+}
+
+fn rcq_view_ret(stmts: Array[Stmt]) -> Array[String] {
+  sorted_names_of(compute_may_return_view_fns(stmts))
+}
+
+fn rcq_scalar_ret(stmts: Array[Stmt]) -> Array[String] {
+  sorted_names_of(compute_scalar_returning_names(stmts))
+}
+
+export fn rc_classify_source(source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  rcq_run_prelude(stmts)
+  let borrow_ret = rcq_borrow_ret(stmts)
+  let masks: Array[Int] = [
+  ]
+  let borrow_param = compute_borrow_param_user_fns(stmts, rcq_entry_exclude(), masks)
+  let view_ret = rcq_view_ret(stmts)
+  let scalar_ret = rcq_scalar_ret(stmts)
   let names = rcq_user_fn_names(stmts)
   let acc = StringBuilder::new()
   let first: Array[Bool] = [
@@ -207,15 +225,11 @@ fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, param
 export fn rc_plan_source(source: String, fn_filter: String) -> String with Exception {
   let stmts = parse_program(lex(source))
   rcq_run_prelude(stmts)
-  let borrow_ret = compute_borrow_returning_names(stmts)
+  let borrow_ret = rcq_borrow_ret(stmts)
   let masks: Array[Int] = [
   ]
-  let borrow_param = compute_borrow_param_user_fns(stmts, [
-    "main",
-    "_start",
-    "cli_main"
-  ], masks)
-  let view_ret = compute_may_return_view_fns(stmts)
+  let borrow_param = compute_borrow_param_user_fns(stmts, rcq_entry_exclude(), masks)
+  let view_ret = rcq_view_ret(stmts)
   let acc = StringBuilder::new()
   let first: Array[Bool] = [
     true

@@ -88,6 +88,21 @@ test "rc_plan_source: --fn filters to that function" {
   assert(!String::contains(out, "pair "))
 }
 
+test "rc_plan_source: later-discovered wrapper is still a view" {
+  // compute_* emit discovery order. linked_compile wraps borrow_ret /
+  // view_ret in sorted_names_of before build_perceus_plan_with_params,
+  // because the planner bsearch_leftmosts those arrays. zebra-then-apple
+  // is unsorted; apple-then-zebra happens to be sorted. The compile plan
+  // for use_apple is the same either way: apple returns a view, so `v`
+  // is not dropped.
+  let zebra_first = "fn zebra(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn apple(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn use_apple(a: Array[Array[Int]]) -> Int {\n  let v = apple(a, 0)\n  Array::length(v)\n}\n"
+  let apple_first = "fn apple(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn zebra(a: Array[Array[Int]], i: Int) -> Array[Int] {\n  Array::get(a, i)\n}\n\nfn use_apple(a: Array[Array[Int]]) -> Int {\n  let v = apple(a, 0)\n  Array::length(v)\n}\n"
+  let out = rc_plan_source(zebra_first, "use_apple")
+  let flipped = rc_plan_source(apple_first, "use_apple")
+  assert_eq(out, flipped)
+  assert(!String::contains(out, "use_apple v drop"))
+}
+
 test "rc_plan_source: missing function throws" {
   let src = "fn keep(t: Array[Int]) -> Array[Int] {\n  t\n}\n"
   let caught = handle {
