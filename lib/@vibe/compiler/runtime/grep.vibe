@@ -323,6 +323,49 @@ fn grep_check_holes(items: Array[Expr]) -> Unit with Exception {
   }
 }
 
+fn grep_skip_ws(pattern: String, from: Int) -> Int {
+  let len = String::length(pattern)
+  let mut i = from
+  while i < len && (String::char_code_at(pattern, i) == ' ' || String::char_code_at(pattern, i) == 9 || String::char_code_at(pattern, i) == 10 || String::char_code_at(pattern, i) == 13) {
+    i = i + 1
+  }
+  i
+}
+
+/// Index just past a leading `let*` (after whitespace), or -1.
+fn grep_let_star_after(pattern: String) -> Int {
+  let i = grep_skip_ws(pattern, 0)
+  let len = String::length(pattern)
+  if i + 4 <= len && String::substring(pattern, i, i + 4) == "let*" {
+    i + 4
+  } else {
+    -1
+  }
+}
+
+/// `let* $(x:id) = $(e:exp)` is a declaration in the parser, so rewrite it
+/// to the `__try_bind` call the file AST actually contains.
+fn grep_rewrite_let_star(pattern: String) -> String with Exception {
+  let after = grep_let_star_after(pattern)
+  if after < 0 {
+    pattern
+  } else {
+    let rest = String::substring(pattern, after, String::length(pattern))
+    let eq = String::index_of(rest, "=")
+    if eq < 0 {
+      throw("grep pattern: `let*` needs `let* $(x:id) = $(e:exp)`")
+    } else {
+      let lhs = String::trim(String::substring(rest, 0, eq))
+      let rhs = String::trim(String::substring(rest, eq + 1, String::length(rest)))
+      if String::length(lhs) == 0 || String::length(rhs) == 0 {
+        throw("grep pattern: `let*` needs `let* $(x:id) = $(e:exp)`")
+      } else {
+        String::concat("__try_bind(", String::concat(rhs, String::concat(", (", String::concat(lhs, ") -> $(_:exp))"))))
+      }
+    }
+  }
+}
+
 /// The pattern string's first identifier after leading whitespace, when that
 /// identifier is `throw` or `perform`. Anything else — a metavar, a wrapping
 /// call, a different name — is `""` and does not filter hits.
@@ -353,7 +396,8 @@ fn grep_pattern_origin(pattern: String) -> String {
 /// the shape it actually produced, rather than being matched against nothing.
 export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
   let vars = grep_empty_strings()
-  let expanded = grep_expand_metavars(pattern, vars)
+  let rewritten = grep_rewrite_let_star(pattern)
+  let expanded = grep_expand_metavars(rewritten, vars)
   // Prefix a lex/parse failure so the reader can tell "your PATTERN does not
   // parse" from "the file being searched does not parse" -- the two arrive on
   // the same channel and are otherwise indistinguishable.
@@ -370,8 +414,13 @@ export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
     match Array::get(stmts, 0) {
       SExpr(e) => {
         grep_validate_holes(e)
+        let origin = if grep_let_star_after(pattern) >= 0 {
+          "let*"
+        } else {
+          grep_pattern_origin(pattern)
+        }
         GrepPattern::{
-          template: e, vars: vars, origin: grep_pattern_origin(pattern)
+          template: e, vars: vars, origin: origin
         }
       },
       _ => throw("grep pattern: must be a single EXPRESSION — declaration patterns (`fn`, top-level `let`, `enum`, ...) are not supported yet; use `vibe symbols` for declarations")
@@ -1175,15 +1224,71 @@ fn grep_flatten(text: String) -> String {
   out
 }
 
+fn grep_is_try_bind(node: Expr) -> Bool {
+  match node {
+    ECall(callee, args, _) => match callee {
+      EIdent(n, _) => n == "__try_bind" && Array::length(args) == 2,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn grep_try_bind_text(node: Expr) -> String {
+  match node {
+    ECall(_, args, _) => if Array::length(args) == 2 {
+      match Array::get(args, 1) {
+        EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
+          let (pname, _) = Array::get(params, 0)
+          String::concat("let* ", String::concat(pname, String::concat(" = ", print_expr(Array::get(args, 0)))))
+        } else {
+          ""
+        },
+        _ => ""
+      }
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
 fn grep_try_match(pat: GrepPattern, node: Expr, path: String, out: Array[GrepHit]) -> Unit with Exception {
   let binds = grep_empty_binds()
   if grep_match_expr(pat.template, node, binds) {
-    let (lo, hi) = grep_expr_span(node)
+    let (lo0, hi0) = grep_expr_span(node)
+    let (lo, hi) = if grep_is_try_bind(node) {
+      match node {
+        ECall(_, args, off) => {
+          let (vlo, vhi) = grep_expr_span(Array::get(args, 0))
+          let lo2 = if off >= 0 {
+            off
+          } else {
+            vlo
+          }
+          let hi2 = if vhi > lo2 {
+            vhi
+          } else {
+            hi0
+          }
+          (lo2, hi2)
+        },
+        _ => (lo0, hi0)
+      }
+    } else {
+      (lo0, hi0)
+    }
+    let raw = grep_try_bind_text(node)
+    let text = if String::length(raw) > 0 {
+      raw
+    } else {
+      grep_flatten(print_expr(node))
+    }
     Array::push(out, GrepHit::{
       path: path,
       offset: lo,
       end_offset: hi,
-      text: grep_flatten(print_expr(node)),
+      text: text,
       captures: binds
     })
   } else {
@@ -2087,6 +2192,8 @@ fn grep_source_keyword_at(source: String, offset: Int) -> String {
     "throw"
   } else if grep_source_word_at(source, offset, "perform") {
     "perform"
+  } else if grep_source_word_at(source, offset, "let") && offset + 4 <= len && String::char_code_at(source, offset + 3) == '*' {
+    "let*"
   } else {
     ""
   }

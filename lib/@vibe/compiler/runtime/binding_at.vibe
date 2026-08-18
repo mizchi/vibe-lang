@@ -405,8 +405,38 @@ fn bind_walk_expr(st: BindState, expr: Expr) -> Unit {
       bind_pop_scope(st, mark)
     },
     ECall(callee, args, _) => {
-      bind_walk_expr(st, callee)
-      bind_walk_exprs(st, args)
+      // `let* x = e` lowers to `__try_bind(e, (x) -> rest)`. Source order is
+      // the binder then the value; walking the call args as written would
+      // recover `x` after `e` and miss the written name.
+      match callee {
+        EIdent(cname, _) => if cname == "__try_bind" && Array::length(args) == 2 {
+          match Array::get(args, 1) {
+            EFn(_, _, params, _, _, body) => if Array::length(params) == 1 {
+              let (pname, _) = Array::get(params, 0)
+              let id = bind_recover_binder(st, pname)
+              bind_walk_expr(st, Array::get(args, 0))
+              let mark = Array::length(st.scope_names)
+              bind_push_binder(st, pname, id)
+              bind_walk_expr(st, body)
+              bind_pop_scope(st, mark)
+            } else {
+              bind_walk_expr(st, callee)
+              bind_walk_exprs(st, args)
+            },
+            _ => {
+              bind_walk_expr(st, callee)
+              bind_walk_exprs(st, args)
+            }
+          }
+        } else {
+          bind_walk_expr(st, callee)
+          bind_walk_exprs(st, args)
+        },
+        _ => {
+          bind_walk_expr(st, callee)
+          bind_walk_exprs(st, args)
+        }
+      }
     },
     EBinOp(_, l, r) => {
       bind_walk_expr(st, l)
