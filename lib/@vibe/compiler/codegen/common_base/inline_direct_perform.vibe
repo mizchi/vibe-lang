@@ -10904,11 +10904,77 @@ fn scps_ty_is_string(ty: Option[TypeExpr]) -> Bool {
 /// expression that spells `cn` disqualifies the proof. That over-refuses (a
 /// binding in an unrelated branch counts) and never over-accepts, which is the
 /// direction this pass has to err in.
+/// #1727 gap 2: the return type the LOCAL binding of `name` declares, when the
+/// pass can be sure which binding that is.
+///
+/// `scps_call_ret_ty` refuses a callee a local binder hides, and #1714 is why:
+/// the top-level declaration is not what runs, and trusting it made codegen
+/// index a String as an Array and silently return 0. But that argument is about
+/// the WRONG declaration being read -- the local's own literal declares its
+/// return type right at the binding, and reading THAT is not a guess.
+///
+/// Fails closed unless the name has exactly ONE binder anywhere in `root` and
+/// that binder is an immutable `let` holding a closure literal with a declared
+/// return type. Two binders mean the pass cannot say which value reaches the
+/// call, which is #1714's hazard in different dress; `let` (not `let mut`)
+/// means no later assignment can replace it.
+fn scps_let_fn_ret_ty(e: Expr, name: String) -> Option[TypeExpr] {
+  match e {
+    ELet(nm, v, b, _) => if nm == name {
+      match v {
+        EFn(_, _, _, ret, _, _) => ret,
+        _ => None
+      }
+    } else {
+      match scps_let_fn_ret_ty(v, name) {
+        Some(t) => Some(t),
+        None => scps_let_fn_ret_ty(b, name)
+      }
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut done = false
+      let mut found: Option[TypeExpr] = None
+      while i < Array::length(kids) && !done {
+        let r = scps_let_fn_ret_ty(Array::get(kids, i), name)
+        match r {
+          Some(t) => {
+            found = Some(t)
+            done = true
+          },
+          None => ()
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn scps_local_binding_ret_ty(root: Expr, name: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Option[TypeExpr] {
+  // A name that is ALSO a top-level function stays refused. The binder probe is
+  // scope-blind, so a single local binder sitting in a branch that does not
+  // reach the call would be read while the call actually resolves to the
+  // top-level fn -- over-accepting in exactly the direction #1714 forbids
+  // (fixtures/err_effect_for_shadowed_callee.vibe is that program). With no
+  // top-level candidate, the only thing the call can resolve to is a local
+  // binder, and requiring exactly one leaves nothing to choose between.
+  let (is_fn, _) = scps_fn_row_of(ctx, name)
+  if is_fn {
+    None
+  } else if edp_rq_fold(RQScpsBindsName(name), root) == 1 {
+    scps_let_fn_ret_ty(root, name)
+  } else {
+    None
+  }
+}
+
 fn scps_call_ret_ty(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Option[TypeExpr] {
   match v {
     ECall(callee, _, _) => match callee {
       EIdent(cn, _) => if scps_binds_name(root, cn) {
-        None
+        scps_local_binding_ret_ty(root, cn, ctx)
       } else {
         scps_fn_ret_ty(ctx, cn)
       },

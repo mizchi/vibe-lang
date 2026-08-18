@@ -1304,6 +1304,13 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # past it: an argument that is a NAME (err_effect_rowvar_hof_call).
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_rowvar_hof_inert_literal_test.vibe
+# #1727 gap 2: a `for` iterand called through a LOCAL binding is proved from
+# that binding's own declared return type. The #1714 guard was about reading a
+# shadowed TOP-LEVEL declaration, not about locals -- so the shadowing shape is
+# now ANSWERED (String semantics, 215) rather than refused. An undeclared local
+# literal still proves nothing (cli_support_test.vibe pins that refusal).
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_for_local_binding_iterand_suspend_test.vibe
 scps_check_reject "err_effect_rowvar_hof_call.vibe" "cannot see through" "rowvarhof"
 # #1536 boundary, measured 2026-08-14. Both of these are narrower than the
 # residual list implied, so they are pinned rather than described: a closure may
