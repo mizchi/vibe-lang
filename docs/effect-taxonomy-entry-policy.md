@@ -32,7 +32,7 @@ effect operation を、次の四分類で扱う（`runtime effect` は #1458 の
 
 | 分類 | 誰が discharge するか | 許諾で揺れるか | メンバー |
 |---|---|---|---|
-| **capability effect** | host / provider (wasm 境界の外) | 揺れる | Fs, Http, Socket, Env, Console, Stdin, Stdout, Stderr, Process, Profiler, Llm |
+| **capability effect** | host / provider (wasm 境界の外) | 揺れる | Fs, Http, Socket, Env, Console (tty 現行; Stdin/Stdout/Stderr は同じ host import の legacy ラベル), Process, Profiler, Llm |
 | **algebraic effect** | プログラム内の `handle` | 無関係 | Log, State, Ask, ParseRecur, … (表に無い名前はすべてここ) |
 | **core ambient effect** | 誰も discharge しない (entry が abortive に処理する) | 無関係 | Exception[E] / Error |
 | **runtime effect** | runtime そのもの | 無関係 | Async |

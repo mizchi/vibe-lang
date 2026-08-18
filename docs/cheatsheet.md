@@ -13,6 +13,8 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 // checker reports `unknown function: String::stdout_write`).
 import @vibe/prelude { stdout_write }
 
+// prelude `stdout_write` still carries the legacy `Stdout` label.
+// The current tty capability is `Console` (`Console::write_stream`).
 fn main with Stdout {
   stdout_write("hello world\n")
 }
@@ -881,7 +883,7 @@ its declarations and `handle` expressions.
 
 | policy | execution owner | current standard labels |
 |---|---|---|
-| host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` `Stdin` `Stdout` `Stderr` `Process` `Profiler` `Llm` |
+| host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` (`Stdin`/`Stdout`/`Stderr` = still-accepted legacy labels, same host imports) `Process` `Profiler` `Llm` |
 | entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception` / `Exception[E]` (`Error` was retired as a row spelling in #1461) |
 | runtime scheduling policy | runtime itself | `Async` |
 
@@ -1534,16 +1536,25 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
 `to_string: (Any) -> String`。
 
-**I/O** (effect 必須):
+**I/O** (effect 必須). tty の現行名は `Console`。`Stdin` / `Stdout` /
+`Stderr` は同じ host import を共有する **legacy ラベル**で、row は相互に
+認可しない。`allows Console::write_stream` は `Console::read_stream` を
+許さない (#1496)。
 
 | 関数 | シグネチャ | effect |
 |---|---|---|
 | `sh` | `(String) -> Unit` | `Process` |
 | `sh_lines` | `(String) -> Array[String]` | `Process` |
-| `Stdout::write_stream` | `(String) -> Unit` | `Stdout` |
-| `Stdout::write_char` | `(Int) -> Unit` | `Stdout` |
-| `Stdin::read_stream` | `(Int) -> String` | `Stdin` |
-| `Stdin::read_char` | `() -> Int` | `Stdin` |
+| `Console::write_stream` | `(String) -> Unit` | `Console` |
+| `Console::write_char` | `(Int) -> Unit` | `Console` |
+| `Console::write_err_stream` | `(String) -> Unit` | `Console` |
+| `Console::write_err_char` | `(Int) -> Unit` | `Console` |
+| `Console::read_stream` | `(Int) -> String` | `Console` |
+| `Console::read_char` | `() -> Int` | `Console` |
+| `Stdout::write_stream` | `(String) -> Unit` | `Stdout` (legacy) |
+| `Stdout::write_char` | `(Int) -> Unit` | `Stdout` (legacy) |
+| `Stdin::read_stream` | `(Int) -> String` | `Stdin` (legacy) |
+| `Stdin::read_char` | `() -> Int` | `Stdin` (legacy) |
 | `Stdin::read_via_stream` | `() -> StdinStream` | `Stdin` |
 | `StdinStream::next` | `(StdinStream) -> Int` (EOF 後は `-1`) | `Async` |
 | `StdinStream::close` | `(StdinStream) -> Unit` (成功後は冪等) | `Async` |
@@ -1895,8 +1906,8 @@ test "n" with { Fs } { .. }    // NG: braced row は #1429 で削除 — `with F
 ```
 
 **名前付き `test` / `bench` は名前の後に effect row を書ける** (#1508)。宣言した
-row は ambient row (`{ Fs, Env, Stdin, Stdout, Stderr, Console, Process,
-Profiler, Error, Exception }`) を**置換ではなく拡張**する — `with Http` を
+row は ambient row (`{ Fs, Env, Console, Stdin, Stdout, Stderr, Process,
+Profiler, Error, Exception }`; `Console` が tty の現行名、旧三つは legacy) を**置換ではなく拡張**する — `with Http` を
 書いても `assert` に必要な `Exception` などの既定は残る。無名 `test { .. }` /
 `bench { .. }` には row を書けない (row を対応付ける名前が無い)。
 
