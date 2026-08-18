@@ -27,6 +27,10 @@ import @vibe/compiler/checker {
   check_program, check_program_type_table
 }
 
+import ./binding_at.vibe {
+  binding_occurrences
+}
+
 import @vibe/compiler/syntax {
   Token, lex_with_offsets, offset_to_line_col, parse_program_located, parse_program_spans
 }
@@ -456,12 +460,27 @@ fn tytab_lookup(table: Array[(Int, Type)], off: Int) -> Option[Type] {
 ///      and let/fn-binding definition sites whose offset is not an EIdent node).
 /// Returns "" when the position is not over a located identifier, or the name
 /// resolves nowhere. Any failure is swallowed and yields "".
-fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt]) -> String with Exception {
+fn type_at_off_in_occ(occ: Array[(Int, Int)], off: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(occ) {
+    let (s, e) = Array::get(occ, i)
+    if off >= s && off < e {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn type_at_use_or_env(table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)]) -> String with Exception {
   let mut use_ty = ""
   let mut u = 0
   while u < Array::length(hits) {
     let (hname, hoff) = hit_name_off(Array::get(hits, u))
-    if hname == name && hoff != chosen_off && !hit_is_callee(Array::get(hits, u)) {
+    if hname == name && hoff != chosen_off && !hit_is_callee(Array::get(hits, u)) && type_at_off_in_occ(occ, hoff) {
       match tytab_lookup(table, hoff) {
         Some(t) => {
           use_ty = type_to_string(subst_apply(final_s, t))
@@ -558,7 +577,7 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
           }
           match table_hit {
             Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
-            None => type_at_use_or_env(table, hits, name, chosen_off, final_s, stmts)
+            None => type_at_use_or_env(table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col))
           }
         }
       }
