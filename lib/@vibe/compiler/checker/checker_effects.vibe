@@ -2156,8 +2156,9 @@ fn lookup_fn_param_effs(names: Array[String], param_effs: Array[Array[Array[Stri
 ///
 /// Returns None when the instantiation cannot be determined, and the caller
 /// then keeps the pre-#1485 exemption. That happens when a contributing
-/// argument is anything other than a name this pass can look up -- a lambda
-/// literal, a call result, a field access. Bailing out there is what keeps the
+/// argument is anything other than a name this pass can look up, or a closure
+/// literal that DECLARES its row (#2078) -- a call result, a field access, an
+/// unannotated lambda. Bailing out there is what keeps the
 /// change one-directional: a call site either gains a requirement that is
 /// justified by a row we actually read, or is left exactly as it was. It never
 /// guesses, so it cannot produce the false positives that sank the naive fix
@@ -2212,6 +2213,38 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
                   bailed = true
                 }
               }
+            }
+          },
+          EFn(_, _, _, _, eff, _) => match effect_row_parse(eff) {
+            // #2078: a closure literal that DECLARES its row needs no
+            // guessing -- the row is written at the argument position. It was
+            // bailing here, and the two mechanisms that would otherwise catch
+            // it both stand down for this exact shape: an explicit annotation
+            // suppresses the lexical charge to the enclosing function (an
+            // unannotated literal's `perform` still lands there, which is why
+            // that case keeps bailing below), and the named-argument arm above
+            // never sees a literal. The result was a program that performs an
+            // effect with no handler and no declared row anywhere, compiles
+            // clean, and traps at runtime.
+            Some(lambda_effs) => {
+              let mut li = 0
+              while li < Array::length(lambda_effs) {
+                let llbl = Array::get(lambda_effs, li)
+                if effect_row_has_label(Some(out), llbl) {
+                  ()
+                } else {
+                  Array::push(out, llbl)
+                }
+                li = li + 1
+              }
+            },
+            // An INFERRED row (`None`, structurally distinct from `Some([])`)
+            // inherits its surrounding context, so reading it here would be
+            // the guess this function exists not to make. Bail and keep the
+            // pre-#1485 exemption; the enclosing function's own row check is
+            // what covers this shape.
+            None => {
+              bailed = true
             }
           },
           _ => {

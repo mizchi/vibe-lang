@@ -1,0 +1,44 @@
+// #1727 gap 1: a row-variable callee that TAKES A FUNCTION is admitted when
+// every function-typed parameter receives a literal this pass proves inert for
+// the handled effect.
+//
+// The refusal it replaces read the CALLEE alone ("takes a function, so an
+// argument could instantiate `e` to the handled effect"). Whether it can is a
+// property of what actually arrives: an inert literal has no `Ask` in its row,
+// no row variable of its own, and no performing call in its body, so `e` cannot
+// become `Ask` here and the call is E-free for the same reason a first-order
+// one is (effect_rowvar_first_order_call_test.vibe).
+//
+// 1 -> resumed 5 -> doubled twice = 20 -> 21. The value is the pin: it can only
+// come from the continuation actually resuming through the CPS split.
+//
+// The shapes that stay refused, each for a reason this pass can state:
+//   - a literal declaring `with Ask`            (its row carries the effect)
+//   - an unannotated literal that performs      (inert-taint sees the body)
+//   - a NAME bound to a pure function           (err_effect_rowvar_hof_call)
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn apply_twice(f: (Int) -> Int with e, x: Int) -> Int with e {
+  f(f(x))
+}
+
+let _start = () -> Int {
+  handle {
+    let a = perform Ask::Get(1)
+    let b = apply_twice((y: Int) -> Int {
+      y * 2
+    }, a)
+    b + 1
+  } with Ask {
+    Get(n) => {
+      let k = resume
+      k(n + 4)
+    }
+  }
+}
+
+test "effect rowvar hof inert literal" {
+  inspect(_start(), "21")
+}

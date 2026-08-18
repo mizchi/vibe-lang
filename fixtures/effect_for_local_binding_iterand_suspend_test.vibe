@@ -1,0 +1,42 @@
+// #1727 gap 2: a `for` whose iterand is a call through a LOCAL binding.
+//
+// The kind proof refused any name a local binder shadows (#1714). That guard
+// was aimed at reading the WRONG declaration -- a shadowed TOP-LEVEL one, which
+// made codegen index a String as an Array and silently return 0 -- but a local
+// literal declares its return type right at the binding, and reading THAT is
+// not a guess. So the loop is proved from the local itself.
+//
+// 1 -> resumed 11, 2 -> resumed 12, summed = 23. The value is the pin: it can
+// only come from the continuation resuming through the CPS split, twice.
+//
+// Still refused, each for a reason the pass can state:
+//   - a local literal with NO declared return type  (cli_support_test.vibe)
+//   - two live binders of the name, so which one runs is unknown
+//   - a name that is ALSO a top-level fn: the binder probe is scope-blind, so a
+//     local binder in a branch that does not reach the call would be read while
+//     the call resolves to the top-level one (err_effect_for_shadowed_callee)
+effect Sus {
+  Suspend(Int) -> Int
+}
+
+let _start = () -> Int {
+  handle {
+    let mk = () -> Array[Int] {
+      [1, 2]
+    }
+    let mut acc = 0
+    for j in mk() {
+      acc = acc + perform Sus::Suspend(j)
+    }
+    acc
+  } with Sus {
+    Suspend(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+test "effect for local binding iterand" {
+  inspect(_start(), "23")
+}

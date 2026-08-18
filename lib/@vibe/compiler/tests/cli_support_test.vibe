@@ -375,13 +375,16 @@ test "check_linked_file: eligible handle still checks clean (#1511)" {
 /// an iterand the pass cannot prove keeps the refusal, and that is what this
 /// test pins.
 ///
-/// Here the iterand is a call through a LOCAL binding. The pass can see that
-/// the local holds an inert closure — that is what admits the call at all — but
-/// the kind proof deliberately refuses any name a local binder shadows (#1714),
-/// so the loop stays unproved. This is the cost of that guard, pinned.
+/// Here the iterand is a call through a LOCAL binding whose literal declares NO
+/// return type. #1727 gap 2 taught the kind proof to read a local binding's own
+/// declared return type (the #1714 guard was about reading the WRONG
+/// declaration — a shadowed top-level one — not about locals as such), so a
+/// declared `() -> Array[Int]` local now proves its loop. An UNDECLARED one
+/// still proves nothing, and that is what this test pins: the refusal survives
+/// exactly where the pass genuinely cannot see the kind.
 test "check_linked_file: suspend-class handle with perform in a for loop fails at check (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_ineligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    let mk = () -> Array[Int] { [1, 2] }\n    for j in mk() {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    let mk = () -> { [1, 2] }\n    for j in mk() {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""

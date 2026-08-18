@@ -1,7 +1,14 @@
-// #1536 boundary: a row-variable callee that DOES take a function. `e` can be
-// instantiated through that argument to the handled effect, and this pass
-// cannot see which closure arrives, so the call stays refused. This is the
-// line that keeps the first-order admission sound.
+// #1536 / #1727 gap 1 boundary. A row-variable callee that DOES take a
+// function: `e` can be instantiated through that argument to the handled
+// effect, so the call is admitted only when the pass can READ what arrives.
+//
+// #1727 widened that to inert closure LITERALS (see
+// effect_rowvar_hof_inert_literal_test.vibe). This fixture holds the line just
+// past it: the argument is a NAME. Its binding is a plain pure function here,
+// but proving that needs the call-edge instantiation the pass still does not
+// have -- a name can be rebound, shadowed, or imported -- so it stays refused.
+// Admitting a name on the strength of a same-file binding is exactly the
+// #1714 mistake (trusting what a local hides).
 effect Ask {
   Get(Int) -> Int
 }
@@ -10,12 +17,14 @@ fn apply_twice(f: (Int) -> Int with e, x: Int) -> Int with e {
   f(f(x))
 }
 
+let double = (y: Int) -> Int {
+  y * 2
+}
+
 let _start = () -> Int {
   handle {
     let a = perform Ask::Get(1)
-    let b = apply_twice((y: Int) -> Int {
-      y * 2
-    }, a)
+    let b = apply_twice(double, a)
     b + 1
   } with Ask {
     Get(n) => {
@@ -24,7 +33,6 @@ let _start = () -> Int {
     }
   }
 }
-_start()
 
 __DATA__
 {
