@@ -330,7 +330,7 @@ echo "[compiler-gate] generic-struct contract arity regression ok"
 echo "[compiler-gate] 6b2b explicit struct type args (#886)"
 stdir="_build/_gate_struct_targs"
 rm -rf "$stdir"; mkdir -p "$stdir"
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/ok.vibe" "$stdir/ok.wasm" _start >/dev/null 2>&1 || true
@@ -341,7 +341,7 @@ fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$stdir/ok.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: explicit struct type args (#886) compiled but trapped at runtime" >&2; exit 1
 fi
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[Int, String]::{ a: 1, b: 2 }\n  assert_eq(p.a, 1)\n}\n' > "$stdir/arity.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[Int, String]::{ a: 1, b: 2 }\n  assert_eq(p.a, 1)\n}\n' > "$stdir/arity.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/arity.vibe" "$stdir/arity.wasm" _start >/dev/null 2>&1 \
@@ -352,7 +352,7 @@ if ! grep -q "expects 1 type argument(s), got 2" "$stdir/arity.wasm.diag" 2>/dev
   echo "[compiler-gate] FAIL: type-arg arity rejection lacks the expected diagnostic (#886)" >&2
   cat "$stdir/arity.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[String]::{ a: 1, b: 2 }\n  assert_eq(p.a, "x")\n}\n' > "$stdir/pin.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[String]::{ a: 1, b: 2 }\n  assert_eq(p.a, "x")\n}\n' > "$stdir/pin.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/pin.vibe" "$stdir/pin.wasm" _start >/dev/null 2>&1 \

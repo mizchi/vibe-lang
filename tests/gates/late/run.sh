@@ -5327,7 +5327,7 @@ rm -rf "$inspdir"; mkdir -p "$inspdir"
 # the arguments already reference. With a fixed temp name this compared the
 # literal against ITSELF and passed; the assertion has to see "wrong".
 cat > "$inspdir/hygiene.vibe" <<'INSPH'
-fn main() -> Int {
+fn main() -> Int with Stdout {
   let __vibe_inspect_actual = "wrong"
   inspect(1, __vibe_inspect_actual)
   0
