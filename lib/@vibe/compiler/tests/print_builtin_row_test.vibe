@@ -1,0 +1,78 @@
+//# The ambient `println` / `print` builtins carry the `Stdout` row (#2107).
+//
+// They used to carry none. The registry entry read
+// `CtFn(reg_p1(CtString), CtUnit, None)` -- the same "pure" spelling `assert`
+// and `map_has` use -- while codegen lowered both names straight onto
+// `Stdout::write_stream` / `Stdout::write_char`, and `builtin_purity` already
+// classified them impure. The checker was the only part of the compiler
+// claiming these are pure, and it is the part that decides what compiles: a
+// `fn main with ()` printed to stdout with a clean `vibe check`.
+//
+// That is the whole capability model failing on one name. Authority is
+// carried by the row and fixed at instantiate (ADR-0075/0084/0088), and
+// `--allow-*` const-folds from the row -- none of which can hold if the tty
+// is reachable from a row that does not mention it. So what is pinned here is
+// not "println works" but "println is subject to the row discipline like
+// every other host operation".
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+fn diags(src: String) -> Array[String] with Exception {
+  collect_all_diagnostics(src)
+}
+
+fn ok(src: String) -> Bool with Exception {
+  Array::length(diags(src)) == 0
+}
+
+//# Tests
+
+test "a row-free function may not print" {
+  let d = diags("fn f() -> Unit {\n  println(\"x\")\n}\n")
+  assert(Array::length(d) == 1)
+  assert(String::contains(Array::get(d, 0), "Stdout"))
+  let e = diags("fn f() -> Unit {\n  print(\"x\")\n}\n")
+  assert(Array::length(e) == 1)
+  assert(String::contains(Array::get(e, 0), "Stdout"))
+}
+
+test "the row makes it legal, and nothing else has to change" {
+  assert(ok("fn f() -> Unit with Stdout {\n  println(\"x\")\n}\n"))
+  assert(ok("fn f() -> Unit with Stdout {\n  print(\"x\")\n}\n"))
+}
+
+test "the requirement travels through a caller" {
+  // The escape was reachable one call deep just as easily: a helper that
+  // prints, called from a function that declares nothing.
+  assert(!ok("fn shout(s: String) -> Unit {\n  println(s)\n}\n\nfn f() -> Unit {\n  shout(\"x\")\n}\n"))
+  assert(ok("fn shout(s: String) -> Unit with Stdout {\n  println(s)\n}\n\nfn f() -> Unit with Stdout {\n  shout(\"x\")\n}\n"))
+}
+
+test "an explicitly pure entry may not print" {
+  // The reported shape (#2107): `with ()` is a claim, and the checker has to
+  // hold the print verb to it.
+  assert(!ok("fn shout(s: String) -> Unit {\n  println(s)\n}\n\nfn main with () {\n  shout(\"leaked\")\n}\n"))
+}
+
+test "a different capability does not authorize printing" {
+  // `Stdin` is the neighbouring tty row and grants nothing here; the same
+  // separation `console_capability_test.vibe` pins between Console and the
+  // legacy three.
+  assert(!ok("fn f() -> Unit with Stdin {\n  println(\"x\")\n}\n"))
+  assert(!ok("fn f() -> Unit with Fs {\n  println(\"x\")\n}\n"))
+}
+
+test "inspect still expands without an import" {
+  // `desugar_inspect_calls` rewrites `inspect(..)` into `__to_string` /
+  // `println` / `assert_true` before the checker runs (#1571), which is why
+  // the snapshot assertion needs no import. Giving println a row must not
+  // cost that: a `test` block is granted the standard test effect set, which
+  // includes Stdout.
+  assert(ok("test \"snap\" {\n  inspect(1 + 1, \"2\")\n}\n"))
+}

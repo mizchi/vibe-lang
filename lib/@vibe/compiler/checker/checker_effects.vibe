@@ -1268,23 +1268,30 @@ fn builtin_call_op_label(name: String, eff: String) -> String {
   }
 }
 
-/// #626 criterion 3 (call-site propagation, builtin slice): calling an effectful
-/// BUILTIN (e.g. `Fs::read_file`, `Env::args_len`) requires the enclosing
-/// function to declare that effect, exactly like `perform`. Returns the required
-/// effect, or None for pure builtins / non-builtins. `Error` (the 441-site throw
-/// discipline) and `Async` (composition-allowed; handled by the async pass) are
-/// deliberately excluded from this slice.
-fn builtin_call_effect(name: String) -> Option[String] {
-  // `sh`/`sh_lines` and the checker_visible `vibe_*_raw` dunder builtins
-  // (Codex review, PR #909) are the only UNQUALIFIED effectful builtins:
-  // they lower to real `vibe.*` host imports that execute shell commands or
-  // terminate the process, so calling them directly must require
-  // `{ Process }` just like a qualified builtin -- otherwise they could run
-  // from a pure function or a bare top-level expression undeclared. Every
-  // name here is checker_visible=true in builtin_registry.vibe (directly
-  // callable from source); vibe_sh_lines_raw is checker_visible=false (only
-  // synthesized internally, never typed by user source) so it needs no
-  // entry. Checked before the `::` fast path below.
+/// The complete set of UNQUALIFIED builtins that carry an effect row, and the
+/// row each one carries. Everything else effectful in the registry is spelled
+/// `Effect::op`, which `builtin_call_effect` resolves through `lookup_builtin`;
+/// an unqualified name never reaches that lookup (the fast path there answers
+/// None without it, on purpose -- the scan is over ~450 rows and runs on every
+/// call in the program), so an unqualified effectful builtin that is missing
+/// from this list is invisible to the row discipline entirely.
+///
+/// #2107: ten of them were. `println` / `print` lower onto
+/// `Stdout::write_stream` / `Stdout::write_char`, the `vibe_tcp_*_raw` four
+/// open and drive sockets, the `vibe_http_*_raw` five make outbound requests,
+/// and `vibe_fs_stat_token_raw` stats a path -- all callable from a function
+/// declaring no row at all, with a clean `vibe check` and a real host import
+/// in the emitted module. Only the `sh` family had ever been listed.
+///
+/// `sleep` is deliberately absent: it carries `Async`, which
+/// `is_entry_runtime_managed_effect` excludes at the caller anyway.
+///
+/// `builtin_registry_unqualified_row_test.vibe` derives this set from the
+/// registry and fails if a new row appears that this list does not name, so it
+/// cannot silently fall behind again.
+fn unqualified_builtin_effect(name: String) -> Option[String] {
+  // vibe_sh_lines_raw is checker_visible=false (only synthesized internally,
+  // never typed by user source), so it needs no entry.
   if name == "sh" || name == "sh_lines"
   || name == "vibe_sh_capture_raw"
   || name == "vibe_sh_capture_exit_code_raw"
@@ -1293,10 +1300,46 @@ fn builtin_call_effect(name: String) -> Option[String] {
   || name == "vibe_sh_capture_close_raw"
   || name == "vibe_process_exit_raw" {
     Some("Process")
+  } else if name == "println" || name == "print" {
+    Some("Stdout")
+  } else if name == "vibe_fs_stat_token_raw" {
+    Some("Fs")
+  } else if name == "vibe_tcp_connect_raw" || name == "vibe_tcp_read_raw"
+  || name == "vibe_tcp_write_raw" || name == "vibe_tcp_close_raw" {
+    Some("Socket")
+  } else if name == "vibe_http_request_raw"
+  || name == "vibe_http_response_status_raw"
+  || name == "vibe_http_response_header_raw"
+  || name == "vibe_http_response_body_raw"
+  || name == "vibe_http_close_raw" {
+    Some("Http")
+  } else {
+    None
+  }
+}
+
+/// #626 criterion 3 (call-site propagation, builtin slice): calling an effectful
+/// BUILTIN (e.g. `Fs::read_file`, `Env::args_len`) requires the enclosing
+/// function to declare that effect, exactly like `perform`. Returns the required
+/// effect, or None for pure builtins / non-builtins. `Error` (the 441-site throw
+/// discipline) and `Async` (composition-allowed; handled by the async pass) are
+/// deliberately excluded from this slice.
+fn builtin_call_effect(name: String) -> Option[String] {
+  let unqualified = unqualified_builtin_effect(name)
+  if unqualified != None {
+    match unqualified {
+      Some(eff) => if is_entry_runtime_managed_effect(eff) {
+        None
+      } else {
+        Some(eff)
+      },
+      None => None
+    }
   } else if String::index_of(name, "::") < 0 {
     // Fast path: every OTHER effectful builtin in this slice is a QUALIFIED name
     // (`Fs::read_file`, `Env::args_len`, `Stdin::...`, `Stdout::...`, ...), so a
-    // callee with no `::` can never be one. Skipping `lookup_builtin` for the
+    // callee with no `::` can never be one -- `unqualified_builtin_effect` above
+    // is the complete list of the exceptions. Skipping `lookup_builtin` for the
     // (vastly more common) unqualified calls keeps the pass cheap enough to run
     // over the whole compiler source within the seed's heap during self-build.
     None
