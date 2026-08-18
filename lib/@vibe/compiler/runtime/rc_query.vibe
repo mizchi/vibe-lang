@@ -1,0 +1,249 @@
+//# `vibe rc-classify` / `vibe rc-plan` (issue 1981).
+//#
+//# The compile pipeline already answers two questions on every build:
+//# which classifier sets a function is in, and what Perceus dup/drop
+//# plan it gets. Those answers lived only inside linked_compile. This
+//# query runs the SAME prelude + the SAME compute_* / planner functions
+//# and prints the result as line-oriented text. Empty output means
+//# nothing special (no classifier membership / no plan actions).
+
+import @vibe/core {
+  array_empty, sorted_names_of
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/compiler/codegen/wasi {
+  effect_lowering_prelude
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  compute_borrow_param_user_fns, compute_may_return_view_fns
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction,
+  build_perceus_plan_with_params,
+  compute_borrow_returning_names,
+  compute_scalar_returning_names,
+  pa_is_alias_dup,
+  pa_is_drop,
+  pa_is_dup
+}
+
+fn rcq_contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn rcq_user_fn_names(stmts: Array[Stmt]) -> Array[String] {
+  let raw: Array[String] = [
+  ]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => match value {
+        EFn(_, _, _, _, _, _) => Array::push(raw, name),
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  sorted_names_of(raw)
+}
+
+fn rcq_run_prelude(stmts: Array[Stmt]) -> Unit with Exception {
+  let linked: Array[(String, String, Int, Int)] = [
+  ]
+  let iw_names: Array[String] = [
+  ]
+  let iw_wats: Array[String] = [
+  ]
+  let errs = effect_lowering_prelude(stmts, "main", linked, iw_names, iw_wats)
+  if Array::length(errs) > 0 {
+    throw(Array::get(errs, 0))
+  } else {
+    ()
+  }
+}
+
+fn rcq_join_tags(tags: Array[String]) -> String {
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(tags) {
+    if i > 0 {
+      StringBuilder::push(acc, ",")
+    } else {
+      ()
+    }
+    StringBuilder::push(acc, Array::get(tags, i))
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn rcq_action_name(a: PerceusAction) -> String {
+  if pa_is_dup(a) {
+    "dup"
+  } else if pa_is_drop(a) {
+    "drop"
+  } else if pa_is_alias_dup(a) {
+    "alias_dup"
+  } else {
+    "other"
+  }
+}
+
+fn rcq_push_line(acc: StringBuilder, first: Array[Bool], line: String) -> Unit {
+  if Array::get(first, 0) {
+    StringBuilder::push(acc, line)
+    Array::set(first, 0, false)
+  } else {
+    StringBuilder::push(acc, "\n")
+    StringBuilder::push(acc, line)
+  }
+}
+
+/// NAME SET[,SET...] per user function that is in at least one classifier
+/// set. Empty string = no special sets. Sets are the same four
+/// linked_compile threads into every Perceus plan: borrow_ret,
+/// borrow_param, view_ret, scalar_ret.
+export fn rc_classify_source(source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  rcq_run_prelude(stmts)
+  let borrow_ret = compute_borrow_returning_names(stmts)
+  let masks: Array[Int] = [
+  ]
+  let borrow_param = compute_borrow_param_user_fns(stmts, [
+    "main",
+    "_start",
+    "cli_main"
+  ], masks)
+  let view_ret = compute_may_return_view_fns(stmts)
+  let scalar_ret = compute_scalar_returning_names(stmts)
+  let names = rcq_user_fn_names(stmts)
+  let acc = StringBuilder::new()
+  let first: Array[Bool] = [
+    true
+  ]
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let tags: Array[String] = [
+    ]
+    if rcq_contains(borrow_ret, name) {
+      Array::push(tags, "borrow_ret")
+    } else {
+      ()
+    }
+    if rcq_contains(borrow_param, name) {
+      Array::push(tags, "borrow_param")
+    } else {
+      ()
+    }
+    if rcq_contains(view_ret, name) {
+      Array::push(tags, "view_ret")
+    } else {
+      ()
+    }
+    if rcq_contains(scalar_ret, name) {
+      Array::push(tags, "scalar_ret")
+    } else {
+      ()
+    }
+    if Array::length(tags) > 0 {
+      rcq_push_line(acc, first, String::concat(name, String::concat(" ", rcq_join_tags(tags))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret: Array[String], borrow_param: Array[String], masks: Array[Int], view_ret: Array[String]) -> Unit {
+  let plan = build_perceus_plan_with_params(params, body, borrow_ret, borrow_param, masks, view_ret)
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    let action = rcq_action_name(a)
+    let binding = a.name
+    let mut count = 1
+    let mut j = i + 1
+    while j < Array::length(plan) {
+      let b = Array::get(plan, j)
+      if b.name == binding && rcq_action_name(b) == action {
+        count = count + 1
+        j = j + 1
+      } else {
+        j = Array::length(plan)
+      }
+    }
+    let line = String::concat(fname, String::concat(" ", String::concat(binding, String::concat(" ", String::concat(action, String::concat(" ", __to_string(count)))))))
+    rcq_push_line(acc, first, line)
+    i = i + count
+  }
+}
+
+/// FN BINDING ACTION COUNT per collapsed Perceus action. `fn_filter` empty
+/// means every user function; a non-empty filter that names no function
+/// throws so "the query broke" stays distinguishable from an empty plan.
+export fn rc_plan_source(source: String, fn_filter: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  rcq_run_prelude(stmts)
+  let borrow_ret = compute_borrow_returning_names(stmts)
+  let masks: Array[Int] = [
+  ]
+  let borrow_param = compute_borrow_param_user_fns(stmts, [
+    "main",
+    "_start",
+    "cli_main"
+  ], masks)
+  let view_ret = compute_may_return_view_fns(stmts)
+  let acc = StringBuilder::new()
+  let first: Array[Bool] = [
+    true
+  ]
+  let mut matched = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => match value {
+        EFn(_, _, params, _, _, body) => {
+          let take = fn_filter == "" || fn_filter == name
+          if take {
+            matched = true
+            rcq_emit_fn_plan(acc, first, name, params, body, borrow_ret, borrow_param, masks, view_ret)
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if fn_filter != "" && !matched {
+    throw(String::concat("rc-plan: function not found: ", fn_filter))
+  } else {
+    ()
+  }
+  StringBuilder::freeze(acc)
+}

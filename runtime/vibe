@@ -58,6 +58,12 @@
 #                                         captures -- the ones codegen boxes into
 #                                         a heap ref cell instead of a wasm local
 #                                         (NAME START END per line; empty = none)
+#   vibe rc-classify <file.vibe>          print RC classifier sets, one
+#                                         `NAME SET[,SET...]` line per user
+#                                         function (empty = no special sets)
+#   vibe rc-plan [--fn NAME] <file.vibe>  print the Perceus plan, one
+#                                         `FN BINDING ACTION COUNT` line
+#                                         (empty = no actions)
 #   vibe allocs <file.vibe>               print possible heap-allocation sites
 #                                         (FN KIND OFFSET per line; empty = none)
 #   vibe deps [--direct] <file.vibe>      print the resolved import closure, one
@@ -296,6 +302,11 @@ case "${1:-help}" in
   symbols)
     case "${2:-}" in
       --legend|--help|-h) need_runner=0 ;;
+    esac
+    ;;
+  rc-classify|rc-plan)
+    case "${2:-}" in
+      --help|-h) need_runner=0 ;;
     esac
     ;;
 esac
@@ -1396,6 +1407,96 @@ case "$cmd" in
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
     if [ -s "$out.diag" ]; then
       echo "error: $(cat "$out.diag")" >&2
+    fi
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
+  rc-classify)
+    # vibe rc-classify <file.vibe>
+    # Print the RC classifier sets linked_compile computes after
+    # effect_lowering_prelude, one `NAME SET[,SET...]` line per user
+    # function that is in at least one of borrow_ret / borrow_param /
+    # view_ret / scalar_ret. Empty output = no special sets.
+    case "${1:-}" in
+      --help|-h)
+        printf '%s\n' \
+          'usage: vibe rc-classify <file.vibe>' \
+          'NAME SET[,SET...] per user function. Empty output = no special sets.' \
+          'Sets: borrow_ret, borrow_param, view_ret, scalar_ret.'
+        exit 0
+        ;;
+    esac
+    [ "$#" -ge 1 ] || die "usage: vibe rc-classify <file.vibe>"
+    src="$1"
+    [ -f "$src" ] || die "not found: $src"
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-rc-classify-XXXXXX)"
+    trap 'rm -f "$out" "$out.diag"' EXIT
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
+        -u VIBE_RC_PLAN -u VIBE_RC_PLAN_FN -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_RC_CLASSIFY=1 \
+      VIBE_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out.diag" ]; then
+      echo "error: $(cat "$out.diag")" >&2
+      exit 1
+    fi
+    if [ -s "$out" ]; then cat "$out"; fi
+    ;;
+  rc-plan)
+    # vibe rc-plan [--fn NAME] <file.vibe>
+    # Print the Perceus dup/drop plan for each user function, one
+    # `FN BINDING ACTION COUNT` line. ACTION is dup / drop / alias_dup.
+    # Consecutive identical (fn, binding, action) rows collapse into COUNT.
+    # Empty output = no actions. --fn restricts to one function; a missing
+    # name is an error, not an empty plan.
+    rc_plan_fn=""
+    src=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --help|-h)
+          printf '%s\n' \
+            'usage: vibe rc-plan [--fn NAME] <file.vibe>' \
+            'FN BINDING ACTION COUNT per collapsed Perceus action.' \
+            'Empty output = no actions. ACTION is dup, drop, or alias_dup.'
+          exit 0
+          ;;
+        --fn)
+          [ "$#" -ge 2 ] || die "usage: vibe rc-plan [--fn NAME] <file.vibe>"
+          rc_plan_fn="$2"
+          shift 2
+          ;;
+        --fn=*)
+          rc_plan_fn="${1#--fn=}"
+          shift
+          ;;
+        -*)
+          die "vibe rc-plan: unknown flag: $1"
+          ;;
+        *)
+          [ -z "$src" ] || die "usage: vibe rc-plan [--fn NAME] <file.vibe>"
+          src="$1"
+          shift
+          ;;
+      esac
+    done
+    [ -n "$src" ] || die "usage: vibe rc-plan [--fn NAME] <file.vibe>"
+    [ -f "$src" ] || die "not found: $src"
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-rc-plan-XXXXXX)"
+    trap 'rm -f "$out" "$out.diag"' EXIT
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
+        -u VIBE_RC_CLASSIFY -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+        -u VIBE_EMIT_MODULE_SOURCE \
+      VIBE_RC_PLAN=1 \
+      VIBE_RC_PLAN_FN="$rc_plan_fn" \
+      VIBE_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
+    if [ -s "$out.diag" ]; then
+      echo "error: $(cat "$out.diag")" >&2
+      exit 1
     fi
     if [ -s "$out" ]; then cat "$out"; fi
     ;;

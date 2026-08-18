@@ -292,6 +292,8 @@ vibe normalize --stdout <file.vibe>   # print the result (no write)
 | `finalize` | Refactor scratch/db source (`--db`, `--export`, `--library`, `--print`, `--dry-run`) |
 | `apply <file>` | Resolve lock + graph head and apply artifacts |
 | `symbols [--json] <file>` | List symbols and index inclusion status |
+| `rc-classify <file>` | RC classifier sets (`NAME SET[,SET...]`; empty = none) |
+| `rc-plan [--fn NAME] <file>` | Perceus plan (`FN BINDING ACTION COUNT`; empty = no actions) |
 | `explain-import <file>` | Visualize import ref normalization and lock lookup |
 | `clean` | Remove build artifacts |
 | `lsp` | Start LSP server (stdin/stdout) |

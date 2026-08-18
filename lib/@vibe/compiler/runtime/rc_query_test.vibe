@@ -1,0 +1,100 @@
+//# `rc_classify_source` / `rc_plan_source` (issue 1981):
+//# the same perceus plan / classifier sets linked_compile uses, as
+//# line-oriented query text. Tests call those shipped functions, not a
+//# second walk.
+
+import ./rc_query.vibe {
+  rc_classify_source, rc_plan_source
+}
+
+fn classify_has_set(out: String, name: String, set: String) -> Bool {
+  let prefix = String::concat(name, " ")
+  let lines = String::split(out, "\n")
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, prefix) {
+      let rest = String::substring(line, String::length(prefix), String::length(line))
+      let tags = String::split(rest, ",")
+      let mut j = 0
+      while j < Array::length(tags) {
+        if Array::get(tags, j) == set {
+          found = true
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn classify_has_name(out: String, name: String) -> Bool {
+  let prefix = String::concat(name, " ")
+  let lines = String::split(out, "\n")
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(lines) {
+    if String::starts_with(Array::get(lines, i), prefix) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "rc_classify_source: a file with no functions is empty" {
+  let src = "let x = 1\n"
+  assert_eq(rc_classify_source(src), "")
+}
+
+test "rc_classify_source: a let-signed Int function is scalar_ret" {
+  // compute_scalar_returning_names reads the SLet signature, not the
+  // `fn` sugar's EFn return slot. `let f: (...) -> Int = ...` is the
+  // form linked_compile actually classifies.
+  let src = "let add: (Int, Int) -> Int = (a: Int, b: Int) -> Int { a + b }\n"
+  let out = rc_classify_source(src)
+  assert(classify_has_set(out, "add", "scalar_ret"))
+}
+
+test "rc_classify_source: a thin Array::get wrapper is borrow_ret" {
+  let src = "enum Tok {\n  TEof;\n  TInt(Int)\n}\n\nfn peek(tokens: Array[Tok], pos: Int) -> Tok {\n  if pos < Array::length(tokens) {\n    Array::get(tokens, pos)\n  } else {\n    TEof\n  }\n}\n"
+  let out = rc_classify_source(src)
+  assert(classify_has_set(out, "peek", "borrow_ret"))
+}
+
+test "rc_classify_source: an annotated builder is not view_ret" {
+  let src = "fn make(n: Int) -> Array[Int] {\n  let out: Array[Int] = []\n  let mut i = 0\n  while i < n {\n    Array::push(out, i)\n    i = i + 1\n  }\n  out\n}\n"
+  let out = rc_classify_source(src)
+  assert(!classify_has_set(out, "make", "view_ret"))
+}
+
+test "rc_plan_source: a twice-used heap binding emits a dup" {
+  let src = "fn pair(t: Array[Int]) -> (Array[Int], Array[Int]) {\n  (t, t)\n}\n"
+  let out = rc_plan_source(src, "pair")
+  assert(String::contains(out, "pair t dup "))
+}
+
+test "rc_plan_source: --fn filters to that function" {
+  let src = "fn keep(t: Array[Int]) -> Array[Int] {\n  t\n}\n\nfn pair(t: Array[Int]) -> (Array[Int], Array[Int]) {\n  (t, t)\n}\n"
+  let out = rc_plan_source(src, "keep")
+  assert(!String::contains(out, "pair "))
+}
+
+test "rc_plan_source: missing function throws" {
+  let src = "fn keep(t: Array[Int]) -> Array[Int] {\n  t\n}\n"
+  let caught = handle {
+    let _ = rc_plan_source(src, "missing")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+  assert(String::contains(caught, "missing"))
+}
