@@ -281,3 +281,29 @@ test "doc-at: hovering a fn declaration resolves its doc comment" {
   let src = "/// adds two numbers\nfn add(a: Int, b: Int) -> Int { a + b }\n"
   inspect(doc_at_source(src, 2, 4), "adds two numbers")
 }
+
+test "type-at: a comment let-star is not a binder" {
+  let src = "// let* dead = o\nfn f(o: Option[Int]) -> Option[Int] {\n  let* x = o\n  Some(x + 1)\n}\n"
+  assert(type_at_source(src, 1, 8) == "")
+}
+
+test "type-at: let-star binder has the unwrapped payload type" {
+  let src = "fn f(o: Option[Int]) -> Option[Int] {\n  let* x = o\n  Some(x + 1)\n}\n"
+  assert(type_at_source(src, 2, 8) == "Int")
+}
+
+test "binding-at: let-star binder includes the written name and its uses" {
+  let src = "fn f(o: Option[Int]) -> Option[Int] {\n  let* x = o\n  Some(x + 1)\n}\n"
+  let occ = binding_occurrences(src, 2, 8)
+  assert(occ_len(occ) >= 2)
+}
+
+test "binding-at: nested let-star binders are distinct" {
+  let src = "fn f(o: Option[Option[Int]]) -> Option[Int] {\n  let* outer = o\n  let* inner = outer\n  Some(inner)\n}\n"
+  let outer_occ = binding_occurrences(src, 2, 8)
+  let inner_occ = binding_occurrences(src, 3, 8)
+  assert(occ_len(outer_occ) >= 2)
+  assert(occ_len(inner_occ) >= 2)
+  assert(type_at_source(src, 2, 8) != "")
+  assert(type_at_source(src, 3, 8) != "")
+}
