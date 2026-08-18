@@ -1,3 +1,11 @@
+//# `assert_eq` and the Stdout row (#2107)
+//
+// Every `main` compiled here declares `with Stdout`. The expansion under test
+// is `if a == b { () } else { println(msg); assert_true(false) }`, and the
+// print builtins carry their row now, so the row lands on the function
+// containing the assertion. A `test` block gets it from the standard test
+// effect set -- these are hand-written entry lambdas, so they say it.
+
 //# Imports
 
 import @vibe/compiler/entry/source_compile {
@@ -38,7 +46,7 @@ fn bytes_contains(hay: Bytes, needle: String) -> Bool {
 }
 
 fn compile_assert_eq_main(body: String) -> Bytes with Exception {
-  compile_source_wasi(String::concat("let main: () -> Int = () -> {\n  ", String::concat(body, "\n  0\n}")), "main")
+  compile_source_wasi(String::concat("let main: () -> Int with Stdout = () -> {\n  ", String::concat(body, "\n  0\n}")), "main")
 }
 
 fn assert_compiled_eq_diag(bytes: Bytes) -> Unit {
@@ -73,12 +81,12 @@ test "assert_eq failure compiles expected and actual for a tuple" {
 }
 
 test "assert_eq failure compiles expected and actual for a Show struct" {
-  let bytes = compile_source_wasi("struct Point { x: Int; y: Int } derive(Eq, Show)\nlet main: () -> Int = () -> {\n  assert_eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 9 })\n  0\n}", "main")
+  let bytes = compile_source_wasi("struct Point { x: Int; y: Int } derive(Eq, Show)\nlet main: () -> Int with Stdout = () -> {\n  assert_eq(Point::{ x: 1, y: 2 }, Point::{ x: 1, y: 9 })\n  0\n}", "main")
   assert_compiled_eq_diag(bytes)
 }
 
 test "assert_eq failure compiles a fallback for an unrenderable value" {
-  let bytes = compile_source_wasi("struct Opaque { n: Int } derive(Eq)\nlet main: () -> Int = () -> {\n  assert_eq(Opaque::{ n: 1 }, Opaque::{ n: 2 })\n  0\n}", "main")
+  let bytes = compile_source_wasi("struct Opaque { n: Int } derive(Eq)\nlet main: () -> Int with Stdout = () -> {\n  assert_eq(Opaque::{ n: 1 }, Opaque::{ n: 2 })\n  0\n}", "main")
   assert(bytes_contains(bytes, "assert_eq failed"))
   assert(bytes_contains(bytes, "<unprintable>"))
 }
@@ -86,7 +94,7 @@ test "assert_eq failure compiles a fallback for an unrenderable value" {
 /// Same lowering, then execute it. `vibe test` keeps stderr and discards
 /// stdout, so the diagnostic has to land on stderr for `vt_fail_detail`.
 test "assert_eq lowering still compiles on the gc lane" {
-  let bytes = compile_source_gc_only("let main: () -> Int = () -> {\n  assert_eq(1, 1)\n  0\n}", "main")
+  let bytes = compile_source_gc_only("let main: () -> Int with Stdout = () -> {\n  assert_eq(1, 1)\n  0\n}", "main")
   assert(Bytes::length(bytes) > 8)
 }
 
