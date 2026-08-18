@@ -13,6 +13,11 @@
 #   - section banners in a lane script with no registry row
 #   - registry rows whose title is not announced by that lane
 #   - fixture paths the lane names that do not exist
+#   - a compile whose failure the lane checks (`if [ ! -s .. ]`) but which can
+#     abort the lane before that check (#2107 fallout: three separate gate
+#     steps died at exit 1 with no message at all, because `set -e` killed the
+#     lane on the compile itself and the step's own FAIL echo was one line too
+#     late to run)
 #
 # Usage:
 #   bash scripts/check_gate_registry.sh
@@ -143,6 +148,39 @@ for lane in $GATE_LANES; do
         ;;
     esac
   done < <(grep -oE '"(fixtures|lib|docs|scripts|tests)/[^"$]+"' "$script" | tr -d '"' || true)
+done
+
+# A lane step that COMPILES something and then checks the artifact
+# (`if [ ! -s .. ]`) must not let the compile itself end the lane: under
+# `set -e` a failing compiler invocation exits before the step's own `FAIL`
+# message, so the lane reports nothing but exit 1 and the reader is left
+# bisecting to find which step it was. `|| true` on the invocation hands the
+# verdict to the check that was written for it.
+for lane in $GATE_LANES; do
+  script="$(gate_lane_script "$lane")"
+  [ -f "$script" ] || continue
+  awk -v script="$script" '
+    # remember the line where a runner invocation starts
+    /run_wasm_vibe_host_runner\.sh/ && $0 !~ /^[ \t]*#/ { in_cmd = 1 }
+    in_cmd {
+      cmd_tail = $0
+      if ($0 ~ /\\$/) { next }        # continued -- keep looking for the tail
+      in_cmd = 0
+      guarded = (cmd_tail ~ /\|\|/ || cmd_tail ~ /&&/ || cmd_tail ~ /=\"\$\(/)
+      if (!guarded) { pending = NR; pending_line = cmd_tail }
+      next
+    }
+    pending && $0 ~ /^[ \t]*$/ { next }
+    pending {
+      if ($0 ~ /^[ \t]*if \[ ! -s /) {
+        printf "[gate-registry] FAIL: %s:%d compiles then checks the artifact, but a failed compile aborts the lane before that check -- add `|| true`\n", script, pending > "/dev/stderr"
+        bad = 1
+      }
+      pending = 0
+      next
+    }
+    END { exit(bad ? 1 : 0) }
+  ' "$script" || fail=1
 done
 
 if [ "$fail" -ne 0 ]; then

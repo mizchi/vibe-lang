@@ -28,7 +28,7 @@ cd "$WORK"
 
 VIBE_PREOPEN_DIR="$WORK" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-  --invoke cli_main "$seed" "hello.vibex" "hello.wasm" "main" >/dev/null
+  --invoke cli_main "$seed" "hello.vibex" "hello.wasm" "main" >/dev/null || true
 
 if [ ! -s "$WORK/hello.wasm" ]; then
   echo "[install-hello-smoke] FAIL: compile produced no wasm" >&2

@@ -196,7 +196,7 @@ for probe in "$OUT_DIR"/probes/*.vibe; do
   rm -f "$gc_wasm" "$gc_wasm.diag" "$lin_wasm" "$lin_wasm.diag"
   env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
-    "${probe#"$ROOT_DIR"/}" "${gc_wasm#"$ROOT_DIR"/}" main >/dev/null 2>&1
+    "${probe#"$ROOT_DIR"/}" "${gc_wasm#"$ROOT_DIR"/}" main >/dev/null 2>&1 || true
   if [ ! -s "$gc_wasm" ]; then
     fail=$((fail+1)); failures+=("$name: COMPILE: $(cat "$gc_wasm.diag" 2>/dev/null || echo '(no diag)')")
     continue
