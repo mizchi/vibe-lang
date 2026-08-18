@@ -4270,12 +4270,12 @@ enum Boom {
   Bang(Int)
 }
 
-fn Boom::to_string(self: Boom) -> String {
+fn Boom::to_string(self: Boom) -> String with Stdout {
   println("FORMATTER RAN")
   "boom"
 }
 
-let _start = () -> Int {
+let _start = () -> Int with Stdout {
   println("interp=\{Bang(1)}")
   handle {
     throw(Bang(1))
