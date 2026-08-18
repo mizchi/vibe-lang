@@ -2,7 +2,7 @@
 
 Previous: [02 Control flow](02_control_flow.vibe.md)
 
-日本語版: [03_data-ja.vibe.md](03_data-ja.vibe.md)
+日本語版: [03_data.vibe.md](../ja/03_data.vibe.md)
 
 ## tuple / array / record
 

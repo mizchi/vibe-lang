@@ -2,7 +2,7 @@
 
 Previous: [03 Data](03_data.vibe.md)
 
-日本語版: [04_option-ja.vibe.md](04_option-ja.vibe.md)
+日本語版: [04_option.vibe.md](../ja/04_option.vibe.md)
 
 ## Option
 

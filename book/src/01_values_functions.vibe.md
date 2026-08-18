@@ -2,12 +2,12 @@
 
 This chapter *is* a `.vibe.md`: every ` ```vibe run ` block is really compiled
 and run by `pkf run vibe-md-tutorial`
-(`bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md`), and the ` ```output `
+(`bash scripts/vibe_md.sh check book/src/*.vibe.md`), and the ` ```output `
 block right after it is that run's output, pasted in (#1142). To refresh it
 locally, run
-`bash scripts/vibe_md.sh write docs/tutorial/01_values_functions.vibe.md`.
+`bash scripts/vibe_md.sh write book/src/01_values_functions.vibe.md`.
 
-日本語版: [01_values_functions-ja.vibe.md](01_values_functions-ja.vibe.md)
+日本語版: [01_values_functions.vibe.md](../ja/01_values_functions.vibe.md)
 
 ## Values and primitive types
 
@@ -23,7 +23,7 @@ import @vibe/prelude {
 
 fn main with Stdout {
   let x: Int = 42
-  // 62-bit tagged; literals go up to 2^61-1
+  // 63-bit tagged (#1877); literals go up to 2^62-1
   let d: Double = 3.14
   // 64-bit float (the default for a decimal literal)
   let b: Bool = true
@@ -148,6 +148,45 @@ inc(41) = 42
 scaled(x=4, y=2) = 42
 ```
 
+## Comments
+
+`//` starts a line comment. There is no `/* */` block comment. Put a
+comment on its own line when you want it between tokens of an
+expression. `///` immediately above a declaration is that declaration's
+doc comment (hover / `vibe doc-at` pick it up). `//#` is a section
+heading used in the compiler sources — it is not a doc comment.
+
+## Optional arguments
+
+A trailing `name?: T` is optional. The caller writes a bare `T` or
+omits it. The body sees `Option[T]`. Measured: `if bang` when
+`bang?: Bool` is a type error (`if condition must be Bool`) — match the
+`Option`.
+
+```vibe run
+import @vibe/prelude {
+  stdout_write
+}
+
+fn greet(name: String, times?: Int) -> String {
+  let n = match times {
+    Some(v) => v,
+    None => 1
+  }
+  String::concat(name, String::concat(" x", __to_string(n)))
+}
+
+fn main with Stdout {
+  stdout_write(String::concat(greet("hi"), "\n"))
+  stdout_write(String::concat(greet("hi", 3), "\n"))
+}
+```
+
+```output
+hi x1
+hi x3
+```
+
 ## Lambda shorthand and placeholders
 
 ```vibe run
@@ -175,4 +214,5 @@ doubled = [2, 4, 6]
 fold sum = 6
 ```
 
-Next: [02 Control flow](02_control_flow.vibe.md)
+Next: [Control flow](02_control_flow.vibe.md).
+The contract those types keep is in [Types and strings](08_types_strings.vibe.md).

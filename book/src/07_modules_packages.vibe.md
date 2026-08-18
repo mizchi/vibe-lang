@@ -4,7 +4,7 @@ Previous: [06 Tests](06_tests.vibe.md)
 (run from the repository root, or in an environment where @vibe/core has been
 materialized)
 
-日本語版: [07_modules_packages-ja.vibe.md](07_modules_packages-ja.vibe.md)
+日本語版: [07_modules_packages.vibe.md](../ja/07_modules_packages.vibe.md)
 
 ## export and relative import
 

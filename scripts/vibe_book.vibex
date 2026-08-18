@@ -1,0 +1,65 @@
+// scripts/vibe_book.vibex — build The Vibe Book HTML site from book/.
+//
+//   bash scripts/vibe_book.sh
+//
+// Reads book/SUMMARY.md and the listed chapters, writes _build/book/*.html.
+// Not launched via vibe_run.sh (same _start double-invoke issue as vibe_md).
+
+import @vibe/prelude {
+  stdout_write
+}
+
+import @vibex/book {
+  html_name_for, parse_summary, render_page, resolve_chapter_path
+}
+
+fn chapter_title(source: String, fallback: String) -> String {
+  let n = String::length(source)
+  if n >= 2 && source[0: 2] == "# " {
+    let mut i = 2
+    while i < n && String::char_code_at(source, i) != 10 {
+      i = i + 1
+    }
+    String::trim(source[2: i])
+  } else {
+    fallback
+  }
+}
+
+fn main with Fs + Stdout + Exception {
+  let book_dir = "book"
+  let out_dir = "_build/book"
+  let summary_src = Fs::read_file(String::concat(book_dir, "/SUMMARY.md"))
+  let entries = parse_summary(summary_src)
+  let n = Array::length(entries)
+  stdout_write(String::concat("book: rendering ", String::concat(Int::to_string(n), " entries\n")))
+  let mut i = 0
+  let mut first_i = 0 - 1
+  while i < n {
+    let e = Array::get(entries, i)
+    if String::length(e.path) == 0 {
+      stdout_write(String::concat("  part ", String::concat(e.title, "\n")))
+    } else {
+      let source = Fs::read_file(resolve_chapter_path(book_dir, e.path))
+      let title = chapter_title(source, e.title)
+      let html = render_page(title, source, entries, i)
+      let dest = String::concat(String::concat(out_dir, "/"), html_name_for(e.path))
+      Fs::write_file(dest, html)
+      stdout_write(String::concat("  wrote ", String::concat(dest, "\n")))
+      if first_i < 0 {
+        first_i = i
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  if first_i >= 0 {
+    let first = Array::get(entries, first_i)
+    let index_src = Fs::read_file(resolve_chapter_path(book_dir, first.path))
+    Fs::write_file(String::concat(out_dir, "/index.html"), render_page(chapter_title(index_src, first.title), index_src, entries, first_i))
+    stdout_write("  wrote _build/book/index.html\n")
+  } else {
+    ()
+  }
+}

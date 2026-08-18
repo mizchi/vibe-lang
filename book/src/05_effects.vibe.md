@@ -2,7 +2,7 @@
 
 Previous: [04 Option](04_option.vibe.md)
 
-日本語版: [05_effects-ja.vibe.md](05_effects-ja.vibe.md)
+日本語版: [05_effects.vibe.md](../ja/05_effects.vibe.md)
 
 vibe is **pure by default**. A side effect is declared in the type's `with ...`
 row (the effect row) and propagates to the caller until a `handle` draws the
@@ -176,8 +176,9 @@ fn main with Stdout {
 apply_twice = 40
 ```
 
-Host I/O (`Fs`, `Env`, `Http` and friends) are builtin effects on this same
-mechanism. Their handlers exist for the checker; at run time they lower
-straight to host imports.
+Host I/O (`Fs`, `Env`, `Http` and friends) are **capabilities**, not
+algebraic effects. On a *split* signature they belong in `allows`, not
+`with`. See [Capabilities](10_capabilities.vibe.md).
 
-Next: [06 Tests](06_tests.vibe.md)
+Next: [Capabilities](10_capabilities.vibe.md). The package/test tour is
+[Modules](07_modules_packages.vibe.md) then [Tests](06_tests.vibe.md).

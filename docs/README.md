@@ -10,7 +10,8 @@ later PRs use it as the inventory.
 Proposed later homes (`docs/user/…`, `docs/internal/…`, `docs/generated/`) are
 labels from #2002, not directories in this commit.
 
-**Users:** [install](install.md) · [tutorial](tutorial/README.md) ·
+**Users:** [install](install.md) · [The Vibe Book](../book/README.md) ·
+[tutorial (pointer)](tutorial/README.md) ·
 [cheatsheet](cheatsheet.md) · [CLI](cli-commands.md) ·
 [editor](editor-and-debugging.md)
 
@@ -32,7 +33,8 @@ Install, learn, write, build, test, package, debug, deploy.
 | Current path | Later home | Notes |
 | --- | --- | --- |
 | [install.md](install.md) | `user/getting-started/` | |
-| [tutorial/](tutorial/) | `user/tutorial/` | English + `-ja` pair. Children: [README.md](tutorial/README.md), [README-ja.md](tutorial/README-ja.md), [01](tutorial/01_values_functions.vibe.md)/[01-ja](tutorial/01_values_functions-ja.vibe.md), [02](tutorial/02_control_flow.vibe.md)/[02-ja](tutorial/02_control_flow-ja.vibe.md), [03](tutorial/03_data.vibe.md)/[03-ja](tutorial/03_data-ja.vibe.md), [04](tutorial/04_option.vibe.md)/[04-ja](tutorial/04_option-ja.vibe.md), [05](tutorial/05_effects.vibe.md)/[05-ja](tutorial/05_effects-ja.vibe.md), [06](tutorial/06_tests.vibe.md)/[06-ja](tutorial/06_tests-ja.vibe.md), [07](tutorial/07_modules_packages.vibe.md)/[07-ja](tutorial/07_modules_packages-ja.vibe.md), [support/mathx.vibe](tutorial/support/mathx.vibe) |
+| [../book/](../book/README.md) | `user/book/` | The Vibe Book. Canonical tour + language + systems. Children: [SUMMARY.md](../book/SUMMARY.md), [src/](../book/src/), [ja/](../book/ja/) |
+| [tutorial/](tutorial/) | `user/tutorial/` | Pointer only. Chapters moved to `book/src/` and `book/ja/`. |
 | [cheatsheet.md](cheatsheet.md) | `user/reference/` | Language reference. Absorbed `language-tour/`. |
 | [cli-commands.md](cli-commands.md) | `user/reference/` | |
 | [editor-and-debugging.md](editor-and-debugging.md) | `user/reference/` | LSP, DAP, editor query CLI |

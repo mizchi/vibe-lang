@@ -1,10 +1,10 @@
 # 01 — 値と関数
 
 このチャプターは `.vibe.md` そのもの — 各 ` ```vibe run ` ブロックは
-`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md`)
+`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md`)
 で実際にコンパイル・実行され、直後の ` ```output ` ブロックは実行結果を
 そのまま埋め込んだもの (#1142)。手元で更新するときは
-`bash scripts/vibe_md.sh write docs/tutorial/01_values_functions-ja.vibe.md`。
+`bash scripts/vibe_md.sh write book/ja/01_values_functions.vibe.md`。
 
 English version: [01_values_functions.vibe.md](01_values_functions.vibe.md) (canonical)
 
@@ -143,6 +143,35 @@ fact(5) = 120
 identity(7) = 7
 inc(41) = 42
 scaled(x=4, y=2) = 42
+```
+
+## 省略引数
+
+末尾の `name?: T` は省略できる。呼び出し側は素の `T` を書くか省略する。
+本体が見るのは `Option[T]`。
+
+```vibe run
+import @vibe/prelude {
+  stdout_write
+}
+
+fn greet(name: String, times?: Int) -> String {
+  let n = match times {
+    Some(v) => v,
+    None => 1
+  }
+  String::concat(name, String::concat(" x", __to_string(n)))
+}
+
+fn main with Stdout {
+  stdout_write(String::concat(greet("hi"), "\n"))
+  stdout_write(String::concat(greet("hi", 3), "\n"))
+}
+```
+
+```output
+hi x1
+hi x3
 ```
 
 ## ラムダ短縮形とプレースホルダ

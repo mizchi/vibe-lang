@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# check_tutorial_translation_parity.sh -- keep docs/tutorial/*.vibe.md and its
-# `-ja` translations from drifting apart.
+# check_tutorial_translation_parity.sh -- keep book/src tour chapters and
+# book/ja translations from drifting apart.
 #
 # AGENTS.md "Language and documentation policy" makes the English chapter the
 # source of truth and the `-ja` file a translation of prose and comments only:
@@ -26,7 +26,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tutorial_dir="$repo_root/docs/tutorial"
+tutorial_dir="$repo_root/book/src"
+ja_dir="$repo_root/book/ja"
 
 # Emit the ```output blocks of a .vibe.md, in order, with a separator between
 # them so that "same text, different block boundaries" is still a difference.
@@ -45,7 +46,7 @@ english=("$tutorial_dir"/[0-9][0-9]_*.vibe.md)
 shopt -u nullglob
 
 if [ ${#english[@]} -eq 0 ]; then
-  echo "check-tutorial-translation-parity: FAIL: no chapters found under docs/tutorial" >&2
+  echo "check-tutorial-translation-parity: FAIL: no chapters found under book/src" >&2
   exit 1
 fi
 
@@ -54,12 +55,17 @@ for en in "${english[@]}"; do
     *-ja.vibe.md) continue ;;
   esac
 
-  ja="${en%.vibe.md}-ja.vibe.md"
+  ja="$ja_dir/$(basename "$en")"
   if [ ! -f "$ja" ]; then
-    echo "check-tutorial-translation-parity: FAIL: $(basename "$en") has no translation" >&2
-    echo "  expected $(basename "$ja") -- a chapter without one drops Japanese readers mid-tour." >&2
-    echo "  Translate it, or delete the chapter." >&2
-    fail=1
+    # New English-only book chapters are allowed. The original tour pair
+    # (01..07) must keep a translation under book/ja/.
+    case "$(basename "$en")" in
+      01_values_functions.vibe.md|02_control_flow.vibe.md|03_data.vibe.md|04_option.vibe.md|05_effects.vibe.md|06_tests.vibe.md|07_modules_packages.vibe.md)
+        echo "check-tutorial-translation-parity: FAIL: $(basename "$en") has no translation" >&2
+        echo "  expected book/ja/$(basename "$en")" >&2
+        fail=1
+        ;;
+    esac
     continue
   fi
 
@@ -69,7 +75,7 @@ for en in "${english[@]}"; do
       <(extract_outputs "$en") <(extract_outputs "$ja"); then
     echo "check-tutorial-translation-parity: FAIL: $(basename "$en") and its translation ran different programs" >&2
     echo '  The two files must run the SAME programs, so their ```output blocks must match.' >&2
-    echo "  Port the code change to both, then: bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md" >&2
+    echo "  Port the code change to both, then: bash scripts/vibe_md.sh write book/src/*.vibe.md book/ja/*.vibe.md" >&2
     fail=1
   fi
 done
@@ -77,11 +83,11 @@ done
 # A translation whose canonical chapter is gone is the same drift seen from the
 # other side -- it will never be checked or updated again.
 shopt -s nullglob
-for ja in "$tutorial_dir"/[0-9][0-9]_*-ja.vibe.md; do
-  en="${ja%-ja.vibe.md}.vibe.md"
+for ja in "$ja_dir"/[0-9][0-9]_*.vibe.md; do
+  en="$tutorial_dir/$(basename "$ja")"
   if [ ! -f "$en" ]; then
-    echo "check-tutorial-translation-parity: FAIL: $(basename "$ja") has no canonical English chapter" >&2
-    echo "  expected $(basename "$en") -- the translation is the copy, not the source." >&2
+    echo "check-tutorial-translation-parity: FAIL: book/ja/$(basename "$ja") has no canonical English chapter" >&2
+    echo "  expected book/src/$(basename "$ja") -- the translation is the copy, not the source." >&2
     fail=1
   fi
 done

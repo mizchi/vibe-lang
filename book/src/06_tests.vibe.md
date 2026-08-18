@@ -2,7 +2,7 @@
 
 Previous: [05 Effects](05_effects.vibe.md)
 
-日本語版: [06_tests-ja.vibe.md](06_tests-ja.vibe.md)
+日本語版: [06_tests.vibe.md](../ja/06_tests.vibe.md)
 
 ## The test block
 
@@ -26,6 +26,21 @@ vibe test a_test.vibe b_test.vibe    # several files
 vibe test tests/                     # every *_test.vibe under a directory
 ```
 
+## `inspect` snapshots
+
+`inspect(value, "expected")` is the snapshot assertion. The expected
+string lives in the source. `vibe test --update` rewrites it. You do
+not import anything — the checker desugars the call before typing.
+
+```vibe
+test "a number" {
+  inspect(1 + 1, "2")
+}
+```
+
+New tests in this repository should use `inspect`, not a `__DATA__`
+sidecar and not a `.diag` file.
+
 ## CLI tooling
 
 ```bash
@@ -46,15 +61,15 @@ vibe hash lib/@vibe/core
 
 ## This tutorial is itself an executable document
 
-Every file under `docs/tutorial/`, this chapter included, is in the `.vibe.md`
+Every chapter under `book/src/`, this one included, is in the `.vibe.md`
 format from #1142: the ` ```vibe run ` blocks really are compiled and run, and
 the ` ```output ` right after each one is the real result. To verify or
 regenerate them locally:
 
 ```bash
-bash scripts/vibe_md.sh check docs/tutorial/*.vibe.md   # verify (FAILs if the embedded output is stale)
-bash scripts/vibe_md.sh write docs/tutorial/*.vibe.md   # run and rewrite the output blocks
-pkf run vibe-md-tutorial                                # the same check as a task
+bash scripts/vibe_md.sh check book/src/*.vibe.md   # verify (FAILs if the embedded output is stale)
+bash scripts/vibe_md.sh write book/src/*.vibe.md   # run and rewrite the output blocks
+pkf run vibe-md-tutorial                           # the same check as a task
 ```
 
 Next: [07 Modules and packages](07_modules_packages.vibe.md)

@@ -9,45 +9,47 @@
 // ordering guarantee among themselves (the heap is not stable).
 //
 // Representation: `buf` is the implicit-tree array (children of `i` at
-// `2i+1` / `2i+2`), `len` the live element count. Same generic-allocation
-// scheme as core deque: no default value of an arbitrary `T` exists, so
-// the buffer starts empty and grows inside `push`, where the pushed
-// element fills the fresh slots. Popped slots keep their old element
-// until overwritten.
+// `2i+1` / `2i+2`), `len` the live element count. Spare slots are `None`
+// via `Array::make` (#1847). Grow does not copy the just-pushed value
+// into unused capacity.
 //
 // Complexity: push / pop O(log n), peek O(1), from_array O(n) (Floyd
 // heapify), to_sorted_array O(n log n).
 
+//# Imports
+
+import ./array.vibe {
+  Array::make, array_empty
+}
+
 //# Types
 
 export struct PriorityQueue[T] {
-  mut buf: Array[T];
+  mut buf: Array[Option[T]];
   mut len: Int;
   cmp: (T, T) -> Int
 }
 
 //# Internal helpers
 
-fn pq_empty_buf[T]() -> Array[T] {
-  ArrayBuilder::freeze(ArrayBuilder::new())
+fn pq_none[T]() -> Option[T] {
+  None
 }
 
-/// Double the backing buffer (or allocate the first one), using `filler`
-/// — the element being pushed — for the fresh slots.
-fn pq_grow[T](q: PriorityQueue[T], filler: T) -> Unit {
+fn pq_empty_buf[T]() -> Array[Option[T]] {
+  array_empty()
+}
+
+/// Double the backing buffer (or allocate the first one). Spare slots
+/// stay `None`; the pusher is not copied into unused capacity.
+fn pq_grow[T](q: PriorityQueue[T]) -> Unit {
   let old_cap = Array::length(q.buf)
   let new_cap = if old_cap > 0 {
     old_cap * 2
   } else {
     8
   }
-  let b = ArrayBuilder::new()
-  let mut i = 0
-  while i < new_cap {
-    ArrayBuilder::push(b, filler)
-    i = i + 1
-  }
-  let nbuf = ArrayBuilder::freeze(b)
+  let nbuf = Array::make(new_cap, pq_none())
   let mut j = 0
   while j < q.len {
     Array::set(nbuf, j, Array::get(q.buf, j))
@@ -62,12 +64,22 @@ fn pq_swap[T](q: PriorityQueue[T], i: Int, j: Int) -> Unit {
   Array::set(q.buf, j, tmp)
 }
 
+fn pq_cmp_slots[T](q: PriorityQueue[T], i: Int, j: Int) -> Int {
+  match Array::get(q.buf, i) {
+    Some(a) => match Array::get(q.buf, j) {
+      Some(b) => (q.cmp)(a, b),
+      None => 0
+    },
+    None => 0
+  }
+}
+
 /// Bubble the element at `start` up until its parent is not greater.
 fn pq_sift_up[T](q: PriorityQueue[T], start: Int) -> Unit {
   let mut i = start
   while i > 0 {
     let parent = (i - 1) / 2
-    if (q.cmp)(Array::get(q.buf, i), Array::get(q.buf, parent)) < 0 {
+    if pq_cmp_slots(q, i, parent) < 0 {
       pq_swap(q, i, parent)
       i = parent
     } else {
@@ -84,10 +96,10 @@ fn pq_sift_down[T](q: PriorityQueue[T], start: Int) -> Unit {
     let l = 2 * i + 1
     let r = 2 * i + 2
     let mut best = i
-    if l < q.len && (q.cmp)(Array::get(q.buf, l), Array::get(q.buf, best)) < 0 {
+    if l < q.len && pq_cmp_slots(q, l, best) < 0 {
       best = l
     }
-    if r < q.len && (q.cmp)(Array::get(q.buf, r), Array::get(q.buf, best)) < 0 {
+    if r < q.len && pq_cmp_slots(q, r, best) < 0 {
       best = r
     }
     if best == i {
@@ -157,9 +169,9 @@ export fn PriorityQueue::is_empty[T](q: PriorityQueue[T]) -> Bool {
 
 export fn PriorityQueue::push[T](q: PriorityQueue[T], x: T) -> Unit {
   if q.len >= Array::length(q.buf) {
-    pq_grow(q, x)
+    pq_grow(q)
   }
-  Array::set(q.buf, q.len, x)
+  Array::set(q.buf, q.len, Some(x))
   q.len = q.len + 1
   pq_sift_up(q, q.len - 1)
 }
@@ -168,7 +180,7 @@ export fn PriorityQueue::peek[T](q: PriorityQueue[T]) -> Option[T] {
   if q.len == 0 {
     None
   } else {
-    Some(Array::get(q.buf, 0))
+    Array::get(q.buf, 0)
   }
 }
 
@@ -180,9 +192,12 @@ export fn PriorityQueue::pop[T](q: PriorityQueue[T]) -> Option[T] {
     q.len = q.len - 1
     if q.len > 0 {
       Array::set(q.buf, 0, Array::get(q.buf, q.len))
+      Array::set(q.buf, q.len, pq_none())
       pq_sift_down(q, 0)
+    } else {
+      Array::set(q.buf, 0, pq_none())
     }
-    Some(top)
+    top
   }
 }
 
@@ -190,14 +205,14 @@ export fn PriorityQueue::pop[T](q: PriorityQueue[T]) -> Option[T] {
 /// The input array is COPIED — the caller's array is not modified.
 export fn PriorityQueue::from_array[T](arr: Array[T], cmp: (T, T) -> Int) -> PriorityQueue[T] {
   let n = Array::length(arr)
-  let b = ArrayBuilder::new()
+  let nbuf = Array::make(n, pq_none())
   let mut i = 0
   while i < n {
-    ArrayBuilder::push(b, Array::get(arr, i))
+    Array::set(nbuf, i, Some(Array::get(arr, i)))
     i = i + 1
   }
   let q = PriorityQueue::{
-    buf: ArrayBuilder::freeze(b),
+    buf: nbuf,
     len: n,
     cmp: cmp
   }
@@ -212,14 +227,14 @@ export fn PriorityQueue::from_array[T](arr: Array[T], cmp: (T, T) -> Int) -> Pri
 /// Dequeue order as an array (cmp-ascending). NON-DESTRUCTIVE: works on
 /// a private copy of the heap, so `q` is unchanged. O(n log n).
 export fn PriorityQueue::to_sorted_array[T](q: PriorityQueue[T]) -> Array[T] {
-  let b = ArrayBuilder::new()
+  let nbuf = Array::make(q.len, pq_none())
   let mut i = 0
   while i < q.len {
-    ArrayBuilder::push(b, Array::get(q.buf, i))
+    Array::set(nbuf, i, Array::get(q.buf, i))
     i = i + 1
   }
   let scratch = PriorityQueue::{
-    buf: ArrayBuilder::freeze(b),
+    buf: nbuf,
     len: q.len,
     cmp: q.cmp
   }
@@ -236,9 +251,13 @@ export fn PriorityQueue::to_sorted_array[T](q: PriorityQueue[T]) -> Array[T] {
   ArrayBuilder::freeze(out)
 }
 
-/// Drop all elements. The backing buffer is KEPT (capacity is reused);
-/// old elements stay referenced by the buffer until overwritten.
+/// Drop all elements. Vacated slots are `None`. Capacity is kept.
 export fn PriorityQueue::clear[T](q: PriorityQueue[T]) -> Unit {
+  let mut i = 0
+  while i < q.len {
+    Array::set(q.buf, i, pq_none())
+    i = i + 1
+  }
   q.len = 0
 }
 
