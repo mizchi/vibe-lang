@@ -3579,6 +3579,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       let pf_inert = Array::concat(plan_base_inert, empty_str_array())
       edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
       edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
+      edp_append_effect_irrelevant_row_fns(fn_defs, ename, pf_inert, row_labels)
       let needing_full = array_empty()
       let mut pfi = 0
       while pfi < Array::length(needing_sd) {
@@ -3744,6 +3745,7 @@ fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[Str
   edp_append_free_host_inert_names(stmts, pure_fns)
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  edp_append_effect_irrelevant_row_fns(fn_defs, ename, pure_fns, row_labels)
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
@@ -4475,6 +4477,10 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
           true
         } else if edp_is_pure_builtin_call(nm) {
           edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
+        } else if edp_builtin_is_first_order(nm) {
+          // #2109: effectful, but it cannot run a user closure, so it cannot
+          // hide a perform of `ename` from this handle.
+          edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
         } else if edp_str_array_contains(needing, nm) {
           edp_exprs_have_unsafe_construct(args, needing, ename, pure_fns, ls_names, ls_flags)
         } else if edp_str_array_contains(pure_fns, nm) {
@@ -4520,6 +4526,58 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
     // leaving it as a plausible-looking gap for a future reader to
     // re-investigate from scratch.
     _ => false
+  }
+}
+
+/// #2109: is this builtin FIRST-ORDER -- does its signature take no function
+/// anywhere in its parameters?
+///
+/// A builtin cannot itself `perform` a user effect (host operations are not
+/// user code), so the only way one can hide a perform from an enclosing
+/// `handle` is by CALLING a closure the program handed it. `Array::foreach`
+/// and friends do exactly that and must stay opaque; `println`, `Fs::read_file`
+/// and the rest of the first-order host surface cannot. Read off the registry
+/// signature rather than a hand-kept list, so a new host builtin is classified
+/// the moment it is declared.
+///
+/// This is what makes `handle { println("x") f() } with Ask { .. }` compile.
+/// It did not, on either lane, and the diagnostic said the handled body may
+/// "perform directly, call a named top-level `fn`, or call a closure literal
+/// that carries an effect row annotation" -- three forms, none of which
+/// describes a print.
+fn edp_type_has_fn(t: Type) -> Bool {
+  match t {
+    CtFn(_, _, _) => true,
+    CtArray(e) => edp_type_has_fn(e),
+    CtOption(e) => edp_type_has_fn(e),
+    CtTuple(es) => edp_types_have_fn(es),
+    CtNamed(_, args) => edp_types_have_fn(args),
+    CtForAll(_, _, body) => edp_type_has_fn(body),
+    _ => false
+  }
+}
+
+fn edp_types_have_fn(ts: Array[Type]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) {
+    if edp_type_has_fn(Array::get(ts, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_builtin_is_first_order(nm: String) -> Bool {
+  match lookup_registry_builtin(nm) {
+    Some(ty) => match ty {
+      CtFn(params, _, _) => !edp_types_have_fn(params),
+      _ => false
+    },
+    None => false
   }
 }
 
@@ -4671,6 +4729,65 @@ fn edp_pure_fn_names(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], 
 /// safety scans already thread everywhere.
 fn edp_name_is_host_raw_shape(nm: String) -> Bool {
   String::starts_with(nm, "vibe_") && String::ends_with(nm, "_raw")
+}
+
+/// #2109: a top-level fn whose declared row does not mention `ename` cannot
+/// PERFORM it, so a call to it hides nothing from a `handle .. with ename`.
+///
+/// The row is complete by construction: the checker requires every effect a
+/// body can require -- directly, transitively, or through a parameter's own
+/// row (#626, #885) -- to appear in the declaring signature, and this pass
+/// runs after it. A callee declaring `with Stdout` therefore cannot reach a
+/// `perform Ask::Get`, and treating the call as opaque only made ordinary code
+/// uncompilable: `handle { println("x") f() } with Ask { .. }` and every
+/// `assert_eq` inside a handled body were rejected with a diagnostic that
+/// enumerates three legal forms the program already satisfies.
+///
+/// Row VARIABLES are excluded, and that exclusion is the reason this is sound
+/// rather than merely plausible: a polymorphic row can be instantiated with
+/// the handled effect at the call site, and the perform then happens inside
+/// the callee where the handler cannot see it. Effect names are CamelCase
+/// (#1458), so a lowercase-initial label is taken to be a variable -- the
+/// conservative direction.
+fn edp_label_is_row_var(label: String) -> Bool {
+  String::length(label) > 0 && String::char_code_at(label, 0) >= 97 && String::char_code_at(label, 0) <= 122
+}
+
+fn edp_row_labels_have_var(labels: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    if edp_label_is_row_var(Array::get(labels, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_append_effect_irrelevant_row_fns(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, _) = Array::get(fn_defs, i)
+    let labels = Array::get(row_labels, i)
+    if Array::length(labels) == 0 {
+      // Row-free: edp_pure_fn_names already listed it.
+      ()
+    } else if edp_str_array_contains(labels, ename) {
+      // Carries the effect: the needing / perform-free / self-discharging
+      // machinery decides this one, and it must keep deciding it.
+      ()
+    } else if edp_row_labels_have_var(labels) {
+      ()
+    } else if edp_str_array_contains(pure_fns, name) {
+      ()
+    } else {
+      Array::push(pure_fns, name)
+    }
+    i = i + 1
+  }
 }
 
 /// ADR-0076 追記34 V2: a row-E function that provably cannot PERFORM E --
@@ -5431,6 +5548,7 @@ fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[Stri
     edp_append_free_host_inert_names(stmts, pure_fns)
     edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+    edp_append_effect_irrelevant_row_fns(fn_defs, ename, pure_fns, row_labels)
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)
@@ -7252,6 +7370,7 @@ fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Ar
   edp_append_free_host_inert_names(stmts, pure_fns)
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  edp_append_effect_irrelevant_row_fns(fn_defs, ename, pure_fns, row_labels)
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
