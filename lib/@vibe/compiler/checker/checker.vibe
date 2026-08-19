@@ -7472,14 +7472,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // `CtNamed` check itself (its tolerate branch calls
             // `detect_narrowed_generic_mismatch`), so the explicit second
             // call this site used to make would double-report — dropped.
-            // This ECall is SYNTHETIC (ascribe_wrap builds it), so `call_off`
-            // is -1 and the diagnostic came out unlocated. The bound value is
-            // the sole argument and does have a real position -- anchor there,
-            // which is also where the annotation-vs-value conflict is fixed.
-            let asc_off = if call_off >= 0 {
-              call_off
+            // This ECall is SYNTHETIC (ascribe_wrap builds it). The bound
+            // value is the sole argument, and where it HAS a position that is
+            // the best anchor -- it is where the annotation-vs-value conflict
+            // is fixed. But a literal carries no offset slot, so
+            // `let a: Int = "not an int"` used to land unlocated. ascribe_wrap
+            // now puts the binder NAME's offset on the synthetic call, so the
+            // fallback anchors at `a` instead of nowhere. Value first, binder
+            // second: this only adds a position where there was none.
+            let val_off = railway_expr_off(Array::get(args, 0))
+            let asc_off = if val_off >= 0 {
+              val_off
             } else {
-              railway_expr_off(Array::get(args, 0))
+              call_off
             }
             let ns2 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", asc_off)
             let bound_ty = preserve_generic_instantiation(resolved, subst_apply(ns2, actual))
