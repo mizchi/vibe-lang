@@ -1,0 +1,92 @@
+//# Every symbol `docs/spec/1.0-freeze.md` freezes actually exists.
+//
+// The freeze document is the one page that promises SemVer stability, so a
+// name listed there that does not resolve is the worst kind of documentation
+// error: it promises not to break something that is already gone.
+//
+// It had two. `Result::and_then` was frozen while `Result` itself was removed
+// from the language in #1324 -- the very next line of the same bullet admitted
+// `tap_ok`/`tap_err` went with it. And the whole `Iterator::map/filter/fold/
+// find/any/all/flatmap` combinator layer was frozen after ADR-0099 retired it;
+// the registry carries zero `Iterator::` rows.
+//
+// Neither was findable by reading. This file is the check that reading could
+// not do: it compiles a use of each frozen symbol and fails on `unknown name`.
+//
+// Method note, learned the hard way while writing it: grepping the registry is
+// NOT this check. Doing that flagged fourteen symbols as missing, of which
+// thirteen -- `Array::map`, `Int::to_string`, `Map::set` and the rest -- were
+// false alarms that reach the program by another route. Only compiling
+// answers the question the document is making a promise about.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+/// True when `src` resolves every name it mentions. Deliberately narrower than
+/// "compiles clean": a frozen symbol used at the wrong arity is a different
+/// bug from a frozen symbol that does not exist, and only the second is what
+/// this file is about.
+fn resolves(src: String) -> Bool with Exception {
+  let d = collect_all_diagnostics(src)
+  let mut i = 0
+  let mut unknown = false
+  while i < Array::length(d) {
+    if String::contains(Array::get(d, i), "unknown name") {
+      unknown = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  !unknown
+}
+
+//# Tests
+
+test "the frozen String builtins resolve without an import" {
+  assert(resolves("fn f() -> Int {\n  String::length(\"a\")\n}\n"))
+  assert(resolves("fn f() -> String {\n  String::concat(\"a\", \"b\")\n}\n"))
+  assert(resolves("fn f() -> String {\n  String::substring(\"abc\", 0, 1)\n}\n"))
+  assert(resolves("fn f() -> Array[String] {\n  String::split(\"a,b\", \",\")\n}\n"))
+  assert(resolves("fn f() -> String {\n  String::join([\"a\"], \",\")\n}\n"))
+  assert(resolves("fn f() -> Int {\n  String::char_code_at(\"a\", 0)\n}\n"))
+}
+
+test "String::replace is frozen as a LIBRARY function, not a builtin" {
+  // The distinction the document now draws. Without the import it does not
+  // resolve, which is why the bullet says so.
+  assert(!resolves("fn f() -> String {\n  String::replace(\"aa\", \"a\", \"b\")\n}\n"))
+  assert(resolves("import @vibe/builtin {\n  String::replace\n}\n\nfn f() -> String {\n  String::replace(\"aa\", \"a\", \"b\")\n}\n"))
+}
+
+test "the frozen Array and Map surface resolves" {
+  assert(resolves("fn f() -> Array[Int] {\n  Array::map([1], (x) -> x + 1)\n}\n"))
+  assert(resolves("fn f() -> Array[Int] {\n  Array::filter([1], (x) -> x > 0)\n}\n"))
+  assert(resolves("fn f() -> Int {\n  Array::fold([1], 0, (a, x) -> a + x)\n}\n"))
+  assert(resolves("fn f() -> Bool {\n  Array::any([1], (x) -> x > 0)\n}\n"))
+  assert(resolves("fn f() -> Array[Int] {\n  Array::reverse([1])\n}\n"))
+  assert(resolves("fn f() -> Int {\n  Int::to_string(1)\n  1\n}\n"))
+}
+
+test "the frozen iteration surface is `for-in`, not the combinator layer" {
+  // ADR-0099 retired `Iterator::*`. The document froze it anyway.
+  assert(resolves("fn f() -> Int {\n  let mut s = 0\n  for x in [1, 2] {\n    s = s + x\n  }\n  s\n}\n"))
+  assert(!resolves("fn f() -> Int {\n  let g = Iterator::map\n  1\n}\n"))
+  assert(!resolves("fn f() -> Int {\n  let g = Iterator::fold\n  1\n}\n"))
+}
+
+test "`Result` is gone, so nothing about it can be frozen" {
+  // #1324 removed it from the language. A program wanting Ok/Err declares the
+  // enum itself, like any other user enum.
+  assert(!resolves("fn f() -> Int {\n  let g = Result::and_then\n  1\n}\n"))
+}
+
+test "sh / sh_lines carry Process, which is what the document now says" {
+  assert(resolves("fn f() -> Unit with Process {\n  let _ = sh(\"true\")\n  ()\n}\n"))
+  assert(resolves("fn f() -> Unit with Process {\n  let _ = sh_lines(\"true\")\n  ()\n}\n"))
+}
