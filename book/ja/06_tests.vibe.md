@@ -1,6 +1,6 @@
 # 06 — テストとツーリング
 
-前章: [05 エフェクト](05_effects-ja.vibe.md)
+前章: [05 エフェクト](05_effects.vibe.md)
 
 English version: [06_tests.vibe.md](06_tests.vibe.md) (canonical)
 
@@ -56,4 +56,4 @@ bash scripts/vibe_md.sh write book/src/*.vibe.md book/ja/*.vibe.md   # 実行し
 pkf run vibe-md-tutorial                                # check のタスク化
 ```
 
-次章: [07 モジュールとパッケージ](07_modules_packages-ja.vibe.md)
+次章: [07 モジュールとパッケージ](07_modules_packages.vibe.md)

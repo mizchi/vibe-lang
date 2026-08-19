@@ -181,4 +181,4 @@ doubled = [2, 4, 6]
 fold sum = 6
 ```
 
-次章: [02 制御フロー](02_control_flow-ja.vibe.md)
+次章: [02 制御フロー](02_control_flow.vibe.md)

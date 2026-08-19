@@ -1,6 +1,6 @@
 # 02 — 制御フロー
 
-前章: [01 値と関数](01_values_functions-ja.vibe.md)
+前章: [01 値と関数](01_values_functions.vibe.md)
 
 English version: [02_control_flow.vibe.md](02_control_flow.vibe.md) (canonical)
 
@@ -26,7 +26,7 @@ v = yes
 `return` は関数全体から抜ける (ループだけではない)。この構文は
 [#1283](https://github.com/mizchi/vibe-lang/issues/1283) で「維持する」と決着した —
 同じ issue で追加された、パターン束縛付きの早期脱出 `guard ... else { ... }` は
-[04 Option](04_option-ja.vibe.md#guard--束縛するか脱出) で扱う。
+[04 Option](04_option.vibe.md#guard--束縛するか脱出) で扱う。
 
 ```vibe run
 fn find_first_neg(arr: Array[Int]) -> Int {
@@ -193,4 +193,4 @@ mapped = [2, 4, 6]
 repeated = 77
 ```
 
-次章: [03 データ](03_data-ja.vibe.md)
+次章: [03 データ](03_data.vibe.md)

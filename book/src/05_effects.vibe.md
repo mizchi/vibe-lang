@@ -16,7 +16,7 @@ effect, and it is compatible with every kind of typed `Exception[E]`.
 available in its handler arm — that arm's value becomes the result of the
 `handle`. An erased handler treats its payload as String/opaque and does not
 preserve type arguments across the handler. For when to reach for a typed
-exception instead, see [ADR-0085](../exception-effect.md).
+exception instead, see [ADR-0085](../../docs/exception-effect.md).
 
 ```vibe run
 fn risky(x: Int) -> Int with Exception {
@@ -105,7 +105,7 @@ A user-defined effect is the advanced tool, for when the caller genuinely has to
 swap the implementation. It comes with the constraint of being resumptive and
 one-shot/tail-resumptive. For ordinary failure use `Exception`, and for local
 state consider `let mut` first. The criteria are in
-[Effects vs let mut](../guide/when-to-use-effects.md).
+[Effects vs let mut](../../docs/guide/when-to-use-effects.md).
 
 ## What a `handle` can see
 
