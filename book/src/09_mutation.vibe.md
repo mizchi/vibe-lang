@@ -22,17 +22,13 @@ A `let mut` binding is writable until the block ends. The block itself is
 still an expression: it produces a value.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let y = {
     let mut v = 0
     v += 1
     v + 1
   }
-  stdout_write("y = \{y}\n")
+  println("y = \{y}")
 }
 ```
 
@@ -46,10 +42,6 @@ That is the ordinary case. Codegen keeps the binding as a wasm local.
 *interior* grows, and every alias sees it.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn grow(xs: Array[Int]) -> Unit {
   Array::push(xs, 9)
 }
@@ -59,7 +51,7 @@ fn main with Stdout {
     1
   ]
   grow(xs)
-  stdout_write("length = \{Array::length(xs)}, last = \{Array::get(xs, 1)}\n")
+  println("length = \{Array::length(xs)}, last = \{Array::get(xs, 1)}")
 }
 ```
 

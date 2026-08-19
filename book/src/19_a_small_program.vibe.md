@@ -6,9 +6,6 @@ chapter is that slot: tally words in a list, using a struct, an
 seen every construct yet. That is the point.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
 import @vibe/core {
   type MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
 }
@@ -74,8 +71,8 @@ fn main with Stdout {
     bump(kinds, Array::get(words, i))
     i = i + 1
   }
-  stdout_write("top = \{top}\n")
-  stdout_write("kinds = \{MutMap::size(kinds)}\n")
+  println("top = \{top}")
+  println("kinds = \{MutMap::size(kinds)}")
 }
 ```
 

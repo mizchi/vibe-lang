@@ -26,23 +26,19 @@ You get a `vibe` dispatcher, a `viberun` host, and the stdlib under
 
 A program is a `fn main` with an explicit effect row. The current tty
 capability is **`Console`**. This hello still says `Stdout` because the
-prelude helper `stdout_write` carries that **legacy** label (same host
-import as `Console::write_stream`; the two names do not authorize each
-other). See [Capabilities](10_capabilities.vibe.md).
+`println` builtin carries that **legacy** label (same host import as
+`Console::write_stream`; the two names do not authorize each other). See
+[Capabilities](10_capabilities.vibe.md).
 
-Two spellings are legal. The **bare** `with Stdout` is the usual hello
-for prelude helpers. The **split** form `with () allows Stdout` says the
-same thing more loudly: nothing algebraic, one capability. Mixing a
+Two spellings are legal. The **bare** `with Stdout` is the usual hello.
+The **split** form `with () allows Stdout` says the same thing more
+loudly: nothing algebraic, one capability. Mixing a
 capability into `with` *after* you wrote `allows` is a parse error
 (`Stdout` must appear in `allows`, not `with`).
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
-  stdout_write("hello, vibe\n")
+  println("hello, vibe")
 }
 ```
 
@@ -50,9 +46,10 @@ fn main with Stdout {
 hello, vibe
 ```
 
-`stdout_write` is a prelude helper, not a builtin. Forget the import and the
-checker reports `unknown function`. The same program as a script file is
-usually named `hello.vibex` and run with `vibe run hello.vibex`.
+`println` is a builtin -- no import -- and its row is not optional: drop
+`with Stdout` and the checker reports an effect row mismatch naming
+`Stdout` (#2107). The same program as a script file is usually named
+`hello.vibex` and run with `vibe run hello.vibex`.
 
 ## Check, then run
 

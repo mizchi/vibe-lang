@@ -11,10 +11,6 @@ Scalars, tuples, structs/enums with `derive(Eq)`, `Bytes` (by content),
 and `Array[T]` when the element type is known.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 struct Point {
   x: Int; y: Int
 } derive (Eq)
@@ -24,7 +20,7 @@ fn same_ints(a: Array[Int], b: Array[Int]) -> Bool {
 }
 
 fn main with Stdout {
-  stdout_write("lits = \{[1, 2] == [1, 2]}\n")
+  println("lits = \{[1, 2] == [1, 2]}")
   let a = [
     1,
     2
@@ -33,10 +29,10 @@ fn main with Stdout {
     1,
     2
   ]
-  stdout_write("lets = \{a == b}\n")
-  stdout_write("fn   = \{same_ints(a, b)}\n")
-  stdout_write("tuple = \{([1, 2], 0) == ([1, 2], 0)}\n")
-  stdout_write("struct = \{Point::{ x: 1, y: 2 } == Point::{ x: 1, y: 2 }}\n")
+  println("lets = \{a == b}")
+  println("fn   = \{same_ints(a, b)}")
+  println("tuple = \{([1, 2], 0) == ([1, 2], 0)}")
+  println("struct = \{Point::{ x: 1, y: 2 } == Point::{ x: 1, y: 2 }}")
 }
 ```
 

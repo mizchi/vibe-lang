@@ -39,16 +39,12 @@ as `vibe check`.
 ## A program the queries can see
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn add(x: Int, y: Int) -> Int {
   x + y
 }
 
 fn main with Stdout {
-  stdout_write("\{add(2, 40)}\n")
+  println("\{add(2, 40)}")
 }
 ```
 

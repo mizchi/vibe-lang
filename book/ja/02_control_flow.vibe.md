@@ -7,17 +7,13 @@ English version: [02_control_flow.vibe.md](02_control_flow.vibe.md) (canonical)
 ## if は式
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let v = if 1 < 2 {
     "yes"
   } else {
     "no"
   }
-  stdout_write("v = \{v}\n")
+  println("v = \{v}")
 }
 ```
 
@@ -33,10 +29,6 @@ v = yes
 [04 Option](04_option-ja.vibe.md#guard--束縛するか脱出) で扱う。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn find_first_neg(arr: Array[Int]) -> Int {
   let mut i = 0
   while i < Array::length(arr) {
@@ -53,8 +45,8 @@ fn find_first_neg(arr: Array[Int]) -> Int {
 }
 
 fn main with Stdout {
-  stdout_write("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}\n")
-  stdout_write("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}\n")
+  println("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}")
+  println("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}")
 }
 ```
 
@@ -69,10 +61,6 @@ find_first_neg([1, 2]) = -1
 可変変数なしで畳み込みが書ける。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 {
@@ -80,7 +68,7 @@ fn main with Stdout {
     }
     continue (i + 1, acc + i)
   }
-  stdout_write("sum = \{sum}\n")
+  println("sum = \{sum}")
 }
 ```
 
@@ -114,10 +102,6 @@ symmetric with this — it takes the loop's single result value, so
 これは今も有効。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let r = loop (i = 0, acc = 0) {
     if i >= 3 {
@@ -126,7 +110,7 @@ fn main with Stdout {
     // break(acc, i) は tuple (acc, i)
     continue (i + 1, acc + i)
   }
-  stdout_write("r = (\{r.0}, \{r.1})\n")
+  println("r = (\{r.0}, \{r.1})")
   // r: (Int, Int) -- break acc, i ではない
 }
 ```
@@ -138,10 +122,6 @@ r = (3, 3)
 ## for-in は Array を返す
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let doubled = for x in [
     1,
@@ -158,8 +138,8 @@ fn main with Stdout {
     i + x
   }
   // [10, 21]
-  stdout_write("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]\n")
-  stdout_write("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]\n")
+  println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
+  println("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]")
 }
 ```
 
@@ -182,10 +162,6 @@ with_index = [10, 21]
 では常に `Type::method(value, ...)` を正規形として書く。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
@@ -203,10 +179,10 @@ fn main with Stdout {
     3
   ] |> Array::map(_, _ * 2)
   let repeated = 7 |> pair(_, _)
-  stdout_write("trimmed_len = \{trimmed_len}\n")
-  stdout_write("arr_len = \{arr_len}\n")
-  stdout_write("mapped = [\{Array::get(mapped, 0)}, \{Array::get(mapped, 1)}, \{Array::get(mapped, 2)}]\n")
-  stdout_write("repeated = \{repeated}\n")
+  println("trimmed_len = \{trimmed_len}")
+  println("arr_len = \{arr_len}")
+  println("mapped = [\{Array::get(mapped, 0)}, \{Array::get(mapped, 1)}, \{Array::get(mapped, 2)}]")
+  println("repeated = \{repeated}")
 }
 ```
 

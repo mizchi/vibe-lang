@@ -44,15 +44,12 @@ Here it is for real, importing `triple` from
 [support/mathx.vibe](support/mathx.vibe):
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
 import ./support/mathx.vibe {
   triple
 }
 
 fn main with Stdout {
-  stdout_write("triple(14) = \{triple(14)}\n")
+  println("triple(14) = \{triple(14)}")
 }
 ```
 
@@ -67,16 +64,13 @@ triple(14) = 42
 the curl installer puts the stdlib).
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
 import @vibe/core {
   hex_encode, sha1
 }
 
 fn main with Stdout {
-  stdout_write("length(sha1(\"vibe\")) = \{String::length(sha1("vibe"))}\n")
-  stdout_write("hex_encode(\"hi\") = \{hex_encode("hi")}\n")
+  println("length(sha1(\"vibe\")) = \{String::length(sha1("vibe"))}")
+  println("hex_encode(\"hi\") = \{hex_encode("hi")}")
 }
 ```
 

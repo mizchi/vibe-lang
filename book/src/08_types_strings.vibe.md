@@ -14,18 +14,14 @@ Arithmetic overflow wraps as 63-bit two's complement on **every** backend
 describing a tag layout the compiler no longer uses.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let max = 4611686018427387903
-  stdout_write("max = \{max}\n")
-  stdout_write("max + 1 = \{max + 1}\n")
-  stdout_write("hex 0xFF = \{0xFF}\n")
-  stdout_write("1 << 4 = \{1 << 4}\n")
+  println("max = \{max}")
+  println("max + 1 = \{max + 1}")
+  println("hex 0xFF = \{0xFF}")
+  println("1 << 4 = \{1 << 4}")
   let neg = 0 - 8
-  stdout_write("(-8) >> 1 = \{neg >> 1}\n")
+  println("(-8) >> 1 = \{neg >> 1}")
 }
 ```
 
@@ -57,19 +53,15 @@ printout looks like an integer bit pattern.
 is bytes, so the type is bytes (ADR-0098).
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let s = "hello"
-  stdout_write("s[0] = \{s[0]}\n")
-  stdout_write("from_char_code = \{String::from_char_code(s[0])}\n")
-  stdout_write("s[:] = \{s[:]}\n")
-  stdout_write("s[:2] = \{s[:2]}\n")
-  stdout_write("s[2:] = \{s[2:]}\n")
-  stdout_write("s[1:4] = \{s[1:4]}\n")
-  stdout_write("length = \{String::length(s)}\n")
+  println("s[0] = \{s[0]}")
+  println("from_char_code = \{String::from_char_code(s[0])}")
+  println("s[:] = \{s[:]}")
+  println("s[:2] = \{s[:2]}")
+  println("s[2:] = \{s[2:]}")
+  println("s[1:4] = \{s[1:4]}")
+  println("length = \{String::length(s)}")
 }
 ```
 
@@ -95,10 +87,6 @@ already render. A user struct without Show used to print a pointer; that
 is now a compile error.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 struct Point {
   x: Int; y: Int
 } derive (Show)
@@ -107,9 +95,9 @@ fn main with Stdout {
   let p = Point::{
     x: 3, y: 4
   }
-  stdout_write("p = \{Point::to_string(p)}\n")
-  stdout_write("opt = \{Some(1)}\n")
-  stdout_write("pair = \{(2, 3)}\n")
+  println("p = \{Point::to_string(p)}")
+  println("opt = \{Some(1)}")
+  println("pair = \{(2, 3)}")
 }
 ```
 

@@ -15,10 +15,6 @@ removed; suspend lives on the effect row).
 ## Eager array tools
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let xs = [
     1,
@@ -33,9 +29,9 @@ fn main with Stdout {
   let doubled = for x in xs {
     x * 2
   }
-  stdout_write("evens length = \{Array::length(evens)}\n")
-  stdout_write("sum = \{sum}\n")
-  stdout_write("doubled[3] = \{Array::get(doubled, 3)}\n")
+  println("evens length = \{Array::length(evens)}")
+  println("sum = \{sum}")
+  println("doubled[3] = \{Array::get(doubled, 3)}")
 }
 ```
 
@@ -58,10 +54,6 @@ closure or a trait iterator is statement-shaped: you cannot write
 marks the slot.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let n = "  vibe  " |> String::trim |> String::length
   let xs = [
@@ -70,8 +62,8 @@ fn main with Stdout {
     3
   ]
   let ys = xs |> Array::map(_, _ * 10)
-  stdout_write("trimmed length = \{n}\n")
-  stdout_write("ys[1] = \{Array::get(ys, 1)}\n")
+  println("trimmed length = \{n}")
+  println("ys[1] = \{Array::get(ys, 1)}")
 }
 ```
 

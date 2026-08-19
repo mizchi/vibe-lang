@@ -19,22 +19,18 @@ wasm-gc.
 ## `Array`
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let xs = [
     1,
     2,
     3
   ]
-  stdout_write("xs[0] = \{xs[0]}\n")
-  stdout_write("length = \{Array::length(xs)}\n")
+  println("xs[0] = \{xs[0]}")
+  println("length = \{Array::length(xs)}")
   let doubled = Array::map(xs, _ * 2)
-  stdout_write("doubled[2] = \{Array::get(doubled, 2)}\n")
+  println("doubled[2] = \{Array::get(doubled, 2)}")
   Array::push(xs, 4)
-  stdout_write("after push, length = \{Array::length(xs)}\n")
+  println("after push, length = \{Array::length(xs)}")
 }
 ```
 
@@ -50,16 +46,12 @@ sees the new length. Prefer `ArrayBuilder` when you accumulate once and
 then only read.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 10)
   ArrayBuilder::push(b, 20)
   let xs = ArrayBuilder::freeze(b)
-  stdout_write("built length = \{Array::length(xs)}, [0] = \{xs[0]}\n")
+  println("built length = \{Array::length(xs)}, [0] = \{xs[0]}")
 }
 ```
 
@@ -70,15 +62,11 @@ built length = 2, [0] = 10
 ## `StringBuilder`
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let b = StringBuilder::new()
   StringBuilder::push(b, "hello ")
   StringBuilder::push(b, "vibe")
-  stdout_write(String::concat(StringBuilder::build(b), "\n"))
+  println(StringBuilder::build(b))
 }
 ```
 
@@ -93,9 +81,6 @@ General-purpose maps live in `@vibe/core`. `MutMap::new_string` /
 closures for the common cases.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
 import @vibe/core {
   type MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
 }
@@ -112,9 +97,9 @@ fn main with Stdout {
   MutMap::set(m, "a", 1)
   MutMap::set(m, "b", 2)
   MutMap::set(m, "a", 7)
-  stdout_write("size = \{MutMap::size(m)}\n")
-  stdout_write("a = \{unwrap_or(MutMap::get(m, "a"), -1)}\n")
-  stdout_write("z = \{unwrap_or(MutMap::get(m, "z"), -1)}\n")
+  println("size = \{MutMap::size(m)}")
+  println("a = \{unwrap_or(MutMap::get(m, "a"), -1)}")
+  println("z = \{unwrap_or(MutMap::get(m, "z"), -1)}")
 }
 ```
 

@@ -7,31 +7,27 @@ English version: [03_data.vibe.md](03_data.vibe.md) (canonical)
 ## tuple / array / record
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let t = (1, "two", true)
-  stdout_write("t.0 = \{t.0}\n")
+  println("t.0 = \{t.0}")
   let a = [
     1,
     2,
     3
   ]
-  stdout_write("a[0] = \{a[0]}\n")
-  stdout_write("Array::length(a) = \{Array::length(a)}\n")
+  println("a[0] = \{a[0]}")
+  println("Array::length(a) = \{Array::length(a)}")
   let r = record {
     name: "vibe",
     ver: 1
   }
-  stdout_write("r.name = \{r.name}, r.ver = \{r.ver}\n")
+  println("r.name = \{r.name}, r.ver = \{r.ver}")
   // 分配束縛も、複数の field を局所名へ取り出すときに使える
   let record {
     name: n,
     ver: v
   } = r
-  stdout_write("n = \{n}, v = \{v}\n")
+  println("n = \{n}, v = \{v}")
 }
 ```
 
@@ -49,10 +45,6 @@ anonymous record も `r.name` のように field を読める。分配束縛は�
 ## struct と derive
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 struct Point {
   x: Int; y: Int
 } derive (Eq, Ord, Show)
@@ -61,10 +53,10 @@ fn main with Stdout {
   let p = Point::{
     x: 1, y: 2
   }
-  stdout_write("p.x = \{p.x}\n")
-  stdout_write("compare(p, {x:1,y:3}) = \{Point::compare(p, Point::{ x: 1, y: 3 })}\n")
+  println("p.x = \{p.x}")
+  println("compare(p, {x:1,y:3}) = \{Point::compare(p, Point::{ x: 1, y: 3 })}")
   // derive(Ord): -1 / 0 / 1
-  stdout_write("to_string(p) = \{Point::to_string(p)}\n")
+  println("to_string(p) = \{Point::to_string(p)}")
   // derive(Show)
 }
 ```
@@ -78,10 +70,6 @@ to_string(p) = Point { x: 1, y: 2 }
 ## enum と match
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 enum Shape {
   Circle(Int);
   Rect(Int, Int)
@@ -95,8 +83,8 @@ fn area(s: Shape) -> Int {
 }
 
 fn main with Stdout {
-  stdout_write("area(Circle(2)) = \{area(Circle(2))}\n")
-  stdout_write("area(Rect(6, 7)) = \{area(Rect(6, 7))}\n")
+  println("area(Circle(2)) = \{area(Circle(2))}")
+  println("area(Rect(6, 7)) = \{area(Rect(6, 7))}")
 }
 ```
 
@@ -108,10 +96,6 @@ area(Rect(6, 7)) = 42
 ## match の道具箱: ガード / or-pattern / リテラル
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn classify(n: Int) -> String {
   match n {
     0 => "zero",
@@ -122,10 +106,10 @@ fn classify(n: Int) -> String {
 }
 
 fn main with Stdout {
-  stdout_write("classify(0) = \{classify(0)}\n")
-  stdout_write("classify(2) = \{classify(2)}\n")
-  stdout_write("classify(-5) = \{classify(-5)}\n")
-  stdout_write("classify(99) = \{classify(99)}\n")
+  println("classify(0) = \{classify(0)}")
+  println("classify(2) = \{classify(2)}")
+  println("classify(-5) = \{classify(-5)}")
+  println("classify(99) = \{classify(99)}")
 }
 ```
 
@@ -148,10 +132,6 @@ classify(99) = big
 後者は `export { .. }` に分ける。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 struct Version {
   major: Int; minor: Int
 }
@@ -171,7 +151,7 @@ let Version::{
 }
 
 fn main with Stdout {
-  stdout_write("sum = \{left + right}, \{name} \{major}.\{minor}\n")
+  println("sum = \{left + right}, \{name} \{major}.\{minor}")
 }
 ```
 
@@ -184,19 +164,15 @@ sum = 42, vibe 0.3
 同じ形は関数本体でも使える (`is` 式による絞り込みと組み合わせられる)。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let (a, b) = (1, 2)
-  stdout_write("a + b = \{a + b}\n")
+  println("a + b = \{a + b}")
   let opt = Some(41)
   if opt is Some(w) {
-    stdout_write("w = \{w}\n")
+    println("w = \{w}")
     // w が束縛される
   }
-  stdout_write("opt is Some(_) = \{opt is Some(_)}\n")
+  println("opt is Some(_) = \{opt is Some(_)}")
   // -> Bool
 }
 ```
@@ -218,10 +194,6 @@ compiler test に固定してある。使い分けは「1回作って以後読�
 `ArrayBuilder`、既にある `Array` を伸ばすなら `Array::push`」。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let arr = {
     let bld = ArrayBuilder::new()
@@ -230,8 +202,8 @@ fn main with Stdout {
     ArrayBuilder::freeze(bld)
     // -> Array[Int]
   }
-  stdout_write("length = \{Array::length(arr)}\n")
-  stdout_write("arr[1] = \{Array::get(arr, 1)}\n")
+  println("length = \{Array::length(arr)}")
+  println("arr[1] = \{Array::get(arr, 1)}")
 }
 ```
 

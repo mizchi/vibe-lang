@@ -19,10 +19,6 @@ preserve type arguments across the handler. For when to reach for a typed
 exception instead, see [ADR-0085](../exception-effect.md).
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn risky(x: Int) -> Int with Exception {
   if x == 0 {
     perform Exception::Throw("division by zero")
@@ -35,7 +31,7 @@ fn main with Stdout {
     risky(0)
   } with Exception {
     Throw(message) => {
-      stdout_write("exception: \{message}\n")
+      println("exception: \{message}")
       0 - 1
     }
   }
@@ -44,8 +40,8 @@ fn main with Stdout {
   } with Exception {
     Throw(_) => 0 - 1
   }
-  stdout_write("safe = \{safe}\n")
-  stdout_write("fine = \{fine}\n")
+  println("safe = \{safe}")
+  println("fine = \{fine}")
 }
 ```
 
@@ -82,10 +78,6 @@ An effect is a *declaration of operations*. The implementation â€” the handler â
 is supplied by the caller.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 effect Ask {
   Value(String) -> Int
 }
@@ -101,7 +93,7 @@ fn main with Stdout {
   } with Ask {
     Value(_q) => resume(41)
   }
-  stdout_write("v = \{v}\n")
+  println("v = \{v}")
 }
 ```
 
@@ -159,16 +151,12 @@ An effect row can be a variable, which is how you write a higher-order function
 that carries whatever effects the function it was handed has.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
 
 fn main with Stdout {
-  stdout_write("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}\n")
+  println("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}")
 }
 ```
 

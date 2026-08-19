@@ -10,10 +10,6 @@ A top-level `fn` needs full annotations. Type arguments on a struct
 literal can be inferred from the fields, or pinned with `Box[Int]::{ ... }`.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 struct Box[T] {
   v: T
 }
@@ -26,7 +22,7 @@ fn main with Stdout {
   let b = Box::{
     v: 41
   }
-  stdout_write("id = \{identity(b.v + 1)}\n")
+  println("id = \{identity(b.v + 1)}")
 }
 ```
 
@@ -43,18 +39,14 @@ structural `==` is generated as `T::equals`. `Ord` gives
 which interpolation also uses.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 enum Color {
   Red; Green; Blue
 } derive (Eq, Show)
 
 fn main with Stdout {
-  stdout_write("eq = \{Color::Red == Color::Red}\n")
-  stdout_write("neq = \{Color::Red == Color::Blue}\n")
-  stdout_write("show = \{Color::Green}\n")
+  println("eq = \{Color::Red == Color::Red}")
+  println("neq = \{Color::Red == Color::Blue}")
+  println("show = \{Color::Green}")
 }
 ```
 
@@ -73,10 +65,6 @@ dictionary, and that is what you want for user code. Marker `impl`s on
 been erased, so `==` would silently become reference equality.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 trait Measured {
   measure(Self) -> Int
 }
@@ -97,7 +85,7 @@ fn main with Stdout {
     2,
     3
   ]
-  stdout_write("size_of = \{size_of(xs)}\n")
+  println("size_of = \{size_of(xs)}")
 }
 ```
 
