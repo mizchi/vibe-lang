@@ -465,19 +465,29 @@ completion / signature help を提供する。詳細は
 - **`~` (bit_not) 非対応**: `x ^ mask` で代用
 - **ビット演算子**: `&`, `|`, `^`, `<<`, `>>` は使用可能
 
-## 実装上の Gotcha (MoonBit ホスト側)
+## 実装上の Gotcha
 
-- **MoonBit `String <` は length-first**: `"buf" < "acc_bits"` が `true` になる
-  (長さ比較が先、その後 char 比較)。**lexicographic な順序が必要なら自前で
-  char-by-char 比較する関数を書くこと**。compiler/codegen 内で構造体の
-  field を sort する箇所 (`sort_record_fields_expr`, `register_struct_types_gc`
-  等) でこの落とし穴で ADR-0052 実装中に wasm-gc cast-failure を生んだ実例
-  あり (`src/codegen/wasm_codegen_data.mbt::record_field_name_lt` 参照)。
-- **`is_mut~` のような短縮ラベル記法は struct literal 内で使えないことがある**:
-  `StructField::{ is_mut~, ... }` が parse error になる場面があった。
-  保守的に `is_mut: is_mut` と書くのが無難。
-- **`/* */` C-style block comment 非対応**: MoonBit は `//` line comment のみ。
-  式の中にコメントを挟みたい場合は別行に分ける。
+- **`String` の `<` は「checker が String と知っているか」で順序が変わる (#2128,
+  P0)**。実測 2026-08-19、同じ 2 つの文字列 `"buf"` と `"acc_bits"` で:
+
+  | 値の取り出し方 | `a < b` |
+  |---|---|
+  | 素の `let` / `Array[String]` からの `Array::get` / `let a: String = ...` | **false** (lexicographic) |
+  | tuple リテラルの destructure / `Array[(String, String)]` の destructure / `.0` `.1` | **true** (length-first) |
+
+  tuple 経由で型が伝わらないと generic 比較 (length-first) に落ちる。`(a: String,
+  b: String)` の関数に渡す・`let a2: String = a` で注釈し直す・`String::concat(a,
+  "")` を通す、のいずれでも lexicographic に戻る。**診断は出ない。**
+  順序が意味を持つ場所 (canonical sort・path の並び) では
+  `@vibe/core` の `str_lt` を使うこと — compiler 内の
+  `sort_module_diagnostics` / `plan_module_order` がそうしている。
+  この節は長らく「MoonBit の `String <` が length-first」と書いており、根拠に
+  #594 で退役した `src/codegen/wasm_codegen_data.mbt` を挙げていた。落とし穴は
+  実在するが retired host のものではなく、現行 vibe の**型情報依存の分岐**である
+  (ADR-0052 当時の経緯は `docs/archive/adr/0052-mut-struct-field.md`)。
+- **`/* */` C-style block comment 非対応** (実測): vibe も `//` の行コメントのみ
+  で、`/* ... */` は `unexpected token: /` になる。式の中にコメントを挟みたい
+  場合は別行に分ける。
 
 ## Tooling
 

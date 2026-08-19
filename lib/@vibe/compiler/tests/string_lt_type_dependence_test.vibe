@@ -1,0 +1,75 @@
+//# `String` `<` gives two different orderings for the same pair, depending on
+//# whether the checker knows the operand is a `String` (#2128, P0).
+//#
+//# These tests pin TODAY'S behaviour, both halves of it. They are not an
+//# endorsement: the split is a bug, and when it is fixed the `length_first`
+//# tests below will FAIL. That is the signal to delete them and keep the
+//# lexicographic ones -- promote, do not re-pin.
+//#
+//# Why pin a bug: two call sites in the compiler
+//# (`typecheck_fs.vibe::module_diag_lt`, `module_graph`'s `plan_module_order`)
+//# use `str_lt` instead of `<` precisely because of this, and the reason
+//# recorded next to them was wrong (it blamed the retired MoonBit host). With
+//# nothing measuring it, the next reader had no way to tell which spellings
+//# were safe.
+//#
+//# `"buf"` vs `"acc_bits"`: 3 bytes vs 8, and 'b' > 'a'. Length-first says
+//# buf < acc_bits; lexicographic says it does not.
+
+//# Tests
+
+test "2128: a plain let compares lexicographically" {
+  let a = "buf"
+  let b = "acc_bits"
+  assert(!(a < b))
+  assert(b < a)
+}
+
+test "2128: an Array[String] element compares lexicographically" {
+  let xs = ["buf", "acc_bits"]
+  let a = Array::get(xs, 0)
+  let b = Array::get(xs, 1)
+  assert(!(a < b))
+}
+
+test "2128: an annotated binding compares lexicographically" {
+  let xs = ["buf", "acc_bits"]
+  let a: String = Array::get(xs, 0)
+  let b: String = Array::get(xs, 1)
+  assert(!(a < b))
+}
+
+test "2128 (length_first, DELETE WHEN FIXED): a tuple-literal destructure does not" {
+  let (a, b) = ("buf", "acc_bits")
+  // Lexicographically this is false. It is true, because the destructure
+  // loses `String` and `<` falls back to a length-first generic compare.
+  assert(a < b)
+}
+
+test "2128 (length_first, DELETE WHEN FIXED): an annotated Array[(String, String)] does not either" {
+  let ps: Array[(String, String)] = [("buf", "acc_bits")]
+  let (a, b) = Array::get(ps, 0)
+  assert(a < b)
+  // ...and `.0` / `.1` on the same tuple agree with the destructure.
+  let p = Array::get(ps, 0)
+  assert(p.0 < p.1)
+}
+
+fn take_strings(a: String, b: String) -> Bool {
+  a < b
+}
+
+test "2128: everything that restores the String type restores the ordering" {
+  let ps: Array[(String, String)] = [("buf", "acc_bits")]
+  let (a, b) = Array::get(ps, 0)
+  // through a typed parameter
+  assert(!take_strings(a, b))
+  // through a re-annotated binding
+  let a2: String = a
+  let b2: String = b
+  assert(!(a2 < b2))
+  // through a String-returning builtin
+  let a3 = String::concat(a, "")
+  let b3 = String::concat(b, "")
+  assert(!(a3 < b3))
+}
