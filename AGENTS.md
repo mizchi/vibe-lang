@@ -475,24 +475,30 @@ completion / signature help を提供する。詳細は
 
 ## 実装上の Gotcha
 
-- **`String` の `<` は「checker が String と知っているか」で順序が変わる (#2128,
-  P0)**。実測 2026-08-19、同じ 2 つの文字列 `"buf"` と `"acc_bits"` で:
+- **`String` の `<` は型が `<` の lowering まで届かないとアドレス比較になる
+  (#2128)**。`<` の素の lowering は (ptr<<32)|len 表現への i64 比較なので、
+  型が分からないと**ポインタを比べる** (#746 がその理由を書いている)。かつては
+  最も鋭い形として `p == q` と `p < q` が同時に true になった。
 
-  | 値の取り出し方 | `a < b` |
+  **tuple リテラル経由は修正済み** (注釈あり・なし、`t.0` 射影・destructure の
+  いずれも内容比較)。**残っているのは tuple が別の値から来る場合**:
+
+  | tuple の出どころ | `<` |
   |---|---|
-  | 素の `let` / `Array[String]` からの `Array::get` / `let a: String = ...` | **false** (lexicographic) |
-  | tuple リテラルの destructure / `Array[(String, String)]` の destructure / `.0` `.1` | **true** (length-first) |
+  | tuple リテラル (`let t = (a, b)` / `let (p, q) = (a, b)` / `t: (String, String)`) | 内容比較 |
+  | `Array[(String, String)]` の要素 / 関数の戻り値 / 入れ子 tuple の要素 | **アドレス比較** (#2128 に残件) |
 
-  tuple 経由で型が伝わらないと generic 比較 (length-first) に落ちる。`(a: String,
-  b: String)` の関数に渡す・`let a2: String = a` で注釈し直す・`String::concat(a,
-  "")` を通す、のいずれでも lexicographic に戻る。**診断は出ない。**
-  順序が意味を持つ場所 (canonical sort・path の並び) では
-  `@vibe/core` の `str_lt` を使うこと — compiler 内の
-  `sort_module_diagnostics` / `plan_module_order` がそうしている。
-  この節は長らく「MoonBit の `String <` が length-first」と書いており、根拠に
-  #594 で退役した `src/codegen/wasm_codegen_data.mbt` を挙げていた。落とし穴は
-  実在するが retired host のものではなく、現行 vibe の**型情報依存の分岐**である
-  (ADR-0052 当時の経緯は `docs/archive/adr/0052-mut-struct-field.md`)。
+  残件を踏んだときの回避は 3 つとも有効: `(a: String, b: String)` の関数に
+  渡す・`let a2: String = a` で注釈し直す・`String::concat(a, "")` を通す。
+  **診断は出ない。** 順序が意味を持つ場所 (canonical sort・path の並び) では
+  `@vibe/core` の `str_lt` を使うこと — compiler 内の `sort_module_diagnostics`
+  / `plan_module_order` がそうしている。
+
+  この節は長らく「MoonBit の `String <` は length-first」と書き、根拠に #594 で
+  退役した `src/codegen/wasm_codegen_data.mbt` を挙げていた。length-first が
+  正解に見えたのは例が `"buf"` (3) vs `"acc_bits"` (8) の 1 つだけだったからで、
+  同じ長さでは崩れる (`"bbb" < "aaa"` が true、`"aaa" < "bbb"` が false)。
+
 - **`/* */` C-style block comment 非対応** (実測): vibe も `//` の行コメントのみ
   で、`/* ... */` は `unexpected token: /` になる。式の中にコメントを挟みたい
   場合は別行に分ける。

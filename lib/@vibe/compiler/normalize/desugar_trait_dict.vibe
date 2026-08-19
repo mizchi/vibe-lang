@@ -217,6 +217,17 @@ fn empty_str_array() -> Array[String] {
   array_empty()
 }
 
+/// #2128: empty environments for `arm_binder_var_types`'s environment-free
+/// entry point. Not "no answer" -- `infer_arg_type_name` still resolves
+/// literals and names already recorded in `var_types` from them.
+fn empty_struct_sets() -> Array[(String, Array[String])] {
+  array_empty()
+}
+
+fn empty_fn_returns() -> Array[(String, String)] {
+  array_empty()
+}
+
 /// #886: empty explicit-type-argument list for constructed ERecord nodes
 /// (dict witnesses / trait defaults never carry explicit struct type args).
 fn empty_ty_args() -> Array[TypeExpr] {
@@ -1190,6 +1201,65 @@ fn ctor_enum_of_name(fn_returns: Array[(String, String)], name: String) -> Optio
   }
 }
 
+/// #2128: `<name>.<i>` on a name whose tuple shape `tuple_shape_bind` recorded
+/// -> element `i`'s type name. `None` when the field is not an index, the name
+/// has no recorded tuple shape, the index is out of range, or the element's
+/// type was not inferable (recorded as an EMPTY entry -- see
+/// `tuple_shape_parts`, which preserves those so the entry count equals the
+/// arity).
+fn dtd_tuple_elem_type_name(obj: Expr, field: String, var_types: Array[(String, String)]) -> Option[String] {
+  match obj {
+    EIdent(n, _) => match dtd_tuple_index_of(field) {
+      Some(idx) => match lookup_var_type(var_types, tuple_shape_key(n)) {
+        Some(sentinel) => {
+          let parts = tuple_shape_parts(sentinel)
+          if idx >= 0 && idx < Array::length(parts) {
+            let elem = Array::get(parts, idx)
+            if String::length(elem) == 0 {
+              None
+            } else {
+              Some(elem)
+            }
+          } else {
+            None
+          }
+        },
+        None => None
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+/// A tuple field is spelled as decimal digits (`t.0`). A struct field never is,
+/// so digits-only is the whole test -- and it must be digits ONLY, or `.0x` on
+/// a struct would read as index 0.
+fn dtd_tuple_index_of(field: String) -> Option[Int] {
+  let n = String::length(field)
+  if n == 0 {
+    None
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while i < n {
+      let c = String::char_code_at(field, i)
+      if c >= 48 && c <= 57 {
+        acc = acc * 10 + (c - 48)
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      Some(acc)
+    } else {
+      None
+    }
+  }
+}
+
 fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match arg {
     EInt(_) => Some("Int"),
@@ -1245,9 +1315,19 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // the body's bytes, with no diagnostic. It also makes `let s = h.s`
     // record `s -> HostStream` (extend_var_types runs infer_arg_type_name on
     // the bound value), so the bind-then-loop spelling works too.
-    EDot(obj, field, _, _) => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
-      Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
-      None => None
+    // #2128: a TUPLE projection (`t.0`) first. `struct_field_type_key` only
+    // knows declared struct fields, so a tuple element fell through to None --
+    // and an untyped operand is exactly what makes `<` compile to a raw i64
+    // compare on the (ptr<<32)|len string repr, i.e. an ADDRESS comparison.
+    // Measured: `let t = ("bbb", "aaa"); t.0 < t.1` answered by address, so
+    // `a == b` and `a < b` could both be true for the same pair. The element
+    // type is already recorded by `tuple_shape_bind`; this is the read side.
+    EDot(obj, field, _, _) => match dtd_tuple_elem_type_name(obj, field, var_types) {
+      Some(elem) => Some(elem),
+      None => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+        Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
+        None => None
+      }
     },
     // A call-valued iterable (`for x in lazy_iter_arr([..])`) or data ctor
     // (`Sh::Circle(5)`): its type is the head of the callee's return type. The
@@ -2582,10 +2662,58 @@ fn tuple_shape_parts(sentinel: String) -> Array[String] {
   out
 }
 
+/// #2128: a `(A, B, ..)` annotation -> the `tuple_shape_key` sentinel (the
+/// element type NAMES, comma-joined). `None` when the annotation is absent or
+/// is not a tuple. An element the shape language cannot spell as a bare name
+/// contributes an EMPTY entry, exactly like `tuple_shape_bind`'s value path, so
+/// the entry count still equals the arity.
+fn dtd_tuple_elem_names_of_ann(ann: Option[TypeExpr]) -> Option[String] {
+  match ann {
+    Some(t) => match t {
+      TyTuple(elems) => if Array::length(elems) == 0 {
+        None
+      } else {
+        let mut acc = ""
+        let mut i = 0
+        while i < Array::length(elems) {
+          let tn = match Array::get(elems, i) {
+            TyName(n) => n,
+            _ => ""
+          }
+          acc = if i == 0 {
+            tn
+          } else {
+            String::concat(acc, String::concat(",", tn))
+          }
+          i = i + 1
+        }
+        Some(acc)
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
 /// #1445: record a let-bound TUPLE literal's shape. Sibling of
 /// `array_elem_bind` -- same "only a bare literal RHS" scope, for the same
 /// reason (this is a syntax-directed pass, not type inference).
 fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  // #2128: an explicit `(A, B)` annotation is the most reliable element list
+  // there is -- the same reason `array_elem_bind` consults one first (#1880).
+  // A local `let t: (String, String) = (..)` is NOT annotation-free: the
+  // parser rewrites it to `((__asc: T) -> __asc)(v)`, which also hides the
+  // `ETuple` from the match below, so before this an annotated tuple recorded
+  // NOTHING and `t.0 < t.1` stayed an address comparison.
+  match dtd_tuple_elem_names_of_ann(dtd_ascribed_type(val)) {
+    Some(sentinel) => {
+      let out = array_empty()
+      push_all_var_types(out, var_types)
+      Array::push(out, (tuple_shape_key(name), sentinel))
+      return out
+    },
+    None => ()
+  }
   match val {
     ETuple(items) => if Array::length(items) > 0 {
       let mut acc = ""
@@ -3118,7 +3246,56 @@ fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, st
 /// (variable, ctor) to work with -- widening it is what a real typed AST is
 /// for, not more sentinels. Everything not matched here behaves exactly as
 /// before.
+/// #2128: the per-element TYPE NAMES of a tuple-valued scrutinee, or an empty
+/// array when they are not knowable. Two sources, both already maintained: a
+/// tuple LITERAL of scalars, and a NAME whose `tuple_shape_bind` record holds
+/// them. The literal case runs the ordinary `infer_arg_type_name`, so a tuple
+/// of CALLS (`(mk(..), mk(..))`) types too -- which is the common spelling.
+///
+/// An element this cannot type is an EMPTY entry, preserved so the count equals
+/// the arity; callers skip those rather than bind a name to "".
+fn dtd_tuple_elem_type_names(scrut: Expr, var_types: Array[(String, String)], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[String] {
+  match scrut {
+    ETuple(items) => {
+      let out = empty_str_array()
+      let mut i = 0
+      let mut any = false
+      while i < Array::length(items) {
+        let tn = match infer_arg_type_name(Array::get(items, i), struct_sets, var_types, fn_returns) {
+          Some(t) => t,
+          None => ""
+        }
+        if String::length(tn) > 0 {
+          any = true
+        } else {
+          ()
+        }
+        Array::push(out, tn)
+        i = i + 1
+      }
+      if any {
+        out
+      } else {
+        empty_str_array()
+      }
+    },
+    EIdent(n, _) => match lookup_var_type(var_types, tuple_shape_key(n)) {
+      Some(sentinel) => tuple_shape_parts(sentinel),
+      None => empty_str_array()
+    },
+    _ => empty_str_array()
+  }
+}
+
+/// The environment-free entry point, kept for `interp_ctor_arm_var_types`,
+/// whose caller carries no `struct_sets`/`fn_returns`. Empty environments cost
+/// nothing there: that path only ever asks about a `PCtor` arm, which reads
+/// recorded payload keys out of `var_types` alone.
 fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  arm_binder_var_types_env(scrut, p, var_types, empty_struct_sets(), empty_fn_returns())
+}
+
+fn arm_binder_var_types_env(scrut: Expr, p: Pat, var_types: Array[(String, String)], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   // #1878: a PTuple arm over a tuple that carries anonymous records — either
   // a NAME whose var_types entry is the compound `__anontup:` sentinel, or a
   // literal tuple scrutinee — hands each element's `__anonrec:` sentinel to
@@ -3161,6 +3338,39 @@ fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, String)])
           tpi = tpi + 1
         }
         return tacc
+      } else {
+        ()
+      }
+      // #2128: no anonymous records involved, but the element TYPES may still
+      // be knowable -- and `let (a, b) = (..)` IS a PTuple arm, since the
+      // parser lowers a pattern let to `EMatch(val, [(pat, rest)])`
+      // (`push_pattern_let_step`). Without this the binders are absent from
+      // `var_types`, so `a < b` on two Strings keeps the raw i64 compare on
+      // the (ptr<<32)|len repr -- an ADDRESS comparison, under which `a == b`
+      // and `a < b` can both be true for the same pair.
+      let tup_elems = dtd_tuple_elem_type_names(scrut, var_types, struct_sets, fn_returns)
+      if Array::length(tup_elems) > 0 {
+        let mut eacc = var_types
+        let mut epi = 0
+        while epi < Array::length(tup_pats) {
+          if epi < Array::length(tup_elems) {
+            match Array::get(tup_pats, epi) {
+              PBind(ev) => {
+                let ety = Array::get(tup_elems, epi)
+                if String::length(ety) == 0 {
+                  ()
+                } else {
+                  eacc = extend_var_types(eacc, ev, Some(ety))
+                }
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          epi = epi + 1
+        }
+        return eacc
       } else {
         ()
       }
@@ -4306,7 +4516,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
         // binders (see arm_binder_var_types) — this walk runs BEFORE the
         // checker, so the arm body's `binding.field` reads rewrite to
         // positional `__rec_field` here too.
-        let arm_vars = arm_binder_var_types(scrut, p, var_types)
+        let arm_vars = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
         Array::push(out, (p, railway_rw(b, struct_sets, arm_vars, fn_returns, changed)))
         i = i + 1
       }
@@ -5799,7 +6009,7 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // known. When the scrutinee is a NAME whose payload type was recorded
         // (`ctor_payload_key`, from a parameter annotation or a let-bound
         // `Some(..)`), the arm's binder gets that type for its body.
-        let arm_vars = arm_binder_var_types(scrut, p, var_types)
+        let arm_vars = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
         Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }

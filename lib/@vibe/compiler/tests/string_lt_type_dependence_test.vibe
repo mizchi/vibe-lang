@@ -1,20 +1,19 @@
-//# `String` `<` gives two different orderings for the same pair, depending on
-//# whether the checker knows the operand is a `String` (#2128, P0).
+//# `String` `<` used to compare ADDRESSES whenever the operand's type did not
+//# reach the `<` lowering (#2128, P0). `#746` had already documented why that
+//# is what a bare `<` compiles to: a raw i64 compare on the (ptr<<32)|len
+//# string repr. What was missing was the type, for a tuple-sourced operand.
 //#
-//# These tests pin TODAY'S behaviour, both halves of it. They are not an
-//# endorsement: the split is a bug, and when it is fixed the `length_first`
-//# tests below will FAIL. That is the signal to delete them and keep the
-//# lexicographic ones -- promote, do not re-pin.
+//# The sharp form, and the one these tests exist for: `p == q` and `p < q`
+//# were BOTH true for the same pair. Structural `==` (ADR-0097) got it right;
+//# `<` did not. It was not "length-first" -- that claim lived in AGENTS.md and
+//# survived because the one example anyone used (`"buf"` 3 bytes vs
+//# `"acc_bits"` 8) gives the same answer either way. On equal-length strings it
+//# came apart, matching first-appearance address order instead.
 //#
-//# Why pin a bug: two call sites in the compiler
-//# (`typecheck_fs.vibe::module_diag_lt`, `module_graph`'s `plan_module_order`)
-//# use `str_lt` instead of `<` precisely because of this, and the reason
-//# recorded next to them was wrong (it blamed the retired MoonBit host). With
-//# nothing measuring it, the next reader had no way to tell which spellings
-//# were safe.
-//#
-//# `"buf"` vs `"acc_bits"`: 3 bytes vs 8, and 'b' > 'a'. Length-first says
-//# buf < acc_bits; lexicographic says it does not.
+//# Fixed for tuple LITERALS (annotated or not), projected (`t.0`) or
+//# destructured (`let (a, b) = ..`). STILL address-comparing when the tuple
+//# itself comes from an array element, a function return, or a nested tuple --
+//# those keep a `deferred` test below, and #2128 tracks them.
 
 //# Tests
 
@@ -39,18 +38,26 @@ test "2128: an annotated binding compares lexicographically" {
   assert(!(a < b))
 }
 
-test "2128 (length_first, DELETE WHEN FIXED): a tuple-literal destructure does not" {
+test "2128: a tuple-literal destructure compares contents" {
   let (a, b) = ("buf", "acc_bits")
-  // Lexicographically this is false. It is true, because the destructure
-  // loses `String` and `<` falls back to a length-first generic compare.
-  assert(a < b)
+  assert(!(a < b))
+  assert(b < a)
 }
 
-test "2128 (length_first, DELETE WHEN FIXED): an annotated Array[(String, String)] does not either" {
+test "2128: an annotated tuple compares contents, projected or destructured" {
+  let t: (String, String) = ("buf", "acc_bits")
+  assert(!(t.0 < t.1))
+  let (a, b) = t
+  assert(!(a < b))
+}
+
+test "2128 (deferred): a tuple reached through an ARRAY still compares addresses" {
+  // The element type of an `Array[(String, String)]` is recorded as a bare
+  // head name, so the tuple's own element types do not survive the hop. Same
+  // for a function-returned tuple and for a nested one. #2128 keeps these.
   let ps: Array[(String, String)] = [("buf", "acc_bits")]
   let (a, b) = Array::get(ps, 0)
   assert(a < b)
-  // ...and `.0` / `.1` on the same tuple agree with the destructure.
   let p = Array::get(ps, 0)
   assert(p.0 < p.1)
 }
@@ -60,6 +67,8 @@ fn take_strings(a: String, b: String) -> Bool {
 }
 
 test "2128: everything that restores the String type restores the ordering" {
+  // Still the array hop (see the deferred test above), so this is the shape
+  // where the workarounds still matter.
   let ps: Array[(String, String)] = [("buf", "acc_bits")]
   let (a, b) = Array::get(ps, 0)
   // through a typed parameter
@@ -72,4 +81,38 @@ test "2128: everything that restores the String type restores the ordering" {
   let a3 = String::concat(a, "")
   let b3 = String::concat(b, "")
   assert(!(a3 < b3))
+}
+
+fn mk(a: String, b: String) -> String {
+  String::concat(a, b)
+}
+
+test "2128: `<` no longer contradicts `==`" {
+  // Identical contents, two distinct heap allocations (built at runtime, so
+  // not interned). This was the sharp form: `p == q` and `p < q` were both
+  // true. Neither strict comparison holds now.
+  let (p, q) = (mk("aa", "bb"), mk("aa", "bb"))
+  assert(p == q)
+  assert(!(p < q))
+  assert(!(q < p))
+}
+
+test "2128: the answer no longer follows allocation order" {
+  // Same contents, allocated in the other order. This used to flip the answer.
+  let q = mk("aa", "bb")
+  let p = mk("aa", "bb")
+  let (pp, qq) = (p, q)
+  assert(pp == qq)
+  assert(!(pp < qq))
+  assert(!(qq < pp))
+}
+
+test "2128: equal-length strings order by content" {
+  // The case that proved it was never "length-first": equal lengths, so a
+  // length-first compare would fall through to content and agree with
+  // lexicographic. It did neither -- it matched address order.
+  let (a, b) = ("bbb", "aaa")
+  assert(!(a < b))
+  let (c, d) = ("aaa", "bbb")
+  assert(c < d)
 }
