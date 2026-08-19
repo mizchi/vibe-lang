@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Integration test for the `vibe` install slice (docs/release-roadmap.md テーマ1):
+# Integration test for the `vibe` install slice (docs/install.md):
 # the viberun runner's vibe::* host imports, the installer, the launcher's
 # run/compile/check/test subcommands, the install-time .cwasm, and the compile
 # diagnostic sidecar. Runs against a throwaway VIBE_HOME so it never touches a

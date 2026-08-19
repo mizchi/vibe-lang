@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression test for `vibe symbols` (LSP document-outline / go-to-definition
-# foundation, docs/release-roadmap.md テーマ4). symbol_spans walks the parsed AST
+# foundation; see docs/editor-and-debugging.md). symbol_spans walks the parsed AST
 # and prints one `NAME KIND START END` line per declared symbol (KIND = LSP
 # SymbolKind int, START/END = char offsets of the declaration name). Unlike a
 # line-regex scan it handles multi-line declarations, module-nested symbols, and
