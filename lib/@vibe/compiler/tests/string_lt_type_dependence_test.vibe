@@ -10,10 +10,14 @@
 //# `"acc_bits"` 8) gives the same answer either way. On equal-length strings it
 //# came apart, matching first-appearance address order instead.
 //#
-//# Fixed for tuple LITERALS (annotated or not), projected (`t.0`) or
-//# destructured (`let (a, b) = ..`). STILL address-comparing when the tuple
-//# itself comes from an array element, a function return, or a nested tuple --
-//# those keep a `deferred` test below, and #2128 tracks them.
+//# Fixed for every tuple source these tests can name: a literal (annotated or
+//# not), projected (`t.0`) or destructured (`let (a, b) = ..`), an element of
+//# an `Array[(String, String)]`, a tuple-returning call, and a nested tuple.
+//# ...and an annotated tuple PARAMETER, including a lambda's. What is left is
+//# two container hops (an array OF arrays of tuples): this pass reads one
+//# recorded shape, it does not walk a chain of them. That keeps the raw
+//# compare, and is why `str_lt` remains the right tool when an ordering has to
+//# be canonical regardless of spelling.
 
 //# Tests
 
@@ -51,24 +55,50 @@ test "2128: an annotated tuple compares contents, projected or destructured" {
   assert(!(a < b))
 }
 
-test "2128 (deferred): a tuple reached through an ARRAY still compares addresses" {
-  // The element type of an `Array[(String, String)]` is recorded as a bare
-  // head name, so the tuple's own element types do not survive the hop. Same
-  // for a function-returned tuple and for a nested one. #2128 keeps these.
+test "2128: a tuple reached through an ARRAY compares contents" {
+  // `array_elem_key` records a bare head name, so an `Array[(String, String)]`
+  // records just "Tuple" and the element types are gone. The ARRAY's own
+  // `__shape$` record keeps them -- that is what both the destructure and the
+  // projection read now.
   let ps: Array[(String, String)] = [("buf", "acc_bits")]
   let (a, b) = Array::get(ps, 0)
-  assert(a < b)
+  assert(!(a < b))
   let p = Array::get(ps, 0)
-  assert(p.0 < p.1)
+  assert(!(p.0 < p.1))
+  // ...and unannotated, where the shape comes from the literal instead.
+  let qs = [("buf", "acc_bits")]
+  let (c, d) = Array::get(qs, 0)
+  assert(!(c < d))
+}
+
+fn mk_pair() -> (String, String) {
+  ("buf", "acc_bits")
+}
+
+test "2128: a tuple-returning CALL compares contents" {
+  let (a, b) = mk_pair()
+  assert(!(a < b))
+  let t = mk_pair()
+  assert(!(t.0 < t.1))
+}
+
+test "2128: a NESTED tuple compares contents" {
+  // The inner tuple is bound under the binder's own tuple record rather than
+  // as a type name -- a shape is not a type, and putting one in the type slot
+  // would name something that does not exist.
+  let nested = (("buf", "acc_bits"), 1)
+  let (inner, _n) = nested
+  assert(!(inner.0 < inner.1))
 }
 
 fn take_strings(a: String, b: String) -> Bool {
   a < b
 }
 
-test "2128: everything that restores the String type restores the ordering" {
-  // Still the array hop (see the deferred test above), so this is the shape
-  // where the workarounds still matter.
+test "2128: the three workarounds still give the same answer" {
+  // These were the documented escapes while the bug was open. They must keep
+  // agreeing with the direct spelling, or the fix has split the language in a
+  // new way instead of closing the old split.
   let ps: Array[(String, String)] = [("buf", "acc_bits")]
   let (a, b) = Array::get(ps, 0)
   // through a typed parameter
@@ -115,4 +145,39 @@ test "2128: equal-length strings order by content" {
   assert(!(a < b))
   let (c, d) = ("aaa", "bbb")
   assert(c < d)
+}
+
+fn param_proj(t: (String, String)) -> Bool {
+  t.0 < t.1
+}
+
+fn param_destr(t: (String, String)) -> Bool {
+  let (a, b) = t
+  a < b
+}
+
+test "2128: an annotated tuple PARAMETER compares contents" {
+  // `seed_var_types` records no render shape for a tuple parameter (its own
+  // comment explains why: rendering has a better path through the TypeExpr).
+  // It does seed the equality sentinel, which carries the same element list --
+  // read here, so nothing about what is RECORDED had to change.
+  assert(!param_proj(("buf", "acc_bits")))
+  assert(!param_destr(("buf", "acc_bits")))
+}
+
+test "2128: a lambda's tuple parameter compares contents" {
+  let f = (t: (String, String)) -> Bool {
+    t.0 < t.1
+  }
+  assert(!f(("buf", "acc_bits")))
+}
+
+test "2128 (deferred): TWO container hops still compare addresses" {
+  // An array OF arrays of tuples. This pass reads one recorded shape; it does
+  // not walk a chain of them, so the inner array's element shape is not
+  // reachable from the outer name. #2128 keeps this.
+  let xs = [[("buf", "acc_bits")]]
+  let inner = Array::get(xs, 0)
+  let (a, b) = Array::get(inner, 0)
+  assert(a < b)
 }

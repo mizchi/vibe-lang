@@ -480,19 +480,18 @@ completion / signature help を提供する。詳細は
   型が分からないと**ポインタを比べる** (#746 がその理由を書いている)。かつては
   最も鋭い形として `p == q` と `p < q` が同時に true になった。
 
-  **tuple リテラル経由は修正済み** (注釈あり・なし、`t.0` 射影・destructure の
-  いずれも内容比較)。**残っているのは tuple が別の値から来る場合**:
+  **修正済み**: tuple リテラル (注釈あり・なし)、`t.0` 射影、destructure、
+  `Array[(String, String)]` の要素、tuple を返す関数、入れ子 tuple、
+  注釈付き tuple 引数 (lambda の引数を含む) — いずれも内容比較になる。
 
-  | tuple の出どころ | `<` |
-  |---|---|
-  | tuple リテラル (`let t = (a, b)` / `let (p, q) = (a, b)` / `t: (String, String)`) | 内容比較 |
-  | `Array[(String, String)]` の要素 / 関数の戻り値 / 入れ子 tuple の要素 | **アドレス比較** (#2128 に残件) |
-
-  残件を踏んだときの回避は 3 つとも有効: `(a: String, b: String)` の関数に
-  渡す・`let a2: String = a` で注釈し直す・`String::concat(a, "")` を通す。
-  **診断は出ない。** 順序が意味を持つ場所 (canonical sort・path の並び) では
+  **残るのは container を 2 段またぐ場合** (`Array[Array[(String, String)]]` の
+  ように、記録された shape を鎖状に辿る必要がある形)。このパスは記録済み shape
+  を 1 つ読むだけで鎖は辿らない。そこは今も raw compare で**診断は出ない**ので、
+  順序が綴りに依らず canonical であるべき場所 (path の並びなど) では
   `@vibe/core` の `str_lt` を使うこと — compiler 内の `sort_module_diagnostics`
-  / `plan_module_order` がそうしている。
+  / `plan_module_order` がそうしている。踏んだときの回避は 3 つとも有効:
+  `(a: String, b: String)` の関数に渡す・`let a2: String = a` で注釈し直す・
+  `String::concat(a, "")` を通す。
 
   この節は長らく「MoonBit の `String <` は length-first」と書き、根拠に #594 で
   退役した `src/codegen/wasm_codegen_data.mbt` を挙げていた。length-first が
