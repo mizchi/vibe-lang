@@ -792,12 +792,19 @@ let arr2 = {
 //     the old name ImmutMap is a #deprecated alias (ADR-0100 (3), #1262)
 //   ImmutArray[T] (persistent vector): empty/push/get/set/length/from_array/to_array
 
-// **Need a persistent map? Use `MapHamt`. The builtin `Map` is for small
-// fixed tables** — `Map` is a flat assoc list, so both construction and
-// lookup degrade to O(n²). Measured at n=1000, `MapHamt` is 27.7× faster
-// with 22× fewer allocations (ADR-0100 (3) /
-// bench/bench_map_vs_immutmap.vibe). The compiler itself has hit the same
-// trap internally (#799).
+// **Need a persistent map? Use `MapHamt`.** `Map` is a flat assoc list, so
+// both construction and lookup degrade to O(n²). "The builtin `Map` is for
+// small fixed tables" is still the rule, but "small" means SINGLE DIGITS:
+// measured 2026-08-19 (VIBE_RC=0, ns/op, median of 3), `MapHamt` already wins
+// at n=64, and the two are indistinguishable at n=8 —
+//
+//   n=8     build 1347 vs 1393, lookup 1411 vs 1540   (noise, no winner)
+//   n=64    build 3908 vs 1778, lookup 3886 vs 2082   (MapHamt 1.9-2.2x)
+//   n=1000  build 514892 vs 21122                     (MapHamt 24.4x)
+//
+// so there is no n at which the builtin meaningfully wins. bench/bench_map_vs_immutmap.vibe
+// pins all three points; ADR-0100 (3) records the decision. The compiler
+// itself has hit the same trap internally (#799).
 
 // Deques / priority queues are @vibe/core (#1842, promoted from @vibex):
 //   Deque::new/push_back/pop_front (ring buffer, O(1) at both ends)
