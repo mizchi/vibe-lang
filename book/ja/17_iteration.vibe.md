@@ -1,6 +1,6 @@
 # 17 — 反復
 
-English version: [17_iteration.vibe.md](../src/17_iteration.vibe.md) (canonical)
+English version: [17_iteration.vibe.md](../en/17_iteration.vibe.md) (canonical)
 
 vibe は 2 層に分けている (ADR-0099)。
 

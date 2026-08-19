@@ -2,7 +2,7 @@
 
 前章: [04 Option](04_option.vibe.md)
 
-English version: [05_effects.vibe.md](../src/05_effects.vibe.md) (canonical)
+English version: [05_effects.vibe.md](../en/05_effects.vibe.md) (canonical)
 
 vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect row) で
 宣言し、呼び出し側は `handle` で境界を引くまで伝播する。
@@ -163,6 +163,6 @@ apply_twice = 40
 まだ受理される **legacy ラベル**で、同じ host import を共有する。
 `Console` を宣言すれば legacy ラベルも認可されるが、逆は成立しない
 （`Console` の方が広い capability のため）。詳細は英語版
-[Capabilities](../src/10_capabilities.vibe.md)。
+[Capabilities](../en/10_capabilities.vibe.md)。
 
 次章: [06 テスト](06_tests.vibe.md)

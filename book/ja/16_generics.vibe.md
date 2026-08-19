@@ -1,6 +1,6 @@
 # 16 — ジェネリクス・trait・derive
 
-English version: [16_generics.vibe.md](../src/16_generics.vibe.md) (canonical)
+English version: [16_generics.vibe.md](../en/16_generics.vibe.md) (canonical)
 
 型パラメータは `[T]`、境界は `[T: Eq + Ord]` と書く。同じ `+` が row の
 effect 名も繋ぐ (`with Exception + Fs`) ので、カンマが 2 つの意味を持つ

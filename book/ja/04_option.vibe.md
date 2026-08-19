@@ -2,7 +2,7 @@
 
 前章: [03 データ](03_data.vibe.md)
 
-English version: [04_option.vibe.md](../src/04_option.vibe.md) (canonical)
+English version: [04_option.vibe.md](../en/04_option.vibe.md) (canonical)
 
 ## Option
 

@@ -1,6 +1,6 @@
 # 15 — コレクション
 
-English version: [15_collections.vibe.md](../src/15_collections.vibe.md) (canonical)
+English version: [15_collections.vibe.md](../en/15_collections.vibe.md) (canonical)
 
 vibe は、綴りから可変性が読めるようにコレクションを命名している。
 

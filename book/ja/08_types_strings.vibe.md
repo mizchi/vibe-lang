@@ -1,6 +1,6 @@
 # 08 — 型と文字列
 
-English version: [08_types_strings.vibe.md](../src/08_types_strings.vibe.md) (canonical)
+English version: [08_types_strings.vibe.md](../en/08_types_strings.vibe.md) (canonical)
 
 1 章では `Int` / `Double` / `Bool` / `String` / `Char` を値として見た。
 この章はそれらの型が実際に守っている契約 — 他の言語からの類推で書くと

@@ -2,7 +2,7 @@
 
 前章: [02 制御フロー](02_control_flow.vibe.md)
 
-English version: [03_data.vibe.md](../src/03_data.vibe.md) (canonical)
+English version: [03_data.vibe.md](../en/03_data.vibe.md) (canonical)
 
 ## tuple / array / record
 

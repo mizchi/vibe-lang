@@ -77,7 +77,7 @@ if broken:
         print(f"{path}:{lineno}: broken link: {target} -- {why}", file=sys.stderr)
     print(f"check-book-links: FAIL: {len(broken)} of {total} relative link(s) are broken.", file=sys.stderr)
     print("  A link target is a path relative to the file it appears in. Chapters live in", file=sys.stderr)
-    print("  book/src/ and book/ja/; the index is ../README.md; repository docs are ../../docs/;", file=sys.stderr)
+    print("  book/en/ and book/ja/; the index is ../README.md; repository docs are ../../docs/;", file=sys.stderr)
     print("  the English original of a translation is ../src/.", file=sys.stderr)
     sys.exit(1)
 

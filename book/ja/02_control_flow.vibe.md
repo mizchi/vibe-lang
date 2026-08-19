@@ -2,7 +2,7 @@
 
 前章: [01 値と関数](01_values_functions.vibe.md)
 
-English version: [02_control_flow.vibe.md](../src/02_control_flow.vibe.md) (canonical)
+English version: [02_control_flow.vibe.md](../en/02_control_flow.vibe.md) (canonical)
 
 ## if は式
 

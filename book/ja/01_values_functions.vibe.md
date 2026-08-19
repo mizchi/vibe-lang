@@ -1,19 +1,19 @@
 # 01 — 値と関数
 
 このチャプターは `.vibe.md` そのもの — 各 ` ```vibe run ` ブロックは
-`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md`)
+`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md`)
 で実際にコンパイル・実行され、直後の ` ```output ` ブロックは実行結果を
 そのまま埋め込んだもの (#1142)。手元で更新するときは
 `bash scripts/vibe_md.sh write book/ja/01_values_functions.vibe.md`。
 
-English version: [01_values_functions.vibe.md](../src/01_values_functions.vibe.md) (canonical)
+English version: [01_values_functions.vibe.md](../en/01_values_functions.vibe.md) (canonical)
 
 ## 値と基本型
 
 束縛は `let`。型注釈は省略できる (推論される)。
 
 `println` は builtin なので import は不要。ただし出力する関数には
-`Stdout` row が必要になる — [Capabilities](../src/10_capabilities.vibe.md) 参照。
+`Stdout` row が必要になる — [Capabilities](../en/10_capabilities.vibe.md) 参照。
 
 ```vibe run
 fn main with Console {

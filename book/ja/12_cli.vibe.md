@@ -1,6 +1,6 @@
 # 12 — CLI を IDE として使う
 
-English version: [12_cli.vibe.md](../src/12_cli.vibe.md) (canonical)
+English version: [12_cli.vibe.md](../en/12_cli.vibe.md) (canonical)
 
 vibe のコマンドラインは、エディタが LSP 越しに得るのと同じ意味解析面である。
 想定する第一の読み手は LLM で、そこからいくつかの規則が導かれる。

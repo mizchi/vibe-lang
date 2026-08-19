@@ -1,6 +1,6 @@
 # 2 — 小さなプログラム
 
-English version: [19_a_small_program.vibe.md](../src/19_a_small_program.vibe.md) (canonical)
+English version: [19_a_small_program.vibe.md](../en/19_a_small_program.vibe.md) (canonical)
 
 Rust book は hello-world のあとで一度立ち止まり、数当てゲームを書く。この章が
 その枠にあたる。struct、`Option`、`MutMap`、そして自分に必要なものを述べる

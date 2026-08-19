@@ -117,7 +117,7 @@ the edit that fixes them rather than an internal pass name.
 
 ## Documentation
 
-- **The Vibe Book** (`book/src/`) has 20 doctest-checked chapters, and every ` ```vibe run `
+- **The Vibe Book** (`book/en/`) has 20 doctest-checked chapters, and every ` ```vibe run `
   block in it is compiled and executed by doctest, with its output checked
   against the recorded ` ```output `. A chapter cannot go stale silently.
 - [docs/cheatsheet.md](cheatsheet.md) is the language reference and is
@@ -130,7 +130,7 @@ the edit that fixes them rather than an internal pass name.
 ## Known gaps
 
 - **The Japanese book covers 19 of the 20 doctest-checked chapters.** English
-  is canonical (`book/src/`); `book/ja/` is a translation, and the pair is
+  is canonical (`book/en/`); `book/ja/` is a translation, and the pair is
   checked for identical program output by
   `pkf run check-tutorial-translation-parity`. `01_getting_started` is
   English-only.

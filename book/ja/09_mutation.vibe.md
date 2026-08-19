@@ -1,6 +1,6 @@
 # 09 — ミューテーション・region・エスケープ
 
-English version: [09_mutation.vibe.md](../src/09_mutation.vibe.md) (canonical)
+English version: [09_mutation.vibe.md](../en/09_mutation.vibe.md) (canonical)
 
 vibe は既定で純粋。ミューテーションは存在するが、局所的であり、関数の
 公開 effect row には現れない。組み込みの `Mut` effect も `Ref[T]` も無い。

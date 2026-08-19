@@ -1,6 +1,6 @@
 # 10 — ケーパビリティ
 
-English version: [10_capabilities.vibe.md](../src/10_capabilities.vibe.md) (canonical)
+English version: [10_capabilities.vibe.md](../en/10_capabilities.vibe.md) (canonical)
 
 effect row は「失敗しうる」だけを表すものではない。ホスト I/O は
 **capability** である。関数の型がどの権限を必要とするかを述べ、呼び出し側の

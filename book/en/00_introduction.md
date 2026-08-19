@@ -11,7 +11,7 @@ and the following `` ```output `` fence is that run's stdout. If the compiler
 changes, the book fails CI instead of quietly rotting.
 
 ```bash
-bash scripts/vibe_md.sh check book/src/*.vibe.md
+bash scripts/vibe_md.sh check book/en/*.vibe.md
 bash scripts/vibe_book.sh          # render _build/book/index.html
 ```
 

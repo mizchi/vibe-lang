@@ -79,7 +79,7 @@ consumes on its own:
 Reader-facing documents (tutorial, language tour, install, README) may carry a
 Japanese translation alongside the English one:
 
-- `book/src/01_values_functions.vibe.md` — **canonical, English**
+- `book/en/01_values_functions.vibe.md` — **canonical, English**
 - `book/ja/01_values_functions.vibe.md` — translation
 
 The English file is the source of truth. Prose and code comments translate;
@@ -91,7 +91,7 @@ enforced by `pkf run check-tutorial-translation-parity`
 fails when a chapter has no translation, a translation has no chapter, or the
 two record different output.
 
-The language tour lives in `book/src/` (The Vibe Book). `docs/language-tour/` was **deleted** and folded
+The language tour lives in `book/en/` (The Vibe Book). `docs/language-tour/` was **deleted** and folded
 into [docs/cheatsheet.md](docs/cheatsheet.md) — it was a fourth surface next to
 the cheatsheet, the tutorial and `docs/spec/syntax.md`, and it rotted the way
 this section predicts: doctest compile-checks ` ```vibe ` blocks and is blind to

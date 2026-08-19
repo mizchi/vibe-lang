@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_tutorial_translation_parity.sh -- keep book/src tour chapters and
+# check_tutorial_translation_parity.sh -- keep book/en tour chapters and
 # book/ja translations from drifting apart.
 #
 # AGENTS.md "Language and documentation policy" makes the English chapter the
@@ -26,7 +26,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-tutorial_dir="$repo_root/book/src"
+tutorial_dir="$repo_root/book/en"
 ja_dir="$repo_root/book/ja"
 
 # Emit the ```output blocks of a .vibe.md, in order, with a separator between
@@ -46,7 +46,7 @@ english=("$tutorial_dir"/[0-9][0-9]_*.vibe.md)
 shopt -u nullglob
 
 if [ ${#english[@]} -eq 0 ]; then
-  echo "check-tutorial-translation-parity: FAIL: no chapters found under book/src" >&2
+  echo "check-tutorial-translation-parity: FAIL: no chapters found under book/en" >&2
   exit 1
 fi
 
@@ -75,7 +75,7 @@ for en in "${english[@]}"; do
       <(extract_outputs "$en") <(extract_outputs "$ja"); then
     echo "check-tutorial-translation-parity: FAIL: $(basename "$en") and its translation ran different programs" >&2
     echo '  The two files must run the SAME programs, so their ```output blocks must match.' >&2
-    echo "  Port the code change to both, then: bash scripts/vibe_md.sh write book/src/*.vibe.md book/ja/*.vibe.md" >&2
+    echo "  Port the code change to both, then: bash scripts/vibe_md.sh write book/en/*.vibe.md book/ja/*.vibe.md" >&2
     fail=1
   fi
 done
@@ -87,7 +87,7 @@ for ja in "$ja_dir"/[0-9][0-9]_*.vibe.md; do
   en="$tutorial_dir/$(basename "$ja")"
   if [ ! -f "$en" ]; then
     echo "check-tutorial-translation-parity: FAIL: book/ja/$(basename "$ja") has no canonical English chapter" >&2
-    echo "  expected book/src/$(basename "$ja") -- the translation is the copy, not the source." >&2
+    echo "  expected book/en/$(basename "$ja") -- the translation is the copy, not the source." >&2
     fail=1
   fi
 done

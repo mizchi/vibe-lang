@@ -2,10 +2,10 @@
 
 This chapter *is* a `.vibe.md`: every ` ```vibe run ` block is really compiled
 and run by `pkf run vibe-md-tutorial`
-(`bash scripts/vibe_md.sh check book/src/*.vibe.md`), and the ` ```output `
+(`bash scripts/vibe_md.sh check book/en/*.vibe.md`), and the ` ```output `
 block right after it is that run's output, pasted in (#1142). To refresh it
 locally, run
-`bash scripts/vibe_md.sh write book/src/01_values_functions.vibe.md`.
+`bash scripts/vibe_md.sh write book/en/01_values_functions.vibe.md`.
 
 日本語版: [01_values_functions.vibe.md](../ja/01_values_functions.vibe.md)
 

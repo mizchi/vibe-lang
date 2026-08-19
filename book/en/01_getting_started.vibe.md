@@ -67,7 +67,7 @@ vibe test hello_test.vibe  # run test { } blocks
 If you are in this repository, the chapters themselves are the test:
 
 ```bash
-bash scripts/vibe_md.sh check book/src/01_getting_started.vibe.md
+bash scripts/vibe_md.sh check book/en/01_getting_started.vibe.md
 ```
 
 Next: [A small program](19_a_small_program.vibe.md).

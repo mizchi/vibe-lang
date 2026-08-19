@@ -47,7 +47,7 @@ vibe run hello.vibex        # -> 42
 ```
 
 The book's first program is this same builtin form; see
-[The Vibe Book](../book/README.md) (`book/src/`) (#1949).
+[The Vibe Book](../book/README.md) (`book/en/`) (#1949).
 
 ### Install layout (rustup-style toolchains, #755)
 

@@ -1,6 +1,6 @@
 # 11 — 並行処理
 
-English version: [11_concurrency.vibe.md](../src/11_concurrency.vibe.md) (canonical)
+English version: [11_concurrency.vibe.md](../en/11_concurrency.vibe.md) (canonical)
 
 vibe の公開並行モデルは **shared-nothing structured concurrency**
 (ADR-0068)。OS スレッドを spawn することはない。`TaskGroup` を走らせ、

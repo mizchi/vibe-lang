@@ -1,6 +1,6 @@
 # 18 — 等価性
 
-English version: [18_equality.vibe.md](../src/18_equality.vibe.md) (canonical)
+English version: [18_equality.vibe.md](../en/18_equality.vibe.md) (canonical)
 
 `==` はどの文脈でも構造的等価を意味することになっている (ADR-0097)。
 表面のほとんどは既にそうなっている。まだ参照で比較する経路がいくつか

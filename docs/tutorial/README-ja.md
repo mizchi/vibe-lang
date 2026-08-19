@@ -1,6 +1,6 @@
 # vibe チュートリアルは The Vibe Book に移りました
 
-正本は英語の [The Vibe Book](../../book/README.md) (`book/src/`)。
+正本は英語の [The Vibe Book](../../book/README.md) (`book/en/`)。
 日本語のツアー章は [book/ja/](../../book/ja/) にあります。各章はこれまで通り
 `*.vibe.md` で、`scripts/vibe_md.sh` が `` ```vibe run `` を実行し
 `` ```output `` と照合します。
@@ -8,7 +8,7 @@
 English: [README.md](README.md)
 
 ```bash
-bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md
+bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md
 pkf run vibe-md-tutorial
 ```
 

@@ -1,6 +1,6 @@
 # 13 — wasm をターゲットにする
 
-English version: [13_wasm.vibe.md](../src/13_wasm.vibe.md) (canonical)
+English version: [13_wasm.vibe.md](../en/13_wasm.vibe.md) (canonical)
 
 コンパイラは wasm を吐く wasm プログラムである。wasm は「バックエンドとして
 選ぶもの」ではなく、表現そのもの。内部の値は tagged i64、String は

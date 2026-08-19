@@ -3,7 +3,7 @@
 前章: [06 テスト](06_tests.vibe.md)
 (リポジトリ root か、@vibe/core が materialize 済みの環境で)
 
-English version: [07_modules_packages.vibe.md](../src/07_modules_packages.vibe.md) (canonical)
+English version: [07_modules_packages.vibe.md](../en/07_modules_packages.vibe.md) (canonical)
 
 ## export と相対 import
 

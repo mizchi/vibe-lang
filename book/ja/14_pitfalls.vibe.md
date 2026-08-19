@@ -1,6 +1,6 @@
 # 14 — 落とし穴 (実測)
 
-English version: [14_pitfalls.vibe.md](../src/14_pitfalls.vibe.md) (canonical)
+English version: [14_pitfalls.vibe.md](../en/14_pitfalls.vibe.md) (canonical)
 
 ここに挙げるのは、人の午後を 1 つ潰す規則である。どれも現行のコンパイラで
 実測した。全一覧は [docs/cheatsheet.md](../../docs/cheatsheet.md) にある。
@@ -105,4 +105,4 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 checker が見えているときだけ。注釈のないヘルパの結果は整数のビット
 パターンとして表示されうる。引数に注釈を付けるか `d * 1.0` と書くこと。
 
-次章: [付録](../src/99_appendix.md)。
+次章: [付録](../en/99_appendix.md)。
