@@ -331,6 +331,13 @@ import 解決レーンは診断を文字列で投げるので range が無い)�
 
 ### Editor query primitives — Semantic Code Navigation
 
+> **位置はすべて byte** (ADR-0108)。`START END` は 0-based half-open の byte
+> offset、`<line> <col>` は 1-based の line と 1-based **byte** column。入力側も
+> 同じで、codepoint / UTF-16 の column を渡すと**エラーにならずに別の位置を
+> 答える**。唯一の例外は LSP 境界 (`--json` / `vibe lsp`) で、そこは 0-based
+> line + UTF-16 code unit へ `lib/@vibe/lsp` が変換する。契約と既知の逸脱は
+> [docs/source-range-contract.md](docs/source-range-contract.md)。
+
 ```bash
 # 宣言アウトライン (NAME KIND START END / 行)。go-to-def / outline の基盤
 vibe symbols file.vibe
@@ -338,7 +345,9 @@ vibe symbols file.vibe
 # カーソル位置 (1-based line,col) の識別子の推論型。hover の基盤
 vibe type-at file.vibe <line> <col>
 
-# カーソル位置の binding の全出現箇所 (START END char offset / 行)。rename/refs の基盤
+# カーソル位置の binding の全出現箇所 (START END byte offset / 行)。rename/refs の基盤。
+# 入出力とも byte 単位 — <col> は 1-based byte column、START/END は 0-based byte
+# offset の half-open 区間。契約は docs/source-range-contract.md
 vibe binding-at file.vibe <line> <col>
 
 # 全 diagnostics (parse error 全件 + 型エラー)。**空出力 = clean、診断ありは

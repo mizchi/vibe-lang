@@ -34,12 +34,8 @@ to mention. `--allow-*` flags const-fold and DCE the denied capability
 away: code that needed it is not in the artifact.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn greet(name: String) -> Unit with Stdout {
-  stdout_write("hi \{name}\n")
+  println("hi \{name}")
 }
 
 fn main with Stdout {
@@ -55,7 +51,7 @@ A function that only calls `greet` must itself mention `Stdout`. The
 capability does not appear by magic at `main` — it is inferred from
 calls and then checked against what you wrote.
 
-`stdout_write` is a prelude helper on the **legacy** `Stdout` label.
+The `println` / `print` builtins carry the **legacy** `Stdout` label.
 The current tty capability — the name a grant prompt should say — is
 `Console`. Both compile today; they share the host imports
 (`vibe.stdout_write_stream` and friends) and they do **not** authorize
@@ -112,12 +108,8 @@ The parser stores the split as the emitted row plus a `#allows` marker,
 not as `with A + C`.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with () allows Stdout {
-  stdout_write("authority is a separate clause\n")
+  println("authority is a separate clause")
 }
 ```
 

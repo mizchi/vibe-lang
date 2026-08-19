@@ -9,10 +9,6 @@ English version: [04_option.vibe.md](04_option.vibe.md) (canonical)
 値がない可能性は `Option[T]` (`Some(v)` / `None`) で表す。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn half(n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
@@ -29,8 +25,8 @@ fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
 }
 
 fn main with Stdout {
-  stdout_write("half(10) unwrap_or -1 = \{unwrap_or(half(10), -1)}\n")
-  stdout_write("half(3)  unwrap_or -1 = \{unwrap_or(half(3), -1)}\n")
+  println("half(10) unwrap_or -1 = \{unwrap_or(half(10), -1)}")
+  println("half(3)  unwrap_or -1 = \{unwrap_or(half(3), -1)}")
 }
 ```
 
@@ -45,10 +41,6 @@ half(3)  unwrap_or -1 = -1
 短絡する。囲む関数全体は対応する `Option[...]` を返さなければならない。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn half(n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
@@ -72,8 +64,8 @@ fn sum_halves(a: Int, b: Int) -> Option[Int] {
 }
 
 fn main with Stdout {
-  stdout_write("sum_halves(4, 6) unwrap_or -1 = \{unwrap_or(sum_halves(4, 6), -1)}\n")
-  stdout_write("sum_halves(4, 3) unwrap_or -1 = \{unwrap_or(sum_halves(4, 3), -1)}\n")
+  println("sum_halves(4, 6) unwrap_or -1 = \{unwrap_or(sum_halves(4, 6), -1)}")
+  println("sum_halves(4, 3) unwrap_or -1 = \{unwrap_or(sum_halves(4, 3), -1)}")
 }
 ```
 
@@ -88,10 +80,6 @@ sum_halves(4, 3) unwrap_or -1 = -1
 する。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn half(n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
@@ -114,8 +102,8 @@ fn first_half(a: Int, b: Int) -> Option[Int] {
 }
 
 fn main with Stdout {
-  stdout_write("first_half(4, 6) unwrap_or -1 = \{unwrap_or(first_half(4, 6), -1)}\n")
-  stdout_write("first_half(4, 3) unwrap_or -1 = \{unwrap_or(first_half(4, 3), -1)}\n")
+  println("first_half(4, 6) unwrap_or -1 = \{unwrap_or(first_half(4, 6), -1)}")
+  println("first_half(4, 3) unwrap_or -1 = \{unwrap_or(first_half(4, 3), -1)}")
 }
 ```
 
@@ -146,10 +134,6 @@ resume しうるので脱出とは数えない。
 > `guard` が脱出を必須にしたのはこの形を消すため。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn double_or_zero(o: Option[Int]) -> Int {
   guard o is Some(v) else {
     return 0
@@ -159,8 +143,8 @@ fn double_or_zero(o: Option[Int]) -> Int {
 }
 
 fn main with Stdout {
-  stdout_write("double_or_zero(Some(21)) = \{double_or_zero(Some(21))}\n")
-  stdout_write("double_or_zero(None) = \{double_or_zero(None)}\n")
+  println("double_or_zero(Some(21)) = \{double_or_zero(Some(21))}")
+  println("double_or_zero(None) = \{double_or_zero(None)}")
 }
 ```
 
@@ -172,10 +156,6 @@ double_or_zero(None) = 0
 ## クイックチェックは is 式
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn half(n: Int) -> Option[Int] {
   if n % 2 == 0 {
     Some(n / 2)
@@ -185,9 +165,9 @@ fn half(n: Int) -> Option[Int] {
 }
 
 fn main with Stdout {
-  stdout_write("half(10) is Some(_) = \{half(10) is Some(_)}\n")
+  println("half(10) is Some(_) = \{half(10) is Some(_)}")
   // true
-  stdout_write("half(3) is None = \{half(3) is None}\n")
+  println("half(3) is None = \{half(3) is None}")
   // true
 }
 ```

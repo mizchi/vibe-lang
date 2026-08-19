@@ -13,14 +13,11 @@ locally, run
 
 `let` binds. The type annotation is optional — it is inferred.
 
-`import @vibe/prelude` is on an installed toolchain (`~/.vibe/lib`) as
-well as in the repository `lib/`.
+`println` is a builtin, so nothing is imported here. Printing costs a
+`Stdout` row on every function that reaches it — see
+[Capabilities](10_capabilities.vibe.md).
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let x: Int = 42
   // 63-bit tagged (#1877); literals go up to 2^62-1
@@ -31,14 +28,14 @@ fn main with Stdout {
   // string interpolation is \{expr}
   let c = 'A'
   // a char literal is its character code (Int); 'A' == 65
-  stdout_write("x = \{x}\n")
-  stdout_write("d = \{d}, to_string = \{Double::to_string(d)}\n")
+  println("x = \{x}")
+  println("d = \{d}, to_string = \{Double::to_string(d)}")
   // Double interpolates with \{expr} too, or use Double::to_string
-  stdout_write("d*100 as int = \{Double::to_int(d * 100.0)}\n")
+  println("d*100 as int = \{Double::to_int(d * 100.0)}")
   // Double::to_int when you want it rounded to an integer
-  stdout_write("b = \{b}\n")
-  stdout_write("s = \{s}\n")
-  stdout_write("c = \{c}\n")
+  println("b = \{b}")
+  println("s = \{s}")
+  println("c = \{c}")
 }
 ```
 
@@ -60,17 +57,13 @@ vibe is pure by default. Local mutable state goes in a `let mut`, and leaves the
 block as a value.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let y = {
     let mut v = 0
     v += 1
     v + 1
   }
-  stdout_write("y = \{y}\n")
+  println("y = \{y}")
 }
 ```
 
@@ -100,10 +93,6 @@ fully annotated, and recursion does not need `rec`. The `let` form, generics and
 labelled arguments all mean the same thing.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn add(x: Int, y: Int) -> Int {
   x + y
 }
@@ -131,11 +120,11 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
 }
 
 fn main with Stdout {
-  stdout_write("add(1, 2) = \{add(1, 2)}\n")
-  stdout_write("fact(5) = \{fact(5)}\n")
-  stdout_write("identity(7) = \{identity(7)}\n")
-  stdout_write("inc(41) = \{inc(41)}\n")
-  stdout_write("scaled(x=4, y=2) = \{scaled(x=4, y=2)}\n")
+  println("add(1, 2) = \{add(1, 2)}")
+  println("fact(5) = \{fact(5)}")
+  println("identity(7) = \{identity(7)}")
+  println("inc(41) = \{inc(41)}")
+  println("scaled(x=4, y=2) = \{scaled(x=4, y=2)}")
   // a labelled call
 }
 ```
@@ -164,10 +153,6 @@ omits it. The body sees `Option[T]`. Measured: `if bang` when
 `Option`.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn greet(name: String, times?: Int) -> String {
   let n = match times {
     Some(v) => v,
@@ -177,8 +162,8 @@ fn greet(name: String, times?: Int) -> String {
 }
 
 fn main with Stdout {
-  stdout_write(String::concat(greet("hi"), "\n"))
-  stdout_write(String::concat(greet("hi", 3), "\n"))
+  println(greet("hi"))
+  println(greet("hi", 3))
 }
 ```
 
@@ -190,10 +175,6 @@ hi x3
 ## Lambda shorthand and placeholders
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let xs = [
     1,
@@ -204,8 +185,8 @@ fn main with Stdout {
   // a section for (v) -> v * 2
   let total = Array::fold(xs, 0, _ + _)
   // (acc, v) -> acc + v
-  stdout_write("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]\n")
-  stdout_write("fold sum = \{total}\n")
+  println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
+  println("fold sum = \{total}")
 }
 ```
 

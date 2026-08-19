@@ -16,10 +16,6 @@ erased な handler の payload は String/opaque 扱いで、handler をまた�
 しない。typed exception との使い分けは [ADR-0085](../exception-effect.md) を参照。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn risky(x: Int) -> Int with Exception {
   if x == 0 {
     perform Exception::Throw("division by zero")
@@ -32,7 +28,7 @@ fn main with Stdout {
     risky(0)
   } with Exception {
     Throw(message) => {
-      stdout_write("exception: \{message}\n")
+      println("exception: \{message}")
       0 - 1
     }
   }
@@ -41,8 +37,8 @@ fn main with Stdout {
   } with Exception {
     Throw(_) => 0 - 1
   }
-  stdout_write("safe = \{safe}\n")
-  stdout_write("fine = \{fine}\n")
+  println("safe = \{safe}")
+  println("fine = \{fine}")
 }
 ```
 
@@ -76,10 +72,6 @@ operation 修飾子の `perform Error::Throw(...)` だけは古い生成物を�
 エフェクトは「操作の宣言」。実装 (handler) は呼び出し側が与える。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 effect Ask {
   Value(String) -> Int
 }
@@ -95,7 +87,7 @@ fn main with Stdout {
   } with Ask {
     Value(_q) => resume(41)
   }
-  stdout_write("v = \{v}\n")
+  println("v = \{v}")
 }
 ```
 
@@ -152,16 +144,12 @@ fn main() -> Int {
 高階関数が書ける。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
 
 fn main with Stdout {
-  stdout_write("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}\n")
+  println("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}")
 }
 ```
 

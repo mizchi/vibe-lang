@@ -1,0 +1,213 @@
+//# One source-range contract for the editor query surface (#1941).
+//
+// The commands were built one at a time and nobody wrote down what a position
+// MEANS, so `docs/editor-and-debugging.md` called `symbols` / `binding-at`
+// offsets "char offsets" while the implementation has always emitted BYTE
+// offsets. On ASCII the two agree, which is why the claim survived; on a file
+// with one multi-byte comment above the code it is off by the number of
+// continuation bytes, and slicing by it silently returns the wrong text.
+//
+// Measured, and pinned here:
+//
+//   | surface                  | unit              | base | interval  |
+//   |--------------------------|-------------------|------|-----------|
+//   | symbols START END        | byte offset       | 0    | half-open |
+//   | binding-at START END     | byte offset       | 0    | half-open |
+//   | escapes START END        | byte offset       | 0    | half-open |
+//   | allocs OFFSET            | byte offset       | 0    | point     |
+//   | check text `line L:C-E:` | line, byte column | 1    | half-open |
+//   | type-at / binding-at IN  | line, byte column | 1    | --        |
+//
+// `vibe check --single-file --json` is the one deliberate exception: LSP
+// positions are 0-based lines and UTF-16 code units, `lib/@vibe/lsp` converts
+// at the boundary (`lsp_pos_to_byte_col` / `lsp_byte_col_to_utf16`), and that
+// conversion is the LSP spec's, not this contract's.
+//
+// Every case below slices the source by the range the command reported and
+// compares it to the token that range is supposed to name -- the acceptance
+// criterion #1941 asks for. A test that only compared numbers would pass just
+// as happily on a contract nobody can act on.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  binding_occurrences, collect_all_diagnostics, escape_spans, symbol_spans, type_at_source
+}
+
+//# Misc
+
+/// A file whose first line is a multi-byte comment, so a byte offset and a
+/// codepoint offset into it differ by 16. Everything below line 1 is ASCII,
+/// which keeps the expected tokens readable while still separating the units.
+fn multibyte_source() -> String {
+  "// 日本語のコメント\nfn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
+}
+
+/// `String::to_int` does not exist and the diagnostic prefix is the only
+/// place this file needs a number out of text.
+fn parse_int(text: String) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < String::length(text) {
+    acc = acc * 10 + (String::char_code_at(text, i) - 48)
+    i = i + 1
+  }
+  acc
+}
+
+fn byte_offset_of(source: String, needle: String) -> Int {
+  String::index_of(source, needle)
+}
+
+/// Byte offset where 1-based `line` starts.
+fn line_start_offset(source: String, line: Int) -> Int {
+  let mut off = 0
+  let mut seen = 1
+  let n = String::length(source)
+  while seen < line && off < n {
+    if String::char_code_at(source, off) == 10 {
+      seen = seen + 1
+    } else {
+      ()
+    }
+    off = off + 1
+  }
+  off
+}
+
+/// The `L`, `C` and `E` of a `line L:C-E:` diagnostic prefix, or `(-1, -1, -1)`
+/// when the diagnostic carries no position at all (#2050's synthetic case).
+fn diag_range(message: String) -> (Int, Int, Int) {
+  let at = String::index_of(message, "line ")
+  if at < 0 {
+    (0 - 1, 0 - 1, 0 - 1)
+  } else {
+    let rest = String::substring(message, at + 5, String::length(message))
+    let colon = String::index_of(rest, ":")
+    let line = parse_int(String::substring(rest, 0, colon))
+    let after = String::substring(rest, colon + 1, String::length(rest))
+    let dash = String::index_of(after, "-")
+    let start_col = parse_int(String::substring(after, 0, dash))
+    let tail = String::substring(after, dash + 1, String::length(after))
+    let end_colon = String::index_of(tail, ":")
+    let end_col = parse_int(String::substring(tail, 0, end_colon))
+    (line, start_col, end_col)
+  }
+}
+
+//# Tests
+
+test "symbols offsets are byte offsets, and slicing one returns the name" {
+  let src = multibyte_source()
+  let spans = symbol_spans(src)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (name, _kind, start, end) = Array::get(spans, i)
+    // The point of the whole file: the reported range has to slice back to
+    // the reported name. A codepoint offset would slice three bytes of the
+    // comment's UTF-8 tail instead.
+    assert_eq(String::substring(src, start, end), name)
+    if name == "add" {
+      found = true
+      assert_eq(start, byte_offset_of(src, "add"))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(found)
+}
+
+test "binding-at takes a 1-based byte column and answers in byte offsets" {
+  let src = "// 日本語\nfn main with Stdout {\n  let total = 1\n  println(\"\\{total}\")\n}\n"
+  // `total` on line 3, byte column 7 (1-based): `  let total`.
+  let hits = binding_occurrences(src, 3, 7)
+  assert(Array::length(hits) == 2)
+  let mut i = 0
+  while i < Array::length(hits) {
+    let (start, end) = Array::get(hits, i)
+    assert_eq(String::substring(src, start, end), "total")
+    i = i + 1
+  }
+}
+
+test "a codepoint column addresses a different position, silently" {
+  // The multi-byte text is on the SAME line as the identifier here, so the
+  // byte column and the codepoint column differ -- and the difference is
+  // always the string's own continuation bytes, so a codepoint column lands
+  // EARLIER, somewhere in or just after the literal. The query then answers
+  // about that position instead of erroring, which is the contract's sharpest
+  // edge for an LSP client: it computes UTF-16 columns, `lib/@vibe/lsp`
+  // converts them at the boundary (`lsp_pos_to_byte_col`), and a caller
+  // reaching these functions directly has to do the same conversion itself.
+  let src = "fn main with Stdout {\n  let s = \"こん\"; let v = 1\n  println(\"\\{s}\\{v}\")\n}\n"
+  let byte_col = 25
+  let codepoint_col = 21
+  let by_bytes = binding_occurrences(src, 2, byte_col)
+  assert(Array::length(by_bytes) == 2)
+  let (start, end) = Array::get(by_bytes, 0)
+  assert_eq(String::substring(src, start, end), "v")
+  // Not "it errors" and not "it returns the same answer" -- it answers about
+  // byte 20, which is inside `let`. Whatever that resolves to, it is not the
+  // `v` binding the caller asked about.
+  let by_codepoints = binding_occurrences(src, 2, codepoint_col)
+  if Array::length(by_codepoints) > 0 {
+    let (o_start, o_end) = Array::get(by_codepoints, 0)
+    assert(String::substring(src, o_start, o_end) != "v")
+  } else {
+    ()
+  }
+  assert(Array::length(by_codepoints) != Array::length(by_bytes))
+}
+
+test "a text diagnostic's line and columns are 1-based bytes, half-open" {
+  let src = "fn main with Stdout {\n  let s = \"こん\"; let bad = quux\n  println(\"\\{s}\")\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) == 1)
+  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  assert_eq(line, 2)
+  let base = line_start_offset(src, line)
+  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "quux")
+}
+
+test "CRLF does not shift a column, because \\r is line content" {
+  let src = "fn main with Stdout {\r\n  let bad = quux\r\n}\r\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) == 1)
+  let (line, start_col, end_col) = diag_range(Array::get(diags, 0))
+  assert_eq(line, 2)
+  let base = line_start_offset(src, line)
+  assert_eq(String::substring(src, base + start_col - 1, base + end_col - 1), "quux")
+}
+
+test "a binder inside an interpolation still slices to the binder" {
+  // `\{..}` is lexed as part of the string token, so an offset landing in it
+  // is the case most likely to be recorded against the enclosing literal
+  // rather than the name.
+  let src = "fn main with Stdout {\n  let value = 2\n  println(\"n=\\{value}\")\n}\n"
+  let hits = binding_occurrences(src, 2, 7)
+  assert(Array::length(hits) == 2)
+  let (_s0, _e0) = Array::get(hits, 0)
+  let (s1, e1) = Array::get(hits, 1)
+  assert_eq(String::substring(src, s1, e1), "value")
+  assert(s1 > String::index_of(src, "println"))
+}
+
+test "escapes offsets slice the captured binding's name" {
+  let src = "// 日本\nfn main with Stdout {\n  let mut count = 0\n  let bump = () -> Unit { count = count + 1 }\n  bump()\n  println(\"\\{count}\")\n}\n"
+  let spans = escape_spans(src)
+  assert(Array::length(spans) > 0)
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (name, start, end) = Array::get(spans, i)
+    assert_eq(String::substring(src, start, end), name)
+    i = i + 1
+  }
+}
+
+test "type-at reads the same 1-based byte column the other queries do" {
+  let src = "// 日本語\nfn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
+  // `add` on line 2, byte column 4.
+  assert_eq(type_at_source(src, 2, 4), "(Int, Int) -> Int")
+}

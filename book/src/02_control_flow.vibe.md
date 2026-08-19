@@ -7,17 +7,13 @@ Previous: [01 Values and functions](01_values_functions.vibe.md)
 ## `if` is an expression
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let v = if 1 < 2 {
     "yes"
   } else {
     "no"
   }
-  stdout_write("v = \{v}\n")
+  println("v = \{v}")
 }
 ```
 
@@ -34,10 +30,6 @@ early exit `guard ... else { ... }` added by that same issue is covered in
 [04 Option](04_option.vibe.md#guard--bind-or-bail-out).
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn find_first_neg(arr: Array[Int]) -> Int {
   let mut i = 0
   while i < Array::length(arr) {
@@ -55,8 +47,8 @@ fn find_first_neg(arr: Array[Int]) -> Int {
 }
 
 fn main with Stdout {
-  stdout_write("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}\n")
-  stdout_write("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}\n")
+  println("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}")
+  println("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}")
 }
 ```
 
@@ -71,10 +63,6 @@ find_first_neg([1, 2]) = -1
 `break result`. It writes a fold without any mutable variable.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 {
@@ -82,7 +70,7 @@ fn main with Stdout {
     }
     continue (i + 1, acc + i)
   }
-  stdout_write("sum = \{sum}\n")
+  println("sum = \{sum}")
 }
 ```
 
@@ -117,10 +105,6 @@ A `continue` with no arguments at all means "go round again with every parameter
 unchanged", and that still works.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let r = loop (i = 0, acc = 0) {
     if i >= 3 {
@@ -129,7 +113,7 @@ fn main with Stdout {
     // break(acc, i) is the tuple (acc, i)
     continue (i + 1, acc + i)
   }
-  stdout_write("r = (\{r.0}, \{r.1})\n")
+  println("r = (\{r.0}, \{r.1})")
   // r: (Int, Int) -- not `break acc, i`
 }
 ```
@@ -141,10 +125,6 @@ r = (3, 3)
 ## `for-in` returns an Array
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let doubled = for x in [
     1,
@@ -161,8 +141,8 @@ fn main with Stdout {
     i + x
   }
   // [10, 21]
-  stdout_write("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]\n")
-  stdout_write("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]\n")
+  println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
+  println("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]")
 }
 ```
 
@@ -186,10 +166,6 @@ A user-defined `Type::method` may be typed as `value.method(...)`, but this
 tutorial always writes the canonical form `Type::method(value, ...)`.
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
@@ -207,10 +183,10 @@ fn main with Stdout {
     3
   ] |> Array::map(_, _ * 2)
   let repeated = 7 |> pair(_, _)
-  stdout_write("trimmed_len = \{trimmed_len}\n")
-  stdout_write("arr_len = \{arr_len}\n")
-  stdout_write("mapped = [\{Array::get(mapped, 0)}, \{Array::get(mapped, 1)}, \{Array::get(mapped, 2)}]\n")
-  stdout_write("repeated = \{repeated}\n")
+  println("trimmed_len = \{trimmed_len}")
+  println("arr_len = \{arr_len}")
+  println("mapped = [\{Array::get(mapped, 0)}, \{Array::get(mapped, 1)}, \{Array::get(mapped, 2)}]")
+  println("repeated = \{repeated}")
 }
 ```
 

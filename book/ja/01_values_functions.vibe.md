@@ -12,17 +12,13 @@ English version: [01_values_functions.vibe.md](01_values_functions.vibe.md) (can
 
 束縛は `let`。型注釈は省略できる (推論される)。
 
-`import @vibe/prelude` はインストール済み toolchain（`~/.vibe/lib`）にも
-リポジトリの `lib/` にもあります。
+`println` は builtin なので import は不要。ただし出力する関数には
+`Stdout` row が必要になる — [Capabilities](../src/10_capabilities.vibe.md) 参照。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let x: Int = 42
-  // 62-bit tagged。リテラル上限 2^61-1
+  // 63-bit tagged (#1877)。リテラル上限 2^62-1
   let d: Double = 3.14
   // 64-bit float (小数点リテラルの既定)
   let b: Bool = true
@@ -30,14 +26,14 @@ fn main with Stdout {
   // 文字列補間は \{expr}
   let c = 'A'
   // char リテラルは文字コード (Int)。'A' == 65
-  stdout_write("x = \{x}\n")
-  stdout_write("d = \{d}, to_string = \{Double::to_string(d)}\n")
+  println("x = \{x}")
+  println("d = \{d}, to_string = \{Double::to_string(d)}")
   // Double も \{expr} 補間 / Double::to_string で出せる
-  stdout_write("d*100 as int = \{Double::to_int(d * 100.0)}\n")
+  println("d*100 as int = \{Double::to_int(d * 100.0)}")
   // 整数に丸めたいときは Double::to_int
-  stdout_write("b = \{b}\n")
-  stdout_write("s = \{s}\n")
-  stdout_write("c = \{c}\n")
+  println("b = \{b}")
+  println("s = \{s}")
+  println("c = \{c}")
 }
 ```
 
@@ -59,17 +55,13 @@ vibe は純粋がデフォルト。ローカルな可変状態は `let mut` で�
 値として出す。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let y = {
     let mut v = 0
     v += 1
     v + 1
   }
-  stdout_write("y = \{y}\n")
+  println("y = \{y}")
 }
 ```
 
@@ -97,10 +89,6 @@ let r#fn = 1
 `rec` は不要。let 形式・ジェネリクス・ラベル付き引数も同じ意味論。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn add(x: Int, y: Int) -> Int {
   x + y
 }
@@ -128,11 +116,11 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
 }
 
 fn main with Stdout {
-  stdout_write("add(1, 2) = \{add(1, 2)}\n")
-  stdout_write("fact(5) = \{fact(5)}\n")
-  stdout_write("identity(7) = \{identity(7)}\n")
-  stdout_write("inc(41) = \{inc(41)}\n")
-  stdout_write("scaled(x=4, y=2) = \{scaled(x=4, y=2)}\n")
+  println("add(1, 2) = \{add(1, 2)}")
+  println("fact(5) = \{fact(5)}")
+  println("identity(7) = \{identity(7)}")
+  println("inc(41) = \{inc(41)}")
+  println("scaled(x=4, y=2) = \{scaled(x=4, y=2)}")
   // ラベル付き呼び出し
 }
 ```
@@ -151,10 +139,6 @@ scaled(x=4, y=2) = 42
 本体が見るのは `Option[T]`。
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn greet(name: String, times?: Int) -> String {
   let n = match times {
     Some(v) => v,
@@ -164,8 +148,8 @@ fn greet(name: String, times?: Int) -> String {
 }
 
 fn main with Stdout {
-  stdout_write(String::concat(greet("hi"), "\n"))
-  stdout_write(String::concat(greet("hi", 3), "\n"))
+  println(greet("hi"))
+  println(greet("hi", 3))
 }
 ```
 
@@ -177,10 +161,6 @@ hi x3
 ## ラムダ短縮形とプレースホルダ
 
 ```vibe run
-import @vibe/prelude {
-  stdout_write
-}
-
 fn main with Stdout {
   let xs = [
     1,
@@ -191,8 +171,8 @@ fn main with Stdout {
   // (v) -> v * 2 の section
   let total = Array::fold(xs, 0, _ + _)
   // (acc, v) -> acc + v
-  stdout_write("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]\n")
-  stdout_write("fold sum = \{total}\n")
+  println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
+  println("fold sum = \{total}")
 }
 ```
 

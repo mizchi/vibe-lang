@@ -70,9 +70,21 @@ checked=0
 known_debt=0
 
 for vpkg in "${vpkgs[@]}"; do
-  # 1. package-owned type names (bare, generics stripped by the char class)
+  # 1. package-owned type names (bare, generics stripped by the char class),
+  #    minus the language's own primitives. A contract may re-declare
+  #    `type Int` / `type String` / ... so it reads as a self-contained
+  #    surface -- @vibe/prelude does, under the comment "compiler-provided
+  #    declarations intentionally exposed by this package" -- but re-declaring
+  #    a name is not owning it: the `Int::` / `String::` namespaces belong to
+  #    builtin_registry.vibe, and no package can add to them. Counting them as
+  #    owned made every `fn f(s: String, ...)` in prelude a gap wanting a
+  #    `String::f` companion, which is not a function anyone can write; 39 of
+  #    the 49 violations this lint reported were that. `Byte`, `Parser`,
+  #    `StringView` and the rest of prelude's types are genuinely its own and
+  #    stay in scope, as does @vibe/wit_runtime's own `export enum Result`.
   mapfile -t types < <(grep -oE '^(export )?(opaque )?(type|struct|enum) [A-Z][A-Za-z0-9_]*' "$vpkg" \
-    | sed -E 's/^(export )?(opaque )?(type|struct|enum) //')
+    | sed -E 's/^(export )?(opaque )?(type|struct|enum) //' \
+    | grep -vxE 'Int|Float|Double|Bool|String|Char|Unit|Bytes|Array|Option')
   [ "${#types[@]}" -eq 0 ] && continue
   type_alt="$(IFS='|'; echo "${types[*]}")"
 
