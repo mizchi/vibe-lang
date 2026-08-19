@@ -2607,6 +2607,26 @@ fn effect_is_declared(defs: Array[TypeDef], eff: String) -> Bool {
   }
 }
 
+/// Where the record literal WROTE the value for field `name`, or -1 when the
+/// field is absent or its value carries no offset (a literal -- see
+/// ADR-0108). The sibling of `lookup_actual_field_ty`: that one answers what
+/// type the literal gave a field, this one answers where to point when the
+/// answer is wrong.
+fn lookup_field_expr_off(fields: Array[(String, Expr)], name: String) -> Int {
+  let mut i = 0
+  let mut out = 0 - 1
+  while i < Array::length(fields) {
+    let (fname, fval) = Array::get(fields, i)
+    if fname == name {
+      out = tail_expr_off(fval)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn lookup_actual_field_ty(actual: Array[(String, Type)], name: String) -> Option[Type] {
   let mut i = 0
   let mut out = None
@@ -6614,7 +6634,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (val_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           let s3 = match subst_apply(s2, obj_ty) {
-            CtArray(elem) => check_assignable(subst_apply(s2, elem), subst_apply(s2, val_ty), s2, errors, "Array::push value type mismatch", 0 - 1),
+            CtArray(elem) => check_assignable(subst_apply(s2, elem), subst_apply(s2, val_ty), s2, errors, "Array::push value type mismatch", tail_expr_off(Array::get(args, 1))),
             _ => s2
           }
           (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s3, c2)
@@ -6642,7 +6662,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             ()
           }
           let s4 = match subst_apply(s3, obj_ty) {
-            CtArray(elem) => check_assignable(subst_apply(s3, elem), subst_apply(s3, val_ty), s3, errors, "Array::set value type mismatch", 0 - 1),
+            CtArray(elem) => check_assignable(subst_apply(s3, elem), subst_apply(s3, val_ty), s3, errors, "Array::set value type mismatch", tail_expr_off(Array::get(args, 2))),
             _ => s3
           }
           (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s4, c3)
@@ -7632,7 +7652,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // The assigned value must be assignable to the variable's type
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
       let s1b = match env_lookup(env, name) {
-        Some(var_ty) => check_assignable(var_ty, subst_apply(s1, vt), s1, errors, String::concat("assignment type mismatch for ", name), 0 - 1),
+        Some(var_ty) => check_assignable(var_ty, subst_apply(s1, vt), s1, errors, String::concat("assignment type mismatch for ", name), tail_expr_off(val)),
         None => s1
       }
       check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
@@ -7746,7 +7766,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   _ => if rk != 0 {
                     si
                   } else {
-                    check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", 0 - 1)
+                    check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", tail_expr_off(body))
                   }
                 }
               }
@@ -8921,7 +8941,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 match lookup_actual_field_ty(field_tys, dn) {
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
-                    s1 = check_assignable(dty, subst_apply(s1, aty), s1, errors, String::concat("struct field type mismatch for ", dn), 0 - 1)
+                    s1 = check_assignable(dty, subst_apply(s1, aty), s1, errors, String::concat("struct field type mismatch for ", dn), lookup_field_expr_off(fields, dn))
                   },
                   None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
                 }
