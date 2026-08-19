@@ -85,3 +85,37 @@ test "a literal operand still reports without a position, and says nothing false
   assert(String::contains(d, "if condition must be Bool"))
   assert(!String::contains(d, "line "))
 }
+
+test "an incompatible struct field value points at that value" {
+  //   `  let p = P::{ x: s }` -- `s` is column 19.
+  let src = "struct P { x: Int }\n\nfn f() -> Int {\n  let s = \"a\"\n  let p = P::{ x: s }\n  1\n}\n"
+  assert(String::contains(first_diag(src), "struct field type mismatch for x"))
+  assert(anchored_at(src, 5, 19))
+}
+
+test "Array::push and Array::set point at the pushed/stored value" {
+  // Not at the array and not at the call: the array is fine, the value is
+  // what has the wrong type.
+  let push_src = "fn f() -> Int {\n  let a = [1]\n  let s = \"a\"\n  Array::push(a, s)\n  1\n}\n"
+  assert(String::contains(first_diag(push_src), "Array::push value type mismatch"))
+  assert(anchored_at(push_src, 4, 18))
+  let set_src = "fn f() -> Int {\n  let a = [1]\n  let s = \"a\"\n  Array::set(a, 0, s)\n  1\n}\n"
+  assert(String::contains(first_diag(set_src), "Array::set value type mismatch"))
+  assert(anchored_at(set_src, 4, 20))
+}
+
+test "mismatched match arms point at the arm body that disagrees" {
+  // Same shape as the `if` branches above: the first arm's type is the
+  // expectation, so the anchor belongs on the arm being checked against it.
+  let src = "fn f(n: Int) -> Int {\n  let s = \"a\"\n  match n {\n    0 => 1,\n    _ => s\n  }\n}\n"
+  assert(String::contains(first_diag(src), "match arms have incompatible types"))
+  assert(anchored_at(src, 5, 10))
+}
+
+test "an assignment of the wrong type points at the value, not the variable" {
+  // The `region escapes its scope` diagnostic one line above in the same
+  // EAssign arm already anchored this way; this one had been left at -1.
+  let src = "fn f() -> Int {\n  let mut n = 1\n  let s = \"a\"\n  n = s\n  n\n}\n"
+  assert(String::contains(first_diag(src), "assignment type mismatch for n"))
+  assert(anchored_at(src, 4, 7))
+}
