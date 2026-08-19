@@ -76,10 +76,19 @@ jobs:
         # upstream; repo never used it — active gates are -W side only).
         env:
           WASMTIME_VERSION: v47.0.2
+        # `--retry`/`--fail` are not decoration. Without them a single reset on
+        # the release download fails a REQUIRED job for a reason that has
+        # nothing to do with the change under test -- seen on #2112:
+        #   curl: (35) Recv failure: Connection reset by peer
+        #   xz: (stdin): File format not recognized
+        # `--fail` is what keeps the second line from happening at all: bare
+        # curl pipes an HTTP error body into tar, so a 5xx is reported as a
+        # corrupt archive. Every wasmtime/wasm-tools/wac fetch in this
+        # repository's workflows carries the same flags.
         run: |
           set -euo pipefail
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Compiler gate (bootstrap + fixpoint)
         # Fixture lanes run as compiler-gate-lanes (matrix) so they do not
@@ -284,7 +293,7 @@ jobs:
         run: |
           set -euo pipefail
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Cache stage2 (keyed on seed + flat module source)
         id: stage2-cache
@@ -455,7 +464,7 @@ jobs:
         run: |
           set -euo pipefail
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Install wasm-tools (this job only)
         # Same pinned version and prebuilt-first/cargo-fallback shape as the
@@ -466,7 +475,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$PWD/gc-tools"
-          if curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz; then
+          if curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz; then
             cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/gc-tools/"
           else
             cargo install wasm-tools --locked --version "$WASM_TOOLS_VERSION" --root "$PWD/gc-tools-cargo"
@@ -564,7 +573,7 @@ jobs:
         run: |
           set -euo pipefail
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Cache stage2 (keyed on seed + flat module source)
         # The stage2 build is a deterministic function of (seed, committed
@@ -656,7 +665,7 @@ jobs:
         run: |
           set -euo pipefail
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Cache stage2 (keyed on seed + flat module source)
         id: stage2-cache
@@ -797,7 +806,7 @@ jobs:
         run: |
           set -euo pipefail
           dir="wasmtime-v47.0.2-x86_64-linux"
-          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/v47.0.2/${dir}.tar.xz" | tar -xJ
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/v47.0.2/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Install wasm-tools / wac
         # Prebuilt release binaries (validated versions; cargo install is the
@@ -815,13 +824,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$PWD/p3-tools"
-          if curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz; then
+          if curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz; then
             cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/p3-tools/"
           else
             cargo install wasm-tools --locked --version "$WASM_TOOLS_VERSION" --root "$PWD/p3-tools-cargo"
             cp "$PWD/p3-tools-cargo/bin/wasm-tools" "$PWD/p3-tools/"
           fi
-          if curl -fsSL -o "$PWD/p3-tools/wac" "https://github.com/bytecodealliance/wac/releases/download/v${WAC_VERSION}/wac-cli-x86_64-unknown-linux-musl"; then
+          if curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$PWD/p3-tools/wac" "https://github.com/bytecodealliance/wac/releases/download/v${WAC_VERSION}/wac-cli-x86_64-unknown-linux-musl"; then
             chmod +x "$PWD/p3-tools/wac"
           else
             cargo install wac-cli --locked --root "$PWD/p3-tools-cargo"
