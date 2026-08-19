@@ -48,13 +48,23 @@ test "Console is a checked capability, not an ambient one" {
   assert(String::contains(Array::get(d, 0), "Console"))
 }
 
-test "Console and the legacy stream effects do not authorize each other" {
-  // The migration property. `Console` is its own label until Phase 3 removes
-  // the legacy three, so a row must name the one whose operation it calls.
+test "Console subsumes the legacy stream effects, and they do not subsume it" {
+  // This test used to assert the relation was symmetric -- neither label
+  // authorizing the other -- and #2102 deliberately opened one direction of
+  // it. The reason is in the book: the docs call `Console` current and
+  // `Stdout` legacy, while `println` carries `Stdout`, so the label a reader
+  // is told to prefer could not be used with the verb they are taught.
+  //
+  // The direction that opened. `Console` owns all six operations, so it is
+  // the union and may authorize a legacy one.
+  assert(ok("fn f() -> Unit with Console {\n  Stdout::write_stream(\"x\")\n}\n"))
+  assert(ok("fn f() -> Unit with Console {\n  Stderr::write_stream(\"x\")\n}\n"))
+  // The direction that did NOT, and must not: `Stdout` owns two of the six.
+  // Opening this would let a write-only row reach `Console::read_stream` --
+  // the capability escape class #2107/#2108 closed, reintroduced through a
+  // migration alias.
   assert(!ok("fn f() -> Unit with Stdout {\n  Console::write_stream(\"x\")\n}\n"))
-  assert(!ok("fn f() -> Unit with Console {\n  Stdout::write_stream(\"x\")\n}\n"))
   assert(!ok("fn f() -> Unit with Stderr {\n  Console::write_err_stream(\"x\")\n}\n"))
-  assert(!ok("fn f() -> Unit with Console {\n  Stderr::write_stream(\"x\")\n}\n"))
   // ...and the legacy spellings still work on their own, unchanged.
   assert(ok("fn f() -> Unit with Stdout {\n  Stdout::write_stream(\"x\")\n}\n"))
   assert(ok("fn f() -> Unit with Stderr {\n  Stderr::write_stream(\"x\")\n}\n"))

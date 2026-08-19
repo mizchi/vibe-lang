@@ -25,9 +25,10 @@ You get a `vibe` dispatcher, a `viberun` host, and the stdlib under
 ## Hello
 
 A program is a `fn main` with an explicit effect row. The current tty
-capability is **`Console`**. This hello still says `Stdout` because the
-`println` builtin carries that **legacy** label (same host import as
-`Console::write_stream`; the two names do not authorize each other). See
+capability is **`Console`**, and that is what this hello declares. The
+`println` builtin still carries the **legacy** `Stdout` label internally;
+declaring `Console` authorizes it, because `Console` is the union of the
+legacy three. The reverse does not hold — see
 [Capabilities](10_capabilities.vibe.md).
 
 Two spellings are legal. The **bare** `with Console` is the usual hello.

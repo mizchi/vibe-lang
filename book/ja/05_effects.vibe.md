@@ -160,8 +160,9 @@ apply_twice = 40
 ホスト I/O (`Fs` / `Env` / `Http` / **`Console`**) は capability で、
 代数 effect ではない。tty の現行名は `Console`（`Console::write_stream` /
 `read_stream` / `write_err_stream` と `*_char`）。上の例の `Stdout` は
-まだ受理される **legacy ラベル**で、同じ host import を共有するが
-`Console::*` とは相互に認可しない。詳細は英語版
+まだ受理される **legacy ラベル**で、同じ host import を共有する。
+`Console` を宣言すれば legacy ラベルも認可されるが、逆は成立しない
+（`Console` の方が広い capability のため）。詳細は英語版
 [Capabilities](../src/10_capabilities.vibe.md)。
 
 次章: [06 テスト](06_tests-ja.vibe.md)
