@@ -101,7 +101,7 @@ fn f() -> Int {
 ```
 $ vibe grep --json --pattern 'add($(a:args))' span.vibe
 {"start":89,"end":101,"text":"add(one, two)","captures":{"a":{"text":"one, two","start":93}}}
-{"start":105,"end":108,"text":"add(1, 2)","captures":{"a":{"text":"1, 2","start":-1}}}
+{"start":105,"end":108,"text":"add(1, 2)","captures":{"a":{"text":"1, 2","start":null}}}
 ```
 
 The first range stops at 101, the end of `two` — one byte short of the closing
@@ -110,8 +110,17 @@ because both operands are literals and neither is visible to the span. `start`
 is exact in both; only `end` is short.
 
 A capture goes one step further: it carries `start` and **no `end`**, so it
-cannot be sliced at all, and `start` is `-1` when the bound node has no
-recorded offset — the literal case above.
+cannot be sliced at all, and `start` is `null` when the bound node has no
+recorded offset — the literal case above. It used to render `-1`, chosen over
+`0` so the output would not invent a plausible offset. Right intent, wrong
+type: `-1` is still a *number*, and a consumer slicing `src[start:]` on it
+reads from the end of the file rather than failing.
+
+`text` is a **printed form, not a source slice** (measured 2026-08-19).
+`f( a  +  b )` captures as `(a + b)` — parens added, whitespace runs collapsed —
+so `src[start : start + length(text)]` is not the captured source, and an `end`
+cannot be derived from the text either. That is why the capture reports no
+`end` rather than a computed one.
 
 So: **`start` is a position you can trust, `end` is a floor, and `text` is the
 description.** To recover the real extent you must re-lex; `lex_with_offsets`
@@ -123,7 +132,7 @@ Tracked as #1941 (the range) and #1943 (the capture range, "captures also lack
 complete source ranges"). Pinned as measured behaviour, so the numbers above
 cannot drift without a test failing.
 
-An offset-less span is reported as `-1` (JSON) or `<synthetic>` (`vibe grep`
-text, #2035), and a still-unlocated diagnostic as the empty LSP range `0:0-0:0`
+An offset-less span is reported as `null` for a capture and `-1` for a hit
+span (JSON), or `<synthetic>` (`vibe grep` text, #2035), and a still-unlocated diagnostic as the empty LSP range `0:0-0:0`
 with `data.synthetic: true` (#2050). Those are the honest markers; a plausible
 `0:0` is not one, and none of the surfaces above emit one any more.

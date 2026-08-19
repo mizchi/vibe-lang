@@ -165,7 +165,7 @@ test "grep: nested matches are reported as the separate sites they are" {
 
 test "grep: JSON output carries offsets and per-capture spans" {
   let src = "let a = f(1)\n"
-  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":-1}}}\n]\n")
+  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":null}}}\n]\n")
 }
 
 test "grep: no match is empty output, in both text and JSON form" {
@@ -384,11 +384,30 @@ test "grep: a match whose operands are all literals collapses to the head" {
   assert_eq(String::substring(src, 105, 108), "add")
 }
 
-test "grep: a capture carries a start and no end, and -1 when it has neither" {
+test "grep: a capture carries a start and no end, and null when it has neither" {
   // #1943's "captures also lack complete source ranges". `one, two` reports
   // where it begins and nothing about where it stops; `1, 2` cannot even
-  // report that, and says -1 rather than inventing 0.
+  // report that.
+  //
+  // The unlocated case used to render `-1`, chosen over `0` so the output did
+  // not invent a plausible offset. Right intent, wrong type: `-1` is still a
+  // NUMBER, and a consumer that slices `src[start:]` on it reads from the end
+  // of the file instead of failing. `null` carries the same "no offset" and
+  // breaks arithmetic loudly.
   let out = scan_json(span_src(), "add($(a:args))")
   assert(String::contains(out, "\"a\":{\"text\":\"one, two\",\"start\":93}"))
-  assert(String::contains(out, "\"a\":{\"text\":\"1, 2\",\"start\":-1}"))
+  assert(String::contains(out, "\"a\":{\"text\":\"1, 2\",\"start\":null}"))
+  assert(!String::contains(out, "\"start\":-1"))
+}
+
+test "grep: a capture's text is a PRINTED form, not a source slice" {
+  // Measured 2026-08-19 and previously undocumented. `f( a  +  b )` captures
+  // as `(a + b)`: parens added, runs of whitespace collapsed. So
+  // `src[start : start + length(text)]` is NOT the captured source, and an
+  // `end` cannot be derived from the text either -- which is why this reports
+  // no end rather than a computed one.
+  let src = "fn f(x: Int) -> Int { x }\nfn g(a: Int, b: Int) -> Int { f( a  +  b ) }\n"
+  let out = scan_json(src, "f($(x:exp))")
+  assert(String::contains(out, "\"text\":\"(a + b)\""))
+  assert(!String::contains(out, "\"text\":\"a  +  b\""))
 }
