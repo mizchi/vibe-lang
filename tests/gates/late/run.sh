@@ -1068,9 +1068,19 @@ if ! printf '%s' "$scps_once_out" | grep -q "one-shot continuation called twice"
   printf '%s\n' "$scps_once_out" >&2
   exit 1
 fi
+# #1571: the `__DATA__` strip is gone. Every fixture this ran carried an
+# `{"error_contains": ...}` tail that was byte-identical to `$needle` right
+# here, and the gate read its own copy while stripping the fixture's -- the
+# same "one fact, two copies" shape the repository has been removing (six other
+# sections already say "no longer carries an unread `__DATA__` error_contains
+# copy"). The tails are deleted, so this was the LAST `sed '/^__DATA__$/,$d'`
+# in tests/gates/.
+#
+# `_start()` is still dropped: that is a top-level call line, not an
+# expectation, and a rejected fixture must not also fail for having one.
 scps_check_reject() {
   local fixture="$1" needle="$2" tag="$3"
-  sed '/^_start()$/d; /^__DATA__$/,$d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
+  sed '/^_start()$/d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$scpsdir/$tag.vibe" "$scpsdir/$tag.wasm" _start >/dev/null 2>&1 || true
