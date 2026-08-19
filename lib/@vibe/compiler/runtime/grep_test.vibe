@@ -250,6 +250,30 @@ test "grep: a filter with nothing after its operator is an error" {
 test "grep: a malformed pattern says what to write instead of matching nothing" {
   inspect(scan_err("let a = 1\n", "f($x)", no_strings()), "grep pattern: `$` must start a metavariable `$(name:kind)`")
   inspect(scan_err("let a = 1\n", "f($(x))", no_strings()), "grep pattern: expected `$(name:kind)`, e.g. `$(x:exp)`")
+}
+
+test "grep: a declaration pattern is rejected by what the user wrote, not by an internal name" {
+  // #2122: this used to fail with `fn parameter '__vgm_args__p' requires a
+  // type annotation` -- the metavariable's internal encoding, in a checker
+  // message, for a pattern the user DID annotate. The good message existed
+  // already but the parser rejected the declaration before it could run.
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }", no_strings()), "starts a DECLARATION"))
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }", no_strings()), "vibe symbols"))
+  assert(!String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }", no_strings()), "__vgm"))
+  // The partial form is a declaration too, and gets the same answer.
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)", no_strings()), "starts a DECLARATION"))
+  // Other declaration keywords, so the check is about the class not one word.
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "enum $(n:id)", no_strings()), "starts a DECLARATION"))
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "struct $(n:id)", no_strings()), "starts a DECLARATION"))
+}
+
+test "grep: a handle pattern that will not parse is pointed at the shape that works" {
+  // A `handle` pattern DOES work -- with the arms written out, because there
+  // is no metavariable kind for arms. `expected with but got eof` describes
+  // the parser's state, not the spelling that succeeds.
+  let msg = scan_err("fn f() -> Int { 1 }\n", "handle { $(b:exp) }", no_strings())
+  assert(String::contains(msg, "handler arms"))
+  assert(String::contains(msg, "resume($(v:exp))"))
   inspect(scan_err("let a = 1\n", "f($(x:exp", no_strings()), "grep pattern: unterminated metavariable — expected `)` after `$(name:kind)`")
   inspect(scan_err("let a = 1\n", "f($(x:exp)", no_strings()), "grep pattern: expected ) but got eof at #3")
   inspect(scan_err("let a = 1\n", "f($(x:expr))", no_strings()), "grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type")

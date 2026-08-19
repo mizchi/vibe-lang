@@ -369,7 +369,11 @@ fn grep_rewrite_let_star(pattern: String) -> String with Exception {
 /// The pattern string's first identifier after leading whitespace, when that
 /// identifier is `throw` or `perform`. Anything else — a metavar, a wrapping
 /// call, a different name — is `""` and does not filter hits.
-fn grep_pattern_origin(pattern: String) -> String {
+/// The pattern's first identifier-shaped word, or "" when it starts with
+/// something else. Read BEFORE parsing: a declaration-shaped pattern has to be
+/// recognised here, because the parser rejects one with a message about the
+/// metavariable's internal encoding rather than about what the user wrote.
+fn grep_leading_word(pattern: String) -> String {
   let len = String::length(pattern)
   let mut i = 0
   while i < len && (String::char_code_at(pattern, i) == ' ' || String::char_code_at(pattern, i) == 9 || String::char_code_at(pattern, i) == 10 || String::char_code_at(pattern, i) == 13) {
@@ -382,13 +386,22 @@ fn grep_pattern_origin(pattern: String) -> String {
     while i < len && grep_is_ident_char(String::char_code_at(pattern, i)) {
       i = i + 1
     }
-    let word = String::substring(pattern, start, i)
-    if word == "throw" || word == "perform" {
-      word
-    } else {
-      ""
-    }
+    String::substring(pattern, start, i)
   }
+}
+
+fn grep_pattern_origin(pattern: String) -> String {
+  let word = grep_leading_word(pattern)
+  if word == "throw" || word == "perform" {
+    word
+  } else {
+    ""
+  }
+}
+
+/// True when `word` starts a DECLARATION rather than an expression.
+fn grep_is_declaration_word(word: String) -> Bool {
+  word == "fn" || word == "enum" || word == "struct" || word == "trait" || word == "effect" || word == "type" || word == "impl" || word == "import" || word == "export" || word == "suberror"
 }
 
 /// Parse a pattern into its template expression. A pattern that parses to
@@ -396,6 +409,18 @@ fn grep_pattern_origin(pattern: String) -> String {
 /// the shape it actually produced, rather than being matched against nothing.
 export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
   let vars = grep_empty_strings()
+  // #2122: `fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }` used to fail with
+  // `fn parameter '__vgm_args__p' requires a type annotation` -- the
+  // metavariable's internal encoding, in a checker message, for a pattern the
+  // user did annotate. The good message below already existed but was
+  // unreachable: the parser rejects a declaration before the SExpr match runs.
+  // Decide from the leading word instead, which needs no parse.
+  let lead_word = grep_leading_word(pattern)
+  if grep_is_declaration_word(lead_word) {
+    throw(String::concat("grep pattern: `", String::concat(lead_word, "` starts a DECLARATION, and a pattern must be a single EXPRESSION. Search declarations with `vibe symbols <file>` (one `NAME KIND START END [DOC]` per declaration), or write a pattern for something INSIDE the declaration, e.g. a call in its body.")))
+  } else {
+    ()
+  }
   let rewritten = grep_rewrite_let_star(pattern)
   let expanded = grep_expand_metavars(rewritten, vars)
   // Prefix a lex/parse failure so the reader can tell "your PATTERN does not
@@ -404,7 +429,15 @@ export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
   let stmts = handle {
     parse_program(lex(expanded))
   } with Exception {
-    Throw(msg) => throw(String::concat("grep pattern: ", msg))
+    // #2122: a `handle` pattern DOES work -- but only with the arms written
+    // out, because there is no metavariable kind for arms. Without that, the
+    // failure is `expected with but got eof`, which describes the parser's
+    // state and not the spelling that works.
+    Throw(msg) => if lead_word == "handle" {
+      throw(String::concat("grep pattern: ", String::concat(msg, " -- a `handle` pattern needs its `with` clause AND its arms written out, because there is no metavariable kind for handler arms yet. Working shape: `handle { $(b:exp) } with $(e:id) { Get => resume($(v:exp)) }`.")))
+    } else {
+      throw(String::concat("grep pattern: ", msg))
+    }
   }
   if Array::length(stmts) == 0 {
     throw("grep pattern: empty pattern")
