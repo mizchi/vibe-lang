@@ -41,6 +41,12 @@ query surface passes them through unconverted. Two spellings of the same thing:
 
 `vibe rc-classify` and `vibe rc-plan` report no positions at all.
 
+This table is enforced. `scripts/check_source_range_contract.sh`
+(`pkf run check-source-ranges`) probes every row against a source with two
+4-byte emoji to the LEFT of the position under test, so the byte, codepoint and
+UTF-16 columns are three different numbers — on an ASCII fixture all three
+agree and the check would prove nothing, which its self-test pins as a failure.
+
 ## The one deliberate exception: LSP
 
 `vibe check --single-file --json` and the `vibe lsp` server emit **LSP**
