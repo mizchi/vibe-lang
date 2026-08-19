@@ -25,11 +25,19 @@ MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row 
 あり triage でも P0 = silent-wrong が「落ちる」より上 (P1)。診断は内部用語
 (pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り —
 ただし以下は**決定済み・実装はこれから** (現在の挙動と混同しないこと):
-`==` の全文脈構造的統一 (ADR-0097, #1526 — 裸 / tuple 内 / struct 内は構造的に
-着地済み (名前経由の裸配列は要素がスカラーのときのみ、#1569)。**残る参照等価**:
-消去された型変数 (`[T: Eq]` の `T`)・関数戻り値経由・空リテラル束縛・要素型が
-スカラーでない名前経由の裸配列。cheatsheet の「`Array` の `==`」に現在の境界が
-ある)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
+`==` の全文脈構造的統一 (ADR-0097, #1526 — **実測 2026-08-19 では silent な
+参照等価はもう残っていない**。裸 / 名前経由 / tuple 内 / struct 内・入れ子配列・
+`Array[String]` / `Array[(Int, Int)]` / `Array[Struct]`・関数戻り値経由・
+空リテラル束縛 (注釈あり・なし両方) がすべて構造的で、長さ違い・要素違いは
+false になる。この節はかつてこの 4 つを「残る参照等価」として列挙していたが、
+実測では 3 つは構造的。4 つ目 — 消去された型変数 (`[T: Eq]` の `T`) — は
+witness を使うので、`Eq` を持つ型 (`Int` / `String` / `derive(Eq)` の struct)
+では正しく動き、witness の無い container を渡すと**拒否される**
+(`fn eq2[T: Eq](a: T, b: T) { a == b }` に `Array[Int]` → ``no impl `Eq` for
+`Array[Int]` ``)。silent-wrong ではなく診断であり、それが ADR-0097 完了まで
+残す意図的なゲート。回帰は `fixtures/structural_eq_contexts_test.vibe` が
+押さえている。cheatsheet の「`Array` / `Bytes` の `==` (#1526)」が契約の全文)、
+反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
 #1559)、`Exception` を正として `Error` を 1.0 freeze で deprecated (ADR-0085,
 #1564)。docs のコード例は doctest が現行コンパイラで検査する — 仕様と実装を
 食い違わせない。
