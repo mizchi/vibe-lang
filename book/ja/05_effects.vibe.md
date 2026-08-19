@@ -23,7 +23,7 @@ fn risky(x: Int) -> Int with Exception {
   100 / x
 }
 
-fn main with Stdout {
+fn main with Console {
   let safe = handle {
     risky(0)
   } with Exception {
@@ -80,7 +80,7 @@ fn answer_of(q: String) -> Int with Ask {
   perform Ask::Value(q) + 1
 }
 
-fn main with Stdout {
+fn main with Console {
   // handler が resume(v) で perform 地点に値を返す (one-shot tail-resumptive)
   let v = handle {
     answer_of("life")
@@ -148,7 +148,7 @@ fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
 
-fn main with Stdout {
+fn main with Console {
   println("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}")
 }
 ```

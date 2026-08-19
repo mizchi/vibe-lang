@@ -18,7 +18,7 @@ locally, run
 [Capabilities](10_capabilities.vibe.md).
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let x: Int = 42
   // 63-bit tagged (#1877); literals go up to 2^62-1
   let d: Double = 3.14
@@ -57,7 +57,7 @@ vibe is pure by default. Local mutable state goes in a `let mut`, and leaves the
 block as a value.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let y = {
     let mut v = 0
     v += 1
@@ -119,7 +119,7 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
 }
 
-fn main with Stdout {
+fn main with Console {
   println("add(1, 2) = \{add(1, 2)}")
   println("fact(5) = \{fact(5)}")
   println("identity(7) = \{identity(7)}")
@@ -161,7 +161,7 @@ fn greet(name: String, times?: Int) -> String {
   String::concat(name, String::concat(" x", __to_string(n)))
 }
 
-fn main with Stdout {
+fn main with Console {
   println(greet("hi"))
   println(greet("hi", 3))
 }
@@ -175,7 +175,7 @@ hi x3
 ## Lambda shorthand and placeholders
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let xs = [
     1,
     2,

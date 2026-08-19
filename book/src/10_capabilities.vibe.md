@@ -13,7 +13,7 @@ permission got there.
 
 ```vibe skip
 // skip: signatures only — not a complete program
-fn greet(name: String) -> Unit with Stdout
+fn greet(name: String) -> Unit with Console
 fn slurp(path: String) -> String with Exception + Fs
 fn read_var(name: String) -> String with Exception + Env
 ```
@@ -34,11 +34,11 @@ to mention. `--allow-*` flags const-fold and DCE the denied capability
 away: code that needed it is not in the artifact.
 
 ```vibe run
-fn greet(name: String) -> Unit with Stdout {
+fn greet(name: String) -> Unit with Console {
   println("hi \{name}")
 }
 
-fn main with Stdout {
+fn main with Console {
   greet("vibe")
 }
 ```
@@ -47,15 +47,19 @@ fn main with Stdout {
 hi vibe
 ```
 
-A function that only calls `greet` must itself mention `Stdout`. The
+A function that only calls `greet` must itself mention `Console`. The
 capability does not appear by magic at `main` — it is inferred from
 calls and then checked against what you wrote.
 
-The `println` / `print` builtins carry the **legacy** `Stdout` label.
-The current tty capability — the name a grant prompt should say — is
-`Console`. Both compile today; they share the host imports
-(`vibe.stdout_write_stream` and friends) and they do **not** authorize
-each other.
+The `println` / `print` builtins still carry the **legacy** `Stdout`
+label internally. `Console` is the current tty capability — the name a
+grant prompt should say — and declaring it authorizes the legacy three,
+which is why the row above reads `with Console` (#2102).
+
+The containment is **one-way**, and deliberately so: `Console` owns six
+operations and `Stdout` owns two of them, so a row declaring only
+`Stdout` may not reach `Console::read_stream`. A write-only program does
+not acquire read authority by way of a migration alias.
 
 ## The current tty name is `Console`
 
@@ -71,7 +75,7 @@ Six operations, one effect:
 | `Console::read_char` | `Stdin::read_char` | `vibe.stdin_read_char` |
 
 `Stdin` / `Stdout` / `Stderr` stay accepted until the seed bump retires
-them. A row must name the label whose operation it calls:
+them, and `with Console` covers all three. The reverse does not hold:
 `with Stdout { Console::write_stream(...) }` is a row mismatch.
 
 `with Console` covers the six operations in the **row**. Instantiate
@@ -91,7 +95,7 @@ hello, console
 
 ```vibe skip
 // skip: legacy Stdout does not authorize Console::* (distinct labels)
-fn main with Stdout {
+fn main with Console {
   Console::write_stream("no")
 }
 ```
@@ -108,7 +112,7 @@ The parser stores the split as the emitted row plus a `#allows` marker,
 not as `with A + C`.
 
 ```vibe run
-fn main with () allows Stdout {
+fn main with () allows Console {
   println("authority is a separate clause")
 }
 ```
@@ -118,9 +122,9 @@ authority is a separate clause
 ```
 
 `Stdout` in a *split* signature belongs in `allows`. Writing
-`fn main() -> Int with Stdout allows Fs::read_file?` is rejected:
+`fn main() -> Int with Console allows Fs::read_file?` is rejected:
 "`Stdout` is a capability effect and must appear in the `allows`
-clause, not `with`". The hello-world `fn main with Stdout` is the
+clause, not `with`". The hello-world `fn main with Console` is the
 **bare** form and stays legal.
 
 ## Optional capability and `perform?`
@@ -138,7 +142,7 @@ keep it in `skip` — do not pretend it runs.
 
 ```vibe skip
 // skip: checker accepts Attempt[String, String]; codegen does not bind perform?
-fn main() -> Int with () allows Stdout + Fs::read_file? {
+fn main() -> Int with () allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("config.json")
   match a {
     NotGranted => 0,

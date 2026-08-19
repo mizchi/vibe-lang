@@ -19,7 +19,7 @@ wasm-gc.
 ## `Array`
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let xs = [
     1,
     2,
@@ -46,7 +46,7 @@ sees the new length. Prefer `ArrayBuilder` when you accumulate once and
 then only read.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 10)
   ArrayBuilder::push(b, 20)
@@ -62,7 +62,7 @@ built length = 2, [0] = 10
 ## `StringBuilder`
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let b = StringBuilder::new()
   StringBuilder::push(b, "hello ")
   StringBuilder::push(b, "vibe")
@@ -92,7 +92,7 @@ fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
   }
 }
 
-fn main with Stdout {
+fn main with Console {
   let m: MutMap[String, Int] = MutMap::new_string()
   MutMap::set(m, "a", 1)
   MutMap::set(m, "b", 2)

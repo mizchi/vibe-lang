@@ -7,7 +7,7 @@ English version: [02_control_flow.vibe.md](02_control_flow.vibe.md) (canonical)
 ## if は式
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let v = if 1 < 2 {
     "yes"
   } else {
@@ -44,7 +44,7 @@ fn find_first_neg(arr: Array[Int]) -> Int {
   return -1
 }
 
-fn main with Stdout {
+fn main with Console {
   println("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}")
   println("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}")
 }
@@ -61,7 +61,7 @@ find_first_neg([1, 2]) = -1
 可変変数なしで畳み込みが書ける。
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 {
       break acc
@@ -102,7 +102,7 @@ symmetric with this — it takes the loop's single result value, so
 これは今も有効。
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let r = loop (i = 0, acc = 0) {
     if i >= 3 {
       break (acc, i)
@@ -122,7 +122,7 @@ r = (3, 3)
 ## for-in は Array を返す
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let doubled = for x in [
     1,
     2,
@@ -166,7 +166,7 @@ fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
-fn main with Stdout {
+fn main with Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [
     1,

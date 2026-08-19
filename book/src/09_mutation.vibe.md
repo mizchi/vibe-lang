@@ -22,7 +22,7 @@ A `let mut` binding is writable until the block ends. The block itself is
 still an expression: it produces a value.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let y = {
     let mut v = 0
     v += 1
@@ -46,7 +46,7 @@ fn grow(xs: Array[Int]) -> Unit {
   Array::push(xs, 9)
 }
 
-fn main with Stdout {
+fn main with Console {
   let xs = [
     1
   ]

@@ -16,7 +16,7 @@ English version: [01_values_functions.vibe.md](01_values_functions.vibe.md) (can
 `Stdout` row が必要になる — [Capabilities](../src/10_capabilities.vibe.md) 参照。
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let x: Int = 42
   // 63-bit tagged (#1877)。リテラル上限 2^62-1
   let d: Double = 3.14
@@ -55,7 +55,7 @@ vibe は純粋がデフォルト。ローカルな可変状態は `let mut` で�
 値として出す。
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let y = {
     let mut v = 0
     v += 1
@@ -115,7 +115,7 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
 }
 
-fn main with Stdout {
+fn main with Console {
   println("add(1, 2) = \{add(1, 2)}")
   println("fact(5) = \{fact(5)}")
   println("identity(7) = \{identity(7)}")
@@ -147,7 +147,7 @@ fn greet(name: String, times?: Int) -> String {
   String::concat(name, String::concat(" x", __to_string(n)))
 }
 
-fn main with Stdout {
+fn main with Console {
   println(greet("hi"))
   println(greet("hi", 3))
 }
@@ -161,7 +161,7 @@ hi x3
 ## ラムダ短縮形とプレースホルダ
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let xs = [
     1,
     2,

@@ -30,14 +30,14 @@ capability is **`Console`**. This hello still says `Stdout` because the
 `Console::write_stream`; the two names do not authorize each other). See
 [Capabilities](10_capabilities.vibe.md).
 
-Two spellings are legal. The **bare** `with Stdout` is the usual hello.
-The **split** form `with () allows Stdout` says the same thing more
+Two spellings are legal. The **bare** `with Console` is the usual hello.
+The **split** form `with () allows Console` says the same thing more
 loudly: nothing algebraic, one capability. Mixing a
 capability into `with` *after* you wrote `allows` is a parse error
 (`Stdout` must appear in `allows`, not `with`).
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   println("hello, vibe")
 }
 ```
@@ -47,8 +47,9 @@ hello, vibe
 ```
 
 `println` is a builtin -- no import -- and its row is not optional: drop
-`with Stdout` and the checker reports an effect row mismatch naming
-`Stdout` (#2107). The same program as a script file is usually named
+`with Console` and the checker reports an effect row mismatch. It names
+`Stdout`, the label the builtin carries internally; `Console` is the
+current capability and authorizes it (#2107, #2102). The same program as a script file is usually named
 `hello.vibex` and run with `vibe run hello.vibex`.
 
 ## Check, then run

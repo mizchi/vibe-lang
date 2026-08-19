@@ -55,7 +55,7 @@ fn top_word(words: Array[String]) -> Tally {
   best
 }
 
-fn main with Stdout {
+fn main with Console {
   let words = [
     "vibe",
     "wasm",
@@ -83,7 +83,7 @@ kinds = 3
 
 What this program is deliberately showing:
 
-- `fn main with Stdout` is the only capability the program needs.
+- `fn main with Console` is the only capability the program needs.
 - Failure that is part of the meaning would be `with Exception`, not
   a `Result` wrapper. Absence of a key is `Option`, unwrapped with
   `match`.

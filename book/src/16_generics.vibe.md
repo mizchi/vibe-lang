@@ -18,7 +18,7 @@ fn identity[T](x: T) -> T {
   x
 }
 
-fn main with Stdout {
+fn main with Console {
   let b = Box::{
     v: 41
   }
@@ -43,7 +43,7 @@ enum Color {
   Red; Green; Blue
 } derive (Eq, Show)
 
-fn main with Stdout {
+fn main with Console {
   println("eq = \{Color::Red == Color::Red}")
   println("neq = \{Color::Red == Color::Blue}")
   println("show = \{Color::Green}")
@@ -79,7 +79,7 @@ fn size_of[T: Measured](x: T) -> Int {
   T::measure(x)
 }
 
-fn main with Stdout {
+fn main with Console {
   let xs = [
     1,
     2,

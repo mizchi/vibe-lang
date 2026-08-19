@@ -7,7 +7,7 @@ Previous: [01 Values and functions](01_values_functions.vibe.md)
 ## `if` is an expression
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let v = if 1 < 2 {
     "yes"
   } else {
@@ -46,7 +46,7 @@ fn find_first_neg(arr: Array[Int]) -> Int {
   return -1
 }
 
-fn main with Stdout {
+fn main with Console {
   println("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}")
   println("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}")
 }
@@ -63,7 +63,7 @@ find_first_neg([1, 2]) = -1
 `break result`. It writes a fold without any mutable variable.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 {
       break acc
@@ -105,7 +105,7 @@ A `continue` with no arguments at all means "go round again with every parameter
 unchanged", and that still works.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let r = loop (i = 0, acc = 0) {
     if i >= 3 {
       break (acc, i)
@@ -125,7 +125,7 @@ r = (3, 3)
 ## `for-in` returns an Array
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let doubled = for x in [
     1,
     2,
@@ -170,7 +170,7 @@ fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
-fn main with Stdout {
+fn main with Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [
     1,
