@@ -1,114 +1,79 @@
-# vibe リリースロードマップ
+# vibe release roadmap
 
-> 作成: 2026-06-25 / 対象: 0.1.0 sign-off 済みのコンパイラを
-> 「外部ユーザーが実利用できる公開リリース」まで持っていくための工程表。
->
-> 言語コア（parser / checker / codegen / bootstrap）は 0.1.0 sign-off
-> （`docs/archive/report/0-1-0-usability-signoff.md`, `docs/archive/TODO.md`「0.1.0 release sign-off」）で
-> 一定の完成度に達している。本ロードマップは **プロダクトとしての配布・利用・
-> 開発体験** に残る 4 テーマを「リリース blocker」として整理する:
->
-> 1. install 配布方法の確定
-> 2. モジュール配布方法の確定
-> 3. debugger の実装
-> 4. LSP の実装
+> The version ladder is ADR-0109; this file is the working detail behind it.
+> Design decisions go in [adr.md](adr.md), tasks in GitHub Issues.
 
-各テーマは GitHub Issue（一次管理）と本ファイル（ロードマップ概要）で追う。
-設計判断は `docs/adr.md` に記録する。
+## Version ladder
 
----
+The repository has published **exactly one** version tag: `v0.0.1`
+(2026-04-14, from the retired MoonBit host). Every other number that appears in
+older documents — "0.1.0 sign-off", "0.2.0", "0.3.0 GA" — was a label in a
+document, never a release. The ladder below numbers releases by what actually
+ships.
 
-## 方針転換 (2026-07-10)
-
-> **1.0 GA タグは見送り、次のリリースは `0.2.0` とする**（ADR-0066）。実装側の
-> content gate 達成（M1–M4）は 2026-06-26 時点の記録として残すが、「1.0 として
-> 外部公開してよいか」は別判断であり、現時点ではまだその段階にないと判断した。
-> `docs/spec/1.0-freeze.md` の stable surface 定義自体は 1.0 到達時にそのまま
-> 使う想定で無効化しない。**#647 は 1.0 GA タグの issue として保留**し、直近の
-> リリース作業は 0.2.0（0.1.0 からの継続的バグ修正・小機能追加）として進める。
->
-> **追記 (2026-07-12, ADR-0067)**: GA のバージョン番号自体を **1.0 → 0.3 に
-> renumber** した。旧 1.0 GA タグ issue #647 は close 済みで、タグ運用を含む
-> tracking は **#805 (0.3.0 GA) / #806 (0.4.0)**。下の「バージョンロードマップ」
-> 参照。
-
----
-
-## バージョンロードマップ (2026-07-12)
-
-> **GA = 0.3.0**（旧 1.0 GA を renumber、ADR-0067）。1.0 は GA の同義語では
-> なくなり、GA 後の成熟版番号として空ける。`spec/1.0-freeze.md` の stable
-> surface 定義は GA (= 0.3) 到達時に適用するものと読み替える（ADR-0057/0066 の
-> 「1.0 到達時に使う」を継承）。
-
-| version | 位置づけ | 内容 |
+| version | meaning | state |
 | --- | --- | --- |
-| **0.2.0** | 現在地 | 既知バグが一通り吐き出せている段階。0.1.0 からの継続的バグ修正・小機能追加（ADR-0066 のリリース） |
-| **0.3.0** | **GA** | 下記 10 項目 + タグ運用。tracking: **#805** |
-| **0.4.0** | post-GA | 下記 3 項目。tracking: **#806** |
+| `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
+| `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](archive/release-notes-0.3.0.md)) | never released |
+| **`0.1.0`** | **The first release usable by anyone but the author** | target; see [release-notes-0.1.0.md](release-notes-0.1.0.md) |
+| `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
+| `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
 
-### 0.3.0 (GA) の内容
+Until the `0.1.0` tag is cut, `runtime/vibe` reports `0.1.0-dev`.
+`scripts/build_release_assets.sh` requires `VIBE_VERSION` to equal the tag being
+built, so a release cannot ship carrying `-dev`, and
+`scripts/check_version_ladder.sh` keeps this table, the launcher, and the
+release notes from drifting apart.
 
-1. **パッケージレジストリの完成** — ADR-0065 の registry / 供給網要件
-   （transparency log、scope 所有権・署名、version→hash 不変 mapping、
-   yank 不変、provenance）を実装し、`vibe add`/`publish` の導線を閉じる。
-   Module System v2（ADR-0063/0064）の後続作業（ネットワーク add/update）を含む。
-2. **冗長な文法の削除** — 同じことを書く方法が複数ある箇所を 1 つに絞る
-   （`module {}` 削除 #728 の路線を継続）。
-3. **トップレベル副作用の制限 + `fn main {}` エントリポイント特殊化** —
-   現状 `_start` / `main` / `cli_main` 等のエントリ規約が混在している。
-   MoonBit と同様に `fn main {}` を言語レベルで特殊化し、トップレベルは
-   宣言のみ・副作用（実行）は main に限定する方向で設計する。
-4. **エフェクトシステムの精緻化** — effect 診断の fix-it (#639)、`Error` の
-   algebraic effect 化 (#640)、mut の region capability 統一
-   (#418/#629, ADR-0060) 系の残タスク。
-5. **REPL** — compiled session backend の `vibe shell` を対話開発の一級導線に
-   引き上げる（interpreter は撤去済みのため compiled REPL として）。
-6. **doctest + 実行可能な `*.vibe.md`** — docs 中のコード例を検証対象にする
-   （cheatsheet ↔ examples の同期切れを構造的に防ぐ）。
-7. **inline wasm (WAT S 式) の直接記述** — 最適化のために WAT の S 式を
-   vibe ソース内に直接書けるようにする。既存資産: `lib/@vibex/wasm` の
-   wat_encoder（S 式完全対応）、SIMD codegen 計画（0xFD prefix emit）。
-   ホットパスの手書き最適化・SIMD intrinsic の足場。
-8. **`@vibe/core` コアライブラリの拡充** — moonbitlang/core を参考に契約
-   パッケージとしての stdlib 面を広げる（#766 で統合した base64/math/diff/
-   uuid/list/set の路線を継続）。
-9. **`let` → `fn` 移行の完遂** — ADR-0064。compiler source を含む全ツリーで
-   トップレベル名前付き関数を `fn` に統一する（cache/sha1.vibe から着手済み）。
-10. **WASI p3 動作保証** (#821) — wasmtime の WASI p3 (wasmtime_wasi p3
-    bindings) で動くことを CI で保証する。async-component gate の復旧、
-    guarantee gate 新設（wasmtime 45/46 matrix、ツール欠如 = FAIL）、
-    ratified 0.3.0 / wasmtime 46 への cutover。パイプライン自体は wasmtime
-    45 で動作確認済み — 欠けているのは検証側のみ。
+The stable surface that the `0.1.0` tag freezes is
+[spec/stable-surface.md](spec/stable-surface.md) (ADR-0057). While the toolchain
+is on 0.x, SemVer shifts one step: a breaking change to that surface is a
+**Minor** bump, a compatible change is a **Patch**.
 
-### 0.4.0 の内容
+### What 0.1.0 needs
 
-1. **shared-nothing structured concurrency** — generative nursery に束縛した
-   `Task` と typed channel、`Send`、cooperative cancel を公開モデルにする
-   （[ADR-0068 詳細仕様](concurrency.md)）。JSPI + Worker、WASI Component
-   Model、shared-everything-threads はこの意味論の交換可能な lowering とする。
-   JSPI の全 browser 出荷と #488 shared-everything の upstream 実装完了は
-   0.4.0 blocker にしない。#488 は opt-in probe を維持し、intrinsic/type gap と
-   backend differential gate が解消してから高速化 backend として昇格する。
-   0.3.0 までの全設計も ADR-0068 の制約（新しい mutable global を増やさない、
-   handler/continuation を task-local に保つ）に従う。
-2. **形式化を念頭に置いた型システムの設計** — checker 健全化
-   （ADR「型健全性」系列）の先にある、仕様の形式化・機械検証を見据えた
-   型システムの再設計。
-3. **専用のエージェントハーネス** — AI エージェントが vibe を書く・検証する
-   ための専用ハーネス（diagnostics/editor query primitives の路線の先）。
-   前身として言語評価ループ `eval/lang-review/`（AI レビュアーが文法・
-   意味論・型健全性をスコアリングし、所見を issue 化して改善を回す）が
-   稼働済み。
+"Usable by anyone but the author" is the bar, so the remaining work is about
+someone else's first hour, not about compiler internals:
+
+1. **Install and run on a machine that is not the author's.** The
+   `cli-install` workflow already covers multi-OS install smoke; what it does
+   not cover is the path a newcomer takes from the README to a running program.
+2. **Package distribution end to end** — `vibe new` / `add` / `fetch` /
+   `publish` against the registry slice that landed, with the lock file as the
+   contract (ADR-0065, ADR-0063/0064, ADR-0070).
+3. **The book reads true.** Every ` ```vibe run ` block is compiled by doctest,
+   and the Japanese translation records the same output
+   (`pkf run check-tutorial-translation-parity`).
+4. **The stable surface is real** — every name in
+   [spec/stable-surface.md](spec/stable-surface.md) §3 resolves in the shipped
+   compiler (`pkf run check-freeze-surface`).
+5. **Editor integration** — `vibe lsp` plus the query primitives
+   (`vibe check` / `symbols` / `type-at` / `binding-at` / `deps` / `grep`).
+
+### What 0.2.0 holds
+
+1. **Shared-nothing structured concurrency** — `Task` bound to a generative
+   nursery, typed channels, `Send`, cooperative cancellation as the public
+   model ([ADR-0068 detail](concurrency.md)). JSPI + Worker, the WASI Component
+   Model, and shared-everything threads are interchangeable lowerings of that
+   semantics; none of them is a blocker. #488 stays an opt-in probe until its
+   intrinsic/type gaps and the backend differential gate are resolved.
+2. **A type system designed for formalization** — the redesign that follows the
+   type-soundness ADR series, aimed at a specification that can be mechanically
+   checked.
+3. **A dedicated agent harness** — for AI agents writing and verifying vibe.
+   Its predecessor, the language evaluation loop `eval/lang-review/`, already
+   runs.
 
 ---
+
 
 ## 実装進捗 (2026-06-25 セッション)
 
 > **マイルストーン**: M1（配布確定）+ M2（開発体験 MVP）+ M3（開発体験フル）+
 > M4（GA）content gate 達成 → 実装側 **GA-ready**（[GA readiness](archive/report/1-0-ga-readiness.md)）。
 > ADR 決定事項を全確定（install/module/LSP host/仕様 freeze =
-> [spec/1.0-freeze.md](spec/1.0-freeze.md)）。PR #642 を main に merge 済み。
+> [spec/stable-surface.md](spec/stable-surface.md)）。PR #642 を main に merge 済み。
 > 以降の DAP P3 step/P4 named-local / `vibe binding-at` / rename 配線 /
 > CI wasmtime 修正 / 仕様 freeze / span-arc step2–5 / docs は branch
 > `claude/kind-fermat-lxtjov` に在り（main は authoritative compiler gate green、
@@ -350,7 +315,7 @@
 | **M1: 配布確定** | install + module の配布方法を凍結し、外部の人が「入れて使える」 | (1)(2) | ✅ 達成（install 配布物確定 + module fetch/lock/transitive/semver/frozen/verify） |
 | **M2: 開発体験 MVP** | LSP MVP（診断/シンボル/hover）+ debugger P0（source-mapped trace） | (3)(4) | ✅ 達成（型付き hover、parser error recovery で全診断、trap→source-line） |
 | **M3: 開発体験フル** | LSP 補完/リファクタ + DAP step 実行 | (3)(4) | ✅ 達成（DAP P1-P4 = breakpoint/名前付き変数検査/step 実行 + 3-D VS Code debug adapter、rename/references は scope 精度の `vibe binding-at` で AST 精度化）。テーマ3 debugger は P0-P4 + 3-D 完了 |
-| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/1.0-freeze.md](spec/1.0-freeze.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](archive/report/1-0-ga-readiness.md)）。**2026-07-10: 1.0 タグ自体は見送り**（ADR-0066）。直近の実リリースは **0.2.0** として進める。post-GA 課題（任意行 debug・LSP span JSON）は引き続き有効 |
+| **M4: GA (1.0)** | 上記を統合し、言語仕様 freeze + docs 完備で一般公開 | 全部 | ✅ content gate 達成（仕様 freeze = [spec/stable-surface.md](spec/stable-surface.md)、docs = install/module/editor+debug、span-arc step1–4 + step5 関数行 breakpoint、[GA readiness](archive/report/1-0-ga-readiness.md)）。**この content gate は 2026-06-26 時点の記録であり、タグは打たれていない** — 版数の現在地は冒頭の Version ladder (ADR-0109)。post-GA 課題（任意行 debug・LSP span JSON）は引き続き有効 |
 
 ### 横断的な前提（どのテーマにも効く 2 つの土台）
 
@@ -776,7 +741,7 @@ install/​debugger と runtime 前提を一本化する。`vibe lsp` を
 4. ✅ **言語仕様 freeze の範囲**（M4, ADR-0057）— 1.0 で SemVer 2.0.0 保証する
    stable surface（言語コア / prelude / CLI / フォーマット）と、対象外の
    unstable surface（async / component model / capability / SIMD / span-arc /
-   incremental / wasm-gc gap）を [spec/1.0-freeze.md](spec/1.0-freeze.md) に確定。
+   incremental / wasm-gc gap）を [spec/stable-surface.md](spec/stable-surface.md) に確定。
 
 > runtime 前提は install・LSP・debugger すべて「独自 wasmtime runner +
 > compiler wasm」に一本化された。node は補助（`clients/js/`、ブラウザ playground）

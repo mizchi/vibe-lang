@@ -9,7 +9,7 @@ Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
 
 ## 位置づけ
 
-本書を v0.4.0 の並行処理に関する公開意味論の source of truth とする。
+本書を v0.2.0 の並行処理に関する公開意味論の source of truth とする。
 `docs/spec/wasi-p3-async.md` は WASI 0.3 への lowering、#488 は
 shared-everything-threads の実験を扱う。両者が本書と衝突する場合、公開 API と
 観測可能な挙動は本書を優先する。
@@ -23,10 +23,10 @@ shared-everything-threads の実験を扱う。両者が本書と衝突する場
 **現行の動く並行 surface は `lib/@vibe/concurrent`** である:
 `TaskGroup::spawn_suspend` が suspend 可能なタスクを生成し、`TaskHandle::join`
 が結果を回収し、`sleep_wait`（#1253）は並行 sleep を直列化させず重ねる。本書が
-記述する `Task[r,T]` / nursery / typed channel はその上に載る v0.4.0 の目標形。
+記述する `Task[r,T]` / nursery / typed channel はその上に載る v0.2.0 の目標形。
 
 本書のコードは提案中の surface を示す疑似 vibe であり、まだコンパイルできない。
-そのためコードブロックは理由付きの `vibe skip` とする。「必須」は v0.4.0 の適合実装が
+そのためコードブロックは理由付きの `vibe skip` とする。「必須」は v0.2.0 の適合実装が
 満たす条件、「将来」は互換性を約束しない拡張を表す。
 
 ## 決定の要約
@@ -42,7 +42,7 @@ shared-everything-threads の実験を扱う。両者が本書と衝突する場
    を越えて共有しない。message は deep-copy snapshot を基準意味論とする。
 5. JSPI は suspend/resume の lowering であり、並列実行の方式ではない。
    browser の並列化には Worker 等を別途使う。JSPI の全 browser 出荷を
-   v0.4.0 の blocker にしない。
+   v0.2.0 の blocker にしない。
 6. WASI Component Model concurrency と shared-everything-threads は交換可能な
    backend とする。shared-everything は #488 の opt-in 実験であり、公開意味論や
    リリース条件を依存させない。
@@ -60,7 +60,7 @@ shared-everything-threads の実験を扱う。両者が本書と衝突する場
 | --- | --- |
 | task | nursery に束縛された、独立した実行・失敗・cancel の単位。runtime 上の軽量 process に相当する |
 | nursery | child task と channel の lifetime を囲う lexical scope |
-| process | mailbox と supervision を持つ長寿命 actor。v0.4.0 の最小コアには含めず、task 上の後続 abstraction とする |
+| process | mailbox と supervision を持つ長寿命 actor。v0.2.0 の最小コアには含めず、task 上の後続 abstraction とする |
 | suspend point | task が scheduler へ制御を返し、cancel を観測できる operation |
 | worker | backend の実行資源。Web Worker、host thread、Wasm thread 等。言語からは見えない |
 | evidence | algebraic effect operation の handler を指す runtime capability |
@@ -105,7 +105,7 @@ enum ChannelConfigError {
 }
 
 // nursery { n => body } introduces a fresh r and handles Spawn[r].
-// NOTE: 以下は v0.4.0 の提案 surface（region-bound `Task[r, T]` + `Spawn[r]`）で
+// NOTE: 以下は v0.2.0 の提案 surface（region-bound `Task[r, T]` + `Spawn[r]`）で
 // あり、#1227 で撤去した eager prototype の `Task::spawn` とは別物。名前は同じ
 // だが型も意味論も異なる——現時点でコンパイルできる API ではない。
 Task::spawn: [T: Send] (() -> T with e)
@@ -210,7 +210,7 @@ cancel は cooperative である。`join`、blocking `send` / `recv`、`yield`�
 まだ body を開始していない child も dispatch 前に cancel できる。要求は次の cancel
 point で観測するが、Running task が次の cancel point より先に完了した場合は、その
 完了 outcome が確定してよい。
-cancel を観測しない CPU loop の prompt termination や fairness は v0.4.0 では
+cancel を観測しない CPU loop の prompt termination や fairness は v0.2.0 では
 保証しない。
 
 nursery は次の状態を取る。
@@ -299,7 +299,7 @@ owner relation を実現することは別の refinement obligation であり、
 
 ## Safe parallel API
 
-v0.4.0 では `Thread`、worker handle、shared reference を新しい公開 primitive にしない。
+v0.2.0 では `Thread`、worker handle、shared reference を新しい公開 primitive にしない。
 安全な並列 API は既存の `nursery` / `Task[r, T]` / channel とし、`Task::spawn` された
 child を同時に実行するかは backend と host policy が決める。同じプログラムは
 cooperative な一 worker でも multi-worker でも同じ async oracle の trace だけを生成する。
@@ -406,7 +406,7 @@ handler stack と continuation は task-affine とする。`perform` が捕捉�
 
 child は親の dynamic handler stack を暗黙に複製しない。spawn boundary では child
 closure の閉じた effect row を明示し、その operation の evidence が fork 可能かを
-検査する。v0.4.0 では `Async` / `Spawn` runtime evidence と、package contract で
+検査する。v0.2.0 では `Async` / `Spawn` runtime evidence と、package contract で
 fork-safe と定めた built-in host capability だけを fork できる。user-defined handler
 は既定で task-local とし、user が fork-safe を宣言する surface は後続 ADR にする。
 
@@ -439,7 +439,7 @@ fork-safe evidence として委譲可能でなければ spawn contract は満た
 より強い operation を持っていても parent authority に無い operation を child へ渡す
 ことは禁止する。
 
-authority は v0.4.0 では immutable とし、動的 grant/revoke は導入しない。将来の
+authority は v0.2.0 では immutable とし、動的 grant/revoke は導入しない。将来の
 `Process[Msg]` も同じ principal hierarchy を使い、親より長生きする場合は supervisor
 への ownership 移管を明示する。詳細、resource/provider contract、Lean Oracle は
 [vibex-runtime-contract.md](vibex-runtime-contract.md) を参照する。
@@ -1058,7 +1058,7 @@ row 注釈も更新が要る: これらを呼ぶ `spawn_suspend` closure literal
 (bracketed な `Exception[E]` ラベル自体は row 変数ではないので、
 `scps_calls_ok` の適格性判定には影響しない)。
 
-## v0.4.0 に含めないもの
+## v0.2.0 に含めないもの
 
 - raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開
 - shared mutable memory、atomics、mutex、weak-memory model

@@ -28,7 +28,7 @@ change.
 - `...` means a separated repetition: comma-separated in expression contexts
   (arguments, tuples, struct literals, import lists), semicolon-separated in
   type declaration bodies (enum variants, struct fields). Using `,` as a
-  declaration-body separator was removed in 0.3.0 and is a parse error.
+  declaration-body separator is a parse error.
 
 This document is intentionally EBNF-like, not a parser generator grammar.
 Parser conflict resolution and diagnostics are implementation-defined.
@@ -109,7 +109,7 @@ Rules:
 - Decimal literals without `f` are `Double`; decimal literals with `f` are
   `Float`.
 - Strings support escapes and interpolation with `\{Expr}`. The former
-  `\(Expr)` spelling was removed in 0.3.0 and is now a lex error. A `String`
+  `\(Expr)` spelling is a lex error. A `String`
   is a byte string: `String::length`, indexes, slices, and iteration use byte
   counts/offsets, and iteration yields byte-valued `Int`s. Use
   `String::byte_at` and `String::from_byte` for single-byte operations;
@@ -270,8 +270,8 @@ export enum Shape { Circle(Int); Rect(Int, Int) }
 Constructors may be used in expressions and patterns.
 
 Declaration members (enum variants, struct fields) are separated by `;`.
-Using `,` as the separator was removed in 0.3.0; the parser reports a located
-error suggesting `;`.
+Using `,` as the separator is a parse error; the parser reports a located
+message suggesting `;`.
 
 ### Structs
 

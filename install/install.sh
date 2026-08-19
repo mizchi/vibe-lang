@@ -22,7 +22,7 @@
 #       [--no-modify-path] [--toolchain NAME] [--set-default] [--no-stdlib]
 #
 # Curl arguments follow `bash -s --`, for example:
-#   curl -fsSL URL | bash -s -- --ref v1.0.0 --no-modify-path
+#   curl -fsSL URL | bash -s -- --ref v0.1.0 --no-modify-path
 #
 # Env overrides: VIBE_INSTALL_REPO, VIBE_INSTALL_REF, VIBE_HOME, VIBE_BIN_DIR.
 # Requirements: git and bash; Node.js unless --cli-wasm supplies the compiler;

@@ -61,7 +61,7 @@ let x: Int = 42                // 63-bit (RC lane: 1-bit-tagged i64),
 let f: Float = 1.5f            // 32-bit (suffix f)
 let d: Double = 3.14           // 64-bit (default decimal)
 let s: String = "hello \{x}"   // interpolation with \{expr}
-                               // (旧 `\(x)` は 0.3.0 で削除、`\{x}` を使う)
+                               // (`\(x)` は非対応、`\{x}` を使う)
                                // #1392: 補間の値に `T::to_string`
                                // (derive(Show)/derive(Hash) 生成物、または
                                // 手書き) があればそれを呼ぶ。`Option`/`Result`/
@@ -635,7 +635,7 @@ expr is None                     // -> Bool
 type Pair = (Int, Int)                   // alias
 
 // enum/struct body members are ';'-separated; ',' as the declaration
-// separator was removed in 0.3.0 (parse error)
+// separator is a parse error
 enum Color { Red; Green; Blue } derive(Eq)
 enum Shape { Circle(Int); Rect(Int, Int) }
 
@@ -786,7 +786,7 @@ let arr2 = {
 // specializations (MutMap::new_int() / MutSortedSet::new_string() etc).
 // Persistent (immutable) collections are @vibex/immut — updates always
 // return a new version, the old one stays intact (structural sharing;
-// sendable data for the 0.4.0 concurrency model):
+// sendable data for the 0.2.0 concurrency model):
 //   MapHamt[V] (HAMT, String key): empty/set/get/delete/size/keys/has_key
 //     the old name ImmutMap is a #deprecated alias (ADR-0100 (3), #1262)
 //   ImmutArray[T] (persistent vector): empty/push/get/set/length/from_array/to_array
@@ -1889,7 +1889,7 @@ enum Shape { Circle(Int); Rect(Int, Int) }        // 宣言メンバは ;
 let r = match s { Circle(r) => r, _ => 0 }        // match arm は ,
 ```
 
-`,` を宣言メンバの区切りに使うのは 0.3.0 で削除済み。逆に match arm を `;` で
+`,` を宣言メンバの区切りに使うのは parse error。逆に match arm を `;` で
 区切ると `unexpected in pattern: ;`。この cheatsheet 自身がこの2行を並べて
 説明している場所で間違えていた (#1506 で修正)。
 
