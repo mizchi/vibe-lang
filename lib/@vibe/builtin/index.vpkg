@@ -14,17 +14,21 @@ generated_hash =
 // time/cache/graph/module/optimizer/wasi were already migrated).
 //
 // Implicit-import investigation (blast-radius check before migrating):
-// `prelude` is NOT wired into the loader as a magic always-imported package.
-// Every `.vibe` file that wants prelude names imports it explicitly (or
+// This package is NOT wired into the loader as a magic always-imported
+// package -- which is why it is `@vibe/builtin` and not `@vibe/prelude`
+// (#2105): "prelude" names the thing a compiler sneaks into every file, and
+// this is not that. Every `.vibe` file that wants these names imports them
+// explicitly (or
 // relies on the compiler's OWN synthetic-injection builtins below) — a plain
-// grep for "prelude" across loader/*.vibe and checker/*.vibe turns up no
-// "auto-import every file" hook. What looks like implicit prelude access is
+// grep for this package across loader/*.vibe and checker/*.vibe turns up no
+// "auto-import every file" hook. What looks like implicit access is
 // actually TWO separate, narrower mechanisms that do not depend on this
 // package's facade shape at all, so the .vpkg boundary does not interact
 // with them:
-//   1. `Result` no longer exists as a language- or prelude-provided type.
+//   1. `Result` no longer exists as a language- or library-provided type.
 //      #1324 removed `result.vibe` (slice 4) and then the checker's
-//      `inject_prelude_result` synthesis (slice 5), so a program wanting
+//      `inject_prelude_result` synthesis (slice 5) -- that compiler-side
+//      symbol keeps its name, it is not this package -- so a program wanting
 //      `Ok`/`Err` declares the enum itself like any other user enum.
 //      Failure is carried by `Exception[E]` rows (ADR-0085).
 //   2. `Option`/`Some`/`None` are genuine compiler builtins (`CtOption`),
@@ -53,12 +57,12 @@ generated_hash =
 // (`opaque type Hash`, satisfied by `maps.vibe`'s `export ./r#map.vibe {
 // ..., trait Hash }` re-export) with the same reasoning spelled out in its
 // own header comment. This package is simply the first to need this many
-// of them at once. `prelude.vibe` (renamed from the old `index.vibe` facade —
+// of them at once. `builtin.vibe` (renamed from the old `index.vibe` facade —
 // a directory may have exactly one of `index.vibe`/`index.vibei`/
 // `index.vpkg`, #729/#897 — content otherwise unchanged) keeps the
 // `export ./builtin_traits.vibe { Eq, Add, Div, Mul, Ord, Sub,
 // Signed, Default, ... }` line that discharges these declarations.
-// (`Hash` is deliberately NOT among them: #1844 removed the prelude's
+// (`Hash` is deliberately NOT among them: #1844 removed this package's
 // marker `Hash` — @vibe/core's method-bearing `trait Hash` in map.vibe
 // is the one definition, and `[K: Hash]` users import it from there.)
 //
@@ -74,7 +78,7 @@ generated_hash =
 // `export ./string.vibe { ..., String::utf8_length, ... }` — syntactically
 // legal even though the named target has no definition in that file,
 // because `check_contract` never verifies a re-export's target actually
-// resolves (same #847 trust boundary as the traits above). `prelude.vibe`
+// resolves (same #847 trust boundary as the traits above). `builtin.vibe`
 // keeps those lines, so these four declarations are discharged the same
 // way. (`Int::to_double` is additionally exercised directly inside this
 // very package — see `double.vibe`'s float/int conversions — so its
@@ -215,7 +219,7 @@ fn Int::fibonacci(n: Int) -> Int
 fn Int::is_negative(x: Int) -> Bool
 fn Int::is_positive(x: Int) -> Bool
 // builtin-intrinsic (checker/builtins_misc.vibe's lookup_int_to_double); no
-// export fn body anywhere in int.vibe, discharged via prelude.vibe's
+// export fn body anywhere in int.vibe, discharged via builtin.vibe's
 // re-export of int.vibe (see header comment)
 fn Int::to_double(x: Int) -> Double
 
@@ -333,7 +337,7 @@ fn Lines::parse(s: String) -> Array[String]
 fn Lines::stringify(lines: Array[String]) -> String
 fn PromptText::new(s: String) -> String
 // builtin-intrinsics (builtins/declarations.vibe); no export fn body
-// anywhere in string.vibe, discharged via prelude.vibe's re-export (see
+// anywhere in string.vibe, discharged via builtin.vibe's re-export (see
 // header comment)
 fn String::utf8_length(s: String) -> Int
 fn String::utf16_length(s: String) -> Int

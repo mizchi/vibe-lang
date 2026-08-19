@@ -74,7 +74,7 @@ Boundary enforcement is active in:
 - `map` itself is reserved in vibe syntax, so Option map is named `map_opt`.
 
 `result.vibe` was removed in #1324 (see the header comment in `index.vpkg`):
-`Result` no longer exists as a language- or prelude-provided type. A program
+`Result` no longer exists as a language- or library-provided type. A program
 wanting `Ok`/`Err` declares the enum itself like any other user enum; failure
 is carried by `Exception[E]` effect rows (ADR-0085).
 
