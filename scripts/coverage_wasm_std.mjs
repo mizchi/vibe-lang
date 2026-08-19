@@ -712,7 +712,7 @@ export function buildSummary(report) {
 
 export function buildMarkdown(report) {
   const lines = [];
-  lines.push("# vibe/prelude wasm source coverage report");
+  lines.push("# @vibe/builtin wasm source coverage report");
   lines.push("");
   lines.push(`- Generated: ${report.generated_at}`);
   lines.push(

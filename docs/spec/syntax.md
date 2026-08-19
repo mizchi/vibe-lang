@@ -453,7 +453,7 @@ Rules:
   error naming both counts. A bare `continue` (no argument list) means "repeat
   with every parameter unchanged" and stays legal.
 - Avoid naming a top-level function `f` or `g`: those identifiers collide
-  with `@vibe/prelude/func.vibe`'s `compose`/`flip` combinator parameter
+  with `@vibe/builtin/func.vibe`'s `compose`/`flip` combinator parameter
   names and can produce invalid wasm at codegen time (checker passes,
   `vibe run` fails to instantiate) -- tracked in #1203. Not a general
   language ambiguity, just a known name-collision gap in the current

@@ -35,7 +35,7 @@ This will:
 3. AOT-compile it to `vibe-cli.cwasm` for this machine,
 4. install the launcher into the toolchain + the dispatcher onto your `PATH`,
 5. materialize the stdlib packages (`@vibe/core` / `@vibe/ast` /
-   `@vibe/parser` / `@vibe/prelude` / `@vibe/wit_runtime`) into
+   `@vibe/parser` / `@vibe/builtin` / `@vibe/wit_runtime`) into
    `$VIBE_HOME/lib`, hash-verified (`vibe hash`).
 
 Then:

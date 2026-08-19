@@ -25,7 +25,7 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 
 ## Module Boundary (Layered Responsibilities)
 
-`vibe/prelude` is managed as layered modules. See `docs/adr.md` (ADR-0005) for the canonical table and allowed import matrix.
+`@vibe/builtin` is managed as layered modules. See `docs/adr.md` (ADR-0005) for the canonical table and allowed import matrix.
 
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
@@ -45,7 +45,7 @@ Boundary enforcement is active in:
 
 ## Effect Signature Policy
 
-`vibe/prelude` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
+`@vibe/builtin` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
 
 - pure modules (`pure-primitive`, `pure-data`) は `with` row を持たない。
 - runtime bridge (`effect-boundary`) は host builtin への薄い委譲に限定し、effect を明示する。
@@ -74,13 +74,13 @@ Boundary enforcement is active in:
 - `map` itself is reserved in vibe syntax, so Option map is named `map_opt`.
 
 `result.vibe` was removed in #1324 (see the header comment in `index.vpkg`):
-`Result` no longer exists as a language- or prelude-provided type. A program
+`Result` no longer exists as a language- or library-provided type. A program
 wanting `Ok`/`Err` declares the enum itself like any other user enum; failure
 is carried by `Exception[E]` effect rows (ADR-0085).
 
 ### Canonical Naming / Alias Policy
 
-`vibe/prelude` では parser 予約語制約を前提に、以下を canonical API 名として扱う。
+`@vibe/builtin` では parser 予約語制約を前提に、以下を canonical API 名として扱う。
 
 - Option: `map_opt`, `flatmap`, `map_or`, `unwrap_or`, `unwrap_or_else`
 - Array: `Array::map`, `flatmap`, `filter`, `fold`
@@ -95,7 +95,7 @@ is carried by `Exception[E]` effect rows (ADR-0085).
 Recommended usage (collision-safe, pipe-first):
 
 ```vibe
-import /vibe/prelude/option.vibe { is_some, unwrap_or }
+import @vibe/builtin/option.vibe { is_some, unwrap_or }
 let ok = Some(1) |> is_some
 let v = None |> unwrap_or(0)
 ```
@@ -153,26 +153,26 @@ let v = None |> unwrap_or(0)
 ```bash
 # Run with the default compiled backend
 just run test \
-  vibe/prelude/builtin_traits_test.vibe \
-  vibe/prelude/bool_test.vibe \
-  vibe/prelude/cmp_test.vibe \
-  vibe/prelude/char_test.vibe \
-  vibe/prelude/bytes_test.vibe \
-  vibe/prelude/int_test.vibe \
-  vibe/prelude/float_test.vibe \
-  vibe/prelude/double_test.vibe \
-  vibe/prelude/array_test.vibe \
-  vibe/prelude/option_test.vibe \
-  vibe/prelude/result_test.vibe \
-  vibe/prelude/string_test.vibe \
-  vibe/prelude/io_test.vibe
+  @vibe/builtin/builtin_traits_test.vibe \
+  @vibe/builtin/bool_test.vibe \
+  @vibe/builtin/cmp_test.vibe \
+  @vibe/builtin/char_test.vibe \
+  @vibe/builtin/bytes_test.vibe \
+  @vibe/builtin/int_test.vibe \
+  @vibe/builtin/float_test.vibe \
+  @vibe/builtin/double_test.vibe \
+  @vibe/builtin/array_test.vibe \
+  @vibe/builtin/option_test.vibe \
+  @vibe/builtin/result_test.vibe \
+  @vibe/builtin/string_test.vibe \
+  @vibe/builtin/io_test.vibe
 
 # Validate WASM compilation (import/export usage)
-just run compile --wasm vibe/prelude/test_import.vibe -o /tmp/test.wasm
+just run compile --wasm @vibe/builtin/test_import.vibe -o /tmp/test.wasm
 wasmtime run --invoke _start /tmp/test.wasm  # -> 484 (untagged: 121)
 ```
 
 ## Notes
 
-- `vibe/prelude/test_import.vibe` is only for compilation validation (no `test` blocks).
-- `vibe/prelude/io.vibe` depends on runtime builtins, so it is exercised via the native/compiled test path rather than pure Core WASM (`--wasm`) today.
+- `@vibe/builtin/test_import.vibe` is only for compilation validation (no `test` blocks).
+- `@vibe/builtin/io.vibe` depends on runtime builtins, so it is exercised via the native/compiled test path rather than pure Core WASM (`--wasm`) today.

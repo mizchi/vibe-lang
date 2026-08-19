@@ -21,7 +21,7 @@
 
 ```bash
 scripts/vibe_test.sh --coverage path/to/foo_test.vibe   # 単一ファイル
-scripts/vibe_test.sh --coverage lib/@vibe/prelude       # ディレクトリ配下の *_test.vibe
+scripts/vibe_test.sh --coverage lib/@vibe/builtin       # ディレクトリ配下の *_test.vibe
 ```
 
 出力例（負数入力を踏まないテストだと `n < 0` アームが未到達 → 3/4）:
@@ -201,7 +201,7 @@ bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を�
 
 `coverage_merge.sh` の固定 3 ワークロードでは分岐 ~56% で頭打ちになる。
 `coverage_corpus.sh` は 1 つの計測コンパイラを **多数の .vibe**
-（`examples/` `fixtures/` `lib/@vibe/prelude/`）に対して compile / normalize / rc で
+（`examples/` `fixtures/` `lib/@vibe/builtin/`）に対して compile / normalize / rc で
 走らせ、全 run を union する。
 
 ```bash
@@ -601,9 +601,9 @@ just coverage-wasm-source fixtures/pattern_coverage_test.vibe
 - `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1` で `test {}` を実行可能
   (`compile --coverage --coverage-run-tests`)
 
-### vibe/prelude 一括計測
+### @vibe/builtin 一括計測
 
-`vibe/prelude/**/*_test.vibe` をまとめて回すときは:
+`@vibe/builtin/**/*_test.vibe` をまとめて回すときは:
 
 ```bash
 just coverage-wasm-std
@@ -641,7 +641,7 @@ just coverage-wasm-std
 - `spec.mismatch_case_count`:
   計測成功ケースの実行 backend が `expected_backend` と不一致だった件数
 
-`vibe/prelude/backend_capabilities.json` をデフォルト matrix として読み込み、
+`@vibe/builtin/backend_capabilities.json` をデフォルト matrix として読み込み、
 失敗ケースごとに `expected_backend` (`wasm` / `wasm-js-string` / `either`)
 を参照して `spec_status` を付与する。
 `VIBE_WASM_STD_COVERAGE_STRICT=1` では `unexpected_failure` または
@@ -666,7 +666,7 @@ just coverage-wasm-std
 実測（このリポジトリ現状）:
 - MoonBit coverage (`just coverage-moon`): `18718/29541` (`63.36%`)
 - Deno integration coverage (`just coverage-deno`): `All files line 69.9%`
-- vibe/prelude wasm coverage (`just coverage-wasm-std`): `626/626` (`100.00%`)
+- @vibe/builtin wasm coverage (`just coverage-wasm-std`): `626/626` (`100.00%`)
 
 運用判断:
 - `coverage-moon` はコンパイラ/型検査本体の回帰検知に有効（本命KPI）。

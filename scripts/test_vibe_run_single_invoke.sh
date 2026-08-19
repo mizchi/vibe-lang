@@ -25,7 +25,7 @@ mkdir -p "$WORK_DIR"
 src="$WORK_DIR/single_invoke_probe.vibex"
 
 cat > "$src" <<'EOF'
-import @vibe/prelude { stdout_write }
+import @vibe/builtin { stdout_write }
 
 fn main with Stdout {
   stdout_write("SINGLE_INVOKE_PROBE_MARKER\n")

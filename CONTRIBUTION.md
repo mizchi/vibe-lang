@@ -136,7 +136,7 @@ pkf run run -- index verify /tmp/advanced-graph-index.json
 pkf run run -- lsif -o /tmp/vibe.lsif examples/syntax.vibe
 
 # Build component + run with wasmtime (explicit invoke for non-command component)
-pkf run component-run -- lib/@vibe/prelude/test_import_test.vibe
+pkf run component-run -- lib/@vibe/builtin/test_import_test.vibe
 # stdin 経由の実行も可能:
 printf 'A' | pkf run component-run -- your_stdio_script.vibe
 # stream TUI デモ:
@@ -145,7 +145,7 @@ printf 'hello\nworld\n' | pkf run component-run -- examples/wasm/tui_stream_demo
 pkf run demo-tui-stream
 
 # moonix で実行（moonix の CLI 差分はランチャで吸収）
-pkf run component-run-moonix -- lib/@vibe/prelude/test_import_test.vibe
+pkf run component-run-moonix -- lib/@vibe/builtin/test_import_test.vibe
 
 # Install CLI to ~/.local/bin/vibe
 pkf run install

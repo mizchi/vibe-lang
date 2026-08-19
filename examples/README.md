@@ -40,8 +40,8 @@ pkf run run -- bench examples/simple_bench.vibe
 
 ## Core Library
 
-- `vibe/prelude/`: vibe core library (self-hosted builtin modules)
-- `vibe/prelude/io.vibe`: stream I/O + ANSI/TUI helpers for terminal-oriented examples
+- `@vibe/builtin/`: vibe core library (self-hosted builtin modules)
+- `@vibe/builtin/io.vibe`: stream I/O + ANSI/TUI helpers for terminal-oriented examples
 
 ## WASM / Component Demos
 

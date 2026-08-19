@@ -72,7 +72,7 @@ module.exports = grammar({
         choice(
           // relative: ./foo.vibe, ./foo.vibe#hash
           /\.\/[a-zA-Z0-9_/.]+(\.[a-zA-Z]+)?(#[a-zA-Z0-9_]+)?/,
-          // absolute: /vibe/prelude/option.vibe
+          // absolute: @vibe/builtin/option.vibe
           /\/[a-zA-Z0-9_/.]+(\.[a-zA-Z]+)?/,
         ),
       ),

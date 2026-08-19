@@ -33,7 +33,7 @@ case "$shard" in
     ;;
   cli)
     # Library `vibe test` smoke (selfhost-CLI-compilable subset; covers lib/@vibex/wasm and
-    # lib/@vibe/prelude — the selfhost-only gate doesn't reach these).
+    # lib/@vibe/builtin — the selfhost-only gate doesn't reach these).
     bash scripts/test_vibe_library.sh
     # #821: the following gate scripts were referenced here but NEVER committed
     # (no git history), so this shard died at the first missing file under

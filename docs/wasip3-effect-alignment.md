@@ -123,7 +123,7 @@ lower する(source 上は `perform Async::Suspend` 系に脱糖)。
 `Stream[T]` builtin(`Array::*` への remap)と phantom `Task[T]`
 (spec §2.5 で歴史的プロトタイプと明記済み)を退役させる。stream の言語表面は
 `AsyncIterator[T]`(`next(Self) -> Future[Option[(T, Self)]]`、spec §2.4 の
-north star と一致、実装は `lib/@vibe/prelude/async_iter.vibe`)に一本化し、
+north star と一致、実装は `lib/@vibe/builtin/async_iter.vibe`)に一本化し、
 `ByteStream` = `stream<u8>` とする。`lib/@vibe/console/byte_stream.vibe` の
 pull closure が実働プロトタイプであり、host shim(現 WASI 0.2
 `input-stream.blocking-read`)を p3 `stream.read` ループへ差し替えるだけで

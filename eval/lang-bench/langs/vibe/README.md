@@ -10,7 +10,7 @@
   `vibe symbols lib/@vibe/fs/index.vibe` (or the sibling `index.vibei`
   contract) for the current readdir-shaped export — API discovery
   convention per the repo's own `CLAUDE.md`.
-- stdout/stderr: `lib/@vibe/prelude`'s `stdout_write` (see
+- stdout/stderr: `lib/@vibe/builtin`'s `stdout_write` (see
   `eval/lang-review/golden/*.vibe` for usage); check the same package for
   a stderr equivalent, or use the exit-code channel plus stdout if none
   exists yet (note this as a friction point in `findings/` if so).

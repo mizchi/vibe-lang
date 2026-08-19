@@ -116,7 +116,7 @@ Status: accepted and moved from `TODO.md`.
   `index.vibe` root registry now requires
   `export let version = "<semver>"` (simple `x.y.z` form).
 - Scratch workflow alias resolution is fixed for local registry usage:
-  persisted sources containing `import vibe/prelude@<version>.vdb` resolve
+  persisted sources containing `import @vibe/builtin@<version>.vdb` resolve
   aliases from `VIBE_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can
   point to object content via `hash:<sha1>` / `{ "hash": "<sha1>" }`.
 - Advanced graph distributed refs workflow is introduced:
@@ -183,7 +183,7 @@ Status: accepted and moved from `TODO.md`.
   `wasm` -> `wasm-js-string` -> no-dce fallback),
   supports optional `bench/importers-no-dce` diagnostics via
   `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`,
-  supports opt-in `vibe/prelude/*.vibe` surfaces via
+  supports opt-in `@vibe/builtin/*.vibe` surfaces via
   `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`,
   stores current metrics in `dist/bundle_size/current.tsv`,
   and enforces per-entry golden budgets from

@@ -89,12 +89,12 @@ Same as #3 but for the linear backend:
 ### 6. Tests
 
 Add a test mirroring `iterator_supports_string_iterable` in
-`vibe/prelude/iterator_test.vibe` — exercises `Iterator::fold` /
+`@vibe/builtin/iterator_test.vibe` — exercises `Iterator::fold` /
 `any` / `find` / `map` against the new type. **Run with both backends**:
 
 ```bash
-vibe test vibe/prelude/iterator_test.vibe                  # linear
-VIBE_TEST_BACKEND=gc vibe test vibe/prelude/iterator_test.vibe  # wasm-gc
+vibe test @vibe/builtin/iterator_test.vibe                  # linear
+VIBE_TEST_BACKEND=gc vibe test @vibe/builtin/iterator_test.vibe  # wasm-gc
 ```
 
 Silent-fail caveat: a wasm-gc miss often manifests as the test

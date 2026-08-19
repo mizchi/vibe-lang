@@ -81,10 +81,10 @@ fi
 # type-checker regression from a same-named type+namespace import pair
 # getting reordered relative to each other by a plain alphabetical sort).
 cat > "$WORK/sort.in.vibe" <<'EOF'
-import @vibe/prelude { zeta_fn, alpha_fn, Middle::Thing, gamma_fn as g, type Beta }
+import @vibe/builtin { zeta_fn, alpha_fn, Middle::Thing, gamma_fn as g, type Beta }
 EOF
 cat > "$WORK/sort.expected.vibe" <<'EOF'
-import @vibe/prelude {
+import @vibe/builtin {
   type Beta, Middle::Thing, alpha_fn, gamma_fn as g, zeta_fn
 }
 EOF

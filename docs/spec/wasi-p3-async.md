@@ -254,7 +254,7 @@ ADR-0089 Decision 3) への一本化だが、**今日の実装には 3 つの表
 |---|---|---|---|
 | `Stream[T]` | `Array[T]` (eager) | `next`、`String::to_bytes`/`Stream::to_string` | **legacy**。eager combinator (`empty`/`once`/`map`/`filter`/`fold`) は #1538 で**退役済み**。残るのは `next` (綴りは未決定) と ByteStream 対 |
 | `HostStream` | 2 語セル `[3, handle]` | `host_stream_named`/`host_stream_next`/`host_stream_close` | **generic named-host-stream 専用**の p3 境界実体。stream の readable handle 1本しか保持できず、completion future を伴う provider の所有/lifecycle は表せない (§3.18.3) |
-| AsyncIter | trait (`lib/@vibe/prelude/async_iter.vibe`) | `for x in it` の pull protocol | 目標形、host stream とは未接続 |
+| AsyncIter | trait (`lib/@vibe/builtin/async_iter.vibe`) | `for x in it` の pull protocol | 目標形、host stream とは未接続 |
 
 `host_stream_named` の戻り型が `Stream[Int]` **ではない**のは #1341 の実測に
 よる: 同じ静的型だと `for` が array パスを選び、cell の 2 語 (state 3 +
@@ -593,7 +593,7 @@ wasmtime 45 で **42** を実測。
 挙動は同じ（`await` は slot 1 を読むだけ）だが、**pending future を後から足すのに
 表現を作り直さなくて済む** — M1b-3c は `await` に slot 0 の分岐を生やすだけになる。
 future を作る側は `Future::ready` / `Stream::next` の2つで、
-`Future[T]` を返す user-level コード（`lib/@vibe/prelude/async_iter.vibe` の
+`Future[T]` を返す user-level コード（`lib/@vibe/builtin/async_iter.vibe` の
 `AsyncIterator::next`）は元から `Future::ready(..)` 経由なので影響しない。
 （#1538 以前は `Stream::fold` も future を作っていた。eager combinator ごと
 退役したので、この位置に残るのは上の2つだけ。）
