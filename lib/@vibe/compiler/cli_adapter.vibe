@@ -44,7 +44,7 @@ import @vibe/compiler/runtime {
   set_incremental_interface_trace_enabled,
   set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
-  symbol_spans,
+  symbol_spans_with_docs,
   type_at_source
 }
 
@@ -264,18 +264,56 @@ fn join_escape_spans(items: Array[(String, Int, Int)]) -> String {
   StringBuilder::freeze(acc)
 }
 
-fn join_symbol_spans(syms: Array[(String, Int, Int, Int)]) -> String {
+/// Escape a `///` doc comment so it survives as ONE field on ONE line:
+/// backslash first, then newline as the two characters `\` `n`. Escaping the
+/// backslash is what makes it reversible -- a doc that literally contains
+/// `\n` would otherwise read back as a line break.
+fn escape_doc_field(text: String) -> String {
+  let n = String::length(text)
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(text, i)
+    if c == 92 {
+      StringBuilder::push(acc, "\\\\")
+    } else {
+      if c == 10 {
+        StringBuilder::push(acc, "\\n")
+      } else {
+        if c == 13 {
+          ()
+        } else {
+          StringBuilder::push(acc, String::from_char_code(c))
+        }
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+/// One `NAME KIND START END` per declaration, with the `///` doc comment
+/// appended as a FIFTH field when the declaration has one. The doc goes last
+/// because it is the only field that can contain spaces, so `cut -f1-4` still
+/// reads the fixed part -- and a declaration with no doc emits exactly the
+/// four fields it always did, with no trailing space.
+fn join_symbol_spans(syms: Array[(String, Int, Int, Int, String)]) -> String {
   let n = Array::length(syms)
   // O(N) join via StringBuilder; per-record String::concat was O(N²) (issue #366).
   let acc = StringBuilder::new()
   let mut first = true
   let mut i = 0
   while i < n {
-    let (name, kind, s, e) = Array::get(syms, i)
+    let (name, kind, s, e, doc) = Array::get(syms, i)
     if String::length(name) == 0 {
       ()
     } else {
-      let line = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      let head = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      let line = if String::length(doc) == 0 {
+        head
+      } else {
+        String::concat(head, String::concat(" ", escape_doc_field(doc)))
+      }
       if first {
         StringBuilder::push(acc, line)
         first = false
@@ -1349,7 +1387,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   if Env::get("VIBE_SYMBOLS") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      let syms = symbol_spans(src)
+      let syms = symbol_spans_with_docs(src)
       Fs::write_bytes(output_path, adapter_string_to_bytes(join_symbol_spans(syms)))
       0
     } with Exception {

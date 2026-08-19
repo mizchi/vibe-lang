@@ -265,9 +265,10 @@ CI shard では:
   削除して構わないが、一括削除はこの PR ではやっていない。**vibe の doc
   comment は `///`** (Rust 風、宣言の直前に置くとその宣言の doc として
   hover/`vibe doc-at` から拾われる。実装は `lib/@vibe/parser/lexer.vibe`
-  `collect_doc_comments`)。**`vibe symbols` はまだ doc comment を返さない**
-  (`runtime/symbol_spans.vibe` は `(name, kind, start, end)` のみ) —
-  拾えるのは hover と `doc-at` だけ。既存の `//#` (モジュール冒頭説明・
+  `collect_doc_comments`)。**`vibe symbols` も doc comment を返す** —
+  doc を持つ宣言だけ `NAME KIND START END DOC` の 5 番目のフィールドが付き
+  (改行は `\n` にエスケープ、1宣言=1行)、持たない宣言は従来どおり 4 フィールド。
+  構造化された答えが要るなら `symbol_spans_with_docs`。既存の `//#` (モジュール冒頭説明・
   セクション見出しに広く使われている非公式記法) は `///` と意味が異なる
   (`//#` は複数宣言にまたがる説明やセクション区切りにも使われており、
   `///` の「直後の1宣言に対応する doc」という意味論とは食い違う) ため、
@@ -318,10 +319,14 @@ CI shard では:
 作業するときのコストとして毎回効いてくる。
 
 現に効いている既知の穴 (どれもこの方針違反として扱う):
-型エラーに `line:col` が付かないこと (**#1567** の残り)、
-`vibe check --json` が `--single-file` でしか使えないこと (同 #1567 —
-import 解決レーンは診断を文字列で投げるので range が無い)、
-`vibe symbols` が doc comment を返さないこと (Coding Convention 節)。
+**型エラーに位置が付かないこと** (**#1567** の残り)。これは import レーン
+固有ではない — 実測 (2026-08-19): `let a: Int = "not an int"` は
+`vibe check` でも `vibe check --single-file` でも位置なしで、`--json` すら
+`0:0` + `"data":{"synthetic":true}` を返す。checker の anchor 機構自体は
+動いていて (`off_marker` / `railway_expr_off`)、**リテラル式が offset
+スロットを持たない**のが原因。`vibe check --json` が `--single-file` でしか
+使えないのも同根で、「import レーンに range が無い」ではなく
+「型エラーにそもそも位置が無い」。
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・

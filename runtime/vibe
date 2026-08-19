@@ -52,7 +52,7 @@
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
 #   vibe doc-at  <file.vibe> <line> <col> print the `///` doc comment at a position (#854)
 #   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
-#   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END per line)
+#   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END [DOC] per line)
 #   vibe symbols --legend                 print KIND NAME table (LSP SymbolKind v1, 2026-08-17)
 #   vibe escapes [--strict] <file.vibe>   print the `let mut` bindings a closure
 #                                         captures -- the ones codegen boxes into
@@ -1315,11 +1315,18 @@ case "$cmd" in
   symbols)
     # vibe symbols <file.vibe>
     # vibe symbols --legend
-    # Print the declaration outline, one `NAME KIND START END` per line (KIND =
-    # LSP SymbolKind int, START/END = char offsets of the name). AST-accurate
-    # (no line-regex scan): handles multi-line decls and module-nested symbols.
-    # Empty output means the file declares no top-level symbols. Powers LSP
-    # document-outline / go-to-definition.
+    # Print the declaration outline, one `NAME KIND START END [DOC]` per line
+    # (KIND = LSP SymbolKind int, START/END = char offsets of the name).
+    # AST-accurate (no line-regex scan): handles multi-line decls and
+    # module-nested symbols. Empty output means the file declares no top-level
+    # symbols. Powers LSP document-outline / go-to-definition.
+    #
+    # DOC is the declaration's `///` doc comment, present only when it has one
+    # -- a declaration without a doc emits exactly the four fields it always
+    # did, no trailing space. It is LAST because it is the only field that can
+    # contain spaces, so `cut -d" " -f1-4` still reads the fixed part. Inside
+    # it a newline is the two characters `\n` and a backslash is doubled, so
+    # one declaration is always one line.
     # `--legend` prints the versioned KIND table (v1 / 2026-08-17): one
     # `KIND NAME` per line, no decoration, never empty. `--help`/`-h` print
     # usage plus a pointer at that table. Neither flag changes the file
@@ -1342,6 +1349,8 @@ case "$cmd" in
         printf '%s\n' \
           'usage: vibe symbols <file.vibe>' \
           '       vibe symbols --legend' \
+          'Prints NAME KIND START END [DOC] per declaration.' \
+          'DOC is the `///` doc comment, omitted when there is none; newlines in it are escaped as \n.' \
           'KIND integers are LSP SymbolKind; print the table with `vibe symbols --legend`.'
         exit 0
         ;;

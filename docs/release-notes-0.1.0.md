@@ -134,9 +134,11 @@ the edit that fixes them rather than an internal pass name.
   identical program output by `pkf run check-tutorial-translation-parity`.
   Chapters 8–19 have no translation yet.
 - **`bench` blocks do not run on the wasm-gc lane** (#1701).
-- `vibe symbols` does not return doc comments; hover and `vibe doc-at` do.
-- `vibe check --json` exists only under `--single-file` — the import-resolving
-  lane throws diagnostics as strings and has no range to report (#1567).
+- **Type errors carry no source position.** `let a: Int = "not an int"` is
+  reported without a `line:col` on either lane, and `vibe check --single-file
+  --json` answers with a synthetic `0:0` range. The checker's anchoring works;
+  literal expressions have no offset slot to anchor to. `vibe check --json`
+  being `--single-file`-only is the same gap seen from the other side (#1567).
 - Everything in §6 of [spec/stable-surface.md](spec/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.

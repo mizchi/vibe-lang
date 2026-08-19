@@ -50,7 +50,7 @@ where it converts.
 ```bash
 vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1-based (line, BYTE col)
 vibe binding-at <file.vibe> <line> <col>  # source spans (START END byte offsets) of every occurrence of that binding
-vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END per line)
+vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END [DOC] per line)
 vibe symbols --legend                     # KIND NAME table (LSP SymbolKind v1, 2026-08-17)
 vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
 vibe check --single-file <file.vibe>      # same, analysing the buffer ALONE (no FS import resolution)
@@ -72,6 +72,13 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   is outlined as the keyword `test`/`bench`. An `impl Trait for T` is one
   Method (6) named after `T` — the impl statement does not carry method
   children.
+- **Doc comments (`DOC`).** A declaration's `///` doc comment is appended as a
+  fifth field, present only when it has one — a declaration without a doc emits
+  the same four fields it always did, with no trailing space. The doc is last
+  because it is the only field that can contain spaces, so `cut -d" " -f1-4`
+  still reads the fixed part; inside it a newline is the two characters `\n`
+  and a backslash is doubled, so one declaration is always one line. The
+  structured form (real newlines, for LSP detail) is `symbol_spans_with_docs`.
 - **SymbolKind legend v1 (2026-08-17).** `KIND` integers are LSP
   [`SymbolKind`](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#symbolKind)
   values. The machine-readable table is `vibe symbols --legend`: one
