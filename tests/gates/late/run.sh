@@ -4550,15 +4550,21 @@ rm -rf "$tcdir"; mkdir -p "$tcdir"
 # run -- measured, that masked 4 of the 13 lost checks.
 tc_names="$(grep -v '^#' fixtures/typecheck/expected.tsv | cut -f1)"
 # One compile each (~250ms), fanned out -- serially this section would be ~15s.
+# A row names a fixture in fixtures/typecheck/, or -- for the #2125 orphans
+# adopted from the repository root -- one directly under fixtures/. Resolving
+# in that order avoids moving 139 files and keeps names unique (checked: the
+# two directories share none).
 printf '%s\n' $tc_names | xargs -P "$(nproc 2>/dev/null || echo 4)" -I{} env \
   ROOT_DIR="$ROOT_DIR" stage2_wasm="$stage2_wasm" tcdir="$tcdir" \
-  bash -c 'VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash -c 'src="fixtures/typecheck/{}.vibe"; [ -f "$src" ] || src="fixtures/{}.vibe"
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "fixtures/typecheck/{}.vibe" "$tcdir/{}.wasm" __no_entry__ >/dev/null 2>&1 || true'
+    "$src" "$tcdir/{}.wasm" __no_entry__ >/dev/null 2>&1 || true'
 tc_fail=0
 tc_debt=0
 while IFS=$'\t' read -r tcname tcstatus tcneedle; do
   case "$tcname" in ''|'#'*) continue ;; esac
+  tcsrc="fixtures/typecheck/$tcname.vibe"; [ -f "$tcsrc" ] || tcsrc="fixtures/$tcname.vibe"
   if [ -s "$tcdir/$tcname.wasm" ]; then tcact="ok"; else tcact="reject"; fi
   tcdiag="$(head -1 "$tcdir/$tcname.wasm.diag" 2>/dev/null || true)"
   case "$tcstatus" in
@@ -4571,11 +4577,11 @@ while IFS=$'\t' read -r tcname tcstatus tcneedle; do
   if [ "$tcact" != "$tcwant" ]; then
     case "$tcstatus" in
       debt-accepts)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is REJECTED again -- the lost check is back. Promote its row in expected.tsv from 'debt-accepts' to 'reject' with the new message (#138)." >&2 ;;
+        echo "[compiler-gate] FAIL: $tcsrc is REJECTED again -- the lost check is back. Promote its row in expected.tsv from 'debt-accepts' to 'reject' with the new message (#138)." >&2 ;;
       debt-rejects)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe COMPILES again. Promote its row in expected.tsv from 'debt-rejects' to 'ok' (#138)." >&2 ;;
+        echo "[compiler-gate] FAIL: $tcsrc COMPILES again. Promote its row in expected.tsv from 'debt-rejects' to 'ok' (#138)." >&2 ;;
       *)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe expected '$tcwant', got '$tcact' (#138)" >&2 ;;
+        echo "[compiler-gate] FAIL: $tcsrc expected '$tcwant', got '$tcact' (#138)" >&2 ;;
     esac
     [ -n "$tcdiag" ] && echo "    diag: $tcdiag" >&2
     tc_fail=1
@@ -4583,7 +4589,7 @@ while IFS=$'\t' read -r tcname tcstatus tcneedle; do
     case "$tcdiag" in
       *"$tcneedle"*) ;;
       *)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is rejected, but not for the recorded reason (#138)" >&2
+        echo "[compiler-gate] FAIL: $tcsrc is rejected, but not for the recorded reason (#138)" >&2
         echo "    expected substring: $tcneedle" >&2
         echo "    actual:             $tcdiag" >&2
         tc_fail=1 ;;
