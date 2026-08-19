@@ -19,9 +19,10 @@ fn main with Stdout {
 
 `print` is the same without the trailing newline. `@vibe/console` publishes the
 rest of the tty surface (`eprint` / `eprintln` on `Stderr`, `read_line`,
-`read_all`), and `@vibe/builtin`'s older `stdout_write` / `stdout_writeln`
-still compile. The row is spelled `Stdout` here because that is what these
-lower onto today; the current tty capability is `Console`
+`read_all`). `@vibe/builtin`'s older `stdout_write` / `stdout_writeln` are
+gone (#2102) -- they duplicated names above. The row is spelled `Stdout` here
+because that is what these lower onto today; the current tty capability is
+`Console`
 (`Console::write_stream`), and #1460 moves them there.
 
 ```bash
@@ -1448,8 +1449,8 @@ the linear and GC backends):
 ```vibe skip
 println(s)         // with Stdout - builtin, no import
 print(s)           // with Stdout - no trailing newline
-stdout_write(s)    // with Stdout - @vibe/builtin
-stdin_read_line()  // with Stdin
+read_line()        // with Stdin  - @vibe/console
+eprintln(s)        // with Stderr - @vibe/console
 sh("ls -la")       // with Stdout - shell command
 sh_lines("ls")     // -> Array[String]
 ```
