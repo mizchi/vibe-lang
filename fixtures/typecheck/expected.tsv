@@ -174,7 +174,7 @@ local_enum_rejected	reject	a block-local `enum` declaration is not supported
 # The recorded needle is TODAY'S message, which is usually the same check under
 # a better name than the retired one ("effect requirements not satisfied" ->
 # "effect row mismatch for 'f': missing { Exception::Throw }"). Where it is not
-# the same check, the fixture is not here -- see the rewrite list in #2126.
+# the same check, the fixture is not here -- the remaining 5 are in #2127.
 effect_not_allowed	reject	effect row mismatch for 'f': missing { Process } (no 'with' clause, requires { Process })
 err_effect_call_effectful_from_pure	reject	effect row mismatch for 'pure': missing { Exception } (no 'with' clause, requires { Exception })
 err_effect_closure_captures_effect	reject	effect row mismatch for 'make_thrower': missing { Exception::Throw } (no 'with' clause, requires { Exception::Throw })
@@ -248,3 +248,99 @@ err_type_member_receiver_mismatch	debt-accepts
 err_type_ord_operator_requires_ord_bound	debt-accepts	
 err_type_undefined_type	debt-accepts	
 err_import_kind_mismatch_trait	debt-accepts	
+
+# --- adopted from fixtures/ after a mechanical rewrite (#1571) -------------
+# 44 more of the 139 were rejected before reaching their own check: ADR-0069
+# made a top-level expression illegal, and these were written as one. Wrapping
+# the trailing expression in `fn main` turned 32 of them into the specific
+# diagnostic the fixture was named for -- `err_type_record_unknown_field` now
+# says "unknown field 'z' on record { x: Int, y: Int }" where it used to say
+# only that a top-level expression is not allowed.
+#
+# 6 compile, and are `debt-accepts`: `x += "hello"` on an Int, `apply(add, 42)`
+# where `apply` wants a 1-argument function, `m[42] = 2` on a Map[String, Int],
+# `type T = T`, an inline `[T](x: T: Show)` bound, and `return` inside a
+# suspending loop (#1536). 3 are `ok` on purpose: two index-out-of-range
+# fixtures assert a RUNTIME error the type system never promised (their own
+# comments say "(runtime error)"), and untyped recursion is allowed today.
+#
+# The two Int-literal fixtures were rewritten a second time: #1877 widened the
+# bound to 2^62-1, so the values they used had become legal, and they were
+# asserting an overflow that no longer happened.
+err_effect_loop_return_suspend	debt-accepts	
+err_eval_assign_immutable	reject	cannot assign to immutable binding `x` (declare it with `let mut`)
+err_parse_int_min_literal_overflow	reject	IntLiteralOverflow: integer literal exceeds Int::max_value (4611686018427387903)
+err_parse_int_overflow_tagged	reject	IntLiteralOverflow: integer literal exceeds Int::max_value (4611686018427387903)
+err_type_array_index_out_of_range	ok	
+err_type_array_push_wrong_type	reject	Array::push value type mismatch: expected Int, got String
+err_type_assign_to_immutable	reject	cannot assign to immutable binding `x` (declare it with `let mut`)
+err_type_call_non_function	reject	calling a non-function value: x
+err_type_compound_assign_immutable	reject	cannot assign to immutable binding `x` (declare it with `let mut`)
+err_type_compound_assign_type	debt-accepts	
+err_type_enum_wrong_ctor	reject	argument type mismatch for f: expected Int, got Bool
+err_type_enum_wrong_ctor_args	reject	function arity mismatch for f: expected 2 args, got 3
+err_type_extra_args	reject	function arity mismatch for add: expected 2 args, got 3
+err_type_fn_arity_mismatch	debt-accepts	
+err_type_generic_arg_mismatch	reject	function arity mismatch for pair: expected 2 args, got 3
+err_type_generic_mismatch	reject	argument type mismatch for use_string: expected String, got Int
+err_type_generic_return_mismatch	reject	argument type mismatch for bad: expected Int, got String
+err_type_hof_return_mismatch	reject	type mismatch in '+': operands must be Int, Double, or String
+err_type_if_condition_not_bool	reject	if condition must be Bool
+err_type_incompatible_fn_types	reject	argument type mismatch for apply: expected (Int) -> String, got (Int) -> Int
+err_type_map_key_type	debt-accepts	
+err_type_mismatch_arg	reject	argument type mismatch for add: expected Int, got String
+err_type_mismatch_pattern	reject	string literal pattern cannot match a non-String scrutinee
+err_type_missing_args	reject	function arity mismatch for add: expected 2 args, got 1
+err_type_negative_index	ok	
+err_type_nested_generic_mismatch	reject	argument type mismatch for my_map: expected Array[Int], got Array[String]
+err_type_option_unwrap_none	reject	type mismatch in '+': operands must be Int, Double, or String
+err_type_record_field_access_wrong_type	reject	field access `.foo` on a non-struct value
+err_type_record_unknown_field	reject	unknown field 'z' on record { x: Int, y: Int }
+err_type_recursive_alias	debt-accepts	
+err_type_recursive_generic	ok	
+err_type_trait_call_bound_violation	reject	no impl `LocalEq` for `String`
+err_type_trait_impl_bound_unsatisfied	reject	no impl `LocalEq` for `NoShow`
+err_type_trait_inline_param_bound_violation	debt-accepts	
+err_type_trait_multi_bound_violation	reject	no impl `Show` for `NoShow`
+err_type_trait_unknown_bound	reject	no impl `LocalEq` for `Int`
+err_type_tuple_element_type	reject	argument type mismatch for expect_str: expected String, got Int
+err_type_tuple_index_out_of_bounds	reject	tuple index 5 out of range for a 3-tuple
+err_type_unknown_function	reject	unknown name: nonexistent_function
+err_type_while_condition_not_bool	reject	while condition must be Bool
+unknown_name	reject	unknown name: foo
+
+# --- the last 21, after a second rewrite pass (#1571) ------------------------
+# 10 of these were declaration-only files: the compiler had nothing to compile,
+# so the check under test never ran. An empty `fn main` gives it a program.
+# 6 more had a multi-line trailing expression (a `match` block) that the
+# ADR-0069 wrap missed. 5 needed nothing but the `__DATA__` strip.
+#
+# 12 compile. Every one of them is a check the retired host claimed to make --
+# a duplicate effect operation, `let rec` on a non-function, `type i32`, an
+# unknown ctor in a pattern, a record pattern with a field the value lacks, and
+# 7 trait rules (duplicate defs, overlapping impls, unknown bounds, supertrait
+# cycles). THE ROWS LOCK TODAY'S BEHAVIOUR, WHICH IS WHAT THE GATE ENFORCES.
+# Whether each SHOULD be rejected is the open question, and it has not been
+# re-decided per row -- read the caveat at the top of this file before
+# "restoring" any of them.
+err_parse_enum_comma_separator	reject	use ';' to separate declaration members; ',' is not a separator
+err_parse_incomplete_binop	reject	unexpected token: eof
+err_parse_invalid_arrow	reject	unexpected token: eof
+err_parse_missing_expr	reject	unexpected token: eof
+err_parse_struct_comma_separator	reject	use ';' to separate declaration members; ',' is not a separator
+err_type_for_in_non_iterable	reject	non-Array `for` does not produce a value
+err_type_match_non_exhaustive	reject	non-exhaustive match: pattern `_` is not handled (add it or a `_` arm)
+err_type_match_wrong_pattern_type	reject	string literal pattern cannot match a non-String scrutinee
+err_type_tuple_length_mismatch	reject	type mismatch in '+': operands must be Int, Double, or String
+err_effect_duplicate_op	debt-accepts	
+err_type_bad_rec	debt-accepts	
+err_type_enum_wrong_variant_pattern	debt-accepts	
+err_type_record_missing_field	debt-accepts	
+err_type_reserved_wasm_type_name	debt-accepts	
+err_type_trait_duplicate_def	debt-accepts	
+err_type_trait_impl_duplicate_target_rejected	debt-accepts	
+err_type_trait_impl_overlap_rejected_when_both_apply	debt-accepts	
+err_type_trait_impl_unknown_bound	debt-accepts	
+err_type_trait_supertrait_self_cycle	debt-accepts	
+err_type_trait_supertrait_unknown	debt-accepts	
+err_type_trait_unknown_impl_trait	debt-accepts	
