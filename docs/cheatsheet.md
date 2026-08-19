@@ -1399,19 +1399,26 @@ vibe test dir/            # run all tests in directory (examples run too)
 
 ## Key Builtins
 
-**String**: byte string (`length`/indexes/slices use byte counts and offsets;
-iteration yields byte-valued `Int`). `String::length`, `byte_at`, `from_byte`,
-`char_code_at`, `from_char_code`, `concat`, `substring`, `contains`,
-`index_of`, `split`, `trim`, `starts_with`, `ends_with`, `join`. Unicode
-code-point/grapheme operations are not part of this API.
+The list below is the **index**; the normative one — what 0.1.0 promises SemVer
+stability for — is [spec/stable-surface.md](spec/stable-surface.md) §3, and
+`pkf run check-freeze-surface` probes every name in it against the compiler.
+The bullets here are checked the same way, so a name listed as a builtin here
+resolves as one.
+
+- **String**: `length`, `byte_at`, `from_byte`, `char_code_at`,
+  `from_char_code`, `concat`, `substring`, `contains`, `index_of`, `split`,
+  `trim`, `starts_with`, `ends_with`, `join`
+- **Array**: `length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`,
+  `all`, `reverse`, `concat`
+- **Map**: `get`, `has_key`, `keys`, `values`, `set`, `size`
+
+`String` is a byte string: `length`, indexes and slices use byte counts and
+offsets, and iteration yields byte-valued `Int`. Unicode code-point and
+grapheme operations are not part of this API.
 
 `String::replace` / `replace_all` are **not** builtins — they are library
 functions and need `import @vibe/builtin { String::replace }`. Calling one
 without the import is `unknown name: String::replace`.
-
-**Array**: `Array::length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`, `concat`
-
-**Map**: `Map::get`, `has_key`, `keys`, `values`, `set`
 
 **Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
 `push` は償却 O(1)):
@@ -1453,11 +1460,11 @@ the linear and GC backends):
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->
 ```vibe skip
-println(s)         // with Stdout - builtin, no import
-print(s)           // with Stdout - no trailing newline
-read_line()        // with Stdin  - @vibe/console
-eprintln(s)        // with Stderr - @vibe/console
-sh("ls -la")       // with Stdout - shell command
+println(s)         // with Console - builtin, no import
+print(s)           // with Console - no trailing newline
+read_line()        // with Console - @vibe/console
+eprintln(s)        // with Console - @vibe/console
+sh("ls -la")       // with Process - shell command
 sh_lines("ls")     // -> Array[String]
 ```
 

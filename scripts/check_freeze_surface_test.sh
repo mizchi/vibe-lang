@@ -29,9 +29,25 @@ $1
 EOF
 }
 
+# The gate reads a second document -- the cheatsheet's Key Builtins index.
+# Point it at a minimal synthetic one so the freeze-list cases stay fast and
+# test only what they name.
+sheet() { # sheet <bullet lines>
+  cat > "$TMP/sheet.md" <<EOF
+# synthetic cheatsheet
+
+## Key Builtins
+
+$1
+
+## Next section
+EOF
+}
+sheet '- **String**: `length`'
+
 expect() { # expect <exit> <label> [needle]
   local want="$1" label="$2" needle="${3:-}" out rc
-  set +e; out="$(FREEZE_DOC="$TMP/doc.md" bash "$CHECK" 2>&1)"; rc=$?; set -e
+  set +e; out="$(FREEZE_DOC="$TMP/doc.md" FREEZE_CHEATSHEET="$TMP/sheet.md" bash "$CHECK" 2>&1)"; rc=$?; set -e
   if [ "$rc" != "$want" ]; then
     echo "freeze-surface self-test: FAIL: $label -- exit $rc, wanted $want" >&2
     echo "$out" >&2; exit 1
@@ -69,6 +85,34 @@ expect 0 "an explicitly not-frozen name is not probed"
 doc '- **Result**: `and_then`
 - **note**: `Result::and_then` cannot be frozen'
 expect 1 "freezing and un-freezing the same name is a contradiction" "says two different things"
+
+# 6b. The index document is checked with the same probe: a name it presents as
+#     a builtin must be one. This is the exact shape #2124 measured --
+#     docs/cheatsheet.md listed `String::replace`, which needs an import.
+doc '- **String**: `length`'
+sheet '- **String**: `length`, `replace`'
+expect 1 "a name the index calls a builtin but that needs an import fails" "String::replace"
+
+# 6c. ...and the corrected form passes.
+sheet '- **String**: `length`, `concat`'
+expect 0 "an index listing only real builtins passes"
+
+# 6d. Only `- **Type**:` bullets are read. Probing the whole section pulls
+#     receivers across prose and tables and invents names like `Math::sh`.
+sheet '- **String**: `length`
+
+Prose below the bullets may mention `replace` freely -- it needs an import.
+
+| Function | Meaning |
+|---|---|
+| `simd_skip_ws(buf, pos, len) -> Int` | first non-whitespace |'
+expect 0 "prose and tables after the bullets are not probed"
+
+# 6e. An index with no bullets at all is asserting nothing.
+sheet 'no bullets here, only prose'
+expect 1 "an index with no builtin bullets fails rather than passing vacuously" "asserting nothing"
+
+sheet '- **String**: `length`'
 
 # 7. A section 3 with no symbols means the check is asserting nothing.
 doc '(prose only, no symbols)'

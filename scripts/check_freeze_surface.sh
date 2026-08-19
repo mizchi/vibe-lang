@@ -22,6 +22,7 @@
 #
 # Usage: bash scripts/check_freeze_surface.sh
 #   FREEZE_DOC        override the document (default docs/spec/stable-surface.md)
+#   FREEZE_CHEATSHEET override the index document (default docs/cheatsheet.md)
 #   FREEZE_STAGE2     compiler wasm (default: newest generation, then seed)
 set -euo pipefail
 
@@ -29,6 +30,20 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 DOC="${FREEZE_DOC:-docs/spec/stable-surface.md}"
 [ -f "$DOC" ] || { echo "check-freeze-surface: no such document: $DOC" >&2; exit 1; }
+
+# The cheatsheet's "Key Builtins" is the INDEX to the same surface, and #2124
+# measured the two drifting in opposite directions: the cheatsheet called
+# `String::replace` a builtin (it is `unknown name` without an import) while
+# the freeze list omitted `byte_at` / `from_byte` (real builtins, outside the
+# SemVer promise). One probe, both documents.
+#
+# Only `- **Type**: ...` bullets are read. Probing the whole section extracts
+# 109 names, most of them nonsense (`Conversion::__add`, `Math::sh`,
+# `Map::perform`) because it also holds prose, tables and code blocks, and a
+# receiver sticks across them. The bullets alone give 31 names and no noise --
+# which is why the symbol list was restructured into bullets.
+CHEATSHEET="${FREEZE_CHEATSHEET:-docs/cheatsheet.md}"
+[ -f "$CHEATSHEET" ] || { echo "check-freeze-surface: no such document: $CHEATSHEET" >&2; exit 1; }
 
 # An EXPLICIT compiler that does not exist is an error, never a fallback. The
 # silent-fallback version of this answered from the seed while the caller
@@ -201,4 +216,57 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 1
 fi
 
-echo "check-freeze-surface: ok ($checked frozen symbol(s) resolve; ${#negated[@]} explicitly not frozen)"
+# The index document: every name it presents as a builtin must be one.
+mapfile -t index_syms < <(FREEZE_CHEATSHEET="$CHEATSHEET" python3 - <<'PYEOF'
+import os, re, sys
+
+doc = open(os.environ["FREEZE_CHEATSHEET"], encoding="utf-8").read()
+m = re.search(r"^## Key Builtins$.*?(?=^## )", doc, re.S | re.M)
+if not m:
+    sys.exit("no '## Key Builtins' section")
+
+recv, names = None, set()
+for line in m.group(0).splitlines():
+    head = re.match(r"- \*\*([A-Za-z][A-Za-z0-9_]*)\*\*\s*:", line)
+    if head:
+        recv = head.group(1)
+    elif not re.match(r"^\s+\S", line):
+        # Not a bullet start and not an indented continuation: the bullet ended,
+        # so the receiver must not leak into the prose and tables that follow.
+        recv = None
+    if recv is None:
+        continue
+    for tok in re.findall(r"`([^`]+)`", line):
+        tok = tok.strip()
+        if "::" in tok:
+            base, _, rest = tok.partition("::")
+            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", base) and re.fullmatch(r"[a-z_][A-Za-z0-9_]*", rest):
+                names.add(base + "::" + rest)
+        elif re.fullmatch(r"[a-z_][A-Za-z0-9_]*", tok):
+            names.add(recv + "::" + tok)
+
+for n in sorted(names):
+    print(n)
+PYEOF
+) || { echo "check-freeze-surface: FAIL: could not read $CHEATSHEET's Key Builtins index" >&2; exit 1; }
+
+if [ "${#index_syms[@]}" -eq 0 ]; then
+  echo "check-freeze-surface: FAIL: extracted 0 symbols from $CHEATSHEET's Key Builtins bullets -- that half of the check is asserting nothing" >&2
+  exit 1
+fi
+
+index_missing=()
+for sym in "${index_syms[@]}"; do
+  case "$(probe "$sym")" in
+    *"unknown name"*) index_missing+=("$sym") ;;
+  esac
+done
+
+if [ "${#index_missing[@]}" -gt 0 ]; then
+  echo "check-freeze-surface: FAIL: $CHEATSHEET lists ${#index_missing[@]} name(s) as builtins that do not resolve:" >&2
+  printf '  %s\n' "${index_missing[@]}" >&2
+  echo "  A reader copies these. If the name needs an import, say so in the prose below the bullets instead of listing it as a builtin." >&2
+  exit 1
+fi
+
+echo "check-freeze-surface: ok ($checked frozen symbol(s) resolve; ${#negated[@]} explicitly not frozen; ${#index_syms[@]} builtin(s) indexed in $CHEATSHEET resolve)"
