@@ -210,6 +210,23 @@ jobs:
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
           DOCTEST_REQUIRE_STAGE2=1 DOCTEST_STAGE2="${gen}stage2.wasm" \
             bash scripts/doctest_extract_run.sh README.md docs/cheatsheet.md docs/vibe.md docs/spec/*.md
+      - name: 1.0 freeze-surface check + self-test
+        # docs/spec/1.0-freeze.md is the only page that makes a SemVer promise,
+        # and it had frozen two names that no longer resolve --
+        # `Result::and_then` (the type went in #1324) and the `Iterator::*`
+        # combinator layer (retired by ADR-0099). Nothing read the list back.
+        #
+        # This lives HERE and not in structural-lint because both steps need a
+        # compiler: the check probes each frozen name, and the self-test drives
+        # the real check against synthetic documents. A first attempt put them
+        # in the pure-shell job, where every probe failed with "runner not
+        # found" -- the check's own calibration caught that and failed loudly
+        # rather than reporting a green run, which is the behaviour being
+        # relied on here.
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface_test.sh
+          FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface.sh
       - name: examples/ type-check ratchet
         # examples/ is the user-facing sample surface and had NOTHING checking
         # it, so it accumulated two independent classes of rot in silence: the
@@ -399,12 +416,6 @@ jobs:
         run: bash scripts/lint_method_style_naming_test.sh
       - name: method-style-naming lint
         run: bash scripts/lint_method_style_naming.sh
-      # The 1.0 freeze list is the only page that makes a SemVer promise, and
-      # it had frozen two names that no longer resolve. It needs a compiler, so
-      # it runs in compiler-gate (late) rather than here; only its self-test,
-      # which is pure shell, belongs in this job.
-      - name: freeze-surface check self-test
-        run: bash scripts/check_freeze_surface_test.sh
       - name: pre-commit hook self-test
         run: bash scripts/precommit_test.sh
 

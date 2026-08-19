@@ -130,22 +130,29 @@ is_negated() {
   return 1
 }
 
-# The runner. `runtime/vibe` needs one, and without it every probe fails with
-# "runner not found" -- which contains no "unknown name" and so USED to count
-# as a pass. That is the fail-open shape this repository keeps closing (#2108):
-# a check that cannot run must not be indistinguishable from a check that
-# passed. So the probe is calibrated first, on a name that must resolve and a
-# name that must not, and the check refuses to report anything if either
-# calibration comes out wrong.
-if [ -z "${VIBE_RUNNER:-}" ]; then
-  for cand in "$HOME/.vibe/toolchains/main/bin/viberun" "$HOME/.vibe/bin/viberun" "$ROOT_DIR/bin/viberun"; do
-    [ -x "$cand" ] && { export VIBE_RUNNER="$cand"; break; }
-  done
-fi
+# The probe drives `cli_main` through the node host runner
+# (scripts/run_wasm_vibe_host_runner.sh), NOT `runtime/vibe`. Same reason
+# scripts/vibe_grep_bin.sh does: `runtime/vibe` needs a native `viberun`, which
+# a CI job that only checks out the repo does not have -- and every probe then
+# failed with "runner not found", output that contains no "unknown name" and so
+# USED to count as a pass. That is the fail-open shape this repository keeps
+# closing (#2108).
+#
+# The calibration below is the belt to that braces: whatever the runner
+# situation, the check first proves it can tell a resolving name from a
+# non-resolving one, and refuses to report anything if it cannot. It is what
+# turned the CI failure into a loud one instead of a green run.
+RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
+[ -f "$RUNNER" ] || { echo "check-freeze-surface: missing host runner: $RUNNER" >&2; exit 1; }
 
-probe() { # probe <symbol> -> prints the checker output
+probe() { # probe <symbol> -> prints the checker's diagnostics
   printf 'fn __freeze_probe() -> Int {\n  let __g = %s\n  1\n}\n' "$1" > "$WORK/probe.vibe"
-  VIBE_CLI_WASM="$CLI" bash "$ROOT_DIR/runtime/vibe" check "$WORK/probe.vibe" 2>&1 || true
+  : > "$WORK/out"
+  env -u VIBE_FS_COMPILE -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_BINDING_AT \
+      -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_GREP \
+      VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw VIBE_PREOPEN_DIR="$WORK" \
+      bash "$RUNNER" --invoke cli_main "$CLI" "$WORK/probe.vibe" "$WORK/out" >/dev/null 2>&1 || true
+  cat "$WORK/out" 2>/dev/null || true
 }
 
 calib_present="$(probe "String::length")"
