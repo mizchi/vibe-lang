@@ -1030,17 +1030,17 @@ hand-declared `Result`).
 
 `tap` runs a side effect on the value and returns it unchanged — observe a
 stage without breaking the `|>` chain. `tap_some` observes only the `Some`
-track. They are prelude exports (`lib/@vibe/prelude/io.vibe`); import them and
-note they carry the `Stdout` effect. (`tap_ok` / `tap_err` were removed with
+track. They are prelude exports (`lib/@vibe/prelude/io.vibe`), so import them —
+and note that observing with a print costs the `Stdout` effect on the chain. (`tap_ok` / `tap_err` were removed with
 the prelude `Result` in #1324.)
 
 <!-- doctest-skip: 未定義名 (x / next_stage / opt) を参照する構文提示の断片 -->
 ```vibe skip
 x
-|> tap((v) -> stdout_write("step: \{v}\n"))
+|> tap((v) -> println("step: \{v}"))
 |> next_stage
 
-opt |> tap_some((v) -> stdout_write("got \{v}\n"))
+opt |> tap_some((v) -> println("got \{v}"))
 ```
 
 ### Error boundary (`throw` / `handle`)
@@ -1153,8 +1153,6 @@ suberror InvalidInput(Int, String)   // tuple payload only
 ### User-defined effects (algebraic)
 
 ```vibe
-import @vibe/prelude { stdout_write }
-
 effect Logger {
   Log(String) -> Unit
 }
@@ -1163,11 +1161,11 @@ let greet: (String) -> Unit with Logger = (name) -> {
   perform Logger::Log("hello \{name}")
 }
 
-// the handler arm calls stdout_write, so the executable entry carries Stdout
+// the handler arm prints, so the executable entry carries Stdout
 fn main with Stdout {
   handle { greet("world") } with Logger {
     Log(msg) => {
-      stdout_write(msg)
+      println(msg)
       resume(())         // continue where perform left off
     }
   }
