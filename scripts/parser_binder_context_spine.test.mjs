@@ -766,11 +766,17 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
   assertContextual(dispatchSource, "parse_handle_arm", ["qualify_handle_arm_pattern(effect_name, pat, context)"], ["qualify_handle_arm_pattern(effect_name, pat)"]);
   assertContextual(dispatchSource, "parse_impl_block", [
     "fold_block_steps(ArrayBuilder::freeze(steps), context)",
-    "ascribe_wrap(val, the_type, value_mark, context)",
+    // The offset argument is required, not incidental: ascribe_wrap's synthetic
+    // ECall used to carry -1, and a local `let x: T = <literal>` then produced a
+    // type error with no line:col at all, because a literal has no offset of its
+    // own to fall back to. Pinning `blk_offset_at(starts, ...)` here keeps the
+    // binder-name anchor from silently regressing to nothing.
+    "ascribe_wrap(val, the_type, value_mark, context, blk_offset_at(starts,",
     "push_pattern_let_step(tokens, steps, pat, val, next_pos, context)",
   ], [
     "fold_block_steps(ArrayBuilder::freeze(steps))",
     "ascribe_wrap(val, the_type)",
+    "ascribe_wrap(val, the_type, value_mark, context)",
     "push_pattern_let_step(tokens, steps, pat, val, next_pos)",
   ]);
   assertContextual(dispatchSource, "parse_impl_dispatch_with_binder_context", [

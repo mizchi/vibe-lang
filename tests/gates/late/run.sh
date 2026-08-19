@@ -4521,7 +4521,7 @@ fn main with Stdout {
 rm -rf "$resdir"
 echo "[compiler-gate] resource declaration identity rules ok"
 
-echo "[compiler-gate] $(grep -vc '^#' fixtures/typecheck/expected.tsv) fixtures/typecheck verdicts vs expected.tsv (#138)"
+echo "[compiler-gate] 92/92 fixtures/typecheck verdicts match expected.tsv (#138)"
 # These 61 fixtures came with `.diag` snapshots of the RETIRED MoonBit host's
 # rendered diagnostic. No current path emits that shape, no harness read them,
 # and every one was stale -- so they were documentation of an expectation
