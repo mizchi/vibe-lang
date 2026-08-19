@@ -2,8 +2,8 @@
 
 vibe is a small, effect-typed language with a **selfhost-only** compiler: the
 parser, type checker, and WASM codegen are all written in vibe itself
-(`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built from a committed seed via
-a wasm runner — no MoonBit toolchain is required to build or run it (the
+(`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built from a pinned,
+sha256-verified seed via a wasm runner — no MoonBit toolchain is required to build or run it (the
 original MoonBit host was retired in #594).
 
 ## Install
@@ -18,7 +18,7 @@ Building the runner from source needs `git`, `bash`, and `cargo`; pass
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 . "$HOME/.vibe/env"   # or restart the shell — ~/.vibe/bin is the PATH entry
 vibe version
-echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
+echo 'fn main with Console { println("42") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
@@ -44,17 +44,17 @@ fn Point::manhattan(p: Point) -> Int {
   p.x + p.y
 }
 
-fn main with Stdout {
+fn main with Console {
   // `handle` is where the row is discharged — no per-call unwrapping.
   let result = handle {
     safe_div(10, 2) + Point::manhattan(Point::{ x: 3, y: 4 })
   } with Exception[String] {
     Throw(msg) => {
-      Stdout::write_stream("failed: \{msg}\n")
+      println("failed: \{msg}")
       0 - 1
     }
   }
-  Stdout::write_stream("\{result}\n")
+  println("\{result}")
 }
 ```
 
