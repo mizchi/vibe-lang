@@ -15,8 +15,9 @@ compiler rather than a list of fixes. The work once prepared under the name
 
 `v0.0.1` was compiled by a MoonBit host implementation. That host is gone
 (#594). The compiler is now written in vibe, lives in `lib/@vibe/compiler/` and
-`lib/@vibe/cli/`, and is built from a committed seed plus its own source with no
-MoonBit toolchain involved. Building it requires only the Rust/node wasm runner.
+`lib/@vibe/cli/`, and is built from a pinned, sha256-verified seed plus its own
+source, with no MoonBit toolchain involved. Building it requires only the
+Rust/node wasm runner.
 
 The practical consequence for a user is that the language and its compiler are
 now the same artifact: a diagnostic you find is a diagnostic in code you can
@@ -35,9 +36,8 @@ read, and every feature below is one the compiler itself depends on.
   two-clause form `with {A} allows {C}`, the optional grade `?`, and the
   `Attempt[T, E]` that `perform?` returns landed over the #1961 series — they
   are on the unstable surface and can still change.
-- **`Result` was removed** (#1324). Errors are the `Exception` effect;
-  `Error` is deprecated for the 1.0 freeze in favour of `Exception`
-  (ADR-0085).
+- **`Result` was removed** (#1324). Errors are the `Exception` effect, and
+  `Error` is deprecated at the freeze in favour of it (ADR-0085).
 - **`String` is a byte string** with byte-offset indexing (ADR-0098), which is
   what the memory actually holds. Source positions follow: every position the
   CLI reports or accepts is a byte position (ADR-0108,
