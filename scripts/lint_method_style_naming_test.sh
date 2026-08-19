@@ -5,7 +5,7 @@
 # the cases stay fixed while the real allowlist shrinks. The lint reads its
 # scope with `git ls-files`, so the fixture has to be a git repository.
 #
-# The first case is why this file exists. @vibe/prelude's contract re-declares
+# The first case is why this file exists. @vibe/builtin's contract re-declares
 # `type Int` / `type String` / ... so it reads as a self-contained surface, and
 # the lint counted those as types the package OWNS -- so every
 # `fn f(s: String, ...)` in it became a gap wanting a `String::f` companion,

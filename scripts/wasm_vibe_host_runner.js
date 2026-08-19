@@ -2956,7 +2956,7 @@ async function main() {
       return vibeModule.fs_close_write(fdTagged);
     },
   };
-  // Stdin/Stdout effect imports for vibe/io and vibe/prelude/io helpers.
+  // Stdin/Stdout effect imports for vibe/io and lib/@vibe/builtin/io helpers.
   const stdinModule = {
     ReadStream(_maxBytesTagged) {
       // tests run without a controlling TTY; return empty string.

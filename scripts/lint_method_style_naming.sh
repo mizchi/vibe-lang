@@ -73,7 +73,7 @@ for vpkg in "${vpkgs[@]}"; do
   # 1. package-owned type names (bare, generics stripped by the char class),
   #    minus the language's own primitives. A contract may re-declare
   #    `type Int` / `type String` / ... so it reads as a self-contained
-  #    surface -- @vibe/prelude does, under the comment "compiler-provided
+  #    surface -- @vibe/builtin does, under the comment "compiler-provided
   #    declarations intentionally exposed by this package" -- but re-declaring
   #    a name is not owning it: the `Int::` / `String::` namespaces belong to
   #    builtin_registry.vibe, and no package can add to them. Counting them as

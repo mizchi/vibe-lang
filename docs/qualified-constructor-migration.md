@@ -55,7 +55,7 @@ fn f() -> Option[Int] { Option::None }     // error: unknown name: Option::None
 PRELUDE_EXEMPT = { Some, None, Ok, Err }
 ```
 
-**名前ベースの固定リストにする。** パッケージ境界(「@vibe/prelude 由来なら免除」)
+**名前ベースの固定リストにする。** パッケージ境界(「@vibe/builtin 由来なら免除」)
 にしない理由: `Some`/`None` はそもそもどのパッケージにも属さない builtin で、
 `Ok`/`Err` は `@vibe/wit_runtime` にあり、「prelude」という単一の出所が実在しない。
 出所で定義すると実装が二経路になり、境界がぶれる。

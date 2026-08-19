@@ -33,10 +33,10 @@ fi
 
 # The tool is ordinary vibe source in this checkout, so it must be built by a
 # compiler that understands THIS checkout's contracts -- not by the pinned seed.
-# The seed is the previous bootstrap tag; once `lib/@vibe/prelude/index.vpkg`
+# The seed is the previous bootstrap tag; once `lib/@vibe/builtin/index.vpkg`
 # moved past it, a seed build died with
 #
-#   lib/@vibe/prelude/index.vpkg: contract violation: contract declaration
+#   lib/@vibe/builtin/index.vpkg: contract violation: contract declaration
 #   'String::join' has no implementation; ... opaque type 'Int' has no
 #   implementation; ...
 #

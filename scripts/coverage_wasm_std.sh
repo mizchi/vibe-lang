@@ -21,7 +21,7 @@ EXCLUDE="${VIBE_WASM_STD_COVERAGE_EXCLUDE:-}"
 ALLOW_TRAP="${VIBE_WASM_STD_COVERAGE_ALLOW_TRAP:-1}"
 MIN_MEASURED_RATE="${VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE:-}"
 MIN_LINE_RATE="${VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE:-}"
-MATRIX_PATH="${VIBE_WASM_STD_COVERAGE_MATRIX:-$PROJECT_ROOT/lib/@vibe/prelude/backend_capabilities.json}"
+MATRIX_PATH="${VIBE_WASM_STD_COVERAGE_MATRIX:-$PROJECT_ROOT/lib/@vibe/builtin/backend_capabilities.json}"
 
 case "$STRICT" in
   0|1) ;;
@@ -74,7 +74,7 @@ mkdir -p "$CASE_DIR"
 
 cd "$PROJECT_ROOT"
 
-mapfile -t tests < <(find vibe/prelude -name '*_test.vibe' | sort)
+mapfile -t tests < <(find lib/@vibe/builtin -name '*_test.vibe' | sort)
 if [ -n "$FILTER" ]; then
   mapfile -t tests < <(printf '%s\n' "${tests[@]}" | rg "$FILTER" || true)
 fi
@@ -82,7 +82,7 @@ if [ -n "$EXCLUDE" ]; then
   mapfile -t tests < <(printf '%s\n' "${tests[@]}" | rg -v "$EXCLUDE" || true)
 fi
 if [ "${#tests[@]}" -eq 0 ]; then
-  echo "[wasm std coverage] no test files selected under vibe/prelude" >&2
+  echo "[wasm std coverage] no test files selected under lib/@vibe/builtin" >&2
   exit 1
 fi
 

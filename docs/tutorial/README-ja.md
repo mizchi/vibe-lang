@@ -23,7 +23,7 @@ echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
-各章の `import @vibe/prelude` はインストール済み toolchain（`~/.vibe/lib`）
+各章の `import @vibe/builtin` はインストール済み toolchain（`~/.vibe/lib`）
 にもリポジトリの `lib/` にもあります。
 
 | 章 | テーマ |

@@ -1888,7 +1888,7 @@ echo "[compiler-gate] cross-import trait-iterator element-type regression ok"
 #     and the async `for`-driven terminals) — these prelude tests are not
 #     otherwise exercised by the gate.
 echo "[compiler-gate] 21/21 prelude iterator combinator suites"
-for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_test.vibe; do
+for suite in lib/@vibe/builtin/lazy_iter_test.vibe lib/@vibe/builtin/async_iter_test.vibe; do
   out="_build/_gate_prelude_iter_$(basename "${suite%.vibe}").wasm"
   # ADR-0069: test-block suites need the explicit `__no_entry__` sentinel for
   # the test-runner `_start` synthesis (unknown entry names are compile errors).

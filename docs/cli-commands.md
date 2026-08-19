@@ -151,7 +151,7 @@ vibe precompile -Os <dir...>
 ```
 
 - Skips `_test.vibe` and `_bench.vibe` files.
-- Output directory structure mirrors input, with the first path component stripped (e.g., `lib/@vibe/prelude/foo.vibe` -> `dist/prelude/foo.wasm`).
+- Output directory structure mirrors input, with the first path component stripped (e.g., `lib/@vibe/builtin/foo.vibe` -> `dist/prelude/foo.wasm`).
 
 ### test
 
@@ -180,7 +180,7 @@ through the same compile path as `vibe run` (accumulate + recompile).
 
 ```
 vibe shell                    # interactive (prompt on a tty)
-vibe shell prelude.vibe       # preload a file's declarations into the session
+vibe shell helpers.vibe       # preload a file's declarations into the session
 printf '...\n' | vibe shell   # stdin not a tty: no prompts, scriptable
 ```
 

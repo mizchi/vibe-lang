@@ -48,7 +48,7 @@ try {
   write(`fixtures/b/${longName}`, '4\n\n__DATA__\n{"last":"4"}\n');
   write(
     "fixtures/err_import_collides_with_local_let.vibe",
-    'let abs = (x: Int) -> Int { x }\nimport @vibe/prelude { abs }\nabs(-1)\n\n__DATA__\n{"last":"-1"}\n',
+    'let abs = (x: Int) -> Int { x }\nimport @vibe/builtin { abs }\nabs(-1)\n\n__DATA__\n{"last":"-1"}\n',
   );
   write(
     "scripts/runtime_fixture_debt.tsv",

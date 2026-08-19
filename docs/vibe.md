@@ -535,10 +535,10 @@ functions.
 Current forms:
 
 ```vibe
-import @vibe/prelude { type Int }             // also imports Int::*
-import @vibe/prelude { Int }                  // namespace activation
-import @vibe/prelude { Int::to_string }       // single member
-import @vibe/prelude { Int::to_string as int_to_string }
+import @vibe/builtin { type Int }             // also imports Int::*
+import @vibe/builtin { Int }                  // namespace activation
+import @vibe/builtin { Int::to_string }       // single member
+import @vibe/builtin { Int::to_string as int_to_string }
 ```
 
 Rules:
@@ -631,7 +631,7 @@ Current lock file:
   - Path imports are rejected when resolved path escapes index root.
   - `index.vibe` may define `export let module = record { <ns>: "<dir>" }` to map
     namespace imports (for example `std/...`) under root.
-  - Default namespace mapping includes `builtin -> ./lib/@vibe/prelude`.
+  - Default namespace mapping includes `builtin -> ./lib/@vibe/builtin`.
 - CLI:
   - `vibe apply <entry>` resolves recursive path imports, updates `index.lock`,
     injects prelude refs, and updates `index.vdb.graph_head`.

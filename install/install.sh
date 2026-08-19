@@ -347,11 +347,11 @@ fi
 if [ "$DO_STDLIB" = "1" ]; then
   # @vibe/wit_runtime is in this list because it is USER-FACING: #1324 removed
   # `Result` from the language, and a WIT-facing fallible export has to import
-  # it (docs/effect-wit-mapping.md tells users to). @vibe/prelude is the same
-  # class (#1949): chapter-01's `import @vibe/prelude { stdout_write }` is the
+  # it (docs/effect-wit-mapping.md tells users to). @vibe/builtin is the same
+  # class (#1949): chapter-01's `import @vibe/builtin { stdout_write }` is the
   # documented form. A package documented for users but materialized only in a
   # repo checkout would resolve in dev and fail on an installed toolchain.
-  for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/prelude @vibe/wit_runtime; do
+  for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/wit_runtime; do
     src="$ROOT_DIR/lib/$pkg"
     [ -f "$src/index.vpkg" ] || [ -f "$src/index.vibei" ] || { say "stdlib $pkg missing in checkout; skipped"; continue; }
     src_hash="$("$TC_DIR/bin/vibe" hash "$src" | awk '/^package /{print $2}')"
