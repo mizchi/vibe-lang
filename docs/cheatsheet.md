@@ -1401,9 +1401,13 @@ vibe test dir/            # run all tests in directory (examples run too)
 
 **String**: byte string (`length`/indexes/slices use byte counts and offsets;
 iteration yields byte-valued `Int`). `String::length`, `byte_at`, `from_byte`,
-`concat`, `substring`, `contains`, `index_of`, `split`, `trim`, `replace`,
-`starts_with`, `ends_with`, `join`. Unicode code-point/grapheme operations are
-not part of this API.
+`char_code_at`, `from_char_code`, `concat`, `substring`, `contains`,
+`index_of`, `split`, `trim`, `starts_with`, `ends_with`, `join`. Unicode
+code-point/grapheme operations are not part of this API.
+
+`String::replace` / `replace_all` are **not** builtins — they are library
+functions and need `import @vibe/builtin { String::replace }`. Calling one
+without the import is `unknown name: String::replace`.
 
 **Array**: `Array::length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`, `concat`
 

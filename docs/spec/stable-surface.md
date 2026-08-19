@@ -116,7 +116,8 @@ The stable symbols listed under "Key Builtins" in the
 
 - **String** (compiler builtin, no import needed): `length`, `concat`,
   `substring`, `contains`, `index_of`, `split`, `trim`, `starts_with`,
-  `ends_with`, `join`, `from_char_code`, `char_code_at`.
+  `ends_with`, `join`, `from_char_code`, `char_code_at`, `byte_at`,
+  `from_byte`.
   `replace` / `replace_all` are **not frozen** as builtins: they are library
   functions in `@vibe/builtin`, reached by
   `import @vibe/builtin { String::replace }`, and are not in the builtin
