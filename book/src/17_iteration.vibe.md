@@ -15,7 +15,7 @@ removed; suspend lives on the effect row).
 ## Eager array tools
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let xs = [
     1,
     2,
@@ -54,7 +54,7 @@ closure or a trait iterator is statement-shaped: you cannot write
 marks the slot.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let n = "  vibe  " |> String::trim |> String::length
   let xs = [
     1,

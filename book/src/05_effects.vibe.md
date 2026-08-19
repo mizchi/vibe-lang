@@ -26,7 +26,7 @@ fn risky(x: Int) -> Int with Exception {
   100 / x
 }
 
-fn main with Stdout {
+fn main with Console {
   let safe = handle {
     risky(0)
   } with Exception {
@@ -86,7 +86,7 @@ fn answer_of(q: String) -> Int with Ask {
   perform Ask::Value(q) + 1
 }
 
-fn main with Stdout {
+fn main with Console {
   // the handler returns a value to the perform site via resume(v) (one-shot tail-resumptive)
   let v = handle {
     answer_of("life")
@@ -155,7 +155,7 @@ fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
 
-fn main with Stdout {
+fn main with Console {
   println("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}")
 }
 ```
@@ -168,9 +168,10 @@ Host I/O (`Fs`, `Env`, `Http`, **`Console`**) are **capabilities**, not
 algebraic effects. On a *split* signature they belong in `allows`, not
 `with`. The current tty capability is `Console` (`Console::write_stream`,
 `read_stream`, `write_err_stream`, and the `*_char` pair). `Stdout` /
-`Stdin` / `Stderr` in the examples above are still-accepted **legacy
-labels** that share those host imports; they do not authorize `Console::*`
-and the other way around. See [Capabilities](10_capabilities.vibe.md).
+`Stdin` / `Stderr` are still-accepted **legacy labels** that share those
+host imports. Declaring `Console` authorizes them; declaring one of them
+does **not** authorize `Console::*`, because `Console` is the wider
+capability. See [Capabilities](10_capabilities.vibe.md).
 
 Next: [Capabilities](10_capabilities.vibe.md). The package/test tour is
 [Modules](07_modules_packages.vibe.md) then [Tests](06_tests.vibe.md).

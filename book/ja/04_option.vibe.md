@@ -24,7 +24,7 @@ fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
   }
 }
 
-fn main with Stdout {
+fn main with Console {
   println("half(10) unwrap_or -1 = \{unwrap_or(half(10), -1)}")
   println("half(3)  unwrap_or -1 = \{unwrap_or(half(3), -1)}")
 }
@@ -63,7 +63,7 @@ fn sum_halves(a: Int, b: Int) -> Option[Int] {
   Some(x + y)
 }
 
-fn main with Stdout {
+fn main with Console {
   println("sum_halves(4, 6) unwrap_or -1 = \{unwrap_or(sum_halves(4, 6), -1)}")
   println("sum_halves(4, 3) unwrap_or -1 = \{unwrap_or(sum_halves(4, 3), -1)}")
 }
@@ -101,7 +101,7 @@ fn first_half(a: Int, b: Int) -> Option[Int] {
   Some(x)
 }
 
-fn main with Stdout {
+fn main with Console {
   println("first_half(4, 6) unwrap_or -1 = \{unwrap_or(first_half(4, 6), -1)}")
   println("first_half(4, 3) unwrap_or -1 = \{unwrap_or(first_half(4, 3), -1)}")
 }
@@ -142,7 +142,7 @@ fn double_or_zero(o: Option[Int]) -> Int {
   // v はここで使える
 }
 
-fn main with Stdout {
+fn main with Console {
   println("double_or_zero(Some(21)) = \{double_or_zero(Some(21))}")
   println("double_or_zero(None) = \{double_or_zero(None)}")
 }
@@ -164,7 +164,7 @@ fn half(n: Int) -> Option[Int] {
   }
 }
 
-fn main with Stdout {
+fn main with Console {
   println("half(10) is Some(_) = \{half(10) is Some(_)}")
   // true
   println("half(3) is None = \{half(3) is None}")

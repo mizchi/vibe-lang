@@ -875,10 +875,38 @@ fn row_base_membership(labels: Array[String], eff_name: String) -> Bool {
   }
 }
 
+/// #1460 is merging `Stdin` / `Stdout` / `Stderr` into one `Console`
+/// capability, and until that lands both spellings have to work. The merge
+/// direction is what makes this CONTAINMENT rather than the alias equality
+/// `exception_effect_labels_equal` uses for `Error` / `Exception`: measured on
+/// the registry, `Console` owns six operations (`read_stream`, `read_char`,
+/// `write_stream`, `write_char`, `write_err_stream`, `write_err_char`) while
+/// the legacy three own three, two and two of them.
+///
+/// So a declared `Console` authorizes a legacy label, and the reverse is
+/// deliberately ABSENT. Letting `with Stdout` authorize a `Console` operation
+/// would hand a write-only program `Console::read_stream` -- the capability
+/// escape class #2107/#2108 closed, reintroduced through a migration alias.
+/// The negative case is pinned in `console_migration_row_test.vibe`.
+///
+/// One coverage gap this does not paper over: `Stdin::read_via_stream`
+/// (#1539's StdinStream) has no `Console::` counterpart, so `Console` is not
+/// yet a complete replacement for `Stdin` at the operation level. That is
+/// #1460's problem to close, not this predicate's to hide.
+fn is_legacy_console_label(name: String) -> Bool {
+  name == "Stdin" || name == "Stdout" || name == "Stderr"
+}
+
+fn console_authorizes_legacy(labels: Array[String], eff_name: String) -> Bool {
+  is_legacy_console_label(eff_name) && effect_row_has_label(Some(labels), "Console")
+}
+
 fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   // All concrete label checks, including Async above, go through this same
   // exact-membership primitive rather than substring matching.
   if effect_row_has_label(Some(labels), eff_name) {
+    true
+  } else if console_authorizes_legacy(labels, eff_name) {
     true
   } else if is_exception_effect_name(eff_name) {
     // ADR-0085 Phase 3 (#1344): the exception effect is authorized by KIND.
@@ -1665,6 +1693,16 @@ fn authority_covers_operation(auth: String, emitted: String) -> Bool {
     true
   } else if String::index_of(auth, "::") < 0 && standard_provider_owns_operation(emitted) {
     effect_name_of_op(emitted) == auth
+  } else if auth == "Console" && is_legacy_console_label(effect_name_of_op(emitted)) {
+    // The instantiate-grant half of #2102's containment. `allows` is a
+    // SEPARATE authorization path from the `with` row (ADR-0075/0084/0088:
+    // authority is fixed once, at instantiate), so teaching only
+    // `decl_authorizes_effect` left the split form unable to express what the
+    // bare form could -- `fn main with () allows Console { println(..) }` was
+    // rejected while `fn main with Console { println(..) }` compiled. Same
+    // one-way rule and same reason: `Console` is the union, the legacy labels
+    // are subsets, and the reverse would widen authority.
+    true
   } else {
     false
   }

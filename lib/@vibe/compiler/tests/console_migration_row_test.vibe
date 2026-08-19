@@ -1,0 +1,99 @@
+//# `Console` authorizes the legacy tty labels, and not the other way (#2102).
+//
+// #1460 is merging `Stdin` / `Stdout` / `Stderr` into one `Console`
+// capability. Until that lands, the docs call `Console` current and `Stdout`
+// legacy -- while the ergonomic verb was welded to the legacy label:
+//
+//     fn main with Stdout  { println("x") }   compiled
+//     fn main with Console { println("x") }   effect row mismatch
+//
+// So the book taught `Stdout` fifty times, in a chapter that tells the reader
+// `Stdout` is legacy. Not a docs bug: `println` carries `Stdout`, so `Console`
+// simply did not authorize it.
+//
+// The fix is CONTAINMENT, not the alias equality `Error`/`Exception` uses
+// (`exception_effect_labels_equal`). Measured on builtin_registry.vibe:
+//
+//     Console  read_stream read_char write_stream write_char
+//              write_err_stream write_err_char                 -- 6
+//     Stdin    read_stream read_char read_via_stream           -- 3
+//     Stdout   write_stream write_char                         -- 2
+//     Stderr   write_stream write_char                         -- 2
+//
+// `Console` is the union, so it may authorize the legacy three. The REVERSE
+// must not hold, and the negative tests below are the point of this file: a
+// symmetric alias would let a program declaring only `Stdout` reach
+// `Console::read_stream` -- a write-only row acquiring read authority, which
+// is the capability escape class #2107/#2108 closed.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+fn ok(src: String) -> Bool with Exception {
+  Array::length(collect_all_diagnostics(src)) == 0
+}
+
+//# Tests
+
+test "Console authorizes the print builtins the book needs" {
+  // The whole reason this change exists: the taught verb works under the
+  // taught label.
+  assert(ok("fn main with Console {\n  println(\"x\")\n}\n"))
+  assert(ok("fn main with Console {\n  print(\"x\")\n}\n"))
+}
+
+test "Console authorizes a legacy operation of any of the three" {
+  assert(ok("fn main with Console {\n  Stdout::write_stream(\"x\")\n}\n"))
+  assert(ok("fn main with Console {\n  Stderr::write_stream(\"x\")\n}\n"))
+  assert(ok("fn main with Console {\n  let s = Stdin::read_stream(1)\n  ()\n}\n"))
+}
+
+test "a legacy label does NOT acquire Console's wider authority" {
+  // The containment is one-way. `Stdout` owns two write operations; if this
+  // ever passes, a write-only row has gained read authority and the merge
+  // alias has become a capability escape.
+  assert(!ok("fn main with Stdout {\n  let s = Console::read_stream(1)\n  ()\n}\n"))
+  assert(!ok("fn main with Stdout {\n  Console::write_stream(\"x\")\n}\n"))
+}
+
+test "one legacy label does not authorize another" {
+  // Unchanged by this rule, and worth pinning next to it: the merge is not a
+  // licence for `Stdout` to reach `Stdin`.
+  assert(!ok("fn main with Stdout {\n  let s = Stdin::read_stream(1)\n  ()\n}\n"))
+  assert(!ok("fn main with Stdin {\n  println(\"x\")\n}\n"))
+}
+
+test "an unrelated capability still authorizes nothing here" {
+  // The control. Without it, a rule that authorized everything would satisfy
+  // every positive assertion above.
+  assert(!ok("fn main with Fs {\n  println(\"x\")\n}\n"))
+  assert(!ok("fn main with Env {\n  let s = Stdin::read_stream(1)\n  ()\n}\n"))
+}
+
+test "the legacy spelling keeps working while the migration runs" {
+  // ~190 lib sites and 50 book sites still say `with Stdout`. They must not
+  // need touching for this change to land.
+  assert(ok("fn main with Stdout {\n  println(\"x\")\n}\n"))
+  assert(ok("fn main with Stdout {\n  Stdout::write_stream(\"x\")\n}\n"))
+}
+
+test "the split `allows` form gets the same containment" {
+  // `allows` is a SEPARATE authorization path from the `with` row
+  // (ADR-0075/0084/0088: authority is fixed once, at instantiate), so
+  // teaching only `decl_authorizes_effect` left the split form unable to
+  // express what the bare form could. The book's own `with () allows Console`
+  // example caught this -- it failed `vibe_md check` while the bare form
+  // passed.
+  assert(ok("fn main with () allows Console {\n  println(\"x\")\n}\n"))
+  assert(ok("fn main with () allows Stdout {\n  println(\"x\")\n}\n"))
+}
+
+test "the escape stays closed on the allows path too" {
+  assert(!ok("fn main with () allows Stdout {\n  let s = Console::read_stream(1)\n  ()\n}\n"))
+  assert(!ok("fn main with () allows Fs {\n  println(\"x\")\n}\n"))
+}

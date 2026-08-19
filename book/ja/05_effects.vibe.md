@@ -23,7 +23,7 @@ fn risky(x: Int) -> Int with Exception {
   100 / x
 }
 
-fn main with Stdout {
+fn main with Console {
   let safe = handle {
     risky(0)
   } with Exception {
@@ -80,7 +80,7 @@ fn answer_of(q: String) -> Int with Ask {
   perform Ask::Value(q) + 1
 }
 
-fn main with Stdout {
+fn main with Console {
   // handler が resume(v) で perform 地点に値を返す (one-shot tail-resumptive)
   let v = handle {
     answer_of("life")
@@ -148,7 +148,7 @@ fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
 
-fn main with Stdout {
+fn main with Console {
   println("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}")
 }
 ```
@@ -160,8 +160,9 @@ apply_twice = 40
 ホスト I/O (`Fs` / `Env` / `Http` / **`Console`**) は capability で、
 代数 effect ではない。tty の現行名は `Console`（`Console::write_stream` /
 `read_stream` / `write_err_stream` と `*_char`）。上の例の `Stdout` は
-まだ受理される **legacy ラベル**で、同じ host import を共有するが
-`Console::*` とは相互に認可しない。詳細は英語版
+まだ受理される **legacy ラベル**で、同じ host import を共有する。
+`Console` を宣言すれば legacy ラベルも認可されるが、逆は成立しない
+（`Console` の方が広い capability のため）。詳細は英語版
 [Capabilities](../src/10_capabilities.vibe.md)。
 
 次章: [06 テスト](06_tests-ja.vibe.md)

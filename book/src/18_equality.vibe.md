@@ -19,7 +19,7 @@ fn same_ints(a: Array[Int], b: Array[Int]) -> Bool {
   a == b
 }
 
-fn main with Stdout {
+fn main with Console {
   println("lits = \{[1, 2] == [1, 2]}")
   let a = [
     1,

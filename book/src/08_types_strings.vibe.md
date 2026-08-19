@@ -14,7 +14,7 @@ Arithmetic overflow wraps as 63-bit two's complement on **every** backend
 describing a tag layout the compiler no longer uses.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let max = 4611686018427387903
   println("max = \{max}")
   println("max + 1 = \{max + 1}")
@@ -53,7 +53,7 @@ printout looks like an integer bit pattern.
 is bytes, so the type is bytes (ADR-0098).
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let s = "hello"
   println("s[0] = \{s[0]}")
   println("from_char_code = \{String::from_char_code(s[0])}")
@@ -91,7 +91,7 @@ struct Point {
   x: Int; y: Int
 } derive (Show)
 
-fn main with Stdout {
+fn main with Console {
   let p = Point::{
     x: 3, y: 4
   }

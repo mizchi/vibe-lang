@@ -7,7 +7,7 @@ Previous: [02 Control flow](02_control_flow.vibe.md)
 ## tuple / array / record
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let t = (1, "two", true)
   println("t.0 = \{t.0}")
   let a = [
@@ -50,7 +50,7 @@ struct Point {
   x: Int; y: Int
 } derive (Eq, Ord, Show)
 
-fn main with Stdout {
+fn main with Console {
   let p = Point::{
     x: 1, y: 2
   }
@@ -83,7 +83,7 @@ fn area(s: Shape) -> Int {
   }
 }
 
-fn main with Stdout {
+fn main with Console {
   println("area(Circle(2)) = \{area(Circle(2))}")
   println("area(Rect(6, 7)) = \{area(Rect(6, 7))}")
 }
@@ -106,7 +106,7 @@ fn classify(n: Int) -> String {
   }
 }
 
-fn main with Stdout {
+fn main with Console {
   println("classify(0) = \{classify(0)}")
   println("classify(2) = \{classify(2)}")
   println("classify(-5) = \{classify(-5)}")
@@ -153,7 +153,7 @@ let Version::{
   major: 0, minor: 3
 }
 
-fn main with Stdout {
+fn main with Console {
   println("sum = \{left + right}, \{name} \{major}.\{minor}")
 }
 ```
@@ -168,7 +168,7 @@ The same shapes work in a function body, and combine with narrowing via the `is`
 expression.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let (a, b) = (1, 2)
   println("a + b = \{a + b}")
   let opt = Some(41)
@@ -200,7 +200,7 @@ compiler tests as the contract from
 you are growing an `Array` that already exists.
 
 ```vibe run
-fn main with Stdout {
+fn main with Console {
   let arr = {
     let bld = ArrayBuilder::new()
     ArrayBuilder::push(bld, 1)
