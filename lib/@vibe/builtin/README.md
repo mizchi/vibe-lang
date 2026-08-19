@@ -17,9 +17,12 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | `char.vibe` | 3 | ASCII classification/conversion helpers (`is_ascii_*`, `to_ascii_*`, `to_string`, `from_string`) |
 | `bytes.vibe` | 5 | Byte array helpers (`is_byte`, `clamp_byte`, `from_ascii`, `to_ascii`, `to_hex`, `from_hex`) |
 | `string.vibe` | 19 | String helpers (`equals`, `compare`, `utf8/utf16/unicode length`, `is_blank`, `trim*`, `head`, `tail`, `contains`, `replace*`, `from_char_code`) |
-| `io.vibe` | 6 | High-level stdio + ANSI/TUI helpers (`stdout_write`, `stdout_writeln`, `stdin_read`, `stdin_read_line`, `ansi_escape`) |
 
 `list.vibe` / `map.vibe` / `set.vibe` moved to `lib/@vibe/core` (#766).
+`io.vibe` is gone (#2102): the stdio wrappers duplicated names
+`@vibe/console` already published (and `println` / `print` are compiler
+builtins), and `ansi_escape` / `tui_*` / `tap` / `tap_some` moved to
+`@vibe/console`. Nothing in this package carries an effect row now.
 
 Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` for `string.vibe`).
 
@@ -30,7 +33,8 @@ Tests are separated into `*_test.vibe` files (for example, `string_test.vibe` fo
 - `trait-contract`: contracts (`builtin_traits.vibe`)
 - `pure-primitive`: pure scalar/string operations (`bool/cmp/char/int/float/double/string`)
 - `pure-data`: pure ADT/data operations (`array/option/result/bytes`)
-- `effect-boundary`: runtime side-effect bridge (`io`)
+- `effect-boundary`: **empty since #2102** — `io.vibe` moved to
+  `@vibe/console`, so this package is pure layers only
 
 Path モジュールは `vibe/path` へ移動済み。
 - quick usage: `import /vibe/path { ... }`
@@ -46,6 +50,8 @@ Boundary enforcement is active in:
 ## Effect Signature Policy
 
 `@vibe/builtin` は pure 層と effect 境界を意図的に分離し、関数シグネチャで副作用を可視化する。
+#2102 以降このパッケージに effect 境界は残っていない（`io.vibe` は
+`@vibe/console` へ移動）。以下は境界を再び足す場合の規則。
 
 - pure modules (`pure-primitive`, `pure-data`) は `with` row を持たない。
 - runtime bridge (`effect-boundary`) は host builtin への薄い委譲に限定し、effect を明示する。
@@ -175,4 +181,4 @@ wasmtime run --invoke _start /tmp/test.wasm  # -> 484 (untagged: 121)
 ## Notes
 
 - `@vibe/builtin/test_import.vibe` is only for compilation validation (no `test` blocks).
-- `@vibe/builtin/io.vibe` depends on runtime builtins, so it is exercised via the native/compiled test path rather than pure Core WASM (`--wasm`) today.
+- `@vibe/console/tui.vibe` (formerly `@vibe/builtin/io.vibe`) depends on runtime builtins, so it is exercised via the native/compiled test path rather than pure Core WASM (`--wasm`) today.

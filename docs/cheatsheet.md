@@ -19,9 +19,10 @@ fn main with Stdout {
 
 `print` is the same without the trailing newline. `@vibe/console` publishes the
 rest of the tty surface (`eprint` / `eprintln` on `Stderr`, `read_line`,
-`read_all`), and `@vibe/builtin`'s older `stdout_write` / `stdout_writeln`
-still compile. The row is spelled `Stdout` here because that is what these
-lower onto today; the current tty capability is `Console`
+`read_all`). `@vibe/builtin`'s older `stdout_write` / `stdout_writeln` are
+gone (#2102) -- they duplicated names above. The row is spelled `Stdout` here
+because that is what these lower onto today; the current tty capability is
+`Console`
 (`Console::write_stream`), and #1460 moves them there.
 
 ```bash
@@ -491,9 +492,10 @@ Array::map(xs, compose(parse, render))
 
 > Runnable reference for the pipe `_` slot, combinators, `let*`, and `tap`:
 > [`lib/@vibe/builtin/pipeline_ergonomics_test.vibe`](../lib/@vibe/builtin/pipeline_ergonomics_test.vibe)
-> (`vibe test lib/@vibe/builtin/pipeline_ergonomics_test.vibe`). `tap` / `tap_some`
-> and the combinators are prelude exports, so a file must `import` them and sit
-> where it can reach the prelude — `import` paths may not escape the file's root
+> (`vibe test lib/@vibe/builtin/pipeline_ergonomics_test.vibe`). The
+> combinators are `@vibe/builtin` exports and `tap` / `tap_some` moved to
+> `@vibe/console` (#2102 — they carry `Stdout`), so a file must `import` them
+> and sit where it can reach those packages — `import` paths may not escape the file's root
 > directory, so standalone `examples/` files cannot reach `lib/@vibe/builtin/`.
 > (`Result` and the `tap_ok`/`tap_err` railway taps were prelude exports until
 > #1324 removed them; `let*` and `?` now bind `Option` only.)
@@ -1030,8 +1032,10 @@ hand-declared `Result`).
 
 `tap` runs a side effect on the value and returns it unchanged — observe a
 stage without breaking the `|>` chain. `tap_some` observes only the `Some`
-track. They are prelude exports (`lib/@vibe/builtin/io.vibe`), so import them —
-and note that observing with a print costs the `Stdout` effect on the chain. (`tap_ok` / `tap_err` were removed with
+track. Both are `@vibe/console` exports (`lib/@vibe/console/tui.vibe`) — they
+carry `Stdout` in their signature, which is why they live there and not beside
+`Int::abs` (#2102) — so import them, and note that observing with a print costs
+the `Stdout` effect on the chain. (`tap_ok` / `tap_err` were removed with
 the prelude `Result` in #1324.)
 
 <!-- doctest-skip: 未定義名 (x / next_stage / opt) を参照する構文提示の断片 -->
@@ -1445,8 +1449,8 @@ the linear and GC backends):
 ```vibe skip
 println(s)         // with Stdout - builtin, no import
 print(s)           // with Stdout - no trailing newline
-stdout_write(s)    // with Stdout - @vibe/builtin
-stdin_read_line()  // with Stdin
+read_line()        // with Stdin  - @vibe/console
+eprintln(s)        // with Stderr - @vibe/console
 sh("ls -la")       // with Stdout - shell command
 sh_lines("ls")     // -> Array[String]
 ```

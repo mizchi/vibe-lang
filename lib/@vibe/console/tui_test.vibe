@@ -1,0 +1,73 @@
+//# Imports
+
+// Moved here with the functions it covers (#2102). The cases for
+// `stdout_write` / `stdout_writeln` / `stdin_read` / `stdin_read_line` are
+// gone with those wrappers: each duplicated a name this package already
+// publishes (`print` / `println` / `read` / `read_line`), and `println` is
+// additionally a compiler builtin. Their replacements are exercised by
+// io_test.vibe next door, so dropping them loses no coverage.
+
+import ./tui.vibe {
+  ansi_escape, tap, tap_some, tui_clear_screen, tui_cursor_home, tui_enter_alt_screen, tui_leave_alt_screen
+}
+
+import @vibe/builtin {
+  Option
+}
+
+//# Tests
+
+test "ansi escape helper runs" {
+  let run_ansi = (suffix: String) -> Unit with Stdout {
+    ansi_escape(suffix)
+  }
+  run_ansi("")
+  assert(true)
+}
+
+test "tui preset helpers run" {
+  let run_tui = () -> Unit with Stdout {
+    tui_cursor_home()
+    tui_clear_screen()
+    tui_enter_alt_screen()
+    tui_leave_alt_screen()
+  }
+  run_tui()
+  assert(true)
+}
+
+test "tap returns its input unchanged" {
+  let observed = []
+  let run_tap = () -> Int with Stdout {
+    tap(41, (v) -> Array::push(observed, v))
+  }
+  assert_eq(run_tap(), 41)
+  assert_eq(Array::length(observed), 1)
+  assert_eq(Array::get(observed, 0), 41)
+}
+
+test "tap_some passes values through and skips None" {
+  let seen = []
+  let run_some = () -> Option[Int] with Stdout {
+    tap_some(Some(7), (v) -> Array::push(seen, v))
+  }
+  let run_none = () -> Option[Int] with Stdout {
+    tap_some(None, (v) -> Array::push(seen, v))
+  }
+  assert(run_some() is Some(_))
+  assert(run_none() is None)
+  // The callback ran for `Some` and not for `None` -- the property that makes
+  // this a railway tap rather than a plain one.
+  assert_eq(Array::length(seen), 1)
+  assert_eq(Array::get(seen, 0), 7)
+}
+
+test "the moved helpers work under the current `Console` label too" {
+  // #2117 made `Console` authorize the legacy `Stdout` these carry. Pinned
+  // here because this package is where a reader meets them.
+  let run = () -> Unit with Console {
+    tui_clear_screen()
+  }
+  run()
+  assert(true)
+}

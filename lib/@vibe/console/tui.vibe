@@ -1,0 +1,61 @@
+//# Imports
+
+import @vibe/builtin {
+  Option
+}
+
+//# Functions
+
+/// ANSI escape sequences and the pipeline taps, moved here from
+/// `@vibe/builtin/io.vibe` (#2102). They were never `Int::abs`'s neighbours:
+/// every one of them carries `Stdout` in its signature, which is the line
+/// between this package and the language's own helpers.
+///
+/// The direct-call form (`Stdout::write_char`) rather than
+/// `perform Stdout::WriteChar` is deliberate and predates the move -- see
+/// #768/#778: the perform/effect-op codegen path for magic host effects could
+/// crash with an uncaught wasm exception in a small compiled unit, and a
+/// module that does nothing but print is exactly that shape.
+export fn ansi_escape(suffix: String) -> Unit with Stdout {
+  Stdout::write_char(27)
+  Stdout::write_stream(suffix)
+}
+
+export fn tui_cursor_home() -> Unit with Stdout {
+  ansi_escape("[H")
+}
+
+export fn tui_clear_screen() -> Unit with Stdout {
+  ansi_escape("[2J")
+}
+
+export fn tui_enter_alt_screen() -> Unit with Stdout {
+  ansi_escape("[?1049h")
+}
+
+export fn tui_leave_alt_screen() -> Unit with Stdout {
+  ansi_escape("[?1049l")
+}
+
+/// `tap` runs a side-effecting callback on a value and returns it unchanged --
+/// the generic pipeline tap for printing intermediate values:
+///   x |> tap((v) -> println("step: \{v}")) |> next
+/// The callback is fixed to the concrete `Stdout` effect.
+export fn tap[T](x: T, f: (v: T) -> Unit with Stdout) -> T with Stdout {
+  f(x)
+  x
+}
+
+/// The railway tap: `o |> tap_some((v) -> println(..)) |> next` observes the
+/// `Some` track without leaving the pipeline. It lived in `io.vibe` rather
+/// than the option module because a pure-data module must not expose
+/// `with <row>` in its public surface -- the same rule puts it here now.
+export fn tap_some[T](opt: Option[T], f: (v: T) -> Unit with Stdout) -> Option[T] with Stdout {
+  match opt {
+    Some(value) => {
+      f(value)
+      Some(value)
+    },
+    _ => None
+  }
+}

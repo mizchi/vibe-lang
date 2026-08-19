@@ -348,10 +348,13 @@ if [ "$DO_STDLIB" = "1" ]; then
   # @vibe/wit_runtime is in this list because it is USER-FACING: #1324 removed
   # `Result` from the language, and a WIT-facing fallible export has to import
   # it (docs/effect-wit-mapping.md tells users to). @vibe/builtin is the same
-  # class (#1949): chapter-01's `import @vibe/builtin { stdout_write }` is the
-  # documented form. A package documented for users but materialized only in a
-  # repo checkout would resolve in dev and fail on an installed toolchain.
-  for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/wit_runtime; do
+  # class (#1949) -- the book imports `Int::abs` and friends from it.
+  # @vibe/console joins them in #2102: it is now where the tty surface lives
+  # (`read_line`, `eprintln`, `tap`, the `tui_*` helpers), so it is documented
+  # for users. A package documented for users but materialized only in a repo
+  # checkout would resolve in dev and fail on an installed toolchain -- which
+  # is exactly what tests/integration/install/install_test.sh probes.
+  for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/console @vibe/wit_runtime; do
     src="$ROOT_DIR/lib/$pkg"
     [ -f "$src/index.vpkg" ] || [ -f "$src/index.vibei" ] || { say "stdlib $pkg missing in checkout; skipped"; continue; }
     src_hash="$("$TC_DIR/bin/vibe" hash "$src" | awk '/^package /{print $2}')"

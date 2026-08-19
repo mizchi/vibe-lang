@@ -10,7 +10,7 @@
 # directly (see linked_compile.vibe's `_start` synthesis), so invoking `main`
 # again afterward ran the entry -- and every side effect it performs -- a
 # second time. Confirmed live via `bash scripts/vibe_run.sh` printing a
-# single `stdout_write` call's line twice before the fix.
+# single `println` call's line twice before the fix.
 #
 # This test compiles a trivial with-effect `.vibex` that writes one marker
 # line to stdout and asserts the marker appears in the run's output EXACTLY
@@ -25,10 +25,9 @@ mkdir -p "$WORK_DIR"
 src="$WORK_DIR/single_invoke_probe.vibex"
 
 cat > "$src" <<'EOF'
-import @vibe/builtin { stdout_write }
 
 fn main with Stdout {
-  stdout_write("SINGLE_INVOKE_PROBE_MARKER\n")
+  println("SINGLE_INVOKE_PROBE_MARKER")
 }
 EOF
 
