@@ -2,7 +2,7 @@
 
 前章: [05 エフェクト](05_effects.vibe.md)
 
-English version: [06_tests.vibe.md](06_tests.vibe.md) (canonical)
+English version: [06_tests.vibe.md](../src/06_tests.vibe.md) (canonical)
 
 ## test ブロック
 

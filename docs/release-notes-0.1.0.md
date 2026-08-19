@@ -129,10 +129,11 @@ the edit that fixes them rather than an internal pass name.
 
 ## Known gaps
 
-- **The Japanese book covers chapters 1–7 of 20.** English is canonical
-  (`book/src/`); `book/ja/` is a translation, and the pair is checked for
-  identical program output by `pkf run check-tutorial-translation-parity`.
-  Chapters 8–19 have no translation yet.
+- **The Japanese book covers 19 of the 20 doctest-checked chapters.** English
+  is canonical (`book/src/`); `book/ja/` is a translation, and the pair is
+  checked for identical program output by
+  `pkf run check-tutorial-translation-parity`. `01_getting_started` is
+  English-only.
 - **`bench` blocks do not run on the wasm-gc lane** (#1701).
 - **Type errors carry no source position.** `let a: Int = "not an int"` is
   reported without a `line:col` on either lane, and `vibe check --single-file

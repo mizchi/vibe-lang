@@ -1,11 +1,10 @@
-# 2 — A small program
+# 2 — 小さなプログラム
 
-日本語版: [19_a_small_program.vibe.md](../ja/19_a_small_program.vibe.md)
+English version: [19_a_small_program.vibe.md](../src/19_a_small_program.vibe.md) (canonical)
 
-The Rust book pauses after hello-world to write a guessing game. This
-chapter is that slot: tally words in a list, using a struct, an
-`Option`, a `MutMap`, and a `fn` that says what it needs. You have not
-seen every construct yet. That is the point.
+Rust book は hello-world のあとで一度立ち止まり、数当てゲームを書く。この章が
+その枠にあたる。struct、`Option`、`MutMap`、そして自分に必要なものを述べる
+`fn` を使って、リスト中の単語を数える。まだ見ていない構文もある。それが狙い。
 
 ```vibe run
 import @vibe/core {
@@ -83,17 +82,16 @@ top = Tally { word: vibe, count: 3 }
 kinds = 3
 ```
 
-What this program is deliberately showing:
+このプログラムが意図して見せているもの:
 
-- `fn main with Console` is the only capability the program needs.
-- Failure that is part of the meaning would be `with Exception`, not
-  a `Result` wrapper. Absence of a key is `Option`, unwrapped with
-  `match`.
-- Mutation stays in the function (`let mut i`, a `MutMap` handle).
-  Nothing escapes.
+- `fn main with Console` が、このプログラムに必要な唯一の capability。
+- 意味の一部としての失敗なら `Result` ラッパではなく `with Exception` に
+  なる。キーが無いことは `Option` で表し、`match` で開く。
+- ミューテーションは関数の中に留まる (`let mut i`、`MutMap` のハンドル)。
+  何も逃げ出さない。
 
-A next step that is still a small program: turn `top_word` into a
-library function in its own file, export it, and import it from
-`fn main` the way [Modules](07_modules_packages.vibe.md) does.
+まだ小さなプログラムのままでできる次の一歩: `top_word` を独立したファイルの
+ライブラリ関数にして export し、[モジュール](07_modules_packages.vibe.md) が
+やっているように `fn main` から import する。
 
-Next: [Values and functions](01_values_functions.vibe.md).
+次章: [値と関数](01_values_functions.vibe.md)。

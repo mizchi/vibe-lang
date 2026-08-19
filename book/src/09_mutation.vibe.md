@@ -1,5 +1,7 @@
 # 09 — Mutation, regions, and escape
 
+日本語版: [09_mutation.vibe.md](../ja/09_mutation.vibe.md)
+
 vibe is pure by default. Mutation exists, but it is local and it does not
 show up on a function's public effect row. There is no builtin `Mut`
 effect and no `Ref[T]`.

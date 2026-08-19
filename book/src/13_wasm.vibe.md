@@ -1,5 +1,7 @@
 # 13 — Targeting wasm
 
+日本語版: [13_wasm.vibe.md](../ja/13_wasm.vibe.md)
+
 The compiler is a wasm program that emits wasm. You do not opt into wasm
 as a backend — it is the representation. Internal values are tagged i64.
 Strings are byte strings. Types that can appear on a WIT boundary follow

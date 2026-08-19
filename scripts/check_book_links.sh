@@ -20,6 +20,12 @@
 # smaller failure than a file that does not exist, and heading slugs differ
 # between renderers.
 #
+# A link to the file it appears in is also reported. It RESOLVES, so a
+# plain existence check calls it fine -- and every "English version" link in
+# book/ja/ was one, `[01_values_functions.vibe.md](01_values_functions.vibe.md)`
+# from inside book/ja/, missing the `../src/`. Seven chapters offered a link to
+# the canonical English text that led back to the translation.
+#
 # Empty output plus exit 0 means clean.
 #
 #   BOOK_DIR   override the directory to scan (default book)
@@ -60,15 +66,19 @@ for dirpath, _dirs, names in os.walk(root):
                 filepart = target.split("#", 1)[0]
                 if not filepart:
                     continue
-                if not os.path.exists(os.path.normpath(os.path.join(dirpath, filepart))):
-                    broken.append((path, lineno, target))
+                resolved = os.path.normpath(os.path.join(dirpath, filepart))
+                if not os.path.exists(resolved):
+                    broken.append((path, lineno, target, "does not exist"))
+                elif os.path.abspath(resolved) == os.path.abspath(path):
+                    broken.append((path, lineno, target, "points at this same file"))
 
 if broken:
-    for path, lineno, target in broken:
-        print(f"{path}:{lineno}: broken link: {target}", file=sys.stderr)
-    print(f"check-book-links: FAIL: {len(broken)} of {total} relative link(s) do not resolve.", file=sys.stderr)
+    for path, lineno, target, why in broken:
+        print(f"{path}:{lineno}: broken link: {target} -- {why}", file=sys.stderr)
+    print(f"check-book-links: FAIL: {len(broken)} of {total} relative link(s) are broken.", file=sys.stderr)
     print("  A link target is a path relative to the file it appears in. Chapters live in", file=sys.stderr)
-    print("  book/src/ and book/ja/; the index is ../README.md; repository docs are ../../docs/.", file=sys.stderr)
+    print("  book/src/ and book/ja/; the index is ../README.md; repository docs are ../../docs/;", file=sys.stderr)
+    print("  the English original of a translation is ../src/.", file=sys.stderr)
     sys.exit(1)
 
 print(f"check-book-links: ok ({total} relative link(s) across {files} file(s) resolve)")

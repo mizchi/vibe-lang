@@ -6,7 +6,7 @@
 そのまま埋め込んだもの (#1142)。手元で更新するときは
 `bash scripts/vibe_md.sh write book/ja/01_values_functions.vibe.md`。
 
-English version: [01_values_functions.vibe.md](01_values_functions.vibe.md) (canonical)
+English version: [01_values_functions.vibe.md](../src/01_values_functions.vibe.md) (canonical)
 
 ## 値と基本型
 

@@ -68,7 +68,20 @@ mkdir -p "$WORK/b/../d" 2>/dev/null || true
 printf '[index](../README.md)\n' > "$WORK/b/src/01.md"
 expect 0 "a link up to the book index resolves"
 
-# 8. A missing directory is an error, not a vacuous pass.
+# 8. A link to the file it appears in resolves, so existence alone calls it
+#    fine -- that is how every "English version" link in book/ja/ pointed back
+#    at the translation instead of ../src/.
+fresh
+printf 'English version: [01](01.md) (canonical)\n' > "$WORK/b/ja/01.md"
+expect 1 "a self-referential link is reported" "points at this same file"
+
+# 9. ...and the corrected form passes.
+fresh
+: > "$WORK/b/src/01.md"
+printf 'English version: [01](../src/01.md) (canonical)\n' > "$WORK/b/ja/01.md"
+expect 0 "a translation linking to its English original passes"
+
+# 10. A missing directory is an error, not a vacuous pass.
 out="$(BOOK_DIR="$WORK/nonexistent" bash "$CHECK" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then
   echo "book-links self-test: FAIL: a missing book directory passed instead of failing"
@@ -77,7 +90,7 @@ else
   echo "  ok: a missing book directory is an error, not a skip"
 fi
 
-# 9. The real book passes.
+# 11. The real book passes.
 if bash "$CHECK" >/dev/null 2>&1; then
   echo "  ok: the repository's own book resolves"
 else

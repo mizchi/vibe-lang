@@ -1,5 +1,7 @@
 # 08 — Types and strings
 
+日本語版: [08_types_strings.vibe.md](../ja/08_types_strings.vibe.md)
+
 Chapter 1 showed `Int`, `Double`, `Bool`, `String`, and `Char` as values.
 This chapter is the contract those types actually keep — the places people
 silently get a wrong answer if they guess from another language.

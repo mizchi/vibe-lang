@@ -1,5 +1,7 @@
 # 10 — Capabilities
 
+日本語版: [10_capabilities.vibe.md](../ja/10_capabilities.vibe.md)
+
 An effect row is not only "this can fail." Host I/O is a **capability**:
 the function's type says which authorities it needs, the call site stays
 an ordinary call, and authorization is decided once — at build / apply /

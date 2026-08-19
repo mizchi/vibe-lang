@@ -2,7 +2,7 @@
 
 前章: [04 Option](04_option.vibe.md)
 
-English version: [05_effects.vibe.md](05_effects.vibe.md) (canonical)
+English version: [05_effects.vibe.md](../src/05_effects.vibe.md) (canonical)
 
 vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect row) で
 宣言し、呼び出し側は `handle` で境界を引くまで伝播する。

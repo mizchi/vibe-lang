@@ -1,5 +1,7 @@
 # 11 — Concurrency
 
+日本語版: [11_concurrency.vibe.md](../ja/11_concurrency.vibe.md)
+
 vibe's public concurrency model is **shared-nothing structured
 concurrency** (ADR-0068). You do not spawn OS threads. You run a
 `TaskGroup`, spawn work into it, and join.
