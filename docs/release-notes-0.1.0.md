@@ -66,7 +66,10 @@ read, and every feature below is one the compiler itself depends on.
 - `vibe new` / `add` / `fetch --frozen` / `verify` / `pkg publish|install|yank`,
   with content-hash locking (`index.lock`) and semver constraint resolution.
   The registry slice is file-based with an RFC6962-shaped transparency log.
-- 26 `@vibe/*` packages and 18 `@vibex/*` packages ship with the toolchain.
+- Six packages ship with the toolchain: `@vibe/core`, `@vibe/ast`,
+  `@vibe/parser`, `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`. The
+  rest of the 26 `@vibe/*` and 18 `@vibex/*` packages in the tree are the
+  compiler's own dependencies, not part of the install.
 - `install/install.sh` is the curl entry point and is smoke-tested on multiple
   operating systems by the `cli-install` workflow.
 
