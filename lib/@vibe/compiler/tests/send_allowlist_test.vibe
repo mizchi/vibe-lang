@@ -1,0 +1,95 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err, check_source_ok
+}
+
+//# Misc
+
+// #2123: the `Send` allowlist was stated in five documents and had drifted in
+// three of them -- three listed `Result` beside `Option` as if both were
+// builtins, when `Option` is a builtin and `Result` is a user enum you declare
+// yourself (#1324 removed the builtin one).
+//
+// The allowlist is BEHAVIOUR, so pin it here and let the documents carry one
+// canonical prose statement instead of five copies. `Send` is compiler-judged
+// and structural (ADR-0068, checker_trait.vibe): there is no `impl Send`, so
+// the only way to ask is to require the bound.
+//
+// The probe is a bound, not a call: `fn need[T: Send](x: T)` accepts exactly
+// the types the checker calls Send.
+
+let probe: String = "fn need[T: Send](x: T) -> Int { 0 }\n"
+
+fn ok(body: String) -> Bool {
+  check_source_ok(String::concat(probe, body))
+}
+
+fn err(body: String) -> Bool {
+  check_source_err(String::concat(probe, body))
+}
+
+//# Tests
+
+test "Send: scalars cross a task boundary" {
+  assert(ok("fn r() -> Int { need(1) }"))
+  assert(ok("fn r() -> Int { need(1.5) }"))
+  assert(ok("fn r() -> Int { need(true) }"))
+  assert(ok("fn r() -> Int { need(\"s\") }"))
+  assert(ok("fn r() -> Int { need('a') }"))
+  assert(ok("fn r() -> Int { need(()) }"))
+}
+
+test "Send: tuples and Option of Send parts are Send" {
+  assert(ok("fn r() -> Int { need((1, \"s\")) }"))
+  assert(ok("fn r() -> Int { need(Some(1)) }"))
+  assert(ok("fn r() -> Int { need(Some((1, true))) }"))
+}
+
+test "Send: a struct with no mut field, built from Send parts, is Send" {
+  assert(ok("struct P { x: Int; y: String }\nfn r() -> Int { need(P::{ x: 1, y: \"s\" }) }"))
+}
+
+test "Send: an enum with no mut field, built from Send parts, is Send" {
+  assert(ok("enum C { Red; Green }\nfn r() -> Int { need(C::Red) }"))
+}
+
+test "Send: a hand-declared Result is Send for the same reason any user enum is" {
+  // #1324 removed the builtin `Result`. The documents that listed
+  // `Option`/`Result` together implied both were builtins; only `Option` is.
+  // A user-declared one is Send exactly when its components are -- nothing
+  // about the NAME matters.
+  assert(ok("enum Result[T, E] { Ok(T); Err(E) }\nfn r() -> Int { let v: Result[Int, String] = Result::Ok(1)\n  need(v) }"))
+  assert(ok("enum Box2[T] { B(T) }\nfn r() -> Int { let v: Box2[Int] = Box2::B(1)\n  need(v) }"))
+}
+
+test "not Send: a type parameter left unresolved blocks Send, even if every resolved part is Send" {
+  // Measured: `Result::Ok(1)` with no annotation leaves `E` open and the
+  // checker answers `no impl `Send` for `Result[Int, ?t8]``. This is the
+  // "unresolved vars/unknowns" arm of the allowlist, and no document said it
+  // -- so "an enum of Send parts is Send" reads as sufficient when it is not.
+  assert(err("enum Result[T, E] { Ok(T); Err(E) }\nfn r() -> Int { need(Result::Ok(1)) }"))
+}
+
+test "not Send: Array and Bytes have a mutable interior" {
+  assert(err("fn r() -> Int { need([\n  1\n]) }"))
+  assert(err("fn r() -> Int { need(Bytes::new()) }"))
+}
+
+test "not Send: a closure is not Send" {
+  assert(err("fn r() -> Int { need((x: Int) -> Int { x }) }"))
+}
+
+test "not Send: a struct with a mut field is not Send" {
+  assert(err("struct M { mut n: Int }\nfn r() -> Int { need(M::{ n: 1 }) }"))
+}
+
+test "not Send: a struct is not Send when a component is not" {
+  assert(err("struct H { xs: Array[Int] }\nfn r() -> Int { need(H::{ xs: [\n  1\n] }) }"))
+}
+
+test "Send is structural, not a trait a user can grant" {
+  // ADR-0068: `impl Send for X` is an error, so a non-Send type cannot be
+  // opted in from user code.
+  assert(err("struct H { xs: Array[Int] }\nimpl Send for H { }\nfn r() -> Int { 0 }"))
+}

@@ -61,11 +61,9 @@
   既知の穴2つが正直に記録されている — (a) generalize される `let`/`let mut`
   ローカル経由のリークは検出不能、(b) `TaskGroup::run` の literal 名
   マッチングは alias/HOF で素通り(構造マッチは誤爆で revert 済み)。
-- **`Send` は compiler 判定の構造マーカー**(`checker_trait.vibe`):
-  scalar / mut field 無し struct/enum (自前宣言の `Result` 等を含む) /
-  builtin の `Option` / 同一 nursery
-  endpoint / `FrozenArray[T]`(phantom-type 追跡)のみ。`Array`/closure は
-  一律 non-Send。**`TypeEnv` は束縛の可変性を一切持たない**ため、
+- **`Send` は compiler 判定の構造マーカー**(`checker_trait.vibe`)。
+  allowlist の正典は [concurrency.md](concurrency.md#send-と-capture-safety)
+  で、`send_allowlist_test.vibe` が挙動を固定している。**`TypeEnv` は束縛の可変性を一切持たない**ため、
   spawn の `let mut` capture 検査は AST 構文 walk で別途実装されている
   (`checker_spawnable.vibe`)。
 - **zero-alloc 検証は不在だが計測は異例に強い**: `vibe bench` の
