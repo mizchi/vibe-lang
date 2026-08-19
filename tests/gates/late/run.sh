@@ -5040,9 +5040,55 @@ export let _start = () -> Int {
 '
 # 7. Declaration authority now travels with the dependency environment, so an
 #    unknown uppercase selection is rejected by the same import-surface check.
-ui_case bogus_uppercase_not_reported err 'import ./dep.vibe { Hue, NoSuchType }
+#    (This case kept the name `bogus_uppercase_not_reported` long after it
+#    stopped being a gap; the same stale claim outlived it in CLAUDE.md, which
+#    still told readers uppercase names went undetected. Measured
+#    2026-08-19: all four shapes below are caught.)
+ui_case bogus_uppercase err 'import ./dep.vibe { Hue, NoSuchType }
 
 export let _start = () -> Int { 1 }
+'
+# 7b-7d. The three uppercase shapes CLAUDE.md named as still-undetected. A
+#    struct and a type alias are DECLARED in the dependency but not exported,
+#    which is a different path from case 7's name-that-never-existed: the
+#    dependency's own environment has them, and only the export-surface
+#    restriction keeps them off the published one.
+cat > "$uidir/upper.vibe" <<'UIUPPER'
+export struct Shown {
+  x: Int
+}
+
+struct Hidden {
+  y: Int
+}
+
+export type ShownAlias = Int
+
+type HiddenAlias = Int
+UIUPPER
+ui_case private_struct_reported err 'import ./upper.vibe { Hidden }
+
+export let _start = () -> Int {
+  let h = Hidden::{ y: 1 }
+  h.y
+}
+'
+ui_case private_type_alias_reported err 'import ./upper.vibe { HiddenAlias }
+
+fn take(x: HiddenAlias) -> Int { x }
+
+export let _start = () -> Int { take(1) }
+'
+# ...and the exported pair from that same module stays clean, so the two
+# cases above are not passing because `upper.vibe` is broken.
+ui_case public_upper_ok ok 'import ./upper.vibe { Shown, ShownAlias }
+
+fn take(x: ShownAlias) -> Int { x }
+
+export let _start = () -> Int {
+  let s = Shown::{ x: 1 }
+  take(s.x)
+}
 '
 # 8. A dependency that binds NO values is still a checked dependency. Deriving
 #    "known" from the binding count switched the check off for exactly these

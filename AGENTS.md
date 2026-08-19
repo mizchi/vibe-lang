@@ -421,8 +421,12 @@ vibe grep --pattern 'f($(x:exp))' --only-ill-typed lib
 > フラグ無しの `vibe check` が検査時に報告する (#1521/#1533。依存が publish する
 > 環境は export surface に制限されるので、private も単なる import 素通しも
 > 「is not exported by」になる)。`--single-file` は単一ファイル解析なので
-> こちらは見えない。大文字名 (struct / type alias) だけは値環境が判定できず、
-> 未検出のまま (#1521 の残り半分)。
+> こちらは見えない。**大文字名 (struct / type alias) も検出される** — かつて
+> 「値環境が判定できず未検出」と書いてあったが、実測 (2026-08-19) では
+> 非公開 struct・非公開 type alias・存在しない型名のいずれも
+> 「is not exported by」になる。gate の該当ケースも
+> `bogus_uppercase_not_reported` という穴だった頃の名前のままだったので、
+> 3 ケース (private struct / private alias / 対照の public 版) と一緒に直した。
 
 ### `vibe lsp` - Language Server
 
