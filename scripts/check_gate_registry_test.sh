@@ -67,6 +67,37 @@ if awk -F'\t' '
   fail=1
 fi
 
+# #2107 fallout: a compile whose failure the lane checks must not be able to
+# abort the lane before the check. Red case built by REMOVING the guard from a
+# live step, so the test breaks if the rule stops being enforced rather than if
+# some synthetic sample drifts.
+lanecopy="$tmp/mid_run.sh"
+cp tests/gates/mid/run.sh "$lanecopy"
+python3 - "$lanecopy" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = '"fixtures/v128_intrinsics_test.vibe" "$vdir/v128.wasm" __no_entry__ >/dev/null 2>&1 || true'
+assert s.count(old) == 1, "the guarded step this Red case removes has moved"
+open(p, 'w').write(s.replace(old, old[:-len(" || true")], 1))
+PYEOF
+cp tests/gates/mid/run.sh "$tmp/mid_run.orig.sh"
+cp "$lanecopy" tests/gates/mid/run.sh
+set +e
+bash scripts/check_gate_registry.sh >/tmp/gate_registry_test.out 2>&1
+unguarded_rc=$?
+set -e
+cp "$tmp/mid_run.orig.sh" tests/gates/mid/run.sh
+if [ "$unguarded_rc" -eq 0 ]; then
+  echo "FAIL: an unguarded compile-then-check step was accepted" >&2
+  fail=1
+else
+  assert_contains "add \`|| true\`"
+fi
+
+# ...and the restored tree is clean again, so the Red case left nothing behind.
+assert_ok "restored lane" bash scripts/check_gate_registry.sh
+
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi

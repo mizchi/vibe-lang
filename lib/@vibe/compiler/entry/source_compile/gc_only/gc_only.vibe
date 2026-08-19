@@ -261,8 +261,17 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   expand_interp_stmts(stmts)
   // #683: lower test/bench blocks BEFORE the check so the synthesized
   // `__test_*` lets and the no-entry `_start` runner are type-checked like
-  // ordinary functions (the linear lane checks STest bodies directly and
-  // rewrites inside codegen; pre-check rewriting is equivalent here).
+  // ordinary functions.
+  //
+  // The order matters in both directions, so neither is free to change:
+  // lowering FIRST is what makes a `handle` written inside a test block
+  // eligible for the ADR-0076 direct-perform lowering (it wants a named
+  // top-level `fn`; `fixtures/effect_effectset_expansion.vibe` is that
+  // shape and compiles on this lane only for this reason), while the
+  // checker's ambient test-effect grant is keyed off the STest / SBench
+  // node this erases. #2107 closed the second half in the checker instead:
+  // `lowered_test_ambient_effects` recognizes these two prefixes, so the
+  // grant survives the lowering without changing what CODEGEN sees.
   let effective_entry = lower_test_blocks_gc(stmts, entry_name)
   let _ = check_program(stmts)
   // #1015: MUST run before strip_generic_type_params below -- that pass

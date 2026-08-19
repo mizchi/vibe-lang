@@ -23,7 +23,7 @@ printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$fsdir/helper.v
 printf 'import ./helper.vibe { add }\nexport let _start = () -> Int { add(40, 2) }\n' > "$fsdir/main.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fsdir/main.vibe" "$fsdir/main.wasm" _start
+  "$fsdir/main.vibe" "$fsdir/main.wasm" _start || true
 if [ ! -s "$fsdir/main.wasm" ]; then
   echo "[compiler-gate] FAIL: multi-file FS-compile produced no wasm" >&2
   exit 1
@@ -79,7 +79,7 @@ export let _start: () -> Int with Fs = () -> {
 VEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$drdir/main.vibe" "$drdir/main.wasm" _start >/dev/null 2>&1
+  "$drdir/main.vibe" "$drdir/main.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$drdir/main.wasm" ]; then
   echo "[compiler-gate] FAIL: deep-resume regression program did not compile" >&2
   cat "$drdir/main.wasm.diag" >&2 2>/dev/null || true
@@ -153,7 +153,7 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$tdir/pass_test.vibe" "$tdir/pass_test.wasm" __no_entry__ >/dev/null 2>&1
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$tdir/fail_test.vibe" "$tdir/fail_test.wasm" __no_entry__ >/dev/null 2>&1
+  "$tdir/fail_test.vibe" "$tdir/fail_test.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$tdir/pass_test.wasm" ] || [ ! -s "$tdir/fail_test.wasm" ]; then
   echo "[compiler-gate] FAIL: test-block compile produced no wasm" >&2; exit 1
 fi
@@ -180,7 +180,7 @@ rm -rf "$ndir"; mkdir -p "$ndir"
 printf 'let dead: () -> Int = () -> { 0 }\nlet helper: () -> Int = () -> { 1 }\nexport let run: () -> Int = () -> { helper() }\n' > "$ndir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1
+  "$ndir/in.vibe" "$ndir/out.vibe" >/dev/null 2>&1 || true
 if [ ! -s "$ndir/out.vibe" ]; then
   echo "[compiler-gate] FAIL: normalize produced no output" >&2; exit 1
 fi
@@ -205,7 +205,7 @@ fi
 printf 'fn checked_inc(x: Int) -> Int where { requires: x >= 0, ensures: result > x } { x + 1 }\nexport fn run() -> Int { checked_inc(41) }\nexport { run }\n' > "$ndir/keep_fn.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1
+  "$ndir/keep_fn.vibe" "$ndir/keep_fn.out.vibe" >/dev/null 2>&1 || true
 if [ ! -s "$ndir/keep_fn.out.vibe" ]; then
   echo "[compiler-gate] FAIL: fn-bearing source was not normalized (#727)" >&2; exit 1
 fi
@@ -237,7 +237,7 @@ cp "$ndir/out.vibe" "$ndir/compile.vibe"
 printf '\nexport let _start: () -> Int = () -> { run() }\n' >> "$ndir/compile.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1
+  "$ndir/compile.vibe" "$ndir/out.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$ndir/out.wasm" ]; then
   echo "[compiler-gate] FAIL: normalized output does not compile" >&2
   cat "$ndir/compile.vibe" >&2; exit 1
@@ -330,7 +330,7 @@ echo "[compiler-gate] generic-struct contract arity regression ok"
 echo "[compiler-gate] 6b2b explicit struct type args (#886)"
 stdir="_build/_gate_struct_targs"
 rm -rf "$stdir"; mkdir -p "$stdir"
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nstruct Bag[T] {\n  xs: Array[T]\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[Int]::{ a: 1, b: 2 }\n  assert_eq(p.a + p.b, 3)\n  let g = Bag[Int]::{ xs: [] }\n  Array::push(g.xs, 42)\n  assert_eq(Array::get(g.xs, 0), 42)\n  let n = Pair[Array[Int]]::{ a: [1, 2], b: [] }\n  assert_eq(Array::length(n.a), 2)\n}\n' > "$stdir/ok.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/ok.vibe" "$stdir/ok.wasm" _start >/dev/null 2>&1 || true
@@ -341,7 +341,7 @@ fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$stdir/ok.wasm" >/dev/null 2>&1; then
   echo "[compiler-gate] FAIL: explicit struct type args (#886) compiled but trapped at runtime" >&2; exit 1
 fi
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[Int, String]::{ a: 1, b: 2 }\n  assert_eq(p.a, 1)\n}\n' > "$stdir/arity.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[Int, String]::{ a: 1, b: 2 }\n  assert_eq(p.a, 1)\n}\n' > "$stdir/arity.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/arity.vibe" "$stdir/arity.wasm" _start >/dev/null 2>&1 \
@@ -352,7 +352,7 @@ if ! grep -q "expects 1 type argument(s), got 2" "$stdir/arity.wasm.diag" 2>/dev
   echo "[compiler-gate] FAIL: type-arg arity rejection lacks the expected diagnostic (#886)" >&2
   cat "$stdir/arity.wasm.diag" 2>/dev/null >&2; exit 1
 fi
-printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit = () -> {\n  let p = Pair[String]::{ a: 1, b: 2 }\n  assert_eq(p.a, "x")\n}\n' > "$stdir/pin.vibe"
+printf 'struct Pair[T] {\n  a: T;\n  b: T\n}\n\nexport let _start: () -> Unit with Stdout = () -> {\n  let p = Pair[String]::{ a: 1, b: 2 }\n  assert_eq(p.a, "x")\n}\n' > "$stdir/pin.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$stdir/pin.vibe" "$stdir/pin.wasm" _start >/dev/null 2>&1 \
@@ -1016,7 +1016,7 @@ EOF
 # Expected: 11 + 21 + 10 + 20 = 62
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start >/dev/null 2>&1
+  "$pdir/litpat.vibe" "$pdir/litpat.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$pdir/litpat.wasm" ]; then
   echo "[compiler-gate] FAIL: literal sub-pattern program did not compile" >&2; exit 1
 fi
@@ -1042,7 +1042,7 @@ rm -rf "$ldir"; mkdir -p "$ldir"
 printf 'let sum: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }\nexport let run: () -> Int = () -> { sum(x=1, y=2) }\nexport { run }\n' > "$ldir/in.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_NORMALIZE=1 \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ldir/in.vibe" "$ldir/out.vibe" >/dev/null 2>&1
+  "$ldir/in.vibe" "$ldir/out.vibe" >/dev/null 2>&1 || true
 if [ ! -s "$ldir/out.vibe" ]; then
   echo "[compiler-gate] FAIL: labeled-param normalize produced no output" >&2; exit 1
 fi
@@ -1120,7 +1120,7 @@ EOF
 # The bound `x` in Some(x) must compile (no trap), and Some must not route to None.
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ndir/nested.vibe" "$ndir/nested.wasm" _start >/dev/null 2>&1
+  "$ndir/nested.vibe" "$ndir/nested.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$ndir/nested.wasm" ]; then
   echo "[compiler-gate] FAIL: nested ctor sub-pattern program did not compile (#608 regressed: codegen trap)" >&2; exit 1
 fi
@@ -1147,7 +1147,7 @@ export let _start: () -> Int = () -> { early() + 1 }
 EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start >/dev/null 2>&1
+  "$wdir/fwd.vibe" "$wdir/fwd.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$wdir/fwd.wasm" ]; then
   echo "[compiler-gate] FAIL: forward-reference program did not compile (#602 regressed: checker trap)" >&2; exit 1
 fi
@@ -1191,7 +1191,7 @@ EOF
 # 3*1000 + 52*100 + 3*10 + 0 = 3000 + 5200 + 30 = 8230
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$idir/interp.vibe" "$idir/interp.wasm" _start >/dev/null 2>&1
+  "$idir/interp.vibe" "$idir/interp.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$idir/interp.wasm" ]; then
   echo "[compiler-gate] FAIL: interpolation program did not compile" >&2; exit 1
 fi
@@ -1226,12 +1226,12 @@ test "pos" {
 EOF
 VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__ >/dev/null 2>&1
+  "$cdir/cov_test.vibe" "$cdir/cov_test.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$cdir/cov_test.wasm" ]; then
   echo "[compiler-gate] FAIL: coverage build produced no wasm (#cov regressed)" >&2; exit 1
 fi
 VIBE_COV_OUT="$cdir/cov.json" VIBE_PREOPEN_DIR="$ROOT_DIR" \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir/cov_test.wasm" >/dev/null 2>&1
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$cdir/cov_test.wasm" >/dev/null 2>&1 || true
 if [ ! -s "$cdir/cov.json" ]; then
   echo "[compiler-gate] FAIL: no coverage report produced (vibe_cov section missing?)" >&2; exit 1
 fi
@@ -1289,7 +1289,7 @@ EOF
 # Expected: 42 + 42 + 42 + 84 + (10+20) + (7+8) + (42+43) = 340
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start >/dev/null 2>&1
+  "$mbtdir/mbt.vibe" "$mbtdir/mbt.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mbtdir/mbt.wasm" ]; then
   echo "[compiler-gate] FAIL: trait dict-passing program did not compile" >&2
   cat "$mbtdir/mbt.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1332,7 +1332,7 @@ EOF
 # Expected: 84 (both Int and String witnesses resolved -> correct shown strings)
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start >/dev/null 2>&1
+  "$mgdir/mg.vibe" "$mgdir/mg.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$mgdir/mg.wasm" ]; then
   echo "[compiler-gate] FAIL: rank-1 trait-method generic program did not compile" >&2
   cat "$mgdir/mg.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1364,7 +1364,7 @@ rm -rf "$ufcsdir"; mkdir -p "$ufcsdir"
 # actual/expected and fails the run.
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  fixtures/trait_bound_ufcs_method.vibe "$ufcsdir/ufcs.wasm" __no_entry__ >/dev/null 2>&1
+  fixtures/trait_bound_ufcs_method.vibe "$ufcsdir/ufcs.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$ufcsdir/ufcs.wasm" ]; then
   echo "[compiler-gate] FAIL: UFCS-on-bounded-tparam program did not compile" >&2
   cat "$ufcsdir/ufcs.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1397,7 +1397,7 @@ EOF
 # Expected: -1 + 1 + 0 + len("P { x: 7, y: 9 }")=16 -> 16
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1
+  "$drvdir/drv.vibe" "$drvdir/drv.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$drvdir/drv.wasm" ]; then
   echo "[compiler-gate] FAIL: derive program did not compile" >&2
   cat "$drvdir/drv.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1437,7 +1437,7 @@ run_test_block_fixtures() {
     rm -f "$fxout" "$fxout.diag"
     VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
     if [ ! -s "$fxout" ]; then
       echo "[compiler-gate] FAIL: $fx did not compile ($label)" >&2
       cat "$fxout.diag" 2>/dev/null >&2; exit 1
@@ -1499,7 +1499,7 @@ for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe; do
   eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$eqtrap_src" "$eqtrap_wasm" _start >/dev/null 2>&1
+    "$eqtrap_src" "$eqtrap_wasm" _start >/dev/null 2>&1 || true
   if [ ! -s "$eqtrap_wasm" ]; then
     echo "[compiler-gate] FAIL: $eqtrap_src did not compile" >&2
     cat "$eqtrap_wasm.diag" 2>/dev/null >&2
@@ -1606,7 +1606,7 @@ EOF
 # Expected: (1+2+3+4) + (1+2+3+4) + (1+2+3+4) = 30
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$itdir/iter.vibe" "$itdir/iter.wasm" _start >/dev/null 2>&1
+  "$itdir/iter.vibe" "$itdir/iter.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$itdir/iter.wasm" ]; then
   echo "[compiler-gate] FAIL: Iterator trait program did not compile" >&2
   cat "$itdir/iter.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1677,7 +1677,7 @@ EOF
 # Expected: 20 + 20 + 7 = 47
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$lcdir/lc.vibe" "$lcdir/lc.wasm" _start >/dev/null 2>&1
+  "$lcdir/lc.vibe" "$lcdir/lc.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$lcdir/lc.wasm" ]; then
   echo "[compiler-gate] FAIL: lazy combinators program did not compile" >&2
   cat "$lcdir/lc.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1732,7 +1732,7 @@ export let _start: () -> Int = () -> { lazy_iter_count(lazy_iter_arr([10, 20, 30
 EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$xidir/main.vibe" "$xidir/main.wasm" _start >/dev/null 2>&1
+  "$xidir/main.vibe" "$xidir/main.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$xidir/main.wasm" ]; then
   echo "[compiler-gate] FAIL: cross-import trait-iterator program did not compile" >&2
   exit 1
@@ -1788,7 +1788,7 @@ EOF
 # Expected: async iterator 10+20+30 = 60, pull closure 1+2+3+4 = 10 -> 70.
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$fadir/fa.vibe" "$fadir/fa.wasm" _start >/dev/null 2>&1
+  "$fadir/fa.vibe" "$fadir/fa.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$fadir/fa.wasm" ]; then
   echo "[compiler-gate] FAIL: async for-loop program did not compile" >&2
   cat "$fadir/fa.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1845,7 +1845,7 @@ export let _start: () -> Int = () -> { sum_direct(lazy_iter_arr([10, 20, 30, 40]
 EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$eidir/pos.vibe" "$eidir/pos.wasm" _start >/dev/null 2>&1
+  "$eidir/pos.vibe" "$eidir/pos.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$eidir/pos.wasm" ]; then
   echo "[compiler-gate] FAIL: element-type positive program did not compile" >&2
   cat "$eidir/pos.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1894,7 +1894,7 @@ for suite in lib/@vibe/prelude/lazy_iter_test.vibe lib/@vibe/prelude/async_iter_
   # the test-runner `_start` synthesis (unknown entry names are compile errors).
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$suite" "$out" __no_entry__ >/dev/null 2>&1
+    "$suite" "$out" __no_entry__ >/dev/null 2>&1 || true
   if [ ! -s "$out" ]; then
     echo "[compiler-gate] FAIL: $suite did not compile" >&2
     cat "$out.diag" 2>/dev/null >&2; exit 1
@@ -1930,7 +1930,7 @@ export let _start: () -> Int = () -> { total([10, 20, 30, 40]) + total(Box::{ v:
 EOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$gidir/pos.vibe" "$gidir/pos.wasm" _start >/dev/null 2>&1
+  "$gidir/pos.vibe" "$gidir/pos.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$gidir/pos.wasm" ]; then
   echo "[compiler-gate] FAIL: generic-impl positive program did not compile" >&2
   cat "$gidir/pos.wasm.diag" 2>/dev/null >&2; exit 1
@@ -1984,7 +1984,7 @@ let use_it = [U: Show2](x: U) -> Int { U::show2(x) }'
 } > "$gjdir/pos.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$gjdir/pos.vibe" "$gjdir/pos.wasm" _start >/dev/null 2>&1
+  "$gjdir/pos.vibe" "$gjdir/pos.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$gjdir/pos.wasm" ]; then
   echo "[compiler-gate] FAIL: dict-of-dict positive program did not compile" >&2
   cat "$gjdir/pos.wasm.diag" 2>/dev/null >&2; exit 1
@@ -2103,7 +2103,7 @@ EOF
 # fails to compile the bare-tuple binding).
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start >/dev/null 2>&1
+  "$nldir/nestedlit.vibe" "$nldir/nestedlit.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$nldir/nestedlit.wasm" ]; then
   echo "[compiler-gate] FAIL: nested literal sub-pattern program did not compile" >&2; exit 1
 fi
@@ -2779,12 +2779,17 @@ for pp_rc in 0 1; do
     echo "[compiler-gate] FAIL: print primitives output '$pp_out' under VIBE_RC=$pp_rc (expected 'hello gate|fortytwo|42|A|'; #929/#930 regressed)" >&2; exit 1
   fi
 done
+# #2107: both rows are declared because both functions really do print --
+# `print` carries `Stdout` now that the checker holds the print builtins to
+# the row discipline. What this fixture pins is unchanged: the SOURCE
+# definition of `println` wins over the builtin lowering, so the program
+# prints "S" rather than "ignored".
 cat > "$ppdir/shadow.vibe" <<'EOF'
-fn println(s: String) -> Unit {
+fn println(s: String) -> Unit with Stdout {
   print("S\n")
 }
 
-fn main() -> Unit {
+fn main() -> Unit with Stdout {
   println("ignored")
 }
 EOF

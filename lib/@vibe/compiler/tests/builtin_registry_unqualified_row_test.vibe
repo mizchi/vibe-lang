@@ -1,0 +1,156 @@
+//# Every unqualified effectful builtin is subject to the row discipline
+//# (#2107).
+//
+// `builtin_call_effect` (checker/checker_effects.vibe) answers "which effect
+// does calling this builtin require". For a QUALIFIED name it reads the answer
+// out of the registry via `lookup_builtin`. For an unqualified one it cannot:
+// that lookup is a linear scan over ~450 rows and would run on every call in
+// the program, so the unqualified path answers None without consulting
+// anything, and the handful of unqualified builtins that ARE effectful are
+// listed by hand in `unqualified_builtin_effect`.
+//
+// A hand-written list next to a registry that keeps growing is a list that
+// falls behind, and it had: ten names carried a row in the registry and were
+// missing from it, so `println`, `print`, the four `vibe_tcp_*_raw`, the five
+// `vibe_http_*_raw` and `vibe_fs_stat_token_raw` could all be called from a
+// function declaring no row at all -- clean `vibe check`, real host import in
+// the emitted module.
+//
+// So this test does not restate the list. It DERIVES the set from the registry
+// and checks the checker actually enforces each one, which is a property the
+// next added builtin cannot quietly break.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Type, builtin_registry_typed
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+/// A literal of the right shape for one parameter, so the synthesized call
+/// type-checks far enough to reach the effect pass.
+fn arg_literal(ty: Type) -> String {
+  match ty {
+    CtString => "\"x\"",
+    CtBool => "true",
+    CtDouble => "0.0",
+    _ => "0"
+  }
+}
+
+fn arg_list(params: Array[Type]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(params) {
+    if i > 0 {
+      out = "\{out}, "
+    } else {
+      ()
+    }
+    out = "\{out}\{arg_literal(Array::get(params, i))}"
+    i = i + 1
+  }
+  out
+}
+
+/// `NAME(args)` in a function that declares `row`, with the call's value
+/// discarded so a return-type mismatch cannot stand in for the diagnostic we
+/// are actually looking for.
+fn call_source(name: String, params: Array[Type], row: String) -> String {
+  let head = if String::length(row) == 0 {
+    "fn f() -> Unit {"
+  } else {
+    "fn f() -> Unit with \{row} {"
+  }
+  "\{head}\n  \{name}(\{arg_list(params)})\n  ()\n}\n"
+}
+
+fn has_row_mismatch(src: String) -> Bool with Exception {
+  let d = collect_all_diagnostics(src)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(d) {
+    if String::contains(Array::get(d, i), "effect row mismatch") {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// (name, params, effect) for every checker-visible registry builtin whose
+/// name has no `::` and whose signature carries an effect label. `Async` is
+/// dropped: the entry/runtime execution policy owns it, and
+/// `builtin_call_effect` excludes it for qualified names too, so it is not a
+/// row the caller is ever asked to declare.
+fn unqualified_effectful_rows() -> Array[(String, Array[Type], String)] {
+  let rows = builtin_registry_typed()
+  let out = []
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, ty, _lin, _gc, visible) = Array::get(rows, i)
+    if visible && String::index_of(name, "::") < 0 {
+      match ty {
+        CtFn(params, _, Some(eff)) => if eff == "Async" || eff == "Error" || eff == "Exception" {
+          ()
+        } else {
+          Array::push(out, (name, params, eff))
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+//# Tests
+
+test "the registry still has unqualified effectful builtins to check" {
+  // Guards the guard: if this ever reads 0, the loop below is asserting
+  // nothing and the test has stopped meaning anything.
+  assert(Array::length(unqualified_effectful_rows()) >= 15)
+}
+
+test "calling one without a row is an effect row mismatch" {
+  let rows = unqualified_effectful_rows()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, params, eff) = Array::get(rows, i)
+    if has_row_mismatch(call_source(name, params, "")) {
+      ()
+    } else {
+      // Name the offender: a bare `assert(false)` here would send the reader
+      // back to the registry to work out which row is unguarded.
+      println("unqualified effectful builtin escapes the row check: \{name} (carries \{eff}); add it to unqualified_builtin_effect in checker/checker_effects.vibe")
+      assert(false)
+    }
+    i = i + 1
+  }
+}
+
+test "declaring the row it carries makes the call legal" {
+  // The other half: the requirement has to be satisfiable by the label the
+  // registry names, or the diagnostic above is unactionable.
+  let rows = unqualified_effectful_rows()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, params, eff) = Array::get(rows, i)
+    if has_row_mismatch(call_source(name, params, eff)) {
+      println("declaring `with \{eff}` did not satisfy \{name}'s own registry row")
+      assert(false)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}

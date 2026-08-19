@@ -105,7 +105,7 @@ for heap_backend in rc bump; do
     VIBE_RC="$heap_rc" VIBE_PROFILE_MEMORY_MARKS=1 \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$heapmarkdir/input.vibe" "$heapmarkdir/$heap_backend.wasm" _start \
-    >/dev/null 2>"$heap_log"
+    >/dev/null 2>"$heap_log" || true
   if [ ! -s "$heapmarkdir/$heap_backend.wasm" ] \
     || ! grep -q "name=start" "$heap_log" \
     || ! grep -q "name=$heap_boundary" "$heap_log"; then

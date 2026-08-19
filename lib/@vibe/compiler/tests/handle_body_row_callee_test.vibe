@@ -1,0 +1,98 @@
+//# A handled body may call a row-carrying function (#2109).
+//
+// ADR-0076's eligibility rule is about STATIC VISIBILITY of performs: the
+// handler has to see every `perform E::op` it covers, so the handled body may
+// not reach one through something this pass cannot resolve. The
+// implementation read that as "the callee carries a row at all", which is a
+// different question and a much bigger set. Measured before the fix, on both
+// lanes: a rowless callee in the handled body compiled, a rowless GENERIC one
+// compiled, and one declaring `with Stdout` did not.
+//
+// So printing or asserting anywhere inside a `handle` was impossible --
+// `assert_eq` and `inspect` expand to a `println` call, and four fixtures in
+// this repository had to hoist the call out of the handle rather than be
+// fixed.
+//
+// Two facts make the narrower rule sound, and both are pinned below:
+//
+//   * a declared row is COMPLETE. The checker requires every effect a body can
+//     require -- directly, transitively, or through a parameter's own row
+//     (#626, #885) -- to appear in the signature, so a callee declaring only
+//     `Stdout` cannot reach a `perform Ask::Get`.
+//   * a row VARIABLE is not complete: it can be instantiated with the handled
+//     effect at the call site, and the perform then happens inside the callee.
+//     That case has to keep failing.
+
+//# Imports
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+//# Misc
+
+/// The shared prelude: an effect, a function that performs it, and a
+/// `handle` in a test block -- the shape every case below varies.
+fn program(body: String) -> String {
+  "effect Ask {\n  Get -> Int\n}\n\nlet f = () -> Int with Ask::Get {\n  perform Ask::Get\n}\n\n\{body}"
+}
+
+fn compiles_linear(src: String) -> Bool {
+  handle {
+    let bytes = compile_source_wasi(src, "__no_entry__")
+    Bytes::length(bytes) > 8
+  } with Exception {
+    Throw(_) => false
+  }
+}
+
+fn compiles_gc(src: String) -> Bool {
+  handle {
+    let bytes = compile_source_gc_only(src, "__no_entry__")
+    Bytes::length(bytes) > 8
+  } with Exception {
+    Throw(_) => false
+  }
+}
+
+fn compiles_both(src: String) -> Bool with Exception {
+  compiles_linear(src) && compiles_gc(src)
+}
+
+//# Tests
+
+test "a callee carrying an unrelated row is callable from a handled body" {
+  let src = program("let side = (n: Int) -> Int with Stdout {\n  println(\"side\")\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "a print builtin is callable from a handled body" {
+  // The builtin half of the same rule: `println` cannot run a user closure,
+  // so it cannot hide a perform either. Read off the registry signature, not
+  // a hand-kept list -- `edp_builtin_is_first_order`.
+  let src = program("test \"t\" {\n  let r = handle {\n    println(\"x\")\n    f()\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "assert_eq and inspect work inside a handled body" {
+  // Both expand to a `println` call before the checker runs, which is how the
+  // rejection reached ordinary test code in the first place.
+  let with_assert = program("test \"t\" {\n  handle {\n    assert_eq(f(), 42)\n  } with Ask {\n    Get => resume(42)\n  }\n}\n")
+  let with_inspect = program("test \"t\" {\n  handle {\n    inspect(f(), \"42\")\n  } with Ask {\n    Get => resume(42)\n  }\n}\n")
+  assert(compiles_both(with_assert))
+  assert(compiles_both(with_inspect))
+}
+
+test "a rowless callee still compiles, generic or not" {
+  // The control: these compiled before the fix too, and must keep doing so --
+  // if they ever stop, the change below them broke something wider than the
+  // rule under test.
+  let plain = program("let side = (n: Int) -> Int {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let generic = program("let side = [T](n: T) -> T {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(plain))
+  assert(compiles_both(generic))
+}

@@ -9,16 +9,20 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 ## Quick Start
 
 ```vibe
-// `stdout_write` is a prelude helper, not a builtin — import it (otherwise the
-// checker reports `unknown function: String::stdout_write`).
-import @vibe/prelude { stdout_write }
-
-// prelude `stdout_write` still carries the legacy `Stdout` label.
-// The current tty capability is `Console` (`Console::write_stream`).
+// `println` is a builtin — no import — and it carries the `Stdout`
+// capability, so the entry declares it. A function that declares no row may
+// not print (#2107).
 fn main with Stdout {
-  stdout_write("hello world\n")
+  println("hello world")
 }
 ```
+
+`print` is the same without the trailing newline. `@vibe/console` publishes the
+rest of the tty surface (`eprint` / `eprintln` on `Stderr`, `read_line`,
+`read_all`), and `@vibe/prelude`'s older `stdout_write` / `stdout_writeln`
+still compile. The row is spelled `Stdout` here because that is what these
+lower onto today; the current tty capability is `Console`
+(`Console::write_stream`), and #1460 moves them there.
 
 ```bash
 vibe run hello.vibex       # compile & execute
@@ -229,8 +233,6 @@ note above); reach for `ArrayBuilder` (build-then-freeze accumulation) or
 ## Functions
 
 ```vibe
-import @vibe/prelude { stdout_write }   // for hello() below
-
 // Top-level named functions: `fn` (#727, ADR-0064). Full annotations
 // required (param types + return type); recursion needs no `rec`.
 fn add(x: Int, y: Int) -> Int { x + y }
@@ -239,7 +241,7 @@ fn fact(n: Int) -> Int {
 }
 fn identity[T](x: T) -> T { x }                // generic
 fn show[T: Eq + Ord](x: T) -> T { x }          // trait bounds
-fn hello() -> Unit with Stdout { stdout_write("hi\n") }
+fn hello() -> Unit with Stdout { println("hi") }
 // #1429: the effect row has exactly one spelling, plus one for the empty row.
 //   with A + B      the row
 //   with ()         the explicitly empty row
@@ -1443,7 +1445,9 @@ the linear and GC backends):
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->
 ```vibe skip
-stdout_write(s)    // with Stdout
+println(s)         // with Stdout - builtin, no import
+print(s)           // with Stdout - no trailing newline
+stdout_write(s)    // with Stdout - @vibe/prelude
 stdin_read_line()  // with Stdin
 sh("ls -la")       // with Stdout - shell command
 sh_lines("ls")     // -> Array[String]

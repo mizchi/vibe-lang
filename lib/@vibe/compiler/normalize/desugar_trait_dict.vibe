@@ -5356,11 +5356,28 @@ fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String
   let actual_s = assert_eq_render(actual, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let expected_s = assert_eq_render(expected, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\n")))))
-  // println, not Stderr::write_stream: the gc lane only reserves host
+  // stdout, not Stderr::write_stream: the gc lane only reserves host
   // imports when the source already used one, and flipping that on a
   // SIMD-only file shifts every generated-body index (gc-gate
   // simd_skip_ws_test). `vibe test` now keeps stdout on FAIL so the
   // diagnostic still reaches vt_fail_detail.
+  //
+  // #2107: `println` here means `assert_eq` REQUIRES `Stdout` in the
+  // function containing it -- this expansion runs before the checker, so the
+  // row lands on the caller. That is the honest reading (the branch really
+  // does write to the console) and it is the same rule `inspect` follows.
+  // In practice it costs nothing: a `test` / `bench` block is granted the
+  // standard test effect set, which includes Stdout, and that is where
+  // assertions live. A plain function asserting outside a test block declares
+  // `with Stdout`, as `fixtures/gc_backend_smoke_test.vibe` now does.
+  //
+  // The internal printer `print_str` looks like the way to avoid that and is
+  // not: its wasm signature takes two params (the string as a pair), it is
+  // `checker_visible=false`, and codegen only ever emits it with that ABI
+  // from a lowering -- a vibe-level call to it is `unknown name` at the
+  // checker and a broken module past it. Introducing a rowless vibe-callable
+  // printer just to keep this branch quiet would re-open the exact escape
+  // #2107 closed, one dunder away.
   let fail = ESeq(ECall(EIdent("println", -1), [msg], -1), ECall(EIdent("assert_true", -1), [
     EBool(false)
   ], -1))
