@@ -1,0 +1,87 @@
+//# Structural type errors carry a source position (#1941 / #1567).
+//
+// The checker had two classes of unlocated diagnostic, and they need different
+// answers:
+//
+//   * the offset does not EXIST. `1 + "s"` has nowhere to point: `EInt` /
+//     `EString` / `EBool` / `EFloat` carry no offset slot in the AST
+//     (lib/@vibe/ast/index.vpkg), which is the same root cause that makes a
+//     `vibe grep` range a lower bound (ADR-0108). Fixing that is an AST change
+//     across ~6100 constructor sites, and `off_marker` correctly emits nothing
+//     rather than inventing a position.
+//   * the offset exists and nobody THREADED it. `if n { .. }` with `n: Int`
+//     reported `if condition must be Bool` with no position at all, even though
+//     the condition is an `EIdent` carrying its own offset.
+//
+// This file pins the second class. Every case here has an identifier operand,
+// so a missing position is a wiring bug and not the AST gap -- and each one
+// asserts the COLUMN, because "has a line:col" is satisfied by pointing at the
+// wrong token.
+//
+// Why it matters beyond tidiness: an unlocated diagnostic JSON-encodes as the
+// empty range `0:0-0:0` with `data.synthetic: true` (#2050). That is honest,
+// but it puts the editor's squiggle on character 1 of the file for some of the
+// most common mistakes in the language.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+fn first_diag(src: String) -> String with Exception {
+  let d = collect_all_diagnostics(src)
+  if Array::length(d) == 0 {
+    ""
+  } else {
+    Array::get(d, 0)
+  }
+}
+
+/// `true` when the first diagnostic carries exactly `line <line>:<col>`.
+fn anchored_at(src: String, line: Int, col: Int) -> Bool with Exception {
+  String::contains(first_diag(src), "line \{line}:\{col}")
+}
+
+//# Tests
+
+test "an if condition that is not Bool points at the condition" {
+  //     1234567
+  //   `  if n {` -- `n` is column 6.
+  let src = "fn f() -> Int {\n  let n = 1\n  if n { 2 } else { 3 }\n}\n"
+  assert(String::contains(first_diag(src), "if condition must be Bool"))
+  assert(anchored_at(src, 3, 6))
+}
+
+test "mismatched if branches point at the else branch" {
+  // The `then` type is the expectation and `else` is checked against it, so
+  // the else arm is the operand that disagrees.
+  let src = "fn f() -> Bool {\n  let n = 1\n  let s = \"x\"\n  if true { n } else { s }\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 4, 24))
+}
+
+test "an incompatible array element points at that element" {
+  let src = "fn f() -> Int {\n  let s = \"x\"\n  let a = [1, s]\n  1\n}\n"
+  assert(String::contains(first_diag(src), "array elements have incompatible types"))
+  assert(anchored_at(src, 3, 15))
+}
+
+test "an incompatible map value points at that value" {
+  let src = "fn f() -> Int {\n  let s = \"x\"\n  let m = Map::from_pairs([(\"a\", 1), (\"b\", s)])\n  1\n}\n"
+  assert(String::contains(first_diag(src), "map literal values have incompatible types"))
+  assert(anchored_at(src, 3, 44))
+}
+
+test "a literal operand still reports without a position, and says nothing false" {
+  // The AST gap, pinned as the boundary of the fix above. `off_marker` emits
+  // nothing for -1, so the message is exactly what it was -- no `line 0:0`, no
+  // guessed anchor. If this case ever GAINS a position, literals grew offsets
+  // and the comment at the top of this file needs rewriting.
+  let src = "fn f() -> Int {\n  if 1 { 2 } else { 3 }\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if condition must be Bool"))
+  assert(!String::contains(d, "line "))
+}
