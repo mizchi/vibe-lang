@@ -66,7 +66,7 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (`\(x)` は非対応、`\{x}` を使う)
                                // #1392: 補間の値に `T::to_string`
                                // (derive(Show)/derive(Hash) 生成物、または
-                               // 手書き) があればそれを呼ぶ。`Option`/`Result`/
+                               // 手書き) があればそれを呼ぶ。`Option`/
                                // タプル/配列は変数・名前関数の戻り値・戻り値が
                                // リテラルの未注釈 lambda・generic の pass-through
                                // 経由でも構造的に展開される
@@ -197,7 +197,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
 current allowlist (see `docs/concurrency.md` "Send と capture safety") —
-only scalars, `mut`-field-free structs/enums, `Option`/`Result` of those,
+only scalars, `mut`-field-free structs/enums, `Option` of those,
 same-nursery `Sender`, and `FrozenArray[T]` are. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
@@ -684,7 +684,7 @@ impl Eq for Int
 impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には使えない (下記)
 
 // `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
-// trait: `[T: Send]` accepts primitives, tuples, Option/Result, and
+// trait: `[T: Send]` accepts primitives, tuples, Option, and
 // immutable structs/enums built from Send parts; Array/Bytes, closures,
 // and `mut`-field structs are rejected. `impl Send for X` is an error.
 
@@ -1864,7 +1864,7 @@ cannot interpolate a value of type `F`: it has no Show renderer
 いるのだから、それは missing `derive(Show)` であって「描画できない値」では
 ないため、エラーにした。
 
-スカラ (`Int`/`String`/...)、`Option`/`Result`/tuple/`Array`、型が解決できない
+スカラ (`Int`/`String`/...)、`Option`/tuple/`Array`、型が解決できない
 値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
 のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
 

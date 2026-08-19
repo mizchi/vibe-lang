@@ -62,7 +62,8 @@
   ローカル経由のリークは検出不能、(b) `TaskGroup::run` の literal 名
   マッチングは alias/HOF で素通り(構造マッチは誤爆で revert 済み)。
 - **`Send` は compiler 判定の構造マーカー**(`checker_trait.vibe`):
-  scalar / mut field 無し struct/enum / Option/Result / 同一 nursery
+  scalar / mut field 無し struct/enum (自前宣言の `Result` 等を含む) /
+  builtin の `Option` / 同一 nursery
   endpoint / `FrozenArray[T]`(phantom-type 追跡)のみ。`Array`/closure は
   一律 non-Send。**`TypeEnv` は束縛の可変性を一切持たない**ため、
   spawn の `let mut` capture 検査は AST 構文 walk で別途実装されている
