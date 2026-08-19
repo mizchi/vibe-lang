@@ -1,0 +1,65 @@
+//# The freeze document's CLAIMS about HOW a symbol is provided (#2102 pass).
+//
+// `scripts/check_freeze_surface.sh` is the gate: it derives the symbol list
+// FROM `docs/spec/1.0-freeze.md` and probes each name, so a row added to the
+// document is checked without anyone editing a test. That is the part that
+// must not be duplicated here -- a second hard-coded copy of the list would
+// drift from the document, which is the failure the gate exists to prevent.
+//
+// What stays here is what the gate deliberately does NOT decide: the document
+// distinguishes compiler builtins from library functions, and says which
+// effect a verb carries. Those are claims about HOW a name is provided, not
+// WHETHER it exists, and they need real programs rather than a bare
+// reference.
+//
+// The two entries that started this -- `Result::and_then` and the
+// `Iterator::*` combinator layer, both frozen after being deleted -- are the
+// gate's business now, and its self-test pins that it catches them.
+
+//# Imports
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+//# Misc
+
+/// True when `src` resolves every name it mentions. Deliberately narrower than
+/// "compiles clean": a frozen symbol used at the wrong arity is a different
+/// bug from a frozen symbol that does not exist, and only the second is what
+/// this file is about.
+fn resolves(src: String) -> Bool with Exception {
+  let d = collect_all_diagnostics(src)
+  let mut i = 0
+  let mut unknown = false
+  while i < Array::length(d) {
+    if String::contains(Array::get(d, i), "unknown name") {
+      unknown = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  !unknown
+}
+
+//# Tests
+
+test "String::replace is frozen as a LIBRARY function, not a builtin" {
+  // The distinction the document now draws. Without the import it does not
+  // resolve, which is why the bullet says so.
+  assert(!resolves("fn f() -> String {\n  String::replace(\"aa\", \"a\", \"b\")\n}\n"))
+  assert(resolves("import @vibe/builtin {\n  String::replace\n}\n\nfn f() -> String {\n  String::replace(\"aa\", \"a\", \"b\")\n}\n"))
+}
+
+test "the frozen iteration surface is `for-in`, not the combinator layer" {
+  // ADR-0099 retired `Iterator::*`. The document froze it anyway.
+  assert(resolves("fn f() -> Int {\n  let mut s = 0\n  for x in [1, 2] {\n    s = s + x\n  }\n  s\n}\n"))
+  assert(!resolves("fn f() -> Int {\n  let g = Iterator::map\n  1\n}\n"))
+  assert(!resolves("fn f() -> Int {\n  let g = Iterator::fold\n  1\n}\n"))
+}
+
+test "sh / sh_lines carry Process, which is what the document now says" {
+  assert(resolves("fn f() -> Unit with Process {\n  let _ = sh(\"true\")\n  ()\n}\n"))
+  assert(resolves("fn f() -> Unit with Process {\n  let _ = sh_lines(\"true\")\n  ()\n}\n"))
+}
