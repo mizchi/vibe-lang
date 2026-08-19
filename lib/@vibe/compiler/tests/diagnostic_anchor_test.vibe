@@ -119,3 +119,42 @@ test "an assignment of the wrong type points at the value, not the variable" {
   assert(String::contains(first_diag(src), "assignment type mismatch for n"))
   assert(anchored_at(src, 4, 7))
 }
+
+//# Effect-shaped sites (#1941, third slice)
+
+/// `handle { f() } with Ask { Get => <arm> }` where `f` performs `Ask::Get`.
+/// The three cases below differ only in the arm, so a column difference is
+/// the arm's, not the scaffolding's.
+fn handled(arm: String) -> String {
+  "effect Ask {\n  Get -> Int\n}\n\nfn f() -> Int with Ask::Get {\n  perform Ask::Get\n}\n\nfn g() -> Int {\n  let s = \"a\"\n  handle {\n    f()\n  } with Ask {\n    Get => \{arm}\n  }\n}\n"
+}
+
+test "a resumed value of the wrong type points at the resume argument" {
+  //   `    Get => resume(s)` -- `s` is column 19.
+  let src = handled("resume(s)")
+  assert(String::contains(first_diag(src), "resume value type mismatch"))
+  assert(anchored_at(src, 14, 19))
+}
+
+test "a handler arm's own value points at the arm body" {
+  // Not at `Get` and not at the `handle`: the arm's VALUE is what fails to
+  // agree with the handle body's type.
+  let src = handled("s")
+  assert(String::contains(first_diag(src), "handler arm value type mismatch"))
+  assert(anchored_at(src, 14, 12))
+}
+
+test "writing a struct field points at the written value" {
+  let src = "struct P { mut x: Int }\n\nfn f(p: P) -> Int {\n  let s = \"a\"\n  p.x = s\n  1\n}\n"
+  assert(String::contains(first_diag(src), "type mismatch writing field `x`"))
+  assert(anchored_at(src, 5, 9))
+}
+
+test "Array::fold points at the initial accumulator, not the callback" {
+  // `check_assignable(expected = the callback's first param type, actual =
+  // init's type)`, so `init` is the operand under test -- same rule as every
+  // other case in this file, and it is the argument a reader would change.
+  let src = "fn f() -> Int {\n  let a = [1]\n  let n = 0\n  Array::fold(a, n, (acc: String, x: Int) -> acc)\n  1\n}\n"
+  assert(String::contains(first_diag(src), "Array::fold accumulator type mismatch"))
+  assert(anchored_at(src, 4, 18))
+}
