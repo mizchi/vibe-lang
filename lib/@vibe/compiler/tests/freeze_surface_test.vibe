@@ -1,23 +1,20 @@
-//# Every symbol `docs/spec/1.0-freeze.md` freezes actually exists.
+//# The freeze document's CLAIMS about HOW a symbol is provided (#2102 pass).
 //
-// The freeze document is the one page that promises SemVer stability, so a
-// name listed there that does not resolve is the worst kind of documentation
-// error: it promises not to break something that is already gone.
+// `scripts/check_freeze_surface.sh` is the gate: it derives the symbol list
+// FROM `docs/spec/1.0-freeze.md` and probes each name, so a row added to the
+// document is checked without anyone editing a test. That is the part that
+// must not be duplicated here -- a second hard-coded copy of the list would
+// drift from the document, which is the failure the gate exists to prevent.
 //
-// It had two. `Result::and_then` was frozen while `Result` itself was removed
-// from the language in #1324 -- the very next line of the same bullet admitted
-// `tap_ok`/`tap_err` went with it. And the whole `Iterator::map/filter/fold/
-// find/any/all/flatmap` combinator layer was frozen after ADR-0099 retired it;
-// the registry carries zero `Iterator::` rows.
+// What stays here is what the gate deliberately does NOT decide: the document
+// distinguishes compiler builtins from library functions, and says which
+// effect a verb carries. Those are claims about HOW a name is provided, not
+// WHETHER it exists, and they need real programs rather than a bare
+// reference.
 //
-// Neither was findable by reading. This file is the check that reading could
-// not do: it compiles a use of each frozen symbol and fails on `unknown name`.
-//
-// Method note, learned the hard way while writing it: grepping the registry is
-// NOT this check. Doing that flagged fourteen symbols as missing, of which
-// thirteen -- `Array::map`, `Int::to_string`, `Map::set` and the rest -- were
-// false alarms that reach the program by another route. Only compiling
-// answers the question the document is making a promise about.
+// The two entries that started this -- `Result::and_then` and the
+// `Iterator::*` combinator layer, both frozen after being deleted -- are the
+// gate's business now, and its self-test pins that it catches them.
 
 //# Imports
 
@@ -48,15 +45,6 @@ fn resolves(src: String) -> Bool with Exception {
 
 //# Tests
 
-test "the frozen String builtins resolve without an import" {
-  assert(resolves("fn f() -> Int {\n  String::length(\"a\")\n}\n"))
-  assert(resolves("fn f() -> String {\n  String::concat(\"a\", \"b\")\n}\n"))
-  assert(resolves("fn f() -> String {\n  String::substring(\"abc\", 0, 1)\n}\n"))
-  assert(resolves("fn f() -> Array[String] {\n  String::split(\"a,b\", \",\")\n}\n"))
-  assert(resolves("fn f() -> String {\n  String::join([\"a\"], \",\")\n}\n"))
-  assert(resolves("fn f() -> Int {\n  String::char_code_at(\"a\", 0)\n}\n"))
-}
-
 test "String::replace is frozen as a LIBRARY function, not a builtin" {
   // The distinction the document now draws. Without the import it does not
   // resolve, which is why the bullet says so.
@@ -64,26 +52,11 @@ test "String::replace is frozen as a LIBRARY function, not a builtin" {
   assert(resolves("import @vibe/builtin {\n  String::replace\n}\n\nfn f() -> String {\n  String::replace(\"aa\", \"a\", \"b\")\n}\n"))
 }
 
-test "the frozen Array and Map surface resolves" {
-  assert(resolves("fn f() -> Array[Int] {\n  Array::map([1], (x) -> x + 1)\n}\n"))
-  assert(resolves("fn f() -> Array[Int] {\n  Array::filter([1], (x) -> x > 0)\n}\n"))
-  assert(resolves("fn f() -> Int {\n  Array::fold([1], 0, (a, x) -> a + x)\n}\n"))
-  assert(resolves("fn f() -> Bool {\n  Array::any([1], (x) -> x > 0)\n}\n"))
-  assert(resolves("fn f() -> Array[Int] {\n  Array::reverse([1])\n}\n"))
-  assert(resolves("fn f() -> Int {\n  Int::to_string(1)\n  1\n}\n"))
-}
-
 test "the frozen iteration surface is `for-in`, not the combinator layer" {
   // ADR-0099 retired `Iterator::*`. The document froze it anyway.
   assert(resolves("fn f() -> Int {\n  let mut s = 0\n  for x in [1, 2] {\n    s = s + x\n  }\n  s\n}\n"))
   assert(!resolves("fn f() -> Int {\n  let g = Iterator::map\n  1\n}\n"))
   assert(!resolves("fn f() -> Int {\n  let g = Iterator::fold\n  1\n}\n"))
-}
-
-test "`Result` is gone, so nothing about it can be frozen" {
-  // #1324 removed it from the language. A program wanting Ok/Err declares the
-  // enum itself, like any other user enum.
-  assert(!resolves("fn f() -> Int {\n  let g = Result::and_then\n  1\n}\n"))
 }
 
 test "sh / sh_lines carry Process, which is what the document now says" {
