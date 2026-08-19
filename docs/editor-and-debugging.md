@@ -42,11 +42,14 @@ degrade gracefully to empty rather than erroring.
 ### Editor query primitives
 
 The LSP server is built on three launcher subcommands you can also call
-directly (useful for scripting or wiring a different editor):
+directly (useful for scripting or wiring a different editor). **Positions are
+bytes** — see [source-range-contract.md](source-range-contract.md) for the one
+contract these commands share, and for the single place (the LSP boundary)
+where it converts.
 
 ```bash
-vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1-based (line,col)
-vibe binding-at <file.vibe> <line> <col>  # source spans (START END char offsets) of every occurrence of that binding
+vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1-based (line, BYTE col)
+vibe binding-at <file.vibe> <line> <col>  # source spans (START END byte offsets) of every occurrence of that binding
 vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END per line)
 vibe symbols --legend                     # KIND NAME table (LSP SymbolKind v1, 2026-08-17)
 vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
@@ -59,10 +62,10 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   `obj.field` (#645): the base identifier and the field name each yield the
   projection type (EDot carries the field token's own offset).
 - `binding-at` powers rename/references. Each line is a `START END` pair of
-  char offsets for one occurrence of the binding under the cursor.
+  byte offsets for one occurrence of the binding under the cursor.
 - `symbols` powers the document outline and go-to-definition. Each line is
   `NAME KIND START END`, where `KIND` is an LSP `SymbolKind` integer and
-  `START END` are char offsets of the declaration name. Because it walks the
+  `START END` are byte offsets of the declaration name. Because it walks the
   parsed AST (not a line regex) it handles multi-line declarations and
   module-nested symbols and never reports a name that only appears in a string
   or comment. Tests and benches are Function (12). An empty test/bench name
@@ -131,7 +134,7 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   `{kind: "add_with_clause", target: <function name>, add: [<missing
   operations>], with: [<full resulting row>], note}`. `target` is a NAME, not
   a position: resolve it to a location with `vibe symbols <file>` (which
-  already returns `NAME KIND START END` char offsets) rather than expecting a
+  already returns `NAME KIND START END` byte offsets) rather than expecting a
   span in the diagnostic itself — the checker only tracks function names and
   effect rows today, not per-declaration source spans, so `data` doesn't
   pretend otherwise.
@@ -259,8 +262,10 @@ lib/@vibe/x/y.vibe:41:11: readit(q)	$f=readit	$x=q
 ```
 
 `--json` emits the same matches as a JSON array; each match carries `start` /
-`end` char offsets and per-capture `{text, start}`, plus `type` when the typed
-tier ran. Empty output (`[]` in JSON) means no match, and `vibe grep` exits 0 —
+`end` byte offsets and per-capture `{text, start}`, plus `type` when the typed
+tier ran. Two caveats, both measured (#1941): `start`/`end` bound the match's
+ANCHOR token, not the `text` field -- for `ident(1)` they slice `ident` -- and
+a capture carries a `start` with no `end`, so it cannot be sliced at all. Empty output (`[]` in JSON) means no match, and `vibe grep` exits 0 —
 it is a *report*. Only a bad pattern or a bad filter is an error, and those say
 what to write instead:
 
