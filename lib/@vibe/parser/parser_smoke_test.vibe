@@ -388,3 +388,58 @@ test "#1862: recovering unexpected-token resyncs at the failing token" {
   assert(String::starts_with(Array::get(diags, 0), "line "))
   assert(recovered_let_named(stmts, "ok"))
 }
+
+// A reserved word in a binder position. `fn test() ...` already named the word
+// and the escape (`r#test`); `let test = 1` and `fn f(test: Int)` said only
+// that a name was expected -- and at a `let` the name IS there, so the message
+// pointed at the one thing that was fine. Six binder positions, one
+// explanation. `fn` is the single word `r#` does not rescue, and the message
+// says that instead of offering an escape that does not work.
+fn parse_error(src: String) -> String {
+  handle {
+    let _ = parse_program(lex(src))
+    "OK: accepted"
+  } with Exception {
+    Throw(e) => e
+  }
+}
+
+test "reserved word: every binder position names the word and the escape" {
+  let cases = [
+    ("let test = 1", "binding"),
+    ("fn main() -> Unit { let test = 1 }", "binding"),
+    ("fn main() -> Unit { let mut test = 1 }", "binding"),
+    ("fn main() -> Unit { let* test = 1 }", "binding"),
+    ("fn test() -> Int { 1 }", "function"),
+    ("fn f(test: Int) -> Int { 1 }", "parameter")
+  ]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let (src, kind) = Array::get(cases, i)
+    let msg = parse_error(src)
+    assert(String::contains(msg, "`test` is a reserved word and cannot be used as a \{kind} name"))
+    assert(String::contains(msg, "write `r#test` to use it as a name"))
+    i = i + 1
+  }
+}
+
+test "reserved word: the escape actually works" {
+  assert(Array::length(parse_program(lex("let r#test = 1"))) == 1)
+  assert(Array::length(parse_program(lex("fn r#test() -> Int { 1 }"))) == 1)
+  assert(Array::length(parse_program(lex("fn f(r#test: Int) -> Int { r#test }"))) == 1)
+}
+
+test "reserved word: `fn` is the one word `r#` does not rescue" {
+  let plain = parse_error("let fn = 1")
+  let raw = parse_error("let r#fn = 1")
+  assert(String::contains(plain, "this keyword cannot be escaped"))
+  assert(String::contains(raw, "this keyword cannot be escaped"))
+  // ...and it must NOT offer `r#fn`, which does not work.
+  assert(!String::contains(plain, "write `r#fn`"))
+  assert(!String::contains(raw, "write `r#fn`"))
+}
+
+test "reserved word: a non-word token still gets the plain expectation" {
+  assert(String::contains(parse_error("let 42 = 1"), "expected binding name after 'let', got 'int'"))
+  assert(String::contains(parse_error("fn f( -> Int { 1 }"), "expected parameter name, got '->'"))
+}

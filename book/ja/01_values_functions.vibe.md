@@ -72,17 +72,35 @@ y = 2
 ## 関数
 
 `fn` は予約語 ([#1280](https://github.com/mizchi/vibe-lang/issues/1280) で着地済み)。
-関数宣言の綴りは `fn` で、binding・引数の名前には使えない。`r#fn` のような
-raw identifier も escape hatch にはならない (実測: `let fn = 1` は
-`expected identifier after 'let'`、`fn f(fn: Int)` は `expected parameter name`、
-`let r#fn = 1` も同様に拒否)。既存の名前が衝突したら `fn_` などへ rename する。
+関数宣言の綴りは `fn` で、binding・引数の名前には使えない。しかも `fn` は
+raw identifier が救わない唯一の予約語で、`r#fn` も拒否される。既存の名前が
+衝突したら `fn_` などへ rename する。
+
+他の予約語は `r#` で使える。診断もそう言う — binding でも引数でも関数名でも
+同じ説明になる。
 
 ```vibe skip
-// skip: 予約語 `fn` の拒否例 (どれも parse error になることを示す断片)
+// skip: 予約語の拒否例 (どれも parse error になることを示す断片)
 let fn = 1
-// error: expected identifier after 'let'
+// error: `fn` is a reserved word and cannot be used as a binding name;
+//        this keyword cannot be escaped, so choose a different name
 let r#fn = 1
-// error: raw identifier は escape hatch にしない
+// error: 同上 — `fn` に raw identifier の escape hatch は無い
+let test = 1
+// error: `test` is a reserved word and cannot be used as a binding name;
+//        write `r#test` to use it as a name
+```
+
+```vibe run
+fn main() -> Unit with Stdout {
+  // `test` は予約語 (`test { ... }` ブロックを開く) だが、`r#test` は名前。
+  let r#test = 1
+  println(Int::to_string(r#test))
+}
+```
+
+```output
+1
 ```
 
 宣言形式は以下がすべて runnable。トップレベル関数は完全注釈必須、再帰に
