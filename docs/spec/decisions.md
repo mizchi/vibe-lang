@@ -156,26 +156,15 @@ Status: accepted and moved from `TODO.md`.
   namespace functions are declared by `let Type::symbol = ...` (or equivalent),
   while `impl` is reserved for `impl Trait for Type`.
 - Railway-style error boundary policy is fixed (ADR-0020):
-  application pipelines prefer Result composition, and exception/handle
-  boundaries must be explicit in the pipeline.
-- Result-first error surface policy is fixed for 0.1.0:
-  public/library APIs use `Result[T, E]` as canonical error transport,
-  while `throw` / `handle { ... } with Exception { ... }` remain boundary syntax for
-  adapters (CLI/HTTP/FFI/tests). `?` remains boundary sugar in 0.1.0 and is
-  not promoted to the primary library surface.
-- Symbol/type/signature indexing backend is implemented and shared:
-  `vibe ide` (`outline`/`peek-def`/`search`) and `vibe lsif` consume the same
-  module-level symbol index (`src/frontend/symbol_index.mbt`).
+  exception/handle boundaries must be explicit in the pipeline rather than
+  implicit in a call.
+- Error surface policy is fixed: errors travel as the `Exception` effect.
+  `throw` / `handle { ... } with Exception { ... }` are the surface, and `?` is
+  boundary sugar. (`Result[T, E]` was the canonical transport when this list was
+  written; the type was removed from the language in #1324.)
 - Scratch-first workflow design:
   default namespace-backed scratch/shell flow, symbol listing with index
   inclusion status, and history reset policy.
-- Advanced graph extension PoC is implemented on vibe side:
-  `vibe index` (`build`/`query`/`verify`) provides a sidecar JSON index
-  (`src/x/module_graph/advanced_graph_poc.mbt`) that models manifest + def graph +
-  symbol/type lookup tables.
-- Advanced graph diff/apply path is implemented for remote sync PoC:
-  delta payload (`AdvancedGraphDelta`) can be computed/applied and
-  serialized as JSON for transfer simulation.
 - Bundle-size guardrail workflow is implemented:
   `scripts/bench_bundle_size.sh` compiles `examples/*.vibe` and
   `bench/bundle_size/cases.txt` importer cases by default
