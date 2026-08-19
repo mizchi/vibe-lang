@@ -73,15 +73,55 @@ they were given. Empty output then reads as "nothing here", which is the CLI's
 own spelling of *clean*, so the mistake is silent. Going through `vibe lsp`
 instead is the way to avoid doing the conversion yourself.
 
-## Known deviations
+## `vibe grep` ranges are a lower bound
 
-Two, both in `vibe grep --json`, both #1941 leftovers:
+`vibe grep` is the one surface whose range you cannot slice with, and the reason
+is structural rather than a bug in the reporting.
 
-- `start` / `end` bound the match's **anchor token**, not the `text` field. For
-  a match whose `text` is `ident(1)`, the range slices `ident`. Slicing by the
-  reported range does not return the reported text.
-- a capture is `{"text": ..., "start": ...}` with **no `end`**, so it cannot be
-  sliced at all. `start` is `-1` for a capture with no recorded offset.
+**Only identifier-shaped AST nodes carry an offset.** `EInt`, `EFloat`,
+`EString`, `EBool`, `EUnit` and `EStringInterp` carry none at all, so
+`grep_expr_span` — which takes the min and max over the offsets it can find in
+the matched subtree — cannot see a literal, and never sees punctuation. What it
+returns is a **lower bound** on the match's true extent, and `text` is the
+printer's canonical re-rendering of the matched node, not a slice of the file.
+The two do not have to agree, and generally do not:
+
+```vibe
+fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+fn f() -> Int {
+  let one = 1
+  let two = 2
+  add(one, two) + add(1, 2)
+}
+```
+
+```
+$ vibe grep --json --pattern 'add($(a:args))' span.vibe
+{"start":89,"end":101,"text":"add(one, two)","captures":{"a":{"text":"one, two","start":93}}}
+{"start":105,"end":108,"text":"add(1, 2)","captures":{"a":{"text":"1, 2","start":-1}}}
+```
+
+The first range stops at 101, the end of `two` — one byte short of the closing
+`)`, so slicing gives `add(one, two`. The second collapses to `add` (105–108),
+because both operands are literals and neither is visible to the span. `start`
+is exact in both; only `end` is short.
+
+A capture goes one step further: it carries `start` and **no `end`**, so it
+cannot be sliced at all, and `start` is `-1` when the bound node has no
+recorded offset — the literal case above.
+
+So: **`start` is a position you can trust, `end` is a floor, and `text` is the
+description.** To recover the real extent you must re-lex; `lex_with_offsets`
+already returns exact token starts *and* ends, which is why the fix is spans on
+the AST nodes rather than better arithmetic here. `parse_program_spans` already
+does exactly that for statements and is the precedent to follow.
+
+Tracked as #1941 (the range) and #1943 (the capture range, "captures also lack
+complete source ranges"). Pinned as measured behaviour, so the numbers above
+cannot drift without a test failing.
 
 An offset-less span is reported as `-1` (JSON) or `<synthetic>` (`vibe grep`
 text, #2035), and a still-unlocated diagnostic as the empty LSP range `0:0-0:0`
