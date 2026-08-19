@@ -55,3 +55,13 @@
 
 - [Pitfalls](src/14_pitfalls.vibe.md)
 - [Where to look next](src/99_appendix.md)
+
+## 日本語版 (Japanese)
+
+- [値と関数](ja/01_values_functions.vibe.md)
+- [制御フロー](ja/02_control_flow.vibe.md)
+- [構造体・列挙・match](ja/03_data.vibe.md)
+- [Option とレールウェイ](ja/04_option.vibe.md)
+- [エフェクト](ja/05_effects.vibe.md)
+- [テストを書く](ja/06_tests.vibe.md)
+- [モジュールとパッケージ](ja/07_modules_packages.vibe.md)
