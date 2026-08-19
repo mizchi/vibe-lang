@@ -343,3 +343,52 @@ test "grep: `let*` matches each written binder in a nested railway" {
   assert(String::contains(out, "$x=outer"))
   assert(String::contains(out, "$x=inner"))
 }
+
+//# Range honesty (#1941 / #1943)
+
+/// Two calls to the same function: one with identifier operands, one with
+/// literal operands. The pair is what separates "the span is short" from "the
+/// span is the head", and both are the SAME reporting rule.
+fn span_src() -> String {
+  "fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n\nfn f() -> Int {\n  let one = 1\n  let two = 2\n  add(one, two) + add(1, 2)\n}\n"
+}
+
+fn scan_json(source: String, pattern: String) -> String with Exception {
+  grep_scan_source("a.vibe", source, pattern, no_strings(), no_strings(), "", true)
+}
+
+test "grep: a reported range is a LOWER BOUND, not the match's extent" {
+  // `grep_expr_span` takes the min/max over the offsets it can find in the
+  // matched subtree, and only identifier-shaped AST nodes carry one -- `EInt`,
+  // `EString`, `EBool`, `EUnit` and friends carry none. So the span stops at
+  // the last identifier and never reaches the closing `)`.
+  //
+  // Slicing by it truncates, which is why docs/source-range-contract.md tells
+  // a reader to trust `start`, treat `end` as a floor, and read `text` for the
+  // description. The exact numbers are pinned so the claim in that document
+  // cannot quietly stop being true.
+  let src = span_src()
+  let out = scan_json(src, "add($(a:args))")
+  // `add(one, two)` starts at 89; `two` ends at 101; the `)` is at 101.
+  assert(String::contains(out, "\"start\":89,\"end\":101,\"text\":\"add(one, two)\""))
+  assert_eq(String::substring(src, 89, 101), "add(one, two")
+  assert_eq(String::substring(src, 89, 102), "add(one, two)")
+}
+
+test "grep: a match whose operands are all literals collapses to the head" {
+  // The same rule at its most visible: neither `1` nor `2` is in the AST with
+  // an offset, so the span has nothing to widen past `add`.
+  let src = span_src()
+  let out = scan_json(src, "add($(a:args))")
+  assert(String::contains(out, "\"start\":105,\"end\":108,\"text\":\"add(1, 2)\""))
+  assert_eq(String::substring(src, 105, 108), "add")
+}
+
+test "grep: a capture carries a start and no end, and -1 when it has neither" {
+  // #1943's "captures also lack complete source ranges". `one, two` reports
+  // where it begins and nothing about where it stops; `1, 2` cannot even
+  // report that, and says -1 rather than inventing 0.
+  let out = scan_json(span_src(), "add($(a:args))")
+  assert(String::contains(out, "\"a\":{\"text\":\"one, two\",\"start\":93}"))
+  assert(String::contains(out, "\"a\":{\"text\":\"1, 2\",\"start\":-1}"))
+}
