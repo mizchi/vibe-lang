@@ -41,12 +41,12 @@ Install, learn, write, build, test, package, debug, deploy.
 | [guide/when-to-use-effects.md](guide/when-to-use-effects.md) | `user/guide/` | `guide/` is mixed; sibling is internal |
 | [vibe.md](vibe.md) | `user/reference/` | Implemented language design outside pure syntax |
 | [spec/syntax.md](spec/syntax.md) | `user/reference/` | Canonical implemented surface syntax. `spec/` is mixed |
-| [spec/1.0-freeze.md](spec/1.0-freeze.md) | `user/reference/` | Stable surface / SemVer (read as v0.3.0 GA) |
+| [spec/stable-surface.md](spec/stable-surface.md) | `user/reference/` | Stable surface / SemVer. Takes effect at the `0.1.0` tag (ADR-0109) |
 | [spec/host-abi.md](spec/host-abi.md) | `user/reference/` | Host ABI of generated wasm |
 | [http_server_contract.md](http_server_contract.md) | `user/reference/` | Public `Http::*` contract |
 | [wasm/feature-levels.md](wasm/feature-levels.md) | `user/reference/` | Generated-wasm feature levels. `wasm/` is mixed |
 | [wasm/host-runtime-contract.md](wasm/host-runtime-contract.md) | `user/reference/` | Host execution contract (not [host-runtime-contract.md](host-runtime-contract.md)) |
-| [release-notes-0.3.0.md](release-notes-0.3.0.md) | `user/getting-started/` | |
+| [release-notes-0.1.0.md](release-notes-0.1.0.md) | `user/getting-started/` | |
 
 ## 2. Maintainer / internal
 
@@ -196,7 +196,7 @@ Top-level names from `ls docs/` at the parent commit, excluding this router:
 `naming-convention-migration.md`, `operation-gate.md`, `perceus-reuse.md`,
 `perf-snapshot-2026-08-07.md`, `pkfire-pkspec.md`, `pl-survey-2026-07.md`,
 `qualified-constructor-migration.md`, `region-mutable-state.md`,
-`registry-design.md`, `release-notes-0.3.0.md`, `release-roadmap.md`, `report`,
+`registry-design.md`, `release-notes-0.1.0.md`, `release-roadmap.md`, `report`,
 `resource-kind-parameters.md`, `selfcompile-heap-policy.md`,
 `side-effect-consolidation.md`, `spec`, `tracing-design.md`, `tutorial`,
 `vibe.md`, `vibec-component.md`, `vibex-runtime-contract.md`,
@@ -206,5 +206,5 @@ Top-level names from `ls docs/` at the parent commit, excluding this router:
 Mixed directories, children classified above:
 
 - `guide/` — user `when-to-use-effects.md`; internal `builtin-effect-migration.md`
-- `spec/` — user `syntax.md`, `1.0-freeze.md`, `host-abi.md`; remaining files internal
+- `spec/` — user `syntax.md`, `stable-surface.md`, `host-abi.md`; remaining files internal
 - `wasm/` — user `feature-levels.md`, `host-runtime-contract.md`; generated `*.json`; internal `gc-value-abi.md`, `code-size-linear-vs-gc.md`

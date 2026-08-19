@@ -715,9 +715,9 @@ let p = Pair2[Int]::{ left: 1, right: 2 }
 
 Rules:
 - Declaration separators are `;` for both enum variants and struct fields.
-  Using `,` as the separator was removed in 0.3.0: the parser reports a located
-  error (`use ';' to separate declaration members; ',' was
-  removed in 0.3.0`).
+  Using `,` as the separator is a parse error: the parser reports a located
+  message (`use ';' to separate declaration members; ',' is not a
+  separator`).
 - Enum/variant constructor names must start with uppercase.
 - Enum definitions must have at least one variant.
 - Constructor names are globally unique in the current environment.

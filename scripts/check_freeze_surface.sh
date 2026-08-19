@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify docs/spec/1.0-freeze.md against the compiler.
+# Verify docs/spec/stable-surface.md against the compiler.
 #
 # That document is the only page in the tree that makes a SemVer promise, so a
 # name listed there that does not resolve is the worst shape a documentation
@@ -21,13 +21,13 @@
 # `Map::set`, ...) that reach a program by another route.
 #
 # Usage: bash scripts/check_freeze_surface.sh
-#   FREEZE_DOC        override the document (default docs/spec/1.0-freeze.md)
+#   FREEZE_DOC        override the document (default docs/spec/stable-surface.md)
 #   FREEZE_STAGE2     compiler wasm (default: newest generation, then seed)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
-DOC="${FREEZE_DOC:-docs/spec/1.0-freeze.md}"
+DOC="${FREEZE_DOC:-docs/spec/stable-surface.md}"
 [ -f "$DOC" ] || { echo "check-freeze-surface: no such document: $DOC" >&2; exit 1; }
 
 # An EXPLICIT compiler that does not exist is an error, never a fallback. The
@@ -55,10 +55,14 @@ trap 'rm -rf "$WORK"' EXIT
 # rejoin them into `String::length`. Extracting only the already-qualified
 # names finds 4 of ~35, which would be a check that mostly does not run.
 #
-# A heading is a type when it is a capitalized identifier. `**変換**`,
-# `**反復**`, `**I/O**` and `**@vibe/builtin helper**` are prose groupings whose
-# members are already written qualified, so their bare names are skipped rather
-# than glued onto a nonsense receiver.
+# A heading is a type when it is a capitalized identifier. `**I/O**` and
+# `**@vibe/builtin helpers**` are prose groupings whose members are already
+# written qualified, so their bare names are skipped rather than glued onto a
+# nonsense receiver. `**Conversions**` and `**Iteration**` DO look like
+# identifiers, so a bare name under them would be probed as `Iteration::fold`
+# and fail. That is the safe direction -- it fails loudly and the fix is to
+# qualify the name -- but it is why every name under a prose heading is written
+# qualified.
 # One pass emits both lists, because a single bullet can hold both: the String
 # bullet freezes `length` / `concat` / ... on its first lines and says
 # `replace` / `replace_all` are NOT frozen-as-builtins on a continuation line.
@@ -76,7 +80,7 @@ if not m:
 # A line saying a name is deliberately not frozen, or frozen only behind an
 # import. These are the document's own words; adding a new way to say it here
 # is how you exempt a symbol.
-NEG = ("凍結できない", "凍結対象ではない", "ライブラリ関数")
+NEG = ("not frozen", "cannot be frozen")
 
 recv = None
 frozen, negated = set(), set()
@@ -193,7 +197,7 @@ fi
 if [ "${#missing[@]}" -gt 0 ]; then
   echo "check-freeze-surface: FAIL: $DOC freezes ${#missing[@]} name(s) that do not resolve:" >&2
   printf '  %s\n' "${missing[@]}" >&2
-  echo "check-freeze-surface: a frozen name promises SemVer stability. Remove the entry, or say on the same line why it is not frozen (凍結できない / 凍結対象ではない / ライブラリ関数)." >&2
+  echo "check-freeze-surface: a frozen name promises SemVer stability. Remove the entry, or say on the same line why it is not frozen (the line must contain \"not frozen\" or \"cannot be frozen\")." >&2
   exit 1
 fi
 

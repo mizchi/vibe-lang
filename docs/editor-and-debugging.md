@@ -117,7 +117,7 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
 - `vibe diagnostics` is the **deprecated** spelling of `vibe check
   --single-file`. It is kept behaviourally frozen (raw lines with no `error: `
   prefix, always exit 0) for editors already wired to it — see
-  [spec/1.0-freeze.md](spec/1.0-freeze.md).
+  [spec/stable-surface.md](spec/stable-surface.md).
 - Once a file type-checks and codegen-validates cleanly, the single-file mode
   also runs two soft, warning-only passes (#1129) that never affect the exit
   code or fail a compile: **unused imports** (a named `import ./f.vibe { a }`
@@ -464,4 +464,4 @@ vibe self update --cli-wasm <path-to-vibe-cli.wasm>
 This installs the given compiler wasm and AOT-compiles it to a host-specific
 `.cwasm` for fast startup. `vibe version` reports the active toolchain version,
 which is the basis for the SemVer guarantee described in
-[spec/1.0-freeze.md](spec/1.0-freeze.md).
+[spec/stable-surface.md](spec/stable-surface.md).

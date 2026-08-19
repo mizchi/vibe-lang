@@ -5,7 +5,7 @@ Status: proposed(骨子段階、規模調査のみ完了、Phase 0 未着手)
 Date: 2026-07-29
 
 Related: ADR-0081(`Type::method` canonical on-disk form)、#1189(Type::method
-naming ratchet lint)、[docs/spec/1.0-freeze.md](spec/1.0-freeze.md)(型命名
+naming ratchet lint)、[docs/spec/stable-surface.md](spec/stable-surface.md)(型命名
 CamelCase の凍結)、[docs/effect-taxonomy-review.md](effect-taxonomy-review.md)
 (本 ADR の発端になった議論)
 
@@ -16,7 +16,7 @@ CamelCase の凍結)、[docs/effect-taxonomy-review.md](effect-taxonomy-review.m
 `Type::method(recv, args)` 形式の qualified call も例外ではなく、method
 部分は snake_case のままである(ADR-0081 が定める canonical on-disk
 form、#1189 の ratchet lint(`scripts/lint_method_style_naming.sh`)が
-CI で強制)。一方 `docs/spec/1.0-freeze.md` は型命名だけを明示的に
+CI で強制)。一方 `docs/spec/stable-surface.md` は型命名だけを明示的に
 1.0 の SemVer 保証対象として凍結している(「ユーザー型は CamelCase」)。
 関数/メソッドの snake_case 自体はこの凍結リストに明記されていない。
 
@@ -45,7 +45,7 @@ SemVer 上の破壊的変更として扱う必要が生じる)よりコストが
 snake_case → lowerCamelCase へ変換する。
 
 - 対象: 関数宣言、`Type::method` の method 名
-- 対象外(現状維持): 型名(CamelCase、`docs/spec/1.0-freeze.md` で
+- 対象外(現状維持): 型名(CamelCase、`docs/spec/stable-surface.md` で
   既に凍結済み)、enum variant 名(既に CamelCase の慣習)
 
 **未決定として残す論点**: local 変数・`let` 束縛も対象に含めるか。
@@ -127,7 +127,7 @@ renaming は他の意味論変更と異なり、**コンパイルが通ること
 - `CLAUDE.md` — 現行の snake_case 命名規約の記述。
 - `scripts/lint_method_style_naming.sh`,
   `scripts/method_style_naming_allowlist.txt` — #1189 の ratchet lint。
-- `docs/spec/1.0-freeze.md`, `docs/spec/decisions.md` — 型命名の凍結
+- `docs/spec/stable-surface.md`, `docs/spec/decisions.md` — 型命名の凍結
   ポリシー。
 - `lib/@vibe/compiler/checker/builtins_fs.vibe`,
   `builtins_system.vibe`, `builtins_net.vibe` — 短縮テーブル叩き台の

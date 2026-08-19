@@ -1,7 +1,12 @@
-# vibe 0.3.0 (GA) リリースノート
+# vibe 0.3.0 (GA) リリースノート — 未リリース
 
+> **This release was never cut.** No `v0.3.0` tag exists, and the version was
+> renumbered by ADR-0109: the first release usable by anyone but the author is
+> `0.1.0`, and everything described below was 0.0.x development. The document is
+> kept as the record of what landed between 2026-06 and 2026-07-17; the release
+> that ships is [release-notes-0.1.0.md](../release-notes-0.1.0.md).
+>
 > 2026-07-17 確定。実装はすべて main にマージ済み (PR #927/#933/#935 ほか)。
-> リリース tag 前に owner が末尾のチェックリスト残項目を消化すること。
 
 0.2.0 (既知バグの消化サイクル、ADR-0066) から 0.3.0 (GA、ADR-0067 で
 1.0→0.3 に renumber) までの変更点。

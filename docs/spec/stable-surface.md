@@ -1,0 +1,241 @@
+# vibe stable surface
+
+> Status: **accepted** — the record of what vibe promises SemVer stability for,
+> and what it deliberately does not. Fine-grained locked decisions live in
+> [spec/decisions.md](decisions.md); the full decision log is [adr.md](../adr.md).
+>
+> **The freeze takes effect at the `0.1.0` tag** — the first release usable by
+> anyone but the author (ADR-0109). Until then this document describes the
+> surface being frozen, not a promise already made.
+
+This document lists the surface vibe guarantees to external users, and marks the
+outside of it — the experimental parts, still open to change.
+
+---
+
+## 1. SemVer policy
+
+vibe follows **SemVer 2.0.0**. The version applies both to the language itself
+(the toolchain version `vibe version` reports) and to user packages (the
+`version` field in `index.vpkg`).
+
+While the toolchain is on **0.x**, the table below shifts one step down, as
+SemVer prescribes for pre-1.0: a breaking change to the stable surface is a
+**Minor** bump (0.1 → 0.2) and a compatible change is a **Patch**. The table
+applies literally from 1.0.0 on.
+
+| Change | Bump (from 1.0.0) | Example |
+| --- | --- | --- |
+| Breaking change to the stable surface | **Major** | Changing the meaning of existing syntax, removing a prelude symbol, removing a CLI command |
+| Compatible addition to the stable surface | **Minor** | New syntax sugar, new prelude symbol, new CLI flag |
+| Change with no observable behavior difference | **Patch** | Bug fix, better diagnostic message, internal optimization |
+
+Trait bound compatibility follows the lock in [decisions.md](decisions.md):
+**tighter bounds = Major / looser bounds = Minor**.
+
+The **unstable surface (§6)** is outside this guarantee. Those parts can break
+within a Minor. They are reached only through `@build.unstable`, an explicit
+flag, or an ADR still marked `proposed`.
+
+---
+
+## 2. Frozen language core (syntax & semantics)
+
+Everything below is demonstrated by the selfhost usability sign-off
+(`docs/archive/report/0-1-0-usability-signoff.md` — an internal quality
+milestone from 2026-06, not a release; see ADR-0109). The canonical definition
+of each item is [spec/syntax.md](syntax.md) and the
+[cheatsheet](../cheatsheet.md).
+
+### 2.1 Values and types
+- Primitives: `Int` (63-bit tagged, literals up to 2^62-1, arithmetic wraps as
+  63-bit two's complement — ADR-0006, #1877), `Float` (32-bit), `Double`
+  (64-bit), `String` (a **byte** string with byte-offset indexing, ADR-0098),
+  `Char` (an `Int` alias), `Bool`, `Unit`.
+- Literals: integers (decimal / `0x` hex), floats (`1.5f` / `3.14`), strings
+  (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`.
+- Composite types: tuples `(A, B)`, `Array[T]`, `Map[K, V]`, record, struct,
+  enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
+  trait bounds `[T: A + B]`, and the `Option[T]` sugar `T?` (ADR-0046).
+
+### 2.2 Bindings and mutability
+- `let` (immutable), `let rec` (recursive), `let mut` (block-scoped mutable,
+  ADR-0017).
+- Destructuring `let (a, b) = ...` / `let Some(v) = e else { ... }`.
+- The five mutation styles (see the cheatsheet's table), `struct { mut field }`
+  (ADR-0052).
+
+### 2.3 Functions and calling convention
+- Lambdas `(x) -> { ... }`, and the separated-annotation form
+  `let f: (T) -> U = (x) -> { ... }`.
+- Labeled arguments `f(x=10)` / `x~`.
+- Shorthands: sections `_ * 2`, the `_` placeholder.
+- **Pipe-first** `x |> f` (ADR-0020) with `_` slot substitution.
+- `.` is field access only — there is no method-call sugar.
+- Name resolution order: local > lexical > import > prelude.
+
+### 2.4 Control flow
+- `if`/`else` (an expression), `match` (with `if` guards and or-patterns
+  `A | B`), `while`, `for-in` (collects into an `Array`; indexed form
+  `for i, x in`), `loop`/`break(v)`/`continue(...)` (ADR-0047), `return` for
+  early exit.
+- Patterns: wildcard, binding, literal, constructor, tuple, record, struct,
+  or-pattern, guard.
+- The `is` expression `expr is Pat` (ADR-0023).
+
+### 2.5 Type definitions and traits
+- `type` aliases, `enum`, `struct`, `derive(Eq)` (ADR-0045).
+- Traits: nominal and marker (v0, decisions.md), supertraits `trait Ord: Eq`,
+  `export trait` (sealed) / `export open trait` (extensible), conditional impls
+  `impl [T: Eq] Eq for Array[T]`.
+
+### 2.6 Effect system
+- Pure by default, with `with E` annotations.
+- `throw` / `handle ... with Exception { ... }`, the `?` operator (ADR-0016,
+  ADR-0050).
+- `suberror` (typed errors).
+- User-defined algebraic effects: `effect` / `perform` / `handle ... with` /
+  `resume` (one-shot, lexically scoped — ADR-0050, ADR-0021 Phase 1
+  tail-resumptive).
+- Effect polymorphism `with e`.
+
+### 2.7 Module system
+- `export` / `import ./path { names }` / `as` renaming / `type` and `trait`
+  imports / re-export.
+- `module Name { ... }` blocks, qualified `Type::method` / `Module::name`.
+- Package references `@json` / `@lib/path`.
+- An import path may not escape the file's root (locked).
+
+---
+
+## 3. Frozen standard library / prelude surface
+
+The stable symbols listed under "Key Builtins" in the
+[cheatsheet](../cheatsheet.md) are frozen:
+
+- **String** (compiler builtin, no import needed): `length`, `concat`,
+  `substring`, `contains`, `index_of`, `split`, `trim`, `starts_with`,
+  `ends_with`, `join`, `from_char_code`, `char_code_at`.
+  `replace` / `replace_all` are **not frozen** as builtins: they are library
+  functions in `@vibe/builtin`, reached by
+  `import @vibe/builtin { String::replace }`, and are not in the builtin
+  registry.
+- **Array**: `length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`,
+  `all`, `reverse`, `concat`, plus `ArrayBuilder::new/push/freeze`.
+- **Map**: `get`, `has_key`, `keys`, `values`, `set`, `size`.
+- **Int64Array**: `make`, `get`, `set`, `length` (for 32-bit word workloads).
+- **Conversions**: `Int::to_string`, `Int::to_double`, `Double::to_int`.
+- **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
+  **combinator layer (`Iterator::map` and friends) is not frozen** — it is
+  retired by ADR-0099's two-layer split and has zero rows in the registry
+  (measured: `Iterator::` 0 hits). Eager iteration is
+  `Array::map` / `Array::filter` / `Array::fold`.
+- **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), and the
+  `let*` railway bind. `Result::and_then` **cannot be frozen** — `Result` was
+  removed from the language in #1324, and `Result::` has zero registry rows.
+  `tap` / `tap_some` moved to `@vibe/console` in #2102 (`tap_ok` / `tap_err`
+  were removed in #1324).
+- **I/O** (an effect is required): `println` / `print` (`{Stdout}`, builtin) and
+  `@vibe/console`'s `read_line` (`{Stdin}`). `sh` / `sh_lines` (structured
+  shell) carry **`{Process}`**, not `{Stdout}`.
+
+> **Adding** a prelude symbol is a Minor. **Removing** one, or changing its
+> signature, is a Major.
+
+This list is checked against the compiler by
+`scripts/check_freeze_surface.sh` (`pkf run check-freeze-surface`), which
+derives the symbols from this section and probes each one.
+
+---
+
+## 4. Frozen CLI / tooling surface
+
+The following subcommands and contracts of the `runtime/vibe` launcher are
+frozen:
+
+| Command | Contract |
+| --- | --- |
+| `vibe run <file>` | Compile and execute. `--trace` / `--break` are opt-in debugging. |
+| `vibe compile` / `vibe build [--release] <file>` | Produce a standalone `.wasm`. |
+| `vibe check [--single-file] [--json] <file>` | Type-check only. Located diagnostics (`line N:M:`) on **stdout**, one per line. **Clean = empty output + exit 0**; any diagnostic means exit 1. `--single-file` analyses one file without resolving imports (for unsaved editor buffers); `--json` exists in that mode only (#1567). |
+| `vibe test <file\|dir>` | Run test blocks. |
+| `vibe new` / `vibe add` | Initialize a project / add a dependency. |
+| `vibe fetch [--frozen]` / `vibe verify` | Fetch modules / verify the lock. |
+| `vibe lsp` | LSP server. |
+| `vibe type-at` / `vibe binding-at` | Editor integration primitives. Always exit 0 — they are queries, not verdicts. |
+| `vibe diagnostics` | **Deprecated** (#1567): `vibe check --single-file` is the successor. Kept with frozen behavior for existing editors — raw diagnostic lines (no `error: ` prefix), always exit 0. |
+| `vibe version` | Report the toolchain version. |
+| `vibe self update --cli-wasm <path>` | Replace the compiler wasm, independently of the runner. |
+
+- **Distribution model**: a purpose-built wasmtime runner and the compiler wasm
+  ship separately, `.cwasm` AOT compilation happens at install time, and the
+  compiler updates independently of the runner.
+- **Module distribution**: distributed over git/URL with no central registry,
+  locked by content hash (`index.lock`), resolved against semver constraints
+  (`^` / `~` / `>=` / `x` / `*`).
+- File conventions: `*.vibe`, `index.vpkg` (the package contract, and the
+  public API boundary — ADR-0070), `index.lock`, `*_test.vibe`. `index.vibe` is
+  a facade, not a boundary, and `index.vibei` is legacy and no longer exists in
+  the repository.
+
+---
+
+## 5. Frozen formatting / canonicalization
+
+As locked in [decisions.md](decisions.md):
+- The enum variant separator canonicalizes to `;`.
+- Struct literals use the `Type::{ ... }` style.
+- The formatter (`vibe fmt`) is idempotent.
+- Type naming: user types are CamelCase; the wasm builtin primitives (`i32`,
+  `f32`, `f64`) are reserved in lowercase.
+
+---
+
+## 6. Not frozen (unstable surface)
+
+The following is still under construction or its design is not settled. It is
+**outside** the SemVer guarantee and can break within a Minor. Use it knowing
+that.
+
+- **Async / structured concurrency / WASI 0.3** (ADR-0012, ADR-0068,
+  `proposed`): the `{Async}` effect, `Future[T]`, `Stream[T]`, `Task[T]`,
+  `for await`. Today's codegen is an eager prototype; the public semantics are
+  defined in the [structured concurrency spec](../concurrency.md). JSPI/Worker,
+  the WASI Component Model, and shared-everything threads are interchangeable
+  lowerings — the stable surface is tied to none of them.
+- **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
+  of non-tail-resumptive handlers, capability effects.
+- **Capability authorization surface** (ADR-0088, `proposed`): the two-clause
+  `with {A} allows {C}` syntax (parser landed), the `?` grade for optional
+  capabilities, the `Attempt[T, E]` that `perform?` returns (the type and
+  `unwrap_or` / `is_granted` are in `@vibe/core`), and preflight authorization.
+  ADR-0043's `--allow-*` / `--deny-*` / `--profile` presets were not built as a
+  separate feature; they were absorbed into L1 of this resolution ladder.
+- **`_start` capability declarations and the top-level effect rule**
+  (ADR-0041/0042, `proposed`).
+- **The SIMD API** (`spec/simd-api-design.md`).
+- **Line-granularity debugger stepping and call-site hover** (span-arc):
+  function-granularity stepping and typed hover are stable; line-granularity
+  stepping and arbitrary-expression watch are a future extension.
+- **Incremental analysis in the LSP** (optional).
+- **The wasm-gc backend compiles one file at a time** (`VIBE_TEST_BACKEND=gc`):
+  *using* an imported name fails with a diagnostic naming the import and
+  pointing at the linear backend (an unused import is fine, #1976). The linear
+  backend is the stable surface; gc is opt-in and experimental. Builtin-level
+  differences are enumerated in
+  `scripts/builtin_parity_classification.tsv` and enforced at the gate. `bench`
+  blocks are not supported on gc (#1701).
+
+---
+
+## 7. Operating the freeze
+
+- After the `0.1.0` tag, a proposed change to the stable surface (§2–§5) must
+  state its SemVer impact in an ADR.
+- When something on the unstable surface (§6) settles, move it into §2–§5 here
+  and update the corresponding ADR to `accepted` — it enters the stable surface
+  in the next Minor.
+- The toolchain version `vibe version` reports is the SemVer reference point.
+  The version ladder itself is ADR-0109.
+- Revisions to this document are tracked in the ADR log's "Release / GA"
+  section.

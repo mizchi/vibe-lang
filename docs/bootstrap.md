@@ -178,7 +178,7 @@ merge し、`seed-release` workflow が使えるようになってから最初�
 
 ### Release タグ体系
 
-- 製品リリース: `v*` (例 `v0.3.0`)。`.github/workflows/release.yml` が発火し、
+- 製品リリース: `v*` (例 `v0.1.0`)。`.github/workflows/release.yml` が発火し、
   `scripts/build_release_assets.sh` が publish する通常の GitHub Release。
 - bootstrap-bump seed リリース: `seed/<name>` (例
   `seed/map-from-pairs-2026-07-17`、`<name>` は既存の `seed.name` 命名を踏襲)。
