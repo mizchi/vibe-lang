@@ -18,6 +18,14 @@
 # and across documents:
 #   4. README.md and docs/install.md document the SAME program -- they are one
 #      quickstart printed twice, and they had already drifted once.
+#   5. Every document that teaches a first program names the SAME entry row.
+#      Measured 2026-08-19: three of four said `fn main with Console` and
+#      docs/cheatsheet.md said `fn main with Stdout` -- the legacy label, in the
+#      one document CLAUDE.md tells you to read first. Both compile, so nothing
+#      failed; a reader just learned a different program from the reference than
+#      from the book. The shell-quickstart docs write their program inside
+#      `echo '...'` and the reference docs write it in a fenced block, so this
+#      compares the entry row rather than trying to parse four block shapes.
 #
 # Host-builtin only; this smoke does not install. The installed-toolchain
 # prelude import is pinned in tests/integration/install/install_test.sh.
@@ -28,6 +36,8 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe-install-hello.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 DOCS="README.md docs/install.md"
+# Every document whose first program a newcomer might copy.
+ROW_DOCS="README.md docs/install.md docs/cheatsheet.md book/en/01_getting_started.vibe.md"
 
 # Extract `echo '<program>' > <file>.vibex` and the `# -> <expected>` on the
 # following `vibe run <file>` line. Inside shell single quotes the program is
@@ -108,4 +118,26 @@ for doc in $DOCS; do
   fi
 done
 
-echo "[install-hello-smoke] ok ($DOCS document one first program: $first_prog -- it compiles with no repo lib/ and prints what they claim)"
+# 5. One entry row across every document that teaches a first program.
+row_first=""
+row_first_doc=""
+for doc in $ROW_DOCS; do
+  [ -f "$ROOT_DIR/$doc" ] || { echo "[install-hello-smoke] FAIL: no such document: $doc" >&2; exit 1; }
+  row="$(grep -oE 'fn main with [A-Za-z]+' "$ROOT_DIR/$doc" | head -1 || true)"
+  if [ -z "$row" ]; then
+    echo "[install-hello-smoke] FAIL: $doc teaches no \`fn main with <Row>\` program." >&2
+    echo "  Every document a newcomer copies from must show one, so this check cannot be disabled by deleting the example." >&2
+    exit 1
+  fi
+  if [ -z "$row_first_doc" ]; then
+    row_first="$row"; row_first_doc="$doc"
+  elif [ "$row" != "$row_first" ]; then
+    echo "[install-hello-smoke] FAIL: the taught entry row differs between documents." >&2
+    echo "  $row_first_doc: $row_first" >&2
+    echo "  $doc: $row" >&2
+    echo "  Both may compile -- that is why this drifted. Pick the current capability and use it everywhere." >&2
+    exit 1
+  fi
+done
+
+echo "[install-hello-smoke] ok ($DOCS document one first program: $first_prog -- it compiles with no repo lib/ and prints what they claim; $row_first across $ROW_DOCS)"

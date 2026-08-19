@@ -9,10 +9,9 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 ## Quick Start
 
 ```vibe
-// `println` is a builtin — no import — and it carries the `Stdout`
-// capability, so the entry declares it. A function that declares no row may
-// not print (#2107).
-fn main with Stdout {
+// `println` is a builtin — no import — and it needs a tty capability, so the
+// entry declares one. A function that declares no row may not print (#2107).
+fn main with Console {
   println("hello world")
 }
 ```
@@ -20,10 +19,13 @@ fn main with Stdout {
 `print` is the same without the trailing newline. `@vibe/console` publishes the
 rest of the tty surface (`eprint` / `eprintln` on `Stderr`, `read_line`,
 `read_all`). `@vibe/builtin`'s older `stdout_write` / `stdout_writeln` are
-gone (#2102) -- they duplicated names above. The row is spelled `Stdout` here
-because that is what these lower onto today; the current tty capability is
-`Console`
-(`Console::write_stream`), and #1460 moves them there.
+gone (#2102) -- they duplicated names above.
+
+The row is `Console`, the current tty capability. `println` still *lowers* onto
+the legacy `Stdout` label internally, and declaring `Console` authorizes the
+legacy three (#2102/#2117) -- one way only, so a row declaring just `Stdout`
+cannot reach `Console::read_stream`. The book, README and installer teach this
+same program; `scripts/test_vibe_install_hello.sh` checks they still agree.
 
 ```bash
 vibe run hello.vibex       # compile & execute
