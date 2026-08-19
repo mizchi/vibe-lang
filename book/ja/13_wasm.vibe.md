@@ -11,7 +11,7 @@ byte string。WIT 境界に出られる型は nominal 規則に従うので、�
 
 - **linear memory** (`vibe test` / `vibe build --release` の既定):
   tagged i64 の値、bump/RC ヒープ、所有権のための Perceus 計画。
-- **wasm-gc**: 型付きヒープ型、`mut` struct フィールド (ADR-0052)。
+- **wasm-gc**: 型付きヒープ型、異なるアロケーション特性。
   `VIBE_TEST_BACKEND=gc` でテストをこちらに乗せられる。
 
 ```bash

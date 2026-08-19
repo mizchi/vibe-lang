@@ -521,8 +521,11 @@ codegen path as `vibe build --release`).
 
 **`VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` switch to the wasm-gc
 backend** — for pure tests and benches only, ones that need no HTTP/FS host
-imports. Use it when you want to exercise a wasm-gc-only feature (ADR-0052's
-`mut` struct fields, say) at test/bench level. Both lower to `VIBE_BACKEND=gc`,
+imports. Use it when you want to measure the gc lane, or to exercise a gap that
+only shows up there. **`mut` struct fields are not a reason** — despite
+ADR-0052's framing they run on linear too (measured 2026-08-19: mutation
+through a function, observed via an alias, gives `c=12 alias=12` on both
+lanes). Both lower to `VIBE_BACKEND=gc`,
 which callers can also set directly.
 
 ```bash
@@ -562,9 +565,18 @@ cause, three separate wrong explanations for it reached the docs (corrected in
 name is one **this file imports**. An unresolved name that is not import-derived
 still gets the internal error, and that one is genuine — report it.
 
-**`bench` blocks do not work on the gc lane yet** — the gc backend emits no
-`__bench_<name>` entry point (#1701), and `runtime/vibe`'s bench branch detects
-that and fails explicitly. The bench cache keys on the backend, so switching
+**`bench` blocks DO run on the gc lane** — #1701 landed the gc backend's
+per-block `__bench_<name>` exports (`codegen/gc/backend_body.vibe`). Measured
+2026-08-19, same file both ways:
+
+| lane | ns/op | B/op |
+|---|---:|---:|
+| linear | 6820 | 0 |
+| gc | 5803 | 0 |
+
+`runtime/vibe` still guards the case where the backend emits no bench entry
+point at all and fails explicitly rather than inventing numbers, which is the
+shape #1701 fixed. The bench cache keys on the backend, so switching
 `linear → gc` recompiles automatically.
 
 Builtin-level divergences between the two lanes have one row each in

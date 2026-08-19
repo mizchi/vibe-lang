@@ -13,8 +13,7 @@ effect and no `Ref[T]`.
 - Growable bytes or text: `Bytes` / `StringBuilder`.
 - Growable array: `ArrayBuilder` then `freeze`, or `Array::push` on an
   array you already hold.
-- A mutable cursor on a heap value: `struct S { mut field: T }` — wasm-gc
-  only (ADR-0052). Linear-memory builds do not have this.
+- A mutable cursor on a heap value: `struct S { mut field: T }` (ADR-0052).
 - Cross-call or handler-mediated state: declare an effect and `handle`
   it. A `perform` *directly* in the handler body is inline-eliminated.
 
@@ -88,8 +87,17 @@ a fresh region and rejects a nursery value escaping through the body's
 
 ## `mut` struct fields
 
-wasm-gc can represent `mut` fields on a struct (ADR-0052). Linear-memory
-builds do not. Prefer `let mut` locals unless you are on the gc backend
-and you need a heap cell.
+A struct field declared `mut` is a heap cell you can write through
+(ADR-0052). Every alias sees the write, including one made before the
+write and one reached through a function:
+
+    struct Counter { mut n: Int }
+    fn bump(c: Counter) -> Unit { c.n = c.n + 1 }
+    // c and an alias of it both read 12 after two bumps from 10
+
+ADR-0052 is written about the wasm-gc backend, but the feature is not
+gc-only: both lanes give that answer (measured 2026-08-19). Still prefer a
+`let mut` local when a local is what you mean — a heap cell that every alias
+can write is a bigger claim than a counter.
 
 Next: [Generics](16_generics.vibe.md).

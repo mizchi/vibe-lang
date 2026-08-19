@@ -11,7 +11,7 @@ nominal rules so the boundary does not have to invent a mapping.
 
 - **linear memory** (default for `vibe test` / `vibe build --release`):
   tagged i64 values, a bump/RC heap, Perceus planning for ownership.
-- **wasm-gc**: typed heap types, `mut` struct fields (ADR-0052). Set
+- **wasm-gc**: typed heap types, a different allocation profile. Set
   `VIBE_TEST_BACKEND=gc` to opt a test onto this path.
 
 ```bash
