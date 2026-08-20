@@ -127,6 +127,19 @@ test "#2125: a duplicate local struct name is still reported" {
   inspect(first_desugared_check_error(src), content = "duplicate declaration: S::equals")
 }
 
+test "#2147 review: a repeated type name keeps first-declaration-wins" {
+  // Codex on #2147: the arms `Array::set` their slot, so a declaration must
+  // own the slot it fills. Taking any same-named slot let the SECOND
+  // declaration replace the FIRST's definition -- measured on the first
+  // enforcement commit, `s.a` reported `unknown field 'a' on struct S`
+  // although the first declaration declares it. `find_typedef` is
+  // first-match-wins, and this pins that it still is.
+  let src = "struct S {\n  a: Int\n}\n\nstruct S {\n  b: String\n}\n\nfn f(s: S) -> Int {\n  s.a\n}\n"
+  inspect(first_check_error(src), content = "")
+  let shadowed = "struct S {\n  a: Int\n}\n\nstruct S {\n  b: String\n}\n\nfn f(s: S) -> String {\n  s.b\n}\n"
+  inspect(first_check_error(shadowed), content = "unknown field 'b' on struct S")
+}
+
 //# The deliberate omission
 
 test "#2125: a type alias is deliberately NOT pre-claimed" {

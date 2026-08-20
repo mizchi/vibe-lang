@@ -107,6 +107,41 @@ test "#2125: a trait's own element type parameter is not a typo" {
   inspect(first_check_error(src), content = "")
 }
 
+test "#2147 review: declaring a trait does not excuse a plain function" {
+  // Codex on #2147: the exemption for a trait's erased element parameter must
+  // not leak out of the impl that binds it. Measured before the fix: merely
+  // declaring `trait Iter[T]` made `T` an accepted annotation ANYWHERE in the
+  // file, which is the wildcard this issue is about.
+  let src = "trait Iter[T] {\n  step(Self) -> Option[T]\n}\n\nfn f(x: T) -> Int {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `T` in parameter `x` [@fn=f]")
+}
+
+test "#2147 review: a value of the same name does not excuse a typo" {
+  // Codex on #2147: the env answers "is this a binder", and an ordinary value
+  // binding is not one for a TYPE. Only a `CtVar` (a type formal) and a region
+  // token's rigid `#region_` skolem are.
+  let src = "let Intt = 1\n\nfn f(x: Intt) -> Int {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `Intt` in parameter `x` [@fn=f]")
+}
+
+test "#1863: a region ROW variable declared by this signature is not a typo" {
+  // `r` is bound by the function's own effect row, not by any enclosing
+  // `region r { .. }`, so nothing binds it as a value where the parameter is
+  // resolved. The row is the binder.
+  let src = "fn fill(l: MutList[Int, r]) -> Unit with r {\n  MutList::push(l, 1)\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#1869: a reserved `__dict_` parameter reports the reserved name, not its type" {
+  // The witness-dictionary type has no `TypeDef` either, so both rules fire on
+  // the same parameter. The reserved name is the actionable edit, so the
+  // annotation stays quiet and #1869's diagnostic is the one that surfaces.
+  let src = "trait Default {\n  default() -> Self\n}\n\nimpl Default for Int {\n  default() -> Int {\n    0\n  }\n}\n\nfn sneaky[T: Default](__dict_Default_T: DefaultDict[T]) -> T {\n  T::default()\n}\n"
+  let msg = first_check_error(src)
+  inspect(String::contains(msg, "reserved"), content = "true")
+  inspect(String::contains(msg, "unknown type"), content = "false")
+}
+
 test "#2125: a region token in type-argument position is not a typo" {
   // ADR-0090: `MutList[T, r]`'s second argument names the region TOKEN, which
   // is an ordinary value binding, not a type.
