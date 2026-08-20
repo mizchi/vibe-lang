@@ -267,16 +267,52 @@ test "grep: a declaration pattern is rejected by what the user wrote, not by an 
   assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "struct $(n:id)", no_strings()), "starts a DECLARATION"))
 }
 
+/// A `handle` whose arms this pattern is not supposed to know about. Two
+/// different effects, two different arm shapes, two different binders.
+fn handle_src() -> String {
+  "effect Ask {\n  Get(Int) -> Int\n}\n\nfn u() -> Int with Ask {\n  perform Ask::Get(1)\n}\n\nfn r() -> Int {\n  handle {\n    u()\n  } with Ask {\n    Get(n) => resume(n + 1)\n  }\n}\n"
+}
+
+test "grep: `$(a:arms)` matches a handler whose arms are not known in advance (#2122)" {
+  // The point of the hole. Before it, a `handle` sweep had to spell every arm
+  // -- INCLUDING each arm's own binders, so `Get => ..` silently failed to
+  // find `Get(n) => ..` and the search came back empty, which is also how the
+  // CLI spells "nothing here".
+  let hits = scan(handle_src(), "handle { $(b:exp) } with $(e:id) { $(a:arms) }")
+  assert(String::contains(hits, "handle {"))
+  // The capture reads back as arms you could paste.
+  assert(String::contains(hits, "$a=Ask::Get(n) => resume((n + 1))"))
+}
+
+test "grep: `$(a:arms)` needs at least one arm to stand for" {
+  // A handler with no arms is not a thing the parser produces, but the hole
+  // must not quietly match an empty list either -- that would make the
+  // pattern true of expressions that are not handlers.
+  assert(!String::contains(scan("let a = f(1)\n", "handle { $(b:exp) } with $(e:id) { $(a:arms) }"), "a.vibe"))
+}
+
+test "grep: `arms` is listed as a kind, and only parses where arms go" {
+  // The kind is real...
+  assert(!String::contains(scan_err(handle_src(), "handle { $(b:exp) } with $(e:id) { $(a:arms) }", no_strings()), "unknown metavariable kind"))
+  // ...and the unknown-kind message lists it, so the set is discoverable.
+  assert(String::contains(scan_err("let a = 1\n", "f($(x:nope))", no_strings()), "arms"))
+  // An arms hole outside arm position is a parse error, not a silent match:
+  // `grep_mangle` spells it `_ => __vgm_arms__a`, which only parses in an arm
+  // list. The message names the parser's state, which is honest here -- there
+  // is no other spelling to point at.
+  assert(String::length(scan_err("let a = 1\n", "f($(a:arms))", no_strings())) > 0)
+}
+
 test "grep: a handle pattern that will not parse is pointed at the shape that works" {
-  // A `handle` pattern DOES work -- with the arms written out, because there
-  // is no metavariable kind for arms. `expected with but got eof` describes
-  // the parser's state, not the spelling that succeeds.
+  // `expected with but got eof` describes the parser's state, not the
+  // spelling that succeeds. The message now names BOTH: the arms hole for any
+  // handler, and the written-out form for a specific one.
   let msg = scan_err("fn f() -> Int { 1 }\n", "handle { $(b:exp) }", no_strings())
-  assert(String::contains(msg, "handler arms"))
+  assert(String::contains(msg, "$(a:arms)"))
   assert(String::contains(msg, "resume($(v:exp))"))
   inspect(scan_err("let a = 1\n", "f($(x:exp", no_strings()), "grep pattern: unterminated metavariable — expected `)` after `$(name:kind)`")
   inspect(scan_err("let a = 1\n", "f($(x:exp)", no_strings()), "grep pattern: expected ) but got eof at #3")
-  inspect(scan_err("let a = 1\n", "f($(x:expr))", no_strings()), "grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type")
+  inspect(scan_err("let a = 1\n", "f($(x:expr))", no_strings()), "grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type, arms")
   inspect(scan_err("let a = 1\n", "f($(a:args), $(b:args))", no_strings()), "grep pattern: at most one `args` metavariable per argument list")
   inspect(scan_err("let a = 1\n", "let x = 1", no_strings()), "grep pattern: must be a single EXPRESSION — declaration patterns (`fn`, top-level `let`, `enum`, ...) are not supported yet; use `vibe symbols` for declarations")
 }

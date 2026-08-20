@@ -184,11 +184,20 @@ fn grep_is_ident_char(c: Int) -> Bool {
 /// so the `__` after it is an unambiguous separator no matter what the user
 /// named the variable.
 fn grep_mangle(kind: String, name: String) -> String {
-  String::concat("__vgm_", String::concat(kind, String::concat("__", name)))
+  let ident = String::concat("__vgm_", String::concat(kind, String::concat("__", name)))
+  if kind == "arms" {
+    // #2122: an arms hole stands for a whole handler arm LIST, and a bare
+    // identifier does not parse where arms go (`expected => but got }`).
+    // Emit a wildcard arm instead, so the real parser accepts it in arm
+    // position and nowhere else -- which is exactly where it means anything.
+    String::concat("_ => ", ident)
+  } else {
+    ident
+  }
 }
 
 fn grep_kind_is_known(kind: String) -> Bool {
-  kind == "exp" || kind == "id" || kind == "const" || kind == "arg" || kind == "args" || kind == "pat" || kind == "type"
+  kind == "exp" || kind == "id" || kind == "const" || kind == "arg" || kind == "args" || kind == "pat" || kind == "type" || kind == "arms"
 }
 
 /// Decode a reserved identifier back to `(kind, name)`, or `("", "")` when the
@@ -275,7 +284,7 @@ fn grep_expand_metavars(pattern: String, vars: Array[String]) -> String with Exc
           if k >= len || String::char_code_at(pattern, k) != ')' {
             throw("grep pattern: unterminated metavariable — expected `)` after `$(name:kind)`")
           } else if !grep_kind_is_known(kind) {
-            throw(String::concat("grep pattern: unknown metavariable kind `", String::concat(kind, "` — use one of exp, id, const, arg, args, pat, type")))
+            throw(String::concat("grep pattern: unknown metavariable kind `", String::concat(kind, "` — use one of exp, id, const, arg, args, pat, type, arms")))
           } else {
             out = String::concat(out, grep_mangle(kind, name))
             if name != "_" {
@@ -434,7 +443,7 @@ export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
     // failure is `expected with but got eof`, which describes the parser's
     // state and not the spelling that works.
     Throw(msg) => if lead_word == "handle" {
-      throw(String::concat("grep pattern: ", String::concat(msg, " -- a `handle` pattern needs its `with` clause AND its arms written out, because there is no metavariable kind for handler arms yet. Working shape: `handle { $(b:exp) } with $(e:id) { Get => resume($(v:exp)) }`.")))
+      throw(String::concat("grep pattern: ", String::concat(msg, " -- a `handle` pattern needs its `with` clause. Use `$(a:arms)` to match ANY handler: `handle { $(b:exp) } with $(e:id) { $(a:arms) }`. Write the arms out instead to match a specific one: `handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => resume($(v:exp)) }`.")))
     } else {
       throw(String::concat("grep pattern: ", msg))
     }
@@ -827,8 +836,61 @@ fn grep_match_fields(ps: Array[(String, Expr)], ts: Array[(String, Expr)], binds
   }
 }
 
+/// The name of the `arms` hole when `ps` is exactly one, or "" otherwise. The
+/// hole is spelled `_ => __vgm_arms__<name>` by `grep_mangle`.
+fn grep_arms_hole_name(ps: Array[(Pat, Expr)]) -> String {
+  if Array::length(ps) != 1 {
+    ""
+  } else {
+    let (php, pbody) = Array::get(ps, 0)
+    match php {
+      PWild => match pbody {
+        EIdent(bn, _) => {
+          let (kind, name) = grep_meta_of(bn)
+          if kind == "arms" {
+            name
+          } else {
+            ""
+          }
+        },
+        _ => ""
+      },
+      _ => ""
+    }
+  }
+}
+
+/// Render a handler arm list the way the source spells one, so an `arms`
+/// capture reads back as something you could paste.
+fn grep_join_arms(ts: Array[(Pat, Expr)]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(ts) {
+    let (tp, te) = Array::get(ts, i)
+    let piece = String::concat(print_pat(tp), String::concat(" => ", print_expr(te)))
+    out = if i == 0 {
+      piece
+    } else {
+      String::concat(out, String::concat(", ", piece))
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn grep_match_arms(ps: Array[(Pat, Expr)], ts: Array[(Pat, Expr)], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
-  if Array::length(ps) != Array::length(ts) {
+  // #2122: `{ $(a:arms) }` matches ANY arm list, so a `handle` sweep no longer
+  // has to know the arms in advance. Without it every handler shape needed its
+  // own pattern -- and the arms' own binders too, so `Get => ..` silently
+  // failed to find `Get(n) => ..`.
+  let hole = grep_arms_hole_name(ps)
+  if String::length(hole) > 0 {
+    if Array::length(ts) == 0 {
+      false
+    } else {
+      grep_bind(binds, hole, grep_join_arms(ts), 0 - 1, false)
+    }
+  } else if Array::length(ps) != Array::length(ts) {
     false
   } else {
     let mut i = 0
