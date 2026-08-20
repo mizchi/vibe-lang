@@ -19,6 +19,12 @@ amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.10.0#/Taskf
 local vibeSources: Listing<String> = new {
   "lib/**/*.vibe"
   "lib/**/*.vibei"
+  // #2138 review: a `.vpkg` is a package CONTRACT -- it decides what a package
+  // exports and therefore whether a dependent compiles at all. Leaving it out
+  // meant no task in this file invalidated on a contract edit: removing
+  // `lookup_builtin` from checker/index.vpkg changes whether a probe compiles,
+  // and every cached verdict would have been replayed over it.
+  "lib/**/*.vpkg"
 }
 
 local scriptSources: Listing<String> = new {
@@ -396,9 +402,31 @@ local testCheckSourceRangeContract =
 // task that passes from cache after the very change it exists to catch. That
 // happened three times on one branch -- twice by me, once caught in review --
 // which is what makes it a gate rather than a note.
-local checkTaskInputs = scriptTask("check-task-inputs", "scripts/check_task_inputs.sh")
+// Taskfile.pkl is this gate's SUBJECT, so it is an input -- the same rule the
+// gate itself enforces, which it was breaking (#2138 review). A task added with
+// incomplete inputs would otherwise pass on a replayed verdict.
+local checkTaskInputs = new Task {
+  name = "check-task-inputs"
+  description = "a task that runs the compiler keys on the compiler"
+  cmd = "bash scripts/check_task_inputs.sh"
+  inputs {
+    ...scriptSources
+    "Taskfile.pkl"
+  }
+}
 local testCheckTaskInputs =
   scriptTask("test-check-task-inputs", "scripts/check_task_inputs_test.sh")
+// #2137: which callee shapes a `handle` body may contain. Its own gate rather
+// than an expected.tsv row, because that lane compiles with `__no_entry__` and
+// is therefore BLIND to entry-boundary diagnostics -- it records `ok` for a
+// program `vibe check` rejects.
+local checkHandleEligibility = new Task {
+  name = "check-handle-eligibility"
+  description = "the handle callee boundary, and that its rejection names the edit"
+  cmd = "bash scripts/check_handle_eligibility.sh"
+  inputs { ...vibeSources; ...scriptSources }
+  deps { selfhostGeneration }
+}
 local checkPackageSiblingScope = new Task {
   name = "check-package-sibling-scope"
   description = "export + contract entry + explicit ./import are all required to reach a sibling"
@@ -1412,6 +1440,7 @@ local releaseCheck = new Task {
     checkCliLineTermination
     checkCheatsheetSignatures
     checkPackageSiblingScope
+    checkHandleEligibility
     checkTaskInputs
     testCheckTaskInputs
     doctestGated
@@ -1485,6 +1514,7 @@ tasks {
   checkCliLineTermination
   checkCheatsheetSignatures
   checkPackageSiblingScope
+  checkHandleEligibility
   checkTaskInputs
   testCheckTaskInputs
   testGenerateSelfhostBundle

@@ -31,9 +31,12 @@ src = open(TASKFILE, encoding="utf-8").read()
 # (`stage2.wasm bytes`), and inside a test fixture's expected output. A gate
 # with that false-positive rate teaches people to ignore it, so the match is
 # anchored to an invocation.
+# The `scripts/` prefix is required, not decoration: without it this detector
+# matched the tool names inside its OWN regex literal and flagged itself. Every
+# real invocation in the tree names the script by path.
 TOOL_RE = re.compile(
-    r"run_wasm_vibe_host_runner|generations\.sh|vibe_cli\.sh|vibe_test\.sh|"
-    r"vibe_run\.sh|ensure_generated\.sh|build_cli_wasm")
+    r"scripts/(?:run_wasm_vibe_host_runner|generations|vibe_cli|vibe_test|"
+    r"vibe_run|ensure_generated|build_cli_wasm|build_cli_core)")
 # The line must also look like it is RUNNING something.
 EXEC_RE = re.compile(r"\b(bash|sh|env|exec|node|spawnSync|spawn|execSync|execFileSync)\b")
 COMMENT_RE = re.compile(r"^\s*(#|//|\*)")

@@ -307,3 +307,38 @@ mean = 39/10 = 3.9 → **repair_convergence = 4.9**。FS compile API が consume
 source snapshot を診断側へ輸送できるまでは、誤った位置を出すより L=0 を選ぶ。
 残る減点はケース08の位置情報1点。以降スコアを動かす場合も、上の
 「追加候補」節の運用に従う。
+
+## Round: #2137 — case 08's diagnostic rewritten, score unchanged
+
+`diag.grep` for `08_handle_ineligible` was re-recorded because the message it
+pins was rewritten. Two of the four phrases it required described shapes the
+compiler **accepts**:
+
+> the handled body may only: perform directly, call a named top-level `fn`, or
+> call a closure literal that carries an effect row annotation. A call through a
+> local binding or a closure parameter hides the perform and is what this
+> rejects
+
+Measured with `vibe check`: a closure parameter carrying a row, a local binding
+carrying a row, and a local alias of a performing `fn` all compile. What this
+branch actually rejects is a call to a local binding whose type carries **no
+effect row** — and it rejects that wherever the perform is, including
+`bump(1) + ask_once()`, where nothing performs through `bump` at all.
+
+**The score does not move.** Case 08's remaining deduction is L=0 (the FS repair
+lane has no position, #1596), and this changed neither the lane nor the offset.
+What changed is the naming evidence: `(here: the call to 'bump')` becomes
+`the handled body calls 'bump', a local binding whose type carries no effect
+row`, plus a named edit. `repair_convergence` stays **4.9**.
+
+Worth noting for the C axis if it is ever re-scored: the new message names the
+exact repair this case's `fixed.vibe` performs — promoting `bump` to a top-level
+`fn` — where the old one said "replace the indirect call with a direct one",
+which describes the call site rather than the binding that has to change.
+
+The boundary itself is now pinned by `scripts/check_handle_eligibility.sh`
+(`pkf run check-handle-eligibility`): five accepted shapes, four rejected, and
+an assertion that the rejection names the missing effect row. It compiles with a
+REAL entry name, because `fixtures/typecheck/expected.tsv` uses `__no_entry__`
+and is blind to this check entirely — it records `ok` for a program `vibe check`
+rejects.

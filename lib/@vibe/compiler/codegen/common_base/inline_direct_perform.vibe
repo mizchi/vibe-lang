@@ -1248,13 +1248,23 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
           }
           Array::push(errs, ds_marked)
         } else {
-          let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects")
+          // #2137: this used to blame "a local binding or a closure parameter",
+          // and BOTH of those compile -- measured with `vibe check`: a closure
+          // parameter carrying a row, a local binding carrying a row, and a
+          // local alias of a performing `fn` are all accepted. What this branch
+          // actually rejects is narrower and does not depend on where the
+          // perform is: a call to a local binding whose type carries NO effect
+          // row. `bump(1) + ask_once()` is rejected even though nothing
+          // performs through `bump`, and hoisting the perform out of the call
+          // does not help. An annotation without a row does not help either --
+          // it is the row the analysis needs.
+          let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here")
           let named = if String::length(culprit) > 0 {
-            String::concat(head, String::concat(" (here: the call to '", String::concat(culprit, "')")))
+            String::concat(head, String::concat(": the handled body calls '", String::concat(culprit, "', a local binding whose type carries no effect row")))
           } else {
-            head
+            String::concat(head, ": the handled body calls a local binding whose type carries no effect row")
           }
-          let full = String::concat(named, " -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)")
+          let full = String::concat(named, String::concat(", so this handle cannot see what that call may perform. Give the binding an explicit type carrying the row (`let f: (Int) -> Int with ", String::concat(bad, " = ...`), or make it a top-level `fn`. This applies wherever the perform is -- an unannotated local call target is opaque to the analysis even when nothing performs through it. (ADR-0076 evidence passing.)")))
           let marked = if culprit_off >= 0 {
             if String::length(culprit) > 0 {
               String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), String::concat(":", String::concat(__to_string(culprit_off + String::length(culprit)), "]")))))
