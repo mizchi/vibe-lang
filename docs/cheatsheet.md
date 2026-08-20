@@ -1556,14 +1556,19 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 
 **Builder**: `ArrayBuilder::new() -> ArrayBuilder[T]`,
 `push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`。
-`MapBuilder::new() -> MapBuilder[K, V]`, `set(MapBuilder[K, V], K, V) -> Unit`,
-`freeze(MapBuilder[K, V]) -> Map[K, V]`。`for-in` 内包表記は内部でこの builder
+`MapBuilder::new() -> MapBuilder[String, V]`,
+`set(MapBuilder[String, V], String, V) -> Unit`,
+`freeze(MapBuilder[String, V]) -> Map[String, V]` — String-keyed, like `Map`.`for-in` 内包表記は内部でこの builder
 操作へ脱糖される。
 
-**Map**: `get: (Map[K, V], K) -> V` (無ければ throw),
-`set: (Map[K, V], K, V) -> Map[K, V]` (新しい map を返す),
-`has_key: (Map[K, V], K) -> Bool`,
-`keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`。
+**Map** — the builtin `Map` is **String-keyed**, not generic in its key.
+`Map::set(m, 7, 1)` is `argument type mismatch for Map::set: expected String,
+got Int`. For a generic key, use `MutMap[K, V]` from `@vibe/core`.
+`get: (Map[String, V], String) -> V` (throws when absent),
+`set: (Map[String, V], String, V) -> Map[String, V]` (returns a new map),
+`has_key: (Map[String, V], String) -> Bool`,
+`keys: (Map[String, V]) -> Array[String]`,
+`values: (Map[String, V]) -> Array[V]`.
 
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,

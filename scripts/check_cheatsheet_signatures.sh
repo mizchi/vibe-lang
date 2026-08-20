@@ -148,10 +148,44 @@ def ret_type(sig):
     r = re.split(r'\s+with\s+', r)[0].strip()
     return "Unit" if r in ("()", "Unit") else r
 
-def is_generic(t):
+def norm(t):
+    """A type with variable NAMES erased but its constructors kept.
+
+    Bailing out of a whole type because it mentions a variable (the first cut)
+    accepted concrete drift around that variable -- the cheatsheet promising
+    `(Map[K, V], K) -> V` while the builtin takes a `String` key was invisible
+    that way. A documented variable is a promise of genericity, so it has to
+    correspond to a variable on the other side, not to a concrete type.
+    """
+    t = t.strip()
     # `?` is how the checker prints an un-instantiated variable; a lone capital
-    # is how the document writes one. Neither can be compared to the other.
-    return "?" in t or bool(re.fullmatch(r'[A-Z]', t)) or bool(re.search(r'\[[A-Z]\]', t))
+    # (optionally with digits) is how the document writes one.
+    t = re.sub(r'(?<![A-Za-z0-9_])\?', 'VAR', t)
+    t = re.sub(r'(?<![A-Za-z0-9_])[A-Z][0-9]?(?![A-Za-z0-9_])', 'VAR', t)
+    return re.sub(r'\s+', '', t)
+
+def compatible(doc, actual):
+    """Whether the documented type and the checker's agree.
+
+    The rule is ASYMMETRIC, because the two sides mean different things by a
+    variable:
+
+    * The checker prints `?` for anything it has not instantiated, including
+      opaque handles. It carries no information, so it matches any documented
+      type -- otherwise every `Array[T]` would "differ" from `Array[?]`.
+    * A DOCUMENTED variable is a promise of genericity. It is satisfied by
+      another variable, and NOT by a concrete type: the cheatsheet promising
+      `Map::keys: (Map[K, V]) -> Array[K]` against an actual `Array[String]`
+      is drift a reader hits the moment they use a non-String key.
+
+    Bailing out of a whole type because it mentions a variable -- the first cut
+    -- accepted exactly that.
+    """
+    d, a = norm(doc), norm(actual)
+    if d == a or a == "VAR":
+        return True
+    # Structural: same shape with VAR matching only VAR.
+    return re.sub(r'VAR', '#', d) == re.sub(r'VAR', '#', a)
 
 def params(sig):
     """The top-level parameter types, split on commas outside brackets."""
@@ -248,7 +282,7 @@ for line in open(sys.argv[2]):
     # Arity alone would have missed `sh`, documented `-> Unit` while the registry
     # returns `String`: same arity, different answer. Compare the return type too.
     rd, ra = ret_type(docsig), ret_type(actual)
-    if rd and ra and not is_generic(rd) and not is_generic(ra) and rd != ra:
+    if rd and ra and not compatible(rd, ra):
         mismatch.append((name, docsig, actual, f"returns {rd}", f"returns {ra}"))
         continue
     # Arity plus return type still let a REORDERING through -- the review's
@@ -258,7 +292,7 @@ for line in open(sys.argv[2]):
     pd, pa = params(docsig), params(actual)
     if pd is not None and pa is not None and len(pd) == len(pa):
         for i, (a, b) in enumerate(zip(pd, pa)):
-            if is_generic(a) or is_generic(b) or a == b:
+            if compatible(a, b):
                 continue
             mismatch.append((name, docsig, actual, f"arg {i + 1} is {a}", f"arg {i + 1} is {b}"))
             break
