@@ -1,13 +1,8 @@
 # Coverage strategy
 
-> **Status (measured 2026-08-20).** Two lanes run: the selfhost `#cov` lane
-> (`pkf run coverage*`) and `pkf run coverage-wasm-std`.
->
-> **The per-file span flow in "vibe source span coverage" is NOT verified.**
-> Measured: `vibe compile --coverage f.vibe` exits 0 and writes the wasm but no
-> `.cov.json` -- the flag is accepted and appears to do nothing on that path --
-> while the `compile-lite` path throws `--coverage/--coverage-run-tests are not
-> supported`. Treat that section's commands as unproven until it is resolved.
+> **Status (measured 2026-08-20).** Working lanes: the selfhost `#cov` lane
+> (`pkf run coverage*`), `pkf run coverage-wasm-std`, and the per-file
+> `--coverage` flags on `scripts/vibe_test.sh` and `scripts/vibe_run.sh`.
 
 ## コンパイラの関数 / 分岐カバレッジ（#cov）
 
@@ -504,32 +499,52 @@ line/branch は span 配線が前提で別途実装が必要。関数レベル�
 
 ## vibe ソース span ベース WASM カバレッジ
 
-`vibe compile --coverage` で生成する `.cov.json` と wasm カウンタを使って、
-vibe ソース基準の line/branch ヒットを集計する。
+vibe ソース基準の line/branch ヒットは、**runner が書く `.cov.json`** から
+集計する。`vibe compile --coverage` はこれを作らない — 実測 (2026-08-20):
+`vibe compile --coverage f.vibe -o out.wasm` は成功して `out.wasm.funcmap`
+(`NAME<TAB>INDEX` の表) を書くが、`.cov.json` は書かない。`.cov.json` を
+出すのは runner 側の `VIBE_COV_OUT` / `VIBE_COV_RAW=1`
+(`scripts/coverage_drivers.sh`, `scripts/vibe_run.sh`)。
+
+動く経路:
 
 ```bash
-# the one-line `just` recipe went with the runner; the two steps it wrapped:
-vibe compile --coverage fixtures/pattern_coverage_test.vibe
-node scripts/coverage_wasm_source.mjs <wasm-file> <map-json>
+# テストファイル単位 (関数/分岐ヒットを実行後に出力、JSON は
+# _build/vibe_test/coverage/ へ)
+bash scripts/vibe_test.sh --coverage lib/@vibe/builtin/bool_test.vibe
+
+# .vibex を走らせて計測 (_build/vibe_run/<name>.cov.json)
+bash scripts/vibe_run.sh --coverage prog.vibex
+
+# stdlib 一括
+pkf run coverage-wasm-std
 ```
 
-生成物:
-- `_build/coverage/wasm-source/<entry>.summary.txt`
-- `_build/coverage/wasm-source/<entry>.report.json`
-- `_build/coverage/wasm-source/<entry>.wasm.cov.json`
+実測例:
 
-環境変数:
+```
+ok   lib/@vibe/builtin/bool_test.vibe  [cov fn 20/32, branch 6/6]
+[vibe-test] coverage: functions 20/32 (62.50%), branches 6/6 (100.00%)
+```
+
+環境変数 (`scripts/coverage_wasm_std.sh` /
+`scripts/coverage_scratch_sidecar.sh` が読む):
 - `VIBE_WASM_SOURCE_COVERAGE_MODE` (`wasm` / `wasm-js-string`)
 - `VIBE_WASM_SOURCE_COVERAGE_NO_DCE` (`0` / `1`)
 - `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS` (`0` / `1`)
 - `VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP` (`0` / `1`)
 - `VIBE_WASM_SOURCE_COVERAGE_DIR` (出力先ディレクトリ)
 
-実装上の制約:
-- `compile --coverage` は test 専用で、`VIBE_TEST_COVERAGE=1` が必要
-- 通常開発では `coverage-wasm-source` ツール経由でのみ生成する
-- `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1` で `test {}` を実行可能
-  (`compile --coverage --coverage-run-tests`)
+**`scripts/coverage_wasm_source.mjs` は現在どこからも呼ばれていない**
+(`<wasm-file> <map-json>` を取る driver だが、参照しているのは自分自身の
+テスト `coverage_wasm_source.test.mjs` だけ)。この節はかつて
+`vibe compile --coverage` → このスクリプト、という 2 段構えを手順として
+書いていたが、その 1 段目は `.cov.json` を作らず、2 段目は誰も呼んでいない。
+
+かつてここに載っていた `VIBE_TEST_COVERAGE=1` は**どこからも読まれていない**。
+`vibe test --coverage` も存在しない (インストール済み CLI は
+`not found: --coverage` と答える) — `bash scripts/vibe_test.sh --coverage` が
+その役割を担う。
 
 ### @vibe/builtin 一括計測
 

@@ -78,7 +78,7 @@ an error that does not name the missing one:
 2. a bodyless `fn f(..) -> T` declaration in `index.vpkg`
 3. `import ./defining_file.vibe { f }` in the consuming file
 
-Measured, all four cases (`scripts/check_package_sibling_scope.sh`,
+Measured, all five cases (`scripts/check_package_sibling_scope.sh`,
 `pkf run check-package-sibling-scope`):
 
 | the sibling declares | consumer does | result |
@@ -86,7 +86,13 @@ Measured, all four cases (`scripts/check_package_sibling_scope.sh`,
 | `fn f` (private) | calls `f` | `unknown name: f` |
 | `export fn f` | calls `f` | `contract violation: exported 'f' is not declared in the contract` |
 | `export fn f` + contract entry | calls `f` | `unknown name: f` |
+| `fn f` (private) + contract entry | `import ./helper.vibe { f }` | `contract violation: contract declaration 'f' is implemented but not exported by its implementation file` |
 | `export fn f` + contract entry | `import ./helper.vibe { f }` | ok |
+
+The fourth row is the one that shows `export` is required **on its own**: it
+supplies the other two prerequisites and fails anyway. Without it the first
+three rows each fail for their own missing piece, and none of them would notice
+if a private function present in the contract started being accepted.
 
 `checker.vibe`'s `import ./checker_resolve.vibe { ... }` is this pattern.
 

@@ -256,9 +256,50 @@ test "#1961: lexically handled ::-less user Console needs no provider" {
   assert_eq(first_check_error(source), "")
 }
 
-test "#1961: perform? on optional allows typechecks as Attempt" {
+test "#2145: perform? on an optional allows is rejected -- codegen cannot lower it" {
+  // #1961 landed the CHECKER half of `perform?` and was closed as completed;
+  // codegen never followed. This test used to assert the source checked CLEAN,
+  // which it did -- and then the build died with
+  //   internal compiler error: `perform?` (local, @call) reached code
+  //   generation unresolved ... this is a bug in the compiler and not in your
+  //   program -- please report the source that triggers it
+  // on a program `book/en/10_capabilities.vibe.md` shows the reader. Two
+  // separate defects: the message asked for a bug report about a documented
+  // feature, and `vibe check` said "compiles" about a file that does not, which
+  // AGENTS.md names as a hole in the diagnostic rather than a caller error.
+  //
+  // Rejecting in the checker fixes both surfaces, since `vibe check` and the
+  // build run the same `check_program`. When codegen lowers `perform?`, this
+  // test fails and says so.
   let source = "fn main() -> Int with () allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "`perform?` is not lowered yet"))
+  assert(String::contains(msg, "#2145"))
+  // Actionable: it names the edit, not the pass that failed.
+  assert(String::contains(msg, "plain `perform`"))
+  assert(!String::contains(msg, "internal compiler error"))
+  assert(!String::contains(msg, "please report"))
+}
+
+test "#2145: the rejection is reported once, not once per occurrence" {
+  let source = "fn main() -> Int with () allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  let b = perform? Fs::read_file(\"y\")\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "`perform?` is not lowered yet"))
+}
+
+test "#2145: plain perform is untouched by the perform? rejection" {
+  // The scan keys on the exact callee name `perform?`, so `perform` -- the
+  // feature that does work -- must not be caught by it.
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
   assert_eq(first_check_error(source), "")
+}
+
+test "#2145: perform? nested inside another expression is still found" {
+  // The scan recurses through expr_children rather than looking only at
+  // statement heads, so a `perform?` buried in a call argument is reported.
+  let source = "fn use_it(a: Int) -> Int { a }\nfn main() -> Int with () allows Fs::read_file? {\n  let a = if true { perform? Fs::read_file(\"x\") } else { perform? Fs::read_file(\"y\") }\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "`perform?` is not lowered yet"))
 }
 
 test "#1961: perform? cannot be used as the operation result type" {
