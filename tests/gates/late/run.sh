@@ -4531,7 +4531,12 @@ fn main with Stdout {
 rm -rf "$resdir"
 echo "[compiler-gate] resource declaration identity rules ok"
 
-echo "[compiler-gate] 92/92 fixtures/typecheck verdicts match expected.tsv (#138)"
+# Section banner. `92/92` is this section's stable registry id (see
+# tests/gates/registry.tsv), not a fixture count. It read "verdicts match"
+# before the loop below had checked anything, so a failing run announced a
+# pass and then printed FAIL; "vs" states the subject without the verdict.
+# The counted result is echoed after the loop.
+echo "[compiler-gate] 92/92 fixtures/typecheck verdicts vs expected.tsv (#138)"
 # These 61 fixtures came with `.diag` snapshots of the RETIRED MoonBit host's
 # rendered diagnostic. No current path emits that shape, no harness read them,
 # and every one was stale -- so they were documentation of an expectation

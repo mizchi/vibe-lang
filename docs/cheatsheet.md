@@ -1832,40 +1832,48 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 ただし **`vibe check` は #1511(b)/#1536(c) 以降、型検査の後に codegen と同じ
 効き方の適格性判定 (ADR-0076 の effect-lowering prelude) を走らせる**ため、
 `vibe check` / `vibe build` / `vibe test` / doctest のどれでも同じエラーが出る
-(`vibe check --single-file` は単一ファイル解析なので対象外):
+(`vibe check --single-file` は単一ファイル解析なので対象外)。
 
-```
-line 5:12-16: handle of effect 'Ask' cannot be compiled here. Every perform
-this handle covers has to be statically visible to it, so the handled body may
-only: perform directly, call a named top-level `fn`, or call a closure literal
-that carries an effect row annotation. A call through a local binding or a
-closure parameter hides the perform and is what this rejects (here: the call
-to 'bump') ...
-```
-
-診断は**どの呼び出しが不適格かを名指しし、その `line:col` を指す** (#1514)。
-`line:col` は handle ではなく犯人の呼び出し (上の例では `bump`) の位置。
-複数ファイルで犯人が依存側モジュールにあるときは位置なしに落ちる
-(entry ファイルの誤った行を指すより位置なしを選ぶ)。
-
-実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level
-`let` にあるか `fn` の中にあるかは**無関係**で、`ask_once` を `fn` で宣言したか
-`let` lambda で宣言したかも**無関係**:
+**この節はかつて prose だけで境界を記述しており、ずれた。** 「ローカルの
+クロージャを呼ぶと NG」と書いていたが実測では通り、しかもその例
+(`handle { bump(ask_once()) }`) は**そもそも perform を隠していない** —
+`perform` は引数評価として handled body の中で起き、`bump` は handle から
+perform への経路上に無い。現在は callee の形ごとに fixture で固定してある
+(`fixtures/typecheck/handle_*.vibe` + `expected.tsv`)。以下は 2026-08-20 に
+現行 stage2 で実測した表:
 
 | handled body が呼ぶもの | 結果 |
 |---|---|
 | `handle { ask_once() }` — 直接 perform する関数 | ok |
 | `handle { bump(ask_once()) }` — `bump` が top-level `fn` | ok |
-| `handle { bump(ask_once()) }` — `bump` が**ローカルのクロージャ** | **NG** |
+| `handle { bump(ask_once()) }` — `bump` が**ローカルのクロージャ** | ok |
+| `let bump: () -> Int with Ask = () -> { ask_once() }` を呼ぶ | ok |
+| `fn apply(f: () -> Int with Ask)` に `ask_once` を渡して呼ぶ | ok |
+| `let bump = () -> Int { ask_once() }` (**row 注釈なし**) を呼ぶ | **NG** |
+| `let f: () -> Int with Ask = ask_once` を呼ぶ | **NG** |
 
-エラー文が列挙している適格な形がそのまま規則 — 直接 `perform`、**名前付き
-top-level 関数**の呼び出し、row 注釈付きクロージャリテラル。
+**拒否される 2 つは、どちらも handle 適格性の診断ではない。** 別々の pass が
+別々のメッセージで落とすので、読むべき行が違う:
 
-**迷ったら handled body から呼ぶものを top-level `fn` に出す。**
+- **row 注釈なしのクロージャ** — 注釈が無いとクロージャは row を運ばないので、
+  handle が覆うものが無くなり `Ask` は `main` まで抜ける。出るのは
+  **entry 境界**の診断:
+  `entry point 'main' cannot discharge { Ask }: no host provider or runtime
+  handler owns this effect`。直し方は「handle の書き方」ではなく
+  **クロージャに row を注釈する**こと。
+- **top-level fn を別名で束ねたローカル束縛** — body に構文上の `perform` が
+  無く opaque な関数値を呼ぶので、#1347 の
+  `handle of effect 'Ask' can never fire` が出る。
 
-(この表は当初 lang-review r3 で「handle の位置が効く」と誤って記録し、r4 の
-再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
-どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
+handle 適格性そのものの診断 (`handle of effect 'X' cannot be compiled here`,
+`inline_direct_perform.vibe`) は健在で、**どの呼び出しが不適格かを名指しし、
+その `line:col` を指す** (#1514)。ただし**その文面は現状の実装より広く主張して
+いる** — 「a call through a local binding or a closure parameter hides the
+perform and is what this rejects」と書いてあるが、closure parameter 経由は
+実測で**通る** (表の 5 行目)。文面のほうを実装に合わせるのが筋。
+
+**迷ったら: クロージャには row を注釈する。** 表の NG 2 つはどちらもそれで
+消える (2 つ目は `let f = ...` を使わず `ask_once()` を直接呼ぶ)。
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 
