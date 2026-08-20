@@ -62,7 +62,6 @@ import ./checker.vibe {
   check_expr,
   check_expr_capture,
   constructor_dependency_row,
-  env_mark_impl_method_body,
   fn_return_env_name,
   is_array_builder_ty,
   is_region_tagged_ty,
@@ -70,6 +69,7 @@ import ./checker.vibe {
   preserve_generic_instantiation,
   reject_resume_outside_handler,
   report_unknown_type_names,
+  trait_erased_type_param_env,
   typed_occurrence_capture_begin_statement,
   typed_occurrence_capture_end_statement
 }
@@ -1564,14 +1564,11 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         let err_before = Array::length(errors)
         // #2125: an `impl` method is parsed as `let <Type>::<method> = ..`
         // (parser.vibe's parse_impl_methods), and its signature may spell the
-        // trait's own erased type parameter with no binder of its own. Mark
-        // the environment the VALUE is checked in -- never `env1` below, so
-        // the marker cannot reach a published or cached environment.
-        let val_env = if String::contains(name, "::") {
-          env_mark_impl_method_body(env)
-        } else {
-          env
-        }
+        // trait's own erased type parameter with no binder of its own. Bind
+        // those names -- and only the ones an actual impl licenses -- into the
+        // environment the VALUE is checked in, never `env1` below, so they
+        // cannot reach a published or cached environment.
+        let val_env = trait_erased_type_param_env(env, name)
         let (vt, ns0, nc) = if is_rec {
           check_expr_capture(val, env_bind(val_env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         } else {

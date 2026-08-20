@@ -32,6 +32,7 @@ import @vibe/compiler/core {
   subst_apply,
   subst_bounds_for,
   trait_method_sig_binders_deep,
+  type_constructor_name,
   type_implements_trait,
   type_name_has_iterator_impl,
   type_to_string,
@@ -140,53 +141,106 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
   }
 }
 
-/// #2125: true when a trait in scope declares `name` as one of ITS OWN type
-/// parameters -- the `T` of `trait Iterator[T] { next(Self) -> Option[T] }`.
-///
-/// Such a name is deliberately unresolvable, and that is not an oversight: the
-/// uniform representation ERASES a trait's element params, so every use is
-/// relaxed to `CtUnknown` (see `relax_unknown_named`). An `impl` method spells
-/// them in its own signature -- `next(self) -> Option[(T, LazyIter)]` -- with
-/// no binder of its own to shadow them, so it reaches annotation resolution
-/// looking exactly like a typo.
-///
-/// Doubly scoped, because either half alone is a hole: only names some trait
-/// actually declares (so a genuine typo inside an impl method is still
-/// reported), and only inside an impl method's body (so merely DECLARING
-/// `trait Iter[T]` does not excuse `fn f(x: T)` in the same file -- it did,
-/// measured, until `env_in_impl_method_body` gated this).
-/// #2125: the env key under which an `impl` method's body is checked. An impl
-/// method is parsed as `let <Type>::<method> = (..) -> ..` (parser.vibe's
-/// `parse_impl_methods`), and only in THAT body may a trait's own erased type
-/// parameter appear unbound -- see `env_trait_declares_type_param`. Bound only
-/// around the value being checked, never into the environment the statement
-/// returns, so it cannot reach a published or cached env.
-let impl_method_body_env_key: String = "__impl_method_body__"
+/// #2125: the env key prefix under which an `impl` method's body carries the
+/// trait type parameters its signature may legally leave unbound. One key per
+/// NAME, bound only around the value being checked -- never into the
+/// environment the statement returns -- so it cannot reach a published or
+/// cached env.
+let trait_erased_type_param_prefix: String = "__trait_erased_tp__"
 
-/// #2125: is this annotation being resolved inside an `impl` method's body?
-export fn env_in_impl_method_body(env: TypeEnv) -> Bool {
-  match env_lookup(env, impl_method_body_env_key) {
-    Some(_) => true,
-    None => false
+/// True when some entry of `methods` declares a method named `method_name`.
+fn trait_methods_declare(methods: Array[(String, Array[TypeExpr], TypeExpr)], method_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(methods) && !found {
+    let (mname, _, _) = Array::get(methods, i)
+    if mname == method_name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// True when `env` records an impl of `trait_name` for the type named
+/// `type_name` -- the binder that licenses the trait's erased parameters
+/// inside that impl's methods.
+fn env_has_trait_impl_for(env: TypeEnv, trait_name: String, type_name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_constructor_name(target) == type_name) || env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_constructor_name(target) == type_name) || env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvMutCell(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTypeDefs(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvCached(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvFlat(_) => false
   }
 }
 
-/// #2125: mark `env` as an `impl` method's body environment.
-export fn env_mark_impl_method_body(env: TypeEnv) -> TypeEnv {
-  env_bind(env, impl_method_body_env_key, CtUnit)
+fn collect_impl_erased_type_params(chain: TypeEnv, full: TypeEnv, type_name: String, method_name: String, out: Array[String]) -> Unit {
+  match chain {
+    EnvEmpty => (),
+    EnvBind(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvTraitDef(trait_name, params, _, methods, rest, header_params, _) => {
+      if trait_methods_declare(methods, method_name) && env_has_trait_impl_for(full, trait_name, type_name) {
+        let mut pi = 0
+        while pi < Array::length(params) {
+          Array::push(out, Array::get(params, pi))
+          pi = pi + 1
+        }
+        let mut hi = 0
+        while hi < Array::length(header_params) {
+          Array::push(out, Array::get(header_params, hi))
+          hi = hi + 1
+        }
+      } else {
+        ()
+      }
+      collect_impl_erased_type_params(rest, full, type_name, method_name, out)
+    },
+    EnvTraitImpl(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvTraitImplGen(_, _, _, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvMutCell(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvTypeDefs(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvCached(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvFlat(_) => ()
+  }
 }
 
-fn env_trait_declares_type_param(env: TypeEnv, name: String) -> Bool {
-  match env {
-    EnvEmpty => false,
-    EnvBind(_, _, rest) => env_trait_declares_type_param(rest, name),
-    EnvTraitDef(_, params, _, _, rest, header_params, _) => string_array_has(params, name) || string_array_has(header_params, name) || env_trait_declares_type_param(rest, name),
-    EnvTraitImpl(_, _, rest) => env_trait_declares_type_param(rest, name),
-    EnvTraitImplGen(_, params, _, _, rest) => string_array_has(params, name) || env_trait_declares_type_param(rest, name),
-    EnvMutCell(_, _, rest) => env_trait_declares_type_param(rest, name),
-    EnvTypeDefs(_, _, rest) => env_trait_declares_type_param(rest, name),
-    EnvCached(_, _, rest) => env_trait_declares_type_param(rest, name),
-    EnvFlat(_) => false
+/// #2125: bind the erased type parameters an IMPL METHOD's signature may
+/// legally spell without a binder of its own -- the `T` of
+/// `trait Iterator[T]` in `impl Iterator for LazyIter { next(self) ->
+/// Option[(T, LazyIter)] }`. The uniform representation erases those
+/// parameters and `relax_unknown_named` relaxes every use to `CtUnknown`, so
+/// they resolve to nothing and look exactly like a typo.
+///
+/// Codex on #2147 (round 2): PROVENANCE, not a name shape. `parse_impl_methods`
+/// lowers an impl to `let <Type>::<method> = (..) -> ..` emitted after its
+/// `SImpl`, so the impl is already in the env when the method is checked --
+/// this asks the env the question the impl answers: does a trait in scope
+/// declare a method of THIS name, carry type parameters, and have an impl for
+/// THIS type? A qualified name alone is not that question, and treating it as
+/// one exempted every associated function: `fn Array::bad(x: T) -> Int { 1 }`
+/// compiled clean whenever any in-scope trait declared a `T` (measured).
+export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> TypeEnv {
+  let sep = String::index_of(binding_name, "::")
+  if sep < 0 {
+    env
+  } else {
+    let type_name = String::substring(binding_name, 0, sep)
+    let method_name = String::substring(binding_name, sep + 2, String::length(binding_name))
+    let names = array_empty()
+    collect_impl_erased_type_params(env, env, type_name, method_name, names)
+    let mut out = env
+    let mut i = 0
+    while i < Array::length(names) {
+      out = env_bind(out, String::concat(trait_erased_type_param_prefix, Array::get(names, i)), CtUnit)
+      i = i + 1
+    }
+    out
   }
 }
 
@@ -214,9 +268,9 @@ fn env_trait_declares_type_param(env: TypeEnv, name: String) -> Bool {
 ///      `fn fill(l: MutList[Int, r]) -> Unit with r`. Nothing binds `r` as a
 ///      value there; the binder is the row, so the call site passes its
 ///      labels in `row_binders`.
-///   4. a trait's own erased type parameter -- and ONLY inside an `impl`
-///      method's body, where the binder is the impl. See
-///      `env_trait_declares_type_param`.
+///   4. a trait's own erased type parameter, and only where an actual IMPL
+///      binds it -- see `trait_erased_type_param_env`, which asks the env for
+///      the impl rather than inferring one from the binding's name.
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   let out = array_empty()
   collect_unknown_type_names(te, defs, shadow, out)
@@ -231,7 +285,11 @@ export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: 
       },
       None => false
     }
-    if bound_by_binder || string_array_has(row_binders, name) || (env_in_impl_method_body(env) && env_trait_declares_type_param(env, name)) {
+    let trait_erased_by_impl = match env_lookup(env, String::concat(trait_erased_type_param_prefix, name)) {
+      Some(_) => true,
+      None => false
+    }
+    if bound_by_binder || string_array_has(row_binders, name) || trait_erased_by_impl {
       ()
     } else {
       Array::push(errors, String::concat(String::concat(String::concat("unknown type `", name), "` in "), where_label))
@@ -2011,6 +2069,39 @@ fn effect_label_is_exempt(lbl: String) -> Bool {
   } else {
     true
   }
+}
+
+/// #2147 review (round 2): the row entries that are effect VARIABLES -- the
+/// only entries a row declares as binders. Mirrors `is_effect_var_name`
+/// (core/types.vibe), which is file-private there; three other copies in the
+/// tree already spell it out the same way.
+fn row_label_is_variable(label: String) -> Bool {
+  let len = String::length(label)
+  if len == 1 {
+    // A source-level effect variable: a single lowercase letter (`with e`).
+    String::char_code_at(label, 0) >= 97 && String::char_code_at(label, 0) <= 122
+  } else if len >= 2 {
+    // A FRESH effect variable minted by `instantiate` (`$N`).
+    String::char_code_at(label, 0) == 36
+  } else {
+    false
+  }
+}
+
+fn row_variable_labels(row: Option[String]) -> Array[String] {
+  let out = array_empty()
+  let labels = row_labels(row)
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    if row_label_is_variable(label) {
+      Array::push(out, label)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn row_labels(row: Option[String]) -> Array[String] {
@@ -8769,11 +8860,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut fn_env = env_bind(tp_env, "__capture_boundary__", CtUnit)
       let mut s1 = s0
       let mut c1 = c0
-      // #2125: this signature's OWN effect row. A region row variable is
-      // declared there and nowhere else -- `fn fill(l: MutList[Int, r]) ->
-      // Unit with r` binds `r` by the row, so the annotations below must not
-      // read it as a type name (#1863's helper signatures are exactly this).
-      let declared_row_binders = row_labels(effect)
+      // #2125: the row VARIABLES this signature's own effect row declares.
+      // A region row variable is declared there and nowhere else --
+      // `fn fill(l: MutList[Int, r]) -> Unit with r` binds `r` by the row, so
+      // the annotations below must not read it as a type name (#1863's helper
+      // signatures are exactly this).
+      //
+      // Codex on #2147 (round 2): VARIABLES only. A concrete label in the same
+      // row binds nothing, and taking the whole row let
+      // `fn f(x: Async) -> Int with Async` keep `Async` as a wildcard
+      // `CtNamed` (measured) -- the very shape this issue is about.
+      let declared_row_binders = row_variable_labels(effect)
       let param_types = array_empty()
       let mut pi = 0
       while pi < plen {
