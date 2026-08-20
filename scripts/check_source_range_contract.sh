@@ -88,7 +88,11 @@ fi
 
 # 2. `vibe binding-at` -- BYTE column in, BYTE offsets out. This is the load
 #    bearing one: the identifier sits behind 8 bytes of emoji.
-occ="$(run "$WORK/ok.vibe" occ VIBE_BINDING_AT=1 VIBE_TYPE_LINE=3 VIBE_TYPE_COL="$BYTE_COL" | tr '\n' '|')"
+# `sed '$!s/$/|/' | tr -d '\n'` joins the records with `|` WITHOUT inventing a
+# trailing one. Plain `tr '\n' '|'` appended an empty field once the queries
+# started terminating their last record (#2133) -- record separators and record
+# terminators are not the same thing, which is the whole point of that fix.
+occ="$(run "$WORK/ok.vibe" occ VIBE_BINDING_AT=1 VIBE_TYPE_LINE=3 VIBE_TYPE_COL="$BYTE_COL" | sed '$!s/$/|/' | tr -d '\n')"
 if [ "$occ" = "26 27|$N_OFF $((N_OFF + 1))" ]; then
   note "vibe binding-at takes a byte column and answers in byte offsets"
 else
