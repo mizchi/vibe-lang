@@ -87,8 +87,8 @@ consumes on its own:
 Reader-facing documents (tutorial, language tour, install, README) may carry a
 Japanese translation alongside the English one:
 
-- `book/en/01_values_functions.vibe.md` — **canonical, English**
-- `book/ja/01_values_functions.vibe.md` — translation
+- `book/en/03_values_functions.vibe.md` — **canonical, English**
+- `book/ja/03_values_functions.vibe.md` — translation
 
 The English file is the source of truth. Prose and code comments translate;
 **the program in each ` ```vibe run ` block stays the same program, so the paired

@@ -29,7 +29,7 @@ capability is **`Console`**, and that is what this hello declares. The
 `println` builtin still carries the **legacy** `Stdout` label internally;
 declaring `Console` authorizes it, because `Console` is the union of the
 legacy three. The reverse does not hold — see
-[Capabilities](10_capabilities.vibe.md).
+[Capabilities](14_capabilities.vibe.md).
 
 Two spellings are legal. The **bare** `with Console` is the usual hello.
 The **split** form `with () allows Console` says the same thing more
@@ -70,5 +70,5 @@ If you are in this repository, the chapters themselves are the test:
 bash scripts/vibe_md.sh check book/en/01_getting_started.vibe.md
 ```
 
-Next: [A small program](19_a_small_program.vibe.md).
-The language tour continues at [Values and functions](01_values_functions.vibe.md).
+Next: [A small program](02_a_small_program.vibe.md).
+The language tour continues at [Values and functions](03_values_functions.vibe.md).

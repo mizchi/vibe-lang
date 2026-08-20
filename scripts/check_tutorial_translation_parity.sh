@@ -60,7 +60,7 @@ for en in "${english[@]}"; do
     # New English-only book chapters are allowed. The original tour pair
     # (01..07) must keep a translation under book/ja/.
     case "$(basename "$en")" in
-      01_values_functions.vibe.md|02_control_flow.vibe.md|03_data.vibe.md|04_option.vibe.md|05_effects.vibe.md|06_tests.vibe.md|07_modules_packages.vibe.md)
+      03_values_functions.vibe.md|04_control_flow.vibe.md|07_data.vibe.md|08_option.vibe.md|13_effects.vibe.md|10_tests.vibe.md|09_modules_packages.vibe.md)
         echo "check-tutorial-translation-parity: FAIL: $(basename "$en") has no translation" >&2
         echo "  expected book/ja/$(basename "$en")" >&2
         fail=1

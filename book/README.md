@@ -47,4 +47,4 @@ mutation (the ownership analog), data, packages, collections, effects,
 generics, concurrency, and tooling.
 
 Start at [Installation and Hello, vibe](en/01_getting_started.vibe.md)
-or jump to [A small program](en/19_a_small_program.vibe.md).
+or jump to [A small program](en/02_a_small_program.vibe.md).
