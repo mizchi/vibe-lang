@@ -1,20 +1,15 @@
 # Coverage strategy
 
-> **Status (re-measured 2026-08-20).** The MoonBit and Deno tracks are gone with
-> the host (#594) and their sections are deleted, not annotated.
+> **Status (measured 2026-08-20).** Two lanes run: the selfhost `#cov` lane
+> (`pkf run coverage*`) and `pkf run coverage-wasm-std`.
 >
-> What runs today: **section 0** (the selfhost `#cov` lane, `pkf run coverage*`)
-> and **`pkf run coverage-wasm-std`**, which exists as a task and is what
-> section 3's std sweep now points at. An earlier note at the bottom of this
-> file claimed `coverage-wasm-std` had been removed; it had not.
->
-> **Section 3's per-file span flow is NOT verified.** Measured: `vibe compile
-> --coverage f.vibe` exits 0 and writes the wasm, but no `.cov.json` -- the flag
-> is accepted and appears to do nothing on that path, while the `compile-lite`
-> path throws `--coverage/--coverage-run-tests are not supported`. Treat the
-> commands in section 3 as unproven until that is resolved.
+> **The per-file span flow in "vibe source span coverage" is NOT verified.**
+> Measured: `vibe compile --coverage f.vibe` exits 0 and writes the wasm but no
+> `.cov.json` -- the flag is accepted and appears to do nothing on that path --
+> while the `compile-lite` path throws `--coverage/--coverage-run-tests are not
+> supported`. Treat that section's commands as unproven until it is resolved.
 
-## 0) コンパイラの関数 / 分岐カバレッジ（#cov）
+## コンパイラの関数 / 分岐カバレッジ（#cov）
 
 コンパイラ自身を **計測ビルド**して、ワークロード実行時にどの compiler
 関数が呼ばれたか（関数カバレッジ）と、どの `if`/`match` 分岐が実行されたか
@@ -507,27 +502,7 @@ line/branch は span 配線が前提で別途実装が必要。関数レベル�
 未テスト経路の検出」には十分有効（例: dead な `__to_string` inline path のような
 穴は missed_fns に現れる）。
 
----
-
-以下は MoonBit host 時代の coverage（歴史的経緯、現在は動かない）。
-
-このプロジェクトでは coverage を 3 つに分けて測る。
-
-1. MoonBit 本体コードの行カバレッジ
-2. WASM 成果物をホストから呼ぶ統合導線のカバレッジ
-3. vibe ソース span ベースの WASM 実行カバレッジ（line/branch）
-
-## MoonBit / Deno coverage: removed
-
-This document used to carry two more coverage tracks: `moon test
---enable-coverage` over the MoonBit host, and Deno coverage over
-`tests/integration-deno/` against `src/lib`. Both subjects are gone -- the
-MoonBit host was retired in #594, `src/` with it, and `just` was replaced by
-`pkf`. The sections are deleted rather than annotated, per the documentation
-rule that an entry whose subject no longer exists is a false statement about
-the current build, not history.
-
-## 3) vibe ソース span ベース WASM カバレッジ
+## vibe ソース span ベース WASM カバレッジ
 
 `vibe compile --coverage` で生成する `.cov.json` と wasm カウンタを使って、
 vibe ソース基準の line/branch ヒットを集計する。
@@ -624,8 +599,5 @@ pkf run coverage-suite-branch-gate # branch coverage gate
 pkf run coverage-suite-next-branches  # 未到達分岐の提案
 ```
 
-> `coverage-moon` and `coverage-deno` went with the MoonBit host (#594), and the
-> `coverage-wasm-source` one-line recipe went with `just`. **`coverage-wasm-std`
-> did not** -- it is a live `pkf` task over `scripts/coverage_wasm_std.sh`. This
-> note used to list it among the removed, which is where section 3's repointing
-> would have gone wrong if it had been believed.
+> `coverage-wasm-std` is a live `pkf` task over
+> `scripts/coverage_wasm_std.sh`.
