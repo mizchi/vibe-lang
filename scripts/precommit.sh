@@ -26,6 +26,7 @@ VIBE_LOCK_CHECK_ROOT="$STAGED_ROOT" bash "$SCRIPT_DIR/check_lock_clean.sh"
 # commit that renames a file and its citation together still passes, and one
 # that renames only the file does not.
 VIBE_DOC_CITATION_DOCS_ROOT="$STAGED_ROOT" \
+  VIBE_DOC_CITATION_REPO_ROOT="$STAGED_ROOT" \
   bash "$SCRIPT_DIR/check_doc_path_citations.sh"
 
 echo "pre-commit: review-derived lint gates passed"

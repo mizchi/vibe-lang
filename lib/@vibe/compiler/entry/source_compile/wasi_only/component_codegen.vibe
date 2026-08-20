@@ -3433,6 +3433,816 @@ fn emit_comp_wasi_cli_stdin_import_prefix(buf: Bytes) -> Unit {
   emit_comp_instance_export_alias_section(buf, 1, "read-via-stream", comp_extern_func)
 }
 
+/// Emit one versioned WIT interface import whose function returns
+/// `future<s64>`, the canonical projection of vibe `Future[Int]` selected by
+/// `wit_type_text`. This is the first WIT-derived import slice: the function is
+/// owned by an imported interface instance rather than by the component root.
+///
+/// Keep unsupported payloads fail-closed until their canonical lowering is
+/// implemented. In particular, accepting an arbitrary WIT type string here
+/// would advertise record/enum support while the adapter still only knows the
+/// scalar Int representation.
+fn comp_wit_descriptor_payload(wit_result_type: String) -> String with Exception {
+  if !String::starts_with(wit_result_type, "future<") || !String::ends_with(wit_result_type, ">") {
+    throw("component(wit-async-import): unsupported result type '\{wit_result_type}'; expected future<s64>, future<record{field:type,...}>, or future<enum{case,...}>")
+  }
+  String::substring(wit_result_type, 7, String::length(wit_result_type) - 1)
+}
+
+fn comp_split_descriptor(text: String, separator: Int) -> Array[String] {
+  let out: Array[String] = array_empty()
+  let mut start = 0
+  let mut i = 0
+  while i < String::length(text) {
+    if String::char_code_at(text, i) == separator {
+      Array::push(out, String::substring(text, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  Array::push(out, String::substring(text, start, String::length(text)))
+  out
+}
+
+fn comp_record_field(field: String) -> (String, String) with Exception {
+  let pieces = comp_split_descriptor(field, 58)
+  if Array::length(pieces) != 2 || String::length(Array::get(pieces, 0)) == 0 {
+    throw("component(wit-async-import): record field must be `name:type`, got '\{field}'")
+  }
+  let ty = Array::get(pieces, 1)
+  if ty != "s64" && ty != "s32" && ty != "string" && ty != "bool" && ty != "stream<u8>" {
+    throw("component(wit-async-import): unsupported record field type '\{ty}' in '\{field}'; supported fields are s64, s32, string, bool, and stream<u8>")
+  }
+  (Array::get(pieces, 0), ty)
+}
+
+fn comp_descriptor_valtype(ty: String) -> Int with Exception {
+  if ty == "s64" {
+    comp_valtype_s64
+  }
+  else if ty == "s32" {
+    comp_valtype_s32
+  }
+  else if ty == "string" {
+    comp_valtype_string
+  }
+  else if ty == "bool" {
+    comp_valtype_bool
+  }
+  else {
+    throw("component(wit-async-import): unsupported scalar payload type '\{ty}'")
+  }
+}
+
+fn comp_align_up(value: Int, alignment: Int) -> Int {
+  ((value + alignment - 1) / alignment) * alignment
+}
+
+fn comp_descriptor_size_align(ty: String) -> (Int, Int) with Exception {
+  if ty == "s64" {
+    (8, 8)
+  }
+  else if ty == "s32" {
+    (4, 4)
+  }
+  else if ty == "string" {
+    (8, 4)
+  }
+  else if ty == "bool" {
+    (1, 1)
+  }
+  else if ty == "stream<u8>" {
+    (4, 4)
+  }
+  else {
+    throw("component(wit-async-import): unsupported scalar payload type '\{ty}'")
+  }
+}
+
+/// Canonical-ABI memory landing contract used by future.read. Keeping this
+/// derived from the same descriptor as component type emission prevents the
+/// adapter from silently reading a scalar slot for an aggregate payload.
+export fn comp_wit_async_payload_landing_layout(wit_result_type: String) -> String with Exception {
+  let payload = comp_wit_descriptor_payload(wit_result_type)
+  if payload == "s64" {
+    "size=8,align=8;value@0:s64"
+  } else if String::starts_with(payload, "enum{") && String::ends_with(payload, "}") {
+    let cases = comp_split_descriptor(String::substring(payload, 5, String::length(payload) - 1), 44)
+    let mut i = 0
+    while i < Array::length(cases) {
+      if String::length(Array::get(cases, i)) == 0 {
+        throw("component(wit-async-import): enum case must not be empty")
+      }
+      i = i + 1
+    }
+    if Array::length(cases) > 256 {
+      throw("component(wit-async-import): enum payloads with more than 256 cases are not supported by the u8 landing lane")
+    }
+    "size=1,align=1;discriminant@0:u8"
+  } else if String::starts_with(payload, "record{") && String::ends_with(payload, "}") {
+    let fields = comp_split_descriptor(String::substring(payload, 7, String::length(payload) - 1), 44)
+    let body = StringBuilder::new()
+    let mut offset = 0
+    let mut record_align = 1
+    let mut i = 0
+    while i < Array::length(fields) {
+      let (name, ty) = comp_record_field(Array::get(fields, i))
+      let (size, alignment) = comp_descriptor_size_align(ty)
+      offset = comp_align_up(offset, alignment)
+      StringBuilder::push(body, ";\{name}@\{offset}:\{ty}")
+      offset = offset + size
+      if alignment > record_align {
+        record_align = alignment
+      }
+      i = i + 1
+    }
+    "size=\{comp_align_up(offset, record_align)},align=\{record_align}\{StringBuilder::freeze(body)}"
+  } else {
+    throw("component(wit-async-import): unsupported future payload '\{payload}'; expected s64, record{field:type,...}, or enum{case,...}")
+  }
+}
+
+/// Canonical WIT spellings for the first outbound HTTP boundary. Headers stay
+/// opaque in this slice; the body is deliberately a stream, never a collected
+/// string, so the guest receives the existing nominal HostStream authority.
+export fn comp_wit_outbound_http_request_descriptor() -> String {
+  "record{method:string,url:string,headers:string,body:stream<u8>}"
+}
+
+export fn comp_wit_outbound_http_response_descriptor() -> String {
+  "future<record{status:s32,headers:string,body:stream<u8>}>"
+}
+
+export fn comp_wit_outbound_http_response_body_contract() -> String {
+  "stream<u8> -> HostStream (host-owned readable; close is idempotent)"
+}
+
+/// The direction-changing edges from the ratified wasi:http 0.3 worlds. The
+/// remaining CLI/clocks/random imports are ambient world dependencies; these
+/// four edges are the HTTP composition contract which must not be collapsed
+/// into a root function import.
+export fn comp_wit_http_world_contract(world: String) -> String with Exception {
+  if world == "service" {
+    "import types; import client; export handler"
+  } else if world == "middleware" {
+    "import types; import handler; import client; export handler"
+  } else {
+    throw("component(wasi-http-world): unsupported world '\{world}'; expected service or middleware")
+  }
+}
+
+/// Fail-closed ownership contract at the Request/Response body boundary.
+/// Both directions move one host-owned readable stream into one HostStream;
+/// collecting to String/Bytes or trying to re-acquire the moved body would
+/// erase either backpressure or linear ownership.
+export fn comp_wit_http_body_boundary_contract(direction: String, guest_type: String) -> String with Exception {
+  if direction == "request-reused" || direction == "response-reused" {
+    throw("component(wasi-http-body): already-consumed body cannot be converted to a second HostStream")
+  } else if direction != "request" && direction != "response" {
+    throw("component(wasi-http-body): direction must be request or response")
+  } else if guest_type != "HostStream" {
+    throw("component(wasi-http-body): \{direction} body must remain streaming as HostStream; String/Bytes collection is not an ownership-preserving boundary")
+  }
+  "\{direction}: own stream<u8> -> HostStream; consume once; close idempotent"
+}
+
+fn emit_comp_defined_option(content: Bytes, valtype: Int) -> Unit {
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 107)
+  bytebuf_push(content, valtype)
+}
+
+fn emit_comp_defined_record2(content: Bytes, left_name: String, left_type: Int, right_name: String, right_type: Int) -> Unit {
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 114)
+  leb128_encode_u32(content, 2)
+  emit_name(content, left_name)
+  leb128_encode_u32(content, left_type)
+  emit_name(content, right_name)
+  leb128_encode_u32(content, right_type)
+}
+
+/// Ratified wasi:http/types@0.3.0 error-code closure. Payload indices include
+/// the nominal type exports because those exports themselves occupy the local
+/// type space; keeping the table explicit makes WAT parity reviewable.
+fn emit_comp_wit_http_error_code_decls(content: Bytes) -> Unit {
+  emit_comp_defined_option(content, comp_valtype_string)
+  // 0
+  emit_comp_defined_option(content, 123)
+  // 1 option<u16>
+  emit_comp_defined_record2(content, "rcode", 0, "info-code", 1)
+  // 2
+  emit_comp_type_export_decl(content, "DNS-error-payload", 2)
+  // 3
+  emit_comp_defined_option(content, comp_valtype_u8)
+  // 4
+  emit_comp_defined_record2(content, "alert-id", 4, "alert-message", 0)
+  // 5
+  emit_comp_type_export_decl(content, "TLS-alert-received-payload", 5)
+  // 6
+  emit_comp_defined_option(content, comp_valtype_u32)
+  // 7
+  emit_comp_defined_record2(content, "field-name", 0, "field-size", 7)
+  // 8
+  emit_comp_type_export_decl(content, "field-size-payload", 8)
+  // 9
+  emit_comp_defined_option(content, 119)
+  // 10 option<u64>
+  emit_comp_defined_option(content, 9)
+  // 11 option<field-size-payload>
+  let names = [
+    "DNS-timeout",
+    "DNS-error",
+    "destination-not-found",
+    "destination-unavailable",
+    "destination-IP-prohibited",
+    "destination-IP-unroutable",
+    "connection-refused",
+    "connection-terminated",
+    "connection-timeout",
+    "connection-read-timeout",
+    "connection-write-timeout",
+    "connection-limit-reached",
+    "TLS-protocol-error",
+    "TLS-certificate-error",
+    "TLS-alert-received",
+    "HTTP-request-denied",
+    "HTTP-request-length-required",
+    "HTTP-request-body-size",
+    "HTTP-request-method-invalid",
+    "HTTP-request-URI-invalid",
+    "HTTP-request-URI-too-long",
+    "HTTP-request-header-section-size",
+    "HTTP-request-header-size",
+    "HTTP-request-trailer-section-size",
+    "HTTP-request-trailer-size",
+    "HTTP-response-incomplete",
+    "HTTP-response-header-section-size",
+    "HTTP-response-header-size",
+    "HTTP-response-body-size",
+    "HTTP-response-trailer-section-size",
+    "HTTP-response-trailer-size",
+    "HTTP-response-transfer-coding",
+    "HTTP-response-content-coding",
+    "HTTP-response-timeout",
+    "HTTP-upgrade-failed",
+    "HTTP-protocol-error",
+    "loop-detected",
+    "configuration-error",
+    "internal-error"
+  ]
+  let payloads = [
+    -1,
+    3,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    6,
+    -1,
+    -1,
+    10,
+    -1,
+    -1,
+    -1,
+    7,
+    11,
+    7,
+    9,
+    -1,
+    7,
+    9,
+    10,
+    7,
+    9,
+    0,
+    0,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    0
+  ]
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 113)
+  leb128_encode_u32(content, Array::length(names))
+  let mut i = 0
+  while i < Array::length(names) {
+    emit_name(content, Array::get(names, i))
+    let payload = Array::get(payloads, i)
+    if payload < 0 {
+      bytebuf_push(content, 0)
+    } else {
+      bytebuf_push(content, 1)
+      leb128_encode_u32(content, payload)
+    }
+    // Variant cases carry a second optional field for `refines`; wasi:http
+    // error-code has no refined cases, so every row ends in zero.
+    bytebuf_push(content, 0)
+    i = i + 1
+  }
+  emit_comp_type_export_decl(content, "error-code", 12)
+}
+
+export fn comp_emit_wit_http_error_code_type_surface() -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  leb128_encode_u32(content, 14)
+  emit_comp_wit_http_error_code_decls(content)
+  emit_raw_content(buf, content)
+  bytebuf_to_bytes(buf)
+}
+
+fn emit_comp_resource_bound_export(content: Bytes, name: String) -> Unit {
+  bytebuf_push(content, 4)
+  bytebuf_push(content, 0)
+  emit_name(content, name)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 1)
+}
+
+fn emit_comp_wit_http_client_instance_type(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  leb128_encode_u32(content, 8)
+  let mut root_type = 1
+  while root_type <= 3 {
+    bytebuf_push(content, 2)
+    bytebuf_push(content, 3)
+    bytebuf_push(content, 2)
+    leb128_encode_u32(content, 1)
+    leb128_encode_u32(content, root_type)
+    root_type = root_type + 1
+  }
+  // local 3 = own<Response(local 1)>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 105)
+  leb128_encode_u32(content, 1)
+  // local 4 = result<own<Response>, error-code(local 2)>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 106)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 3)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 2)
+  // local 5 = own<Request(local 0)>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 105)
+  leb128_encode_u32(content, 0)
+  // local 6 = async send(request: own<Request>) -> result<...>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  leb128_encode_u32(content, 1)
+  emit_name(content, "request")
+  leb128_encode_u32(content, 5)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 4)
+  bytebuf_push(content, 4)
+  bytebuf_push(content, 0)
+  emit_name(content, "send")
+  bytebuf_push(content, comp_extern_func)
+  leb128_encode_u32(content, 6)
+  emit_raw_content(buf, content)
+}
+
+/// Exact nominal import surface for ratified wasi:http/client@0.3.0's send.
+/// Request/Response are resource bounds, not record stand-ins; ownership and
+/// the full error-code variant remain visible in the canonical type graph.
+export fn comp_emit_wit_http_client_send_surface() -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  bytebuf_push(buf, section_type)
+  let types = bytebuf_new()
+  leb128_encode_u32(types, 1)
+  bytebuf_push(types, 66)
+  leb128_encode_u32(types, 16)
+  emit_comp_wit_http_error_code_decls(types)
+  emit_comp_resource_bound_export(types, "request")
+  emit_comp_resource_bound_export(types, "response")
+  emit_raw_content(buf, types)
+  emit_comp_instance_import_section(buf, "wasi:http/types@0.3.0", 0)
+  emit_comp_instance_export_alias_section(buf, 0, "request", 3)
+  emit_comp_instance_export_alias_section(buf, 0, "response", 3)
+  emit_comp_instance_export_alias_section(buf, 0, "error-code", 3)
+  emit_comp_wit_http_client_instance_type(buf)
+  emit_comp_instance_import_section(buf, "wasi:http/client@0.3.0", 4)
+  emit_comp_instance_export_alias_section(buf, 1, "send", comp_extern_func)
+  bytebuf_to_bytes(buf)
+}
+
+fn emit_comp_type_export_decl(content: Bytes, name: String, type_idx: Int) -> Unit {
+  bytebuf_push(content, 4)
+  bytebuf_push(content, 0)
+  emit_name(content, name)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, type_idx)
+}
+
+fn emit_comp_http_record_decl(content: Bytes, response: Bool) -> Unit {
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 114)
+  leb128_encode_u32(content, if response {
+    3
+  } else {
+    4
+  })
+  if response {
+    emit_name(content, "status")
+    bytebuf_push(content, comp_valtype_s32)
+  } else {
+    emit_name(content, "method")
+    bytebuf_push(content, comp_valtype_string)
+    emit_name(content, "url")
+    bytebuf_push(content, comp_valtype_string)
+  }
+  emit_name(content, "headers")
+  bytebuf_push(content, comp_valtype_string)
+  emit_name(content, "body")
+  // local type 0 is stream<u8>; indexed valtypes are raw type indices.
+  leb128_encode_u32(content, 0)
+}
+
+fn emit_comp_wit_http_types_instance_type(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  leb128_encode_u32(content, 5)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 102)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, comp_valtype_u8)
+  emit_comp_http_record_decl(content, false)
+  emit_comp_http_record_decl(content, true)
+  emit_comp_type_export_decl(content, "request", 1)
+  emit_comp_type_export_decl(content, "response", 2)
+  emit_raw_content(buf, content)
+}
+
+fn emit_comp_wit_http_async_func_decl(content: Bytes) -> Unit {
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  leb128_encode_u32(content, 1)
+  emit_name(content, "request")
+  leb128_encode_u32(content, 0)
+  // Async component functypes encode the single unnamed result with tag 0,
+  // followed by its valtype. Opcode 67 already carries async-ness; there is
+  // no extra async flag byte before the parameter count.
+  bytebuf_push(content, 0)
+  // local type 2 is future<response>.
+  leb128_encode_u32(content, 2)
+}
+
+fn emit_comp_wit_http_outgoing_instance_type(buf: Bytes, func_names: Array[String]) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  let nfuncs = Array::length(func_names)
+  leb128_encode_u32(content, 3 + nfuncs + nfuncs)
+  // Root types 1/2 are the nominal request/response aliases.
+  let mut outer_idx = 1
+  while outer_idx <= 2 {
+    bytebuf_push(content, 2)
+    bytebuf_push(content, 3)
+    bytebuf_push(content, 2)
+    leb128_encode_u32(content, 1)
+    leb128_encode_u32(content, outer_idx)
+    outer_idx = outer_idx + 1
+  }
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 1)
+  let mut i = 0
+  while i < nfuncs {
+    emit_comp_wit_http_async_func_decl(content)
+    i = i + 1
+  }
+  i = 0
+  while i < nfuncs {
+    bytebuf_push(content, 4)
+    bytebuf_push(content, 0)
+    emit_name(content, Array::get(func_names, i))
+    bytebuf_push(content, comp_extern_func)
+    leb128_encode_u32(content, 3 + i)
+    i = i + 1
+  }
+  emit_raw_content(buf, content)
+}
+
+/// Minimal valid two-request outbound HTTP surface. Each exported function is
+/// a distinct async component function, so a later adapter must allocate one
+/// future/read landing band per call instead of serializing through one slot.
+export fn comp_emit_wit_outbound_http_dual_fetch_surface() -> Bytes {
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_comp_wit_http_types_instance_type(buf)
+  emit_comp_instance_import_section(buf, "wasi:http/types@0.3.0", 0)
+  emit_comp_instance_export_alias_section(buf, 0, "request", 3)
+  emit_comp_instance_export_alias_section(buf, 0, "response", 3)
+  emit_comp_wit_http_outgoing_instance_type(buf, ["fetch-left", "fetch-right"])
+  emit_comp_instance_import_section(buf, "wasi:http/outgoing-handler@0.3.0", 3)
+  emit_comp_instance_export_alias_section(buf, 1, "fetch-left", comp_extern_func)
+  emit_comp_instance_export_alias_section(buf, 1, "fetch-right", comp_extern_func)
+  bytebuf_to_bytes(buf)
+}
+
+fn emit_comp_wit_payload_and_future_types(buf: Bytes, payload: String) -> Int with Exception {
+  if payload == "s64" {
+    emit_comp_future_type_section(buf, comp_valtype_s64)
+    0
+  } else {
+    bytebuf_push(buf, section_type)
+    let content = bytebuf_new()
+    leb128_encode_u32(content, 2)
+    if String::starts_with(payload, "record{") && String::ends_with(payload, "}") {
+      let fields = comp_split_descriptor(String::substring(payload, 7, String::length(payload) - 1), 44)
+      bytebuf_push(content, 114)
+      leb128_encode_u32(content, Array::length(fields))
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (name, ty) = comp_record_field(Array::get(fields, i))
+        emit_name(content, name)
+        bytebuf_push(content, comp_descriptor_valtype(ty))
+        i = i + 1
+      }
+    } else if String::starts_with(payload, "enum{") && String::ends_with(payload, "}") {
+      let cases = comp_split_descriptor(String::substring(payload, 5, String::length(payload) - 1), 44)
+      bytebuf_push(content, 109)
+      leb128_encode_u32(content, Array::length(cases))
+      let mut i = 0
+      while i < Array::length(cases) {
+        let name = Array::get(cases, i)
+        if String::length(name) == 0 {
+          throw("component(wit-async-import): enum case must not be empty")
+        }
+        emit_name(content, name)
+        i = i + 1
+      }
+    } else {
+      throw("component(wit-async-import): unsupported future payload '\{payload}'; expected s64, record{field:type,...}, or enum{case,...}")
+    }
+    // type 1 = future<type 0>; indexed component valtypes are tag 1 + index.
+    bytebuf_push(content, 101)
+    bytebuf_push(content, 1)
+    leb128_encode_u32(content, 0)
+    emit_raw_content(buf, content)
+    1
+  }
+}
+
+fn emit_comp_wit_payload_type(content: Bytes, payload: String) -> Int with Exception {
+  if String::starts_with(payload, "record{") && String::ends_with(payload, "}") {
+    let fields = comp_split_descriptor(String::substring(payload, 7, String::length(payload) - 1), 44)
+    let has_stream = String::contains(payload, ":stream<u8>")
+    if has_stream {
+      bytebuf_push(content, 1)
+      bytebuf_push(content, 102)
+      bytebuf_push(content, 1)
+      bytebuf_push(content, comp_valtype_u8)
+    }
+    bytebuf_push(content, 1)
+    bytebuf_push(content, 114)
+    leb128_encode_u32(content, Array::length(fields))
+    let mut i = 0
+    while i < Array::length(fields) {
+      let (name, ty) = comp_record_field(Array::get(fields, i))
+      emit_name(content, name)
+      if ty == "stream<u8>" {
+        // An indexed component valtype is the raw type index. The leading 1
+        // used by future<T> belongs to future's option wrapper, not valtype.
+        leb128_encode_u32(content, 0)
+      } else {
+        bytebuf_push(content, comp_descriptor_valtype(ty))
+      }
+      i = i + 1
+    }
+    if has_stream {
+      1
+    } else {
+      0
+    }
+  } else {
+    let cases = comp_split_descriptor(String::substring(payload, 5, String::length(payload) - 1), 44)
+    bytebuf_push(content, 1)
+    bytebuf_push(content, 109)
+    leb128_encode_u32(content, Array::length(cases))
+    let mut i = 0
+    while i < Array::length(cases) {
+      let name = Array::get(cases, i)
+      if String::length(name) == 0 {
+        throw("component(wit-async-import): enum case must not be empty")
+      }
+      emit_name(content, name)
+      i = i + 1
+    }
+    0
+  }
+}
+
+/// Aggregate payload types live inside the imported interface type. Defining
+/// them at the root and aliasing a future that refers back to the root record
+/// is not a valid import type in the component model.
+fn emit_comp_wit_async_aggregate_instance_type(buf: Bytes, payload: String, func_names: Array[String]) -> Unit with Exception {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  let nfuncs = Array::length(func_names)
+  leb128_encode_u32(content, 2 + nfuncs + nfuncs)
+  let _ = emit_comp_wit_payload_type(content, payload)
+  // local type 1 = future<local payload type 0>
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 0)
+  let mut ti = 0
+  while ti < nfuncs {
+    bytebuf_push(content, 1)
+    bytebuf_push(content, 67)
+    bytebuf_push(content, 0)
+    bytebuf_push(content, 0)
+    leb128_encode_u32(content, 1)
+    ti = ti + 1
+  }
+  let mut ei = 0
+  while ei < nfuncs {
+    bytebuf_push(content, 4)
+    bytebuf_push(content, 0)
+    emit_name(content, Array::get(func_names, ei))
+    bytebuf_push(content, comp_extern_func)
+    leb128_encode_u32(content, 2 + ei)
+    ei = ei + 1
+  }
+  emit_raw_content(buf, content)
+}
+
+fn comp_wit_types_interface_id(interface_id: String) -> String with Exception {
+  let mut slash = 0 - 1
+  let mut at = 0 - 1
+  let mut i = 0
+  while i < String::length(interface_id) {
+    let ch = String::char_code_at(interface_id, i)
+    if ch == 47 {
+      slash = i
+    }
+    if ch == 64 {
+      at = i
+    }
+    i = i + 1
+  }
+  if slash < 0 || at <= slash {
+    throw("component(wit-async-import): cannot derive sibling types interface from '\{interface_id}'")
+  }
+  "\{String::substring(interface_id, 0, slash + 1)}types\{String::substring(interface_id, at, String::length(interface_id))}"
+}
+
+fn emit_comp_wit_payload_types_instance_type(buf: Bytes, payload: String) -> Unit with Exception {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  let payload_idx = if String::contains(payload, ":stream<u8>") {
+    1
+  } else {
+    0
+  }
+  leb128_encode_u32(content, payload_idx + 2)
+  let emitted_payload_idx = emit_comp_wit_payload_type(content, payload)
+  if emitted_payload_idx != payload_idx {
+    throw("component(wit-async-import): internal payload type index mismatch")
+  }
+  bytebuf_push(content, 4)
+  bytebuf_push(content, 0)
+  emit_name(content, "payload")
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, payload_idx)
+  emit_raw_content(buf, content)
+}
+
+fn emit_comp_wit_async_aggregate_api_type(buf: Bytes, func_name: String) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  leb128_encode_u32(content, 4)
+  // Alias root type 1 (the nominal payload exported by the types interface).
+  bytebuf_push(content, 2)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 2)
+  leb128_encode_u32(content, 1)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  leb128_encode_u32(content, 0)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 67)
+  bytebuf_push(content, 0)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 4)
+  bytebuf_push(content, 0)
+  emit_name(content, func_name)
+  bytebuf_push(content, comp_extern_func)
+  leb128_encode_u32(content, 2)
+  emit_raw_content(buf, content)
+}
+
+export fn comp_emit_wit_async_future_import_surface(interface_id: String, func_name: String, wit_result_type: String) -> Bytes with Exception {
+  if !String::contains(interface_id, ":") || !String::contains(interface_id, "/") || !String::contains(interface_id, "@") {
+    throw("component(wit-async-import): interface id must be versioned (`namespace:package/interface@version`)")
+  } else if String::length(func_name) == 0 {
+    throw("component(wit-async-import): function name must not be empty")
+  } else {
+    ()
+  }
+  let payload = comp_wit_descriptor_payload(wit_result_type)
+  let _ = comp_wit_async_payload_landing_layout(wit_result_type)
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  // Root type 0 is future<s64>. Root type 1 is an instance type with three
+  // declarations:
+  //   alias outer type 0 (preserves the future's canonical type identity)
+  //   type 1 = async func() -> the aliased type 0
+  //   export <func_name>: func type 1
+  if payload == "s64" {
+    let future_type_idx = emit_comp_wit_payload_and_future_types(buf, payload)
+    emit_comp_wit_async_future_instance_type_at(buf, [func_name], future_type_idx)
+    emit_comp_instance_import_section(buf, interface_id, future_type_idx + 1)
+    emit_comp_instance_export_alias_section(buf, 0, func_name, comp_extern_func)
+  } else {
+    // Nominal aggregate payloads come from the package's sibling `types`
+    // interface. The API interface aliases that imported identity before
+    // defining future<payload>; an inline private record makes the instance
+    // type invalid as a component import.
+    emit_comp_wit_payload_types_instance_type(buf, payload)
+    emit_comp_instance_import_section(buf, comp_wit_types_interface_id(interface_id), 0)
+    emit_comp_instance_export_alias_section(buf, 0, "payload", 3)
+    emit_comp_wit_async_aggregate_api_type(buf, func_name)
+    emit_comp_instance_import_section(buf, interface_id, 2)
+    emit_comp_instance_export_alias_section(buf, 1, func_name, comp_extern_func)
+  }
+  bytebuf_to_bytes(buf)
+}
+
+fn emit_comp_wit_async_future_instance_type(buf: Bytes, func_names: Array[String]) -> Unit {
+  emit_comp_wit_async_future_instance_type_at(buf, func_names, 0)
+}
+
+fn emit_comp_wit_async_future_instance_type_at(buf: Bytes, func_names: Array[String], future_type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 66)
+  let nfuncs = Array::length(func_names)
+  leb128_encode_u32(content, 1 + nfuncs + nfuncs)
+  // One outer alias makes every function in this interface refer to the same
+  // canonical future<s64> identity.
+  bytebuf_push(content, 2)
+  bytebuf_push(content, 3)
+  bytebuf_push(content, 2)
+  leb128_encode_u32(content, 1)
+  leb128_encode_u32(content, future_type_idx)
+  let mut ti = 0
+  while ti < nfuncs {
+    bytebuf_push(content, 1)
+    bytebuf_push(content, 67)
+    bytebuf_push(content, 0)
+    bytebuf_push(content, 0)
+    leb128_encode_u32(content, 0)
+    ti = ti + 1
+  }
+  let mut ei = 0
+  while ei < nfuncs {
+    bytebuf_push(content, 4)
+    bytebuf_push(content, 0)
+    emit_name(content, Array::get(func_names, ei))
+    bytebuf_push(content, comp_extern_func)
+    leb128_encode_u32(content, 1 + ei)
+    ei = ei + 1
+  }
+  emit_raw_content(buf, content)
+}
+
 fn comp_emit_wasi_cli_stdin_import_surface_for_test() -> Bytes {
   let buf = bytebuf_new()
   emit_component_header(buf)
@@ -4837,7 +5647,91 @@ fn comp_hoststream_import_label(core_name: String) -> String {
 /// ADR-0089 (c) (#1218): is `nm` a host-future GET core import -- the
 /// anonymous `host_future_get` or a named `host_future_get$<label>`?
 fn comp_is_host_future_get_import(nm: String) -> Bool {
-  nm == "host_future_get" || String::starts_with(nm, "host_future_get$")
+  nm == "host_future_get" || String::starts_with(nm, "host_future_get$") || String::starts_with(nm, "wit_future_get$")
+}
+
+fn comp_is_wit_future_get_import(nm: String) -> Bool {
+  String::starts_with(nm, "wit_future_get$")
+}
+
+fn comp_wit_future_separator(core_name: String) -> Int with Exception {
+  let suffix = String::substring(core_name, String::length("wit_future_get$"), String::length(core_name))
+  let sep = String::index_of(suffix, "#")
+  if sep <= 0 || sep + 1 >= String::length(suffix) {
+    throw("component(wit-async-import): malformed core metadata '\{core_name}'; expected wit_future_get$<versioned-interface>#<func>")
+  }
+  sep
+}
+
+fn comp_wit_future_interface(core_name: String) -> String with Exception {
+  let start = String::length("wit_future_get$")
+  let interface_id = String::substring(core_name, start, start + comp_wit_future_separator(core_name))
+  if !String::contains(interface_id, ":") || !String::contains(interface_id, "/") || !String::contains(interface_id, "@") {
+    throw("component(wit-async-import): interface id in '\{core_name}' must be versioned (`namespace:package/interface@version`)")
+  }
+  interface_id
+}
+
+fn comp_wit_future_func(core_name: String) -> String with Exception {
+  let start = String::length("wit_future_get$")
+  let sep = comp_wit_future_separator(core_name)
+  String::substring(core_name, start + sep + 1, String::length(core_name))
+}
+
+fn comp_string_array_index(items: Array[String], needle: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(items) && found < 0 {
+    if Array::get(items, i) == needle {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Unique WIT interfaces in first core-declaration order. This is the
+/// canonical component instance-import order.
+fn comp_wit_future_interfaces(core_names: Array[String]) -> Array[String] with Exception {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(core_names) {
+    let core_name = Array::get(core_names, i)
+    if comp_is_wit_future_get_import(core_name) {
+      let interface_id = comp_wit_future_interface(core_name)
+      if comp_string_array_index(out, interface_id) < 0 {
+        Array::push(out, interface_id)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Functions owned by one interface, preserving core-declaration order.
+fn comp_wit_future_funcs(core_names: Array[String], interface_id: String) -> Array[String] with Exception {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(core_names) {
+    let core_name = Array::get(core_names, i)
+    if comp_is_wit_future_get_import(core_name) && comp_wit_future_interface(core_name) == interface_id {
+      let func_name = comp_wit_future_func(core_name)
+      if comp_string_array_index(out, func_name) >= 0 {
+        throw("component(wit-async-import): duplicate function '\{func_name}' in interface '\{interface_id}'")
+      }
+      Array::push(out, func_name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// ADR-0089 (c) (#1218): every host-future GET core import name the module
@@ -4922,8 +5816,10 @@ fn comp_hf_max_handles() -> Int {
   1023
 }
 
-fn comp_hostfuture_import_label(core_name: String) -> String {
-  if core_name == "host_future_get" {
+fn comp_hostfuture_import_label(core_name: String) -> String with Exception {
+  if comp_is_wit_future_get_import(core_name) {
+    comp_wit_future_func(core_name)
+  } else if core_name == "host_future_get" {
     "get-future"
   } else {
     String::substring(core_name, String::length("host_future_get$"), String::length(core_name))
@@ -5007,7 +5903,7 @@ fn comp_sleep_wait_payload_slot() -> Int {
   32
 }
 
-fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int) -> Bytes {
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool) -> Bytes with Exception {
   // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
   // other two: the host side is an `async func(ms) -> ms`, so its
   // async-lowered call yields a SUBTASK rather than a future/stream handle,
@@ -5277,19 +6173,27 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
     emit_i32_const(get_body, 8)
     emit_i32_load(get_body, 2, 0)
     emit_local_set(get_body, 1)
-    // Per-handle scratch lives at HF_VALUE_BASE/HF_STATE_BASE + fut * 4, so
+    // Per-handle scratch lives at HF_VALUE_BASE + fut * payload width, so
     // concurrent reads never share a landing slot. Handles are small
     // instance-table indices; anything past the reserved band is a contract
     // violation this adapter cannot represent, so trap.
     emit_local_get(get_body, 1)
-    emit_i32_const(get_body, comp_hf_max_handles())
+    emit_i32_const(get_body, if future_s64 {
+      511
+    } else {
+      comp_hf_max_handles()
+    })
     emit_i32_gt_u(get_body)
     emit_if_void(get_body)
     bytebuf_push(get_body, 0)
     emit_end(get_body)
-    // addr = HF_VALUE_BASE + fut * 4
+    // addr = HF_VALUE_BASE + fut * payload width
     emit_local_get(get_body, 1)
-    emit_i32_const(get_body, 2)
+    emit_i32_const(get_body, if future_s64 {
+      3
+    } else {
+      2
+    })
     emit_i32_shl(get_body)
     emit_i32_const(get_body, comp_hf_value_base())
     emit_i32_add(get_body)
@@ -5332,7 +6236,11 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_i32_wrap_i64(wait_body)
   emit_local_set(wait_body, 1)
   emit_local_get(wait_body, 1)
-  emit_i32_const(wait_body, 2)
+  emit_i32_const(wait_body, if future_s64 {
+    3
+  } else {
+    2
+  })
   emit_i32_shl(wait_body)
   emit_i32_const(wait_body, comp_hf_value_base())
   emit_i32_add(wait_body)
@@ -5392,9 +6300,18 @@ fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], strea
   emit_i32_store(wait_body, 2, 0)
   // Return the value in the compiled core's value convention.
   emit_local_get(wait_body, 5)
-  emit_i32_load(wait_body, 2, 0)
-  bytebuf_push(wait_body, 173)
-  comp_emit_encode_i64_value(wait_body, tag_mode)
+  if future_s64 {
+    // i64.load align=3 offset=0. `future<s64>` is already vibe Int's
+    // canonical scalar; only the internal tag convention remains.
+    bytebuf_push(wait_body, 41)
+    leb128_encode_u32(wait_body, 3)
+    leb128_encode_u32(wait_body, 0)
+    comp_emit_encode_i64_value(wait_body, tag_mode)
+  } else {
+    emit_i32_load(wait_body, 2, 0)
+    bytebuf_push(wait_body, 173)
+    comp_emit_encode_i64_value(wait_body, tag_mode)
+  }
   bytebuf_push(wait_body, 11)
   if nnames > 0 {
     leb128_encode_u32(code_sec, Bytes::length(wait_body))
@@ -6126,6 +7043,27 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   let hf_names = comp_core_host_future_names(main_core_wasm)
   let nhf = Array::length(hf_names)
+  let mut nwit = 0
+  let mut wit_i = 0
+  while wit_i < nhf {
+    if comp_is_wit_future_get_import(Array::get(hf_names, wit_i)) {
+      nwit = nwit + 1
+    } else {
+      ()
+    }
+    wit_i = wit_i + 1
+  }
+  // Root futures carry u32 while WIT Future[Int] carries canonical s64. Keep
+  // those adapter payload contracts separate instead of silently selecting one
+  // width for a mixed program.
+  if nwit > 0 && nwit != nhf {
+    throw("component(wit-async-import): cannot mix runner-private future<u32> root imports with WIT-derived future<s64> interface imports; migrate all async imports in this component to versioned WIT interfaces")
+  } else {
+    ()
+  }
+  let future_s64 = nwit > 0
+  let wit_interfaces = comp_wit_future_interfaces(hf_names)
+  let nwit_interfaces = Array::length(wit_interfaces)
   // ADR-0089 Decision 3 (#1218): host STREAMS ride the same composition --
   // per-name `stream<u8>` component imports after the future imports, the
   // stream canon pair after the waitable quartet, and the shared adapter
@@ -6143,6 +7081,11 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // instance to satisfy it -- and emitted an unvalidatable component with a
   // zero exit status rather than saying so.
   let want_sleep = comp_core_imports_sleep(main_core_wasm)
+  if future_s64 && (nhs > 0 || want_sleep) {
+    throw("component(wit-async-import): WIT future imports cannot yet share a component with runner-private host streams or sleep; their component-function ordering needs the generalized import planner")
+  } else {
+    ()
+  }
   if nt == 0 && !want_sleep {
     throw("component(async-hostfuture): core module imports no vibe.host_future_get[$name] / vibe.host_stream_get$name / vibe.sleep (this wrap is keyed on those imports)")
   } else {
@@ -6151,22 +7094,39 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   let tag_mode = comp_core_tag_mode(main_core_wasm)
   let buf = bytebuf_new()
   emit_component_header(buf)
-  // Component type indices, in emission order: the future pair (value type
-  // + import functype) when futures exist, then the stream pair when
-  // streams exist, then (later) the export functype.
+  // Component type indices: root futures use the historical pair. WIT futures
+  // use one shared future<s64> type plus one instance type per unique interface.
   let future_type_idx = 0
   let fut_functype_idx = 1
   if nhf > 0 {
-    emit_comp_future_type_section(buf, comp_valtype_u32)
-    emit_comp_async_functype_section_result_type(buf, future_type_idx)
+    emit_comp_future_type_section(buf, if future_s64 {
+      comp_valtype_s64
+    } else {
+      comp_valtype_u32
+    })
+    if future_s64 {
+      let mut wit_ty_i = 0
+      while wit_ty_i < nwit_interfaces {
+        let interface_id = Array::get(wit_interfaces, wit_ty_i)
+        emit_comp_wit_async_future_instance_type(buf, comp_wit_future_funcs(hf_names, interface_id))
+        wit_ty_i = wit_ty_i + 1
+      }
+    } else {
+      emit_comp_async_functype_section_result_type(buf, future_type_idx)
+    }
   } else {
     ()
   }
-  let stream_type_idx = if nhf > 0 {
-    2
+  let future_type_count = if nhf > 0 {
+    if future_s64 {
+      1 + nwit_interfaces
+    } else {
+      2
+    }
   } else {
     0
   }
+  let stream_type_idx = future_type_count
   let stream_functype_idx = stream_type_idx + 1
   if nhs > 0 {
     emit_comp_stream_type_section(buf, comp_valtype_u8)
@@ -6178,11 +7138,7 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // imports this one takes a PARAM (the delay) and has no future value type of
   // its own, so it is one functype and no defined type. Both halves may be
   // absent, so count the emitted types rather than assuming a fixed offset.
-  let sleep_functype_idx = (if nhf > 0 {
-    2
-  } else {
-    0
-  }) + (if nhs > 0 {
+  let sleep_functype_idx = future_type_count + (if nhs > 0 {
     2
   } else {
     0
@@ -6201,10 +7157,19 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   // its core module's declaration order, so component func index i is the
   // import the composer's lowered core func i belongs to. `sleep-for` follows
   // them, so it is component func index nt.
-  let mut himp_i = 0
-  while himp_i < nhf {
-    emit_comp_import_section_typed(buf, comp_hostfuture_import_label(Array::get(hf_names, himp_i)), fut_functype_idx)
-    himp_i = himp_i + 1
+  if future_s64 {
+    let mut wi = 0
+    while wi < nwit_interfaces {
+      emit_comp_instance_import_section(buf, Array::get(wit_interfaces, wi), 1 + wi)
+      wi = wi + 1
+    }
+  } else {
+    let mut himp_i = 0
+    while himp_i < nhf {
+      let core_name = Array::get(hf_names, himp_i)
+      emit_comp_import_section_typed(buf, comp_hostfuture_import_label(core_name), fut_functype_idx)
+      himp_i = himp_i + 1
+    }
   }
   let mut simp_i = 0
   while simp_i < nhs {
@@ -6223,9 +7188,23 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   }
   emit_core_module_section(buf, main_core_wasm)
   emit_core_module_section(buf, comp_generate_memhost_module())
-  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode))
+  emit_core_module_section(buf, comp_generate_hostfuture_adapter_core_module(hf_names, hs_names, hs_wants_close, want_sleep, tag_mode, future_s64))
   emit_core_module_section(buf, comp_generate_async_trampoline_hostfuture())
   emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  // A component-instance export alias must follow embedded core-module
+  // sections. Root function imports need no alias; the WIT instance route does.
+  if future_s64 {
+    let mut wai = 0
+    while wai < nhf {
+      let core_name = Array::get(hf_names, wai)
+      let interface_id = comp_wit_future_interface(core_name)
+      let instance_idx = comp_string_array_index(wit_interfaces, interface_id)
+      emit_comp_instance_export_alias_section(buf, instance_idx, comp_wit_future_func(core_name), comp_extern_func)
+      wai = wai + 1
+    }
+  } else {
+    ()
+  }
   let memhost_inst = 0
   emit_core_instance_instantiate_section(buf, 1, array_empty())
   let mem_alias_idx = 0
@@ -6373,6 +7352,85 @@ export fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, expor
   emit_canon_lift_async_section(buf, tramp_run_func_idx, export_functype_idx)
   emit_comp_export_section(buf, export_name, nimports)
   bytebuf_to_bytes(buf)
+}
+
+/// Validation fixture for #2064's first end-to-end WIT-derived import route.
+/// The synthetic core carries the same metadata import linked_compile will
+/// eventually derive from parsed WIT, then the production composer turns it
+/// into a versioned interface instance import and the s64 future adapter.
+export fn comp_emit_component_wasm_async_wit_future_fixture() -> Bytes with Exception {
+  comp_emit_component_wasm_async_hostfuture(comp_generate_async_wit_future_fixture_core(false), "run")
+}
+
+/// Negative fixture: the payload widths differ, so mixed root/WIT futures must
+/// fail with the composer's migration diagnostic before any component is emit.
+export fn comp_emit_component_wasm_async_wit_future_mixed_fixture() -> Bytes with Exception {
+  comp_emit_component_wasm_async_hostfuture(comp_generate_async_wit_future_fixture_core(true), "run")
+}
+
+fn comp_generate_async_wit_future_fixture_core(include_root: Bool) -> Bytes {
+  let core = bytebuf_new()
+  emit_header(core)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 3)
+  emit_func_type_raw(tc, [127, 127, 127, 127], [127])
+  emit_func_type_raw(tc, [126], [126])
+  emit_func_type_raw(tc, array_empty(), [126])
+  bytebuf_push_section(core, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, if include_root {
+    6
+  } else {
+    5
+  })
+  emit_name(ic, "wasi_snapshot_preview1")
+  emit_name(ic, "fd_write")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "vibe")
+  emit_name(ic, "host_future_wait")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "vibe")
+  emit_name(ic, "wit_future_get$example:prices/api@1.0.0#get-price")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "vibe")
+  emit_name(ic, "wit_future_get$example:prices/api@1.0.0#get-tax")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "vibe")
+  emit_name(ic, "wit_future_get$example:inventory/api@2.1.0#get-stock")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  if include_root {
+    emit_name(ic, "vibe")
+    emit_name(ic, "host_future_get$legacy")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
+  bytebuf_push_section(core, 2, ic)
+  emit_function_section(core, [1])
+  emit_export_section(core, "run", if include_root {
+    6
+  } else {
+    5
+  })
+  let body = bytebuf_new()
+  emit_i64_const(body, 42)
+  emit_code_section(core, [body])
+  let tagged = bytebuf_new()
+  bytebuf_push_buf(tagged, core)
+  let metadata = bytebuf_new()
+  emit_name(metadata, "vibe.tagmode")
+  bytebuf_push(metadata, 1)
+  bytebuf_push(metadata, 0)
+  bytebuf_push(metadata, 0)
+  bytebuf_push(metadata, 0)
+  bytebuf_push_section(tagged, 0, metadata)
+  bytebuf_to_bytes(tagged)
 }
 
 /// ADR-0089 step 2 (#1218): guest core module for the SELF-CONTAINED
@@ -7345,7 +8403,7 @@ fn comp_generate_serve_stream_adapter_module() -> Bytes {
   emit_i64_const(b, 0 - 1)
   emit_return(b)
   emit_end(b)
-  // One byte per call: the shape ByteStream::next needs, and the worst case
+  // One byte per call: the current host-stream read shape, and the worst case
   // for status handling.
   emit_local_get(b, 1)
   emit_local_get(b, 6)

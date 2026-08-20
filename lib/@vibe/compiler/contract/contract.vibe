@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, lookup_registry_builtin, resolve_builtin
+  Expr, ImportItem, Stmt, TypeExpr, lookup_registry_builtin, resolve_builtin
 }
 
 import @vibe/compiler/syntax {
@@ -375,7 +375,9 @@ fn collect_reexported_names(impl_stmts: Array[Stmt]) -> Array[String] {
       SReExport(_, items) => {
         let mut ii = 0
         while ii < Array::length(items) {
-          let (rname, alias_opt) = Array::get(items, ii)
+          let item = Array::get(items, ii)
+          let rname = item.name
+          let alias_opt = item.alias
           let exported_name = match alias_opt {
             Some(a) => a,
             None => rname
@@ -898,9 +900,13 @@ export fn contract_types_item_names(tds: Array[Stmt]) -> Array[String] {
   let mut i = 0
   while i < Array::length(tds) {
     match Array::get(tds, i) {
-      SStruct(_, name, _, _, _, _) => Array::push(out, String::concat("type ", name)),
-      SEnum(_, name, _, _, _) => Array::push(out, String::concat("type ", name)),
-      STypeAlias(_, name, _, _) => Array::push(out, String::concat("type ", name)),
+      // This line is a compiler-owned carrier for already-checked transparent
+      // declarations, not a user's kind-qualified import claim. Keep it bare
+      // so parsing records ImportItem.kind=None; `type` would falsely assert
+      // that structs/enums are aliases under import-kind Phase 1.
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      SEnum(_, name, _, _, _) => Array::push(out, name),
+      STypeAlias(_, name, _, _) => Array::push(out, name),
       _ => ()
     }
     i = i + 1
@@ -924,11 +930,11 @@ export fn contract_types_module_line(keyword: String, types_path: String, tds: A
 /// unqualified form is shared with sibling impl files -- the namespaced form's
 /// whole point is to keep `mod.x` the ONLY way in, so propagating it verbatim
 /// would defeat that.
-fn import_items_are_dot_qualified(items: Array[(String, Option[String])]) -> Bool {
+fn import_items_are_dot_qualified(items: Array[ImportItem]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(items) && !found {
-    let (_, alias) = Array::get(items, i)
+    let alias = Array::get(items, i).alias
     match alias {
       Some(a) => if String::index_of(a, ".") >= 0 {
         found = true
@@ -1112,7 +1118,10 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
           uti = uti + 1
         }
         if here {
-          Array::push(names, "type \{oname}")
+          // Generated facade carrier: this does not assert that the opaque
+          // implementation is a type alias (it may be a struct or enum).
+          // Keep the import item bare so Phase 1 records kind=None.
+          Array::push(names, oname)
           Array::push(allocated, "type \{oname}")
         } else ()
       }

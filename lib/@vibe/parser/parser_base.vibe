@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
 }
 
 import ./parser_binder_context.vibe {
@@ -767,8 +767,8 @@ fn is_non_pipe_infix(tok: Token) -> Bool {
   }
 }
 
-export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Option[String]), Int) with Exception {
-  let parse_import_name: (Int) -> ((String, Option[String]), Int) with Exception = (name_pos) -> {
+export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (ImportItem, Int) with Exception {
+  let parse_import_name: (Int, Option[ImportKind]) -> (ImportItem, Int) with Exception = (name_pos, kind) -> {
     match peek(tokens, name_pos) {
       TIdent(name) => {
         let (base, after) = match peek(tokens, name_pos + 1) {
@@ -783,13 +783,13 @@ export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, 
           TAs => match peek(tokens, after + 1) {
             TIdent(alias) => {
               binder_capture_source(context, alias, after + 1, after + 1)
-              ((base, Some(alias)), after + 2)
+              (ImportItem::{ kind, name: base, alias: Some(alias) }, after + 2)
             },
             _ => throw("expected alias name after 'as'")
           },
           _ => {
             binder_capture_source(context, base, name_pos, after - 1)
-            ((base, None), after)
+            (ImportItem::{ kind, name: base, alias: None }, after)
           }
         }
       },
@@ -797,17 +797,23 @@ export fn parse_import_item_with_binder_context(tokens: Array[Token], pos: Int, 
     }
   }
   match peek(tokens, pos) {
-    TIdent(_) => parse_import_name(pos),
-    TType => parse_import_name(pos + 1),
-    TTrait => parse_import_name(pos + 1),
+    TIdent(name) => if name == "effect" {
+      parse_import_name(pos + 1, Some(ImportEffect))
+    } else {
+      parse_import_name(pos, None)
+    },
+    TType => parse_import_name(pos + 1, Some(ImportType)),
+    TStruct => parse_import_name(pos + 1, Some(ImportStruct)),
+    TEnum => parse_import_name(pos + 1, Some(ImportEnum)),
+    TTrait => parse_import_name(pos + 1, Some(ImportTrait)),
     _ => throw("expected import item name")
   }
 }
 
-fn parse_import_item(tokens: Array[Token], pos: Int) -> ((String, Option[String]), Int) with Exception {
+fn parse_import_item(tokens: Array[Token], pos: Int) -> (ImportItem, Int) with Exception {
   parse_import_item_with_binder_context(tokens, pos, None)
 }
-fn empty_import_items() -> Array[(String, Option[String])] {
+fn empty_import_items() -> Array[ImportItem] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 

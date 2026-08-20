@@ -10,9 +10,8 @@
 #
 # Entries covered (spec milestone table M1b-3b / M-conc-1 / M2a / M2b / M2c):
 #   await      await(Future::ready(42))
-#   option     Stream::next Some/None over a ByteStream ("*" = 42, "" = None)
 #   body       ByteStream consume: String::to_bytes fold
-#   roundtrip  Stream::to_string(String::to_bytes(...))
+#   roundtrip  ByteStream::to_string(String::to_bytes(...))
 #   control    non-async entry stays a core module (magic layer 0x01)
 #
 # forawait: the `for x in stream` entry regressed while this gate was
@@ -65,19 +64,6 @@ let run: () -> Int with Async = () -> {
   await(Future::ready(42))
 }
 EOF
-  cat >"$OUT_DIR/option.vibe" <<'EOF'
-let run: () -> Int with Async = () -> {
-  let a = match await(Stream::next(String::to_bytes("*"))) {
-    Some(v) => v,
-    None => 0
-  }
-  let b = match await(Stream::next(String::to_bytes(""))) {
-    Some(v) => v,
-    None => 0
-  }
-  a + b
-}
-EOF
   cat >"$OUT_DIR/body.vibe" <<'EOF'
 let run: () -> Int with Async = () -> {
   let mut acc = 0
@@ -89,7 +75,7 @@ let run: () -> Int with Async = () -> {
 EOF
   cat >"$OUT_DIR/roundtrip.vibe" <<'EOF'
 let run: () -> Int with Async = () -> {
-  let s = Stream::to_string(String::to_bytes("42"))
+  let s = ByteStream::to_string(String::to_bytes("42"))
   if s == "42" { 42 } else { 0 }
 }
 EOF
@@ -149,7 +135,7 @@ run_component_42() {
 
 write_fixtures
 
-ENTRIES="await option body roundtrip forawait"
+ENTRIES="await body roundtrip forawait"
 for name in $ENTRIES; do
   run_component_42 "$name"
 done

@@ -1,0 +1,2734 @@
+//# Shadow-only checked implementation body artifact (#1958)
+
+import @vibe/ast {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/compiler/checker {
+  check_program_binder_occurrence_observation, check_program_result, check_program_typed_occurrence_expression_path_observation
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Subst, Type, TypeDef, TypeEnv, env_lookup, type_to_string
+}
+
+import @vibe/parser {
+  LocatedProgramBinderAuthority,
+  located_program_binder_authority_program,
+  located_program_binder_authority_source,
+  parse_source_located_with_binder_authority
+}
+
+import ./checked_exported_interface_artifact.vibe {
+  checked_exported_interface_artifact_from_checked_program,
+  decode_checked_exported_interface_artifact_v1,
+  encode_checked_exported_interface_artifact_v1
+}
+
+/// Exact ingested source plus exact parser-authoritative binder-to-use rows.
+/// The source retains comments, whitespace, docs, and byte locations. This is
+/// shadow comparison data only; decoding does not attest checker success.
+export struct CheckedImplementationBodyArtifact {
+  source: String;
+  binding_rows: Array[(Int, Int, Int)];
+  exported_interface_bytes: String;
+  diagnostic_identity: String
+}
+
+/// Versioned normalized typed-IR pilot. V1 deliberately supports exactly one
+/// top-level unannotated SLet whose value is a scalar leaf. Every other node
+/// fails closed until its complete semantic fields receive a codec.
+export struct NormalizedCheckedLeafArtifact {
+  exported: Bool;
+  recursive: Bool;
+  name: String;
+  leaf_kind: String;
+  payload: String;
+  checked_type: String
+}
+
+/// Structured function pilot. The nested type and body fields use independent
+/// recursive codecs and are validated again when the outer artifact decodes.
+export struct NormalizedCheckedFunctionArtifact {
+  exported: Bool;
+  name: String;
+  parameter_names: Array[String];
+  checked_function_type: String;
+  body: String
+}
+
+/// Shadow-only minimal join for one checked function. Every field is retained
+/// from the same successful checker run or parser authority. It is never a
+/// cache or production reuse input.
+export struct NormalizedCheckedFunctionJoinArtifact {
+  source: String;
+  binding_rows: Array[(Int, Int, Int)];
+  function_bytes: String;
+  final_env_binding: String;
+  final_subst: String;
+  occurrences: Array[(Int, String, String, String)]
+}
+
+/// Lossless value-environment transport pilot. Trait/type-definition nodes
+/// remain fail-closed until their complete declaration codecs join this schema.
+export struct NormalizedValueTypeEnvArtifact {
+  env_bytes: String
+}
+
+fn body_empty_diagnostic_identity() -> String {
+  "vibe-checked-implementation-body:empty-typing-diagnostics:path,start,end,code,message:v1"
+}
+
+fn body_push_int(out: StringBuilder, value: Int) -> Unit {
+  StringBuilder::push(out, __to_string(value))
+  StringBuilder::push(out, ":")
+}
+
+fn body_push_piece(out: StringBuilder, value: String) -> Unit {
+  body_push_int(out, String::length(value))
+  StringBuilder::push(out, value)
+}
+
+fn body_row_text(row: (Int, Int, Int)) -> String {
+  let out = StringBuilder::new()
+  body_push_int(out, row.0)
+  body_push_int(out, row.1)
+  body_push_int(out, row.2)
+  StringBuilder::freeze(out)
+}
+
+fn body_rows_valid(source: String, rows: Array[(Int, Int, Int)]) -> Bool {
+  let n = String::length(source)
+  let mut i = 0
+  let mut valid = true
+  while i < Array::length(rows) && valid {
+    let (use_off, start, end) = Array::get(rows, i)
+    if use_off < 0 || use_off >= n || start < 0 || start >= end || end > n {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+/// Trusted in-memory producer: the checker must succeed and the complete
+/// parser-authoritative occurrence walk must remain eligible.
+export fn checked_implementation_body_artifact_from_authority(authority: LocatedProgramBinderAuthority) -> Option[CheckedImplementationBodyArtifact] with Exception {
+  let program = located_program_binder_authority_program(authority)
+  let checked = check_program_result(program)
+  match (check_program_binder_occurrence_observation(authority), checked_exported_interface_artifact_from_checked_program(checked)) {
+    (Some(rows), Some(exported_interface)) => {
+      let source = located_program_binder_authority_source(authority)
+      if body_rows_valid(source, rows) {
+        Some(CheckedImplementationBodyArtifact::{
+          source,
+          binding_rows: rows,
+          exported_interface_bytes: encode_checked_exported_interface_artifact_v1(exported_interface),
+          diagnostic_identity: body_empty_diagnostic_identity()
+        })
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+/// Domain-separated, length-delimited canonical v1 encoding.
+export fn encode_checked_implementation_body_artifact_v1(artifact: CheckedImplementationBodyArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-checked-implementation-body:v1\n")
+  body_push_piece(out, artifact.source)
+  StringBuilder::push(out, __to_string(Array::length(artifact.binding_rows)))
+  StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(artifact.binding_rows) {
+    body_push_piece(out, body_row_text(Array::get(artifact.binding_rows, i)))
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  body_push_piece(out, artifact.exported_interface_bytes)
+  body_push_piece(out, artifact.diagnostic_identity)
+  StringBuilder::freeze(out)
+}
+
+fn body_decimal(text: String, start: Int, end: Int, bound: Int) -> Option[Int] {
+  if start >= end {
+    None
+  } else {
+    let mut i = start
+    let mut value = 0
+    let mut valid = !(end - start > 1 && String::char_code_at(text, start) == 48)
+    while i < end && valid {
+      let digit = String::char_code_at(text, i) - 48
+      if digit < 0 || digit > 9 || value > (bound - digit) / 10 {
+        valid = false
+      } else {
+        value = value * 10 + digit
+        i = i + 1
+      }
+    }
+    if valid {
+      Some(value)
+    } else {
+      None
+    }
+  }
+}
+
+fn body_piece(text: String, pos: Int) -> Option[(String, Int)] {
+  let n = String::length(text)
+  let mut colon = pos
+  while colon < n && String::char_code_at(text, colon) != 58 {
+    colon = colon + 1
+  }
+  match body_decimal(text, pos, colon, n) {
+    Some(size) => {
+      let start = colon + 1
+      let end = start + size
+      if colon >= n || end < start || end > n {
+        None
+      } else {
+        Some((text[start: end], end))
+      }
+    },
+    None => None
+  }
+}
+
+fn body_row(text: String) -> Option[(Int, Int, Int)] {
+  let bound = (2305843009213693951<<1)|1
+  let mut ends = array_empty()
+  let mut start = 0
+  let mut i = 0
+  while i < String::length(text) {
+    if String::char_code_at(text, i) == 58 {
+      Array::push(ends, i)
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(ends) != 3 || start != String::length(text) {
+    None
+  } else {
+    match (body_decimal(text, 0, Array::get(ends, 0), bound), body_decimal(text, Array::get(ends, 0) + 1, Array::get(ends, 1), bound), body_decimal(text, Array::get(ends, 1) + 1, Array::get(ends, 2), bound)) {
+      (Some(a), Some(b), Some(c)) => Some((a, b, c)),
+      _ => None
+    }
+  }
+}
+
+/// Strict decoder: old versions, truncation, malformed counts, extra bytes,
+/// invalid ranges, and alternate encodings all fail closed.
+export fn decode_checked_implementation_body_artifact_v1(text: String) -> Option[CheckedImplementationBodyArtifact] {
+  let prefix = "vibe-checked-implementation-body:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else {
+    match body_piece(text, String::length(prefix)) {
+      Some((source, after_source)) => {
+        let mut bracket = after_source
+        while bracket < String::length(text) && String::char_code_at(text, bracket) != 91 {
+          bracket = bracket + 1
+        }
+        match body_decimal(text, after_source, bracket, String::length(text)) {
+          Some(count) => {
+            let rows = array_empty()
+            let mut cursor = bracket + 1
+            let mut i = 0
+            let mut valid = bracket < String::length(text)
+            while i < count && valid {
+              match body_piece(text, cursor) {
+                Some((raw, next)) => match body_row(raw) {
+                  Some(row) => {
+                    Array::push(rows, row); cursor = next
+                  },
+                  None => {
+                    valid = false
+                  }
+                },
+                None => {
+                  valid = false
+                }
+              }
+              i = i + 1
+            }
+            if !valid || cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 || !body_rows_valid(source, rows) {
+              None
+            } else match body_piece(text, cursor + 1) {
+              Some((exported_interface_bytes, after_interface)) => match decode_checked_exported_interface_artifact_v1(exported_interface_bytes) {
+                Some(_) => {
+                  match body_piece(text, after_interface) {
+                    Some((diagnostic_identity, end)) => {
+                      let artifact = CheckedImplementationBodyArtifact::{
+                        source,
+                        binding_rows: rows,
+                        exported_interface_bytes,
+                        diagnostic_identity
+                      }
+                      if end != String::length(text) || diagnostic_identity != body_empty_diagnostic_identity() || encode_checked_implementation_body_artifact_v1(artifact) != text {
+                        None
+                      } else {
+                        Some(artifact)
+                      }
+                    },
+                    None => None
+                  }
+                },
+                None => None
+              },
+              None => None
+            }
+          },
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+export fn canonical_checked_implementation_body_artifact_snapshot(artifact: CheckedImplementationBodyArtifact) -> String {
+  encode_checked_implementation_body_artifact_v1(artifact)
+}
+
+export fn checked_implementation_body_artifact_source(artifact: CheckedImplementationBodyArtifact) -> String {
+  artifact.source
+}
+
+export fn checked_implementation_body_artifact_binding_row_count(artifact: CheckedImplementationBodyArtifact) -> Int {
+  Array::length(artifact.binding_rows)
+}
+
+export fn checked_implementation_body_artifact_exported_interface_bytes(artifact: CheckedImplementationBodyArtifact) -> String {
+  artifact.exported_interface_bytes
+}
+
+export fn checked_implementation_body_artifact_diagnostic_identity(artifact: CheckedImplementationBodyArtifact) -> String {
+  artifact.diagnostic_identity
+}
+
+/// Shadow convenience entry: syntax/type failures publish no artifact. The
+/// fixed empty-diagnostic marker exists only after a successful checker.
+export fn shadow_checked_implementation_body_artifact_from_source(source: String) -> Option[CheckedImplementationBodyArtifact] {
+  handle {
+    match parse_source_located_with_binder_authority(source) {
+      Some(authority) => checked_implementation_body_artifact_from_authority(authority),
+      None => None
+    }
+  } with Exception {
+    Throw(_) => None
+  }
+}
+
+/// Shadow freshness/parity check against one current parser authority. This
+/// deliberately reruns checking and publishes nothing; #1959 may not consume
+/// the result as production reuse authority.
+export fn checked_implementation_body_artifact_matches_authority(text: String, authority: LocatedProgramBinderAuthority) -> Bool with Exception {
+  match (decode_checked_implementation_body_artifact_v1(text), checked_implementation_body_artifact_from_authority(authority)) {
+    (Some(retained), Some(current)) => canonical_checked_implementation_body_artifact_snapshot(retained) == canonical_checked_implementation_body_artifact_snapshot(current),
+    _ => false
+  }
+}
+
+fn normalized_leaf_payload(expr: Expr) -> Option[(String, String)] {
+  match expr {
+    EInt(value) => Some(("Int", __to_string(value))),
+    EBool(value) => Some(("Bool", if value {
+      "true"
+    } else {
+      "false"
+    })),
+    EString(value) => Some(("String", value)),
+    EUnit => Some(("Unit", "")),
+    _ => None
+  }
+}
+
+fn normalized_int_payload_valid(payload: String) -> Bool {
+  let n = String::length(payload)
+  let start = if n > 0 && String::char_code_at(payload, 0) == 45 {
+    1
+  } else {
+    0
+  }
+  let mut i = start
+  let mut valid = start < n && !(n - start > 1 && String::char_code_at(payload, start) == 48)
+  while i < n && valid {
+    let c = String::char_code_at(payload, i)
+    if c < 48 || c > 57 {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+fn normalized_leaf_valid(artifact: NormalizedCheckedLeafArtifact) -> Bool {
+  if String::length(artifact.name) == 0 || String::length(artifact.checked_type) == 0 {
+    false
+  } else if artifact.leaf_kind == "Int" {
+    normalized_int_payload_valid(artifact.payload)
+  } else if artifact.leaf_kind == "Bool" {
+    artifact.payload == "true" || artifact.payload == "false"
+  } else if artifact.leaf_kind == "String" {
+    true
+  } else if artifact.leaf_kind == "Unit" {
+    artifact.payload == ""
+  } else {
+    false
+  }
+}
+
+/// Trusted pilot producer. The checker runs first; unsupported statement,
+/// annotation, or expression constructors return None without approximation.
+export fn normalized_checked_leaf_artifact_from_authority(authority: LocatedProgramBinderAuthority) -> Option[NormalizedCheckedLeafArtifact] with Exception {
+  let checked = check_program_result(located_program_binder_authority_program(authority))
+  if Array::length(checked.checked_stmts) != 1 {
+    None
+  } else match Array::get(checked.checked_stmts, 0) {
+    SLet(exported, recursive, name, None, value) => match (normalized_leaf_payload(value), env_lookup(checked.final_env, name)) {
+      (Some((leaf_kind, payload)), Some(ty)) => {
+        let artifact = NormalizedCheckedLeafArtifact::{
+          exported,
+          recursive,
+          name,
+          leaf_kind,
+          payload,
+          checked_type: type_to_string(ty)
+        }
+        if normalized_leaf_valid(artifact) {
+          Some(artifact)
+        } else {
+          None
+        }
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+export fn encode_normalized_checked_leaf_artifact_v1(artifact: NormalizedCheckedLeafArtifact) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-normalized-checked-leaf:v1\n")
+  body_push_piece(out, if artifact.exported {
+    "1"
+  } else {
+    "0"
+  })
+  body_push_piece(out, if artifact.recursive {
+    "1"
+  } else {
+    "0"
+  })
+  body_push_piece(out, artifact.name)
+  body_push_piece(out, artifact.leaf_kind)
+  body_push_piece(out, artifact.payload)
+  body_push_piece(out, artifact.checked_type)
+  StringBuilder::freeze(out)
+}
+
+export fn decode_normalized_checked_leaf_artifact_v1(text: String) -> Option[NormalizedCheckedLeafArtifact] {
+  let prefix = "vibe-normalized-checked-leaf:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else match body_piece(text, String::length(prefix)) {
+    Some((raw_exported, p1)) => match body_piece(text, p1) {
+      Some((raw_recursive, p2)) => match body_piece(text, p2) {
+        Some((name, p3)) => match body_piece(text, p3) {
+          Some((leaf_kind, p4)) => match body_piece(text, p4) {
+            Some((payload, p5)) => match body_piece(text, p5) {
+              Some((checked_type, end)) => {
+                let artifact = NormalizedCheckedLeafArtifact::{
+                  exported: raw_exported == "1",
+                  recursive: raw_recursive == "1",
+                  name,
+                  leaf_kind,
+                  payload,
+                  checked_type
+                }
+                if end != String::length(text) || (raw_exported != "0" && raw_exported != "1") || (raw_recursive != "0" && raw_recursive != "1") || !normalized_leaf_valid(artifact) || encode_normalized_checked_leaf_artifact_v1(artifact) != text {
+                  None
+                } else {
+                  Some(artifact)
+                }
+              },
+              None => None
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+export fn canonical_normalized_checked_leaf_artifact_snapshot(artifact: NormalizedCheckedLeafArtifact) -> String {
+  encode_normalized_checked_leaf_artifact_v1(artifact)
+}
+
+fn normalized_type_bytes(ty: Type, depth: Int) -> Option[String] {
+  if depth > 128 {
+    None
+  } else match ty {
+    CtInt => Some("I"),
+    CtDouble => Some("D"),
+    CtBool => Some("B"),
+    CtString => Some("S"),
+    CtChar => Some("C"),
+    CtUnit => Some("U"),
+    CtBytes => Some("Y"),
+    CtUnknown => Some("Z"),
+    CtVar(id) => Some(String::concat("V", __to_string(id))),
+    CtForAll(vars, bounds, body) => match normalized_type_bytes(body, depth + 1) {
+      Some(body_bytes) => {
+        let out = StringBuilder::new()
+        StringBuilder::push(out, "Q")
+        StringBuilder::push(out, __to_string(Array::length(vars)))
+        StringBuilder::push(out, "[")
+        let mut i = 0
+        while i < Array::length(vars) {
+          body_push_piece(out, __to_string(Array::get(vars, i)))
+          i = i + 1
+        }
+        StringBuilder::push(out, "]")
+        StringBuilder::push(out, __to_string(Array::length(bounds)))
+        StringBuilder::push(out, "[")
+        i = 0
+        while i < Array::length(bounds) {
+          let bound = Array::get(bounds, i)
+          let entry = StringBuilder::new()
+          body_push_piece(entry, __to_string(bound.0))
+          StringBuilder::push(entry, __to_string(Array::length(bound.1)))
+          StringBuilder::push(entry, "[")
+          let mut j = 0
+          while j < Array::length(bound.1) {
+            body_push_piece(entry, Array::get(bound.1, j))
+            j = j + 1
+          }
+          StringBuilder::push(entry, "]")
+          body_push_piece(out, StringBuilder::freeze(entry))
+          i = i + 1
+        }
+        StringBuilder::push(out, "]")
+        body_push_piece(out, body_bytes)
+        Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    CtArray(elem) => match normalized_type_bytes(elem, depth + 1) {
+      Some(item) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "A"); body_push_piece(out, item); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    CtOption(elem) => match normalized_type_bytes(elem, depth + 1) {
+      Some(item) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "O"); body_push_piece(out, item); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    CtTuple(items) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "T"); StringBuilder::push(out, __to_string(Array::length(items))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(items) && valid {
+        match normalized_type_bytes(Array::get(items, i), depth + 1) {
+          Some(item) => body_push_piece(out, item),
+          None => {
+            valid = false
+          }
+        }; i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    CtStruct(name) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "R"); body_push_piece(out, name); Some(StringBuilder::freeze(out))
+    },
+    CtEnum(name) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "E"); body_push_piece(out, name); Some(StringBuilder::freeze(out))
+    },
+    CtNamed(name, args) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "N")
+      body_push_piece(out, name)
+      StringBuilder::push(out, __to_string(Array::length(args)))
+      StringBuilder::push(out, "[")
+      let mut i = 0
+      let mut valid = true
+      while i < Array::length(args) && valid {
+        match normalized_type_bytes(Array::get(args, i), depth + 1) {
+          Some(item) => body_push_piece(out, item),
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::push(out, "]")
+      if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    CtRecord(fields) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "X")
+      StringBuilder::push(out, __to_string(Array::length(fields)))
+      StringBuilder::push(out, "[")
+      let mut i = 0
+      let mut valid = true
+      while i < Array::length(fields) && valid {
+        let field = Array::get(fields, i)
+        match normalized_type_bytes(field.1, depth + 1) {
+          Some(field_type) => {
+            let entry = StringBuilder::new()
+            body_push_piece(entry, field.0)
+            body_push_piece(entry, field_type)
+            body_push_piece(out, StringBuilder::freeze(entry))
+          },
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::push(out, "]")
+      if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    CtFn(params, ret, effect) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "F")
+      body_push_piece(out, match effect {
+        Some(row) => row,
+        None => ""
+      })
+      StringBuilder::push(out, __to_string(Array::length(params)))
+      StringBuilder::push(out, "[")
+      let mut i = 0
+      let mut valid = true
+      while i < Array::length(params) && valid {
+        match normalized_type_bytes(Array::get(params, i), depth + 1) {
+          Some(item) => body_push_piece(out, item),
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::push(out, "]")
+      match normalized_type_bytes(ret, depth + 1) {
+        Some(result) => body_push_piece(out, result),
+        None => {
+          valid = false
+        }
+      }
+      if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+fn normalized_piece_array_end(text: String, pos: Int, validator: (String, Int) -> Bool, depth: Int) -> Option[Int] {
+  let mut bracket = pos
+  while bracket < String::length(text) && String::char_code_at(text, bracket) != 91 {
+    bracket = bracket + 1
+  }
+  match body_decimal(text, pos, bracket, String::length(text)) {
+    Some(count) => {
+      let mut cursor = bracket + 1
+      let mut i = 0
+      let mut valid = bracket < String::length(text)
+      while i < count && valid {
+        match body_piece(text, cursor) {
+          Some((item, next)) => if validator(item, depth + 1) {
+            cursor = next
+          } else {
+            valid = false
+          },
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      if valid && cursor < String::length(text) && String::char_code_at(text, cursor) == 93 {
+        Some(cursor + 1)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+fn normalized_type_valid(text: String, depth: Int) -> Bool {
+  if depth > 128 || String::length(text) == 0 {
+    false
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 73 || tag == 68 || tag == 66 || tag == 83 || tag == 67 || tag == 85 || tag == 89 || tag == 90 {
+      String::length(text) == 1
+    } else if tag == 86 {
+      normalized_decimal_piece_valid(text[1: String::length(text)])
+    } else if tag == 81 {
+      match normalized_piece_array_end(text, 1, normalized_decimal_item_valid, depth) {
+        Some(after_vars) => match normalized_piece_array_end(text, after_vars, normalized_bound_valid, depth) {
+          Some(after_bounds) => match body_piece(text, after_bounds) {
+            Some((body, end)) => end == String::length(text) && normalized_type_valid(body, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    } else if tag == 65 || tag == 79 {
+      match body_piece(text, 1) {
+        Some((item, end)) => end == String::length(text) && normalized_type_valid(item, depth + 1),
+        None => false
+      }
+    } else if tag == 84 {
+      match normalized_piece_array_end(text, 1, normalized_type_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    } else if tag == 82 || tag == 69 {
+      match body_piece(text, 1) {
+        Some((name, end)) => String::length(name) > 0 && end == String::length(text),
+        None => false
+      }
+    } else if tag == 78 {
+      match body_piece(text, 1) {
+        Some((name, after_name)) => if String::length(name) == 0 {
+          false
+        } else match normalized_piece_array_end(text, after_name, normalized_type_valid, depth) {
+          Some(end) => end == String::length(text),
+          None => false
+        },
+        None => false
+      }
+    } else if tag == 88 {
+      match normalized_piece_array_end(text, 1, normalized_record_type_field_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    } else if tag == 70 {
+      match body_piece(text, 1) {
+        Some((_, after_effect)) => match normalized_piece_array_end(text, after_effect, normalized_type_valid, depth) {
+          Some(after_params) => match body_piece(text, after_params) {
+            Some((ret, end)) => end == String::length(text) && normalized_type_valid(ret, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    } else {
+      false
+    }
+  }
+}
+
+fn normalized_record_type_field_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p)) => match body_piece(text, p) {
+      Some((field_type, end)) => String::length(name) > 0 && end == String::length(text) && normalized_type_valid(field_type, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_decimal_item_valid(text: String, _depth: Int) -> Bool {
+  normalized_decimal_piece_valid(text)
+}
+
+fn normalized_nonempty_name_valid(text: String, _depth: Int) -> Bool {
+  String::length(text) > 0
+}
+
+fn normalized_bound_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((id, pos)) => if !normalized_decimal_piece_valid(id) {
+      false
+    } else match normalized_piece_array_end(text, pos, normalized_nonempty_name_valid, depth) {
+      Some(end) => end == String::length(text),
+      None => false
+    },
+    None => false
+  }
+}
+
+/// Test-only structured-type seam until the complete function/program
+/// transport can expose reconstructed Type values without widening #1959.
+export fn normalized_checked_type_snapshot_for_test(ty: Type) -> Option[String] {
+  match normalized_type_bytes(ty, 0) {
+    Some(bytes) => if normalized_type_valid(bytes, 0) {
+      Some(bytes)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+fn normalized_pat_bytes(pat: Pat, depth: Int) -> Option[String] {
+  if depth > 128 {
+    None
+  } else match pat {
+    PWild => Some("w"),
+    PBind(name) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "b"); body_push_piece(out, name); Some(StringBuilder::freeze(out))
+    },
+    PInt(value) => Some(String::concat("i", __to_string(value))),
+    PString(value) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "s"); body_push_piece(out, value); Some(StringBuilder::freeze(out))
+    },
+    PBool(value) => Some(if value {
+      "q1"
+    } else {
+      "q0"
+    }),
+    POr(left, right) => match (normalized_pat_bytes(left, depth + 1), normalized_pat_bytes(right, depth + 1)) {
+      (Some(l), Some(r)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "o"); body_push_piece(out, l); body_push_piece(out, r); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    PCtor(name, items) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "k"); body_push_piece(out, name); StringBuilder::push(out, __to_string(Array::length(items))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(items) && valid {
+        match normalized_pat_bytes(Array::get(items, i), depth + 1) {
+          Some(item) => body_push_piece(out, item),
+          None => {
+            valid = false
+          }
+        }; i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    PTuple(items) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "t"); StringBuilder::push(out, __to_string(Array::length(items))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(items) && valid {
+        match normalized_pat_bytes(Array::get(items, i), depth + 1) {
+          Some(item) => body_push_piece(out, item),
+          None => {
+            valid = false
+          }
+        }; i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    PStruct(name, fields) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "r"); body_push_piece(out, name); StringBuilder::push(out, __to_string(Array::length(fields))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(fields) && valid {
+        let field = Array::get(fields, i)
+        match normalized_pat_bytes(field.1, depth + 1) {
+          Some(p) => {
+            let entry = StringBuilder::new(); body_push_piece(entry, field.0); body_push_piece(entry, p); body_push_piece(out, StringBuilder::freeze(entry))
+          },
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+fn normalized_pat_valid(text: String, depth: Int) -> Bool {
+  if depth > 128 || String::length(text) == 0 {
+    false
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 119 {
+      text == "w"
+    }
+    else if tag == 98 || tag == 115 {
+      match body_piece(text, 1) {
+        Some((value, end)) => end == String::length(text) && (tag == 115 || String::length(value) > 0),
+        None => false
+      }
+    }
+    else if tag == 105 {
+      normalized_int_payload_valid(text[1: String::length(text)])
+    }
+    else if tag == 113 {
+      text == "q0" || text == "q1"
+    }
+    else if tag == 111 {
+      match body_piece(text, 1) {
+        Some((left, p)) => match body_piece(text, p) {
+          Some((right, end)) => end == String::length(text) && normalized_pat_valid(left, depth + 1) && normalized_pat_valid(right, depth + 1),
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 116 {
+      match normalized_piece_array_end(text, 1, normalized_pat_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 107 {
+      match body_piece(text, 1) {
+        Some((name, p)) => match normalized_piece_array_end(text, p, normalized_pat_valid, depth) {
+          Some(end) => String::length(name) > 0 && end == String::length(text),
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 114 {
+      match body_piece(text, 1) {
+        Some((name, p)) => match normalized_piece_array_end(text, p, normalized_struct_pat_field_valid, depth) {
+          Some(end) => String::length(name) > 0 && end == String::length(text),
+          None => false
+        },
+        None => false
+      }
+    }
+    else {
+      false
+    }
+  }
+}
+
+export fn normalized_checked_pattern_snapshot_for_test(pat: Pat) -> Option[String] {
+  match normalized_pat_bytes(pat, 0) {
+    Some(bytes) => if normalized_pat_valid(bytes, 0) {
+      Some(bytes)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+fn normalized_struct_pat_field_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p)) => match body_piece(text, p) {
+      Some((pat, end)) => String::length(name) > 0 && end == String::length(text) && normalized_pat_valid(pat, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_match_arm_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((pat, p)) => match body_piece(text, p) {
+      Some((body, end)) => end == String::length(text) && normalized_pat_valid(pat, depth + 1) && normalized_expr_valid(body, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_type_expr_bytes(ty: TypeExpr, depth: Int) -> Option[String] {
+  if depth > 128 {
+    None
+  } else match ty {
+    TyName(name) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "n"); body_push_piece(out, name); Some(StringBuilder::freeze(out))
+    },
+    TyApp(name, args) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "a"); body_push_piece(out, name); StringBuilder::push(out, __to_string(Array::length(args))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(args) && valid {
+        match normalized_type_expr_bytes(Array::get(args, i), depth + 1) {
+          Some(arg) => body_push_piece(out, arg),
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    TyFn(params, ret, effect) => match normalized_type_expr_bytes(ret, depth + 1) {
+      Some(ret_bytes) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "f")
+        match effect {
+          Some(row) => {
+            body_push_piece(out, "1"); body_push_piece(out, row)
+          },
+          None => body_push_piece(out, "0")
+        }
+        StringBuilder::push(out, __to_string(Array::length(params))); StringBuilder::push(out, "[")
+        let mut i = 0; let mut valid = true
+        while i < Array::length(params) && valid {
+          match normalized_type_expr_bytes(Array::get(params, i), depth + 1) {
+            Some(param) => body_push_piece(out, param),
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        StringBuilder::push(out, "]"); body_push_piece(out, ret_bytes); if valid {
+          Some(StringBuilder::freeze(out))
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    TyTuple(items) => normalized_type_expr_array_bytes("t", items, depth),
+    TyUnit => Some("u")
+  }
+}
+
+fn normalized_type_expr_array_bytes(tag: String, items: Array[TypeExpr], depth: Int) -> Option[String] {
+  let out = StringBuilder::new(); StringBuilder::push(out, tag); StringBuilder::push(out, __to_string(Array::length(items))); StringBuilder::push(out, "[")
+  let mut i = 0; let mut valid = true
+  while i < Array::length(items) && valid {
+    match normalized_type_expr_bytes(Array::get(items, i), depth + 1) {
+      Some(item) => body_push_piece(out, item),
+      None => {
+        valid = false
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::push(out, "]"); if valid {
+    Some(StringBuilder::freeze(out))
+  } else {
+    None
+  }
+}
+
+fn normalized_type_expr_valid(text: String, depth: Int) -> Bool {
+  if depth > 128 || String::length(text) == 0 {
+    false
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 117 {
+      text == "u"
+    }
+    else if tag == 110 {
+      match body_piece(text, 1) {
+        Some((name, end)) => String::length(name) > 0 && end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 116 {
+      match normalized_piece_array_end(text, 1, normalized_type_expr_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 97 {
+      match body_piece(text, 1) {
+        Some((name, p)) => match normalized_piece_array_end(text, p, normalized_type_expr_valid, depth) {
+          Some(end) => String::length(name) > 0 && end == String::length(text),
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 102 {
+      match body_piece(text, 1) {
+        Some((present, p1)) => {
+          let mut p2 = p1; let mut effect_valid = present == "0"
+          if present == "1" {
+            match body_piece(text, p1) {
+              Some((_, next)) => {
+                effect_valid = true; p2 = next
+              },
+              None => {
+                effect_valid = false
+              }
+            }
+          }
+          if !effect_valid {
+            false
+          } else match normalized_piece_array_end(text, p2, normalized_type_expr_valid, depth) {
+            Some(p3) => match body_piece(text, p3) {
+              Some((ret, end)) => end == String::length(text) && normalized_type_expr_valid(ret, depth + 1),
+              None => false
+            },
+            None => false
+          }
+        },
+        None => false
+      }
+    } else {
+      false
+    }
+  }
+}
+
+fn normalized_expr_bytes(expr: Expr, depth: Int) -> Option[String] {
+  if depth > 256 {
+    None
+  } else match expr {
+    EInt(value) => Some(String::concat("i", __to_string(value))),
+    EBool(value) => Some(if value {
+      "b1"
+    } else {
+      "b0"
+    }),
+    EString(value) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "s"); body_push_piece(out, value); Some(StringBuilder::freeze(out))
+    },
+    EUnit => Some("u"),
+    ETuple(items) => normalized_expr_array_bytes("t", items, depth),
+    EArray(items) => normalized_expr_array_bytes("a", items, depth),
+    ERecord(name, fields, type_args) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "r"); body_push_piece(out, name)
+      match normalized_named_expr_array_bytes("P", fields, depth) {
+        Some(field_bytes) => {
+          body_push_piece(out, field_bytes)
+          match normalized_type_expr_array_bytes("t", type_args, depth) {
+            Some(type_bytes) => {
+              body_push_piece(out, type_bytes); Some(StringBuilder::freeze(out))
+            },
+            None => None
+          }
+        },
+        None => None
+      }
+    },
+    EIdent(name, off) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "v"); body_push_piece(out, name); body_push_piece(out, __to_string(off)); Some(StringBuilder::freeze(out))
+    },
+    ELet(name, value, body, off) => match (normalized_expr_bytes(value, depth + 1), normalized_expr_bytes(body, depth + 1)) {
+      (Some(v), Some(b)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "l"); body_push_piece(out, name); body_push_piece(out, __to_string(off)); body_push_piece(out, v); body_push_piece(out, b); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    ELetRec(name, value, body) => normalized_named_expr_pair_bytes("R", name, value, body, depth),
+    ELetMut(name, value, body, off) => match normalized_named_expr_pair_bytes("M", name, value, body, depth) {
+      Some(prefix) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, prefix); body_push_piece(out, __to_string(off)); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    EAssign(name, value, body) => normalized_named_expr_pair_bytes("A", name, value, body, depth),
+    EAssignOp(name, op, value, body) => match normalized_named_expr_pair_bytes("H", name, value, body, depth) {
+      Some(base) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, base); body_push_piece(out, op); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    ESeq(first, second) => normalized_expr_pair_bytes(";", first, second, depth),
+    EWhile(cond, body) => normalized_expr_pair_bytes("W", cond, body, depth),
+    ELoop(bindings, body) => match normalized_expr_bytes(body, depth + 1) {
+      Some(body_bytes) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "L"); StringBuilder::push(out, __to_string(Array::length(bindings))); StringBuilder::push(out, "[")
+        let mut i = 0; let mut valid = true
+        while i < Array::length(bindings) && valid {
+          let binding = Array::get(bindings, i)
+          match normalized_expr_bytes(binding.1, depth + 1) {
+            Some(value) => {
+              let entry = StringBuilder::new(); body_push_piece(entry, binding.0); body_push_piece(entry, value); body_push_piece(out, StringBuilder::freeze(entry))
+            },
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        StringBuilder::push(out, "]"); body_push_piece(out, body_bytes)
+        if valid {
+          Some(StringBuilder::freeze(out))
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    EForIn(name, index, iterable, body) => match (normalized_expr_bytes(iterable, depth + 1), normalized_expr_bytes(body, depth + 1)) {
+      (Some(iterable_bytes), Some(body_bytes)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "G"); body_push_piece(out, name)
+        match index {
+          Some(index_name) => {
+            body_push_piece(out, "1"); body_push_piece(out, index_name)
+          },
+          None => body_push_piece(out, "0")
+        }
+        body_push_piece(out, iterable_bytes); body_push_piece(out, body_bytes); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    ECall(callee, args, off) => match normalized_expr_bytes(callee, depth + 1) {
+      Some(c) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "c"); body_push_piece(out, __to_string(off)); body_push_piece(out, c)
+        StringBuilder::push(out, __to_string(Array::length(args))); StringBuilder::push(out, "[")
+        let mut i = 0; let mut valid = true
+        while i < Array::length(args) && valid {
+          match normalized_expr_bytes(Array::get(args, i), depth + 1) {
+            Some(a) => body_push_piece(out, a),
+            None => {
+              valid = false
+            }
+          }; i = i + 1
+        }
+        StringBuilder::push(out, "]")
+        if valid {
+          Some(StringBuilder::freeze(out))
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    EBinOp(op, left, right) => match (normalized_expr_bytes(left, depth + 1), normalized_expr_bytes(right, depth + 1)) {
+      (Some(l), Some(r)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "o"); body_push_piece(out, op); body_push_piece(out, l); body_push_piece(out, r); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    EUnaryOp(op, value) => match normalized_expr_bytes(value, depth + 1) {
+      Some(v) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "n"); body_push_piece(out, op); body_push_piece(out, v); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    EDot(base, field, off, slot) => match normalized_expr_bytes(base, depth + 1) {
+      Some(b) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "d"); body_push_piece(out, b); body_push_piece(out, field); body_push_piece(out, __to_string(off)); body_push_piece(out, __to_string(slot)); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    EReturn(value) => normalized_unary_expr_bytes("Z", value, depth),
+    EBreak(value) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "K")
+      match value {
+        Some(expr) => match normalized_expr_bytes(expr, depth + 1) {
+          Some(bytes) => {
+            body_push_piece(out, "1"); body_push_piece(out, bytes); Some(StringBuilder::freeze(out))
+          },
+          None => None
+        },
+        None => {
+          body_push_piece(out, "0"); Some(StringBuilder::freeze(out))
+        }
+      }
+    },
+    EContinue(values) => normalized_expr_array_bytes("J", values, depth),
+    EMap(fields) => normalized_named_expr_array_bytes("P", fields, depth),
+    EIf(cond, yes, no) => match (normalized_expr_bytes(cond, depth + 1), normalized_expr_bytes(yes, depth + 1), normalized_expr_bytes(no, depth + 1)) {
+      (Some(c), Some(y), Some(n)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "?"); body_push_piece(out, c); body_push_piece(out, y); body_push_piece(out, n); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    EMatch(scrutinee, arms) => match normalized_expr_bytes(scrutinee, depth + 1) {
+      Some(s) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "m"); body_push_piece(out, s); StringBuilder::push(out, __to_string(Array::length(arms))); StringBuilder::push(out, "[")
+        let mut i = 0; let mut valid = true
+        while i < Array::length(arms) && valid {
+          let arm = Array::get(arms, i)
+          match (normalized_pat_bytes(arm.0, depth + 1), normalized_expr_bytes(arm.1, depth + 1)) {
+            (Some(p), Some(b)) => {
+              let entry = StringBuilder::new(); body_push_piece(entry, p); body_push_piece(entry, b); body_push_piece(out, StringBuilder::freeze(entry))
+            },
+            _ => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        StringBuilder::push(out, "]"); if valid {
+          Some(StringBuilder::freeze(out))
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    EHandle(scrutinee, arms) => normalized_match_like_bytes("h", scrutinee, arms, depth),
+    _ => None
+  }
+}
+
+fn normalized_match_like_bytes(tag: String, scrutinee: Expr, arms: Array[(Pat, Expr)], depth: Int) -> Option[String] {
+  match normalized_expr_bytes(scrutinee, depth + 1) {
+    Some(s) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, tag); body_push_piece(out, s); StringBuilder::push(out, __to_string(Array::length(arms))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(arms) && valid {
+        let arm = Array::get(arms, i)
+        match (normalized_pat_bytes(arm.0, depth + 1), normalized_expr_bytes(arm.1, depth + 1)) {
+          (Some(p), Some(b)) => {
+            let entry = StringBuilder::new(); body_push_piece(entry, p); body_push_piece(entry, b); body_push_piece(out, StringBuilder::freeze(entry))
+          },
+          _ => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+fn normalized_unary_expr_bytes(tag: String, value: Expr, depth: Int) -> Option[String] {
+  match normalized_expr_bytes(value, depth + 1) {
+    Some(bytes) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, tag); body_push_piece(out, bytes); Some(StringBuilder::freeze(out))
+    },
+    None => None
+  }
+}
+
+fn normalized_expr_pair_bytes(tag: String, first: Expr, second: Expr, depth: Int) -> Option[String] {
+  match (normalized_expr_bytes(first, depth + 1), normalized_expr_bytes(second, depth + 1)) {
+    (Some(a), Some(b)) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, tag); body_push_piece(out, a); body_push_piece(out, b); Some(StringBuilder::freeze(out))
+    },
+    _ => None
+  }
+}
+
+fn normalized_named_expr_pair_bytes(tag: String, name: String, first: Expr, second: Expr, depth: Int) -> Option[String] {
+  match normalized_expr_pair_bytes(tag, first, second, depth) {
+    Some(pair) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, tag); body_push_piece(out, name)
+      body_push_piece(out, pair[1: String::length(pair)])
+      Some(StringBuilder::freeze(out))
+    },
+    None => None
+  }
+}
+
+fn normalized_named_expr_array_bytes(tag: String, fields: Array[(String, Expr)], depth: Int) -> Option[String] {
+  let out = StringBuilder::new(); StringBuilder::push(out, tag); StringBuilder::push(out, __to_string(Array::length(fields))); StringBuilder::push(out, "[")
+  let mut i = 0; let mut valid = true
+  while i < Array::length(fields) && valid {
+    let field = Array::get(fields, i)
+    match normalized_expr_bytes(field.1, depth + 1) {
+      Some(value) => {
+        let entry = StringBuilder::new(); body_push_piece(entry, field.0); body_push_piece(entry, value); body_push_piece(out, StringBuilder::freeze(entry))
+      },
+      None => {
+        valid = false
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  if valid {
+    Some(StringBuilder::freeze(out))
+  } else {
+    None
+  }
+}
+
+fn normalized_expr_array_bytes(tag: String, items: Array[Expr], depth: Int) -> Option[String] {
+  let out = StringBuilder::new(); StringBuilder::push(out, tag); StringBuilder::push(out, __to_string(Array::length(items))); StringBuilder::push(out, "[")
+  let mut i = 0; let mut valid = true
+  while i < Array::length(items) && valid {
+    match normalized_expr_bytes(Array::get(items, i), depth + 1) {
+      Some(item) => body_push_piece(out, item),
+      None => {
+        valid = false
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::push(out, "]")
+  if valid {
+    Some(StringBuilder::freeze(out))
+  } else {
+    None
+  }
+}
+
+fn normalized_decimal_piece_valid(text: String) -> Bool {
+  let n = String::length(text); let start = if n > 0 && String::char_code_at(text, 0) == 45 {
+    1
+  } else {
+    0
+  }; let mut i = start; let mut valid = start < n
+  while i < n && valid {
+    let c = String::char_code_at(text, i); if c < 48 || c > 57 {
+      valid = false
+    } else {
+      i = i + 1
+    }
+  }
+  valid
+}
+
+fn normalized_expr_valid(text: String, depth: Int) -> Bool {
+  if depth > 256 || String::length(text) == 0 {
+    false
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 105 {
+      normalized_int_payload_valid(text[1: String::length(text)])
+    }
+    else if tag == 98 {
+      text == "b0" || text == "b1"
+    }
+    else if tag == 117 {
+      text == "u"
+    }
+    else if tag == 116 || tag == 97 {
+      match normalized_piece_array_end(text, 1, normalized_expr_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 115 {
+      match body_piece(text, 1) {
+        Some((_, end)) => end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 114 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((fields, p2)) => match body_piece(text, p2) {
+            Some((type_args, end)) => end == String::length(text) && (name == "" || String::length(name) > 0) && normalized_expr_valid(fields, depth + 1) && normalized_type_expr_valid(type_args, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 118 {
+      match body_piece(text, 1) {
+        Some((name, p)) => match body_piece(text, p) {
+          Some((off, end)) => String::length(name) > 0 && end == String::length(text) && normalized_decimal_piece_valid(off),
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 108 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((off, p2)) => match body_piece(text, p2) {
+            Some((value, p3)) => match body_piece(text, p3) {
+              Some((body, end)) => String::length(name) > 0 && normalized_decimal_piece_valid(off) && normalized_expr_valid(value, depth + 1) && normalized_expr_valid(body, depth + 1) && end == String::length(text),
+              None => false
+            },
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 82 || tag == 65 {
+      normalized_named_expr_pair_valid(text, depth, false)
+    }
+    else if tag == 77 {
+      normalized_named_expr_pair_valid(text, depth, true)
+    }
+    else if tag == 72 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((pair, p2)) => match body_piece(text, p2) {
+            Some((op, end)) => String::length(name) > 0 && String::length(op) > 0 && end == String::length(text) && normalized_expr_pair_payload_valid(pair, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 59 || tag == 87 {
+      normalized_expr_pair_valid(text, depth)
+    }
+    else if tag == 76 {
+      match normalized_piece_array_end(text, 1, normalized_named_expr_field_valid, depth) {
+        Some(p) => match body_piece(text, p) {
+          Some((body, end)) => end == String::length(text) && normalized_expr_valid(body, depth + 1),
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 71 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((present, p2)) => {
+            let mut p3 = p2
+            let mut index_valid = present == "0"
+            if present == "1" {
+              match body_piece(text, p2) {
+                Some((index, next)) => {
+                  index_valid = String::length(index) > 0; p3 = next
+                },
+                None => {
+                  index_valid = false
+                }
+              }
+            }
+            if !index_valid || String::length(name) == 0 {
+              false
+            } else match body_piece(text, p3) {
+              Some((iterable, p4)) => match body_piece(text, p4) {
+                Some((body, end)) => end == String::length(text) && normalized_expr_valid(iterable, depth + 1) && normalized_expr_valid(body, depth + 1),
+                None => false
+              },
+              None => false
+            }
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 111 {
+      match body_piece(text, 1) {
+        Some((op, p1)) => match body_piece(text, p1) {
+          Some((left, p2)) => match body_piece(text, p2) {
+            Some((right, end)) => String::length(op) > 0 && normalized_expr_valid(left, depth + 1) && normalized_expr_valid(right, depth + 1) && end == String::length(text),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 110 {
+      match body_piece(text, 1) {
+        Some((op, p)) => match body_piece(text, p) {
+          Some((value, end)) => String::length(op) > 0 && end == String::length(text) && normalized_expr_valid(value, depth + 1),
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 100 {
+      match body_piece(text, 1) {
+        Some((base, p1)) => match body_piece(text, p1) {
+          Some((field, p2)) => match body_piece(text, p2) {
+            Some((off, p3)) => match body_piece(text, p3) {
+              Some((slot, end)) => String::length(field) > 0 && end == String::length(text) && normalized_expr_valid(base, depth + 1) && normalized_decimal_piece_valid(off) && normalized_decimal_piece_valid(slot),
+              None => false
+            },
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 90 {
+      normalized_one_expr_valid(text, depth)
+    }
+    else if tag == 75 {
+      match body_piece(text, 1) {
+        Some((present, p)) => if present == "0" {
+          p == String::length(text)
+        } else if present == "1" {
+          match body_piece(text, p) {
+            Some((value, end)) => end == String::length(text) && normalized_expr_valid(value, depth + 1),
+            None => false
+          }
+        } else {
+          false
+        },
+        None => false
+      }
+    }
+    else if tag == 74 {
+      match normalized_piece_array_end(text, 1, normalized_expr_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 80 {
+      match normalized_piece_array_end(text, 1, normalized_named_expr_field_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 99 {
+      match body_piece(text, 1) {
+        Some((off, p1)) => match body_piece(text, p1) {
+          Some((callee, p2)) => match normalized_piece_array_end(text, p2, normalized_expr_valid, depth) {
+            Some(end) => normalized_decimal_piece_valid(off) && normalized_expr_valid(callee, depth + 1) && end == String::length(text),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 63 {
+      match body_piece(text, 1) {
+        Some((cond, p1)) => match body_piece(text, p1) {
+          Some((yes, p2)) => match body_piece(text, p2) {
+            Some((no, end)) => end == String::length(text) && normalized_expr_valid(cond, depth + 1) && normalized_expr_valid(yes, depth + 1) && normalized_expr_valid(no, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 109 || tag == 104 {
+      match body_piece(text, 1) {
+        Some((scrutinee, p)) => match normalized_piece_array_end(text, p, normalized_match_arm_valid, depth) {
+          Some(end) => end == String::length(text) && normalized_expr_valid(scrutinee, depth + 1),
+          None => false
+        },
+        None => false
+      }
+    }
+    else {
+      false
+    }
+  }
+}
+
+fn normalized_one_expr_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 1) {
+    Some((value, end)) => end == String::length(text) && normalized_expr_valid(value, depth + 1),
+    None => false
+  }
+}
+
+fn normalized_expr_pair_payload_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((first, p)) => match body_piece(text, p) {
+      Some((second, end)) => end == String::length(text) && normalized_expr_valid(first, depth + 1) && normalized_expr_valid(second, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_expr_pair_valid(text: String, depth: Int) -> Bool {
+  normalized_expr_pair_payload_valid(text[1: String::length(text)], depth)
+}
+
+fn normalized_named_expr_pair_valid(text: String, depth: Int, has_offset: Bool) -> Bool {
+  match body_piece(text, 1) {
+    Some((name, p1)) => match body_piece(text, p1) {
+      Some((pair, p2)) => if String::length(name) == 0 || !normalized_expr_pair_payload_valid(pair, depth + 1) {
+        false
+      } else if has_offset {
+        match body_piece(text, p2) {
+          Some((off, end)) => end == String::length(text) && normalized_decimal_piece_valid(off),
+          None => false
+        }
+      } else {
+        p2 == String::length(text)
+      },
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_named_expr_field_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p)) => match body_piece(text, p) {
+      Some((value, end)) => String::length(name) > 0 && end == String::length(text) && normalized_expr_valid(value, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+export fn normalized_checked_expression_snapshot_for_test(expr: Expr) -> Option[String] {
+  match normalized_expr_bytes(expr, 0) {
+    Some(bytes) => if normalized_expr_valid(bytes, 0) {
+      Some(bytes)
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+fn normalized_name_valid(text: String, _depth: Int) -> Bool {
+  String::length(text) > 0
+}
+
+fn normalized_checked_function_from_stmt(stmt: Stmt, env: TypeEnv) -> Option[NormalizedCheckedFunctionArtifact] {
+  match stmt {
+    SLet(exported, _, name, None, EFn(_, _, params, _, _, body)) => match (env_lookup(env, name), normalized_expr_bytes(body, 0)) {
+      (Some(ty), Some(body_bytes)) => match normalized_type_bytes(ty, 0) {
+        Some(type_bytes) => {
+          let names = array_empty(); let mut i = 0
+          while i < Array::length(params) {
+            Array::push(names, Array::get(params, i).0); i = i + 1
+          }
+          Some(NormalizedCheckedFunctionArtifact::{
+            exported,
+            name,
+            parameter_names: names,
+            checked_function_type: type_bytes,
+            body: body_bytes
+          })
+        },
+        None => None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+export fn normalized_checked_function_artifact_from_authority(authority: LocatedProgramBinderAuthority) -> Option[NormalizedCheckedFunctionArtifact] with Exception {
+  let checked = check_program_result(located_program_binder_authority_program(authority))
+  let mut result = None
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(checked.checked_stmts) {
+    match normalized_checked_function_from_stmt(Array::get(checked.checked_stmts, i), checked.final_env) {
+      Some(artifact) => {
+        result = Some(artifact); count = count + 1
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  if count == 1 {
+    result
+  } else {
+    None
+  }
+}
+
+export fn encode_normalized_checked_function_artifact_v1(artifact: NormalizedCheckedFunctionArtifact) -> String {
+  let out = StringBuilder::new(); StringBuilder::push(out, "vibe-normalized-checked-function:v1\n")
+  body_push_piece(out, if artifact.exported {
+    "1"
+  } else {
+    "0"
+  }); body_push_piece(out, artifact.name)
+  StringBuilder::push(out, __to_string(Array::length(artifact.parameter_names))); StringBuilder::push(out, "[")
+  let mut i = 0; while i < Array::length(artifact.parameter_names) {
+    body_push_piece(out, Array::get(artifact.parameter_names, i)); i = i + 1
+  }; StringBuilder::push(out, "]")
+  body_push_piece(out, artifact.checked_function_type); body_push_piece(out, artifact.body); StringBuilder::freeze(out)
+}
+
+export fn decode_normalized_checked_function_artifact_v1(text: String) -> Option[NormalizedCheckedFunctionArtifact] {
+  let prefix = "vibe-normalized-checked-function:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else match body_piece(text, String::length(prefix)) {
+    Some((raw_exported, p1)) => match body_piece(text, p1) {
+      Some((name, p2)) => {
+        let mut bracket = p2; while bracket < String::length(text) && String::char_code_at(text, bracket) != 91 {
+          bracket = bracket + 1
+        }
+        match body_decimal(text, p2, bracket, String::length(text)) {
+          Some(count) => {
+            let names = array_empty(); let mut cursor = bracket + 1; let mut i = 0; let mut valid = bracket < String::length(text)
+            while i < count && valid {
+              match body_piece(text, cursor) {
+                Some((item, next)) => if normalized_name_valid(item, 0) {
+                  Array::push(names, item); cursor = next
+                } else {
+                  valid = false
+                },
+                None => {
+                  valid = false
+                }
+              }; i = i + 1
+            }
+            if !valid || cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
+              None
+            } else match body_piece(text, cursor + 1) {
+              Some((type_bytes, p3)) => match body_piece(text, p3) {
+                Some((body_bytes, end)) => {
+                  let artifact = NormalizedCheckedFunctionArtifact::{
+                    exported: raw_exported == "1",
+                    name,
+                    parameter_names: names,
+                    checked_function_type: type_bytes,
+                    body: body_bytes
+                  }
+                  if end == String::length(text) && (raw_exported == "0" || raw_exported == "1") && String::length(name) > 0 && normalized_type_valid(type_bytes, 0) && normalized_expr_valid(body_bytes, 0) && encode_normalized_checked_function_artifact_v1(artifact) == text {
+                    Some(artifact)
+                  } else {
+                    None
+                  }
+                },
+                None => None
+              },
+              None => None
+            }
+          },
+          None => None
+        }
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+export fn canonical_normalized_checked_function_artifact_snapshot(artifact: NormalizedCheckedFunctionArtifact) -> String {
+  encode_normalized_checked_function_artifact_v1(artifact)
+}
+
+fn normalized_subst_bytes(s: Subst, depth: Int) -> Option[String] {
+  if depth > 512 {
+    None
+  } else match s {
+    SubstEmpty => Some("e"),
+    SubstBind(id, ty, rest) => match (normalized_type_bytes(ty, depth + 1), normalized_subst_bytes(rest, depth + 1)) {
+      (Some(type_bytes), Some(rest_bytes)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "b"); body_push_piece(out, __to_string(id)); body_push_piece(out, type_bytes); body_push_piece(out, rest_bytes); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    SubstBound(id, bounds, rest) => match normalized_subst_bytes(rest, depth + 1) {
+      Some(rest_bytes) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "q"); body_push_piece(out, __to_string(id)); StringBuilder::push(out, __to_string(Array::length(bounds))); StringBuilder::push(out, "[")
+        let mut i = 0; while i < Array::length(bounds) {
+          body_push_piece(out, Array::get(bounds, i)); i = i + 1
+        }
+        StringBuilder::push(out, "]"); body_push_piece(out, rest_bytes); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    SubstEffBind(name, row, rest) => match normalized_subst_bytes(rest, depth + 1) {
+      Some(rest_bytes) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "f"); body_push_piece(out, name); body_push_piece(out, row); body_push_piece(out, rest_bytes); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    SubstCached(_, _, _) => None
+  }
+}
+
+fn normalized_subst_valid(text: String, depth: Int) -> Bool {
+  if depth > 512 || String::length(text) == 0 {
+    false
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 101 {
+      text == "e"
+    }
+    else if tag == 98 {
+      match body_piece(text, 1) {
+        Some((id, p1)) => match body_piece(text, p1) {
+          Some((ty, p2)) => match body_piece(text, p2) {
+            Some((rest, end)) => end == String::length(text) && normalized_decimal_piece_valid(id) && normalized_type_valid(ty, depth + 1) && normalized_subst_valid(rest, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 113 {
+      match body_piece(text, 1) {
+        Some((id, p1)) => match normalized_piece_array_end(text, p1, normalized_nonempty_name_valid, depth) {
+          Some(p2) => match body_piece(text, p2) {
+            Some((rest, end)) => end == String::length(text) && normalized_decimal_piece_valid(id) && normalized_subst_valid(rest, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 102 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((_, p2)) => match body_piece(text, p2) {
+            Some((rest, end)) => String::length(name) > 0 && end == String::length(text) && normalized_subst_valid(rest, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    } else {
+      false
+    }
+  }
+}
+
+fn normalized_join_valid(artifact: NormalizedCheckedFunctionJoinArtifact) -> Bool {
+  if !body_rows_valid(artifact.source, artifact.binding_rows) || decode_normalized_checked_function_artifact_v1(artifact.function_bytes) == None || !normalized_type_valid(artifact.final_env_binding, 0) || !normalized_subst_valid(artifact.final_subst, 0) {
+    false
+  } else {
+    let mut i = 0; let mut valid = true
+    while i < Array::length(artifact.occurrences) && valid {
+      let row = Array::get(artifact.occurrences, i)
+      if row.0 < 0 || row.0 >= String::length(artifact.source) || String::length(row.1) == 0 || String::length(row.2) == 0 || !normalized_type_valid(row.3, 0) {
+        valid = false
+      }
+      let mut j = 0
+      while j < i && valid {
+        if Array::get(artifact.occurrences, j).0 == row.0 {
+          valid = false
+        }; j = j + 1
+      }
+      i = i + 1
+    }
+    valid
+  }
+}
+
+export fn normalized_checked_function_join_artifact_from_authority(authority: LocatedProgramBinderAuthority) -> Option[NormalizedCheckedFunctionJoinArtifact] with Exception {
+  let program = located_program_binder_authority_program(authority)
+  match (check_program_typed_occurrence_expression_path_observation(program), check_program_binder_occurrence_observation(authority)) {
+    (Some(observation), Some(binding_rows)) => {
+      let checked = observation.checked_program
+      if Array::length(checked.checked_stmts) != 1 || Array::length(observation.entries.provenance_entries) != Array::length(checked.typed_occurrences) {
+        None
+      }
+      else match normalized_checked_function_from_stmt(Array::get(checked.checked_stmts, 0), checked.final_env) {
+        Some(function) => match (env_lookup(checked.final_env, function.name), normalized_subst_bytes(checked.final_subst, 0)) {
+          (Some(binding_type), Some(subst_bytes)) => match normalized_type_bytes(binding_type, 0) {
+            Some(binding_bytes) => {
+              let occurrences = array_empty(); let mut i = 0; let mut valid = true
+              while i < Array::length(checked.typed_occurrences) && valid {
+                let (off, raw_type) = Array::get(checked.typed_occurrences, i)
+                let (statement_path, _, role, lane, provenance_type) = Array::get(observation.entries.provenance_entries, i)
+                match (normalized_type_bytes(raw_type, 0), normalized_type_bytes(provenance_type, 0)) {
+                  (Some(type_bytes), Some(provenance_bytes)) => if Array::length(statement_path) == 1 && Array::get(statement_path, 0) == 0 && type_bytes == provenance_bytes {
+                    Array::push(occurrences, (off, role, lane, type_bytes))
+                  } else {
+                    valid = false
+                  },
+                  _ => {
+                    valid = false
+                  }
+                }
+                i = i + 1
+              }
+              let artifact = NormalizedCheckedFunctionJoinArtifact::{
+                source: located_program_binder_authority_source(authority),
+                binding_rows,
+                function_bytes: encode_normalized_checked_function_artifact_v1(function),
+                final_env_binding: binding_bytes,
+                final_subst: subst_bytes,
+                occurrences
+              }
+              if valid && normalized_join_valid(artifact) {
+                Some(artifact)
+              } else {
+                None
+              }
+            },
+            None => None
+          },
+          _ => None
+        },
+        None => None
+      }
+    },
+    _ => None
+  }
+}
+
+export fn encode_normalized_checked_function_join_artifact_v1(artifact: NormalizedCheckedFunctionJoinArtifact) -> String {
+  let out = StringBuilder::new(); StringBuilder::push(out, "vibe-normalized-checked-function-join:v1\n")
+  body_push_piece(out, artifact.source); StringBuilder::push(out, __to_string(Array::length(artifact.binding_rows))); StringBuilder::push(out, "[")
+  let mut i = 0; while i < Array::length(artifact.binding_rows) {
+    body_push_piece(out, body_row_text(Array::get(artifact.binding_rows, i))); i = i + 1
+  }; StringBuilder::push(out, "]")
+  body_push_piece(out, artifact.function_bytes); body_push_piece(out, artifact.final_env_binding); body_push_piece(out, artifact.final_subst)
+  StringBuilder::push(out, __to_string(Array::length(artifact.occurrences))); StringBuilder::push(out, "["); i = 0
+  while i < Array::length(artifact.occurrences) {
+    let row = Array::get(artifact.occurrences, i); let entry = StringBuilder::new(); body_push_piece(entry, __to_string(row.0)); body_push_piece(entry, row.1); body_push_piece(entry, row.2); body_push_piece(entry, row.3); body_push_piece(out, StringBuilder::freeze(entry)); i = i + 1
+  }
+  StringBuilder::push(out, "]"); StringBuilder::freeze(out)
+}
+
+fn normalized_occurrence_row(text: String) -> Option[(Int, String, String, String)] {
+  let bound = (2305843009213693951<<1)|1
+  match body_piece(text, 0) {
+    Some((raw_off, p1)) => match body_piece(text, p1) {
+      Some((role, p2)) => match body_piece(text, p2) {
+        Some((lane, p3)) => match body_piece(text, p3) {
+          Some((type_bytes, end)) => match body_decimal(raw_off, 0, String::length(raw_off), bound) {
+            Some(off) => {
+              if end == String::length(text) && String::length(role) > 0 && String::length(lane) > 0 && normalized_type_valid(type_bytes, 0) {
+                Some((off, role, lane, type_bytes))
+              } else {
+                None
+              }
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+export fn decode_normalized_checked_function_join_artifact_v1(text: String) -> Option[NormalizedCheckedFunctionJoinArtifact] {
+  let prefix = "vibe-normalized-checked-function-join:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else match body_piece(text, String::length(prefix)) {
+    Some((source, after_source)) => {
+      let mut bracket = after_source; while bracket < String::length(text) && String::char_code_at(text, bracket) != 91 {
+        bracket = bracket + 1
+      }
+      match body_decimal(text, after_source, bracket, String::length(text)) {
+        Some(binding_count) => {
+          let binding_rows = array_empty(); let mut cursor = bracket + 1; let mut i = 0; let mut valid = bracket < String::length(text)
+          while i < binding_count && valid {
+            match body_piece(text, cursor) {
+              Some((raw, next)) => match body_row(raw) {
+                Some(row) => {
+                  Array::push(binding_rows, row); cursor = next
+                },
+                None => {
+                  valid = false
+                }
+              },
+              None => {
+                valid = false
+              }
+            }
+            i = i + 1
+          }
+          if !valid || cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 {
+            None
+          } else match body_piece(text, cursor + 1) {
+            Some((function_bytes, p1)) => match body_piece(text, p1) {
+              Some((env_binding, p2)) => match body_piece(text, p2) {
+                Some((subst_bytes, p3)) => {
+                  bracket = p3; while bracket < String::length(text) && String::char_code_at(text, bracket) != 91 {
+                    bracket = bracket + 1
+                  }
+                  match body_decimal(text, p3, bracket, String::length(text)) {
+                    Some(occurrence_count) => {
+                      let occurrences = array_empty(); cursor = bracket + 1; i = 0; valid = bracket < String::length(text)
+                      while i < occurrence_count && valid {
+                        match body_piece(text, cursor) {
+                          Some((raw, next)) => match normalized_occurrence_row(raw) {
+                            Some(row) => {
+                              Array::push(occurrences, row); cursor = next
+                            },
+                            None => {
+                              valid = false
+                            }
+                          },
+                          None => {
+                            valid = false
+                          }
+                        }
+                        i = i + 1
+                      }
+                      if !valid || cursor >= String::length(text) || String::char_code_at(text, cursor) != 93 || cursor + 1 != String::length(text) {
+                        None
+                      } else {
+                        let artifact = NormalizedCheckedFunctionJoinArtifact::{
+                          source,
+                          binding_rows,
+                          function_bytes,
+                          final_env_binding: env_binding,
+                          final_subst: subst_bytes,
+                          occurrences
+                        }
+                        if normalized_join_valid(artifact) && encode_normalized_checked_function_join_artifact_v1(artifact) == text {
+                          Some(artifact)
+                        } else {
+                          None
+                        }
+                      }
+                    },
+                    None => None
+                  }
+                },
+                None => None
+              },
+              None => None
+            },
+            None => None
+          }
+        },
+        None => None
+      }
+    },
+    None => None
+  }
+}
+
+export fn normalized_checked_function_join_artifact_matches_authority(text: String, authority: LocatedProgramBinderAuthority) -> Bool with Exception {
+  match (decode_normalized_checked_function_join_artifact_v1(text), normalized_checked_function_join_artifact_from_authority(authority)) {
+    (Some(retained), Some(current)) => encode_normalized_checked_function_join_artifact_v1(retained) == encode_normalized_checked_function_join_artifact_v1(current),
+    _ => false
+  }
+}
+
+fn normalized_binding_origin_bytes(origin: BindingOrigin) -> String {
+  match origin {
+    BindingOriginUnavailable => "u",
+    BindingOriginModuleExport(module_name, export_name) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "m"); body_push_piece(out, module_name); body_push_piece(out, export_name); StringBuilder::freeze(out)
+    }
+  }
+}
+
+fn normalized_binding_origin_valid(text: String) -> Bool {
+  if text == "u" {
+    true
+  } else if String::starts_with(text, "m") {
+    match body_piece(text, 1) {
+      Some((module_name, p)) => match body_piece(text, p) {
+        Some((export_name, end)) => String::length(module_name) > 0 && String::length(export_name) > 0 && end == String::length(text),
+        None => false
+      },
+      None => false
+    }
+  } else {
+    false
+  }
+}
+
+fn normalized_env_binding_bytes(binding: EnvValueBinding, depth: Int) -> Option[String] {
+  match normalized_type_bytes(binding.ty, depth + 1) {
+    Some(type_bytes) => {
+      let out = StringBuilder::new(); body_push_piece(out, normalized_binding_origin_bytes(binding.origin)); body_push_piece(out, type_bytes); Some(StringBuilder::freeze(out))
+    },
+    None => None
+  }
+}
+
+fn normalized_env_binding_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((origin, p)) => match body_piece(text, p) {
+      Some((ty, end)) => end == String::length(text) && normalized_binding_origin_valid(origin) && normalized_type_valid(ty, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_named_env_binding_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p)) => match body_piece(text, p) {
+      Some((binding, end)) => String::length(name) > 0 && end == String::length(text) && normalized_env_binding_valid(binding, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_string_array_bytes(items: Array[String]) -> String {
+  let out = StringBuilder::new(); StringBuilder::push(out, __to_string(Array::length(items))); StringBuilder::push(out, "[")
+  let mut i = 0; while i < Array::length(items) {
+    body_push_piece(out, Array::get(items, i)); i = i + 1
+  }
+  StringBuilder::push(out, "]"); StringBuilder::freeze(out)
+}
+
+fn normalized_type_array_bytes(items: Array[Type], depth: Int) -> Option[String] {
+  let out = StringBuilder::new(); StringBuilder::push(out, __to_string(Array::length(items))); StringBuilder::push(out, "[")
+  let mut i = 0; let mut valid = true
+  while i < Array::length(items) && valid {
+    match normalized_type_bytes(Array::get(items, i), depth + 1) {
+      Some(item) => body_push_piece(out, item),
+      None => {
+        valid = false
+      }
+    }; i = i + 1
+  }
+  StringBuilder::push(out, "]"); if valid {
+    Some(StringBuilder::freeze(out))
+  } else {
+    None
+  }
+}
+
+fn normalized_named_type_field_bytes(name: String, ty: Type, depth: Int) -> Option[String] {
+  match normalized_type_bytes(ty, depth + 1) {
+    Some(type_bytes) => {
+      let out = StringBuilder::new(); body_push_piece(out, name); body_push_piece(out, type_bytes); Some(StringBuilder::freeze(out))
+    },
+    None => None
+  }
+}
+
+fn normalized_named_type_field_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p)) => match body_piece(text, p) {
+      Some((ty, end)) => String::length(name) > 0 && end == String::length(text) && normalized_type_valid(ty, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_type_def_bytes(def: TypeDef, depth: Int) -> Option[String] {
+  if depth > 512 {
+    None
+  } else match def {
+    TDEnum(name, params, variants) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "e"); body_push_piece(out, name); body_push_piece(out, normalized_string_array_bytes(params)); StringBuilder::push(out, __to_string(Array::length(variants))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(variants) && valid {
+        let row = Array::get(variants, i); match normalized_type_array_bytes(row.1, depth + 1) {
+          Some(types) => {
+            let entry = StringBuilder::new(); body_push_piece(entry, row.0); body_push_piece(entry, types); body_push_piece(out, StringBuilder::freeze(entry))
+          },
+          None => {
+            valid = false
+          }
+        }; i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    TDStruct(name, fields, mut_fields, params) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "s"); body_push_piece(out, name); StringBuilder::push(out, __to_string(Array::length(fields))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(fields) && valid {
+        let row = Array::get(fields, i); match normalized_named_type_field_bytes(row.0, row.1, depth + 1) {
+          Some(field) => body_push_piece(out, field),
+          None => {
+            valid = false
+          }
+        }; i = i + 1
+      }
+      StringBuilder::push(out, "]"); body_push_piece(out, normalized_string_array_bytes(mut_fields)); body_push_piece(out, normalized_string_array_bytes(params)); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    TDAlias(name, params, body) => match normalized_type_bytes(body, depth + 1) {
+      Some(body_bytes) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "a"); body_push_piece(out, name); body_push_piece(out, normalized_string_array_bytes(params)); body_push_piece(out, body_bytes); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    TDEffect(name, operations, params) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "f"); body_push_piece(out, name); StringBuilder::push(out, __to_string(Array::length(operations))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(operations) && valid {
+        let op = Array::get(operations, i); match (normalized_type_array_bytes(op.1, depth + 1), normalized_type_bytes(op.2, depth + 1)) {
+          (Some(args), Some(ret)) => {
+            let entry = StringBuilder::new(); body_push_piece(entry, op.0); body_push_piece(entry, args); body_push_piece(entry, ret); body_push_piece(out, StringBuilder::freeze(entry))
+          },
+          _ => {
+            valid = false
+          }
+        }; i = i + 1
+      }
+      StringBuilder::push(out, "]"); body_push_piece(out, normalized_string_array_bytes(params)); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    TDEffectSet(name, members) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "z"); body_push_piece(out, name); body_push_piece(out, normalized_string_array_bytes(members)); Some(StringBuilder::freeze(out))
+    }
+  }
+}
+
+fn normalized_type_array_payload_valid(text: String, depth: Int) -> Bool {
+  match normalized_piece_array_end(text, 0, normalized_type_valid, depth) {
+    Some(end) => end == String::length(text),
+    None => false
+  }
+}
+
+fn normalized_string_array_payload_valid(text: String, depth: Int) -> Bool {
+  match normalized_piece_array_end(text, 0, normalized_nonempty_name_valid, depth) {
+    Some(end) => end == String::length(text),
+    None => false
+  }
+}
+
+fn normalized_enum_variant_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p)) => match body_piece(text, p) {
+      Some((types, end)) => String::length(name) > 0 && end == String::length(text) && normalized_type_array_payload_valid(types, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_effect_operation_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p1)) => match body_piece(text, p1) {
+      Some((args, p2)) => match body_piece(text, p2) {
+        Some((ret, end)) => String::length(name) > 0 && end == String::length(text) && normalized_type_array_payload_valid(args, depth + 1) && normalized_type_valid(ret, depth + 1),
+        None => false
+      },
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_type_def_valid(text: String, depth: Int) -> Bool {
+  if depth > 512 || String::length(text) == 0 {
+    false
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 101 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((params, p2)) => match normalized_piece_array_end(text, p2, normalized_enum_variant_valid, depth) {
+            Some(end) => String::length(name) > 0 && normalized_string_array_payload_valid(params, depth + 1) && end == String::length(text),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 115 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match normalized_piece_array_end(text, p1, normalized_named_type_field_valid, depth) {
+          Some(p2) => match body_piece(text, p2) {
+            Some((mut_fields, p3)) => match body_piece(text, p3) {
+              Some((params, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(mut_fields, depth + 1) && normalized_string_array_payload_valid(params, depth + 1),
+              None => false
+            },
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 97 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((params, p2)) => match body_piece(text, p2) {
+            Some((body, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(params, depth + 1) && normalized_type_valid(body, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 102 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match normalized_piece_array_end(text, p1, normalized_effect_operation_valid, depth) {
+          Some(p2) => match body_piece(text, p2) {
+            Some((params, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(params, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 122 {
+      match body_piece(text, 1) {
+        Some((name, p)) => match body_piece(text, p) {
+          Some((members, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(members, depth + 1),
+          None => false
+        },
+        None => false
+      }
+    } else {
+      false
+    }
+  }
+}
+
+fn normalized_string_bounds_bytes(bounds: Array[(String, Array[String])]) -> String {
+  let out = StringBuilder::new(); StringBuilder::push(out, __to_string(Array::length(bounds))); StringBuilder::push(out, "[")
+  let mut i = 0
+  while i < Array::length(bounds) {
+    let row = Array::get(bounds, i); let entry = StringBuilder::new(); body_push_piece(entry, row.0); body_push_piece(entry, normalized_string_array_bytes(row.1)); body_push_piece(out, StringBuilder::freeze(entry)); i = i + 1
+  }
+  StringBuilder::push(out, "]"); StringBuilder::freeze(out)
+}
+
+fn normalized_string_bound_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p)) => match body_piece(text, p) {
+      Some((bounds, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(bounds, depth + 1),
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_trait_method_bytes(method: (String, Array[TypeExpr], TypeExpr), depth: Int) -> Option[String] {
+  match (normalized_type_expr_array_bytes("t", method.1, depth + 1), normalized_type_expr_bytes(method.2, depth + 1)) {
+    (Some(params), Some(ret)) => {
+      let out = StringBuilder::new(); body_push_piece(out, method.0); body_push_piece(out, params); body_push_piece(out, ret); Some(StringBuilder::freeze(out))
+    },
+    _ => None
+  }
+}
+
+fn normalized_trait_method_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p1)) => match body_piece(text, p1) {
+      Some((params, p2)) => match body_piece(text, p2) {
+        Some((ret, end)) => String::length(name) > 0 && end == String::length(text) && normalized_type_expr_valid(params, depth + 1) && normalized_type_expr_valid(ret, depth + 1),
+        None => false
+      },
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_method_gen_bytes(row: (String, Array[String], Array[(String, Array[String])])) -> String {
+  let out = StringBuilder::new(); body_push_piece(out, row.0); body_push_piece(out, normalized_string_array_bytes(row.1)); body_push_piece(out, normalized_string_bounds_bytes(row.2)); StringBuilder::freeze(out)
+}
+
+fn normalized_method_gen_valid(text: String, depth: Int) -> Bool {
+  match body_piece(text, 0) {
+    Some((name, p1)) => match body_piece(text, p1) {
+      Some((params, p2)) => match body_piece(text, p2) {
+        Some((bounds, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(params, depth + 1) && match normalized_piece_array_end(bounds, 0, normalized_string_bound_valid, depth) {
+          Some(bound_end) => bound_end == String::length(bounds),
+          None => false
+        },
+        None => false
+      },
+      None => false
+    },
+    None => false
+  }
+}
+
+fn normalized_env_bytes(env: TypeEnv, depth: Int) -> Option[String] {
+  if depth > 2048 {
+    None
+  } else match env {
+    EnvEmpty => Some("0"),
+    EnvBind(name, binding, rest) => match (normalized_env_binding_bytes(binding, depth + 1), normalized_env_bytes(rest, depth + 1)) {
+      (Some(binding_bytes), Some(rest_bytes)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "B"); body_push_piece(out, name); body_push_piece(out, binding_bytes); body_push_piece(out, rest_bytes); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    EnvFlat(bindings) => {
+      let out = StringBuilder::new(); StringBuilder::push(out, "L"); StringBuilder::push(out, __to_string(Array::length(bindings))); StringBuilder::push(out, "[")
+      let mut i = 0; let mut valid = true
+      while i < Array::length(bindings) && valid {
+        let entry = Array::get(bindings, i)
+        match normalized_env_binding_bytes(entry.1, depth + 1) {
+          Some(binding_bytes) => {
+            let field = StringBuilder::new(); body_push_piece(field, entry.0); body_push_piece(field, binding_bytes); body_push_piece(out, StringBuilder::freeze(field))
+          },
+          None => {
+            valid = false
+          }
+        }
+        i = i + 1
+      }
+      StringBuilder::push(out, "]"); if valid {
+        Some(StringBuilder::freeze(out))
+      } else {
+        None
+      }
+    },
+    EnvCached(names, bindings, rest) => if Array::length(names) != Array::length(bindings) {
+      None
+    } else match normalized_env_bytes(rest, depth + 1) {
+      Some(rest_bytes) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "C"); StringBuilder::push(out, __to_string(Array::length(names))); StringBuilder::push(out, "[")
+        let mut i = 0; let mut valid = true
+        while i < Array::length(names) && valid {
+          match normalized_env_binding_bytes(Array::get(bindings, i), depth + 1) {
+            Some(binding_bytes) => {
+              let field = StringBuilder::new(); body_push_piece(field, Array::get(names, i)); body_push_piece(field, binding_bytes); body_push_piece(out, StringBuilder::freeze(field))
+            },
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        StringBuilder::push(out, "]"); body_push_piece(out, rest_bytes); if valid {
+          Some(StringBuilder::freeze(out))
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    EnvMutCell(name, escapes, rest) => match normalized_env_bytes(rest, depth + 1) {
+      Some(r) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "M"); body_push_piece(out, name); body_push_piece(out, if escapes {
+          "1"
+        } else {
+          "0"
+        }); body_push_piece(out, r); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    EnvTraitImpl(name, target, rest) => match (normalized_type_bytes(target, depth + 1), normalized_env_bytes(rest, depth + 1)) {
+      (Some(t), Some(r)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "I"); body_push_piece(out, name); body_push_piece(out, t); body_push_piece(out, r); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    EnvTraitImplGen(name, params, bounds, target, rest) => match (normalized_type_bytes(target, depth + 1), normalized_env_bytes(rest, depth + 1)) {
+      (Some(t), Some(r)) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "G"); body_push_piece(out, name); body_push_piece(out, normalized_string_array_bytes(params)); body_push_piece(out, normalized_string_bounds_bytes(bounds)); body_push_piece(out, t); body_push_piece(out, r); Some(StringBuilder::freeze(out))
+      },
+      _ => None
+    },
+    EnvTypeDefs(defs, selectable, rest) => match normalized_env_bytes(rest, depth + 1) {
+      Some(r) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "P"); StringBuilder::push(out, __to_string(Array::length(defs))); StringBuilder::push(out, "["); let mut i = 0; let mut valid = true; while i < Array::length(defs) && valid {
+          match normalized_type_def_bytes(Array::get(defs, i), depth + 1) {
+            Some(d) => body_push_piece(out, d),
+            None => {
+              valid = false
+            }
+          }; i = i + 1
+        }; StringBuilder::push(out, "]"); body_push_piece(out, normalized_string_array_bytes(selectable)); body_push_piece(out, r); if valid {
+          Some(StringBuilder::freeze(out))
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => match normalized_env_bytes(rest, depth + 1) {
+      Some(r) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, "D"); body_push_piece(out, name); body_push_piece(out, normalized_string_array_bytes(supers)); body_push_piece(out, if is_auto {
+          "1"
+        } else {
+          "0"
+        }); StringBuilder::push(out, __to_string(Array::length(methods))); StringBuilder::push(out, "["); let mut i = 0; let mut valid = true; while i < Array::length(methods) && valid {
+          match normalized_trait_method_bytes(Array::get(methods, i), depth + 1) {
+            Some(m) => body_push_piece(out, m),
+            None => {
+              valid = false
+            }
+          }; i = i + 1
+        }; StringBuilder::push(out, "]"); body_push_piece(out, r); body_push_piece(out, normalized_string_array_bytes(params)); StringBuilder::push(out, __to_string(Array::length(method_gens))); StringBuilder::push(out, "["); i = 0; while i < Array::length(method_gens) {
+          body_push_piece(out, normalized_method_gen_bytes(Array::get(method_gens, i))); i = i + 1
+        }; StringBuilder::push(out, "]"); if valid {
+          Some(StringBuilder::freeze(out))
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+fn normalized_env_valid(text: String, depth: Int) -> Bool {
+  if depth > 2048 || String::length(text) == 0 {
+    false
+  } else {
+    let tag = String::char_code_at(text, 0)
+    if tag == 48 {
+      text == "0"
+    }
+    else if tag == 66 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((binding, p2)) => match body_piece(text, p2) {
+            Some((rest, end)) => String::length(name) > 0 && end == String::length(text) && normalized_env_binding_valid(binding, depth + 1) && normalized_env_valid(rest, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 76 {
+      match normalized_piece_array_end(text, 1, normalized_named_env_binding_valid, depth) {
+        Some(end) => end == String::length(text),
+        None => false
+      }
+    }
+    else if tag == 67 {
+      match normalized_piece_array_end(text, 1, normalized_named_env_binding_valid, depth) {
+        Some(p) => match body_piece(text, p) {
+          Some((rest, end)) => end == String::length(text) && normalized_env_valid(rest, depth + 1),
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 77 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((flag, p2)) => match body_piece(text, p2) {
+            Some((rest, end)) => String::length(name) > 0 && (flag == "0" || flag == "1") && end == String::length(text) && normalized_env_valid(rest, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 73 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((target, p2)) => match body_piece(text, p2) {
+            Some((rest, end)) => String::length(name) > 0 && end == String::length(text) && normalized_type_valid(target, depth + 1) && normalized_env_valid(rest, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 71 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((params, p2)) => match body_piece(text, p2) {
+            Some((bounds, p3)) => match body_piece(text, p3) {
+              Some((target, p4)) => match body_piece(text, p4) {
+                Some((rest, end)) => String::length(name) > 0 && end == String::length(text) && normalized_string_array_payload_valid(params, depth + 1) && match normalized_piece_array_end(bounds, 0, normalized_string_bound_valid, depth) {
+                  Some(be) => be == String::length(bounds),
+                  None => false
+                } && normalized_type_valid(target, depth + 1) && normalized_env_valid(rest, depth + 1),
+                None => false
+              },
+              None => false
+            },
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 80 {
+      match normalized_piece_array_end(text, 1, normalized_type_def_valid, depth) {
+        Some(p1) => match body_piece(text, p1) {
+          Some((selectable, p2)) => match body_piece(text, p2) {
+            Some((rest, end)) => end == String::length(text) && normalized_string_array_payload_valid(selectable, depth + 1) && normalized_env_valid(rest, depth + 1),
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else if tag == 68 {
+      match body_piece(text, 1) {
+        Some((name, p1)) => match body_piece(text, p1) {
+          Some((supers, p2)) => match body_piece(text, p2) {
+            Some((auto, p3)) => match normalized_piece_array_end(text, p3, normalized_trait_method_valid, depth) {
+              Some(p4) => match body_piece(text, p4) {
+                Some((rest, p5)) => match body_piece(text, p5) {
+                  Some((params, p6)) => match normalized_piece_array_end(text, p6, normalized_method_gen_valid, depth) {
+                    Some(end) => String::length(name) > 0 && (auto == "0" || auto == "1") && end == String::length(text) && normalized_string_array_payload_valid(supers, depth + 1) && normalized_env_valid(rest, depth + 1) && normalized_string_array_payload_valid(params, depth + 1),
+                    None => false
+                  },
+                  None => false
+                },
+                None => false
+              },
+              None => false
+            },
+            None => false
+          },
+          None => false
+        },
+        None => false
+      }
+    }
+    else {
+      false
+    }
+  }
+}
+
+export fn normalized_value_type_env_artifact_from_env(env: TypeEnv) -> Option[NormalizedValueTypeEnvArtifact] {
+  match normalized_env_bytes(env, 0) {
+    Some(env_bytes) => if normalized_env_valid(env_bytes, 0) {
+      Some(NormalizedValueTypeEnvArtifact::{ env_bytes })
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+export fn normalized_value_type_env_artifact_from_authority(authority: LocatedProgramBinderAuthority) -> Option[NormalizedValueTypeEnvArtifact] with Exception {
+  normalized_value_type_env_artifact_from_env(check_program_result(located_program_binder_authority_program(authority)).final_env)
+}
+
+export fn encode_normalized_value_type_env_artifact_v1(artifact: NormalizedValueTypeEnvArtifact) -> String {
+  let out = StringBuilder::new(); StringBuilder::push(out, "vibe-normalized-value-type-env:v1\n"); body_push_piece(out, artifact.env_bytes); StringBuilder::freeze(out)
+}
+
+export fn decode_normalized_value_type_env_artifact_v1(text: String) -> Option[NormalizedValueTypeEnvArtifact] {
+  let prefix = "vibe-normalized-value-type-env:v1\n"
+  if !String::starts_with(text, prefix) {
+    None
+  } else match body_piece(text, String::length(prefix)) {
+    Some((env_bytes, end)) => {
+      let artifact = NormalizedValueTypeEnvArtifact::{ env_bytes }
+      if end == String::length(text) && normalized_env_valid(env_bytes, 0) && encode_normalized_value_type_env_artifact_v1(artifact) == text {
+        Some(artifact)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}

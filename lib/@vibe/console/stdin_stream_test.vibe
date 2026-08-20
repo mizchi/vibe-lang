@@ -1,15 +1,7 @@
-// #761 regression: byte_stream's pull closures are
-// `() -> Option[String] with Stdin` values threaded through HOF terminals,
-// and this test drains them at the (host-effectful) test top level — both paths
-// the selfhost effect checker now accepts.
-
 //# Imports
 
 import ./io.vibe {
   read_all, read_char, read_n
-}
-import ./byte_stream.vibe {
-  stdin_stream, stream_byte_length, stream_collect, stream_to_string
 }
 
 //# Functions
@@ -53,26 +45,4 @@ test "read_n stops at EOF / zero (empty stdin -> \"\")" {
   // end-to-end by scripts/test_host_stream_bridge.sh.
   assert(read_n(0) == "")
   assert(read_n(8) == "")
-}
-
-test "ByteStream over empty stdin yields nothing" {
-  // An empty host stream produces no chunks: fold keeps init, collect is empty.
-  // The fed case (stream_echo / stream_total over a real body) is checked
-  // end-to-end by scripts/test_host_stream_bridge.sh.
-  assert(stream_byte_length(stdin_stream(4)) == 0)
-  assert(Array::length(stream_collect(stdin_stream(4))) == 0)
-  assert(stream_to_string(stdin_stream(4)) == "")
-}
-
-test "for over empty host stream yields no iterations" {
-  // `for x in <pull-closure>` desugars to a pull-to-EOF loop. With no
-  // VIBE_STDIN_BYTES the stream is empty, so zero iterations. Non-Array
-  // iterator loops are statement-shaped; use stream_collect when an Array is
-  // wanted (covered immediately above).
-  // The fed case (echo a body) is checked by scripts/test_host_stream_bridge.sh.
-  let mut seen = 0
-  for _chunk in stdin_stream(4) {
-    seen = seen + 1
-  }
-  assert(seen == 0)
 }

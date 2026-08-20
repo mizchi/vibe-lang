@@ -364,6 +364,13 @@ import ./linked_helpers.vibe {
 
 let wasm_page_size = 65536
 
+// Fixed names below live only inside compiler-owned helper functions. Keeping
+// the lint waiver in the binder expression documents that no user expression
+// is placed under these binders.
+fn lc_fixed_synthetic_name(name: String, _review_lint: String) -> String {
+  name
+}
+
 fn lc_fresh_int_array() -> Array[Int] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
@@ -1209,9 +1216,8 @@ fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
 /// lc_rename_sleep_calls.
 ///
 /// Parameterized over (surface, injected) so the host read
-/// `host_stream_next` -> `__hs_next`, host close
-/// `host_stream_close` -> `__hs_close`, and eager builtin
-/// `Stream::next` -> `__sn_next` share one TOTAL walk. A second copy of a
+/// `host_stream_next` -> `__hs_next` and host close
+/// `host_stream_close` -> `__hs_close` share one TOTAL walk. A second copy of a
 /// 150-line total walk is exactly the kind of thing that drifts and silently
 /// stops covering a container.
 fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) -> Expr {
@@ -1363,12 +1369,8 @@ fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
   lc_rename_hs_call(e, active, "host_stream_next", "__hs_next")
 }
 
-/// #1536 (a), eager Stream slice: the Array-backed `Stream::next` builtin
-/// lowers too late in compile_call for suspend CPS to classify it. Retarget
-/// it to the synthetic row-free top-level fn before that pass, just as the
-/// host-stream read surface retargets to `__hs_next`.
-fn lc_rename_stream_next_calls(e: Expr, active: Bool, target: String) -> Expr {
-  lc_rename_hs_call(e, active, "Stream::next", target)
+fn lc_rename_hs_option_next_calls(e: Expr, active: Bool) -> Expr {
+  lc_rename_hs_call(e, active, "HostStream::next", "__hs_next_option")
 }
 
 /// ADR-0089 Decision 3 follow-up (#1218): the CLOSE retarget, run as its own
@@ -1376,7 +1378,7 @@ fn lc_rename_stream_next_calls(e: Expr, active: Bool, target: String) -> Expr {
 /// two name tests because shadowing is per-name: `let host_stream_next = ..`
 /// must not disable the close rewrite, and vice versa.
 fn lc_rename_hs_close_calls(e: Expr, active: Bool) -> Expr {
-  lc_rename_hs_call(e, active, "host_stream_close", "__hs_close")
+  lc_rename_hs_call(lc_rename_hs_call(e, active, "host_stream_close", "__hs_close"), active, "HostStream::close", "__hs_close")
 }
 
 /// The close retarget, skipped entirely when the program never closes. The
@@ -1923,7 +1925,15 @@ fn lc_hs_req_base() -> Int {
 /// them implies the boundary's stream settle arm and the shared
 /// `vibe.host_stream_read` import.
 fn lc_expr_calls_host_stream(e: Expr) -> Bool {
-  lc_expr_calls_name(e, "host_stream_named") || lc_expr_calls_name(e, "host_stream_next") || lc_expr_calls_name(e, "host_stream_close")
+  lc_expr_calls_name(e, "host_stream_named") || lc_expr_calls_name(e, "host_stream_next") || lc_expr_calls_name(e, "host_stream_close") || lc_expr_calls_name(e, "HostStream::next") || lc_expr_calls_name(e, "HostStream::close")
+}
+
+fn lc_expr_calls_host_stream_close(e: Expr) -> Bool {
+  lc_expr_calls_name(e, "host_stream_close") || lc_expr_calls_name(e, "HostStream::close")
+}
+
+fn lc_expr_calls_host_stream_option_next(e: Expr) -> Bool {
+  lc_expr_calls_name(e, "HostStream::next")
 }
 
 /// ADR-0089 Decision 3 (#1218): every component import name a
@@ -2143,32 +2153,6 @@ fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
   hit
 }
 
-/// #1536 (a), eager Stream slice: the same program-level key as the host
-/// boundary machinery, but for `Stream::next`'s row-free synthetic retarget.
-/// The rewrite itself is shadow-aware; this key may only over-inject an unused
-/// private fn when a shadowed spelling appears.
-fn lc_stmts_call_stream_next(stmts: Array[Stmt]) -> Bool {
-  let mut hit = false
-  let mut i = 0
-  while i < Array::length(stmts) {
-    let se = match Array::get(stmts, i) {
-      SLet(_, _, _, _, v) => lc_expr_calls_name(v, "Stream::next"),
-      SLetMut(_, _, v) => lc_expr_calls_name(v, "Stream::next"),
-      SExpr(v) => lc_expr_calls_name(v, "Stream::next"),
-      STest(_, v) => lc_expr_calls_name(v, "Stream::next"),
-      SBench(_, v) => lc_expr_calls_name(v, "Stream::next"),
-      _ => false
-    }
-    if se {
-      hit = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  hit
-}
-
 /// True when `target` appears as a binder or identifier reference. The
 /// retarget's synthetic target must avoid both: a duplicate top-level binding
 /// changes an existing definition, while a nested binding captures the newly
@@ -2333,76 +2317,6 @@ fn lc_stmts_mention_name(stmts: Array[Stmt], target: String) -> Bool {
     i = i + 1
   }
   hit
-}
-
-fn lc_fresh_stream_next_target(stmts: Array[Stmt]) -> String {
-  let mut suffix = 0
-  let mut target = ""
-  while target == "" {
-    let candidate = if suffix == 0 {
-      "__sn_next"
-    } else {
-      String::concat("__sn_next_", __to_string(suffix))
-    }
-    if lc_stmts_mention_name(stmts, candidate) {
-      suffix = suffix + 1
-    } else {
-      target = candidate
-    }
-  }
-  target
-}
-
-/// #1536 (a), eager Stream slice: make `Stream::next` visible as a concrete
-/// row-free top-level call before suspend CPS evaluates eligibility. The
-/// target is fresh against every user binding and reference, so rewriting
-/// cannot capture a local `__sn_next*` binding. Its ready Future cell is
-/// constructed directly: `Future::ready` is user-shadowable and therefore
-/// cannot be used inside a synthetic body.
-fn lc_inject_stream_next_retarget(stmts: Array[Stmt]) -> Unit {
-  // compile_call prefers a real top-level binding over builtin lowering. A
-  // user-defined nominal `Stream` therefore owns its generated
-  // `Stream::next` method; retargeting that spelling would silently replace
-  // the user's iterator semantics with the eager Array-backed builtin.
-  if !lc_stmts_call_stream_next(stmts) || lc_program_defines_top_level(stmts, "Stream::next") {
-    ()
-  } else {
-    let target = lc_fresh_stream_next_target(stmts)
-    let sn_s = EIdent("__sn_s", -1)
-    let sn_option = EIf(ECall(EIdent("lt", -1), [
-      EInt(0),
-      ECall(EIdent("Array::length", -1), [sn_s], -1)
-    ], -1), ECall(EIdent("Some", -1), [
-      ECall(EIdent("Array::get", -1), [sn_s, EInt(0)], -1)
-    ], -1), ECall(EIdent("None", -1), array_empty(), -1))
-    let sn_body = EArray([EInt(0), sn_option])
-    let sn_params: Array[(String, Option[TypeExpr])] = [("__sn_s", None)]
-    Array::push(stmts, SLet(false, false, target, None, EFn(lc_fresh_string_array(), array_empty(), sn_params, None, None, sn_body)))
-    let mut i = 0
-    while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SLet(ex, isrec, nm, ty, expr) => if nm == target {
-          ()
-        } else {
-          Array::set(stmts, i, SLet(ex, isrec, nm, ty, lc_rename_stream_next_calls(expr, true, target)))
-        },
-        SLetMut(nm, ty, expr) => {
-          Array::set(stmts, i, SLetMut(nm, ty, lc_rename_stream_next_calls(expr, true, target)))
-        },
-        SExpr(expr) => {
-          Array::set(stmts, i, SExpr(lc_rename_stream_next_calls(expr, true, target)))
-        },
-        STest(nm, expr) => {
-          Array::set(stmts, i, STest(nm, lc_rename_stream_next_calls(expr, true, target)))
-        },
-        SBench(nm, expr) => {
-          Array::set(stmts, i, SBench(nm, lc_rename_stream_next_calls(expr, true, target)))
-        },
-        _ => ()
-      }
-      i = i + 1
-    }
-  }
 }
 
 /// ADR-0089 (#1218, resolve -> direct wake): can this program call the
@@ -2847,6 +2761,10 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   // reserve the close import in programs that only ever drain, which is
   // exactly the byte-compat property this surface is supposed to keep.
   let mut calls_host_stream_close = false
+  // The public Option-returning helper is a second suspend function. Keep it
+  // out of raw-scalar programs: besides preserving their component bytes, the
+  // suspend pass must not classify an unused helper as another boundary path.
+  let mut calls_host_stream_option_next = false
   let mut user_defines_host_stream = false
   let mut has_spawn_suspend = false
   let mut has_aw_poll = false
@@ -2889,7 +2807,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" {
+        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" || name == "HostStream::next" || name == "HostStream::close" {
           user_defines_host_stream = true
         } else {
           ()
@@ -2899,8 +2817,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if lc_expr_calls_name(fbody, "host_stream_close") {
+        if lc_expr_calls_host_stream_close(fbody) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(fbody) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -2921,7 +2844,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" {
+        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" || name == "HostStream::next" || name == "HostStream::close" {
           user_defines_host_stream = true
         } else {
           ()
@@ -2946,8 +2869,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if lc_expr_calls_name(sv, "host_stream_close") {
+        if lc_expr_calls_host_stream_close(sv) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(sv) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -2973,8 +2901,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if lc_expr_calls_name(mv, "host_stream_close") {
+        if lc_expr_calls_host_stream_close(mv) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(mv) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -3000,8 +2933,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if lc_expr_calls_name(se, "host_stream_close") {
+        if lc_expr_calls_host_stream_close(se) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(se) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -3027,8 +2965,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if lc_expr_calls_name(te, "host_stream_close") {
+        if lc_expr_calls_host_stream_close(te) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(te) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -3054,8 +2997,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
-        if lc_expr_calls_name(be, "host_stream_close") {
+        if lc_expr_calls_host_stream_close(be) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(be) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -3078,23 +3026,6 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
   let hf_machinery = calls_host_future && !user_defines_host_future && entry_has_async
   let hs_machinery = calls_host_stream && !user_defines_host_stream && entry_has_async
-  // #2065: the old advice here was "handle Async inside the entry instead",
-  // which cannot be followed in the component lane -- an entry MUST carry
-  // `Async` for the async lift to be selected at all, so a user building an
-  // async component was told to do the one thing that would stop it being a
-  // component. Say what is actually true instead.
-  //
-  // Measured (#2065): the convention mismatch is NOT the blocker it looks
-  // like. The boundary arm is tail-resumptive only because it spells
-  // `resume(v)` in callee position; binding `resume` to a name first makes the
-  // same handler suspend-class (`scps_arm_refs_resume_value`), and then this
-  // guard has nothing to reject. What that exposes is the real wall: a
-  // suspend-class boundary requires the WHOLE entry body to be split-eligible,
-  // and every route into a TaskGroup goes through
-  // `TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e)` -- a
-  // function-typed parameter carrying a ROW VARIABLE, which is #1727's
-  // remaining gap 1 and a soundness line rather than an oversight. So the
-  // refusal stands; only its wording was wrong.
   if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && has_spawn_suspend {
     "the entry's Async boundary and TaskGroup::spawn_suspend are mixing the step convention for one effect. Either drop `Async` from the entry row and let TaskGroup discharge it (row-free entry + TaskGroup::run), or keep the Async entry and use `sleep`/`await` directly instead of spawning tasks. Both together need #1727 (a row-variable callee taking a function cannot be proven suspend-eligible), tracked in #2065"
   } else {
@@ -3241,6 +3172,36 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       ], -1), -1), EBinOp("-", EInt(0), EInt(1)))
       let hsn_params: Array[(String, Option[TypeExpr])] = [("__hsn_s", None)]
       Array::push(stmts, SLet(false, false, "__hs_next", None, EFn(lc_fresh_string_array(), array_empty(), hsn_params, Some(TyName("Int")), Some("Async"), hsn_body)))
+      // #1955: public source protocol. Authority remains in the Async row and
+      // the stateful HostStream handle is consumed in place, so no Future or
+      // redundant Self value is returned.
+      if calls_host_stream_option_next {
+        let hso_s = EIdent("__hso_s", -1)
+        let hso_v = EIdent("__hso_v", -1)
+        let hso_raw = EIdent("__hso_raw", -1)
+        let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1)
+        let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
+        let hso_suspend = ECall(EIdent("perform", -1), [
+          ECall(EIdent("Async::Suspend", -1), [
+            EBinOp("+", hso_hnd, EInt(lc_hs_req_base()))
+          ], -1)
+        ], -1)
+        let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
+        let hso_option = EIf(EBinOp("<", hso_raw, EInt(0)), EIdent("None", -1), ECall(EIdent("Some", -1), [
+          hso_raw
+        ], -1))
+        let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
+        let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
+        let hso_body = EIf(EBinOp("==", hso_state, EInt(3)), hso_read, EIdent("None", -1))
+        let hso_params: Array[(String, Option[TypeExpr])] = [("__hso_s", None)]
+        let hso_fn = EFn(lc_fresh_string_array(), array_empty(), hso_params, Some(TyApp("Option", [
+          TyName("Int")
+        ])), Some("Async"), hso_body)
+        let hso_binding = SLet(false, false, lc_fixed_synthetic_name("__hs_next_option", "review-lint: allow-fixed-synthetic-name"), None, hso_fn)
+        Array::push(stmts, hso_binding)
+      } else {
+        ()
+      }
       let hsf_s = EIdent("__hsf_s", -1)
       let hsf_v = EIdent("__hsf_v", -1)
       let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1)
@@ -3293,22 +3254,28 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let mut hsr = 0
       while hsr < Array::length(stmts) {
         match Array::get(stmts, hsr) {
-          SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_fin" || hrname == "__hs_close" {
+          SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_next_option" || hrname == "__hs_fin" || hrname == "__hs_close" {
             ()
           } else {
-            Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hrexpr, true), true)))
+            let with_raw_next = lc_rename_hs_next_calls(hrexpr, true)
+            let with_option_next = if calls_host_stream_option_next {
+              lc_rename_hs_option_next_calls(with_raw_next, true)
+            } else {
+              with_raw_next
+            }
+            Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, with_option_next, true)))
           },
           SLetMut(hmname, hmty, hmexpr) => {
-            Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hmexpr, true), true)))
+            Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hmexpr, true), true), true)))
           },
           STest(htname, htexpr) => {
-            Array::set(stmts, hsr, STest(htname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(htexpr, true), true)))
+            Array::set(stmts, hsr, STest(htname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(htexpr, true), true), true)))
           },
           SBench(hbname, hbexpr) => {
-            Array::set(stmts, hsr, SBench(hbname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hbexpr, true), true)))
+            Array::set(stmts, hsr, SBench(hbname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hbexpr, true), true), true)))
           },
           SExpr(hsexpr) => {
-            Array::set(stmts, hsr, SExpr(lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_next_calls(hsexpr, true), true)))
+            Array::set(stmts, hsr, SExpr(lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hsexpr, true), true), true)))
           },
           _ => ()
         }
@@ -3378,9 +3345,9 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
           ("__entry_hf_q", Some(TyName("Int")))
         ]
         Array::push(stmts, SLet(false, false, "__entry_settle", None, EFn(lc_fresh_string_array(), array_empty(), settle_params, Some(TyName("Int")), None, settle_body)))
-        ELet("__entry_slp_v", ECall(EIdent("__entry_settle", -1), [req], -1), ECall(EIdent("resume", -1), [
-          EIdent("__entry_slp_v", -1)
-        ], -1), -1)
+        let settled = ECall(EIdent("__entry_settle", -1), [req], -1)
+        let resumed = ECall(EIdent("resume", -1), [EIdent("__entry_slp_v", -1)], -1)
+        ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, resumed, -1)
       } else {
         let settle = EIf(EBinOp("<", req, EInt(0)), ECall(EIdent("sleep_blocking", -1), [
           EBinOp("-", EInt(0), req)
@@ -3507,12 +3474,6 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     if async_sleep_boundary_err != "" {
       Array::push(errs, async_sleep_boundary_err)
     } else {
-      // #1536 (a), eager Stream slice: compile_call lowers `Stream::next`
-      // directly, which is after suspend_cps_pass and leaves it opaque to the
-      // pass. Give it a shadow-aware synthetic top-level spelling first; its
-      // row-free body exactly preserves the one-evaluation ready
-      // Future[Option[T]] lowering. This must stay before suspend CPS.
-      lc_inject_stream_next_retarget(stmts)
       // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
       // reachable-only-via-tail-resumptive-handler-arms directly into their
       // handler arm body (single-shot fast path). Conservative: bails out
@@ -4086,7 +4047,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     __mk = __mk + 1
   }
   // Always seed the empty string so codegen that materialises "" (e.g.
-  // StringBuilder::freeze's join separator, Stream::to_string's accumulator)
+  // StringBuilder::freeze's join separator, ByteStream::to_string's accumulator)
   // can rely on str_table_lookup("") succeeding even when the source never
   // mentions "" literally.
   if !array_contains_str(str_strs, "") {

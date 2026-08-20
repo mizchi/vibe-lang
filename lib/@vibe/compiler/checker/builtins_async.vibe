@@ -80,23 +80,11 @@ fn lookup_future(name: String) -> Option[Type] {
   }
 }
 
-/// The `Stream`-headed builtins that survive #1538's retirement of the eager
-/// combinators, plus the `HostStream` reads.
-///
-/// `Stream::empty` / `once` / `map` / `filter` / `fold` are GONE: they were the
-/// eager prototype (a `Stream[T]` was a plain `Array[T]`), which ADR-0089
-/// Decision 3 retires in favour of AsyncIter. What remains under this head is
-/// `Stream::next` (the `Future[Option[T]]` protocol read, whose spelling on a
-/// host stream is still an open decision) and the `ByteStream` pair
-/// `String::to_bytes` / `Stream::to_string` in `lookup_bytestream` below.
+/// Host-owned component streams. Their scalar next protocol is tracked by
+/// #1955 and intentionally remains distinct from the nominal ByteStream value
+/// conversion below.
 fn lookup_stream(name: String) -> Option[Type] {
-  if name == "Stream::next" {
-    // Stream::next: (Stream[T]) -> Future[Option[T]] with Async
-    // None terminates the stream.
-    Some(CtFn([CtNamed("Stream", [CtUnknown])], CtNamed("Future", [
-      CtOption(CtUnknown)
-    ]), Some("Async")))
-  } else if name == "host_stream_named" {
+  if name == "host_stream_named" {
     // host_stream_named: (String) -> Stream[Int]   (pure; a NAMED host stream)
     //
     // ADR-0089 Decision 3 (#1218): the readable end of a component-level
@@ -129,11 +117,13 @@ fn lookup_stream(name: String) -> Option[Type] {
     // the entry boundary settles it via `stream.read` (+ waitable-set.wait
     // when the read blocks) in the component adapter.
     //
-    // Distinct from the generic `Stream::next` (Future[Option[T]] protocol):
-    // this is the direct scalar read the p3 lowering supports today. #1341
-    // connects `for b in s` to it via the desugar; the full AsyncIter
-    // unification stays follow-up (spec §3.18).
+    // This is the direct scalar read the p3 lowering supports today. Its final
+    // protocol is intentionally left to #1955.
     Some(CtFn([CtNamed("HostStream", array_empty())], CtInt, Some("Async")))
+  } else if name == "HostStream::next" {
+    // Public nominal protocol. The scalar primitive remains internal to
+    // generated loops; the source contract makes EOS explicit.
+    Some(CtFn([CtNamed("HostStream", array_empty())], CtOption(CtInt), Some("Async")))
   } else if name == "host_stream_close" {
     // host_stream_close: (Stream[Int]) -> Unit   (pure)
     //
@@ -149,6 +139,8 @@ fn lookup_stream(name: String) -> Option[Type] {
     // settle -- the injected `__hs_close` calls the adapter directly. It is
     // also IDEMPOTENT: closing an already-closed (or fully drained) stream
     // is a no-op, because the cell's state word is what gates the drop.
+    Some(CtFn([CtNamed("HostStream", array_empty())], CtUnit, None))
+  } else if name == "HostStream::close" {
     Some(CtFn([CtNamed("HostStream", array_empty())], CtUnit, None))
   } else {
     None
@@ -171,18 +163,16 @@ fn lookup_concurrency(name: String) -> Option[Type] {
   None
 }
 
-/// ByteStream = Stream[Int] — WASI 0.3 stream<u8> / HTTP body bridge (M2c).
-/// `String::to_bytes` exposes a String's bytes as a ByteStream so request/response
-/// bodies can be consumed with the Stream combinators (map/filter/fold/next). It
-/// is pure & eager on the linear backend (the bytes are already in memory).
+/// Nominal ByteStream conversion surface (ADR-0089 D4/D5, #1954).
+///
+/// The linear backend currently materializes these values, but that runtime
+/// detail is not exposed as `Stream[T]`: only the nominal boundary handle maps
+/// to WIT `stream<u8>`, while guest AsyncIter remains unmapped.
 fn lookup_bytestream(name: String) -> Option[Type] {
   if name == "String::to_bytes" {
-    // String::to_bytes: (String) -> Stream[Int]   (ByteStream)
-    Some(CtFn([CtString], CtNamed("Stream", [CtInt]), None))
-  } else if name == "Stream::to_string" {
-    // Stream::to_string: (Stream[Int]) -> String   (ByteStream -> String;
-    // collect a byte stream into a response body)
-    Some(CtFn([CtNamed("Stream", [CtInt])], CtString, None))
+    Some(CtFn([CtString], CtNamed("ByteStream", array_empty()), None))
+  } else if name == "ByteStream::to_string" {
+    Some(CtFn([CtNamed("ByteStream", array_empty())], CtString, None))
   } else {
     None
   }

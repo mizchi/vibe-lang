@@ -456,4 +456,52 @@ CLOSE_SITES="$(grep -c 'host_stream_close' "$CLOSE_WAT" || true)"
   || { echo "named hoststreams component gate FAILED: expected the closing component to both import and export host_stream_close, found $CLOSE_SITES site(s)" >&2; exit 1; }
 echo "[named-hoststreams-component-gate] close half is gated on use (absent from the drain-only component, guest import + adapter export present in the closing one)"
 
+# --- #1955 nominal Option protocol + multiple live streams -------------------
+# Two host-owned streams stay live and are read in an interleaved order. The
+# left stream is drained and read twice after EOS; the right stream is closed
+# before its 99 tail, closed again, and read after close. All terminal reads
+# must be None, and the four delivered bytes sum to 42.
+PROTOCOL_SRC="$OUT_DIR/stream_protocol.vibe"
+cat >"$PROTOCOL_SRC" <<'EOF'
+fn value_or_zero(value: Option[Int]) -> Int {
+  match value {
+    Some(byte) => byte,
+    None => 0
+  }
+}
+
+let run: () -> Int with Async = () -> {
+  let left = host_stream_named("left")
+  let right = host_stream_named("right")
+  let a = value_or_zero(HostStream::next(left))
+  let b = value_or_zero(HostStream::next(right))
+  let c = value_or_zero(HostStream::next(left))
+  let d = value_or_zero(HostStream::next(right))
+  let left_eos_1 = HostStream::next(left)
+  let left_eos_2 = HostStream::next(left)
+  HostStream::close(right)
+  HostStream::close(right)
+  let right_after_close = HostStream::next(right)
+  let terminals = match (left_eos_1, left_eos_2, right_after_close) {
+    (None, None, None) => 0,
+    _ => 1000
+  }
+  a + b + c + d + terminals
+}
+EOF
+
+PROTOCOL_COMPONENT="$OUT_DIR/stream_protocol.component.wasm"
+compile_fixture "$PROTOCOL_SRC" "$PROTOCOL_COMPONENT"
+check_component_header "$PROTOCOL_COMPONENT"
+PROTOCOL_LOG="$OUT_DIR/run.protocol.log"
+if ! VIBE_ASYNC_STREAMS="left=10|20@20,right=5|7|99@20" timeout 60 "$RUNNER" "$PROTOCOL_COMPONENT" >"$PROTOCOL_LOG" 2>&1; then
+  echo "named hoststreams component gate FAILED: nominal protocol run did not exit 0" >&2
+  cat "$PROTOCOL_LOG" >&2
+  exit 1
+fi
+PROTOCOL_GOT="$(cat "$PROTOCOL_LOG")"
+[ "$PROTOCOL_GOT" = "42" ] \
+  || { echo "named hoststreams component gate FAILED: nominal protocol expected 42, got: $PROTOCOL_GOT" >&2; exit 1; }
+echo "[named-hoststreams-component-gate] nominal protocol: 42 (Option EOS, repeated reads, early/idempotent close, two live parked streams)"
+
 echo "named hoststreams component gate OK"

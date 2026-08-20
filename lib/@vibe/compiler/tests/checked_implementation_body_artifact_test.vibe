@@ -1,0 +1,475 @@
+//# #1958 checked implementation body shadow artifact
+
+import @vibe/compiler/checker/artifacts {
+  canonical_checked_implementation_body_artifact_snapshot,
+  canonical_normalized_checked_function_artifact_snapshot,
+  canonical_normalized_checked_leaf_artifact_snapshot,
+  checked_implementation_body_artifact_binding_row_count,
+  checked_implementation_body_artifact_diagnostic_identity,
+  checked_implementation_body_artifact_exported_interface_bytes,
+  checked_implementation_body_artifact_from_authority,
+  checked_implementation_body_artifact_matches_authority,
+  checked_implementation_body_artifact_source,
+  decode_checked_implementation_body_artifact_v1,
+  decode_normalized_checked_function_artifact_v1,
+  decode_normalized_checked_function_join_artifact_v1,
+  decode_normalized_checked_leaf_artifact_v1,
+  decode_normalized_value_type_env_artifact_v1,
+  encode_checked_implementation_body_artifact_v1,
+  encode_normalized_checked_function_artifact_v1,
+  encode_normalized_checked_function_join_artifact_v1,
+  encode_normalized_checked_leaf_artifact_v1,
+  encode_normalized_value_type_env_artifact_v1,
+  normalized_checked_expression_snapshot_for_test,
+  normalized_checked_function_artifact_from_authority,
+  normalized_checked_function_join_artifact_from_authority,
+  normalized_checked_function_join_artifact_matches_authority,
+  normalized_checked_leaf_artifact_from_authority,
+  normalized_checked_pattern_snapshot_for_test,
+  normalized_checked_type_snapshot_for_test,
+  normalized_value_type_env_artifact_from_authority,
+  normalized_value_type_env_artifact_from_env,
+  shadow_checked_implementation_body_artifact_from_source
+}
+
+import @vibe/ast {
+  Expr, Pat, TypeExpr
+}
+
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Type, TypeDef, TypeEnv
+}
+
+fn normalized_function(source: String) -> Option[String] with Exception {
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match normalized_checked_function_artifact_from_authority(authority) {
+      Some(artifact) => Some(encode_normalized_checked_function_artifact_v1(artifact)),
+      None => None
+    },
+    None => None
+  }
+}
+
+fn normalized_join(source: String) -> Option[String] with Exception {
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match normalized_checked_function_join_artifact_from_authority(authority) {
+      Some(artifact) => Some(encode_normalized_checked_function_join_artifact_v1(artifact)),
+      None => None
+    },
+    None => None
+  }
+}
+
+fn normalized_leaf(source: String) -> Option[String] with Exception {
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match normalized_checked_leaf_artifact_from_authority(authority) {
+      Some(artifact) => Some(encode_normalized_checked_leaf_artifact_v1(artifact)),
+      None => None
+    },
+    None => None
+  }
+}
+
+fn interface_bytes(source: String) -> String with Exception {
+  match decode_checked_implementation_body_artifact_v1(build(source)) {
+    Some(artifact) => checked_implementation_body_artifact_exported_interface_bytes(artifact),
+    None => ""
+  }
+}
+
+fn first_offset(text: String, needle: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i + String::length(needle) <= String::length(text) && found < 0 {
+    if String::substring(text, i, i + String::length(needle)) == needle {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+import @vibe/parser {
+  parse_source_located_with_binder_authority
+}
+
+fn build(source: String) -> String with Exception {
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match checked_implementation_body_artifact_from_authority(authority) {
+      Some(artifact) => encode_checked_implementation_body_artifact_v1(artifact),
+      None => ""
+    },
+    None => ""
+  }
+}
+
+test "#1958: exact source and binder provenance round-trip canonically" {
+  let source = "/// docs\nfn f() -> Int {\n  let value = 1\n  value\n}\n"
+  let bytes = build(source)
+  assert(String::starts_with(bytes, "vibe-checked-implementation-body:v1\n"))
+  match decode_checked_implementation_body_artifact_v1(bytes) {
+    Some(artifact) => {
+      assert_eq(checked_implementation_body_artifact_source(artifact), source)
+      assert(checked_implementation_body_artifact_binding_row_count(artifact) > 0)
+      assert_eq(checked_implementation_body_artifact_diagnostic_identity(artifact), "vibe-checked-implementation-body:empty-typing-diagnostics:path,start,end,code,message:v1")
+      assert_eq(canonical_checked_implementation_body_artifact_snapshot(artifact), bytes)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1958: diagnosed and malformed sources publish no shadow artifact" {
+  assert(shadow_checked_implementation_body_artifact_from_source("fn broken() -> Int { \"wrong\" }\n") == None)
+  assert(shadow_checked_implementation_body_artifact_from_source("fn broken( -> Int { 1 }\n") == None)
+}
+
+test "#1958: repeated shadow modes produce byte-identical clean output" {
+  let source = "/// stable docs\nexport fn value() -> Int { 1 }\n"
+  match (shadow_checked_implementation_body_artifact_from_source(source), shadow_checked_implementation_body_artifact_from_source(source)) {
+    (Some(first), Some(second)) => assert_eq(encode_checked_implementation_body_artifact_v1(first), encode_checked_implementation_body_artifact_v1(second)),
+    _ => assert(false)
+  }
+}
+
+test "#1958: direct-authority and source-shadow paths are byte-identical" {
+  let source = "export fn value() -> Int { 1 }\n"
+  match (parse_source_located_with_binder_authority(source), shadow_checked_implementation_body_artifact_from_source(source)) {
+    (Some(authority), Some(shadow)) => match checked_implementation_body_artifact_from_authority(authority) {
+      Some(direct) => assert_eq(encode_checked_implementation_body_artifact_v1(direct), encode_checked_implementation_body_artifact_v1(shadow)),
+      None => assert(false)
+    },
+    _ => assert(false)
+  }
+}
+
+test "#1958: normalized typed leaf representatives round-trip" {
+  let cases = [
+    "let value = 42\n",
+    "let value = true\n",
+    "let value = \"a:b\\ntext\"\n",
+    "let value = ()\n"
+  ]
+  let mut i = 0
+  while i < Array::length(cases) {
+    match normalized_leaf(Array::get(cases, i)) {
+      Some(bytes) => match decode_normalized_checked_leaf_artifact_v1(bytes) {
+        Some(decoded) => assert_eq(canonical_normalized_checked_leaf_artifact_snapshot(decoded), bytes),
+        None => assert(false)
+      },
+      None => assert(false)
+    }
+    i = i + 1
+  }
+}
+
+test "#1958: normalized typed leaf pilot rejects unsupported nodes" {
+  assert(normalized_leaf("let value = 1 + 2\n") == None)
+  assert(normalized_leaf("let value: Int = 1\n") == None)
+  assert(normalized_leaf("fn value() -> Int { 1 }\n") == None)
+}
+
+test "#1958: normalized typed leaf decoder rejects hostile bytes" {
+  match normalized_leaf("let value = 42\n") {
+    Some(bytes) => {
+      assert(decode_normalized_checked_leaf_artifact_v1(String::concat(bytes, "x")) == None)
+      assert(decode_normalized_checked_leaf_artifact_v1("vibe-normalized-checked-leaf:v0\n") == None)
+      let marker = "3:Int"
+      let at = first_offset(bytes, marker)
+      assert(at >= 0)
+      let unknown = String::concat(String::substring(bytes, 0, at), String::concat("3:Map", String::substring(bytes, at + String::length(marker), String::length(bytes))))
+      assert(decode_normalized_checked_leaf_artifact_v1(unknown) == None)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1958: structured function type and let-call-binop body round-trip" {
+  let source = "fn apply(f: (Int) -> Int, x: Int) -> Int with Exception {\n  let y = x + 1\n  f(y)\n}\n"
+  match normalized_function(source) {
+    Some(bytes) => {
+      assert(String::contains(bytes, "Exception"))
+      match decode_normalized_checked_function_artifact_v1(bytes) {
+        Some(decoded) => assert_eq(canonical_normalized_checked_function_artifact_snapshot(decoded), bytes),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "#1958: generic function scheme and bounds round-trip structurally" {
+  let source = "fn generic[T: Eq + Show](x: T) -> T { x }\n"
+  match normalized_function(source) {
+    Some(bytes) => match decode_normalized_checked_function_artifact_v1(bytes) {
+      Some(decoded) => assert_eq(canonical_normalized_checked_function_artifact_snapshot(decoded), bytes),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+  assert(normalized_checked_type_snapshot_for_test(CtVar(7)) != None)
+  assert(normalized_checked_type_snapshot_for_test(CtForAll([7], [
+    (7, ["Eq", "Show"])
+  ], CtFn([CtVar(7)], CtVar(7), None))) != None)
+}
+
+test "#1958: additional expression and pattern constructors round-trip" {
+  let source = "fn values(x: Int) -> Array[Int] {\n  let pair = (x, -1)\n  [pair.0, 2]\n}\n"
+  match normalized_function(source) {
+    Some(bytes) => assert(decode_normalized_checked_function_artifact_v1(bytes) != None),
+    None => assert(false)
+  }
+  assert(normalized_checked_pattern_snapshot_for_test(POr(PInt(1), PInt(2))) != None)
+}
+
+test "#1958: mutable and control expression constructors round-trip" {
+  let expressions: Array[Expr] = [
+    ELetRec("walk", EInt(1), EIdent("walk", 4)),
+    ELetMut("count", EInt(0), EAssign("count", EInt(1), EIdent("count", 8)), 2),
+    EAssignOp("count", "+", EInt(1), EIdent("count", 8)),
+    ESeq(EInt(1), EInt(2)),
+    EWhile(EBool(false), EUnit),
+    ELoop([("item", EInt(1))], EBreak(Some(EIdent("item", 3)))),
+    EForIn("item", Some("index"), EArray([EInt(1)]), EContinue([
+      EIdent("item", 2)
+    ])),
+    EReturn(EInt(1)),
+    EMap([("key", EString("value"))]),
+    ERecord("Box", [("value", EInt(1))], [TyName("Int")]),
+    EHandle(EInt(1), [(PInt(1), EInt(2))])
+  ]
+  let mut i = 0
+  while i < Array::length(expressions) {
+    assert(normalized_checked_expression_snapshot_for_test(Array::get(expressions, i)) != None)
+    i = i + 1
+  }
+}
+
+test "#1958: record checked type codec is structured" {
+  assert(normalized_checked_type_snapshot_for_test(CtRecord([
+    ("name", CtString),
+    ("age", CtInt)
+  ])) != None)
+}
+
+test "#1958: container types, if, constructors, and match patterns round-trip" {
+  let source = "fn choose(xs: Array[Option[(Int, Bool)]], x: Option[Int]) -> Int {\n  match x {\n    Some(v) => if true { v } else { 0 }\n    None => 0\n  }\n}\n"
+  match normalized_function(source) {
+    Some(bytes) => match decode_normalized_checked_function_artifact_v1(bytes) {
+      Some(decoded) => assert_eq(canonical_normalized_checked_function_artifact_snapshot(decoded), bytes),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1958: structured container and nominal type codecs round-trip" {
+  let types = [
+    CtArray(CtInt),
+    CtOption(CtBool),
+    CtTuple([CtInt, CtString]),
+    CtStruct("Point"),
+    CtEnum("Shade")
+  ]
+  let mut i = 0
+  while i < Array::length(types) {
+    assert(normalized_checked_type_snapshot_for_test(Array::get(types, i)) != None)
+    i = i + 1
+  }
+}
+
+test "#1958: constructor tuple and struct pattern codecs round-trip" {
+  let patterns = [
+    PCtor("Some", [PBind("value")]),
+    PTuple([PBind("left"), PWild]),
+    PStruct("Point", [("x", PBind("value"))])
+  ]
+  let mut i = 0
+  while i < Array::length(patterns) {
+    assert(normalized_checked_pattern_snapshot_for_test(Array::get(patterns, i)) != None)
+    i = i + 1
+  }
+}
+
+test "#1958: tuple patterns round-trip" {
+  let source = "fn first(pair: (Int, Bool)) -> Int {\n  match pair {\n    (value, _) => value\n  }\n}\n"
+  match normalized_function(source) {
+    Some(bytes) => assert(decode_normalized_checked_function_artifact_v1(bytes) != None),
+    None => assert(false)
+  }
+}
+
+test "#1958: structured function decoder rejects hostile bytes" {
+  match normalized_function("fn id(x: Int) -> Int { x }\n") {
+    Some(bytes) => {
+      assert(decode_normalized_checked_function_artifact_v1(String::concat(bytes, "x")) == None)
+      assert(decode_normalized_checked_function_artifact_v1("vibe-normalized-checked-function:v0\n") == None)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1958: function join retains env subst and typed occurrence authority" {
+  let source = "fn apply(f: (Int) -> Int, x: Int) -> Int { f(x) }\n"
+  match normalized_join(source) {
+    Some(bytes) => {
+      assert(String::starts_with(bytes, "vibe-normalized-checked-function-join:v1\n"))
+      match decode_normalized_checked_function_join_artifact_v1(bytes) {
+        Some(decoded) => assert_eq(encode_normalized_checked_function_join_artifact_v1(decoded), bytes),
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "#1958: function join rejects torn stale and cross-source authority" {
+  let old_source = "fn value(x: Int) -> Int { x }\n"
+  let new_source = "fn value(x: Int) -> Int { x + 1 }\n"
+  match (normalized_join(old_source), parse_source_located_with_binder_authority(old_source), parse_source_located_with_binder_authority(new_source)) {
+    (Some(bytes), Some(old_authority), Some(new_authority)) => {
+      assert(normalized_checked_function_join_artifact_matches_authority(bytes, old_authority))
+      assert(!normalized_checked_function_join_artifact_matches_authority(bytes, new_authority))
+      assert(decode_normalized_checked_function_join_artifact_v1(String::substring(bytes, 0, String::length(bytes) - 1)) == None)
+      assert(decode_normalized_checked_function_join_artifact_v1(String::concat(bytes, "x")) == None)
+    },
+    _ => assert(false)
+  }
+}
+
+fn value_env_bytes(env: TypeEnv) -> Option[String] {
+  match normalized_value_type_env_artifact_from_env(env) {
+    Some(artifact) => Some(encode_normalized_value_type_env_artifact_v1(artifact)),
+    None => None
+  }
+}
+
+test "#1958: value TypeEnv preserves order duplicates and binding origin" {
+  let local = EnvValueBinding::{ ty: CtInt, origin: BindingOriginUnavailable }
+  let imported = EnvValueBinding::{
+    ty: CtInt,
+    origin: BindingOriginModuleExport("dep", "value")
+  }
+  let ordered = EnvFlat([("value", local), ("value", imported)])
+  let reversed = EnvFlat([("value", imported), ("value", local)])
+  match (value_env_bytes(ordered), value_env_bytes(reversed)) {
+    (Some(a), Some(b)) => {
+      assert(a != b)
+      assert(decode_normalized_value_type_env_artifact_v1(a) != None)
+      assert(decode_normalized_value_type_env_artifact_v1(b) != None)
+    },
+    _ => assert(false)
+  }
+}
+
+test "#1958: cached value TypeEnv preserves exact index and rejects mismatch" {
+  let local = EnvValueBinding::{
+    ty: CtString,
+    origin: BindingOriginUnavailable
+  }
+  let cached = EnvCached(["a", "a"], [local, local], EnvBind("tail", local, EnvEmpty))
+  match value_env_bytes(cached) {
+    Some(bytes) => {
+      assert(decode_normalized_value_type_env_artifact_v1(bytes) != None)
+      assert(decode_normalized_value_type_env_artifact_v1(String::concat(bytes, "x")) == None)
+    },
+    None => assert(false)
+  }
+  assert(normalized_value_type_env_artifact_from_env(EnvCached(["a"], [], EnvEmpty)) == None)
+}
+
+test "#1958: complete seeded final TypeEnv round-trips" {
+  let source = "fn id[T](x: T) -> T { x }\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match normalized_value_type_env_artifact_from_authority(authority) {
+      Some(artifact) => {
+        let bytes = encode_normalized_value_type_env_artifact_v1(artifact)
+        assert(decode_normalized_value_type_env_artifact_v1(bytes) != None)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1958: declaration and mutation TypeEnv nodes round-trip" {
+  let defs: Array[TypeDef] = [
+    TDEnum("Choice", ["T"], [("Choice", [CtNamed("T", [])])]),
+    TDStruct("Point", [("x", CtInt)], ["x"], []),
+    TDAlias("Count", [], CtInt),
+    TDEffect("Log", [("Emit", [CtString], CtUnit)], []),
+    TDEffectSet("Console", ["Log"])
+  ]
+  let env = EnvTraitDef("Show", [], false, [
+    ("show", [TyName("Self")], TyName("String"))
+  ], EnvTraitImpl("Show", CtInt, EnvTraitImplGen("Eq", ["T"], [("T", ["Eq"])], CtNamed("Box", [
+    CtNamed("T", [])
+  ]), EnvTypeDefs(defs, ["Choice", "Point"], EnvMutCell("value", true, EnvEmpty)))), [
+    "Self"
+  ], [("show", ["T"], [("T", ["Show"])])])
+  match value_env_bytes(env) {
+    Some(bytes) => assert(decode_normalized_value_type_env_artifact_v1(bytes) != None),
+    None => assert(false)
+  }
+}
+
+test "#1958: comments and whitespace have explicit lossless identity" {
+  let compact = build("fn f() -> Int { 1 }\n")
+  let documented = build("/// docs\nfn f() -> Int {\n  1\n}\n")
+  assert(compact != "")
+  assert(documented != "")
+  assert(compact != documented)
+}
+
+test "#1958: private body changes alter implementation identity" {
+  let one = build("fn private_value() -> Int { 1 }\n")
+  let two = build("fn private_value() -> Int { 2 }\n")
+  assert(one != "")
+  assert(two != "")
+  assert(one != two)
+}
+
+test "#1958: private body changes preserve exported-interface identity" {
+  let one = interface_bytes("fn private_value() -> Int { 1 }\nexport fn public_value() -> Int { private_value() }\n")
+  let two = interface_bytes("fn private_value() -> Int { 2 }\nexport fn public_value() -> Int { private_value() }\n")
+  assert(one != "")
+  assert_eq(one, two)
+}
+
+test "#1958: public signature changes alter exported-interface identity" {
+  let int_interface = interface_bytes("export fn public_value() -> Int { 1 }\n")
+  let bool_interface = interface_bytes("export fn public_value() -> Bool { true }\n")
+  assert(int_interface != "")
+  assert(bool_interface != "")
+  assert(int_interface != bool_interface)
+}
+
+test "#1958: shadow parity accepts exact current authority and rejects stale body" {
+  let old_source = "export fn public_value() -> Int { 1 }\n"
+  let new_source = "export fn public_value() -> Int { 2 }\n"
+  let retained = build(old_source)
+  match (parse_source_located_with_binder_authority(old_source), parse_source_located_with_binder_authority(new_source)) {
+    (Some(old_authority), Some(new_authority)) => {
+      assert(checked_implementation_body_artifact_matches_authority(retained, old_authority))
+      assert(!checked_implementation_body_artifact_matches_authority(retained, new_authority))
+    },
+    _ => assert(false)
+  }
+}
+
+test "#1958: malformed stale-version and torn bytes fail closed" {
+  let bytes = build("fn f() -> Int { 1 }\n")
+  assert(decode_checked_implementation_body_artifact_v1("vibe-checked-implementation-body:v0\n") == None)
+  assert(decode_checked_implementation_body_artifact_v1(String::substring(bytes, 0, String::length(bytes) - 1)) == None)
+  assert(decode_checked_implementation_body_artifact_v1(String::concat(bytes, "x")) == None)
+  let nested = "vibe-checked-exported-interface-artifact:v1\n"
+  let at = first_offset(bytes, nested)
+  assert(at >= 0)
+  let corrupted_nested = String::concat(String::substring(bytes, 0, at), String::concat("vibe-checked-exported-interface-artifact:v0\n", String::substring(bytes, at + String::length(nested), String::length(bytes))))
+  assert(decode_checked_implementation_body_artifact_v1(corrupted_nested) == None)
+  let diagnostic = "vibe-checked-implementation-body:empty-typing-diagnostics:path,start,end,code,message:v1"
+  let diagnostic_at = first_offset(bytes, diagnostic)
+  assert(diagnostic_at >= 0)
+  let corrupted_diagnostic = String::concat(String::substring(bytes, 0, diagnostic_at), String::concat("vibe-checked-implementation-body:empty-typing-diagnostics:path,start,end,code,message:v0", String::substring(bytes, diagnostic_at + String::length(diagnostic), String::length(bytes))))
+  assert(decode_checked_implementation_body_artifact_v1(corrupted_diagnostic) == None)
+}

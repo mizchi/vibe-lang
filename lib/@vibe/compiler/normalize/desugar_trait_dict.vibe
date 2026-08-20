@@ -2,6 +2,7 @@
 
 import @vibe/compiler/core {
   Expr,
+  ImportItem,
   Pat,
   Stmt,
   TypeEnv,
@@ -1421,13 +1422,12 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       EIdent("Map::insert", _) => Some("Map"),
       EIdent("Map::delete", _) => Some("Map"),
       EIdent("MapBuilder::freeze", _) => Some("Map"),
-      // The one Stream-returning builtin left after #1538 retired the eager
-      // combinators: `for b in String::to_bytes(s)` — or a let-bound
-      // ByteStream via extend_var_types — must classify as "Stream" so the
+      // Nominal ByteStream values retain an internal materialized lowering on
+      // the linear backend. Classify them separately from guest AsyncIter so the
       // for-loop classification lowers it to the plain array loop instead of
       // the pull-closure loop (#822: the pull desugar called the stream value
       // as a closure — call_indirect on an array pointer = table OOB trap).
-      EIdent("String::to_bytes", _) => Some("Stream"),
+      EIdent("String::to_bytes", _) => Some("ByteStream"),
       EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
@@ -1528,7 +1528,7 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
 /// inference for method calls — and no other path in `infer_arg_type_name`
 /// produces a non-concrete `Some`.
 fn is_concrete_or_known_type_name(t: String, struct_sets: Array[(String, Array[String])]) -> Bool {
-  t == "Int" || t == "Bool" || t == "String" || t == "Double" || t == "Float" || t == "Array" || t == "Map" || t == "Option" || t == "Result" || t == "Stream" || struct_set_has(struct_sets, t)
+  t == "Int" || t == "Bool" || t == "String" || t == "Double" || t == "Float" || t == "Array" || t == "Map" || t == "Option" || t == "Result" || t == "ByteStream" || struct_set_has(struct_sets, t)
 }
 
 /// #973: does either operand's inferred static type look like an ERASED
@@ -3952,7 +3952,9 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       SImport(_, items) => {
         let mut ii = 0
         while ii < Array::length(items) {
-          let (orig, alias_opt) = Array::get(items, ii)
+          let item = Array::get(items, ii)
+          let orig = item.name
+          let alias_opt = item.alias
           match alias_opt {
             Some(alias) => {
               Array::push(out, (type_alias_key(alias), orig))
@@ -11601,9 +11603,9 @@ fn relabel_stmt_paired(stmt: Stmt, tbl: Array[(String, Array[String])], node: Bi
       let mut i = 0
       while i < Array::length(items) {
         let item = Array::get(items, i)
-        let local = match item.1 {
+        let local = match item.alias {
           Some(alias) => alias,
-          None => item.0
+          None => item.name
         }
         paired_expect_slot(node, i, StatementImportBinder, local, poisoned)
         i = i + 1
@@ -12196,11 +12198,13 @@ fn dinsp_binds_inspect(stmts: Array[Stmt]) -> Bool {
   found
 }
 
-fn dinsp_import_binds(items: Array[(String, Option[String])]) -> Bool {
+fn dinsp_import_binds(items: Array[ImportItem]) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(items) {
-    let (original, alias) = Array::get(items, i)
+    let item = Array::get(items, i)
+    let original = item.name
+    let alias = item.alias
     found = match alias {
       Some(a) => a == "inspect",
       None => original == "inspect"

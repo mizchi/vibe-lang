@@ -10,7 +10,19 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin, Expr, Stmt, Type, TypeEnv, TypeExpr, env_cache, env_lookup, env_lookup_binding, env_value_binding, trait_defined
+  BindingOrigin,
+  Expr,
+  ImportItem,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_cache,
+  env_lookup,
+  env_lookup_binding,
+  env_value_binding,
+  trait_defined
 }
 
 import @vibe/compiler/checker {
@@ -100,6 +112,53 @@ fn retained_trait_node_tags(env: TypeEnv) -> String {
     EnvFlat(_) => "",
     EnvCached(_, _, rest) => retained_trait_node_tags(rest)
   }
+}
+
+fn import_kind_provider_env() -> TypeEnv {
+  EnvTypeDefs([
+    TDAlias("Alias", [], CtInt),
+    TDStruct("Record", [("value", CtInt)], [], []),
+    TDEnum("Choice", [], [("First", []), ("Second", [])]),
+    TDEffect("Audit", [("Emit", [CtString], CtUnit)], [])
+  ], ["Alias", "Record", "Choice", "Audit"], EnvTraitDef("Marker", [], false, [], EnvEmpty, [
+  ], []))
+}
+
+fn projected_import_kind_error(source: String) -> String {
+  handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", source), import_kind_provider_env())
+    ""
+  } with Exception {
+    Throw(message) => message
+  }
+}
+
+test "kind-qualified imports match projected declaration authority" {
+  assert(projected_import_kind_error("import ./provider.vibe { type Alias }") == "")
+  assert(projected_import_kind_error("import ./provider.vibe { type Record }") == "")
+  assert(projected_import_kind_error("import ./provider.vibe { type Choice }") == "")
+  assert(projected_import_kind_error("import ./provider.vibe { struct Record }") == "")
+  assert(projected_import_kind_error("import ./provider.vibe { enum Choice }") == "")
+  assert(projected_import_kind_error("import ./provider.vibe { effect Audit }") == "")
+  assert(projected_import_kind_error("import ./provider.vibe { trait Marker }") == "")
+  assert(projected_import_kind_error("import ./provider.vibe { Alias }") == "")
+  assert(projected_import_kind_error("export ./provider.vibe { enum Choice as PublicChoice }") == "")
+}
+
+test "struct imports reject enums" {
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { struct Choice }"), "import kind mismatch: `Choice` is an enum, not a struct"))
+}
+
+test "enum imports reject effects" {
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { enum Audit }"), "import kind mismatch: `Audit` is an effect, not an enum"))
+}
+
+test "effect imports reject traits" {
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { effect Marker }"), "import kind mismatch: `Marker` is a trait, not an effect"))
+}
+
+test "trait imports reject aliases" {
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { trait Alias }"), "import kind mismatch: `Alias` is a type alias, not a trait"))
 }
 
 fn imported_forall_bound_label(env: TypeEnv, name: String) -> String {
@@ -368,7 +427,9 @@ test "projected checker nested modules retain legacy import replay" {
   ], [(dep_path, dep_env)])
   let checked = check_program_with_projected_import_env_result([
     SModule(false, "Nested", [
-      SImport("./dep.vibe", [("source", Some("alias"))]),
+      SImport("./dep.vibe", [
+        ImportItem::{ kind: None, name: "source", alias: Some("alias") }
+      ]),
       // Legacy nested replay shadows the projected String with CtUnknown, so
       // this remains accepted exactly as before. Inheriting root projected
       // mode would retain String and reject the annotation.

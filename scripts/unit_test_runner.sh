@@ -151,7 +151,10 @@ if [ -n "${VIBE_STAGE2_WASM:-}" ] && [ -s "${VIBE_STAGE2_WASM}" ]; then
 else
   outdir="$ROOT_DIR/_build/_unit_test_gen"
   echo "[unit-test-runner] building fresh stage2 (seed->stage1->stage2)"
-  rm -f "$ROOT_DIR"/_build/vibe_selfhost_*.tsv
+  # Keep cleanup argv bounded even after a large incremental/full-gate run.
+  # Expanding the glob in the shell can exceed ARG_MAX before rm starts.
+  find "$ROOT_DIR/_build" -maxdepth 1 -type f -name 'vibe_selfhost_*.tsv' \
+    -exec rm -f {} +
   bash scripts/generations.sh build --out-dir "$outdir" >/dev/null
   S2="$outdir/stage2.wasm"
 fi

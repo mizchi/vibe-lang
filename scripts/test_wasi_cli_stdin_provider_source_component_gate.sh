@@ -25,6 +25,10 @@ grep -Fq 'fn Stdin::read_via_stream() -> StdinStream with Stdin' lib/@vibe/conso
 grep -Fq 'fn StdinStream::next(stream: StdinStream) -> Int with Async' lib/@vibe/console/index.vpkg
 grep -Fq 'fn StdinStream::close(stream: StdinStream) -> Unit with Async' lib/@vibe/console/index.vpkg
 grep -Fq 'fn StdinStream::read_chunk(stream: StdinStream, chunk_size: Int) -> Option[String] with Async' lib/@vibe/console/index.vpkg
+if grep -Fq 'fn stdin_stream(' lib/@vibe/console/index.vpkg; then
+  echo "stdin provider source gate FAILED: legacy stdin_stream remains public; use StdinStream::read_chunk" >&2
+  exit 1
+fi
 if grep -Fq 'vibe_stdin_provider_' lib/@vibe/console/index.vpkg; then
   echo "stdin provider source gate FAILED: raw names leaked into console contract" >&2
   exit 1
@@ -560,29 +564,6 @@ fi
 grep -Fq 'StdinStream is component-only; VIBE_COVERAGE=1 cannot emit' "$OUT/import-alias-coverage.wasm.diag"
 if grep -Fq 'stdin_provider_' "$OUT/import-alias-coverage.wasm.diag" "$OUT/import-alias-coverage.log"; then
   echo "stdin provider source gate FAILED: FS coverage exposed the raw provider ABI" >&2
-  exit 1
-fi
-
-# The additive compiler-owned adapter must not poison the unchanged source
-# implementation of legacy stdin_stream or make its standalone core acquire
-# the component-private provider ABI.
-cat >"$OUT/legacy-standalone.vibe" <<'EOF'
-import @vibe/console { stdin_stream }
-fn main() -> Int with Stdin {
-  let pull = stdin_stream(2)
-  match pull() { Some(chunk) => String::length(chunk), None => 0 }
-}
-EOF
-rm -f "$OUT/legacy-standalone.wasm" "$OUT/legacy-standalone.wasm.diag"
-VIBE_FS_COMPILE=1 VIBE_LIB="$ROOT/lib" VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
-  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
-  "$COMPILER" "$OUT/legacy-standalone.vibe" "$OUT/legacy-standalone.wasm" main >/dev/null
-[ -s "$OUT/legacy-standalone.wasm" ] || { cat "$OUT/legacy-standalone.wasm.diag" >&2 || true; exit 1; }
-[ "$(od -A n -t x1 -N 8 "$OUT/legacy-standalone.wasm" | awk '{print $5}')" = "01" ]
-wasm-tools validate --features all "$OUT/legacy-standalone.wasm"
-wasm-tools print "$OUT/legacy-standalone.wasm" >"$OUT/legacy-standalone.wat"
-if grep -Fq 'stdin_provider_' "$OUT/legacy-standalone.wat"; then
-  echo "stdin provider source gate FAILED: legacy stdin_stream gained provider imports" >&2
   exit 1
 fi
 

@@ -934,12 +934,13 @@ bytes per `Some` except for the final short chunk; it does not preserve provider
 read boundaries and preserves arbitrary bytes. EOF settles the provider, after
 which calls return `None`. For `n <= 0`, it returns `None` without reading or
 settling, so the caller must close the stream. An exact multiple needs one extra
-call to settle EOF. The pull-closure/`for` adapter remains blocked on transitive
-higher-order effect evidence (#1536); do not treat `read_chunk` as directly
-iterable. This surface is component-only (linear/RC); GC, standalone core,
-`host_stream_named("stdin")`, and mixed named-provider composition are
-rejected. Legacy `stdin_stream(chunk_size)` is standalone-capable and
-`#deprecated` (`use StdinStream::read_chunk`).
+call to settle EOF. The retired pull-closure `stdin_stream(chunk_size)` is no
+longer exported. Pull explicitly with `StdinStream::read_chunk` and close the
+provider on every early-stop path. A direct `for` adapter remains blocked on
+transitive higher-order effect evidence (#1536); do not treat `read_chunk` as
+directly iterable. This surface is component-only (linear/RC); GC, standalone
+core, `host_stream_named("stdin")`, and mixed named-provider composition are
+rejected.
 
 **Naming.** Effect names are CamelCase. A standard provider builtin is a plain
 `Effect::snake_case` function call; a declared operation is CamelCase and is
@@ -1329,7 +1330,7 @@ export ./lib.vibe { helper1, helper2 }  // re-export
 // import
 import ./lib.vibe { func1, func2 }
 import ./lib.vibe { func1 as renamed }
-import ./lib.vibe { type MyType, trait Show }
+import ./lib.vibe { type MyType, struct Point, enum Color, effect Console, trait Show, println }
 import ./subdir { helper }   // directory import -> subdir/index.vibe(i)
 import . { helper }          // own directory's index (same resolution)
 
@@ -1337,6 +1338,33 @@ import . { helper }          // own directory's index (same resolution)
 // use file boundaries + import/export. `Type::method` / `Effect::Op`
 // qualified access is an independent mechanism and remains.
 ```
+
+### Selective import kinds
+
+Values use the bare item spelling, including values declared with `fn` or
+`let`. A function declaration is sugar for a value binding, so there are no
+`fn` or `let` import qualifiers:
+
+```vibe skip
+// doctest-skip: illustrative module path
+import @vibe/console { effect Console, struct Tty, println }
+```
+
+Phase A accepts bare items for compatibility and also accepts the optional
+`type`, `struct`, `enum`, `effect`, and `trait` qualifiers. Written qualifiers
+are checked: `struct`, `enum`, `effect`, and `trait` require that exact exported
+declaration kind. For example, requesting `struct Color` when `Color` is an enum
+is rejected with a diagnostic that identifies both the requested and exported
+kinds. Selective re-exports use the same rules.
+
+`type` is temporarily broader in Phase A and accepts a type alias, struct, or
+enum. Existing code used it as a type-namespace selector, so narrowing it in the
+same bootstrap generation would prevent the compiler from rebuilding itself.
+
+Phase B is planned, not current behavior: after the bootstrap compiler accepts
+the new item syntax, `type` will mean exactly a type alias, and qualifiers will
+eventually become mandatory for non-value imports. Bare value imports will stay
+bare.
 
 ### Same-named traits from two packages are rejected (#1910)
 

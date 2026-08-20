@@ -59,11 +59,19 @@ test "1538: HostStream is rejected by a legacy Stream consumer" {
   assert(check_source_err("fn consume(s: Stream[Int]) -> Int { 0 }\nfn main() -> Int { consume(host_stream_named(\"body\")) }"))
 }
 
-/// #1538 retired the eager producers; `String::to_bytes` is the ByteStream half
-/// that keeps the `Stream[Int]` head inhabited, so a `Stream[Int]` parameter is
-/// still writable and still reachable.
-test "1538: a Stream[Int] parameter still reaches its ByteStream producer" {
-  assert(check_source_ok("fn consume(s: Stream[Int]) -> Int { 0 }\nfn main() -> Int { consume(String::to_bytes(\"*\")) }"))
+/// #1954 removes the compiler-owned legacy Stream surface. A bare unknown
+/// named type remains intentionally tolerated by the generic checker, so the
+/// load-bearing boundary is that the old builtin consumer no longer resolves.
+test "1954: legacy Stream consumer is unreachable" {
+  assert(check_source_err("fn main() -> String { Stream::to_string(String::to_bytes(\"*\")) }"))
+}
+
+test "1954: String bytes satisfy an explicit ByteStream parameter" {
+  assert(check_source_ok("fn consume(s: ByteStream) -> Int { 0 }\nfn main() -> Int { consume(String::to_bytes(\"*\")) }"))
+}
+
+test "1954: ByteStream does not expose its materialized representation" {
+  assert(check_source_err("fn main() -> Int { Array::length(String::to_bytes(\"*\")) }"))
 }
 
 /// The retired names must not resolve -- an unknown name is the error now.
