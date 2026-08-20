@@ -34,14 +34,16 @@ VIBE_TRACE_OUT="$T" bash scripts/trace_span.sh outer bash -c "
   VIBE_TRACE_OUT='$T' bash scripts/trace_span.sh inner1 true
   VIBE_TRACE_OUT='$T' bash scripts/trace_span.sh inner2 true
 " || bad "nested run failed"
-[ "$(wc -l < "$T")" = "3" ] || bad "expected 3 spans, got $(wc -l < "$T")"
+span_count="$(wc -l < "$T" | tr -d '[:space:]')"
+[ "$span_count" = "3" ] || bad "expected 3 spans, got $span_count"
 outer_sid="$(sed -n 's/.*"sid":"\([0-9a-f]*\)","pid":"","name":"outer".*/\1/p' "$T")"
 [ -n "$outer_sid" ] || bad "outer span is not a root (empty pid)"
 for child in inner1 inner2; do
   pid="$(sed -n "s/.*\"pid\":\"\([0-9a-f]*\)\",\"name\":\"$child\".*/\1/p" "$T")"
   [ "$pid" = "$outer_sid" ] || bad "$child parented to '$pid', want outer '$outer_sid'"
 done
-[ "$(cut -d'"' -f4 < "$T" | sort -u | wc -l)" = "1" ] || bad "spans span more than one trace id"
+trace_count="$(cut -d'"' -f4 < "$T" | sort -u | wc -l | tr -d '[:space:]')"
+[ "$trace_count" = "1" ] || bad "spans span more than one trace id"
 
 # 4. A malformed inherited traceparent starts a NEW trace instead of
 #    propagating a bogus id -- reparenting everything under a wrong trace is

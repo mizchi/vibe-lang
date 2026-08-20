@@ -4553,12 +4553,13 @@ tc_names="$(grep -v '^#' fixtures/typecheck/expected.tsv | cut -f1)"
 # adopted from the repository root -- one directly under fixtures/. Resolving
 # in that order avoids moving 139 files and keeps names unique (checked: the
 # two directories share none).
-printf '%s\n' $tc_names | xargs -P "$(nproc 2>/dev/null || echo 4)" -I{} env \
+printf '%s\n' $tc_names | xargs -P "$(nproc 2>/dev/null || echo 4)" -n 1 env \
   ROOT_DIR="$ROOT_DIR" stage2_wasm="$stage2_wasm" tcdir="$tcdir" \
-  bash -c 'src="fixtures/typecheck/{}.vibe"; [ -f "$src" ] || src="fixtures/{}.vibe"
+  bash -c 'name="$1"
+    src="fixtures/typecheck/$name.vibe"; [ -f "$src" ] || src="fixtures/$name.vibe"
     VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$src" "$tcdir/{}.wasm" __no_entry__ >/dev/null 2>&1 || true'
+    "$src" "$tcdir/$name.wasm" __no_entry__ >/dev/null 2>&1 || true' _
 tc_fail=0
 tc_debt=0
 while IFS=$'\t' read -r tcname tcstatus tcneedle; do
