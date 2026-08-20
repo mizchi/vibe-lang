@@ -58,6 +58,8 @@
 
 ## 日本語版 (Japanese)
 
+- [はじめに](ja/00_introduction.md)
+- [インストールと Hello, vibe](ja/01_getting_started.vibe.md)
 - [小さなプログラム](ja/02_a_small_program.vibe.md)
 - [値と関数](ja/03_values_functions.vibe.md)
 - [制御フロー](ja/04_control_flow.vibe.md)
