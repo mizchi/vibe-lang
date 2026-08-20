@@ -1,12 +1,16 @@
-# 04 — Option
+# 08 — Option and the railway
 
-Previous: [03 Data](07_data.vibe.md)
+Previous: [Structs, enums, and match](07_data.vibe.md)
 
 日本語版: [08_option.vibe.md](../ja/08_option.vibe.md)
 
-## Option
+A value that might not be there has type `Option[T]`: either `Some(v)`
+or `None`. It is an ordinary enum — nothing about it is built into the
+compiler — but it is common enough that the language has three
+shorthands for the thing you always want to do with it, which is *stop
+early when there is nothing*.
 
-A value that might not be there is an `Option[T]` — `Some(v)` or `None`.
+## The type
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -14,32 +18,35 @@ fn half(n: Int) -> Option[Int] {
     Some(n / 2)
   } else {
     None
-  }
-}
-
-fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
-  match o {
-    Some(v) => v,
-    None => fallback
   }
 }
 
 fn main with Console {
-  println("half(10) unwrap_or -1 = \{unwrap_or(half(10), -1)}")
-  println("half(3)  unwrap_or -1 = \{unwrap_or(half(3), -1)}")
+  let a = match half(10) {
+    Some(v) => v,
+    None => 0 - 1
+  }
+  let b = match half(3) {
+    Some(v) => v,
+    None => 0 - 1
+  }
+  println("half(10) = \{a}")
+  println("half(3)  = \{b}")
 }
 ```
 
 ```output
-half(10) unwrap_or -1 = 5
-half(3)  unwrap_or -1 = -1
+half(10) = 5
+half(3)  = -1
 ```
 
-## `let*` — bind and short-circuit
+`match` is always available and always works. The rest of this chapter
+is about not writing it four times in a row.
 
-`let* x = e` unwraps a `Some(x)` and binds it; on `None` the whole block
-short-circuits to `None`. The enclosing function has to return the matching
-`Option[...]`.
+## `?` — unwrap, or return `None` now
+
+Put `?` after an expression of type `Option[T]` and you get the `T`. If
+it was `None`, the enclosing function returns `None` immediately:
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -50,92 +57,66 @@ fn half(n: Int) -> Option[Int] {
   }
 }
 
-fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
-  match o {
-    Some(v) => v,
-    None => fallback
+fn sum_halves(a: Int, b: Int) -> Option[Int] {
+  let x = half(a)?
+  let y = half(b)?
+  Some(x + y)
+}
+
+fn main with Console {
+  println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
+  println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
+}
+```
+
+```output
+sum_halves(4, 6) = Some(5)
+sum_halves(4, 3) = None
+```
+
+The function has to return an `Option` itself, which is the honest part
+of the deal: `?` does not make the absence disappear, it passes it to
+your caller.
+
+## `let*` — the same idea for a whole block
+
+`let* x = e` binds the contents of a `Some`, and on `None` the block it
+sits in evaluates to `None`:
+
+```vibe run
+fn half(n: Int) -> Option[Int] {
+  if n % 2 == 0 {
+    Some(n / 2)
+  } else {
+    None
   }
 }
 
 fn sum_halves(a: Int, b: Int) -> Option[Int] {
   let* x = half(a)
-  // a None ends it right here
   let* y = half(b)
   Some(x + y)
 }
 
 fn main with Console {
-  println("sum_halves(4, 6) unwrap_or -1 = \{unwrap_or(sum_halves(4, 6), -1)}")
-  println("sum_halves(4, 3) unwrap_or -1 = \{unwrap_or(sum_halves(4, 3), -1)}")
+  println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
+  println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
 }
 ```
 
 ```output
-sum_halves(4, 6) unwrap_or -1 = 5
-sum_halves(4, 3) unwrap_or -1 = -1
+sum_halves(4, 6) = Some(5)
+sum_halves(4, 3) = None
 ```
 
-## `?` — unwrap or return early
+`?` and `let*` do the same job here; `?` suits one expression in the
+middle of a line, `let*` suits a run of steps that all have to succeed.
 
-`e?` evaluates to the contents of a `Some(v)`, and on `None` early-returns
-`None` from the enclosing function.
+## `guard` — bind, or leave
 
-```vibe run
-fn half(n: Int) -> Option[Int] {
-  if n % 2 == 0 {
-    Some(n / 2)
-  } else {
-    None
-  }
-}
-
-fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
-  match o {
-    Some(v) => v,
-    None => fallback
-  }
-}
-
-fn first_half(a: Int, b: Int) -> Option[Int] {
-  let x = half(a)?
-  let _unused = half(b)?
-  Some(x)
-}
-
-fn main with Console {
-  println("first_half(4, 6) unwrap_or -1 = \{unwrap_or(first_half(4, 6), -1)}")
-  println("first_half(4, 3) unwrap_or -1 = \{unwrap_or(first_half(4, 3), -1)}")
-}
-```
-
-```output
-first_half(4, 6) unwrap_or -1 = 2
-first_half(4, 3) unwrap_or -1 = -1
-```
-
-## `guard` — bind or bail out
-
-`guard e is PAT else { ... }` unwraps a `Some(v)` and binds `v` **for the rest
-of the scope**; if it does not match, control enters the `else`. It writes
-"unwrap and carry on" without the rightward nesting of a `match`.
-
-The `else` **must** bail out. The construct desugars to
-`match e { PAT => <the rest>, _ => else }`, so the `else` arm sits where the
-remainder of the block would be evaluated — if it did not bail out there would
-be a path that goes on to use an unbound `v`. The accepted exits are `return`
-and a direct `throw(...)` (measured: `guard o is Some(v) else { throw("no value") }`
-is accepted as long as the function's row carries `Exception`, and the caller
-can catch it with `handle` — see [05 Effects](13_effects.vibe.md#the-exception-boundary--perform--handle)).
-Any other `perform` might resume, so it does not count as an exit.
-
-When the fallback is a *value* rather than an exit, use
-`if e is PAT { .. } else { .. }`.
-
-> The older spelling `let PAT = e else { ... }` (#760(1)) is gone and now
-> produces a parse error that says so by name. It was never a synonym: in the
-> old form the `else` became the value of **the entire rest of the block**, so
-> `let Some(v) = o else { 0 }` could silently replace the remainder of the
-> function with `0`. Requiring `guard` to bail out is what removed that shape.
+Sometimes you do not want to propagate the `None` — you want to handle
+it and carry on with an unwrapped value. `guard` binds for the **rest of
+the scope**, and its `else` must leave:
 
 ```vibe run
 fn double_or_zero(o: Option[Int]) -> Int {
@@ -143,7 +124,6 @@ fn double_or_zero(o: Option[Int]) -> Int {
     return 0
   }
   v * 2
-  // v is available here
 }
 
 fn main with Console {
@@ -157,7 +137,17 @@ double_or_zero(Some(21)) = 42
 double_or_zero(None) = 0
 ```
 
-## Quick checks use the `is` expression
+Note that `v` is in scope on the last line, with no nesting — that is
+the whole point of `guard` over `match`.
+
+The `else` must actually leave the function, by `return` or by
+`throw(...)`. It has to, because everything after the `guard` is written
+assuming `v` exists. When the fallback is a *value* rather than an exit,
+use `if o is Some(v) { ... } else { ... }` instead.
+
+## Asking without unwrapping
+
+When you only want to know, `is` gives you a `Bool`:
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -170,9 +160,7 @@ fn half(n: Int) -> Option[Int] {
 
 fn main with Console {
   println("half(10) is Some(_) = \{half(10) is Some(_)}")
-  // true
   println("half(3) is None = \{half(3) is None}")
-  // true
 }
 ```
 
@@ -181,7 +169,12 @@ half(10) is Some(_) = true
 half(3) is None = true
 ```
 
-Aborting *with a reason* is the next chapter's
-[Exception boundary](13_effects.vibe.md#the-exception-boundary--perform--handle).
+## When absence is not the story
 
-Next: [05 Effects](13_effects.vibe.md)
+`Option` says a value is missing. It does not say *why*, and sometimes
+why is the point — a parse failed, a file was malformed. For that, a
+function declares `with Exception` and throws a message, which the next
+chapters cover. Reach for `Option` when "not there" is the whole story,
+and for `Exception` when the caller deserves a reason.
+
+Next: [Modules and packages](09_modules_packages.vibe.md).

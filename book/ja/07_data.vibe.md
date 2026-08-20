@@ -1,10 +1,22 @@
-# 03 — データとパターンマッチ
+# 07 — 構造体・列挙・match
 
-前章: [02 制御フロー](04_control_flow.vibe.md)
+前: [ミューテーション・region・エスケープ](06_mutation.vibe.md)
 
-English version: [07_data.vibe.md](../en/07_data.vibe.md) (canonical)
+English version: [07_data.vibe.md](../en/07_data.vibe.md)
 
-## tuple / array / record
+vibe のデータは2つの形のどちらかで、この区別は言語全体を貫いています:
+
+- いくつかのものを**すべて**持つ値 — 点は `x` **と** `y` を持つ — は
+  **構造体**;
+- いくつかのうち**どれか1つ**である値 — 図形は円 **または** 長方形 — は
+  **列挙**。
+
+どちらを分解するのも `match` で、場合を尽くしたかはコンパイラが検査します。
+
+## 軽い形: タプル・配列・レコード
+
+名前付きの形の前に、軽いものを3つ。タプルは決まった個数の値を位置で束ね、
+配列は同じ型を多数持ち、レコードは名前を付けなかった構造体です:
 
 ```vibe run
 fn main with Console {
@@ -22,7 +34,6 @@ fn main with Console {
     ver: 1
   }
   println("r.name = \{r.name}, r.ver = \{r.ver}")
-  // 分配束縛も、複数の field を局所名へ取り出すときに使える
   let record {
     name: n,
     ver: v
@@ -39,10 +50,13 @@ r.name = vibe, r.ver = 1
 n = vibe, v = 1
 ```
 
-anonymous record も `r.name` のように field を読める。分配束縛は複数 field を
-局所名へ取り出す場合の選択肢であり、accessor の回避策ではない。
+最後の2行が分解です。複数のフィールドをローカル名で取り出すもので、
+大半を使うときに `r.` を繰り返すより読みやすくなります。
 
-## struct と derive
+## 構造体
+
+`struct` は形に名前を付けます。`derive` は、その形について自明な演算を
+コンパイラに書かせる指示です:
 
 ```vibe run
 struct Point {
@@ -55,9 +69,7 @@ fn main with Console {
   }
   println("p.x = \{p.x}")
   println("compare(p, {x:1,y:3}) = \{Point::compare(p, Point::{ x: 1, y: 3 })}")
-  // derive(Ord): -1 / 0 / 1
   println("to_string(p) = \{Point::to_string(p)}")
-  // derive(Show)
 }
 ```
 
@@ -67,7 +79,15 @@ compare(p, {x:1,y:3}) = -1
 to_string(p) = Point { x: 1, y: 2 }
 ```
 
-## enum と match
+`Eq` は `==` を、`Ord` は `compare`（-1 / 0 / 1 を返す）を、`Show` は
+`to_string` とそれによる補間を与えます。手で書くのは、導出された意味が
+欲しいものと違うときだけです。
+[ジェネリクス・trait・derive](15_generics.vibe.md)で先へ進みます。
+
+## 列挙
+
+`enum` は選択肢を並べ、それぞれが自分のデータを持ちます。`match` は
+どれなのかで分岐します:
 
 ```vibe run
 enum Shape {
@@ -93,7 +113,14 @@ area(Circle(2)) = 12
 area(Rect(6, 7)) = 42
 ```
 
-## match の道具箱: ガード / or-pattern / リテラル
+この enum に `Triangle` を足すと、その面積を述べるまで `area` は
+コンパイルが通らなくなります。これが欲しい性質です — 更新が必要な箇所を
+コンパイラが見つけてくれるので、場合を足す作業が捜索ではなく作業になります。
+
+## `match` で書けること
+
+パターンは variant に限りません。リテラルに一致させ、`|` で選択肢を並べ、
+`if` で条件を足し、`_` で残りを受けられます:
 
 ```vibe run
 fn classify(n: Int) -> String {
@@ -120,16 +147,14 @@ classify(-5) = negative
 classify(99) = big
 ```
 
-## 分配束縛と is 式
+腕は上から順に試されるので、`x if x < 0` に来るのは `0` / `1` / `2` の
+どれでもなかった値だけです。
 
-### トップレベルの irrefutable pattern
+## 形で束縛する
 
-必ず一致する pattern はトップレベルでも束縛できる ([#1281](https://github.com/mizchi/vibe-lang/issues/1281))。
-右辺は名前がいくつあっても**ちょうど1回**評価され、各名前はそこからの射影に
-なる。enum variant・literal・or-pattern のような refutable pattern は
-「失敗しうる」ので拒否される (関数の中で `match` を使う)。型注釈と
-`export let <pattern>` も書けない — 前者は注釈すべき単一の binding が無く、
-後者は `export { .. }` に分ける。
+失敗しえないパターンは `match` なしで直接束縛できます — 関数の中でも、
+ファイルのトップレベルでも。右辺は一度だけ評価され、各名前はそこからの
+射影です:
 
 ```vibe run
 struct Version {
@@ -159,9 +184,9 @@ fn main with Console {
 sum = 42, vibe 0.3
 ```
 
-### 関数本体での束縛
-
-同じ形は関数本体でも使える (`is` 式による絞り込みと組み合わせられる)。
+**失敗しうる**パターン — enum の variant やリテラル — には `match` か、
+あるいは `is` 式が要ります。`is` はパターンを検査し、続く分岐でその名前を
+束縛します:
 
 ```vibe run
 fn main with Console {
@@ -170,10 +195,8 @@ fn main with Console {
   let opt = Some(41)
   if opt is Some(w) {
     println("w = \{w}")
-    // w が束縛される
   }
   println("opt is Some(_) = \{opt is Some(_)}")
-  // -> Bool
 }
 ```
 
@@ -183,33 +206,6 @@ w = 41
 opt is Some(_) = true
 ```
 
-## 蓄積は ArrayBuilder
+`opt is Some(_)` は単独では単なる `Bool` で、たいていはそれで十分です。
 
-`ArrayBuilder` は「積んでから凍らせる」蓄積用の型で、まとめて作る場面の既定。
-`Array::push` も使える — 生 `Array` をその場で伸ばす in-place 操作で、その
-`Array` を指すすべての参照 (別名・引数・struct field・キャプチャ) から
-伸びた結果が見える。linear / RC / wasm-gc のどのバックエンドでも同じ挙動で、
-[#1285](https://github.com/mizchi/vibe-lang/issues/1285) の contract として
-compiler test に固定してある。使い分けは「1回作って以後読むだけなら
-`ArrayBuilder`、既にある `Array` を伸ばすなら `Array::push`」。
-
-```vibe run
-fn main with Console {
-  let arr = {
-    let bld = ArrayBuilder::new()
-    ArrayBuilder::push(bld, 1)
-    ArrayBuilder::push(bld, 2)
-    ArrayBuilder::freeze(bld)
-    // -> Array[Int]
-  }
-  println("length = \{Array::length(arr)}")
-  println("arr[1] = \{Array::get(arr, 1)}")
-}
-```
-
-```output
-length = 2
-arr[1] = 2
-```
-
-次章: [04 Option](08_option.vibe.md)
+次: [Option とレールウェイ](08_option.vibe.md)

@@ -1,10 +1,25 @@
-# 03 — Data and pattern matching
+# 07 — Structs, enums, and match
 
-Previous: [02 Control flow](04_control_flow.vibe.md)
+Previous: [Mutation, regions, and escape](06_mutation.vibe.md)
 
 日本語版: [07_data.vibe.md](../ja/07_data.vibe.md)
 
-## tuple / array / record
+Data in vibe has one of two shapes, and the distinction runs through the
+whole language:
+
+- a value that has **all** of several things — a point has an `x` *and*
+  a `y` — is a **struct**;
+- a value that is **one** of several things — a shape is a circle *or* a
+  rectangle — is an **enum**.
+
+`match` is how you take either apart, and the compiler checks that you
+covered the cases.
+
+## Quick shapes: tuple, array, record
+
+Before the named forms, three lightweight ones. A tuple groups a fixed
+number of values positionally, an array holds many of one type, and a
+record is a struct you did not bother to name:
 
 ```vibe run
 fn main with Console {
@@ -22,7 +37,6 @@ fn main with Console {
     ver: 1
   }
   println("r.name = \{r.name}, r.ver = \{r.ver}")
-  // destructuring is also available for pulling several fields into local names
   let record {
     name: n,
     ver: v
@@ -39,11 +53,13 @@ r.name = vibe, r.ver = 1
 n = vibe, v = 1
 ```
 
-An anonymous record reads its fields the same way, `r.name`. Destructuring is an
-option when you want several fields under local names; it is not a workaround
-for a missing accessor.
+The last two lines destructure: pulling several fields out under local
+names, which reads better than repeating `r.` when you want most of them.
 
-## struct and derive
+## Structs
+
+A `struct` names the shape, and `derive` asks the compiler to write the
+obvious operations for it:
 
 ```vibe run
 struct Point {
@@ -56,9 +72,7 @@ fn main with Console {
   }
   println("p.x = \{p.x}")
   println("compare(p, {x:1,y:3}) = \{Point::compare(p, Point::{ x: 1, y: 3 })}")
-  // derive(Ord): -1 / 0 / 1
   println("to_string(p) = \{Point::to_string(p)}")
-  // derive(Show)
 }
 ```
 
@@ -68,7 +82,15 @@ compare(p, {x:1,y:3}) = -1
 to_string(p) = Point { x: 1, y: 2 }
 ```
 
-## enum and match
+`Eq` gives `==`, `Ord` gives `compare` (returning -1, 0 or 1), and
+`Show` gives `to_string` and therefore interpolation. Write them out by
+hand only when the derived meaning is not the one you want.
+[Generics, traits, and derive](15_generics.vibe.md) goes further.
+
+## Enums
+
+An `enum` lists the alternatives, each carrying its own data, and
+`match` dispatches on which one you have:
 
 ```vibe run
 enum Shape {
@@ -94,7 +116,16 @@ area(Circle(2)) = 12
 area(Rect(6, 7)) = 42
 ```
 
-## The match toolbox: guards, or-patterns, literals
+Add a `Triangle` to that enum and `area` stops compiling until you say
+what its area is. That is the property worth having: the compiler finds
+the places that need updating, so adding a case is a mechanical job
+rather than a hunt.
+
+## What `match` can express
+
+Patterns are not limited to variants. You can match literals, offer
+alternatives with `|`, add a condition with `if`, and catch the rest
+with `_`:
 
 ```vibe run
 fn classify(n: Int) -> String {
@@ -121,18 +152,14 @@ classify(-5) = negative
 classify(99) = big
 ```
 
-## Destructuring and the `is` expression
+Arms are tried in order, so `x if x < 0` is reached only for values that
+were not `0`, `1` or `2`.
 
-### Irrefutable patterns at the top level
+## Binding by shape
 
-A pattern that always matches can bind at the top level too
-([#1281](https://github.com/mizchi/vibe-lang/issues/1281)). However many names
-it introduces, the right-hand side is evaluated **exactly once** and each name
-is a projection out of that. Refutable patterns — an enum variant, a literal, an
-or-pattern — can fail, so they are rejected; use `match` inside a function for
-those. Type annotations and `export let <pattern>` are also not allowed: the
-first has no single binding to annotate, and the second belongs in a separate
-`export { .. }`.
+A pattern that cannot fail can bind directly, without `match` — at the
+top level of a file as well as inside a function. The right-hand side is
+evaluated once and each name is a projection out of it:
 
 ```vibe run
 struct Version {
@@ -162,10 +189,9 @@ fn main with Console {
 sum = 42, vibe 0.3
 ```
 
-### Binding inside a function body
-
-The same shapes work in a function body, and combine with narrowing via the `is`
-expression.
+A pattern that *can* fail — an enum variant, a literal — needs `match`,
+or the `is` expression, which tests a pattern and binds its names for
+the branch that follows:
 
 ```vibe run
 fn main with Console {
@@ -174,10 +200,8 @@ fn main with Console {
   let opt = Some(41)
   if opt is Some(w) {
     println("w = \{w}")
-    // w is bound here
   }
   println("opt is Some(_) = \{opt is Some(_)}")
-  // -> Bool
 }
 ```
 
@@ -187,35 +211,7 @@ w = 41
 opt is Some(_) = true
 ```
 
-## Accumulate with ArrayBuilder
+`opt is Some(_)` on its own is just a `Bool`, which is often all you
+need.
 
-`ArrayBuilder` is the accumulation type — push, then freeze — and it is the
-default when you are building something in one go. `Array::push` is available
-too: it grows a raw `Array` in place, and the growth is visible through every
-reference to that `Array` (aliases, arguments, struct fields, captures). This
-behaves identically on the linear, RC and wasm-gc backends, and is pinned in the
-compiler tests as the contract from
-[#1285](https://github.com/mizchi/vibe-lang/issues/1285). The rule of thumb:
-`ArrayBuilder` when you build once and only read afterwards, `Array::push` when
-you are growing an `Array` that already exists.
-
-```vibe run
-fn main with Console {
-  let arr = {
-    let bld = ArrayBuilder::new()
-    ArrayBuilder::push(bld, 1)
-    ArrayBuilder::push(bld, 2)
-    ArrayBuilder::freeze(bld)
-    // -> Array[Int]
-  }
-  println("length = \{Array::length(arr)}")
-  println("arr[1] = \{Array::get(arr, 1)}")
-}
-```
-
-```output
-length = 2
-arr[1] = 2
-```
-
-Next: [04 Option](08_option.vibe.md)
+Next: [Option and the railway](08_option.vibe.md).

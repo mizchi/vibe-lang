@@ -1,12 +1,15 @@
-# 04 — Option
+# 08 — Option とレールウェイ
 
-前章: [03 データ](07_data.vibe.md)
+前: [構造体・列挙・match](07_data.vibe.md)
 
-English version: [08_option.vibe.md](../en/08_option.vibe.md) (canonical)
+English version: [08_option.vibe.md](../en/08_option.vibe.md)
 
-## Option
+そこに無いかもしれない値の型が `Option[T]` です — `Some(v)` か `None` の
+どちらか。ただの enum で、コンパイラに組み込まれた特別なところは何もあり
+ません。ただ、これに対してやりたいこと — **無かったら早めに止める** — が
+あまりに頻出なので、言語が略記を3つ用意しています。
 
-値がない可能性は `Option[T]` (`Some(v)` / `None`) で表す。
+## 型そのもの
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -14,31 +17,35 @@ fn half(n: Int) -> Option[Int] {
     Some(n / 2)
   } else {
     None
-  }
-}
-
-fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
-  match o {
-    Some(v) => v,
-    None => fallback
   }
 }
 
 fn main with Console {
-  println("half(10) unwrap_or -1 = \{unwrap_or(half(10), -1)}")
-  println("half(3)  unwrap_or -1 = \{unwrap_or(half(3), -1)}")
+  let a = match half(10) {
+    Some(v) => v,
+    None => 0 - 1
+  }
+  let b = match half(3) {
+    Some(v) => v,
+    None => 0 - 1
+  }
+  println("half(10) = \{a}")
+  println("half(3)  = \{b}")
 }
 ```
 
 ```output
-half(10) unwrap_or -1 = 5
-half(3)  unwrap_or -1 = -1
+half(10) = 5
+half(3)  = -1
 ```
 
-## `let*` — 束縛して短絡
+`match` はいつでも使えて、いつでも正しく動きます。この章の残りは、これを
+4回続けて書かないための話です。
 
-`let* x = e` は `Some(x)` を剥がして束縛し、`None` ならブロック全体を `None` で
-短絡する。囲む関数全体は対応する `Option[...]` を返さなければならない。
+## `?` — 取り出す、無ければ今すぐ `None` を返す
+
+`Option[T]` の式の後ろに `?` を置くと `T` が得られます。`None` だったら、
+囲んでいる関数がその場で `None` を返します:
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -49,89 +56,65 @@ fn half(n: Int) -> Option[Int] {
   }
 }
 
-fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
-  match o {
-    Some(v) => v,
-    None => fallback
+fn sum_halves(a: Int, b: Int) -> Option[Int] {
+  let x = half(a)?
+  let y = half(b)?
+  Some(x + y)
+}
+
+fn main with Console {
+  println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
+  println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
+}
+```
+
+```output
+sum_halves(4, 6) = Some(5)
+sum_halves(4, 3) = None
+```
+
+その関数自身も `Option` を返す必要があります。そこがこの取引の誠実な部分です
+— `?` は「無い」を消すのではなく、呼び出し側に渡します。
+
+## `let*` — 同じ考えをブロック全体に
+
+`let* x = e` は `Some` の中身を束縛し、`None` のときはそれが置かれた
+ブロックが `None` に評価されます:
+
+```vibe run
+fn half(n: Int) -> Option[Int] {
+  if n % 2 == 0 {
+    Some(n / 2)
+  } else {
+    None
   }
 }
 
 fn sum_halves(a: Int, b: Int) -> Option[Int] {
   let* x = half(a)
-  // None ならここで終わり
   let* y = half(b)
   Some(x + y)
 }
 
 fn main with Console {
-  println("sum_halves(4, 6) unwrap_or -1 = \{unwrap_or(sum_halves(4, 6), -1)}")
-  println("sum_halves(4, 3) unwrap_or -1 = \{unwrap_or(sum_halves(4, 3), -1)}")
+  println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
+  println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
 }
 ```
 
 ```output
-sum_halves(4, 6) unwrap_or -1 = 5
-sum_halves(4, 3) unwrap_or -1 = -1
+sum_halves(4, 6) = Some(5)
+sum_halves(4, 3) = None
 ```
 
-## `?` — 剥がすか早期 return
+ここでは `?` と `let*` は同じ仕事をします。行の途中の1つの式には `?` が、
+すべて成功しなければならない一連の手順には `let*` が向きます。
 
-`e?` は `Some(v)` の中身を返し、`None` なら囲む関数から `None` を early-return
-する。
+## `guard` — 束縛する、さもなくば抜ける
 
-```vibe run
-fn half(n: Int) -> Option[Int] {
-  if n % 2 == 0 {
-    Some(n / 2)
-  } else {
-    None
-  }
-}
-
-fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
-  match o {
-    Some(v) => v,
-    None => fallback
-  }
-}
-
-fn first_half(a: Int, b: Int) -> Option[Int] {
-  let x = half(a)?
-  let _unused = half(b)?
-  Some(x)
-}
-
-fn main with Console {
-  println("first_half(4, 6) unwrap_or -1 = \{unwrap_or(first_half(4, 6), -1)}")
-  println("first_half(4, 3) unwrap_or -1 = \{unwrap_or(first_half(4, 3), -1)}")
-}
-```
-
-```output
-first_half(4, 6) unwrap_or -1 = 2
-first_half(4, 3) unwrap_or -1 = -1
-```
-
-## `guard` — 束縛するか脱出
-
-`guard e is PAT else { ... }` は `Some(v)` を剥がして `v` を**後続のスコープで**束縛し、
-マッチしなければ `else` に入る。`match` のような右方向ネストなしで
-「剥がして続行」を書ける。
-
-`else` は**必ず脱出**する。`match e { PAT => <残り>, _ => else }` に脱糖されるので
-`else` 腕は残りのブロックそのものの代わりに評価される位置にあり、脱出しないと
-束縛されていない `v` を使う経路ができてしまうため。受理する脱出の形は
-`return` と直接の `throw(...)` (実測: `guard o is Some(v) else { throw("no value") }`
-は関数の row に `Exception` があればそのまま通り、呼び出し側の `handle` で
-捕まえられる — [05 エフェクト](13_effects.vibe.md) 参照)。他の `perform` は
-resume しうるので脱出とは数えない。
-
-フォールバックが「脱出」ではなく「値」なら `if e is PAT { .. } else { .. }` を使う。
-
-> 旧綴りの `let PAT = e else { ... }` (#760(1)) は廃止され、名指しの parse error に
-> なる。同義ではない — 旧形の `else` はブロックの**残り全体**の値になったので、
-> `let Some(v) = o else { 0 }` は残りの関数を黙って `0` に差し替えられた。
-> `guard` が脱出を必須にしたのはこの形を消すため。
+`None` を伝播させたくない場合もあります — その場で処理して、取り出した値で
+続けたい。`guard` は**スコープの残り全体**に対して束縛し、その `else` は
+必ず抜けなければなりません:
 
 ```vibe run
 fn double_or_zero(o: Option[Int]) -> Int {
@@ -139,7 +122,6 @@ fn double_or_zero(o: Option[Int]) -> Int {
     return 0
   }
   v * 2
-  // v はここで使える
 }
 
 fn main with Console {
@@ -153,7 +135,17 @@ double_or_zero(Some(21)) = 42
 double_or_zero(None) = 0
 ```
 
-## クイックチェックは is 式
+最後の行で `v` がスコープにあり、しかもネストしていないことに注目して
+ください — `match` ではなく `guard` を使う理由はそこにあります。
+
+`else` は `return` か `throw(...)` で実際に関数を抜ける必要があります。
+抜けなければならないのは、`guard` より後がすべて「`v` が存在する」前提で
+書かれているからです。代替が抜け出しではなく**値**なら、
+`if o is Some(v) { ... } else { ... }` を使ってください。
+
+## 取り出さずに訊く
+
+知りたいだけなら `is` が `Bool` を返します:
 
 ```vibe run
 fn half(n: Int) -> Option[Int] {
@@ -166,9 +158,7 @@ fn half(n: Int) -> Option[Int] {
 
 fn main with Console {
   println("half(10) is Some(_) = \{half(10) is Some(_)}")
-  // true
   println("half(3) is None = \{half(3) is None}")
-  // true
 }
 ```
 
@@ -177,7 +167,12 @@ half(10) is Some(_) = true
 half(3) is None = true
 ```
 
-理由を伴う中断は次章の [Exception 境界](13_effects.vibe.md#exception-境界--perform--handle)
-で扱う。
+## 「無い」が本題でないとき
 
-次章: [05 エフェクト](13_effects.vibe.md)
+`Option` は値が無いことを述べますが、**なぜ**無いのかは述べません。そして
+理由こそが本題のこともあります — パースに失敗した、ファイルが壊れていた。
+その場合、関数は `with Exception` を宣言してメッセージを投げます。次の章
+以降で扱います。「そこに無い」が話の全部なら `Option` を、呼び出し側が理由を
+知るべきなら `Exception` を選んでください。
+
+次: [モジュールとパッケージ](09_modules_packages.vibe.md)
