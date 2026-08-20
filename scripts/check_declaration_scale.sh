@@ -80,4 +80,21 @@ if VIBE_NODE_STACK_SIZE=0 compiles "red_$$"; then
   exit 1
 fi
 
+# A caller that names its own --stack-size must keep it. node takes the LAST
+# flag (measured), so an unconditional append would override it -- and
+# scripts/generations.sh passes --stack-size=131072 for the bootstrap compiles,
+# where silently dropping to 4 MB removes a 32x margin in the most load-bearing
+# place there is.
+#
+# Asserted end to end, not by re-reading the script: with a caller-set stack
+# far BELOW node's default, a module that compiles by default must now fail. If
+# our raise were still appended after it, this would pass and prove nothing.
+if VIBE_NODE_WASM_FLAGS="--stack-size=500" compiles "caller_$$"; then
+  echo "declaration-scale: FAIL: a caller-set --stack-size=500 did not take effect," >&2
+  echo "  so run_wasm_vibe_host_runner.sh is appending its own after the caller's." >&2
+  echo "  node takes the LAST --stack-size, so that OVERRIDES generations.sh's" >&2
+  echo "  --stack-size=131072 and cuts the bootstrap stack to 4 MB (#2134)." >&2
+  exit 1
+fi
+
 echo "declaration-scale: ok ($N top-level declarations compile; still fail without the stack raise)"

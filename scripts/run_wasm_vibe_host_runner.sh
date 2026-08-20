@@ -73,9 +73,19 @@ if [ -z "${VIBE_NODE_STACK_SIZE:-}" ]; then
       ;;
   esac
 fi
+# node takes the LAST --stack-size wins (measured), so appending ours after a
+# caller's own would silently OVERRIDE it. scripts/generations.sh passes
+# `--stack-size=131072` through VIBE_NODE_WASM_FLAGS for the bootstrap
+# compiles, and appending 4000 after it would cut a deliberate 128 MB stack to
+# 4 MB -- a 32x margin removed, invisibly, in the one place that needs it most.
+# A caller who named a size owns the decision.
+vibe_caller_set_stack=0
+case " ${node_flags[*]-} " in
+  *" --stack-size="*) vibe_caller_set_stack=1 ;;
+esac
 # Below node's own default (~984 KB) the flag would LOWER the ceiling, so only
 # raise it. `VIBE_NODE_STACK_SIZE=0` disables it (used by the gate's Red case).
-if [ "${VIBE_NODE_STACK_SIZE}" -gt 1200 ] 2>/dev/null; then
+if [ "$vibe_caller_set_stack" -eq 0 ] && [ "${VIBE_NODE_STACK_SIZE}" -gt 1200 ] 2>/dev/null; then
   node_flags+=("--stack-size=${VIBE_NODE_STACK_SIZE}")
 fi
 
