@@ -7466,7 +7466,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // intentionally not type-checked as a callable expression.
             typed_occurrence_capture_skip_children(capture, 1)
             let (at, ns0, nc0) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-            let resolved = resolve_type_expr(ann_te, defs)
+            // #2130: map an enclosing declaration's type formals onto their
+            // real variables, the same two-step the parameter and return-type
+            // paths do (`resolve_type_expr_shadowed` + `resolve_tparams_in`,
+            // the EFn arm). Without it a body-level `let y: T = ..` resolved
+            // `T` to a bare `CtNamed("T", [])` -- indistinguishable from an
+            // unresolved name, which `check_assignable` must tolerate because
+            // that is also how an un-instantiated formal is spelled. So the
+            // annotation was not checked AT ALL: `fn f[T](x: T) -> T { let y: T
+            // = 42; y }` compiled, and `f("a string")` handed the caller an Int
+            // typed as String (`String::length` on it returned 84). It only
+            // looked like it worked because the rigid name matched by string
+            // equality. `env` already binds each formal to a fresh `CtVar` (see
+            // the EFn arm's `tp_env`), so the mapping is available right here.
+            let resolved = resolve_tparams_in(resolve_type_expr(ann_te, defs), env)
             let actual = subst_apply(ns0, at)
             // #981: `check_assignable` now runs the #844 same-name concrete
             // `CtNamed` check itself (its tolerate branch calls

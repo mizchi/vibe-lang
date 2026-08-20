@@ -1,0 +1,80 @@
+//# Imports
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+//# Functions
+
+// #2130: a body-level annotation mentioning an enclosing type formal must be
+// CHECKED against the value.
+//
+// It was not. `resolve_type_expr` at the ascription site took neither a
+// `shadow` nor an env, so a `let y: T = ..` inside `fn f[T]` resolved `T` to a
+// bare `CtNamed("T", [])` -- indistinguishable from an UNRESOLVED name, which
+// `check_assignable` must tolerate because that is also how an
+// un-instantiated formal is spelled. The mismatch was computed and discarded.
+//
+// Measured before the fix: `fn f[T](x: T) -> T { let y: T = 42; y }` compiled,
+// and `String::length(f("a string"))` returned 84 -- the Int escaped the
+// function and the caller used it as a String. No trap, no diagnostic.
+//
+// The annotation was what disabled the check. The same body with `let y = 42`
+// was correctly rejected, and `let y: String = 42` in a NON-generic function
+// was correctly rejected. Writing the annotation the language intends turned
+// the check off; deleting it turned the check back on.
+//
+// The fix maps formals onto their real variables with `resolve_tparams_in` --
+// the same two-step the parameter and return-type paths already did. `T` then
+// unifies with `CtInt` and binds `T := Int`, so the conflict surfaces at the
+// CALL, which is where it actually is, and in the same words the unannotated
+// spelling already used.
+
+/// True when the source type-checks. `check_program` throws on a type error;
+/// every source below is syntactically valid, so a throw is a type error.
+fn checks(src: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    true
+  } with Exception {
+    Throw(_) => false
+  }
+}
+
+//# Tests
+
+test "2130: a local annotation on a formal constrains it" {
+  // `let y: T = 42` makes T Int, so a String argument is a call-site error.
+  assert(!checks("fn f[T](x: T) -> T {\n  let y: T = 42\n  y\n}\nfn g() -> Unit { let _ = f(\"s\") }"))
+  // ...and an Int argument agrees with it.
+  assert(checks("fn f[T](x: T) -> T {\n  let y: T = 42\n  y\n}\nfn g() -> Unit { let _ = f(7) }"))
+}
+
+test "2130: the same holds through a container annotation" {
+  assert(!checks("fn f[T](x: T) -> T {\n  let ys: Array[T] = [42]\n  Array::get(ys, 0)\n}\nfn g() -> Unit { let _ = f(\"s\") }"))
+}
+
+test "2130: valid generic code still compiles" {
+  // The formal used as itself -- the overwhelmingly common shape.
+  assert(checks("fn f[T](x: T) -> T {\n  let y: T = x\n  y\n}\nfn g() -> Unit { let _ = f(\"ok\") }"))
+  assert(checks("fn f[T](xs: Array[T]) -> T {\n  let ys: Array[T] = xs\n  Array::get(ys, 0)\n}\nfn g() -> Unit { let _ = f([\"ok\"]) }"))
+  // A lambda's own parameter annotation already resolved correctly -- it goes
+  // through the EFn arm, which always did the two-step. Pinned so the fix does
+  // not regress it.
+  assert(checks("fn f[T](x: T) -> T {\n  let h = (z: T) -> T { z }\n  h(x)\n}\nfn g() -> Unit { let _ = f(\"ok\") }"))
+}
+
+test "2130: a non-generic annotation is still checked, as it always was" {
+  assert(!checks("fn g() -> Unit {\n  let y: String = 42\n  let _ = y\n}"))
+  assert(checks("fn g() -> Unit {\n  let y: String = \"s\"\n  let _ = y\n}"))
+}
+
+test "2130: an UNannotated binding keeps inferring, unchanged" {
+  // Already correct before the fix; the control that showed the annotation was
+  // the thing turning the check off.
+  assert(!checks("fn f[T](x: T) -> T {\n  let y = 42\n  y\n}\nfn g() -> Unit { let _ = f(\"s\") }"))
+}
