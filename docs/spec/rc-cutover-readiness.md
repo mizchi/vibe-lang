@@ -1,14 +1,27 @@
 # RC cutover readiness (ADR-0055 #493)
 
-Status: **NOT READY for cutover (real-corpus re-assessment, 2026-06-29).** The
-synthetic 8-program probe (`scripts/rc_cutover_readiness.sh`) is fully green, and
-the #702 fixes (below) were real. But running the **existing fixture test
-corpus** under RC vs the default backend tells a different story: of the
-default-passing tests sampled, **only ~41% also pass under RC** — the rest trap
-or fault. The probe, even at 8 programs, is still far too narrow; the real corpus
-exercises derive macros, traits/dict dispatch, iterators, and structural
-equality, all of which have pre-existing RC bugs (see "Real test-corpus
-assessment"). **Do not flip the default until the real corpus reaches parity.**
+Status: **the cutover happened — RC is the linear default.** Measured
+2026-08-20: compiling the same program with `VIBE_RC` unset and with
+`VIBE_RC=1` produces a **byte-identical** module, and `VIBE_RC=0` produces a
+different one. `scripts/check_rc_default.sh` pins that, so this line cannot
+drift from the compiler again.
+
+Until 2026-08-20 this header carried the opposite verdict — a 2026-06-29
+assessment that found only ~41% of default-passing tests also passing under RC,
+and told the reader to hold the cutover until the real corpus reached parity.
+That assessment was acted on and is finished. It is not the current state, and a
+document instructing a reader against something already done is worse than no
+document. The path is in `git log` and the issue thread, per the documentation
+rule that a design which changed mid-flight is rewritten as the final state
+rather than narrated. The old wording is deliberately not quoted here: a
+directive stays readable as a directive when skimmed, whatever frames it.
+
+What remains true, and why this document is kept: the probe below is a live
+**regression** guard, not a readiness question. It pins its own baseline with
+`: "${VIBE_RC:=0}"` so it can compare bump against RC whatever the compiler's
+default is — which is exactly what makes it still useful now that the default
+moved.
+
 Measures
 whether the Perceus RC path is ready to become the linear
 default (cutover, #493 C/F). The reclaim

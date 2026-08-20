@@ -88,6 +88,17 @@ for f in sorted(files):
             while i < len(lines) and not lines[i].strip().startswith("```"):
                 ln, line = i + 1, lines[i].strip().lstrip("$ ").strip()
                 if not line.startswith("#"):
+                    # A retired runner is a command that cannot run, which is
+                    # the same failure as a path that does not exist -- and it
+                    # is how a whole retired section stayed in docs/coverage.md
+                    # under a banner claiming it had been removed (#2138 review).
+                    m = re.match(r'(just|moon|cargo run --bin vibe)\b', line)
+                    if m:
+                        checked += 1
+                        tool = m.group(1)
+                        if (f, tool) not in allow:
+                            fails.append((f, ln, f"`{tool}` -- retired runner; `just` was replaced by "
+                                                 f"`pkf` and the MoonBit host went in #594"))
                     for m in re.finditer(r'\bpkf run ((?:--[a-z-]+ )*)([a-z0-9:-]+)', line):
                         t = m.group(2); checked += 1
                         if t not in tasks and (f, t) not in allow:

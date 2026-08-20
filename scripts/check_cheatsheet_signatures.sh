@@ -86,6 +86,15 @@ for l in lines[start:end]:
     # Requiring `::` silently dropped them, and dropped a real mismatch with them.
     names = re.findall(r'`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)?)`', cells[0])
     sigs = re.findall(r'`(\([^`]*\)\s*->\s*[^`]+)`', cells[1])
+    # The tables carry the required effect in their own third column, and
+    # `ret_type` strips `with ...` from the checker's side -- so documenting
+    # `Console::write_stream` with `Process` changed nothing measurable
+    # (#2138 review). Carry it through and compare it.
+    eff = ""
+    if len(cells) > 2:
+        em = re.findall(r'`([A-Za-z_][A-Za-z0-9_:]*)`', cells[2])
+        if len(em) == 1:
+            eff = em[0]
     if len(names) == 1 and len(sigs) >= 1:
         pairs = [(names[0], sigs[0])]
     elif len(names) > 1 and len(sigs) == 1:
@@ -94,8 +103,8 @@ for l in lines[start:end]:
         pairs = list(zip(names, sigs))
     else:
         continue
-    for n, s in pairs:
-        print(f"{n}\t{s}")
+    for n, sg in pairs:
+        print(f"{n}\t{sg}\t{eff}")
 PY
 
 pair_count="$(grep -c '' "$WORK/pairs.tsv" || true)"
@@ -299,12 +308,12 @@ for line in open(sys.argv[2]):
         continue
     seen += 1
     parts = line.rstrip("\n").split("\t")
-    if len(parts) != 3:
+    if len(parts) != 4:
         # Never skipped silently: a row the probe could not render is a row this
         # gate did not check, and dropping it would shrink the corpus quietly.
         malformed.append(line.rstrip("\n")[:120])
         continue
-    name, docsig, actual = parts
+    name, docsig, doceff, actual = parts
     if actual == "<not a builtin>":
         nonbuiltin.add(name)
         continue
@@ -318,6 +327,16 @@ for line in open(sys.argv[2]):
     rd, ra = ret_type(docsig), ret_type(actual)
     if rd and ra and not compatible(rd, ra):
         mismatch.append((name, docsig, actual, f"returns {rd}", f"returns {ra}"))
+        continue
+    # The documented effect column against the checker's row. Only when the
+    # document names exactly one effect: a blank column claims nothing, and a
+    # prose cell ("Console (legacy)") is not a row to compare.
+    aeff = ""
+    m_eff = re.search(r'\bwith\s+([A-Za-z_][A-Za-z0-9_:]*)\s*$', actual.strip())
+    if m_eff:
+        aeff = m_eff.group(1)
+    if doceff and aeff and doceff != aeff:
+        mismatch.append((name, docsig, actual, f"effect {doceff}", f"effect {aeff}"))
         continue
     # Arity plus return type still let a REORDERING through -- the review's
     # example, `String::substring` documented as `(Int, String, Int) -> String`,
@@ -339,7 +358,7 @@ if seen != expected_rows:
           f"of the document", file=sys.stderr)
     fails = 1
 for m in malformed:
-    print(f"cheatsheet-signatures: FAIL: malformed probe row (want NAME\\tDOC\\tACTUAL): {m}", file=sys.stderr)
+    print(f"cheatsheet-signatures: FAIL: malformed probe row (want NAME\\tDOC\\tEFFECT\\tACTUAL): {m}", file=sys.stderr)
     fails = 1
 for name, d, a, ad, aa in mismatch:
     print(f"cheatsheet-signatures: FAIL: {name} documented as {d} ({ad}) but the checker says {a} ({aa})", file=sys.stderr)
@@ -354,7 +373,7 @@ missing = sorted(nonbuiltin - listed)
 documented = set()
 for l in open(sys.argv[2]):
     parts = l.rstrip("\n").split("\t")
-    if len(parts) == 3:
+    if len(parts) == 4:
         documented.add(parts[0])
 extra = sorted((listed - nonbuiltin) & documented)
 undocumented = sorted(listed - nonbuiltin - documented)
