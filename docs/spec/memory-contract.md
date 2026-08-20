@@ -47,31 +47,23 @@ through the linear `--wasm` path; the RC analysis path is exercised by
 > longer true for the CLI; the table has been corrected to match the
 > behavior pinned here.
 
-## Perceus RC status — experimental, in progress
+## Perceus RC status — shipped as the linear default
 
-RC was **ported into the compiler** (it is no longer src/-only), but the
-reclamation half is not finished. Detailed staged plan:
-[rc-port.md](rc-port.md); readiness:
-[rc-cutover-readiness.md](rc-cutover-readiness.md).
+RC **is** the linear default: compiling a program with `VIBE_RC` unset produces
+a byte-identical module to `VIBE_RC=1`, and a different one to `VIBE_RC=0`
+(measured 2026-08-20; pinned by `scripts/check_rc_default.sh`). The compiler's
+own self-build stays pinned to bump (`scripts/generations.sh`) as a
+**performance** choice — an RC self-build is ~1.7x wall and ~2.9x output size —
+not because RC self-hosting is unproven; it reaches a byte-identical fixpoint.
 
-- **Phase 1 — uniform object header (prerequisite):** *started*. RC's drop
-  helper needs a `[type_id][length]` header to recurse; the linear
-  layout is otherwise headerless. Records/structs already carried a header;
-  tuples now take one under `enable_rc` (type_id 3). Arrays / enums /
-  closures still pending. Guarded by `CompileCtx.enable_rc`, proven
-  output-equivalent by the parity gates; strings/bytes stay headerless
-  (leaf objects). Leak profiler baseline: 16 B/iteration (bump, no RC);
-  RC-mode tuple loop 24 B/iter (still leaking until Phase 3).
-- **Phase 2 — analysis pass:** *complete (bar cross-branch balancing)*.
-  `build_perceus_plan` in `lib/@vibe/compiler/perceus/perceus.vibe` mirrors the
-  validated `src/` semantics on the compiler's expression-oriented AST: calls
-  / field access / array index arg0 are borrows; pure-borrow / unused
-  non-scalar bindings get a scope-end drop; multiply-used owning references
-  dup. 14/14 isolation tests (`perceus_rc_test.vibe`).
-- **Phase 3 — drop codegen + free-list:** *not started*. Emitting the
-  dup/drop instructions and a reclaiming allocator is what actually drops
-  per-iteration heap growth to ~0 (the concrete leak-fixed acceptance
-  criterion) and what a wasmtime RC e2e gate would assert.
+This section previously read "experimental, in progress" and said "the
+reclamation half is not finished", staging it as three phases of which the
+first was *started* and the third *not started*. That describes the port, which
+completed; the staged plan is history in `git log` and #493.
+
+Canonical status and residual leaks:
+[rc-cutover-readiness.md](rc-cutover-readiness.md). Representation details:
+[uniform-value-repr.md](uniform-value-repr.md).
 
 ### RC limitations to keep documented
 

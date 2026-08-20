@@ -1,66 +1,51 @@
-# lib/@vibe/compiler (experimental)
+# lib/@vibe/compiler
 
-An experimental self-hosted compiler/tooling package for vibe-lang, written in vibe itself.
+The vibe compiler, written in vibe. Since #594 this is the **only**
+implementation: the MoonBit host (`src/`, `moon.mod`) was retired, and the
+compiler is built from the committed seed (`bootstrap/seed/`) plus this package
+and `lib/@vibe/cli/`. Parser, checker, codegen, CLI commands, adapters, the
+bundle and the component entry all live here — see the "where changes go"
+section of [AGENTS.md](../../../AGENTS.md).
 
-## Status
+This file used to open by calling the package "experimental" and listing
+"Known Gaps Before Full Self-Hosting". Self-hosting landed; one of those gaps
+(`return` "is not supported (parser rejects it)") was measurably untrue — it
+compiles and runs.
 
-- Frontend and typecheck stages are implemented in vibe.
-- Multi-file `import` / `export` resolution is part of the active compiler pipeline.
-- Mainline validation is now centered on compiled fixture and CLI gates.
-- Current gates and remaining work are tracked via GitHub Issues and
-  [docs/release-roadmap.md](../../docs/release-roadmap.md).
+## Structure
 
-## Implemented
+- **Frontend** — lexer (source → tokens), parser (tokens → AST for
+  expr/stmt/type/pattern), printer (AST → normalized source).
+  `|>` is desugared in the parser (`x |> f(a, b)` → `f(x, a, b)`); mixing it
+  with other infix operators at top-level parse scope is rejected. `import` is
+  the only module syntax — `use` was removed.
+- **Type checking** — expression + statement checker on an HM-like inference
+  baseline, trait/type-def environment plumbing, and import-surface checks in
+  the statement pass (a name a dependency does not export is reported at check
+  time, #1521/#1533).
+- **Module loading** — multi-file resolution with import cycle detection, and
+  the fixture parse / roundtrip / typecheck helpers the suites use.
+- **`type_db` + `ripple`** — the incremental-typecheck substrate
+  (`type_db.vibe`, tests in `tests/type_db_*`): fingerprint caching and
+  import-dependency-based invalidation. Still a substrate rather than a
+  default path through the main checker pipeline.
 
-### Frontend
+## Known limitations
 
-- Lexer: source string -> token array
-- Parser: token array -> AST (expr/stmt/type/pattern)
-- Printer: AST -> normalized source
-- `|>` is desugared in parser:
-  - `x |> f(a, b)` -> `f(x, a, b)`
-  - mixing `|>` with other infix operators at top-level parse scope is rejected
-- `use` syntax is removed; `import` is the only supported module syntax
+- `raise` is rejected: `'raise' is deprecated, use 'throw(expr)' instead`.
+- Deep recursion in the checker can reach the host stack limit. The runner now
+  derives `--stack-size` from `ulimit -s` instead of a fixed value, and
+  `scripts/check_declaration_scale.sh` (`pkf run check-declaration-scale`)
+  pins the scale that used to fall over (#2134).
 
-### Type Checking
+Current gates and remaining work: GitHub Issues and
+[docs/release-roadmap.md](../../../docs/release-roadmap.md).
 
-- Expression + statement checker (HM-like inference baseline)
-- Trait/type-def environment plumbing
-- Import surface checks in statement pass
-
-### Fixture Support
-
-- Multi-file module loading with import cycle detection
-- Fixture parsing / roundtrip / typecheck helpers used by the test suites
-- Runtime fixture smoke coverage via the compiled backend
-
-### Incremental Typecheck Experiment
-
-- `type_db` + `ripple` prototype exists and has dedicated tests
-- Caches fingerprints and import-dependency-based invalidation
-
-## Known Gaps Before Full Self-Hosting
-
-- `return` is not supported (parser rejects it)
-- `raise` is deprecated (must use `throw(expr)`)
-- `type_db` is still experimental and not integrated into the main checker pipeline
-- Some deeper recursive self-host scenarios can still hit WASM stack limits
-
-See GitHub Issues and [docs/release-roadmap.md](../../docs/release-roadmap.md)
-for the tracked checklist and release gates.
-
-## Quick Verification
-
-Run full project checks:
+## Verification
 
 ```bash
-just release-check
-```
-
-Run focused compiler suites:
-
-```bash
-just test-typecheck-fixtures
-just test-runtime-fixtures
-just test-cli-core
+pkf run release-check     # full sign-off
+pkf run test              # the operation gate — the main pre-commit check
+pkf run test-affected     # only the tests the change can reach
+pkf run test-cli-core     # the CLI suite
 ```

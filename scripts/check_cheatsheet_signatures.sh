@@ -328,15 +328,21 @@ for line in open(sys.argv[2]):
     if rd and ra and not compatible(rd, ra):
         mismatch.append((name, docsig, actual, f"returns {rd}", f"returns {ra}"))
         continue
-    # The documented effect column against the checker's row. Only when the
-    # document names exactly one effect: a blank column claims nothing, and a
-    # prose cell ("Console (legacy)") is not a row to compare.
+    # The documented effect column against the checker's row. Gated on the
+    # DOCUMENT naming exactly one effect: a blank column claims nothing, and a
+    # prose cell ("Console (legacy)") is not a row to compare. It is NOT gated on
+    # the actual row being non-empty -- that was the review's finding: dropping
+    # an effect from a builtin emptied `aeff` and skipped the comparison, so a
+    # row still promising `Process` passed. An absent actual row is a mismatch,
+    # and the loudest kind: the document claims an effect the checker does not
+    # have.
     aeff = ""
     m_eff = re.search(r'\bwith\s+([A-Za-z_][A-Za-z0-9_:]*)\s*$', actual.strip())
     if m_eff:
         aeff = m_eff.group(1)
-    if doceff and aeff and doceff != aeff:
-        mismatch.append((name, docsig, actual, f"effect {doceff}", f"effect {aeff}"))
+    if doceff and doceff != aeff:
+        mismatch.append((name, docsig, actual, f"effect {doceff}",
+                         f"effect {aeff}" if aeff else "no effect row"))
         continue
     # Arity plus return type still let a REORDERING through -- the review's
     # example, `String::substring` documented as `(Int, String, Int) -> String`,

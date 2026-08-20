@@ -65,7 +65,7 @@ Run from the repo root:
 ```bash
 pkf list
 pkf run test
-pkf run run -- examples/hello.vibe
+pkf run run -- prog.vibex        # `run` is scripts/vibe_run.sh: one .vibex root
 pkf graph --format tree
 pkf run --explain-cache test
 ```

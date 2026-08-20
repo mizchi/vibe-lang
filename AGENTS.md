@@ -183,7 +183,7 @@ pkf run test              # operation gate (commit 前の主チェック)
 pkf run test-affected     # affected tests only, import-graph selected (#988)
 pkf run test-local        # flaker lane (directory-based selection — see caveat)
 pkf run full-gate         # complete operation gate
-pkf run run -- args       # run main with args
+pkf run run -- prog.vibex # run a .vibex root (entry `main`); args after a 2nd --
 # 型検査 / 診断: vibe check <file.vibe> (空出力 = clean、診断ありは exit 1)
 # selfhost の CST-token formatter (lib/@vibe/compiler/fmt/format.vibe,
 # scripts/vibe_fmt.sh, #854/#1138) は実装済みで `bash scripts/vibe_fmt.sh

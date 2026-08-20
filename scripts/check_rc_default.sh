@@ -4,10 +4,9 @@
 #
 # Three places recorded an answer and they disagreed: AGENTS.md called RC "the
 # production default", ADR-0055 recorded cutover readiness as READY, and
-# docs/spec/rc-cutover-readiness.md still said "NOT READY … **Do not flip the
-# default until the real corpus reaches parity**". A reader could take any of
-# the three. Nothing checked which was true, so nothing corrected the two that
-# were not.
+# docs/spec/rc-cutover-readiness.md told the reader to hold the cutover. A
+# reader could take any of the three. Nothing checked which was true, so
+# nothing corrected the two that were not.
 #
 # The compiler answers it in one line: compile the same source with `VIBE_RC`
 # unset, with `VIBE_RC=1`, and with `VIBE_RC=0`, and see which artifact the
@@ -46,10 +45,16 @@ fn main() -> Int {
 }
 VIBE
 
+# The "unset" build must be genuinely unset. Adding no assignment is not the
+# same thing: a caller who exports VIBE_RC -- `VIBE_RC=0 pkf run release-check`
+# does exactly that -- would have the probe inherit it, match the bump artifact,
+# and report a default the compiler does not have. `env -u` removes it.
 build() { # build <label> <VIBE_RC value or empty>
   local out="$WORK/$1.wasm"
+  local -a rc_env
+  if [ -n "$2" ]; then rc_env=(VIBE_RC="$2"); else rc_env=(-u VIBE_RC); fi
   rm -f "$out" "$out.diag"
-  env ${2:+VIBE_RC=$2} VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  env "${rc_env[@]}" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     "$WORK/probe.vibe" "$out" main >/dev/null 2>&1 || true
   [ -s "$out" ] || { echo "rc-default: FAIL: the probe did not compile with VIBE_RC=${2:-<unset>}" >&2; exit 1; }
@@ -74,19 +79,34 @@ else
   exit 1
 fi
 
+# The document states its answer ONCE, in a line this gate parses. The first
+# version of this check searched instead for two literal phrases from the
+# pre-cutover text and passed as long as neither appeared -- which a document
+# can satisfy while still telling the reader, in other words and in other
+# sections, the opposite of what the compiler does. That is what happened: a
+# current-state header sat on top of sections that still described the default
+# as bump and concluded the cutover "must wait", and this gate called it
+# agreement. Absence of a phrase is not a claim; the line below is.
 DOC="docs/spec/rc-cutover-readiness.md"
-if [ "$actual" = "RC" ]; then
-  if grep -qi "NOT READY for cutover\|Do not flip the default" "$DOC"; then
-    echo "rc-default: FAIL: the compiler's linear default IS RC, but $DOC still tells" >&2
-    echo "  the reader not to flip it. Rewrite that status to the current state (#2138)." >&2
-    exit 1
-  fi
-else
-  if ! grep -qi "NOT READY for cutover\|Do not flip the default" "$DOC"; then
-    echo "rc-default: FAIL: the compiler's linear default is BUMP, but $DOC reads as though" >&2
-    echo "  the cutover happened. One of the two moved; make them agree." >&2
-    exit 1
-  fi
+documented="$(sed -n 's/^linear-default:[[:space:]]*\([A-Za-z]*\)[[:space:]]*$/\1/p' "$DOC")"
+case "$(printf '%s\n' "$documented" | wc -l | tr -d ' ')" in
+  1) ;;
+  *) documented="" ;;   # zero or several -- neither is a single answer
+esac
+
+if [ -z "$documented" ]; then
+  echo "rc-default: FAIL: $DOC must carry exactly one line spelled" >&2
+  echo "  'linear-default: RC' or 'linear-default: bump'. That line is what this gate" >&2
+  echo "  compares against the compiler; without it the document states no answer." >&2
+  exit 1
+fi
+
+if [ "$documented" != "$actual" ]; then
+  echo "rc-default: FAIL: the compiler's linear default is $actual, but $DOC says" >&2
+  echo "  'linear-default: $documented'. One of the two moved; make them agree." >&2
+  echo "  If the compiler moved, the document's prose has to move with the line --" >&2
+  echo "  editing only the line reinstates exactly the drift this gate exists to catch." >&2
+  exit 1
 fi
 
 echo "rc-default: ok (the compiler's linear default is $actual, and $DOC says so)"
