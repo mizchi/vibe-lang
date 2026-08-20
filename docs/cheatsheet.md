@@ -1422,9 +1422,15 @@ resolves as one.
 offsets, and iteration yields byte-valued `Int`. Unicode code-point and
 grapheme operations are not part of this API.
 
-`String::replace` / `replace_all` are **not** builtins — they are library
-functions and need `import @vibe/builtin { String::replace }`. Calling one
-without the import is `unknown name: String::replace`.
+<!-- import-required-builtins: the authoritative list. scripts/check_cheatsheet_signatures.sh
+     requires this paragraph to name EXACTLY the entries in the Signature reference
+     tables that `lookup_builtin` does not know -- no more, no less. -->
+
+これらは **builtin ではない** — `@vibe/builtin` の library 関数なので
+`import @vibe/builtin { ... }` が要る。import 無しで呼ぶと
+`unknown name: String::replace` になる:
+`String::replace`, `String::replace_all`, `String::trim_start`,
+`String::trim_end`, `String::count`。
 
 **Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
 `push` は償却 O(1)):

@@ -1,0 +1,43 @@
+//# Imports
+
+import @vibe/compiler/checker {
+  lookup_builtin
+}
+
+import @vibe/compiler/core {
+  type_to_string
+}
+
+//# Functions
+
+/// #2121: ask the CHECKER what a name's builtin signature is, so the cheatsheet's
+/// signature tables are compared against the compiler rather than against a
+/// second hand-written copy of the same facts.
+///
+/// Reads `NAME\tDOCUMENTED_SIGNATURE` lines from the path in
+/// `CHEATSHEET_SIG_INPUT` and writes `NAME\tDOCUMENTED\tACTUAL` to stdout,
+/// where ACTUAL is `<not a builtin>` when `lookup_builtin` has no entry --
+/// which is a real answer, not a failure: several documented names are library
+/// functions that require an import.
+fn main() -> Unit with Fs + Env + Stdout {
+  let path = Env::get("CHEATSHEET_SIG_INPUT")
+  let raw = Fs::read_file(path)
+  let lines = String::split(raw, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let tab = String::index_of(line, "\t")
+    if String::length(line) > 0 && tab > 0 {
+      let name = String::substring(line, 0, tab)
+      let doc = String::substring(line, tab + 1, String::length(line))
+      let actual = match lookup_builtin(name) {
+        Some(t) => type_to_string(t)
+        None => "<not a builtin>"
+      }
+      println("\{name}\t\{doc}\t\{actual}")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
