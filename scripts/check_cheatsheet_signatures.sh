@@ -87,16 +87,27 @@ if [ ! -s "$WORK/probe.wasm" ]; then
   head -3 "$WORK/probe.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# The probe's exit status is load-bearing, so it is NOT discarded. If it emits
+# some rows and then traps -- a later `lookup_builtin` or `type_to_string` being
+# what failed -- the file is non-empty and a naive "did it produce output?"
+# check passes after comparing only a PREFIX. That is the same
+# passes-vacuously failure this gate exists to prevent.
+probe_rc=0
 env VIBE_PREOPEN_DIR="$ROOT_DIR" CHEATSHEET_SIG_INPUT="_build/_cheatsheet_sig/pairs.tsv" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$WORK/probe.wasm" \
-  > "$WORK/actual.tsv" 2>/dev/null || true
+  > "$WORK/actual.tsv" 2>"$WORK/probe.err" || probe_rc=$?
+if [ "$probe_rc" -ne 0 ]; then
+  echo "cheatsheet-signatures: FAIL: the probe exited $probe_rc after emitting $(grep -c '' "$WORK/actual.tsv" 2>/dev/null || echo 0) of $pair_count rows" >&2
+  head -3 "$WORK/probe.err" 2>/dev/null >&2 || true
+  exit 1
+fi
 if [ ! -s "$WORK/actual.tsv" ]; then
   echo "cheatsheet-signatures: FAIL: the probe produced no output" >&2
   exit 1
 fi
 
 # The caveat paragraph: the one authoritative list of documented non-builtins.
-python3 - "$DOC" "$WORK/actual.tsv" <<'PY' || exit 1
+python3 - "$DOC" "$WORK/actual.tsv" "$pair_count" <<'PY' || exit 1
 import re, sys
 doc = open(sys.argv[1], encoding="utf-8").read()
 
@@ -140,10 +151,17 @@ if not listed:
           "`Type::fn` at all, so this gate would accept anything", file=sys.stderr)
     sys.exit(1)
 
-nonbuiltin, mismatch, compared = set(), [], 0
+nonbuiltin, mismatch, compared, seen = set(), [], 0, 0
+malformed = []
 for line in open(sys.argv[2]):
+    if not line.strip():
+        continue
+    seen += 1
     parts = line.rstrip("\n").split("\t")
     if len(parts) != 3:
+        # Never skipped silently: a row the probe could not render is a row this
+        # gate did not check, and dropping it would shrink the corpus quietly.
+        malformed.append(line.rstrip("\n")[:120])
         continue
     name, docsig, actual = parts
     if actual == "<not a builtin>":
@@ -155,6 +173,15 @@ for line in open(sys.argv[2]):
         mismatch.append((name, docsig, actual, ad, aa))
 
 fails = 0
+expected_rows = int(sys.argv[3])
+if seen != expected_rows:
+    print(f"cheatsheet-signatures: FAIL: the probe answered for {seen} of {expected_rows} extracted "
+          f"pairs -- every pair must produce exactly one row, or the comparison covers only part "
+          f"of the document", file=sys.stderr)
+    fails = 1
+for m in malformed:
+    print(f"cheatsheet-signatures: FAIL: malformed probe row (want NAME\\tDOC\\tACTUAL): {m}", file=sys.stderr)
+    fails = 1
 for name, d, a, ad, aa in mismatch:
     print(f"cheatsheet-signatures: FAIL: {name} documented as {d} ({ad} args) but the checker says {a} ({aa} args)", file=sys.stderr)
     fails = 1
