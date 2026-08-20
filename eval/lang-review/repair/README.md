@@ -309,45 +309,48 @@ source snapshot を診断側へ輸送できるまでは、誤った位置を出�
 残る減点はケース08の位置情報1点。以降スコアを動かす場合も、上の
 「追加候補」節の運用に従う。
 
-## 更新: #2137 — 08 の文言が嘘をついていた
+## Update: #2137 — case 08's message was lying
 
-`#1511 の (c)` 節の「**拒否される形を名指しした**」が**誤りだった**。
-2026-08-20 に stage2 で実測すると、名指しされた形のうち次はすべて
-**コンパイルできる**:
+The `#1511 (c)` claim that the message "**names the rejected forms**" was
+**wrong**. Measured on stage2 2026-08-20, every one of these named forms
+**compiles**:
 
-| handled body が呼ぶもの | 実測 |
+| the handled body calls | measured |
 |---|---|
-| row を持つクロージャ**引数** (`f: () -> Int with Ask`) | ok |
-| row を持つローカル**束縛** | ok |
-| handled body の**中で**定義した row 無しクロージャ | ok |
-| performing な top-level `fn` の**別名** (`let alias = ask_once`) | ok |
-| first-order builtin (`println` など、#2109) | ok |
+| a closure **parameter** carrying the row (`f: () -> Int with Ask`) | ok |
+| a local **binding** carrying the row | ok |
+| a rowless closure defined **inside** the handled body | ok |
+| an **alias** of a performing top-level `fn` (`let alias = ask_once`) | ok |
+| a first-order builtin (`println` etc., #2109) | ok |
 
-実際に落ちるのは「この pass が中を見られない呼び出し」の一形だけで、しかも
-08 のように**その呼び出しが handled body に無い**ケース (needing 関数の中の
-row 無し引数経由) もある。旧文言はそこで「handled body に許されるのは…」と
-述べており、**08 のプログラムが既に満たしている形**を助言していた。
+What actually fails is one shape — a call this pass cannot see into — and, as
+in case 08, the offending call may not even be **in** the handled body (it can
+sit behind a rowless parameter inside a function the body calls). The old
+wording answered that case with "the handled body may only …", advising forms
+**the 08 program already satisfied**.
 
-書き直しは 3 分岐にした — 犯人を名指しできるとき / 呼び出しが名前でないとき
-(即時適用ラムダ、`(t.0)(x)`) / 犯人が handled body に無いとき。どの分岐も、
-実測して通ることを確認した編集だけを挙げる。`diag.grep` は新しい文言に更新
-した。**`(here: the call to 'bump')` は据え置き** — これは装飾ではなく
-`verify_culprit_off_marker` が犯人名を取り出す綴りで、変えると `[@off=N:M]`
-が未検証のまま流れて #1596 の「依存モジュール由来の offset を entry の行に
-解決してしまう」が復活する。
+The rewrite has three branches — the culprit can be named / the call is not a
+name (an immediately-applied lambda, `(t.0)(x)`) / the culprit is not in the
+handled body. Every branch offers only edits measured to compile. `diag.grep`
+was updated for the new wording. **`(here: the call to 'bump')` stays** — it is
+not decoration: `verify_culprit_off_marker` parses the culprit name out of that
+exact spelling, and changing it lets `[@off=N:M]` flow unverified,
+resurrecting #1596 (a dependency-module offset resolved against the entry
+file's lines).
 
-**スコアは動かない** (08 は L=0 / A=1 / C=2 = 3 のまま、mean 3.9 →
-repair_convergence 4.9)。rubric の A が測るのは「編集を述べているか」なので、
-嘘の編集を正しい編集に替えても点にはならない。L の残り 1 点も従来どおり
-FS compile レーンの snapshot 輸送待ち。
+**The score does not move** (case 08 stays L=0 / A=1 / C=2 = 3, mean 3.9 →
+repair_convergence 4.9). Rubric axis A measures whether an edit is *stated*,
+so replacing a false edit with a true one earns no point. The remaining L
+point still waits on the FS compile lane's snapshot transport, as before.
 
-accept/reject と文言の対は
-`lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe` が押さえて
-おり、受理される形の実測表は `docs/cheatsheet.md` にある。
+The accept/reject-and-wording pairs are pinned by
+`lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe`, and the
+measured table of accepted forms lives in `docs/cheatsheet.md`.
 
-`08_handle_ineligible/diag.grep` は**次の bootstrap bump まで**、旧文言 (seed)
-と新文言 (stage2) の両方に含まれる部分文字列だけを needle にしている —
-`run_repair.sh` は generation の stage2 が無い環境 (CI の late shard) では
-seed に fallback し、seed は旧文言を出すため、新文言専用の needle は
-コンパイラの選ばれ方でスコアが変わる嘘の検証になる。bump 後は
-`handle_eligibility_diagnostic_test.vibe` が押さえている新文言へ戻すこと。
+**Until the next bootstrap bump**, `08_handle_ineligible/diag.grep` uses only
+substrings common to the old wording (seed) and the new one (stage2) —
+`run_repair.sh` falls back to the seed where no generation stage2 exists (the
+CI late shard), and the seed emits the old wording, so needles pinning the new
+wording alone make the score depend on which compiler answered. After the
+bump, restore the new-wording needles that
+`handle_eligibility_diagnostic_test.vibe` pins.
