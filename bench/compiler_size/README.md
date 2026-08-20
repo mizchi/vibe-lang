@@ -1,5 +1,13 @@
 # Compiler Bundle Size Fixtures
 
+> **This benchmark does not run.** Nothing in the repository drives it, and the
+> `just bench-bundle-size-compiler*` recipes this README described went with
+> the MoonBit host and `just` (#594) without a replacement. See
+> `bench/bundle_size/README.md` — the shared driver there is a 0-byte file.
+>
+> The fixtures under `cases/` and `cases.txt` are kept as the inputs a revival
+> would need. The commands below name nothing that exists.
+
 `bench/compiler_size/` contains **fixed input fixtures** for compiler bundle-size regression checks.
 
 ## Goal

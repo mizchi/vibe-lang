@@ -6,23 +6,23 @@ records the intended direction. The retired MoonBit host (`src/`, #594) is
 referenced only as historical context; nothing in `src/` is reachable from
 the production CLI anymore.
 
-Intended direction in one line: **wasm-gc is the long-term primary target;
-the linear backend stays the production default and is gaining Perceus RC
-so its "bump allocator, never free" leak becomes opt-out rather than the
-only behavior.**
+Direction in one line: **wasm-gc is the long-term primary target; the linear
+backend is the production default, and Perceus RC is what it does — the "bump
+allocator, never free" behavior is now the opt-out (`VIBE_RC=0`) rather than
+the only behavior.**
 
 ## Backend contract table
 
-| | linear (today / default) | linear + Perceus RC (in progress) | wasm-gc |
+| | linear + Perceus RC (**the default**) | linear, bump only (`VIBE_RC=0`) | wasm-gc |
 |---|---|---|---|
-| CLI entry | `compile --wasm` / `--wasm-linear`, `build --release`, `test`, `bench` | env opt-in `VIBE_RC` → `compile_source_wasi_only_rc`; **not** CLI-exposed | **not wired in the CLI** (`compile --wasm-gc` throws "not supported by selfhost cli yet"); reachable only via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for host-import-free test/bench |
-| value representation | tagged `i64` (2-bit tag) | same tagged `i64` | tagged `i64` with tuple/struct/ctor/closure data in guest linear memory (the backend enables Wasm-GC features but does not yet emit `struct.new` / `array.new` for user values) |
-| allocation | bump allocator | bump + (planned head free-list) | guest-linear bump allocator + `memory.grow` |
-| reclamation | **none (leaks linearly)** | Perceus dup/drop (analysis complete; drop **codegen Phase 3 WIP**) | **none for current user-value allocations**; Wasmtime tracing GC has no user allocations to reclaim yet |
-| object lifetime | n/a | deterministic, eager (once Phase 3 lands) | current user values live to instance teardown; future Wasm-GC values will be non-deterministic/lazy |
-| cycles | n/a | **leak (RC limitation)** | current bump allocations are retained; future Wasm-GC cycles are intended to be collected |
-| known gaps | — | uniform object header only partly landed (tuples done, arrays/enums/closures pending); no drop emission yet; no wasmtime RC e2e gate | single-file only (referencing an imported name fails with `@gc_call ... unresolved`; an unused import is fine); `bench` blocks unsupported (#1701); builtin parity tracked in `scripts/builtin_parity_classification.tsv`; not CLI-reachable |
-| intended status | production default | future linear default (opt-out leak) | long-term primary target |
+| CLI entry | `compile --wasm` / `--wasm-linear`, `build --release`, `test`, `bench` — i.e. everything, with `VIBE_RC` unset | env opt-out `VIBE_RC=0`; **not** CLI-exposed | **not wired in the CLI** (`compile --wasm-gc` throws "not supported by selfhost cli yet"); reachable only via `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for host-import-free test/bench |
+| value representation | tagged `i64` (1-bit tag on the shipped RC lane) | same tagged `i64` | tagged `i64` with tuple/struct/ctor/closure data in guest linear memory (the backend enables Wasm-GC features but does not yet emit `struct.new` / `array.new` for user values) |
+| allocation | `__rc_alloc` + free-list | bump allocator | guest-linear bump allocator + `memory.grow` |
+| reclamation | Perceus dup/drop, **eager and deterministic** (bounded heap: `heap(N1) == heap(N2)`) | **none (leaks linearly)** | **none for current user-value allocations**; Wasmtime tracing GC has no user allocations to reclaim yet |
+| object lifetime | deterministic, eager | n/a (never freed) | current user values live to instance teardown; future Wasm-GC values will be non-deterministic/lazy |
+| cycles | **leak (permanent RC limitation)** | n/a (nothing is freed) | current bump allocations are retained; future Wasm-GC cycles are intended to be collected |
+| known gaps | cycles leak; a matched heap field bound but **unused** over-keeps (write `_`); replay-based handlers spill past ~16K performs per `handle` | — | single-file only (referencing an imported name fails with `@gc_call ... unresolved`; an unused import is fine); `bench` blocks unsupported (#1701); builtin parity tracked in `scripts/builtin_parity_classification.tsv`; not CLI-reachable |
+| intended status | production default | escape hatch and bump-vs-RC baseline | long-term primary target |
 
 The defaults above are exercised by the gate
 (`scripts/compiler_gate.sh`), which compiles, runs, and self-reproduces
@@ -39,8 +39,12 @@ through the linear `--wasm` path; the RC analysis path is exercised by
 - `vibe build --release` → linear (same codegen as `compile --wasm`).
 - `vibe test` / `vibe bench` → linear by default; `VIBE_TEST_BACKEND=gc` /
   `VIBE_BENCH_BACKEND=gc` opt into wasm-gc for pure (no HTTP/FS) cases.
-- `VIBE_RC=1` selects the experimental RC preprocessing path
-  (`compile_source_wasi_only_rc`); not surfaced as a CLI flag.
+- `VIBE_RC` unset == `VIBE_RC=1` (byte-identical output, measured 2026-08-20
+  and pinned by `scripts/check_rc_default.sh`). `VIBE_RC=0` opts back out to
+  bump. Not surfaced as a CLI flag either way.
+- The compiler's own self-build is pinned to bump in `scripts/generations.sh`
+  — a **performance** choice (~1.7x wall, ~2.9x output size), not a
+  correctness one.
 
 > README note: the README "Runtime Targets" table historically described the
 > MoonBit-host `vibe_compile_wasi` where `--wasm` selected wasm-gc. That is no
@@ -70,9 +74,11 @@ Canonical status and residual leaks:
 - **Cycles leak** — RC cannot reclaim reference cycles; this is a permanent
   semantic difference from wasm-gc. Policy (accept + document vs. weak refs /
   cycle collector) is deferred.
-- **No RC reclamation today** — until Phase 3, `VIBE_RC=1` changes layout and
-  runs the analysis but does not free; the production default (`--wasm`
-  without `VIBE_RC`) leaks by design (bump allocator).
+- **`VIBE_RC=0` does not reclaim** — the bump lane never frees, by design. It
+  is the escape hatch and the baseline the RC regression probe compares
+  against, not the default.
+- **A matched heap field bound but unused over-keeps** — a safe over-keep, not
+  a use-after-free; write `_` for a field you do not use.
 
 ## Semantics alignment with wasm-gc
 
@@ -100,6 +106,7 @@ Canonical status and residual leaks:
 - ✅ `compile --wasm` / `--wasm-gc` / `build --release` / `test` / `bench`
   backend defaults pinned above and exercised by the gate.
 - ✅ README backend description reconciled with the current CLI.
-- ✅ Perceus RC marked experimental opt-in; port status and the
-  remaining Phase 3 work are tracked in `rc-port.md`.
-- ✅ The "no reclamation / cycles leak" limitations are documented above.
+- ✅ Perceus RC **shipped as the linear default**; status and residual leaks
+  in [rc-cutover-readiness.md](rc-cutover-readiness.md), design in
+  [rc-port.md](rc-port.md).
+- ✅ The cycles-leak limitation and the residual over-keep are documented above.

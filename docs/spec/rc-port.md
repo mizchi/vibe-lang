@@ -1,10 +1,20 @@
-# Perceus RC port — design & staged plan
+# Perceus RC — design record
 
-Status: planning (issue #493 direction C / item **D**). Tracks implementing
-Perceus reference-counting memory management in the vibe-written compiler
-(`lib/@vibe/compiler/`). The MoonBit `src/` backend is now a historical
-reference and legacy bootstrap/fallback layer; new RC work targets the
-compiler directly and is guarded by the parity gates (per CLAUDE.md).
+Status: **the port is done and RC is the linear default** (`VIBE_RC` unset ==
+`VIBE_RC=1`, byte-identical; pinned by `scripts/check_rc_default.sh`). Current
+status and residual leaks live in
+[rc-cutover-readiness.md](rc-cutover-readiness.md); the backend contract table
+is in [memory-contract.md](memory-contract.md).
+
+This file is kept for the **design**: why the port was not a straight code
+port, the layout change it required, and the rc-check elision analysis
+(Phase 3.5), which is what other documents still cite. The staged plan below
+records the shape of the work, not a queue of remaining work — where a phase
+heading says WIP or "first vertical", read it as the state at the time that
+phase was written, not as today's.
+
+The MoonBit `src/` backend referenced throughout was retired in #594; it is
+historical context for the layout discussion, not a live fallback.
 
 ## Why this is not a straight code port
 

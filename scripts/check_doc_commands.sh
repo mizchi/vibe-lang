@@ -55,7 +55,17 @@ for dp, dn, fn in os.walk("."):
     dn[:] = [d for d in dn if d not in skip_dirs]
     if "README.md" in fn:
         files.append(os.path.normpath(os.path.join(dp, "README.md")))
-files = sorted(set(os.path.normpath(f) for f in files))
+# Dedupe by real path: CLAUDE.md is a symlink to AGENTS.md, and reporting the
+# same finding twice under two names asks for the same fix twice -- and would
+# need two allowlist entries for one line of prose.
+seen_real, deduped = set(), []
+for f in sorted(set(os.path.normpath(f) for f in files)):
+    r = os.path.realpath(f)
+    if r in seen_real:
+        continue
+    seen_real.add(r)
+    deduped.append(f)
+files = deduped
 
 tf = open("Taskfile.pkl", encoding="utf-8").read()
 # Task names may contain '_' (experimental_wasmtime_stack_switching). A
@@ -159,6 +169,50 @@ def shell_lines(path):
                 line = line[2:].strip()
             if line and not line.startswith("#"):
                 yield n, line
+
+# Inline, backticked commands in PROSE -- `just bench-bundle-size`, `pkf run
+# coverage`, `vibe fmt`. A fenced block is not where most README instructions
+# live: "2. Run `just bench-bundle-size-compiler-update`" is a numbered step a
+# reader follows exactly like a fenced line, and the fence-only scan reported
+# success over a dozen of them (#2138 review).
+#
+# Only inside backticks, and only `just` and `pkf run` -- NOT `vibe`.
+#
+# Inline `vibe <verb>` was tried and produced too many false positives to be
+# worth having: prose names markdown fence tags (`` `vibe skip` ``, from
+# ```` ```vibe skip ````), and design documents name commands they are
+# PROPOSING (`vibe plan`, `vibe migrate`, `vibe dedupe`). Neither is a claim
+# that the command exists, and a gate that cannot tell them from one that is
+# would push people toward suppressing it. Inside a fenced block the anchored
+# rule already covers the real thing.
+#
+# `just` and `pkf run` have neither problem: `just` is unconditionally retired,
+# and `pkf run X` always names a task or fails to.
+INLINE_RE = re.compile(
+    r'`(just|pkf run)\s+((?:--[a-z-]+\s+)*)([A-Za-z0-9_:-]+)')
+
+def inline_commands(path):
+    """Yield (lineno, head, name) for backticked commands outside fences."""
+    tag = None
+    for n, raw in enumerate(open(path, encoding="utf-8").read().split("\n"), 1):
+        m = re.match(r'\s*```+\s*([A-Za-z0-9_+-]*)', raw)
+        if m:
+            tag = m.group(1).lower() if tag is None else None
+            continue
+        if tag is not None:
+            continue
+        for im in INLINE_RE.finditer(raw):
+            yield n, im.group(1), im.group(3)
+
+for f in sorted(files):
+    for ln, head, name in inline_commands(f):
+        checked += 1
+        if head == "just":
+            if (f, "just") not in allow and (f, f"just {name}") not in allow:
+                fails.append((f, ln, f"`just {name}` -- retired runner; `just` was replaced by `pkf`"))
+        else:
+            if name not in tasks and (f, name) not in allow:
+                fails.append((f, ln, f"`pkf run {name}` -- no such task in Taskfile.pkl"))
 
 for f in sorted(files):
     for ln, line in shell_lines(f):

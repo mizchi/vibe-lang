@@ -279,8 +279,9 @@ Files:
 - `lib/@vibe/compiler/bundle_bench.vibe` (optional `bundle` phase)
 - `lib/@vibe/compiler/codegen_bench.vibe` (optional `codegen` phase)
 
-Driver (host CLI compiled backend):
-`scripts/bench_selfhost_compile_hotspots.sh` → `just bench-selfhost-compile-hotspots`.
+Driver: `scripts/profile_compile.sh` → `pkf run bench-compile-hotspots -- <stage2.wasm>`.
+(`scripts/bench_selfhost_compile_hotspots.sh` and its `just` recipe were
+replaced in #851.)
 
 These bench files type-check clean (`vibe check ...` passes) and define
 per-case probes that exercise the selfhost lexer / parser / checker against

@@ -73,47 +73,25 @@ pkf run --explain-cache test
 The cache lives in `~/.cache/pkfire` (global, per-user); `.pkfire/` in the
 repo is git-ignored as a fallback.
 
-### Why bother when `just` works?
+### Why pkfire
 
-- **Typed deps**: `deps { check }` is a Pkl value, not a string — typos fail
-  at evaluation time.
-- **Content-addressed cache**: re-running `pkf run check` after a no-op edit
-  is a cache hit; `just check` always re-invokes `moon`.
+- **Typed deps**: `deps { checkDocCommands }` is a Pkl value, not a string —
+  a typo fails at evaluation time rather than at run time.
+- **Content-addressed cache**: re-running a task after a no-op edit is a cache
+  hit, keyed on the task's declared `inputs`. That makes the inputs
+  load-bearing: a task whose inputs omit something it reads will replay a
+  stale verdict, which is why `pkf run check-task-inputs` exists.
 - **`pkf affected --since=origin/main`**: cheap PR-diff aware runs.
 
-For one-off shell tasks, `just <recipe>` is still the right choice — the
-pkfire Taskfile only mirrors the common entry points.
-
-### Differential test execution
-
-`Taskfile.pkl` generates one task per moon package under `src/`
-(`test:parser`, `test:checker`, `test:cmd-vibe`, …) whose `inputs` are
-scoped to that package's directory. Combine with pkfire's `affected` query
-and a `test:*` glob target to run only the packages whose files changed:
-
-```bash
-# vs a git ref (e.g. PR base)
-pkf affected --since=origin/main 'test:*'
-
-# explicit file list (CI helpers, scripts, hooks)
-pkf affected --files="$(git diff --name-only origin/main | paste -sd,)" 'test:*'
-
-# preview only — no commands run
-pkf affected --since=origin/main --dry-run --explain 'test:*'
-
-# full sweep, cache reuse for unchanged packages
-pkf run 'test:*'
-```
-
-The `'test:*'` glob is important: without it, `pkf affected` also pulls in
-wide-scope tasks (`check`, `test`, `release-check`, …) whose inputs cover
-all of `src/`. Names flatten `/` to `-` (e.g. `test:cmd-vibe` for
-`mizchi/vibe/cmd/vibe`) so a single glob covers all 32 packages.
-
-`pkf` treats each `moon test -p` as a black box; cross-package dep
-tracking (parser change → checker tests need rerun) is handled inside
-moon, not by pkfire. For the final pre-commit sweep, fall back to
-`just test` or `pkf run test`.
+This section used to argue pkfire against `just`, and the one below described
+one generated task per moon package under `src/` (`test:parser`,
+`test:checker`, … 32 of them) wrapping `moon test -p`. `just`, `moon` and
+`src/` were all retired with the MoonBit host (#594), and the per-package
+`test:*` tasks went in the dead-task cleanup. Test selection is now
+`pkf run test-affected`, which walks the compiler's own resolved import graph
+(`vibe deps --direct`) and falls back to running everything whenever it cannot
+decide — see the "Local Test Execution" section of
+[AGENTS.md](../AGENTS.md).
 
 ## git hooks (`pkf hooks`)
 

@@ -1,5 +1,17 @@
 # Product Bundle Size (Examples + Importers)
 
+> **This benchmark does not run.** Nothing in the repository drives it: there
+> is no pkf task, no script and no gate that reads `bench/bundle_size/`, and
+> its driver `bundle_size.vibe` is a **0-byte file**. The `just bench-bundle-size*`
+> recipes this README described went with the MoonBit host and `just` (#594)
+> and were never replaced.
+>
+> The fixtures (`cases.txt`, the `consumer_*.vibe` cases, `prelude/`) and the
+> budget snapshot `bench/golden/bundle_size_budget.tsv` are kept because they
+> are the inputs a revival would need. Everything below describes the intended
+> workflow, not one you can run today; the commands in it name nothing that
+> exists.
+
 `bench/bundle_size/` is the **product-level bundle-size monitor**.
 It measures live `examples/` plus use-case importer benchmarks.
 

@@ -79,10 +79,19 @@ expect() { # expect <label> <export> <declare> <import> <COMPILES|needle>
   fi
 }
 
+# The near-complete case: everything present EXCEPT `export`. Without it none
+# of the four below isolates the export requirement -- the private case is also
+# missing the import, the two middle cases fail for their own omissions, and
+# the complete case proves nothing about export on its own. If same-owner
+# imports ever started accepting a private function that appears in the
+# contract, all four would still pass (#2138 review). Measured: the compiler
+# names the omission exactly -- "contract declaration 'sib_helper' is
+# implemented but not exported by its implementation file".
+expect "declared + imported, but NOT exported"       no  yes yes "is implemented but not exported by its implementation file"
 expect "private sibling, no import"                  no  no  no  "unknown name: sib_helper"
 expect "exported but not declared in the contract"   yes no  no  "is not declared in the contract"
 expect "exported + declared, but not imported"       yes yes no  "unknown name: sib_helper"
 expect "exported + declared + explicit ./import"     yes yes yes COMPILES
 
 [ "$fails" -eq 0 ] || exit 1
-echo "package-sibling-scope: ok (4 cases; export, contract entry and explicit import are all required)"
+echo "package-sibling-scope: ok (5 cases; export, contract entry and explicit import are each independently required)"
