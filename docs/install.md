@@ -42,12 +42,12 @@ Then:
 
 ```bash
 vibe version
-echo 'fn main with Stdout { Stdout::write_stream("42\\n") }' > hello.vibex
+echo 'fn main with Console { println("42") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
-The tutorial's first program is this same host-builtin form; see
-[The Vibe Book](../book/README.md) (`book/src/`) (#1949).
+The book's first program is this same builtin form; see
+[The Vibe Book](../book/README.md) (`book/en/`) (#1949).
 
 ### Install layout (rustup-style toolchains, #755)
 

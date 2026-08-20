@@ -33,8 +33,8 @@ Install, learn, write, build, test, package, debug, deploy.
 | Current path | Later home | Notes |
 | --- | --- | --- |
 | [install.md](install.md) | `user/getting-started/` | |
-| [../book/](../book/README.md) | `user/book/` | The Vibe Book. Canonical tour + language + systems. Children: [SUMMARY.md](../book/SUMMARY.md), [src/](../book/src/), [ja/](../book/ja/) |
-| [tutorial/](tutorial/) | `user/tutorial/` | Pointer only. Chapters moved to `book/src/` and `book/ja/`. |
+| [../book/](../book/README.md) | `user/book/` | The Vibe Book. Canonical tour + language + systems. Children: [SUMMARY.md](../book/SUMMARY.md), [src/](../book/en/), [ja/](../book/ja/) |
+| [tutorial/](tutorial/) | `user/tutorial/` | Pointer only. Chapters moved to `book/en/` and `book/ja/`. |
 | [cheatsheet.md](cheatsheet.md) | `user/reference/` | Language reference. Absorbed `language-tour/`. |
 | [cli-commands.md](cli-commands.md) | `user/reference/` | |
 | [editor-and-debugging.md](editor-and-debugging.md) | `user/reference/` | LSP, DAP, editor query CLI |

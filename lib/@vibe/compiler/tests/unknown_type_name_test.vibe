@@ -1,0 +1,126 @@
+//# Imports
+
+import @vibe/compiler/checker {
+  collect_unknown_type_names
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_type
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+// #2125: an unknown type name is accepted wherever a type may appear, and the
+// annotation then behaves as a WILDCARD at argument positions -- `vibe check`
+// exits 0 on `fn takes(x: Intt) -> Int { 1 }` called with both `1` and `"s"`.
+//
+// The cause is that `resolve_type_expr_shadowed` falls through to
+// `CtNamed(name, [])` for a name it cannot resolve, which is spelled exactly
+// like an un-instantiated generic formal -- and `check_assignable` must
+// tolerate a unify failure under a `CtNamed` head so as not to over-reject
+// polymorphic code. The two together turn a typo into a disabled slot.
+//
+// `collect_unknown_type_names` is the missing discrimination: it mirrors that
+// function's lookups and reports the names that resolve to nothing. These
+// tests pin its contract. Wiring it to the error sink is the remaining half of
+// #2125 and is blocked -- see the last test.
+
+/// The unresolvable names in the type written as `src`, with `shadow` bound as
+/// the enclosing declaration's type formals. Written as source text rather than
+/// built from constructors so each case reads as the annotation it stands for.
+fn unknown_in(src: String, shadow: Array[String]) -> Array[String] {
+  handle {
+    let (te, _) = parse_type(lex(src), 0)
+    let out = array_empty()
+    collect_unknown_type_names(te, array_empty(), shadow, out)
+    out
+  } with Exception {
+    // A sentinel, not `[]` -- an empty result is the "everything resolved"
+    // answer, so a parse failure must not be able to impersonate a pass.
+    Throw(_) => one("<parse error>")
+  }
+}
+
+fn no_shadow() -> Array[String] {
+  array_empty()
+}
+
+fn one(name: String) -> Array[String] {
+  let a = array_empty()
+  Array::push(a, name)
+  a
+}
+
+test "an undeclared name is reported" {
+  inspect(unknown_in("Intt", no_shadow()), content = "[Intt]")
+}
+
+test "a builtin is not reported" {
+  inspect(unknown_in("Int", no_shadow()), content = "[]")
+  inspect(unknown_in("String", no_shadow()), content = "[]")
+  inspect(unknown_in("Unit", no_shadow()), content = "[]")
+}
+
+test "a name bound as a type formal is not reported" {
+  inspect(unknown_in("T", one("T")), content = "[]")
+}
+
+test "the same formal name IS reported when nothing binds it" {
+  inspect(unknown_in("T", no_shadow()), content = "[T]")
+}
+
+test "Array and Option are structural heads, never unknown" {
+  inspect(unknown_in("Array[Int]", no_shadow()), content = "[]")
+  inspect(unknown_in("Option[Int]", no_shadow()), content = "[]")
+}
+
+test "an unknown head with a known argument reports only the head" {
+  inspect(unknown_in("Frobnicate[Int]", no_shadow()), content = "[Frobnicate]")
+}
+
+test "an unknown name nested inside a structural head is reported" {
+  // This is the shape that blocks enforcement, below.
+  inspect(unknown_in("Array[T]", no_shadow()), content = "[T]")
+}
+
+test "compiler-owned nominal heads are not reported" {
+  // They resolve to CtNamed with no TypeDef behind them, so lookup alone
+  // cannot tell them from a typo; they are named explicitly instead.
+  inspect(unknown_in("Future[Int]", no_shadow()), content = "[]")
+  inspect(unknown_in("Map[Int, Int]", no_shadow()), content = "[]")
+}
+
+test "tuples and function types are walked" {
+  inspect(unknown_in("(Int, Nope)", no_shadow()), content = "[Nope]")
+  inspect(unknown_in("(Bad1) -> Bad2", no_shadow()), content = "[Bad1, Bad2]")
+}
+
+test "a repeated unknown name is reported once per occurrence" {
+  // The collector does not deduplicate; the reporter does.
+  inspect(unknown_in("(Zz, Zz)", no_shadow()), content = "[Zz, Zz]")
+}
+
+test "BLOCKER for enforcing #2125: the compiler synthesizes this exact shape" {
+  // `gen_arr_equals_fn` (normalize/desugar_trait_dict.vibe) builds
+  //     EFn([], [], [("a", Array[elem]), ("b", Array[elem])], Bool, ..)
+  // -- an EMPTY type-parameter list. When `elem` is a type variable, the
+  // synthesized declaration annotates its parameters with a name that nothing
+  // binds, and it type-checks ONLY because an unresolved name silently becomes
+  // a rigid `CtNamed`. So the hole this issue is about is load-bearing for the
+  // compiler's own generated code.
+  //
+  // Measured: wiring the reporter to the error sink builds a stage1 that then
+  // fails to compile the stage2 flat source with exactly one diagnostic --
+  // `unknown type \`T\` in parameter \`a\``, on a two-parameter function whose
+  // tparams list has length 0.
+  //
+  // Enforcement therefore needs that synthesis fixed first: either bind the
+  // free names of `elem` as the synthesized function's own type parameters, or
+  // synthesize per instantiation with the concrete element type.
+  inspect(unknown_in("Array[T]", no_shadow()), content = "[T]")
+  inspect(unknown_in("Array[T]", one("T")), content = "[]")
+}

@@ -41,6 +41,12 @@ query surface passes them through unconverted. Two spellings of the same thing:
 
 `vibe rc-classify` and `vibe rc-plan` report no positions at all.
 
+This table is enforced. `scripts/check_source_range_contract.sh`
+(`pkf run check-source-ranges`) probes every row against a source with two
+4-byte emoji to the LEFT of the position under test, so the byte, codepoint and
+UTF-16 columns are three different numbers — on an ASCII fixture all three
+agree and the check would prove nothing, which its self-test pins as a failure.
+
 ## The one deliberate exception: LSP
 
 `vibe check --single-file --json` and the `vibe lsp` server emit **LSP**
@@ -100,8 +106,8 @@ fn f() -> Int {
 
 ```
 $ vibe grep --json --pattern 'add($(a:args))' span.vibe
-{"start":89,"end":101,"text":"add(one, two)","captures":{"a":{"text":"one, two","start":93}}}
-{"start":105,"end":108,"text":"add(1, 2)","captures":{"a":{"text":"1, 2","start":-1}}}
+{"start":89,"end":101,"synthetic":false,"text":"add(one, two)","captures":{"a":{"text":"one, two","start":93}}}
+{"start":105,"end":108,"synthetic":false,"text":"add(1, 2)","captures":{"a":{"text":"1, 2","start":null}}}
 ```
 
 The first range stops at 101, the end of `two` — one byte short of the closing
@@ -110,8 +116,25 @@ because both operands are literals and neither is visible to the span. `start`
 is exact in both; only `end` is short.
 
 A capture goes one step further: it carries `start` and **no `end`**, so it
-cannot be sliced at all, and `start` is `-1` when the bound node has no
-recorded offset — the literal case above.
+cannot be sliced at all, and `start` is `null` when the bound node has no
+recorded offset — the literal case above. It used to render `-1`, chosen over
+`0` so the output would not invent a plausible offset. Right intent, wrong
+type: `-1` is still a *number*, and a consumer slicing `src[start:]` on it
+reads from the end of the file rather than failing.
+
+A match with NO recorded offset at all reports `null` in all four position
+fields and `"synthetic":true` — the JSON spelling of what the text lane writes
+as `<synthetic>` in place of `line:col`. The two output modes are checked
+against each other by `scripts/check_source_range_contract.sh` (check 11), not
+each against its own copy of the answer. JSON used to render `-1` in those
+fields, with the same defect as the capture-level `-1` below: a number where an
+offset goes.
+
+`text` is a **printed form, not a source slice** (measured 2026-08-19).
+`f( a  +  b )` captures as `(a + b)` — parens added, whitespace runs collapsed —
+so `src[start : start + length(text)]` is not the captured source, and an `end`
+cannot be derived from the text either. That is why the capture reports no
+`end` rather than a computed one.
 
 So: **`start` is a position you can trust, `end` is a floor, and `text` is the
 description.** To recover the real extent you must re-lex; `lex_with_offsets`
@@ -123,7 +146,27 @@ Tracked as #1941 (the range) and #1943 (the capture range, "captures also lack
 complete source ranges"). Pinned as measured behaviour, so the numbers above
 cannot drift without a test failing.
 
-An offset-less span is reported as `-1` (JSON) or `<synthetic>` (`vibe grep`
-text, #2035), and a still-unlocated diagnostic as the empty LSP range `0:0-0:0`
+An offset-less span is reported as `null` for a capture and `-1` for a hit
+span (JSON), or `<synthetic>` (`vibe grep` text, #2035), and a still-unlocated diagnostic as the empty LSP range `0:0-0:0`
 with `data.synthetic: true` (#2050). Those are the honest markers; a plausible
 `0:0` is not one, and none of the surfaces above emit one any more.
+
+## Every type error carries a position
+
+A diagnostic with **no** position fails this contract more completely than one
+in the wrong unit: there is nothing for a client to convert. Two shapes used to
+escape, both because a literal value carries no offset slot in the AST:
+
+- a **local** `let a: Int = "x"` — closed by anchoring the synthetic ascription
+  call on the binder name (`ascribe_wrap`),
+- a **top-level** `let a: Int = "x"` — closed by tagging the binder name with
+  the `[@fn=NAME]` side channel, which `find_fn_anchor_off` already resolved for
+  `fn name` *and* `let name`. The top-level lane keeps its annotation on `SLet`
+  rather than going through `ascribe_wrap`, which is why it needed the second
+  mechanism rather than the first.
+
+The value's own offset still wins wherever it exists — `let a: Int = f()`
+reports at `f()`, because that is where the edit goes. The binder is only the
+fallback. Both are pinned by `scripts/check_source_range_contract.sh` checks 9
+and 10, the second of which asserts the *failing* binder is named rather than
+the first `let` in the file.

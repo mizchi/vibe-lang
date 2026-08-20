@@ -2,10 +2,10 @@
 
 This chapter *is* a `.vibe.md`: every ` ```vibe run ` block is really compiled
 and run by `pkf run vibe-md-tutorial`
-(`bash scripts/vibe_md.sh check book/src/*.vibe.md`), and the ` ```output `
+(`bash scripts/vibe_md.sh check book/en/*.vibe.md`), and the ` ```output `
 block right after it is that run's output, pasted in (#1142). To refresh it
 locally, run
-`bash scripts/vibe_md.sh write book/src/01_values_functions.vibe.md`.
+`bash scripts/vibe_md.sh write book/en/01_values_functions.vibe.md`.
 
 日本語版: [01_values_functions.vibe.md](../ja/01_values_functions.vibe.md)
 
@@ -75,17 +75,34 @@ y = 2
 
 `fn` is a keyword ([#1280](https://github.com/mizchi/vibe-lang/issues/1280)
 landed it). It spells a function declaration and cannot be used as a binding or
-parameter name, and a raw identifier like `r#fn` is not an escape hatch either
-(measured: `let fn = 1` gives `expected identifier after 'let'`,
-`fn f(fn: Int)` gives `expected parameter name`, and `let r#fn = 1` is rejected
-the same way). Rename a colliding name to something like `fn_`.
+parameter name, and `fn` is the one reserved word a raw identifier does not
+rescue: `r#fn` is rejected too. Rename a colliding name to something like `fn_`.
+
+Every other reserved word DOES take `r#`, and the message says so wherever the
+word appears -- a binding, a parameter, or a function name.
 
 ```vibe skip
-// skip: how the reserved word `fn` is rejected -- every fragment here is a parse error
+// skip: how reserved words are rejected -- every fragment here is a parse error
 let fn = 1
-// error: expected identifier after 'let'
+// error: `fn` is a reserved word and cannot be used as a binding name;
+//        this keyword cannot be escaped, so choose a different name
 let r#fn = 1
-// error: a raw identifier is not an escape hatch
+// error: the same -- a raw identifier is not an escape hatch for `fn`
+let test = 1
+// error: `test` is a reserved word and cannot be used as a binding name;
+//        write `r#test` to use it as a name
+```
+
+```vibe run
+fn main() -> Unit with Stdout {
+  // `test` is reserved (it opens a `test { ... }` block), but `r#test` is a name.
+  let r#test = 1
+  println(Int::to_string(r#test))
+}
+```
+
+```output
+1
 ```
 
 All of the declaration forms below are runnable. A top-level function must be

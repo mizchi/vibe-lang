@@ -49,6 +49,36 @@ if [ $# -lt 2 ]; then
   exit 2
 fi
 
+# Refuse a document this is not the harness for. There are TWO doctest
+# harnesses and they are not interchangeable:
+#
+#   scripts/vibe_md.sh            *.vibe.md (the book) -- runs each
+#                                 ```vibe run block and checks the paired
+#                                 ```output block
+#   scripts/doctest_extract_run.sh  prose docs (README, cheatsheet, spec) --
+#                                 compile-only, symlinks `lib` next to the
+#                                 block so `import ./lib/@vibe/core` resolves,
+#                                 and tolerates a declaration-only block
+#
+# Handed `docs/cheatsheet.md`, this one used to answer "30 pass, 3 fail" for a
+# document `pkf run doctest` calls clean -- two harnesses, one document, two
+# answers, and the failures were entirely the two differences above. A
+# contributor following CLAUDE.md's `scripts/vibe_md.sh check` had no way to
+# tell which was right. Naming the other harness is the answer; making this
+# one accept prose docs would just move the disagreement.
+for arg in "${@:2}"; do
+  case "$arg" in
+    *.vibe.md) ;;
+    *)
+      echo "vibe_md.sh: $arg is not a *.vibe.md document." >&2
+      echo "  This harness runs \`\`\`vibe run blocks and checks their paired \`\`\`output block," >&2
+      echo "  which only *.vibe.md documents carry (book/en, book/ja)." >&2
+      echo "  For a prose document, use: bash scripts/doctest_extract_run.sh $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
 compiler="${VIBE_MD_COMPILER:-}"
 if [ -z "$compiler" ]; then
   for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do

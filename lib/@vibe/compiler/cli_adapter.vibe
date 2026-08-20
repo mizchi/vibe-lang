@@ -44,7 +44,7 @@ import @vibe/compiler/runtime {
   set_incremental_interface_trace_enabled,
   set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
-  symbol_spans,
+  symbol_spans_with_docs,
   type_at_source
 }
 
@@ -131,6 +131,37 @@ fn adapter_basename_no_vibe(path: String) -> String {
     base[0: blen - 5]
   } else {
     base
+  }
+}
+
+/// #2133: a line-oriented query's output must END with a newline, not merely
+/// SEPARATE its records with one.
+///
+/// Every `join_*` below builds `record \n record`, so a 97-record answer
+/// carried 96 newlines. Three things break on that, and none of them errors:
+///
+///   - `wc -l` undercounts by exactly one, always (97 records reported as 96)
+///   - a shell `while read` loop DROPS the last record entirely, because `read`
+///     returns non-zero when it hits EOF without a delimiter
+///   - concatenating two answers MERGES the last record of the first with the
+///     first record of the second: `parse_struct_stmt 12 78268 78285peek 12
+///     239 243` -- one malformed line, silently
+///
+/// AGENTS.md asks these commands to be greppable, one record per line, with
+/// the LLM as the first reader. A record the reader never sees is worse than a
+/// wrong one.
+///
+/// Empty output stays byte-EMPTY. "Empty output = clean" is the contract, and
+/// a bare newline would read as one blank record -- turning "nothing to
+/// report" into "one nameless finding".
+fn line_terminated(text: String) -> String {
+  let n = String::length(text)
+  if n == 0 {
+    text
+  } else if String::char_code_at(text, n - 1) == 10 {
+    text
+  } else {
+    String::concat(text, "\n")
   }
 }
 
@@ -264,18 +295,56 @@ fn join_escape_spans(items: Array[(String, Int, Int)]) -> String {
   StringBuilder::freeze(acc)
 }
 
-fn join_symbol_spans(syms: Array[(String, Int, Int, Int)]) -> String {
+/// Escape a `///` doc comment so it survives as ONE field on ONE line:
+/// backslash first, then newline as the two characters `\` `n`. Escaping the
+/// backslash is what makes it reversible -- a doc that literally contains
+/// `\n` would otherwise read back as a line break.
+fn escape_doc_field(text: String) -> String {
+  let n = String::length(text)
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(text, i)
+    if c == 92 {
+      StringBuilder::push(acc, "\\\\")
+    } else {
+      if c == 10 {
+        StringBuilder::push(acc, "\\n")
+      } else {
+        if c == 13 {
+          ()
+        } else {
+          StringBuilder::push(acc, String::from_char_code(c))
+        }
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+/// One `NAME KIND START END` per declaration, with the `///` doc comment
+/// appended as a FIFTH field when the declaration has one. The doc goes last
+/// because it is the only field that can contain spaces, so `cut -f1-4` still
+/// reads the fixed part -- and a declaration with no doc emits exactly the
+/// four fields it always did, with no trailing space.
+fn join_symbol_spans(syms: Array[(String, Int, Int, Int, String)]) -> String {
   let n = Array::length(syms)
   // O(N) join via StringBuilder; per-record String::concat was O(N²) (issue #366).
   let acc = StringBuilder::new()
   let mut first = true
   let mut i = 0
   while i < n {
-    let (name, kind, s, e) = Array::get(syms, i)
+    let (name, kind, s, e, doc) = Array::get(syms, i)
     if String::length(name) == 0 {
       ()
     } else {
-      let line = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      let head = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      let line = if String::length(doc) == 0 {
+        head
+      } else {
+        String::concat(head, String::concat(" ", escape_doc_field(doc)))
+      }
       if first {
         StringBuilder::push(acc, line)
         first = false
@@ -1304,7 +1373,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let ty = type_at_source(src, line, col)
-    Fs::write_bytes(output_path, adapter_string_to_bytes(ty))
+    Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(ty)))
     return 0
   }
   // `vibe doc-at`: Rust-`///`-style doc comment lookup (#854), same
@@ -1317,7 +1386,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let doc = doc_at_source(src, line, col)
-    Fs::write_bytes(output_path, adapter_string_to_bytes(doc))
+    Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(doc)))
     return 0
   }
   // `vibe binding-at`: AST-accurate binding occurrences (scope-precision rename /
@@ -1330,12 +1399,14 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     let line = parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
     let col = parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
     let occ = binding_occurrences(src, line, col)
-    Fs::write_bytes(output_path, adapter_string_to_bytes(join_binding_occurrences(occ)))
+    Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_binding_occurrences(occ))))
     return 0
   }
   // `vibe symbols`: AST-accurate declaration outline. Writes one
   // `NAME KIND START END` line per declared symbol (KIND = LSP SymbolKind int,
-  // START/END = char offsets of the name), or empty when the file declares none.
+  // START/END = BYTE offsets of the name, 0-based half-open -- ADR-0108, and
+  // measured: `main` after two 4-byte emoji reports the byte offset, not the
+  // codepoint one), or empty when the file declares none.
   // Powers document-outline / go-to-definition without a text-regex scan.
   //
   // #946: `symbol_spans` throws (e.g. a lexer error on an unsupported
@@ -1349,8 +1420,8 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   if Env::get("VIBE_SYMBOLS") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      let syms = symbol_spans(src)
-      Fs::write_bytes(output_path, adapter_string_to_bytes(join_symbol_spans(syms)))
+      let syms = symbol_spans_with_docs(src)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_symbol_spans(syms))))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)
@@ -1380,7 +1451,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       } else {
         escape_spans(src)
       }
-      Fs::write_bytes(output_path, adapter_string_to_bytes(join_escape_spans(esc)))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_escape_spans(esc))))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)
@@ -1394,7 +1465,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   if Env::get("VIBE_RC_CLASSIFY") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      Fs::write_bytes(output_path, adapter_string_to_bytes(rc_classify_source(src)))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(rc_classify_source(src))))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)
@@ -1403,7 +1474,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   if Env::get("VIBE_RC_PLAN") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      Fs::write_bytes(output_path, adapter_string_to_bytes(rc_plan_source(src, Env::get("VIBE_RC_PLAN_FN"))))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(rc_plan_source(src, Env::get("VIBE_RC_PLAN_FN")))))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)
@@ -1416,7 +1487,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   if Env::get("VIBE_ALLOCS") == "1" {
     return handle {
       let src = Fs::read_file(input_path)
-      Fs::write_bytes(output_path, adapter_string_to_bytes(join_alloc_spans(alloc_spans(src))))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_alloc_spans(alloc_spans(src)))))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)
@@ -1454,10 +1525,10 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         let raw = Fs::read_file(input_path)
         let source = ingest_source_text_fs(input_path, raw)
         let (deps, _, _) = load_or_parse_module_header_fs(input_path, source, 0)
-        Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(deps)))
+        Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_lines(deps))))
       } else {
         let groups = collect_source_groups_fs(input_path)
-        Fs::write_bytes(output_path, adapter_string_to_bytes(join_dep_paths(groups, input_path)))
+        Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_dep_paths(groups, input_path))))
       }
       0
     } with Exception {
@@ -1474,8 +1545,12 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   if Env::get("VIBE_GREP") == "1" {
     return handle {
       let (text, warnings) = grep_scan_fs_report(input_path, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1")
-      Fs::write_bytes(output_path, adapter_string_to_bytes(text))
-      Fs::write_bytes(String::concat(output_path, ".warn"), adapter_string_to_bytes(warnings))
+      // #2133: both are line-oriented (`path:line:col: <match>` one per line,
+      // and one warning per line), so both terminate their last record. JSON
+      // mode gets the trailing newline too, which is conventional and which no
+      // JSON reader notices.
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(text)))
+      Fs::write_bytes(String::concat(output_path, ".warn"), adapter_string_to_bytes(line_terminated(warnings)))
       0
     } with Exception {
       Throw(msg) => emit_compile_diag(output_path, msg)
@@ -1495,7 +1570,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       Fs::write_bytes(output_path, adapter_string_to_bytes(lsp_diagnostics_json_string(src)))
     } else {
       let diags = collect_all_diagnostics(src)
-      Fs::write_bytes(output_path, adapter_string_to_bytes(join_lines(diags)))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_lines(diags))))
     }
     return 0
   }

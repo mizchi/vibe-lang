@@ -184,11 +184,20 @@ fn grep_is_ident_char(c: Int) -> Bool {
 /// so the `__` after it is an unambiguous separator no matter what the user
 /// named the variable.
 fn grep_mangle(kind: String, name: String) -> String {
-  String::concat("__vgm_", String::concat(kind, String::concat("__", name)))
+  let ident = String::concat("__vgm_", String::concat(kind, String::concat("__", name)))
+  if kind == "arms" {
+    // #2122: an arms hole stands for a whole handler arm LIST, and a bare
+    // identifier does not parse where arms go (`expected => but got }`).
+    // Emit a wildcard arm instead, so the real parser accepts it in arm
+    // position and nowhere else -- which is exactly where it means anything.
+    String::concat("_ => ", ident)
+  } else {
+    ident
+  }
 }
 
 fn grep_kind_is_known(kind: String) -> Bool {
-  kind == "exp" || kind == "id" || kind == "const" || kind == "arg" || kind == "args" || kind == "pat" || kind == "type"
+  kind == "exp" || kind == "id" || kind == "const" || kind == "arg" || kind == "args" || kind == "pat" || kind == "type" || kind == "arms"
 }
 
 /// Decode a reserved identifier back to `(kind, name)`, or `("", "")` when the
@@ -275,7 +284,7 @@ fn grep_expand_metavars(pattern: String, vars: Array[String]) -> String with Exc
           if k >= len || String::char_code_at(pattern, k) != ')' {
             throw("grep pattern: unterminated metavariable — expected `)` after `$(name:kind)`")
           } else if !grep_kind_is_known(kind) {
-            throw(String::concat("grep pattern: unknown metavariable kind `", String::concat(kind, "` — use one of exp, id, const, arg, args, pat, type")))
+            throw(String::concat("grep pattern: unknown metavariable kind `", String::concat(kind, "` — use one of exp, id, const, arg, args, pat, type, arms")))
           } else {
             out = String::concat(out, grep_mangle(kind, name))
             if name != "_" {
@@ -369,7 +378,11 @@ fn grep_rewrite_let_star(pattern: String) -> String with Exception {
 /// The pattern string's first identifier after leading whitespace, when that
 /// identifier is `throw` or `perform`. Anything else — a metavar, a wrapping
 /// call, a different name — is `""` and does not filter hits.
-fn grep_pattern_origin(pattern: String) -> String {
+/// The pattern's first identifier-shaped word, or "" when it starts with
+/// something else. Read BEFORE parsing: a declaration-shaped pattern has to be
+/// recognised here, because the parser rejects one with a message about the
+/// metavariable's internal encoding rather than about what the user wrote.
+fn grep_leading_word(pattern: String) -> String {
   let len = String::length(pattern)
   let mut i = 0
   while i < len && (String::char_code_at(pattern, i) == ' ' || String::char_code_at(pattern, i) == 9 || String::char_code_at(pattern, i) == 10 || String::char_code_at(pattern, i) == 13) {
@@ -382,13 +395,22 @@ fn grep_pattern_origin(pattern: String) -> String {
     while i < len && grep_is_ident_char(String::char_code_at(pattern, i)) {
       i = i + 1
     }
-    let word = String::substring(pattern, start, i)
-    if word == "throw" || word == "perform" {
-      word
-    } else {
-      ""
-    }
+    String::substring(pattern, start, i)
   }
+}
+
+fn grep_pattern_origin(pattern: String) -> String {
+  let word = grep_leading_word(pattern)
+  if word == "throw" || word == "perform" {
+    word
+  } else {
+    ""
+  }
+}
+
+/// True when `word` starts a DECLARATION rather than an expression.
+fn grep_is_declaration_word(word: String) -> Bool {
+  word == "fn" || word == "enum" || word == "struct" || word == "trait" || word == "effect" || word == "type" || word == "impl" || word == "import" || word == "export" || word == "suberror"
 }
 
 /// Parse a pattern into its template expression. A pattern that parses to
@@ -396,6 +418,18 @@ fn grep_pattern_origin(pattern: String) -> String {
 /// the shape it actually produced, rather than being matched against nothing.
 export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
   let vars = grep_empty_strings()
+  // #2122: `fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }` used to fail with
+  // `fn parameter '__vgm_args__p' requires a type annotation` -- the
+  // metavariable's internal encoding, in a checker message, for a pattern the
+  // user did annotate. The good message below already existed but was
+  // unreachable: the parser rejects a declaration before the SExpr match runs.
+  // Decide from the leading word instead, which needs no parse.
+  let lead_word = grep_leading_word(pattern)
+  if grep_is_declaration_word(lead_word) {
+    throw(String::concat("grep pattern: `", String::concat(lead_word, "` starts a DECLARATION, and a pattern must be a single EXPRESSION. Search declarations with `vibe symbols <file>` (one `NAME KIND START END [DOC]` per declaration), or write a pattern for something INSIDE the declaration, e.g. a call in its body.")))
+  } else {
+    ()
+  }
   let rewritten = grep_rewrite_let_star(pattern)
   let expanded = grep_expand_metavars(rewritten, vars)
   // Prefix a lex/parse failure so the reader can tell "your PATTERN does not
@@ -404,7 +438,15 @@ export fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception {
   let stmts = handle {
     parse_program(lex(expanded))
   } with Exception {
-    Throw(msg) => throw(String::concat("grep pattern: ", msg))
+    // #2122: a `handle` pattern DOES work -- but only with the arms written
+    // out, because there is no metavariable kind for arms. Without that, the
+    // failure is `expected with but got eof`, which describes the parser's
+    // state and not the spelling that works.
+    Throw(msg) => if lead_word == "handle" {
+      throw(String::concat("grep pattern: ", String::concat(msg, " -- a `handle` pattern needs its `with` clause. Use `$(a:arms)` to match ANY handler: `handle { $(b:exp) } with $(e:id) { $(a:arms) }`. Write the arms out instead to match a specific one: `handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => resume($(v:exp)) }`.")))
+    } else {
+      throw(String::concat("grep pattern: ", msg))
+    }
   }
   if Array::length(stmts) == 0 {
     throw("grep pattern: empty pattern")
@@ -665,7 +707,32 @@ fn grep_match_name(pname: String, tname: String, binds: Array[(String, String, I
   if kind == "" {
     pname == tname
   } else if kind == "id" {
-    grep_bind(binds, var, tname, -1, false)
+    // #2132: a metavariable can be the QUALIFIER of a qualified name --
+    // `with $(e:id) { Get(..) => .. }` reaches here as `__vgm_id__e::Get`,
+    // because the parser resolves an arm's operation against the handled
+    // effect. `grep_meta_of` decodes the variable as `e::Get`, so the literal
+    // `Get` used to be swallowed into the variable NAME and never compared:
+    // the pattern matched `Log::Emit` and reported it under the nonsense key
+    // `$e::Get`. Split the suffix back off and require it to match.
+    let sep = String::index_of(var, "::")
+    if sep < 0 {
+      grep_bind(binds, var, tname, 0 - 1, false)
+    } else {
+      let mvar = var[0: sep]
+      let suffix = var[sep + 2: String::length(var)]
+      let tsep = String::index_of(tname, "::")
+      if tsep < 0 {
+        false
+      } else {
+        let tqual = tname[0: tsep]
+        let tsuffix = tname[tsep + 2: String::length(tname)]
+        if suffix != tsuffix {
+          false
+        } else {
+          grep_bind(binds, mvar, tqual, 0 - 1, false)
+        }
+      }
+    }
   } else {
     false
   }
@@ -794,8 +861,61 @@ fn grep_match_fields(ps: Array[(String, Expr)], ts: Array[(String, Expr)], binds
   }
 }
 
+/// The name of the `arms` hole when `ps` is exactly one, or "" otherwise. The
+/// hole is spelled `_ => __vgm_arms__<name>` by `grep_mangle`.
+fn grep_arms_hole_name(ps: Array[(Pat, Expr)]) -> String {
+  if Array::length(ps) != 1 {
+    ""
+  } else {
+    let (php, pbody) = Array::get(ps, 0)
+    match php {
+      PWild => match pbody {
+        EIdent(bn, _) => {
+          let (kind, name) = grep_meta_of(bn)
+          if kind == "arms" {
+            name
+          } else {
+            ""
+          }
+        },
+        _ => ""
+      },
+      _ => ""
+    }
+  }
+}
+
+/// Render a handler arm list the way the source spells one, so an `arms`
+/// capture reads back as something you could paste.
+fn grep_join_arms(ts: Array[(Pat, Expr)]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(ts) {
+    let (tp, te) = Array::get(ts, i)
+    let piece = String::concat(print_pat(tp), String::concat(" => ", print_expr(te)))
+    out = if i == 0 {
+      piece
+    } else {
+      String::concat(out, String::concat(", ", piece))
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn grep_match_arms(ps: Array[(Pat, Expr)], ts: Array[(Pat, Expr)], binds: Array[(String, String, Int, Bool)]) -> Bool with Exception {
-  if Array::length(ps) != Array::length(ts) {
+  // #2122: `{ $(a:arms) }` matches ANY arm list, so a `handle` sweep no longer
+  // has to know the arms in advance. Without it every handler shape needed its
+  // own pattern -- and the arms' own binders too, so `Get => ..` silently
+  // failed to find `Get(n) => ..`.
+  let hole = grep_arms_hole_name(ps)
+  if String::length(hole) > 0 {
+    if Array::length(ts) == 0 {
+      false
+    } else {
+      grep_bind(binds, hole, grep_join_arms(ts), 0 - 1, false)
+    }
+  } else if Array::length(ps) != Array::length(ts) {
     false
   } else {
     let mut i = 0
@@ -2156,7 +2276,49 @@ fn grep_render_line(hit: GrepHit, line: Int, col: Int) -> String {
 }
 
 fn grep_render_json(ctx: GrepTyped, typed: Bool, hit: GrepHit, line: Int, col: Int) -> String {
-  let head = String::concat("{\"path\":\"", String::concat(grep_json_escape(hit.path), String::concat("\",\"line\":", String::concat(grep_int(line), String::concat(",\"col\":", String::concat(grep_int(col), String::concat(",\"start\":", String::concat(grep_int(hit.offset), String::concat(",\"end\":", String::concat(grep_int(hit.end_offset), String::concat(",\"text\":\"", String::concat(grep_json_escape(hit.text), "\",\"captures\":{"))))))))))))
+  // #1943: the two output modes have to agree. The TEXT lane already renders an
+  // unlocated match honestly, as `<synthetic>` in place of `line:col`; JSON
+  // rendered `-1` in all four position fields, which a consumer reads as an
+  // offset and slices from the END of the file. Same defect the capture-level
+  // `start` had, and the same fix: `null` fails loudly, and `synthetic` says
+  // which kind of row this is without the reader inferring it from a sentinel.
+  //
+  // A match comes out unlocated when its operands are literals -- literals
+  // carry no offset slot, the same gap that leaves type errors unlocated.
+  let synth = hit.offset < 0
+  let line_field = if synth {
+    "null"
+  } else {
+    grep_int(line)
+  }
+  let col_field = if synth {
+    "null"
+  } else {
+    grep_int(col)
+  }
+  let start_field = if hit.offset < 0 {
+    "null"
+  } else {
+    grep_int(hit.offset)
+  }
+  let end_field = if hit.end_offset < 0 {
+    "null"
+  } else {
+    grep_int(hit.end_offset)
+  }
+  let synth_field = if synth {
+    "true"
+  } else {
+    "false"
+  }
+  let mut head = String::concat("{\"path\":\"", grep_json_escape(hit.path))
+  head = String::concat(head, String::concat("\",\"line\":", line_field))
+  head = String::concat(head, String::concat(",\"col\":", col_field))
+  head = String::concat(head, String::concat(",\"start\":", start_field))
+  head = String::concat(head, String::concat(",\"end\":", end_field))
+  head = String::concat(head, String::concat(",\"synthetic\":", synth_field))
+  head = String::concat(head, String::concat(",\"text\":\"", grep_json_escape(hit.text)))
+  head = String::concat(head, "\",\"captures\":{")
   let mut body = ""
   let mut i = 0
   while i < Array::length(hit.captures) {
@@ -2169,7 +2331,17 @@ fn grep_render_json(ctx: GrepTyped, typed: Bool, hit: GrepHit, line: Int, col: I
     } else {
       ""
     }
-    let entry = String::concat("\"", String::concat(grep_json_escape(n), String::concat("\":{\"text\":\"", String::concat(grep_json_escape(t), String::concat("\",\"start\":", String::concat(grep_int(o), String::concat(ty, "}")))))))
+    // An unlocated capture must not emit a number where an offset goes.
+    // It used to render `"start":-1`, which a consumer reads as an offset and
+    // slices from the end of the file. `null` fails loudly instead. Captures
+    // come out unlocated when the captured expression is a literal: literals
+    // carry no offset slot, the same gap that left type errors unlocated.
+    let start_field = if o < 0 {
+      "null"
+    } else {
+      grep_int(o)
+    }
+    let entry = String::concat("\"", String::concat(grep_json_escape(n), String::concat("\":{\"text\":\"", String::concat(grep_json_escape(t), String::concat("\",\"start\":", String::concat(start_field, String::concat(ty, "}")))))))
     body = if i == 0 {
       entry
     } else {

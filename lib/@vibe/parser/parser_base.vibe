@@ -833,7 +833,44 @@ export fn parse_binding_name_with_binder_context(tokens: Array[Token], pos: Int,
         (name, pos + 1)
       }
     },
-    _ => throw("expected name after 'let'")
+    token => throw(binder_name_error(tk_name(token), "binding", pos))
+  }
+}
+
+/// A `let` / `fn` / parameter binder position holding something that is not a
+/// name. `fn` already said which word was in the way and how to escape it
+/// (`r#test`); every other position said only that a name was expected, which
+/// names neither -- and at a `let`, the name IS there, so the message pointed
+/// at the one thing that was fine. Measured 2026-08-19: `fn test() -> Int { 1 }`
+/// explained itself; `let test = 1` and `fn f(test: Int)` did not, though
+/// `r#test` works in all three. One spelling for all of them; `kind` is the
+/// only difference.
+export fn binder_name_error(actual: String, kind: String, pos: Int) -> String {
+  let first = if String::length(actual) > 0 {
+    String::char_code_at(actual, 0)
+  } else {
+    0
+  }
+  let word_token = (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')
+  let literal_or_eof = actual == "int" || actual == "float" || actual == "string" || actual == "eof"
+  if actual == "fn" {
+    "`fn` is a reserved word and cannot be used as a \{kind} name; this keyword cannot be escaped, so choose a different name at #\{pos}"
+  } else if word_token && !literal_or_eof {
+    "`\{actual}` is a reserved word and cannot be used as a \{kind} name; write `r#\{actual}` to use it as a name at #\{pos}"
+  } else {
+    "expected \{kind} name\{binder_keyword_clause(kind)}, got '\{actual}' at #\{pos}"
+  }
+}
+
+/// The keyword that opened the binder position, when there is one. A parameter
+/// position is not opened by a keyword, so it gets no clause.
+fn binder_keyword_clause(kind: String) -> String {
+  if kind == "function" {
+    " after 'fn'"
+  } else if kind == "binding" {
+    " after 'let'"
+  } else {
+    ""
   }
 }
 
@@ -1558,10 +1595,7 @@ fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: 
         }
       }
     },
-    _ => {
-      let actual = tk_name(peek(tokens, pos))
-      throw("expected parameter name at #\{pos} token=\{actual}")
-    }
+    token => throw(binder_name_error(tk_name(token), "parameter", pos))
   }
 }
 

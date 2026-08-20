@@ -11,7 +11,7 @@ paths, `#directives`). No external highlighter crate.
 
 ```bash
 # prove the examples
-bash scripts/vibe_md.sh check book/src/*.vibe.md
+bash scripts/vibe_md.sh check book/en/*.vibe.md
 pkf run vibe-md-tutorial
 
 # render _build/book/index.html
@@ -31,7 +31,7 @@ artifact at that URL; the playground still lives in `playground/`
 | Path | Role |
 | --- | --- |
 | `book/SUMMARY.md` | chapter list (mdbook-style links) |
-| `book/src/` | English chapters (canonical) |
+| `book/en/` | English chapters (canonical) |
 | `book/ja/` | Japanese translations of the original tour |
 | `lib/@vibex/book/` | HTML renderer + SUMMARY parser |
 | `scripts/vibe_book.sh` | compile and run the generator |
@@ -46,5 +46,5 @@ Language*: a short getting-started plus a small program, then concepts,
 mutation (the ownership analog), data, packages, collections, effects,
 generics, concurrency, and tooling.
 
-Start at [Installation and Hello, vibe](src/01_getting_started.vibe.md)
-or jump to [A small program](src/19_a_small_program.vibe.md).
+Start at [Installation and Hello, vibe](en/01_getting_started.vibe.md)
+or jump to [A small program](en/19_a_small_program.vibe.md).

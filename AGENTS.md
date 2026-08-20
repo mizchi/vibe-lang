@@ -25,11 +25,19 @@ MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row 
 あり triage でも P0 = silent-wrong が「落ちる」より上 (P1)。診断は内部用語
 (pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り —
 ただし以下は**決定済み・実装はこれから** (現在の挙動と混同しないこと):
-`==` の全文脈構造的統一 (ADR-0097, #1526 — 裸 / tuple 内 / struct 内は構造的に
-着地済み (名前経由の裸配列は要素がスカラーのときのみ、#1569)。**残る参照等価**:
-消去された型変数 (`[T: Eq]` の `T`)・関数戻り値経由・空リテラル束縛・要素型が
-スカラーでない名前経由の裸配列。cheatsheet の「`Array` の `==`」に現在の境界が
-ある)、反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
+`==` の全文脈構造的統一 (ADR-0097, #1526 — **実測 2026-08-19 では silent な
+参照等価はもう残っていない**。裸 / 名前経由 / tuple 内 / struct 内・入れ子配列・
+`Array[String]` / `Array[(Int, Int)]` / `Array[Struct]`・関数戻り値経由・
+空リテラル束縛 (注釈あり・なし両方) がすべて構造的で、長さ違い・要素違いは
+false になる。この節はかつてこの 4 つを「残る参照等価」として列挙していたが、
+実測では 3 つは構造的。4 つ目 — 消去された型変数 (`[T: Eq]` の `T`) — は
+witness を使うので、`Eq` を持つ型 (`Int` / `String` / `derive(Eq)` の struct)
+では正しく動き、witness の無い container を渡すと**拒否される**
+(`fn eq2[T: Eq](a: T, b: T) { a == b }` に `Array[Int]` → ``no impl `Eq` for
+`Array[Int]` ``)。silent-wrong ではなく診断であり、それが ADR-0097 完了まで
+残す意図的なゲート。回帰は `fixtures/structural_eq_contexts_test.vibe` が
+押さえている。cheatsheet の「`Array` / `Bytes` の `==` (#1526)」が契約の全文)、
+反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
 #1559)、`Exception` を正として `Error` を 1.0 freeze で deprecated (ADR-0085,
 #1564)。docs のコード例は doctest が現行コンパイラで検査する — 仕様と実装を
 食い違わせない。
@@ -79,7 +87,7 @@ consumes on its own:
 Reader-facing documents (tutorial, language tour, install, README) may carry a
 Japanese translation alongside the English one:
 
-- `book/src/01_values_functions.vibe.md` — **canonical, English**
+- `book/en/01_values_functions.vibe.md` — **canonical, English**
 - `book/ja/01_values_functions.vibe.md` — translation
 
 The English file is the source of truth. Prose and code comments translate;
@@ -91,7 +99,7 @@ enforced by `pkf run check-tutorial-translation-parity`
 fails when a chapter has no translation, a translation has no chapter, or the
 two record different output.
 
-The language tour lives in `book/src/` (The Vibe Book). `docs/language-tour/` was **deleted** and folded
+The language tour lives in `book/en/` (The Vibe Book). `docs/language-tour/` was **deleted** and folded
 into [docs/cheatsheet.md](docs/cheatsheet.md) — it was a fourth surface next to
 the cheatsheet, the tutorial and `docs/spec/syntax.md`, and it rotted the way
 this section predicts: doctest compile-checks ` ```vibe ` blocks and is blind to
@@ -265,9 +273,10 @@ CI shard では:
   削除して構わないが、一括削除はこの PR ではやっていない。**vibe の doc
   comment は `///`** (Rust 風、宣言の直前に置くとその宣言の doc として
   hover/`vibe doc-at` から拾われる。実装は `lib/@vibe/parser/lexer.vibe`
-  `collect_doc_comments`)。**`vibe symbols` はまだ doc comment を返さない**
-  (`runtime/symbol_spans.vibe` は `(name, kind, start, end)` のみ) —
-  拾えるのは hover と `doc-at` だけ。既存の `//#` (モジュール冒頭説明・
+  `collect_doc_comments`)。**`vibe symbols` も doc comment を返す** —
+  doc を持つ宣言だけ `NAME KIND START END DOC` の 5 番目のフィールドが付き
+  (改行は `\n` にエスケープ、1宣言=1行)、持たない宣言は従来どおり 4 フィールド。
+  構造化された答えが要るなら `symbol_spans_with_docs`。既存の `//#` (モジュール冒頭説明・
   セクション見出しに広く使われている非公式記法) は `///` と意味が異なる
   (`//#` は複数宣言にまたがる説明やセクション区切りにも使われており、
   `///` の「直後の1宣言に対応する doc」という意味論とは食い違う) ため、
@@ -318,10 +327,14 @@ CI shard では:
 作業するときのコストとして毎回効いてくる。
 
 現に効いている既知の穴 (どれもこの方針違反として扱う):
-型エラーに `line:col` が付かないこと (**#1567** の残り)、
-`vibe check --json` が `--single-file` でしか使えないこと (同 #1567 —
-import 解決レーンは診断を文字列で投げるので range が無い)、
-`vibe symbols` が doc comment を返さないこと (Coding Convention 節)。
+**型エラーに位置が付かないこと** (**#1567** の残り)。これは import レーン
+固有ではない — 実測 (2026-08-19): `let a: Int = "not an int"` は
+`vibe check` でも `vibe check --single-file` でも位置なしで、`--json` すら
+`0:0` + `"data":{"synthetic":true}` を返す。checker の anchor 機構自体は
+動いていて (`off_marker` / `railway_expr_off`)、**リテラル式が offset
+スロットを持たない**のが原因。`vibe check --json` が `--single-file` でしか
+使えないのも同根で、「import レーンに range が無い」ではなく
+「型エラーにそもそも位置が無い」。
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・
@@ -416,8 +429,12 @@ vibe grep --pattern 'f($(x:exp))' --only-ill-typed lib
 > フラグ無しの `vibe check` が検査時に報告する (#1521/#1533。依存が publish する
 > 環境は export surface に制限されるので、private も単なる import 素通しも
 > 「is not exported by」になる)。`--single-file` は単一ファイル解析なので
-> こちらは見えない。大文字名 (struct / type alias) だけは値環境が判定できず、
-> 未検出のまま (#1521 の残り半分)。
+> こちらは見えない。**大文字名 (struct / type alias) も検出される** — かつて
+> 「値環境が判定できず未検出」と書いてあったが、実測 (2026-08-19) では
+> 非公開 struct・非公開 type alias・存在しない型名のいずれも
+> 「is not exported by」になる。gate の該当ケースも
+> `bogus_uppercase_not_reported` という穴だった頃の名前のままだったので、
+> 3 ケース (private struct / private alias / 対照の public 版) と一緒に直した。
 
 ### `vibe lsp` - Language Server
 
@@ -456,19 +473,41 @@ completion / signature help を提供する。詳細は
 - **`~` (bit_not) 非対応**: `x ^ mask` で代用
 - **ビット演算子**: `&`, `|`, `^`, `<<`, `>>` は使用可能
 
-## 実装上の Gotcha (MoonBit ホスト側)
+## 実装上の Gotcha
 
-- **MoonBit `String <` は length-first**: `"buf" < "acc_bits"` が `true` になる
-  (長さ比較が先、その後 char 比較)。**lexicographic な順序が必要なら自前で
-  char-by-char 比較する関数を書くこと**。compiler/codegen 内で構造体の
-  field を sort する箇所 (`sort_record_fields_expr`, `register_struct_types_gc`
-  等) でこの落とし穴で ADR-0052 実装中に wasm-gc cast-failure を生んだ実例
-  あり (`src/codegen/wasm_codegen_data.mbt::record_field_name_lt` 参照)。
-- **`is_mut~` のような短縮ラベル記法は struct literal 内で使えないことがある**:
-  `StructField::{ is_mut~, ... }` が parse error になる場面があった。
-  保守的に `is_mut: is_mut` と書くのが無難。
-- **`/* */` C-style block comment 非対応**: MoonBit は `//` line comment のみ。
-  式の中にコメントを挟みたい場合は別行に分ける。
+- **`String` の `<` は型が `<` の lowering まで届かないとアドレス比較になる
+  (#2128)**。`<` の素の lowering は (ptr<<32)|len 表現への i64 比較なので、
+  型が分からないと**ポインタを比べる** (#746 がその理由を書いている)。かつては
+  最も鋭い形として `p == q` と `p < q` が同時に true になった。
+
+  **修正済み**: tuple リテラル (注釈あり・なし)、`t.0` 射影、destructure、
+  `Array[(String, String)]` の要素、tuple を返す関数、入れ子 tuple、
+  注釈付き tuple 引数 (lambda の引数を含む) — いずれも内容比較になる。
+
+  **container を複数段またぐ場合も修正済み** (`Array[Array[(String, String)]]`、
+  `Array[Array[Array[...]]]`)。この節はかつて「記録された shape を鎖状に辿る
+  必要があるので残る」と書いていたが、原因は鎖ではなかった — `Array::get` が
+  結果に shape を**何も記録しなかった**ため、外側の名前の shape が 1 段深すぎて
+  読めず、内側の名前には shape が無かった。`dtd_elem_projecting_shape` が
+  1 呼び出しにつき `[..]` をちょうど 1 段剥がすので、読みの連鎖がそのまま
+  shape の連鎖になる (パス自体は今も鎖を辿らない)。実測: 2 段・3 段とも
+  修正前は `true` (アドレス比較)、修正後は `false` (内容比較)。
+  回帰は `lib/@vibe/compiler/tests/string_lt_type_dependence_test.vibe` (16 tests)。
+
+  型が届かない経路が万一残っていた場合の回避は 3 つとも有効:
+  `(a: String, b: String)` の関数に渡す・`let a2: String = a` で注釈し直す・
+  `String::concat(a, "")` を通す。順序が綴りに依らず canonical であるべき場所
+  (path の並びなど) で `@vibe/core` の `str_lt` を使う
+  (`sort_module_diagnostics` / `plan_module_order`) のは今も安全側の選択。
+
+  この節は長らく「MoonBit の `String <` は length-first」と書き、根拠に #594 で
+  退役した `src/codegen/wasm_codegen_data.mbt` を挙げていた。length-first が
+  正解に見えたのは例が `"buf"` (3) vs `"acc_bits"` (8) の 1 つだけだったからで、
+  同じ長さでは崩れる (`"bbb" < "aaa"` が true、`"aaa" < "bbb"` が false)。
+
+- **`/* */` C-style block comment 非対応** (実測): vibe も `//` の行コメントのみ
+  で、`/* ... */` は `unexpected token: /` になる。式の中にコメントを挟みたい
+  場合は別行に分ける。
 
 ## Tooling
 
@@ -516,8 +555,11 @@ codegen path as `vibe build --release`).
 
 **`VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` switch to the wasm-gc
 backend** — for pure tests and benches only, ones that need no HTTP/FS host
-imports. Use it when you want to exercise a wasm-gc-only feature (ADR-0052's
-`mut` struct fields, say) at test/bench level. Both lower to `VIBE_BACKEND=gc`,
+imports. Use it when you want to measure the gc lane, or to exercise a gap that
+only shows up there. **`mut` struct fields are not a reason** — despite
+ADR-0052's framing they run on linear too (measured 2026-08-19: mutation
+through a function, observed via an alias, gives `c=12 alias=12` on both
+lanes). Both lower to `VIBE_BACKEND=gc`,
 which callers can also set directly.
 
 ```bash
@@ -557,9 +599,18 @@ cause, three separate wrong explanations for it reached the docs (corrected in
 name is one **this file imports**. An unresolved name that is not import-derived
 still gets the internal error, and that one is genuine — report it.
 
-**`bench` blocks do not work on the gc lane yet** — the gc backend emits no
-`__bench_<name>` entry point (#1701), and `runtime/vibe`'s bench branch detects
-that and fails explicitly. The bench cache keys on the backend, so switching
+**`bench` blocks DO run on the gc lane** — #1701 landed the gc backend's
+per-block `__bench_<name>` exports (`codegen/gc/backend_body.vibe`). Measured
+2026-08-19, same file both ways:
+
+| lane | ns/op | B/op |
+|---|---:|---:|
+| linear | 6820 | 0 |
+| gc | 5803 | 0 |
+
+`runtime/vibe` still guards the case where the backend emits no bench entry
+point at all and fails explicitly rather than inventing numbers, which is the
+shape #1701 fixed. The bench cache keys on the backend, so switching
 `linear → gc` recompiles automatically.
 
 Builtin-level divergences between the two lanes have one row each in

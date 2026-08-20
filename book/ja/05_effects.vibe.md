@@ -1,8 +1,8 @@
 # 05 — エフェクト (vibe の核)
 
-前章: [04 Option](04_option-ja.vibe.md)
+前章: [04 Option](04_option.vibe.md)
 
-English version: [05_effects.vibe.md](05_effects.vibe.md) (canonical)
+English version: [05_effects.vibe.md](../en/05_effects.vibe.md) (canonical)
 
 vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect row) で
 宣言し、呼び出し側は `handle` で境界を引くまで伝播する。
@@ -13,7 +13,7 @@ vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect
 typed `Exception[E]` のどの kind とも互換である。`perform Exception::Throw` は継続を
 再開せず、handler arm で `resume` は使えない。その arm の値が `handle` の結果になる。
 erased な handler の payload は String/opaque 扱いで、handler をまたぐ型引数の保存は
-しない。typed exception との使い分けは [ADR-0085](../exception-effect.md) を参照。
+しない。typed exception との使い分けは [ADR-0085](../../docs/exception-effect.md) を参照。
 
 ```vibe run
 fn risky(x: Int) -> Int with Exception {
@@ -98,7 +98,7 @@ v = 42
 ユーザー定義 effect は、実装を呼び出し側から差し替える必要がある場合の advanced な
 手段である。これは resumptive かつ one-shot/tail-resumptive という制約を持つ。通常の
 失敗は `Exception` を使い、局所的な状態はまず `let mut` を検討する。判断基準は
-[Effects vs let mut](../guide/when-to-use-effects.md) を参照。
+[Effects vs let mut](../../docs/guide/when-to-use-effects.md) を参照。
 
 ## `handle` が見えるもの
 
@@ -163,6 +163,6 @@ apply_twice = 40
 まだ受理される **legacy ラベル**で、同じ host import を共有する。
 `Console` を宣言すれば legacy ラベルも認可されるが、逆は成立しない
 （`Console` の方が広い capability のため）。詳細は英語版
-[Capabilities](../src/10_capabilities.vibe.md)。
+[Capabilities](../en/10_capabilities.vibe.md)。
 
-次章: [06 テスト](06_tests-ja.vibe.md)
+次章: [06 テスト](06_tests.vibe.md)

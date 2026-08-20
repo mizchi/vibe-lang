@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression test for `vibe binding-at` (AST-accurate binding occurrences, the
-# scope-precision rename / references groundwork, docs/release-roadmap.md テーマ4).
+# scope-precision rename / references groundwork; see docs/editor-and-debugging.md).
 # binding_occurrences locates the identifier at a 1-based (line, col) via the real
 # EIdent / binding-name source offsets and prints, one `START END` per line, the
 # source span of EVERY occurrence of that name across the AST. AST-accurate: no

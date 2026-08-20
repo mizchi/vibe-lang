@@ -50,7 +50,7 @@ Included in standard tutorial:
 - core expressions/statements: `let`, `if`, `match`, `while`
 - module API: `import` / `export`
 - data model: `enum` / `struct` / tuples / arrays / records
-- error flow: `Result` composition (`map`, `and_then`, `match`)
+- error flow: the `Exception` effect row (`throw` / `handle`, `?`)
 - effects: explicit `with ...`
 - effect handling: `handle` arms for effect/local error pattern matching
 
@@ -840,8 +840,8 @@ Normalization and internal identity:
   `<canonical-symbol>#<addr-hash>`
 
 Example:
-- `/vibe/builtin@0.0.1/result/Result::and_then`
-- `/vibe/builtin@0.0.1/result/Result::and_then#9b1f...`
+- `/vibe/builtin@0.0.1/func/compose`
+- `/vibe/builtin@0.0.1/func/compose#9b1f...`
 
 ### Prelude and `--nostd` (current)
 
@@ -893,7 +893,8 @@ Rules:
 - `yield expr` requires `{Async}` and returns `Unit`.
 - Runtime execution for `yield` is gated by `--unstable-async`
   (disabled by default in CLI entrypoints).
-- Result-first policy remains canonical for application/core flows.
+- Errors travel as the `Exception` effect; `Result` was removed from the
+  language in #1324.
 - Error boundary syntax is `handle { ... } with Exception { Throw(_) => ... }`.
 
 ## Test blocks (MoonBit-style)

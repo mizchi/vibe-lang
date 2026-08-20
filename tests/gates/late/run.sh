@@ -1068,9 +1068,19 @@ if ! printf '%s' "$scps_once_out" | grep -q "one-shot continuation called twice"
   printf '%s\n' "$scps_once_out" >&2
   exit 1
 fi
+# #1571: the `__DATA__` strip is gone. Every fixture this ran carried an
+# `{"error_contains": ...}` tail that was byte-identical to `$needle` right
+# here, and the gate read its own copy while stripping the fixture's -- the
+# same "one fact, two copies" shape the repository has been removing (six other
+# sections already say "no longer carries an unread `__DATA__` error_contains
+# copy"). The tails are deleted, so this was the LAST `sed '/^__DATA__$/,$d'`
+# in tests/gates/.
+#
+# `_start()` is still dropped: that is a top-level call line, not an
+# expectation, and a rejected fixture must not also fail for having one.
 scps_check_reject() {
   local fixture="$1" needle="$2" tag="$3"
-  sed '/^_start()$/d; /^__DATA__$/,$d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
+  sed '/^_start()$/d' "fixtures/$fixture" > "$scpsdir/$tag.vibe"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$scpsdir/$tag.vibe" "$scpsdir/$tag.wasm" _start >/dev/null 2>&1 || true
@@ -4521,7 +4531,12 @@ fn main with Stdout {
 rm -rf "$resdir"
 echo "[compiler-gate] resource declaration identity rules ok"
 
-echo "[compiler-gate] 92/92 fixtures/typecheck verdicts match expected.tsv (#138)"
+# Section banner. `92/92` is this section's stable registry id (see
+# tests/gates/registry.tsv), not a fixture count. It read "verdicts match"
+# before the loop below had checked anything, so a failing run announced a
+# pass and then printed FAIL; "vs" states the subject without the verdict.
+# The counted result is echoed after the loop.
+echo "[compiler-gate] 92/92 fixtures/typecheck verdicts vs expected.tsv (#138)"
 # These 61 fixtures came with `.diag` snapshots of the RETIRED MoonBit host's
 # rendered diagnostic. No current path emits that shape, no harness read them,
 # and every one was stale -- so they were documentation of an expectation
@@ -4540,15 +4555,21 @@ rm -rf "$tcdir"; mkdir -p "$tcdir"
 # run -- measured, that masked 4 of the 13 lost checks.
 tc_names="$(grep -v '^#' fixtures/typecheck/expected.tsv | cut -f1)"
 # One compile each (~250ms), fanned out -- serially this section would be ~15s.
+# A row names a fixture in fixtures/typecheck/, or -- for the #2125 orphans
+# adopted from the repository root -- one directly under fixtures/. Resolving
+# in that order avoids moving 139 files and keeps names unique (checked: the
+# two directories share none).
 printf '%s\n' $tc_names | xargs -P "$(nproc 2>/dev/null || echo 4)" -I{} env \
   ROOT_DIR="$ROOT_DIR" stage2_wasm="$stage2_wasm" tcdir="$tcdir" \
-  bash -c 'VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash -c 'src="fixtures/typecheck/{}.vibe"; [ -f "$src" ] || src="fixtures/{}.vibe"
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "fixtures/typecheck/{}.vibe" "$tcdir/{}.wasm" __no_entry__ >/dev/null 2>&1 || true'
+    "$src" "$tcdir/{}.wasm" __no_entry__ >/dev/null 2>&1 || true'
 tc_fail=0
 tc_debt=0
 while IFS=$'\t' read -r tcname tcstatus tcneedle; do
   case "$tcname" in ''|'#'*) continue ;; esac
+  tcsrc="fixtures/typecheck/$tcname.vibe"; [ -f "$tcsrc" ] || tcsrc="fixtures/$tcname.vibe"
   if [ -s "$tcdir/$tcname.wasm" ]; then tcact="ok"; else tcact="reject"; fi
   tcdiag="$(head -1 "$tcdir/$tcname.wasm.diag" 2>/dev/null || true)"
   case "$tcstatus" in
@@ -4561,11 +4582,11 @@ while IFS=$'\t' read -r tcname tcstatus tcneedle; do
   if [ "$tcact" != "$tcwant" ]; then
     case "$tcstatus" in
       debt-accepts)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is REJECTED again -- the lost check is back. Promote its row in expected.tsv from 'debt-accepts' to 'reject' with the new message (#138)." >&2 ;;
+        echo "[compiler-gate] FAIL: $tcsrc is REJECTED again -- the lost check is back. Promote its row in expected.tsv from 'debt-accepts' to 'reject' with the new message (#138)." >&2 ;;
       debt-rejects)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe COMPILES again. Promote its row in expected.tsv from 'debt-rejects' to 'ok' (#138)." >&2 ;;
+        echo "[compiler-gate] FAIL: $tcsrc COMPILES again. Promote its row in expected.tsv from 'debt-rejects' to 'ok' (#138)." >&2 ;;
       *)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe expected '$tcwant', got '$tcact' (#138)" >&2 ;;
+        echo "[compiler-gate] FAIL: $tcsrc expected '$tcwant', got '$tcact' (#138)" >&2 ;;
     esac
     [ -n "$tcdiag" ] && echo "    diag: $tcdiag" >&2
     tc_fail=1
@@ -4573,7 +4594,7 @@ while IFS=$'\t' read -r tcname tcstatus tcneedle; do
     case "$tcdiag" in
       *"$tcneedle"*) ;;
       *)
-        echo "[compiler-gate] FAIL: fixtures/typecheck/$tcname.vibe is rejected, but not for the recorded reason (#138)" >&2
+        echo "[compiler-gate] FAIL: $tcsrc is rejected, but not for the recorded reason (#138)" >&2
         echo "    expected substring: $tcneedle" >&2
         echo "    actual:             $tcdiag" >&2
         tc_fail=1 ;;
@@ -5024,9 +5045,55 @@ export let _start = () -> Int {
 '
 # 7. Declaration authority now travels with the dependency environment, so an
 #    unknown uppercase selection is rejected by the same import-surface check.
-ui_case bogus_uppercase_not_reported err 'import ./dep.vibe { Hue, NoSuchType }
+#    (This case kept the name `bogus_uppercase_not_reported` long after it
+#    stopped being a gap; the same stale claim outlived it in CLAUDE.md, which
+#    still told readers uppercase names went undetected. Measured
+#    2026-08-19: all four shapes below are caught.)
+ui_case bogus_uppercase err 'import ./dep.vibe { Hue, NoSuchType }
 
 export let _start = () -> Int { 1 }
+'
+# 7b-7d. The three uppercase shapes CLAUDE.md named as still-undetected. A
+#    struct and a type alias are DECLARED in the dependency but not exported,
+#    which is a different path from case 7's name-that-never-existed: the
+#    dependency's own environment has them, and only the export-surface
+#    restriction keeps them off the published one.
+cat > "$uidir/upper.vibe" <<'UIUPPER'
+export struct Shown {
+  x: Int
+}
+
+struct Hidden {
+  y: Int
+}
+
+export type ShownAlias = Int
+
+type HiddenAlias = Int
+UIUPPER
+ui_case private_struct_reported err 'import ./upper.vibe { Hidden }
+
+export let _start = () -> Int {
+  let h = Hidden::{ y: 1 }
+  h.y
+}
+'
+ui_case private_type_alias_reported err 'import ./upper.vibe { HiddenAlias }
+
+fn take(x: HiddenAlias) -> Int { x }
+
+export let _start = () -> Int { take(1) }
+'
+# ...and the exported pair from that same module stays clean, so the two
+# cases above are not passing because `upper.vibe` is broken.
+ui_case public_upper_ok ok 'import ./upper.vibe { Shown, ShownAlias }
+
+fn take(x: ShownAlias) -> Int { x }
+
+export let _start = () -> Int {
+  let s = Shown::{ x: 1 }
+  take(s.x)
+}
 '
 # 8. A dependency that binds NO values is still a checked dependency. Deriving
 #    "known" from the binding count switched the check off for exactly these

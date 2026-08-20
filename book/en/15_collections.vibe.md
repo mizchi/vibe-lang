@@ -1,5 +1,7 @@
 # 15 — Collections
 
+日本語版: [15_collections.vibe.md](../ja/15_collections.vibe.md)
+
 vibe names a collection so you can read its mutability off the spelling.
 
 - A **bare** name is persistent: every "mutating" operation returns a new

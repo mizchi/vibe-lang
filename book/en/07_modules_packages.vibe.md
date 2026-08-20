@@ -83,7 +83,7 @@ hex_encode("hi") = 6869
 
 > The canonical statement of the boundary, visibility and pin rules is the
 > "現行モデル" section of
-> [docs/module-system-oracle.md](../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+> [docs/module-system-oracle.md](../../docs/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
 > (#1269). What follows is the tutorial-level summary.
 
 A package's boundary is its `index.vpkg` — a **contract** listing the public API
@@ -153,8 +153,8 @@ vibe pkg yank @you/pkg@1.0.0                  # mark withdrawn (append-only)
 vibe pkg update @you/pkg                      # move to the latest non-yanked (shows the contract diff)
 ```
 
-More detail: [docs/adding-modules.md](../adding-modules.md) /
-[docs/registry-design.md](../registry-design.md)
+More detail: [docs/adding-modules.md](../../docs/adding-modules.md) /
+[docs/registry-design.md](../../docs/registry-design.md)
 
-— that is the end of the tour. From the [README](README.md) you can re-run any
+— that is the end of the tour. From the [README](../README.md) you can re-run any
 chapter.

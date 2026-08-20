@@ -360,21 +360,35 @@ nursery scope によって決まる。
 
 ## `Send` と capture safety
 
+> **この節が `Send` allowlist の正典 (#2123)。** 他の文書はここへリンクし、
+> 一覧を書き写さない。以前は cheatsheet・`mutability-control-review.md`・
+> book 11 章・本書の 4 箇所に複製され、うち 3 つが `Option` と `Result` を
+> 並べて「どちらも builtin」と読める形に drift していた。挙動そのものは
+> `lib/@vibe/compiler/tests/send_allowlist_test.vibe` が固定している (11 件)
+> ので、この一覧が実装からずれたらテストが落ちる。
+
 `Send` は user が `unsafe impl` できる通常 trait ではなく、compiler が型構造から
-判定する marker とする。初期 allowlist は保守的にする。
+判定する marker とする。`impl Send for X` は reject される。allowlist は保守的。
 
 `Send` になるもの:
 
-- `Unit`、`Bool`、`Int`、`Double`、`String`
+- `Unit`、`Bool`、`Int`、`Double`、`String`、`Char`
 - 全 field が `Send` で mutable field を持たない tuple / struct / enum
-- 上記から構成される `Option` / immutable な application-defined enum
+- 上記から構成される **builtin の `Option`**、および自前宣言の enum
+  (名前は無関係 — 自分で書いた `Result[T, E]` も components が `Send` なら
+  `Send`。`Result` は #1324 で言語から削除されたので builtin ではない)
 - runtime が特別に認識する同一 nursery 内の `Sender[r, T]`
+- `FrozenArray[T]` (要素が `Send` のとき)
 
-初期仕様で `Send` にならないもの:
+`Send` にならないもの:
 
 - `Array`、`ArrayBuilder`、`Bytes`、mutable field を持つ struct、captured `let mut`
 - closure、handler evidence、continuation、`Task` / `Receiver` handle
 - host resource と opaque FFI value（contract で安全性を証明した組み込みを除く）
+- **型パラメータが未解決のまま残っている値** — 解決済みの部分がすべて `Send`
+  でも通らない。実測: 注釈なしの `Result::Ok(1)` は `E` が開いたままなので
+  `no impl \`Send\` for \`Result[Int, ?t8]\`` で落ちる。「Send な部品からなる
+  enum は Send」だけ読むと十分条件に見えるが、そうではない
 
 closure 自体を message として送ることはできない。spawn closure には別途
 `Spawnable[r]` 判定を行い、全 capture が `Send` または許可された同一 region handle
@@ -667,11 +681,9 @@ checker に compiler 判定の structural `Send` を実装した。`Send` は
 `register_builtin_traits` で trait def として seed され(primitive は
 nominal impl も併記)、`[T: Send]` bound の enforcement は
 `check_program_bounds` から `type_send_ok`
-(`checker/checker_trait.vibe`) に dispatch する。判定は本書の
-allowlist どおり: primitives / tuple / Option / Result / mut field を
-持たない struct / enum(generic instantiation・再帰型は coinductive)
-が Send、`Array` / `Bytes` / closure / mut-field struct / 未解決型は
-非 Send。`impl Send for X` は「compiler-judged marker」として reject。
+(`checker/checker_trait.vibe`) に dispatch する。判定は本書冒頭の
+allowlist どおりで、ここには書き写さない (#2123: 一覧の複製が drift の原因
+だった)。generic instantiation・再帰型は coinductive に扱う。
 generic enum は TDEnum が payload を宣言時 fresh `CtVar` で保存する
 ため、ctor の `CtForAll` binder から var id を回収して positional に
 置換する(struct は名前ベースの `subst_type_params` で足りる)。

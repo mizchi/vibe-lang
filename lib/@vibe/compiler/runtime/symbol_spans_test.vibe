@@ -8,7 +8,7 @@
 // outline.
 
 import ./symbol_spans.vibe {
-  symbol_spans
+  symbol_spans, symbol_spans_with_docs
 }
 
 //# Functions
@@ -47,6 +47,67 @@ fn sym_fmt(syms: Array[(String, Int, Int, Int)]) -> String {
 }
 
 //# Misc
+
+/// `NAME=DOC` per symbol that carries one, so a test can assert the pairing
+/// without depending on offsets.
+fn sym_doc_fmt(syms: Array[(String, Int, Int, Int, String)]) -> String {
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < Array::length(syms) {
+    let (name, _kind, _s, _e, doc) = Array::get(syms, i)
+    if String::length(doc) == 0 {
+      ()
+    } else {
+      if first {
+        first = false
+      } else {
+        StringBuilder::push(acc, ", ")
+      }
+      StringBuilder::push(acc, name)
+      StringBuilder::push(acc, "=")
+      StringBuilder::push(acc, doc)
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+test "symbol_spans_with_docs: a `///` block attaches to the declaration below it" {
+  let src = "/// Doubles it.\nfn twice(x: Int) -> Int { x * 2 }\nfn plain(y: Int) -> Int { y }\n"
+  let syms = symbol_spans_with_docs(src)
+  // Both declarations are outlined; only the documented one carries text.
+  assert(Array::length(syms) == 2)
+  inspect(sym_doc_fmt(syms), "twice=Doubles it.")
+}
+
+test "symbol_spans_with_docs: a multi-line doc keeps its newlines here" {
+  // The CLI escapes them to keep one record on one line; this layer is the
+  // structured answer and hands back the real text.
+  let src = "/// One.\n/// Two.\nfn f() -> Int { 1 }\n"
+  let syms = symbol_spans_with_docs(src)
+  let (_n, _k, _s, _e, doc) = Array::get(syms, 0)
+  assert(doc == "One.\nTwo.")
+}
+
+test "symbol_spans_with_docs: the outline matches symbol_spans exactly" {
+  // Both go through symbol_spans_impl, so a doc comment must never add,
+  // drop, or move a symbol -- only annotate one.
+  let src = "/// Doc.\nfn a() -> Int { 1 }\nstruct P { x: Int }\n/// Doc2.\nfn b() -> Int { 2 }\n"
+  let plain = symbol_spans(src)
+  let withd = symbol_spans_with_docs(src)
+  assert(Array::length(plain) == Array::length(withd))
+  let mut i = 0
+  while i < Array::length(plain) {
+    let (pn, pk, ps, pe) = Array::get(plain, i)
+    let (dn, dk, ds, de, _doc) = Array::get(withd, i)
+    assert(pn == dn)
+    assert(pk == dk)
+    assert(ps == ds)
+    assert(pe == de)
+    i = i + 1
+  }
+}
 
 test "symbol_spans: a clean file returns its declarations" {
   let syms = symbol_spans("export fn f(x: Int) -> Int { x + 1 }\n")

@@ -1,5 +1,7 @@
 # 12 — The CLI as an IDE
 
+日本語版: [12_cli.vibe.md](../ja/12_cli.vibe.md)
+
 vibe's command line is the same semantic surface an editor gets over LSP.
 The first reader is an LLM. That forces a few rules:
 
@@ -16,7 +18,7 @@ file an issue.
 ```bash
 vibe check file.vibe                # empty = this file compiles (imports resolved)
 vibe check --single-file file.vibe  # buffer-only; imports are not followed
-vibe symbols file.vibe              # outline: NAME KIND START END
+vibe symbols file.vibe              # outline: NAME KIND START END [DOC]
 vibe type-at file.vibe 12 4         # hover at 1-based line,col
 vibe binding-at file.vibe 12 4      # rename / refs
 vibe escapes file.vibe              # which let mut is boxed

@@ -1,8 +1,8 @@
 # 03 — データとパターンマッチ
 
-前章: [02 制御フロー](02_control_flow-ja.vibe.md)
+前章: [02 制御フロー](02_control_flow.vibe.md)
 
-English version: [03_data.vibe.md](03_data.vibe.md) (canonical)
+English version: [03_data.vibe.md](../en/03_data.vibe.md) (canonical)
 
 ## tuple / array / record
 
@@ -212,4 +212,4 @@ length = 2
 arr[1] = 2
 ```
 
-次章: [04 Option](04_option-ja.vibe.md)
+次章: [04 Option](04_option.vibe.md)

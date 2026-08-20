@@ -327,6 +327,33 @@ local checkFixtureExecution =
 local checkFreezeSurface = scriptTask("check-freeze-surface", "scripts/check_freeze_surface.sh")
 // ADR-0109: one version number, checked wherever it is written (launcher,
 // release notes, roadmap ladder, stable-surface doc). Pure text -- no compiler.
+// The book is the onboarding surface; a broken chapter link ends a reader's
+// visit. Pure text -- no compiler.
+local checkBookLinks = scriptTask("check-book-links", "scripts/check_book_links.sh")
+local testCheckBookLinks = scriptTask("test-check-book-links", "scripts/check_book_links_test.sh")
+// Two doctest harnesses answer differently on the same document; the guard in
+// scripts/vibe_md.sh keeps a prose doc from reaching the *.vibe.md one.
+local testVibeMdGuard = scriptTask("test-vibe-md-guard", "scripts/vibe_md_guard_test.sh")
+// ADR-0108 / docs/source-range-contract.md: six editor-query surfaces share one
+// position unit. A surface that switched units would fail SILENTLY (a wrong
+// column answers about an earlier position, and empty reads as clean).
+local checkSourceRangeContract =
+  scriptTask("check-source-ranges", "scripts/check_source_range_contract.sh")
+local testCheckSourceRangeContract =
+  scriptTask("test-check-source-ranges", "scripts/check_source_range_contract_test.sh")
+// #2134: the host's JS stack, not the compiler, caps how many top-level
+// declarations a module may have (~1300 on node's default). A VALID file
+// simply stopped compiling. The gate generates unique content every run --
+// a successful compile caches a row keyed by source, so a fixed corpus would
+// pass forever after its own first green run, fix or no fix.
+// #2133: the line-oriented queries joined records with "\n" instead of
+// terminating them, so a shell `while read` dropped the last record and
+// concatenating two answers merged one record into another -- silently. Empty
+// must stay byte-empty, which is what rules out the naive always-append fix.
+local checkCliLineTermination =
+  scriptTask("check-cli-line-termination", "scripts/check_cli_line_termination.sh")
+local checkDeclarationScale =
+  scriptTask("check-declaration-scale", "scripts/check_declaration_scale.sh")
 local checkVersionLadder = scriptTask("check-version-ladder", "scripts/check_version_ladder.sh")
 local testCheckVersionLadder =
   scriptTask("test-check-version-ladder", "scripts/check_version_ladder_test.sh")
@@ -1144,7 +1171,7 @@ local vibeMdTutorial = new Task {
   name = "vibe-md-tutorial"
   description =
     "run ```vibe run blocks in book/**/*.vibe.md and verify embedded ```output matches (#1142)"
-  cmd = "bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md"
+  cmd = "bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md"
   // Developer convenience task: like plain `doctest`, this may fall back to
   // the committed seed when no stage2 exists. The release/CI gate below must
   // instead prove the docs against a compiler built from this checkout.
@@ -1156,7 +1183,7 @@ local vibeMdTutorialGated = new Task {
   description =
     "tutorial executable-docs check against a stage2 built for THIS checkout (release-check / CI form)"
   cmd =
-    "gen=\"$(ls -dt _build/selfhost/generations/*/ | head -1)\"; VIBE_MD_COMPILER=\"${gen}stage2.wasm\" VIBE_MD_STAGE2=\"${gen}stage2.wasm\" bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md"
+    "gen=\"$(ls -dt _build/selfhost/generations/*/ | head -1)\"; VIBE_MD_COMPILER=\"${gen}stage2.wasm\" VIBE_MD_STAGE2=\"${gen}stage2.wasm\" bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md"
   // Build and run both the markdown tool and its extracted blocks with the
   // checkout's stage2. Naming both variables is deliberate: VIBE_MD_COMPILER
   // selects the compiler for vibe_md.vibex itself, while VIBE_MD_STAGE2 is
@@ -1169,7 +1196,7 @@ local vibeMdTutorialGated = new Task {
 local checkTutorialTranslationParity = new Task {
   name = "check-tutorial-translation-parity"
   description =
-    "every original tour chapter in book/src has a book/ja translation, and each pair runs the same programs"
+    "every original tour chapter in book/en has a book/ja translation, and each pair runs the same programs"
   cmd = "bash scripts/check_tutorial_translation_parity.sh"
   // vibe_md.sh proves each file on its own; this is the part it cannot see.
   // Two files that run the same programs record the same ```output blocks, so
@@ -1182,7 +1209,7 @@ local vibeMdFmtCheck = new Task {
   name = "vibe-md-fmt-check"
   description =
     "check that ```vibe code blocks in *.vibe.md docs are a fixpoint of the selfhost CST formatter"
-  cmd = "bash scripts/vibe_md.sh fmt-check book/src/*.vibe.md book/ja/*.vibe.md"
+  cmd = "bash scripts/vibe_md.sh fmt-check book/en/*.vibe.md book/ja/*.vibe.md"
   // informational, not enforced anywhere: the formatter's always-expanded-block
   // style (one import per line, every `if`/`fn` body on its own lines) fights
   // the compact, hand-tuned prose style these docs use for readability, so
@@ -1257,6 +1284,13 @@ local releaseCheck = new Task {
     checkFreezeSurface
     testCheckVersionLadder
     checkVersionLadder
+    testCheckBookLinks
+    checkBookLinks
+    testVibeMdGuard
+    checkSourceRangeContract
+    testCheckSourceRangeContract
+    checkDeclarationScale
+    checkCliLineTermination
     doctestGated
     vibeMdTutorialGated
     checkTutorialTranslationParity
@@ -1319,6 +1353,13 @@ tasks {
   testCheckFreezeSurface
   checkVersionLadder
   testCheckVersionLadder
+  checkBookLinks
+  testCheckBookLinks
+  testVibeMdGuard
+  checkSourceRangeContract
+  testCheckSourceRangeContract
+  checkDeclarationScale
+  checkCliLineTermination
   testGenerateSelfhostBundle
   checkOffbuildTypecheck
   testSelfhostAsyncComponent

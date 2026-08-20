@@ -1,9 +1,9 @@
 # 07 — モジュールとパッケージ
 
-前章: [06 テスト](06_tests-ja.vibe.md)
+前章: [06 テスト](06_tests.vibe.md)
 (リポジトリ root か、@vibe/core が materialize 済みの環境で)
 
-English version: [07_modules_packages.vibe.md](07_modules_packages.vibe.md) (canonical)
+English version: [07_modules_packages.vibe.md](../en/07_modules_packages.vibe.md) (canonical)
 
 ## export と相対 import
 
@@ -78,7 +78,7 @@ hex_encode("hi") = 6869
 ## Advanced: 契約 (`index.vpkg`) と version
 
 > 境界・可視性・pin の規則の正本は
-> [docs/module-system-oracle.md の「現行モデル」節](../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
+> [docs/module-system-oracle.md の「現行モデル」節](../../docs/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
 > 以下はチュートリアル向けの要約。
 
 パッケージの境界は `index.vpkg` — 公開 API を bodyless 宣言で列挙した
@@ -143,7 +143,7 @@ vibe pkg yank @you/pkg@1.0.0                  # 撤回マーキング (append-on
 vibe pkg update @you/pkg                      # 最新 non-yanked へ (契約 diff 表示)
 ```
 
-詳細: [docs/adding-modules.md](../adding-modules.md) /
-[docs/registry-design.md](../registry-design.md)
+詳細: [docs/adding-modules.md](../../docs/adding-modules.md) /
+[docs/registry-design.md](../../docs/registry-design.md)
 
-— 以上でツアーは終わり。[README](README-ja.md) から任意の章を再実行できる。
+— 以上でツアーは終わり。[README](../README.md) から任意の章を再実行できる。

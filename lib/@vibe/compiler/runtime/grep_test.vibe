@@ -165,7 +165,21 @@ test "grep: nested matches are reported as the separate sites they are" {
 
 test "grep: JSON output carries offsets and per-capture spans" {
   let src = "let a = f(1)\n"
-  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":-1}}}\n]\n")
+  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"synthetic\":false,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":null}}}\n]\n")
+}
+
+test "grep: an unlocated match is null + synthetic, and the two modes agree" {
+  // #1943: the text lane has always rendered such a match as `<synthetic>`;
+  // JSON rendered `-1` in all four position fields. `-1` is a NUMBER, so a
+  // consumer slicing `src[start:end]` reads from the end of the file instead
+  // of failing. A match is unlocated when its operands are literals, which
+  // carry no offset slot.
+  let src = "let a = 3 + 4\n"
+  let out = grep_scan_source("a.vibe", src, "$(x:exp) + $(y:exp)", no_strings(), no_strings(), "", true)
+  assert(String::contains(out, "\"line\":null,\"col\":null,\"start\":null,\"end\":null,\"synthetic\":true"))
+  assert(!String::contains(out, "-1"))
+  // The text lane's spelling of the same fact.
+  assert(String::contains(scan(src, "$(x:exp) + $(y:exp)"), "<synthetic>"))
 }
 
 test "grep: no match is empty output, in both text and JSON form" {
@@ -250,9 +264,102 @@ test "grep: a filter with nothing after its operator is an error" {
 test "grep: a malformed pattern says what to write instead of matching nothing" {
   inspect(scan_err("let a = 1\n", "f($x)", no_strings()), "grep pattern: `$` must start a metavariable `$(name:kind)`")
   inspect(scan_err("let a = 1\n", "f($(x))", no_strings()), "grep pattern: expected `$(name:kind)`, e.g. `$(x:exp)`")
+}
+
+test "grep: a declaration pattern is rejected by what the user wrote, not by an internal name" {
+  // #2122: this used to fail with `fn parameter '__vgm_args__p' requires a
+  // type annotation` -- the metavariable's internal encoding, in a checker
+  // message, for a pattern the user DID annotate. The good message existed
+  // already but the parser rejected the declaration before it could run.
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }", no_strings()), "starts a DECLARATION"))
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }", no_strings()), "vibe symbols"))
+  assert(!String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)($(p:args)) -> $(r:type) { $(b:exp) }", no_strings()), "__vgm"))
+  // The partial form is a declaration too, and gets the same answer.
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "fn $(n:id)", no_strings()), "starts a DECLARATION"))
+  // Other declaration keywords, so the check is about the class not one word.
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "enum $(n:id)", no_strings()), "starts a DECLARATION"))
+  assert(String::contains(scan_err("fn f() -> Int { 1 }\n", "struct $(n:id)", no_strings()), "starts a DECLARATION"))
+}
+
+/// A `handle` whose arms this pattern is not supposed to know about. Two
+/// different effects, two different arm shapes, two different binders.
+fn handle_src() -> String {
+  "effect Ask {\n  Get(Int) -> Int\n}\n\nfn u() -> Int with Ask {\n  perform Ask::Get(1)\n}\n\nfn r() -> Int {\n  handle {\n    u()\n  } with Ask {\n    Get(n) => resume(n + 1)\n  }\n}\n"
+}
+
+test "grep: `$(a:arms)` matches a handler whose arms are not known in advance (#2122)" {
+  // The point of the hole. Before it, a `handle` sweep had to spell every arm
+  // -- INCLUDING each arm's own binders, so `Get => ..` silently failed to
+  // find `Get(n) => ..` and the search came back empty, which is also how the
+  // CLI spells "nothing here".
+  let hits = scan(handle_src(), "handle { $(b:exp) } with $(e:id) { $(a:arms) }")
+  assert(String::contains(hits, "handle {"))
+  // The capture reads back as arms you could paste.
+  assert(String::contains(hits, "$a=Ask::Get(n) => resume((n + 1))"))
+}
+
+/// The same handler shape but a DIFFERENT effect and operation, so a pattern
+/// naming one operation must not find the other.
+fn handle_other_src() -> String {
+  "effect Log {\n  Emit(String) -> Unit\n}\n\nfn r2() -> Int {\n  handle {\n    perform Log::Emit(\"x\")\n    7\n  } with Log {\n    Emit(m) => resume(())\n  }\n}\n"
+}
+
+test "grep: a literal operation in an arm is compared, not swallowed (#2132)" {
+  // `with $(e:id) { Get(..) => .. }` reaches the matcher as
+  // `__vgm_id__e::Get`, because the parser resolves an arm's operation against
+  // the handled effect. `grep_meta_of` decodes the variable as `e::Get`, so
+  // `Get` used to become part of the variable NAME and was never compared: the
+  // pattern matched `Log::Emit` too, and reported it under the nonsense key
+  // `$e::Get`. A search that returns hits you did not ask for is worse than
+  // one that errors -- the extra hit looks like an answer.
+  let getp = "handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => resume($(v:exp)) }"
+  assert(String::contains(scan(handle_src(), getp), "handle {"))
+  assert(!String::contains(scan(handle_other_src(), getp), "a.vibe"))
+  // ...and the mirror, so this is about comparing the name and not about
+  // rejecting the second file for some other reason.
+  let emitp = "handle { $(b:exp) } with $(e:id) { Emit($(p:pat)) => resume($(v:exp)) }"
+  assert(String::contains(scan(handle_other_src(), emitp), "handle {"))
+  assert(!String::contains(scan(handle_src(), emitp), "a.vibe"))
+}
+
+test "grep: the qualifier metavariable captures the EFFECT, under its own name" {
+  // `$(e:id)` stands for the effect, so it binds `Ask` -- not the whole
+  // qualified `Ask::Get`, and not under the key `$e::Get`, which is not a
+  // variable anyone wrote.
+  let hits = scan(handle_src(), "handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => resume($(v:exp)) }")
+  assert(String::contains(hits, "$e=Ask"))
+  assert(!String::contains(hits, "$e::Get"))
+}
+
+test "grep: `$(a:arms)` needs at least one arm to stand for" {
+  // A handler with no arms is not a thing the parser produces, but the hole
+  // must not quietly match an empty list either -- that would make the
+  // pattern true of expressions that are not handlers.
+  assert(!String::contains(scan("let a = f(1)\n", "handle { $(b:exp) } with $(e:id) { $(a:arms) }"), "a.vibe"))
+}
+
+test "grep: `arms` is listed as a kind, and only parses where arms go" {
+  // The kind is real...
+  assert(!String::contains(scan_err(handle_src(), "handle { $(b:exp) } with $(e:id) { $(a:arms) }", no_strings()), "unknown metavariable kind"))
+  // ...and the unknown-kind message lists it, so the set is discoverable.
+  assert(String::contains(scan_err("let a = 1\n", "f($(x:nope))", no_strings()), "arms"))
+  // An arms hole outside arm position is a parse error, not a silent match:
+  // `grep_mangle` spells it `_ => __vgm_arms__a`, which only parses in an arm
+  // list. The message names the parser's state, which is honest here -- there
+  // is no other spelling to point at.
+  assert(String::length(scan_err("let a = 1\n", "f($(a:arms))", no_strings())) > 0)
+}
+
+test "grep: a handle pattern that will not parse is pointed at the shape that works" {
+  // `expected with but got eof` describes the parser's state, not the
+  // spelling that succeeds. The message now names BOTH: the arms hole for any
+  // handler, and the written-out form for a specific one.
+  let msg = scan_err("fn f() -> Int { 1 }\n", "handle { $(b:exp) }", no_strings())
+  assert(String::contains(msg, "$(a:arms)"))
+  assert(String::contains(msg, "resume($(v:exp))"))
   inspect(scan_err("let a = 1\n", "f($(x:exp", no_strings()), "grep pattern: unterminated metavariable — expected `)` after `$(name:kind)`")
   inspect(scan_err("let a = 1\n", "f($(x:exp)", no_strings()), "grep pattern: expected ) but got eof at #3")
-  inspect(scan_err("let a = 1\n", "f($(x:expr))", no_strings()), "grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type")
+  inspect(scan_err("let a = 1\n", "f($(x:expr))", no_strings()), "grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type, arms")
   inspect(scan_err("let a = 1\n", "f($(a:args), $(b:args))", no_strings()), "grep pattern: at most one `args` metavariable per argument list")
   inspect(scan_err("let a = 1\n", "let x = 1", no_strings()), "grep pattern: must be a single EXPRESSION — declaration patterns (`fn`, top-level `let`, `enum`, ...) are not supported yet; use `vibe symbols` for declarations")
 }
@@ -370,7 +477,7 @@ test "grep: a reported range is a LOWER BOUND, not the match's extent" {
   let src = span_src()
   let out = scan_json(src, "add($(a:args))")
   // `add(one, two)` starts at 89; `two` ends at 101; the `)` is at 101.
-  assert(String::contains(out, "\"start\":89,\"end\":101,\"text\":\"add(one, two)\""))
+  assert(String::contains(out, "\"start\":89,\"end\":101,\"synthetic\":false,\"text\":\"add(one, two)\""))
   assert_eq(String::substring(src, 89, 101), "add(one, two")
   assert_eq(String::substring(src, 89, 102), "add(one, two)")
 }
@@ -380,15 +487,34 @@ test "grep: a match whose operands are all literals collapses to the head" {
   // an offset, so the span has nothing to widen past `add`.
   let src = span_src()
   let out = scan_json(src, "add($(a:args))")
-  assert(String::contains(out, "\"start\":105,\"end\":108,\"text\":\"add(1, 2)\""))
+  assert(String::contains(out, "\"start\":105,\"end\":108,\"synthetic\":false,\"text\":\"add(1, 2)\""))
   assert_eq(String::substring(src, 105, 108), "add")
 }
 
-test "grep: a capture carries a start and no end, and -1 when it has neither" {
+test "grep: a capture carries a start and no end, and null when it has neither" {
   // #1943's "captures also lack complete source ranges". `one, two` reports
   // where it begins and nothing about where it stops; `1, 2` cannot even
-  // report that, and says -1 rather than inventing 0.
+  // report that.
+  //
+  // The unlocated case used to render `-1`, chosen over `0` so the output did
+  // not invent a plausible offset. Right intent, wrong type: `-1` is still a
+  // NUMBER, and a consumer that slices `src[start:]` on it reads from the end
+  // of the file instead of failing. `null` carries the same "no offset" and
+  // breaks arithmetic loudly.
   let out = scan_json(span_src(), "add($(a:args))")
   assert(String::contains(out, "\"a\":{\"text\":\"one, two\",\"start\":93}"))
-  assert(String::contains(out, "\"a\":{\"text\":\"1, 2\",\"start\":-1}"))
+  assert(String::contains(out, "\"a\":{\"text\":\"1, 2\",\"start\":null}"))
+  assert(!String::contains(out, "\"start\":-1"))
+}
+
+test "grep: a capture's text is a PRINTED form, not a source slice" {
+  // Measured 2026-08-19 and previously undocumented. `f( a  +  b )` captures
+  // as `(a + b)`: parens added, runs of whitespace collapsed. So
+  // `src[start : start + length(text)]` is NOT the captured source, and an
+  // `end` cannot be derived from the text either -- which is why this reports
+  // no end rather than a computed one.
+  let src = "fn f(x: Int) -> Int { x }\nfn g(a: Int, b: Int) -> Int { f( a  +  b ) }\n"
+  let out = scan_json(src, "f($(x:exp))")
+  assert(String::contains(out, "\"text\":\"(a + b)\""))
+  assert(!String::contains(out, "\"text\":\"a  +  b\""))
 }

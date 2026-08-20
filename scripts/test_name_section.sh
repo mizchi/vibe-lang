@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regression test for the wasm name section (debugger P0 / ADR-0035 /
-# docs/release-roadmap.md テーマ3), updated for ADR-0077 (#1107): release
+# Regression test for the wasm name section (debugger P0 / ADR-0035),
+# updated for ADR-0077 (#1107): release
 # executables are STRIPPED by default — the name section must be absent from
 # a plain FS compile — while `VIBE_WASM_NAMES=1` (what `vibe run`/`vibe shell`
 # pass, so trap backtraces keep naming user functions) must still produce a

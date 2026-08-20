@@ -9,10 +9,9 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 ## Quick Start
 
 ```vibe
-// `println` is a builtin — no import — and it carries the `Stdout`
-// capability, so the entry declares it. A function that declares no row may
-// not print (#2107).
-fn main with Stdout {
+// `println` is a builtin — no import — and it needs a tty capability, so the
+// entry declares one. A function that declares no row may not print (#2107).
+fn main with Console {
   println("hello world")
 }
 ```
@@ -20,10 +19,13 @@ fn main with Stdout {
 `print` is the same without the trailing newline. `@vibe/console` publishes the
 rest of the tty surface (`eprint` / `eprintln` on `Stderr`, `read_line`,
 `read_all`). `@vibe/builtin`'s older `stdout_write` / `stdout_writeln` are
-gone (#2102) -- they duplicated names above. The row is spelled `Stdout` here
-because that is what these lower onto today; the current tty capability is
-`Console`
-(`Console::write_stream`), and #1460 moves them there.
+gone (#2102) -- they duplicated names above.
+
+The row is `Console`, the current tty capability. `println` still *lowers* onto
+the legacy `Stdout` label internally, and declaring `Console` authorizes the
+legacy three (#2102/#2117) -- one way only, so a row declaring just `Stdout`
+cannot reach `Console::read_stream`. The book, README and installer teach this
+same program; `scripts/test_vibe_install_hello.sh` checks they still agree.
 
 ```bash
 vibe run hello.vibex       # compile & execute
@@ -64,7 +66,7 @@ let s: String = "hello \{x}"   // interpolation with \{expr}
                                // (`\(x)` は非対応、`\{x}` を使う)
                                // #1392: 補間の値に `T::to_string`
                                // (derive(Show)/derive(Hash) 生成物、または
-                               // 手書き) があればそれを呼ぶ。`Option`/`Result`/
+                               // 手書き) があればそれを呼ぶ。`Option`/
                                // タプル/配列は変数・名前関数の戻り値・戻り値が
                                // リテラルの未注釈 lambda・generic の pass-through
                                // 経由でも構造的に展開される
@@ -194,9 +196,9 @@ contract — this is a naming *rule*, not a per-type coincidence:
 
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
-current allowlist (see `docs/concurrency.md` "Send と capture safety") —
-only scalars, `mut`-field-free structs/enums, `Option`/`Result` of those,
-same-nursery `Sender`, and `FrozenArray[T]` are. Reach for `FrozenArray`
+current allowlist — the canonical one is
+[concurrency.md](concurrency.md#send-と-capture-safety), pinned by
+`send_allowlist_test.vibe`. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
 
@@ -682,9 +684,8 @@ impl Eq for Int
 impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には使えない (下記)
 
 // `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
-// trait: `[T: Send]` accepts primitives, tuples, Option/Result, and
-// immutable structs/enums built from Send parts; Array/Bytes, closures,
-// and `mut`-field structs are rejected. `impl Send for X` is an error.
+// trait; `impl Send for X` is an error. The allowlist is stated once, in
+// docs/concurrency.md "Send と capture safety".
 
 // `Default` (#1847) は builtin trait: prelude が marker + primitive impl
 // (Int/Float/Double/Bool/String) を登録するので `[T: Default]` bound は
@@ -791,12 +792,19 @@ let arr2 = {
 //     the old name ImmutMap is a #deprecated alias (ADR-0100 (3), #1262)
 //   ImmutArray[T] (persistent vector): empty/push/get/set/length/from_array/to_array
 
-// **Need a persistent map? Use `MapHamt`. The builtin `Map` is for small
-// fixed tables** — `Map` is a flat assoc list, so both construction and
-// lookup degrade to O(n²). Measured at n=1000, `MapHamt` is 27.7× faster
-// with 22× fewer allocations (ADR-0100 (3) /
-// bench/bench_map_vs_immutmap.vibe). The compiler itself has hit the same
-// trap internally (#799).
+// **Need a persistent map? Use `MapHamt`.** `Map` is a flat assoc list, so
+// both construction and lookup degrade to O(n²). "The builtin `Map` is for
+// small fixed tables" is still the rule, but "small" means SINGLE DIGITS:
+// measured 2026-08-19 (VIBE_RC=0, ns/op, median of 3), `MapHamt` already wins
+// at n=64, and the two are indistinguishable at n=8 —
+//
+//   n=8     build 1347 vs 1393, lookup 1411 vs 1540   (noise, no winner)
+//   n=64    build 3908 vs 1778, lookup 3886 vs 2082   (MapHamt 1.9-2.2x)
+//   n=1000  build 514892 vs 21122                     (MapHamt 24.4x)
+//
+// so there is no n at which the builtin meaningfully wins. bench/bench_map_vs_immutmap.vibe
+// pins all three points; ADR-0100 (3) records the decision. The compiler
+// itself has hit the same trap internally (#799).
 
 // Deques / priority queues are @vibe/core (#1842, promoted from @vibex):
 //   Deque::new/push_back/pop_front (ring buffer, O(1) at both ends)
@@ -1397,15 +1405,26 @@ vibe test dir/            # run all tests in directory (examples run too)
 
 ## Key Builtins
 
-**String**: byte string (`length`/indexes/slices use byte counts and offsets;
-iteration yields byte-valued `Int`). `String::length`, `byte_at`, `from_byte`,
-`concat`, `substring`, `contains`, `index_of`, `split`, `trim`, `replace`,
-`starts_with`, `ends_with`, `join`. Unicode code-point/grapheme operations are
-not part of this API.
+The list below is the **index**; the normative one — what 0.1.0 promises SemVer
+stability for — is [spec/stable-surface.md](spec/stable-surface.md) §3, and
+`pkf run check-freeze-surface` probes every name in it against the compiler.
+The bullets here are checked the same way, so a name listed as a builtin here
+resolves as one.
 
-**Array**: `Array::length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`, `concat`
+- **String**: `length`, `byte_at`, `from_byte`, `char_code_at`,
+  `from_char_code`, `concat`, `substring`, `contains`, `index_of`, `split`,
+  `trim`, `starts_with`, `ends_with`, `join`
+- **Array**: `length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`,
+  `all`, `reverse`, `concat`
+- **Map**: `get`, `has_key`, `keys`, `values`, `set`, `size`
 
-**Map**: `Map::get`, `has_key`, `keys`, `values`, `set`
+`String` is a byte string: `length`, indexes and slices use byte counts and
+offsets, and iteration yields byte-valued `Int`. Unicode code-point and
+grapheme operations are not part of this API.
+
+`String::replace` / `replace_all` are **not** builtins — they are library
+functions and need `import @vibe/builtin { String::replace }`. Calling one
+without the import is `unknown name: String::replace`.
 
 **Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
 `push` は償却 O(1)):
@@ -1447,11 +1466,11 @@ the linear and GC backends):
 **I/O** (require effects):
 <!-- doctest-skip: 未定義名 (s) + effect context 無しの呼び出しシグネチャ一覧 -->
 ```vibe skip
-println(s)         // with Stdout - builtin, no import
-print(s)           // with Stdout - no trailing newline
-read_line()        // with Stdin  - @vibe/console
-eprintln(s)        // with Stderr - @vibe/console
-sh("ls -la")       // with Stdout - shell command
+println(s)         // with Console - builtin, no import
+print(s)           // with Console - no trailing newline
+read_line()        // with Console - @vibe/console
+eprintln(s)        // with Console - @vibe/console
+sh("ls -la")       // with Process - shell command
 sh_lines("ls")     // -> Array[String]
 ```
 
@@ -1813,40 +1832,48 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 ただし **`vibe check` は #1511(b)/#1536(c) 以降、型検査の後に codegen と同じ
 効き方の適格性判定 (ADR-0076 の effect-lowering prelude) を走らせる**ため、
 `vibe check` / `vibe build` / `vibe test` / doctest のどれでも同じエラーが出る
-(`vibe check --single-file` は単一ファイル解析なので対象外):
+(`vibe check --single-file` は単一ファイル解析なので対象外)。
 
-```
-line 5:12-16: handle of effect 'Ask' cannot be compiled here. Every perform
-this handle covers has to be statically visible to it, so the handled body may
-only: perform directly, call a named top-level `fn`, or call a closure literal
-that carries an effect row annotation. A call through a local binding or a
-closure parameter hides the perform and is what this rejects (here: the call
-to 'bump') ...
-```
-
-診断は**どの呼び出しが不適格かを名指しし、その `line:col` を指す** (#1514)。
-`line:col` は handle ではなく犯人の呼び出し (上の例では `bump`) の位置。
-複数ファイルで犯人が依存側モジュールにあるときは位置なしに落ちる
-(entry ファイルの誤った行を指すより位置なしを選ぶ)。
-
-実測した境界は **handled body が呼ぶ callee の種類**。handle 自体が top-level
-`let` にあるか `fn` の中にあるかは**無関係**で、`ask_once` を `fn` で宣言したか
-`let` lambda で宣言したかも**無関係**:
+**この節はかつて prose だけで境界を記述しており、ずれた。** 「ローカルの
+クロージャを呼ぶと NG」と書いていたが実測では通り、しかもその例
+(`handle { bump(ask_once()) }`) は**そもそも perform を隠していない** —
+`perform` は引数評価として handled body の中で起き、`bump` は handle から
+perform への経路上に無い。現在は callee の形ごとに fixture で固定してある
+(`fixtures/typecheck/handle_*.vibe` + `expected.tsv`)。以下は 2026-08-20 に
+現行 stage2 で実測した表:
 
 | handled body が呼ぶもの | 結果 |
 |---|---|
 | `handle { ask_once() }` — 直接 perform する関数 | ok |
 | `handle { bump(ask_once()) }` — `bump` が top-level `fn` | ok |
-| `handle { bump(ask_once()) }` — `bump` が**ローカルのクロージャ** | **NG** |
+| `handle { bump(ask_once()) }` — `bump` が**ローカルのクロージャ** | ok |
+| `let bump: () -> Int with Ask = () -> { ask_once() }` を呼ぶ | ok |
+| `fn apply(f: () -> Int with Ask)` に `ask_once` を渡して呼ぶ | ok |
+| `let bump = () -> Int { ask_once() }` (**row 注釈なし**) を呼ぶ | **NG** |
+| `let f: () -> Int with Ask = ask_once` を呼ぶ | **NG** |
 
-エラー文が列挙している適格な形がそのまま規則 — 直接 `perform`、**名前付き
-top-level 関数**の呼び出し、row 注釈付きクロージャリテラル。
+**拒否される 2 つは、どちらも handle 適格性の診断ではない。** 別々の pass が
+別々のメッセージで落とすので、読むべき行が違う:
 
-**迷ったら handled body から呼ぶものを top-level `fn` に出す。**
+- **row 注釈なしのクロージャ** — 注釈が無いとクロージャは row を運ばないので、
+  handle が覆うものが無くなり `Ask` は `main` まで抜ける。出るのは
+  **entry 境界**の診断:
+  `entry point 'main' cannot discharge { Ask }: no host provider or runtime
+  handler owns this effect`。直し方は「handle の書き方」ではなく
+  **クロージャに row を注釈する**こと。
+- **top-level fn を別名で束ねたローカル束縛** — body に構文上の `perform` が
+  無く opaque な関数値を呼ぶので、#1347 の
+  `handle of effect 'Ask' can never fire` が出る。
 
-(この表は当初 lang-review r3 で「handle の位置が効く」と誤って記録し、r4 の
-再測定で訂正した。#1511 のコメントに経緯。診断に位置情報が付かず、body 内の
-どの呼び出しが不適格かも言わないので、複数呼び出しがある body では二分探索が要る。)
+handle 適格性そのものの診断 (`handle of effect 'X' cannot be compiled here`,
+`inline_direct_perform.vibe`) は健在で、**どの呼び出しが不適格かを名指しし、
+その `line:col` を指す** (#1514)。ただし**その文面は現状の実装より広く主張して
+いる** — 「a call through a local binding or a closure parameter hides the
+perform and is what this rejects」と書いてあるが、closure parameter 経由は
+実測で**通る** (表の 5 行目)。文面のほうを実装に合わせるのが筋。
+
+**迷ったら: クロージャには row を注釈する。** 表の NG 2 つはどちらもそれで
+消える (2 つ目は `let f = ...` を使わず `ask_once()` を直接呼ぶ)。
 
 ### 補間できるのは Show を持つ型だけ (#1445)
 
@@ -1862,7 +1889,7 @@ cannot interpolate a value of type `F`: it has no Show renderer
 いるのだから、それは missing `derive(Show)` であって「描画できない値」では
 ないため、エラーにした。
 
-スカラ (`Int`/`String`/...)、`Option`/`Result`/tuple/`Array`、型が解決できない
+スカラ (`Int`/`String`/...)、`Option`/tuple/`Array`、型が解決できない
 値 (generic の `T` など) は対象外 — このパスが「レンダラが無い」と断言できる
 のは宣言済みの集約型のときだけなので、それ以外は従来どおり。
 

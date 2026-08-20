@@ -113,10 +113,21 @@ is_excluded() {
 # file(s) regressed" for fixtures the generator is still being taught to wrap
 # (#1855). CI never sees it (fresh clone), which is exactly what makes it a
 # trap: it only ever fails for the person who ran the generator.
+#
+# `bench/` joins on a different rule. Three bench files carry `test` blocks
+# whose whole job is to prove the implementations being compared do the SAME
+# work -- bench_map_vs_immutmap.vibe says so itself: "these are what stop
+# `the faster one was actually doing a different job` from going unnoticed".
+# Nothing ran them: they are named `bench_*.vibe`, not `*_test.vibe`, and
+# `bench/` was not a discovery root either, so both filters missed them. A
+# `test` block is the selector, so a bench file with no correctness claim
+# still costs the lane nothing.
 discover() {
-  find examples lib fixtures "$RUNTIME_FIXTURE_GENERATED_DIR" \
-    -name '*_test.vibe' -not -path '*/_generated_runtime_fixtures/*' 2>/dev/null \
-    | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort
+  {
+    find examples lib fixtures "$RUNTIME_FIXTURE_GENERATED_DIR" \
+      -name '*_test.vibe' -not -path '*/_generated_runtime_fixtures/*' 2>/dev/null
+    grep -l -E '^test( "|\{| \{)' bench/*.vibe 2>/dev/null
+  } | sed "s@^$ROOT_DIR/@@" | sed 's@^\./@@' | sort
 }
 
 mode="run"

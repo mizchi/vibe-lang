@@ -8,32 +8,63 @@ import ./html.vibe {
 
 //# Functions
 
+/// The page name a SUMMARY entry renders to. Output is flat, so the name has
+/// to be unique across the whole book.
+///
+/// The canonical chapters live under `en/`, and their names are the URLs the
+/// site has always published -- `en/02_x.vibe.md` stays `02_x.html`. A
+/// translation is a DIFFERENT top-level directory holding the SAME basenames,
+/// so taking the basename alone made `ja/01_values_functions.vibe.md` and
+/// `en/01_values_functions.vibe.md` both write `01_values_functions.html`:
+/// listing the Japanese book in SUMMARY.md would have silently overwritten the
+/// English pages, one by one, with no error. So a top-level directory that is
+/// not the canonical `en/` becomes part of the name
+/// (`ja_01_values_functions.html`), which also works for whatever language
+/// comes next -- and keeps every already-published English URL unchanged.
 export fn html_name_for(path: String) -> String {
   let n = String::length(path)
-  let mut slash = 0 - 1
+  let mut first_slash = 0 - 1
+  let mut last_slash = 0 - 1
   let mut i = 0
   while i < n {
     if String::char_code_at(path, i) == 47 {
-      slash = i
+      if first_slash < 0 {
+        first_slash = i
+      } else {
+        ()
+      }
+      last_slash = i
     } else {
       ()
     }
     i = i + 1
   }
-  let base = if slash >= 0 {
-    path[slash + 1: n]
+  let base = if last_slash >= 0 {
+    path[last_slash + 1: n]
   } else {
     path
   }
-  let bn = String::length(base)
-  if bn > 8 && base[bn - 8: bn] == ".vibe.md" {
-    String::concat(base[0: bn - 8], ".html")
-  } else if bn > 5 && base[bn - 5: bn] == ".vibe" {
-    String::concat(base[0: bn - 5], ".html")
-  } else if bn > 3 && base[bn - 3: bn] == ".md" {
-    String::concat(base[0: bn - 3], ".html")
+  // Deeper directories under a language root do not disambiguate anything --
+  // `en/support/mathx.vibe` has always been `mathx.html`. Only the root does.
+  let top = if first_slash > 0 {
+    path[0: first_slash]
   } else {
-    String::concat(base, ".html")
+    ""
+  }
+  let named = if top == "" || top == "en" {
+    base
+  } else {
+    String::concat(top, String::concat("_", base))
+  }
+  let bn = String::length(named)
+  if bn > 8 && named[bn - 8: bn] == ".vibe.md" {
+    String::concat(named[0: bn - 8], ".html")
+  } else if bn > 5 && named[bn - 5: bn] == ".vibe" {
+    String::concat(named[0: bn - 5], ".html")
+  } else if bn > 3 && named[bn - 3: bn] == ".md" {
+    String::concat(named[0: bn - 3], ".html")
+  } else {
+    String::concat(named, ".html")
   }
 }
 

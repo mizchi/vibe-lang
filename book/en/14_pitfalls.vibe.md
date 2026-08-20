@@ -1,5 +1,7 @@
 # 14 — Pitfalls (measured)
 
+日本語版: [14_pitfalls.vibe.md](../ja/14_pitfalls.vibe.md)
+
 These are rules that cost people an afternoon. Each one was measured on
 the current compiler. The full list lives in
 [docs/cheatsheet.md](../../docs/cheatsheet.md). This chapter is the

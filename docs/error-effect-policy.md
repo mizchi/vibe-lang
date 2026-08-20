@@ -56,7 +56,9 @@ runtime が最外周 Error handler となり、診断付きの unsuccessful proc
 変換する。生の `WebAssembly.Exception` を公開 entry boundary の外へ漏らさない。
 
 `fn main` が Error を宣言しない場合は、通常の関数と同じく Error を送出する処理を
-直接・推移的に含められない。`handle` または `Result` によって局所化する。
+直接・推移的に含められない。`handle` で局所化するか、失敗を値として返す
+自前の enum に畳む (`Result` は #1324 で言語から削除されたので、使うなら
+自分で宣言した enum である)。
 
 ## Formal contract
 

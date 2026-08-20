@@ -150,3 +150,101 @@ export fn resolve_type_expr_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow:
     }
   }
 }
+
+/// #2125: nominal heads the compiler owns itself. They resolve to
+/// `CtNamed(name, args)` with no `TypeDef` behind them and no entry in
+/// `resolve_builtin`, so they are indistinguishable from a typo by lookup
+/// alone and have to be named.
+///
+/// This list is EMPIRICAL, not a design: it is what a Red run of
+/// `collect_unknown_type_names` over `lib/**` reported as unresolved while the
+/// tree compiled clean. Adding a compiler-owned type without adding it here
+/// makes every annotation that mentions it an error, which is a loud failure,
+/// not a silent one.
+fn is_wellknown_nominal_head(name: String) -> Bool {
+  name == "Future"
+  || name == "Stream"
+  || name == "HostStream"
+  || name == "Task"
+  || name == "TaskHandle"
+  || name == "TaskGroup"
+  || name == "Sender"
+  || name == "Receiver"
+  || name == "Map"
+  || name == "MapBuilder"
+  || name == "MutList"
+  || name == "MutBytes"
+  || name == "MutMap"
+  || name == "ArrayBuilder"
+  || name == "StringBuilder"
+  || name == "FrozenArray"
+  || name == "FixedArray"
+  || name == "Attempt"
+  || name == "Self"
+}
+
+/// #2125: the type names `te` mentions that resolve to NOTHING -- neither a
+/// formal in `shadow`, nor a builtin, nor a declaration in `defs`. Appended to
+/// `out`; nothing is appended when every name resolves.
+///
+/// This mirrors `resolve_type_expr_shadowed`'s lookups exactly, because the
+/// thing being detected is the case where that function falls through to
+/// `CtNamed(name, [])`. That result is INDISTINGUISHABLE from an
+/// un-instantiated generic formal, and `check_assignable` deliberately
+/// tolerates a unify failure under a `CtNamed` head (see its comment) so as not
+/// to over-reject polymorphic code. The two together mean a typo does not
+/// merely go unreported: it turns the annotation into a wildcard, and the slot
+/// stops being checked at all.
+///
+/// Resolution itself stays pure -- it has ~84 call sites and no error sink.
+/// This is the separate question, asked where a declaration INTRODUCES an
+/// annotation and an error sink is in hand.
+export fn collect_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyUnit => (),
+    TyName(name) => if is_shadowed_tyvar(shadow, name) {
+      ()
+    } else {
+      match resolve_builtin(name) {
+        Some(_) => (),
+        None => match find_typedef(defs, name) {
+          Some(_) => (),
+          None => if is_wellknown_nominal_head(name) {
+            ()
+          } else {
+            Array::push(out, name)
+          }
+        }
+      }
+    },
+    TyApp(name, args) => {
+      for a in args {
+        collect_unknown_type_names(a, defs, shadow, out)
+      }
+      // `Array` and `Option` are structural heads that `resolve_type_expr_shadowed`
+      // special-cases before any lookup, so they are never unknown.
+      if name == "Array" || name == "Option" || is_shadowed_tyvar(shadow, name) {
+        ()
+      } else {
+        match find_typedef(defs, name) {
+          Some(_) => (),
+          None => if is_wellknown_nominal_head(name) {
+            ()
+          } else {
+            Array::push(out, name)
+          }
+        }
+      }
+    },
+    TyTuple(elems) => for e in elems {
+      collect_unknown_type_names(e, defs, shadow, out)
+    },
+    TyFn(params, ret, _) => {
+      for p in params {
+        collect_unknown_type_names(p, defs, shadow, out)
+      }
+      let ret_box = Array::slice([ret], 0, 1)
+      collect_unknown_type_names(Array::get(ret_box, 0), defs, shadow, out)
+    }
+  }
+}

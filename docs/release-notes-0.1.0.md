@@ -117,7 +117,7 @@ the edit that fixes them rather than an internal pass name.
 
 ## Documentation
 
-- **The Vibe Book** (`book/src/`) has 20 doctest-checked chapters, and every ` ```vibe run `
+- **The Vibe Book** (`book/en/`) has 20 doctest-checked chapters, and every ` ```vibe run `
   block in it is compiled and executed by doctest, with its output checked
   against the recorded ` ```output `. A chapter cannot go stale silently.
 - [docs/cheatsheet.md](cheatsheet.md) is the language reference and is
@@ -129,14 +129,16 @@ the edit that fixes them rather than an internal pass name.
 
 ## Known gaps
 
-- **The Japanese book covers chapters 1–7 of 20.** English is canonical
-  (`book/src/`); `book/ja/` is a translation, and the pair is checked for
-  identical program output by `pkf run check-tutorial-translation-parity`.
-  Chapters 8–19 have no translation yet.
-- **`bench` blocks do not run on the wasm-gc lane** (#1701).
-- `vibe symbols` does not return doc comments; hover and `vibe doc-at` do.
-- `vibe check --json` exists only under `--single-file` — the import-resolving
-  lane throws diagnostics as strings and has no range to report (#1567).
+- **The Japanese book covers 19 of the 20 doctest-checked chapters.** English
+  is canonical (`book/en/`); `book/ja/` is a translation, and the pair is
+  checked for identical program output by
+  `pkf run check-tutorial-translation-parity`. `01_getting_started` is
+  English-only.
+- **Type errors carry no source position.** `let a: Int = "not an int"` is
+  reported without a `line:col` on either lane, and `vibe check --single-file
+  --json` answers with a synthetic `0:0` range. The checker's anchoring works;
+  literal expressions have no offset slot to anchor to. `vibe check --json`
+  being `--single-file`-only is the same gap seen from the other side (#1567).
 - Everything in §6 of [spec/stable-surface.md](spec/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.

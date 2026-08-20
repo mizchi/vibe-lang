@@ -29,7 +29,7 @@ order they are usually useful.
 vibe check file.vibe                 # empty = compiles
 vibe test file_test.vibe
 vibe run hello.vibex
-bash scripts/vibe_md.sh check book/src/*.vibe.md
+bash scripts/vibe_md.sh check book/en/*.vibe.md
 bash scripts/vibe_book.sh            # _build/book/index.html
 pkf run book
 pkf run vibe-md-tutorial

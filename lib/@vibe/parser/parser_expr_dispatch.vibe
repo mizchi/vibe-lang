@@ -7,6 +7,7 @@ import @vibe/ast {
 import ./parser_base.vibe {
   _no_tb,
   _no_tp,
+  binder_name_error,
   collect_row_item_targs,
   empty_arms,
   empty_exprs,
@@ -51,13 +52,22 @@ let no_dispatch_binder_rows: Array[SourceBinder] = []
 /// `ty` (enforced by the call-argument check) while evaluating to `val` itself.
 /// Used to type-check a local `let x: T = e`, whose annotation `ELet` cannot
 /// store. Uses only EFn/ECall, so every downstream pass handles it unchanged.
-fn ascribe_wrap(val: Expr, ty: TypeExpr, capture_mark: Int, context: Option[ParserBinderContext]) -> Expr {
+///
+/// `binder_off` is the byte offset of the binder NAME. The synthetic ECall used
+/// to carry `-1`, which was fine while the checker anchored its mismatch on the
+/// bound value -- until the bound value is a literal, and literals have no
+/// offset slot. `let a: Int = "not an int"` then came out with no `line:col` at
+/// all, on both `vibe check` lanes, which is the most basic type error a
+/// newcomer writes. The binder name is an identifier, so it always has one.
+/// The checker still prefers the value's own offset when the value has one
+/// (checker.vibe, `asc_off`) -- this is the fallback, not a replacement.
+fn ascribe_wrap(val: Expr, ty: TypeExpr, capture_mark: Int, context: Option[ParserBinderContext], binder_off: Int) -> Expr {
   binder_capture_insert_synthetic_at(context, capture_mark, "__asc")
   let tparams = _no_tp()
   let tbounds = _no_tb()
   let params = [("__asc", Some(ty))]
   let lam = EFn(tparams, tbounds, params, None, None, EIdent("__asc", 0 - 1))
-  ECall(lam, [val], 0 - 1)
+  ECall(lam, [val], binder_off)
 }
 
 /// #705: a local `let f: (A) -> R = (x) -> ..` must behave like the top-level
@@ -939,7 +949,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 let val2 = match m_ann {
                   Some(the_type) => match distribute_local_fn_ann(the_type, val, context) {
                     Some(distributed) => distributed,
-                    None => ascribe_wrap(val, the_type, value_mark, context)
+                    None => ascribe_wrap(val, the_type, value_mark, context, blk_offset_at(starts, next + 1))
                   },
                   None => val
                 }
@@ -947,7 +957,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 p = next_pos
               }
             },
-            _ => throw("expected identifier after 'let mut'")
+            token => throw(binder_name_error(tk_name(token), "binding", next + 1))
           },
           TStar => match peek(tokens, next + 1) {
             TIdent(name) => {
@@ -964,7 +974,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 p = next_pos
               }
             },
-            _ => throw("expected identifier after 'let*'")
+            token => throw(binder_name_error(tk_name(token), "binding", next + 1))
           },
           TIdent(name) => {
             let after_name = peek(tokens, next + 1)
@@ -1061,7 +1071,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                         None => {
                           // Insert the wrapper at the still-current higher mark,
                           // then remove the erased annotation segment below it.
-                          let wrapped = ascribe_wrap(val, the_type, value_mark, context)
+                          let wrapped = ascribe_wrap(val, the_type, value_mark, context, blk_offset_at(starts, next))
                           binder_capture_discard_segment(context, annotation_mark, annotation_mark + Array::length(ltps))
                           wrapped
                         }
@@ -1088,7 +1098,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               p = push_pattern_let_step(tokens, steps, pat, val, next_pos, context)
             }
           },
-          _ => throw("expected identifier after 'let'")
+          token => throw(binder_name_error(tk_name(token), "binding", next))
         }
       },
       // #1283: `guard <scrutinee> is <pattern> else { .. }`. Folded as a

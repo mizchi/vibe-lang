@@ -1,8 +1,8 @@
 # 04 — Option
 
-前章: [03 データ](03_data-ja.vibe.md)
+前章: [03 データ](03_data.vibe.md)
 
-English version: [04_option.vibe.md](04_option.vibe.md) (canonical)
+English version: [04_option.vibe.md](../en/04_option.vibe.md) (canonical)
 
 ## Option
 
@@ -123,7 +123,7 @@ first_half(4, 3) unwrap_or -1 = -1
 束縛されていない `v` を使う経路ができてしまうため。受理する脱出の形は
 `return` と直接の `throw(...)` (実測: `guard o is Some(v) else { throw("no value") }`
 は関数の row に `Exception` があればそのまま通り、呼び出し側の `handle` で
-捕まえられる — [05 エフェクト](05_effects-ja.vibe.md) 参照)。他の `perform` は
+捕まえられる — [05 エフェクト](05_effects.vibe.md) 参照)。他の `perform` は
 resume しうるので脱出とは数えない。
 
 フォールバックが「脱出」ではなく「値」なら `if e is PAT { .. } else { .. }` を使う。
@@ -177,7 +177,7 @@ half(10) is Some(_) = true
 half(3) is None = true
 ```
 
-理由を伴う中断は次章の [Exception 境界](05_effects-ja.vibe.md#exception-境界--perform--handle)
+理由を伴う中断は次章の [Exception 境界](05_effects.vibe.md#exception-境界--perform--handle)
 で扱う。
 
-次章: [05 エフェクト](05_effects-ja.vibe.md)
+次章: [05 エフェクト](05_effects.vibe.md)

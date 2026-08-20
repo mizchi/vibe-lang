@@ -45,7 +45,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program_spans
+  collect_doc_comments, lex_with_offsets, offset_to_line_col, parse_program_spans
 }
 
 //# Functions
@@ -197,4 +197,46 @@ fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with Exce
 /// catching; the sole caller now routes it to that sidecar.
 export fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with Exception {
   symbol_spans_impl(source)
+}
+
+/// The `///` doc comment attached to the declaration on `line`, or "" when
+/// there is none. `collect_doc_comments` keys a block by the line of the item
+/// it attaches to, and a declaration's NAME sits on that same line (`fn f`,
+/// `struct P`, ...), so the symbol's own start offset resolves the lookup.
+fn sym_doc_for_line(docs: Array[(Int, String)], line: Int) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(docs) {
+    let (doc_line, text) = Array::get(docs, i)
+    if doc_line == line {
+      found = text
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `symbol_spans` plus each declaration's `///` doc comment ("" when it has
+/// none). Doc text keeps its real newlines here -- this is the structured
+/// answer, for LSP document-symbol detail and for `vibe symbols`, which
+/// escapes them itself to keep one record per line.
+///
+/// Separate from `symbol_spans` rather than replacing it: existing callers
+/// destructure the 4-tuple, and a doc comment is information they did not ask
+/// for. Both go through `symbol_spans_impl`, so the outline can never differ
+/// between them.
+export fn symbol_spans_with_docs(source: String) -> Array[(String, Int, Int, Int, String)] with Exception {
+  let syms = symbol_spans_impl(source)
+  let docs = collect_doc_comments(source)
+  let out = ArrayBuilder::new()
+  let mut i = 0
+  while i < Array::length(syms) {
+    let (name, kind, start, end) = Array::get(syms, i)
+    let (line, _col) = offset_to_line_col(source, start)
+    ArrayBuilder::push(out, (name, kind, start, end, sym_doc_for_line(docs, line)))
+    i = i + 1
+  }
+  ArrayBuilder::freeze(out)
 }

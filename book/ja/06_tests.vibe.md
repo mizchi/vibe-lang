@@ -1,8 +1,8 @@
 # 06 — テストとツーリング
 
-前章: [05 エフェクト](05_effects-ja.vibe.md)
+前章: [05 エフェクト](05_effects.vibe.md)
 
-English version: [06_tests.vibe.md](06_tests.vibe.md) (canonical)
+English version: [06_tests.vibe.md](../en/06_tests.vibe.md) (canonical)
 
 ## test ブロック
 
@@ -46,14 +46,14 @@ vibe hash lib/@vibe/core
 
 ## このチュートリアル自身も実行可能ドキュメント
 
-この章まで含め `book/src/*.vibe.md` と `book/ja/*.vibe.md` はすべて #1142 の `.vibe.md` 形式
+この章まで含め `book/en/*.vibe.md` と `book/ja/*.vibe.md` はすべて #1142 の `.vibe.md` 形式
 — ` ```vibe run ` ブロックは実際にコンパイル・実行され、直後の
 ` ```output ` は本物の実行結果。手元で検証・再生成するには:
 
 ```bash
-bash scripts/vibe_md.sh check book/src/*.vibe.md book/ja/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
-bash scripts/vibe_md.sh write book/src/*.vibe.md book/ja/*.vibe.md   # 実行して output を書き直す
+bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
+bash scripts/vibe_md.sh write book/en/*.vibe.md book/ja/*.vibe.md   # 実行して output を書き直す
 pkf run vibe-md-tutorial                                # check のタスク化
 ```
 
-次章: [07 モジュールとパッケージ](07_modules_packages-ja.vibe.md)
+次章: [07 モジュールとパッケージ](07_modules_packages.vibe.md)

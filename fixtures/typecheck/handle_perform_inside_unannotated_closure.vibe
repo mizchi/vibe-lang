@@ -1,0 +1,19 @@
+// #1511 / #2121: the `handle` eligibility boundary, pinned per callee shape.
+//
+// docs/cheatsheet.md described this boundary in prose and drifted: it recorded
+// a local-closure callee as REJECTED when it compiles, and the diagnostic text
+// still claims a closure-parameter call is rejected when it is accepted. Prose
+// cannot be checked; these can.
+effect Ask { Get() -> Int }
+
+fn ask_once() -> Int with Ask { perform Ask::Get() }
+
+// An UNANNOTATED local closure that performs. Rejected -- but by the ENTRY
+// boundary, not by handle eligibility: an unannotated closure does not carry
+// the row, so the handle covers nothing and `Ask` escapes to `main`.
+// Three different passes reject three of these shapes with three different
+// messages; the needle records which one actually speaks.
+fn main() -> Unit {
+  let bump = () -> Int { ask_once() + 1 }
+  let _ = handle { bump() } with Ask { Get() => resume(1) }
+}

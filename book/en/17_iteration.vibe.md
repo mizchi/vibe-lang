@@ -1,5 +1,7 @@
 # 17 — Iteration
 
+日本語版: [17_iteration.vibe.md](../ja/17_iteration.vibe.md)
+
 vibe keeps two layers (ADR-0099):
 
 1. **Eager `Array::*`** — `map`, `fold`, `filter`, `for x in xs`. The

@@ -1,5 +1,7 @@
 # 13 — Targeting wasm
 
+日本語版: [13_wasm.vibe.md](../ja/13_wasm.vibe.md)
+
 The compiler is a wasm program that emits wasm. You do not opt into wasm
 as a backend — it is the representation. Internal values are tagged i64.
 Strings are byte strings. Types that can appear on a WIT boundary follow
@@ -9,7 +11,7 @@ nominal rules so the boundary does not have to invent a mapping.
 
 - **linear memory** (default for `vibe test` / `vibe build --release`):
   tagged i64 values, a bump/RC heap, Perceus planning for ownership.
-- **wasm-gc**: typed heap types, `mut` struct fields (ADR-0052). Set
+- **wasm-gc**: typed heap types, a different allocation profile. Set
   `VIBE_TEST_BACKEND=gc` to opt a test onto this path.
 
 ```bash

@@ -1,5 +1,7 @@
 # 16 — Generics, traits, and derive
 
+日本語版: [16_generics.vibe.md](../ja/16_generics.vibe.md)
+
 A type parameter is written `[T]`. A bound is written `[T: Eq + Ord]`.
 The same `+` joins effect names on a row (`with Exception + Fs`) so a
 comma never has to mean two things.

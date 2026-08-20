@@ -1,5 +1,7 @@
 # 2 — A small program
 
+日本語版: [19_a_small_program.vibe.md](../ja/19_a_small_program.vibe.md)
+
 The Rust book pauses after hello-world to write a guessing game. This
 chapter is that slot: tally words in a list, using a struct, an
 `Option`, a `MutMap`, and a `fn` that says what it needs. You have not

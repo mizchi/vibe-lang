@@ -1,5 +1,7 @@
 # 18 — Equality
 
+日本語版: [18_equality.vibe.md](../ja/18_equality.vibe.md)
+
 `==` is supposed to mean structural equality everywhere (ADR-0097).
 Most of the surface already does. A few paths still compare by
 reference; those are listed at the end so you do not have to discover

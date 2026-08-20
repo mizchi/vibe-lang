@@ -63,7 +63,8 @@ of each item is [spec/syntax.md](syntax.md) and the
   ADR-0017).
 - Destructuring `let (a, b) = ...` / `let Some(v) = e else { ... }`.
 - The five mutation styles (see the cheatsheet's table), `struct { mut field }`
-  (ADR-0052).
+  (ADR-0052 — despite that ADR's wasm-gc framing, these run on the linear lane
+  too; measured 2026-08-19).
 
 ### 2.3 Functions and calling convention
 - Lambdas `(x) -> { ... }`, and the separated-annotation form
@@ -115,7 +116,8 @@ The stable symbols listed under "Key Builtins" in the
 
 - **String** (compiler builtin, no import needed): `length`, `concat`,
   `substring`, `contains`, `index_of`, `split`, `trim`, `starts_with`,
-  `ends_with`, `join`, `from_char_code`, `char_code_at`.
+  `ends_with`, `join`, `from_char_code`, `char_code_at`, `byte_at`,
+  `from_byte`.
   `replace` / `replace_all` are **not frozen** as builtins: they are library
   functions in `@vibe/builtin`, reached by
   `import @vibe/builtin { String::replace }`, and are not in the builtin
@@ -223,8 +225,7 @@ that.
   pointing at the linear backend (an unused import is fine, #1976). The linear
   backend is the stable surface; gc is opt-in and experimental. Builtin-level
   differences are enumerated in
-  `scripts/builtin_parity_classification.tsv` and enforced at the gate. `bench`
-  blocks are not supported on gc (#1701).
+  `scripts/builtin_parity_classification.tsv` and enforced at the gate.
 
 ---
 
