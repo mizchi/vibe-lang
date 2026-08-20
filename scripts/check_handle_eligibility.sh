@@ -112,6 +112,15 @@ fn main() -> Int {
   handle { bump(1) + ask_once() } with Ask { Get() => resume(10) }
 }'
 
+# A closure PARAMETER without a row reaches this branch too (#2138 review). It
+# is why the message says "call target" rather than "local binding": there is no
+# `let` at this site, so suggesting one would name an edit that does not exist.
+expect_rejected_by_eligibility closure_parameter_without_a_row '
+fn run(f: (Int) -> Int) -> Int {
+  handle { f(1) + ask_once() } with Ask { Get() => resume(10) }
+}
+fn main() -> Int { run((x: Int) -> Int { x + 1 }) }'
+
 # An annotation is not enough; it has to carry the ROW.
 expect_rejected_by_eligibility annotated_type_without_a_row '
 fn main() -> Int {
@@ -120,4 +129,4 @@ fn main() -> Int {
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "handle-eligibility: ok (5 accepted shapes, 4 rejected with an actionable message)"
+echo "handle-eligibility: ok (5 accepted shapes, 5 rejected with an actionable message)"

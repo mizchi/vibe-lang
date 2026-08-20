@@ -1258,13 +1258,23 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
           // performs through `bump`, and hoisting the perform out of the call
           // does not help. An annotation without a row does not help either --
           // it is the row the analysis needs.
-          let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here")
+          let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here: the handled body calls a value whose type carries no effect row, so this handle cannot see what that call may perform")
+          // The ` (here: the call to 'X')` clause is a TRANSPORT, not decoration:
+          // `verify_culprit_off_marker` (cli_support.vibe) extracts the culprit
+          // name from this exact spelling to check that the `[@off=` span really
+          // spells it in the entry's text. Dropping the clause skipped that
+          // check, and a dependency-module offset was then trusted against the
+          // ENTRY's text -- emitting `line 4:36`, a column past the end of the
+          // line. #1445/#1596: a confidently wrong position is worse than none.
           let named = if String::length(culprit) > 0 {
-            String::concat(head, String::concat(": the handled body calls '", String::concat(culprit, "', a local binding whose type carries no effect row")))
+            String::concat(head, String::concat(" (here: the call to '", String::concat(culprit, "')")))
           } else {
-            String::concat(head, ": the handled body calls a local binding whose type carries no effect row")
+            head
           }
-          let full = String::concat(named, String::concat(", so this handle cannot see what that call may perform. Give the binding an explicit type carrying the row (`let f: (Int) -> Int with ", String::concat(bad, " = ...`), or make it a top-level `fn`. This applies wherever the perform is -- an unannotated local call target is opaque to the analysis even when nothing performs through it. (ADR-0076 evidence passing.)")))
+          // Says "call target", not "local binding": `edp_first_opaque_call_info`
+          // reaches here for a PARAMETER without a row too, where `let f: ..` is
+          // not an edit that exists at that site.
+          let full = String::concat(named, String::concat(" -- give that call target's type the row (`... -> T with ", String::concat(bad, "`), or make it a top-level `fn`. This applies wherever the perform is: an unannotated call target is opaque to the analysis even when nothing performs through it. (ADR-0076 evidence passing.)")))
           let marked = if culprit_off >= 0 {
             if String::length(culprit) > 0 {
               String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), String::concat(":", String::concat(__to_string(culprit_off + String::length(culprit)), "]")))))

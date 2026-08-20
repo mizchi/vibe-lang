@@ -37,6 +37,13 @@ src = open(TASKFILE, encoding="utf-8").read()
 TOOL_RE = re.compile(
     r"scripts/(?:run_wasm_vibe_host_runner|generations|vibe_cli|vibe_test|"
     r"vibe_run|ensure_generated|build_cli_wasm|build_cli_core)")
+# Aggregators dispatch the lane scripts dynamically, so none of the tool names
+# above appear in them literally (#2138 review). A task whose command is
+# `bash scripts/compiler_gate.sh` runs the compiler as surely as one naming the
+# runner, and without these it was classified as touching nothing.
+AGGREGATOR_RE = re.compile(
+    r"scripts/(?:compiler_gate\.sh|unit_test_runner\.sh|pkfire/gates_shard\.sh|"
+    r"test_affected\.sh|coverage_suite\.sh|coverage_corpus\.sh)")
 # The line must also look like it is RUNNING something.
 EXEC_RE = re.compile(r"\b(bash|sh|env|exec|node|spawnSync|spawn|execSync|execFileSync)\b")
 COMMENT_RE = re.compile(r"^\s*(#|//|\*)")
@@ -71,8 +78,10 @@ for m in re.finditer(r"new Task \{", src):
     if not name_m:
         continue
     name = name_m.group(1)
-    if "inputs" not in block:          # no explicit inputs: nothing was replaced
-        continue
+    # A hand-written `new Task` inherits NOTHING, so no `inputs` at all is the
+    # worst case, not the safe one: an empty cache key replays the first result
+    # after any change (#2138 review). `scriptTask` one-liners are excluded
+    # above precisely because they DO inherit the defaults.
     if re.search(r"cache\s*=\s*false", block):
         continue
     # From the COMMAND only. Reading the whole block also picked up scripts
@@ -81,20 +90,19 @@ for m in re.finditer(r"new Task \{", src):
     cmd_m = re.search(r'cmd\s*=\s*(#?)"(.*?)"\1', block, re.S)
     cmd = cmd_m.group(2) if cmd_m else ""
     scripts = re.findall(r'(scripts/[A-Za-z0-9_./-]+\.(?:sh|mjs))', cmd)
-    hot = [s for s in scripts if reaches_compiler(s)]
+    hot = [s for s in scripts if AGGREGATOR_RE.search(s) or reaches_compiler(s)]
     if not hot:
         continue
     checked += 1
     if "vibeSources" not in block:
-        fails.append((name, hot[0]))
+        why = "declares no `inputs` at all" if "inputs" not in block else "does not include `...vibeSources`"
+        fails.append((name, hot[0], why))
 
-for name, script in fails:
+for name, script, why in fails:
     print(f"check-task-inputs: FAIL: task `{name}` runs {script}, which reaches the compiler,",
           file=sys.stderr)
-    print("  but its explicit `inputs` do not include `...vibeSources` and it does not set",
-          file=sys.stderr)
-    print("  `cache = false`. A change under lib/**/*.vibe would replay a cached pass.",
-          file=sys.stderr)
+    print(f"  but it {why} and does not set `cache = false`. A change under", file=sys.stderr)
+    print("  lib/**/*.vibe would replay a cached pass.", file=sys.stderr)
     print("  Add `...vibeSources` to the list -- spelling inputs out should ADD to the",
           file=sys.stderr)
     print("  defaults, not replace them.", file=sys.stderr)

@@ -50,10 +50,26 @@ run_case "pure-text task is not flagged" 0 'local t = new Task {
   inputs { "book/**/*.md" }
 }'
 
-# No explicit inputs: scriptTask defaults apply, nothing was replaced.
-run_case "task without explicit inputs is not flagged" 0 'local t = new Task {
+# A hand-written task with NO inputs inherits nothing, so its cache key is
+# empty -- the worst case, not the safe one (#2138 review). An earlier version
+# of this gate accepted it, and this case is what proves it no longer does.
+run_case "compiler task with no inputs at all is rejected" 1 'local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
+}'
+
+# An aggregator dispatches the lane scripts dynamically, so it contains none of
+# the tool names literally -- it has to be classified by name.
+run_case "aggregator wrapper is treated as compiler-running" 1 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/compiler_gate.sh"
+  inputs { "docs/cheatsheet.md" }
+}'
+
+run_case "aggregator wrapper with vibeSources passes" 0 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/compiler_gate.sh"
+  inputs { ...vibeSources }
 }'
 
 # A script named only in `inputs` is declared, not run. Flagging it was a real
@@ -65,4 +81,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (6 cases)"
+echo "check-task-inputs-test: ok (8 cases)"
