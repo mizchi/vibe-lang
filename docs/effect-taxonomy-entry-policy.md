@@ -1,12 +1,13 @@
-# ADR-0084: Effect の分類と `.vibex` entry row の許可規則
+# ADR-0084: Effect classification and the `.vibex` entry-row admission rule
 
 Status: proposed
 
 Date: 2026-07-30
 
-Related: #1218, ADR-0071(effectset), ADR-0075(`.vibex` runtime contract),
-ADR-0073(checked `Error`), ADR-0068(concurrency)。背景と選択肢は
-[effect-taxonomy-review.md](effect-taxonomy-review.md) を参照。
+Related: #1218, ADR-0071 (effectset), ADR-0075 (`.vibex` runtime contract),
+ADR-0073 (checked `Error`), ADR-0068 (concurrency). Background and the
+alternatives considered are in
+[effect-taxonomy-review.md](effect-taxonomy-review.md).
 
 > **Implementation boundary (#1496, #1683):** The full resource-qualified
 > taxonomy in the formal model remains prospective. The current compiler uses
@@ -17,188 +18,202 @@ ADR-0073(checked `Error`), ADR-0068(concurrency)。背景と選択肢は
 
 ## Context
 
-vibe の effect row は、現在は `Fs`、`Env`、`Error`、`Async`、ユーザー定義
-`Logger` を同じ文字列ラベルとして保持している。しかし、これらは host が
-解決できるか、プログラム内の handler が解決すべきかという点で異なる。
+vibe's effect rows currently keep `Fs`, `Env`, `Error`, `Async`, and a
+user-defined `Logger` as the same kind of string label. But they differ in
+whether the host can resolve them or whether a handler inside the program has
+to.
 
-ADR-0075 は `.vibex` の `main` に closed/exact row を要求する。一方で、host
-が解決できない通常の algebraic effect を `main` に残すことを許すと、host
-contract は満たせない。反対に `Fs` のような capability を `main` から禁止
-すると、実行契約の目的と矛盾する。
+ADR-0075 requires a closed/exact row on a `.vibex` `main`. Allowing an
+ordinary algebraic effect the host cannot resolve to remain on `main` would
+make the host contract unsatisfiable; conversely, banning a capability like
+`Fs` from `main` would contradict the purpose of the execution contract.
 
 ## Decision
 
-effect operation を、次の四分類で扱う（`runtime effect` は #1458 の追加）。
+Effect operations are treated under the following four classes (`runtime
+effect` was added by #1458).
 
-| 分類 | 誰が discharge するか | 許諾で揺れるか | メンバー |
+| class | who discharges it | permission-sensitive? | members |
 |---|---|---|---|
-| **capability effect** | host / provider (wasm 境界の外) | 揺れる | Fs, Http, Socket, Env, Console (tty 現行; Stdin/Stdout/Stderr は同じ host import の legacy ラベル), Process, Profiler, Llm |
-| **algebraic effect** | プログラム内の `handle` | 無関係 | Log, State, Ask, ParseRecur, … (表に無い名前はすべてここ) |
-| **core ambient effect** | 誰も discharge しない (entry が abortive に処理する) | 無関係 | Exception[E] / Error |
-| **runtime effect** | runtime そのもの | 無関係 | Async |
+| **capability effect** | host / provider (outside the wasm boundary) | yes | Fs, Http, Socket, Env, Console (current tty; Stdin/Stdout/Stderr are legacy labels for the same host imports), Process, Profiler |
+| **algebraic effect** | a `handle` inside the program | no | Log, State, Ask, ParseRecur, … (every name not in this table) |
+| **core ambient effect** | nobody (the entry treats it abortively) | no | Exception[E] / Error |
+| **runtime effect** | the runtime itself | no | Async |
 
-1. **capability effect** は resource kind parameter を持つ effect である。
-   host/provider が binding を解決し、residual WIT contract に投影する。例えば
-   `Fs[Root]::read_file` と `S3[Posts]::get_object` である。
-2. **algebraic effect** は resource kind parameter を持たない通常の effect
-   である。これは in-process の handler/DI 用であり、`.vibex` の `main` に
-   到達する前に `handle` で discharge しなければならない。
-3. **core ambient effect** は言語予約の少数の effect である。ADR-0085 の
-   typed `Exception[E]`（`Error` は移行中の alias）が該当する。これは entry
-   boundary の runtime handler が diagnosed failure へ変換するため、`main` の
-   row に残ることを許可する。
-4. **runtime effect** (#1458) は runtime が駆動する effect である。今日の
-   唯一のメンバーは `Async` で、ADR-0089 Decision 5 のとおり **backend の
-   選択であって権限ではない**。`main` の row に残ることを許可する。
+1. A **capability effect** is an effect carrying a resource kind parameter.
+   The host/provider resolves its binding and projects it into the residual
+   WIT contract — e.g. `Fs[Root]::read_file` and `S3[Posts]::get_object`.
+2. An **algebraic effect** is an ordinary effect with no resource kind
+   parameter. It exists for in-process handlers/DI and must be discharged by
+   `handle` before reaching a `.vibex` `main`.
+3. A **core ambient effect** is one of a small language-reserved set.
+   ADR-0085's typed `Exception[E]` (`Error` is a transitional alias)
+   qualifies. The entry boundary's runtime handler converts it into a
+   diagnosed failure, so it is allowed to remain on `main`'s row.
+4. A **runtime effect** (#1458) is an effect the runtime drives. Its only
+   member today is `Async`, which per ADR-0089 Decision 5 is **a backend
+   choice, not a permission**. It is allowed to remain on `main`'s row.
 
-   core ambient と分けたのは分類の正確さのためだけではない。両者は「row を
-   素通りする」点では同じだが、**理由が逆**である — core ambient は誰も
-   discharge しないから残ってよく、runtime は runtime が discharge するから
-   残ってよい。`Async` を core ambient に混ぜていた間、checker と wit_gen の
-   両方に「`Error` と `Async` は同じ理由でここに居る」と読めるコメントが
-   書かれていた。
+   Separating it from core ambient is not just taxonomic tidiness. Both
+   "pass through the row", but **for opposite reasons** — a core ambient
+   effect may remain because nobody discharges it, a runtime effect because
+   the runtime discharges it. While `Async` was lumped in with core ambient,
+   both the checker and wit_gen carried comments readable as "`Error` and
+   `Async` are here for the same reason".
 
    This is prospective admission-model terminology. In the current compiler,
    checker row filtering and WIT import filtering instead use the narrow
    `is_entry_runtime_managed_effect` execution-policy predicate.
 
-`.vibex` の `main` の残余 row は capability effect・core ambient effect・
-runtime effect を含めてよい。row に algebraic effect が残るプログラムは、
-WIT 生成や host preflight の前に型エラーとする。これは通常の関数の row を
-制限しない。
+The residual row on a `.vibex` `main` may contain capability effects, core
+ambient effects, and runtime effects. A program whose row still carries an
+algebraic effect is a type error before WIT generation or host preflight.
+This does not restrict the rows of ordinary functions.
 
-既存 builtin の source compatibility は保つ。Phase 1 では、既存の
-`with Fs` と `Fs::read_file(...)` を暗黙 singleton resource
-`Fs[Process::Root]` として内部表現に lower する。明示 resource syntax は
-Phase 2 以降の追加であり、この ADR では構文を決めない。
+Source compatibility for existing builtins is preserved. In Phase 1, existing
+`with Fs` and `Fs::read_file(...)` lower internally to the implicit singleton
+resource `Fs[Process::Root]`. Explicit resource syntax is a Phase 2+ addition;
+this ADR does not decide its surface syntax.
 
 ## Consequences
 
-- `main` が残す row は host が preflight できる contract になる。host が
-  解決できない `Logger` や `State[T]` を残すことはできない。
-- user-defined algebraic effect は通常関数・高階関数・handler 内ではこれまで
-  どおり利用できる。entry 直前に discharge すればよい。
-- `Error` の既存の entry-boundary 処理は維持する。改名を先に行わないため、
-  既存ソースの一括変更や bootstrap bump は不要である。
-- 現在の entry row 検査は standard policy registry に載る既存 provider と
-  entry/runtime owner を許可し、その他を fail-closed にする (#1683)。明示
-  resource kind と metadata-driven classification は後続 phase のままである。
-  同名 effect の user operation は provider authority を得ない。一方、linked
-  module に同名 effect があっても registry-owned operation の authority は失わない。
-  row variable を含む open row も entry contract として reject する。
+- The row `main` leaves behind becomes a contract the host can preflight. A
+  `Logger` or `State[T]` the host cannot resolve cannot remain.
+- User-defined algebraic effects stay usable as before in ordinary functions,
+  higher-order functions, and inside handlers; they just have to be
+  discharged before the entry.
+- `Error`'s existing entry-boundary treatment is kept. Since the rename is
+  not done first, no mass source change or bootstrap bump is needed.
+- The current entry-row check admits the existing providers in the standard
+  policy registry plus the entry/runtime owners, and fails closed on
+  everything else (#1683). Explicit resource kinds and metadata-driven
+  classification remain follow-up phases. A user operation on a same-named
+  effect gains no provider authority; conversely, a same-named effect in a
+  linked module does not cost a registry-owned operation its authority. An
+  open row containing a row variable is also rejected as an entry contract.
 
 ## Non-goals
 
-- resource kind parameter の表面構文・kind bound の構文を決めない。
-- `resource` の plan/apply/bind lifecycle、optional capability、WIT ABI を
-  実装しない。これらは ADR-0075 の後続 phase である。
-- `Error` を `Exception[E]` へ改名しない。改名・typed identity・Wasm EH との
-  関係は [ADR-0085](exception-effect.md) が定める。
-- `TaskGroup::spawn` の row-polymorphic 化や fork-safe evidence 転送を
-  実装しない。これは ADR-0068 / ADR-0075 の個別実装として扱う。
+- Deciding the surface syntax for resource kind parameters or kind bounds.
+- Implementing the `resource` plan/apply/bind lifecycle, optional
+  capabilities, or the WIT ABI — those are follow-up phases of ADR-0075.
+- Renaming `Error` to `Exception[E]`. The rename, typed identity, and the
+  relationship with Wasm EH are defined by [ADR-0085](exception-effect.md).
+- Making `TaskGroup::spawn` row-polymorphic or implementing fork-safe
+  evidence transfer; those are individual pieces of ADR-0068 / ADR-0075.
 
 ## Implementation sequence
 
-1. `OperationRef` / builtin metadata に resource kind と effect class を導入し、
-   builtin を implicit `Process::Root` へ lower する。既存 fixture は無変更で
-   通ることを確認する。
-2. 明示 resource kind を持つ capability と、resource kind を持たない
-   algebraic effect を checker が区別できるようにする。
-3. `.vibex` の `main` / `_start` に残る row を current standard policy で分類し、
-   user effect を reject、host provider / Exception / Async を accept する。
-   **#1683 で current-policy slice は実装済み**。resource-qualified taxonomy
-   への置換は Phase 1/2 の metadata 導入後に行う。
-4. その残余 row のみを WIT / `Entry.requires` / host preflight に渡す。
+1. Introduce resource kind and effect class into `OperationRef` / builtin
+   metadata, lowering builtins to the implicit `Process::Root`. Confirm the
+   existing fixtures pass unchanged.
+2. Let the checker distinguish capabilities with an explicit resource kind
+   from algebraic effects without one.
+3. Classify the row remaining on a `.vibex` `main` / `_start` under the
+   current standard policy: reject user effects, accept host providers /
+   Exception / Async. **The current-policy slice landed in #1683.** Replacing
+   it with the resource-qualified taxonomy comes after the Phase 1/2 metadata
+   work.
+4. Pass only that residual row to WIT / `Entry.requires` / host preflight.
 
 ## Formal contract
 
-実装に先行する taxonomy-level contract を
-[`Effect/Taxonomy.lean`](../formal/VibeFormal/Effect/Taxonomy.lean) に定義し、
+A taxonomy-level contract ahead of the implementation is defined in
+[`Effect/Taxonomy.lean`](../formal/VibeFormal/Effect/Taxonomy.lean), with
 [`EffectTaxonomyCorrect.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyCorrect.lean)
-で executable checker と命題の一致を証明する。モデルは次を固定する。
+proving the executable checker agrees with the propositions. The model fixes:
 
-- capability / algebraic / typed Exception を disjoint な requirement として扱う。
-- entry row は capability/core ambient のみを許し、capability は
-  `OperationRef` に exact logical resource marker を保持する。
-- host は exact capability identity を provide できるが、algebraic effect を
-  解決できない。
-- handler は同じ algebraic effect、または exact Exception kind だけを
-  discharge し、別カテゴリ・別 kind を保存する。
-- spawn child row は parent row の subset で、capability には fork-safe host
-  evidence が必要であり、algebraic handler evidence は既定で継承しない。
+- capability / algebraic / typed Exception are disjoint requirements.
+- An entry row admits only capability/core-ambient members, and a capability
+  keeps an exact logical resource marker on its `OperationRef`.
+- A host can provide an exact capability identity but cannot resolve an
+  algebraic effect.
+- A handler discharges only the same algebraic effect, or exactly its
+  Exception kind, preserving other categories and other kinds.
+- A spawn child row is a subset of the parent row; capabilities need
+  fork-safe host evidence, and algebraic handler evidence is not inherited by
+  default.
 
 [`EffectTaxonomyExamples.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
-は accept/reject 例に加え、capability だけを row から射影する壊れた
-preflight が未処理 `Logger` を誤って accept する反例を保持する。
+holds accept/reject examples plus a counterexample: a broken preflight that
+projects only capabilities out of the row wrongly accepts an unhandled
+`Logger`.
 
-resolved `OperationRef` と declaration metadata から三分類を構築する境界は
-[`Effect/TaxonomyClassifier.lean`](../formal/VibeFormal/Effect/TaxonomyClassifier.lean)
-で定義する。catalog lookup は同じ `EffectDefId` の metadata が exactly one
-の場合だけ成功する。capability は logical resource id をちょうど1個、
-algebraic effect は resource argument を0個、core Exception は normalized
-type argument をちょうど1個持たなければならない。未知 ID、重複 metadata、
-malformed arguments は complete row 全体を reject し、要素を黙って落とさない。
+The boundary that builds the three-way classification from a resolved
+`OperationRef` and declaration metadata is defined in
+[`Effect/TaxonomyClassifier.lean`](../formal/VibeFormal/Effect/TaxonomyClassifier.lean).
+A catalog lookup succeeds only when exactly one metadata entry exists for the
+`EffectDefId`. A capability must carry exactly one logical resource id, an
+algebraic effect zero resource arguments, and a core Exception exactly one
+normalized type argument. Unknown ids, duplicate metadata, and malformed
+arguments reject the complete row — no element is silently dropped.
 
 [`TaxonomyClassifierCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
-は executable classifier と declarative `Classifies` 関係の一致、および
-row classification 成功時の well-formedness と input/output length 保存を
-証明する。
+proves the executable classifier agrees with the declarative `Classifies`
+relation, plus well-formedness and input/output length preservation on
+successful row classification.
 [`TaxonomyClassifierExamples.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierExamples.lean)
-は argument shape だけで class を推測する壊れた classifier と、失敗要素を
-`filterMap` で捨てる壊れた row conversion の反例を保持する。
+holds counterexamples for a broken classifier that guesses the class from
+argument shape alone, and a broken row conversion that discards failing
+elements via `filterMap`.
 
-この分類境界の正負15ケースは
-[`effect-taxonomy.tsv`](../formal/oracle/effect-taxonomy.tsv) に機械可読な
-Oracle として固定する。catalog metadata、resolved operation row、
-accept/reject と正規化後 requirement row を
-[`TaxonomyOracleMain.lean`](../formal/TaxonomyOracleMain.lean) が Lean model
-から生成し、`formal-check` が stale snapshot を拒否する。現時点では
-contract-level Oracle であり、selfhost checker が declaration metadata を
-公開した後に同じ corpus を differential fixture として接続する。
+The 15 positive/negative cases of this classification boundary are fixed as a
+machine-readable Oracle in
+[`effect-taxonomy.tsv`](../formal/oracle/effect-taxonomy.tsv). Catalog
+metadata, resolved operation rows, accept/reject verdicts, and the normalized
+requirement rows are generated from the Lean model by
+[`TaxonomyOracleMain.lean`](../formal/TaxonomyOracleMain.lean), and
+`formal-check` rejects a stale snapshot. For now this is a contract-level
+Oracle; once the selfhost checker exposes declaration metadata, the same
+corpus connects as a differential fixture.
 
-taxonomy check 後の ADR-0075 contract への接続は
-[`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
-で定義し、
+The connection from the taxonomy check to the ADR-0075 contract is defined in
+[`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean),
+with
 [`TaxonomyBridgeCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
-で一方向 refinement を証明する。exact `CapabilityRef` は semantic
-`OperationRef` と `ResourceClaim` に、host provider は authority と
-`ResourceBinding` に投影される。完全 row の entry/spawn 判定が通れば、
-投影後の既存 ADR-0075 preflight も通る。
+proving a one-way refinement. An exact `CapabilityRef` projects onto a
+semantic `OperationRef` and `ResourceClaim`; a host provider projects onto an
+authority and `ResourceBinding`. If the complete row passes the entry/spawn
+judgement, the projected form also passes the existing ADR-0075 preflight.
 
-この含意の逆向きは成立しない。投影前の taxonomy check を省くと algebraic
-effect が capability-only contract から消え、resource claim を省くと同じ
-operation/resource identity を持つ別 resource kind を誤受理する。
+The converse implication does not hold. Skipping the taxonomy check before
+projection makes algebraic effects vanish from a capability-only contract,
+and skipping resource claims wrongly accepts a different resource kind with
+the same operation/resource identity.
 [`TaxonomyBridgeExamples.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeExamples.lean)
-は両方の負例を固定する。
+fixes both negative examples.
 
-resource-qualified capability の path scope は ADR-0075 の
-[`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
-で別層として定義する。同一 logical/physical scope domain で交差しうる
-glob は同一 authority の場合だけ許可し、異なる authority の重複を
-scope-aware preflight が reject する。
+Path scope for resource-qualified capabilities is defined as a separate layer
+in ADR-0075's
+[`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean).
+Globs that can intersect within the same logical/physical scope domain are
+allowed only under the same authority; a scope-aware preflight rejects
+overlaps across different authorities.
 [`PathScopeCorrect.lean`](../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
-は overlap 判定と共通 path の存在の同値、および同じ path に一致する grant
-の authority 一意性を証明する。executable checker は canonical な共通 path
-witness を返し、`none` と semantic intersection の空性も同値である。
+proves the overlap judgement equivalent to the existence of a common path,
+and the uniqueness of the authority among grants matching the same path. The
+executable checker returns a canonical common-path witness, and `none` is
+likewise equivalent to the semantic intersection being empty.
 
-これは ADR の意味論に対する machine-checked model であり、現行の文字列
-checker、builtin metadata、WIT 生成との correspondence proof ではない。
-Implementation sequence 1–4 と compiler fixture は引き続き必要である。
+This is a machine-checked model of the ADR's semantics, not a correspondence
+proof against the current string-label checker, builtin metadata, or WIT
+generation. Implementation sequence 1–4 and the compiler fixtures remain
+necessary.
 
 ## Reconciliation ledger
 
-| 項目 | 根拠 / 観測 | 結論 |
+| item | evidence / observation | conclusion |
 | --- | --- | --- |
-| 期待する契約 | ADR-0075 は `main` の closed/exact row と host preflight を要求する | entry row は host が解決可能でなければならない |
-| 実装観測 | `checker_effects.vibe` は `main` / `_start` の row を `is_entry_admitted_effect` で検査する (#1683) | host/runtime owner のない user effect は WIT/codegen 前に reject する |
-| 実装観測 | `checker_effects.vibe` は effect を文字列ラベルで追跡し、`Error` / `Async` を特別扱いしている | effect class/resource kind metadata が先行条件である |
-| 回帰ガード | `main with Ask` / `_start with Ask` は reject、`main with Fs + Exception + Async` は accept | checker test に固定済み (#1683) |
-| 形式モデル | taxonomy-level requirement、entry/host/spawn 判定、handler discharge を Lean で定義した | ADR の意味論は machine-checked。checker 対応は未証明 |
-| metadata classifier | exactly-one metadata lookup と argument shape から complete row を分類し、unknown/duplicate/malformed を fail-closed にした | 実装 metadata はこの contract に対応させる |
-| Oracle corpus | 正負15ケースを Lean から TSV に生成し、stale snapshot を `formal-check` で拒否する | contract の回帰ガードは自動化済み。selfhost differential は metadata API 待ち |
-| contract refinement | exact capability を operation/claim/binding に投影し、taxonomy admission から ADR-0075 preflight への含意を Lean で証明した | taxonomy check は WIT/host projection より前に必須 |
-| path-scope policy | restricted glob の overlap と共通 path の存在が同値で、diagnostic witness の健全性と authority 一意性を証明した | logical/physical の二段階で異権限の重複を exact に reject し、共通 path を報告する |
+| expected contract | ADR-0075 requires a closed/exact row on `main` and host preflight | the entry row must be host-resolvable |
+| implementation observation | `checker_effects.vibe` checks the `main` / `_start` row via `is_entry_admitted_effect` (#1683) | user effects with no host/runtime owner are rejected before WIT/codegen |
+| implementation observation | `checker_effects.vibe` tracks effects as string labels and special-cases `Error` / `Async` | effect class / resource kind metadata is the prerequisite |
+| regression guard | `main with Ask` / `_start with Ask` reject; `main with Fs + Exception + Async` accepts | pinned in checker tests (#1683) |
+| formal model | taxonomy-level requirements, entry/host/spawn judgements, and handler discharge are defined in Lean | the ADR's semantics are machine-checked; checker correspondence is unproven |
+| metadata classifier | classifies a complete row from exactly-one metadata lookups and argument shapes, failing closed on unknown/duplicate/malformed | the implementation metadata is to be brought into correspondence with this contract |
+| Oracle corpus | 15 positive/negative cases generated from Lean into TSV, with `formal-check` rejecting stale snapshots | contract regression guarding is automated; the selfhost differential waits on the metadata API |
+| contract refinement | exact capabilities project onto operations/claims/bindings, and the implication from taxonomy admission to the ADR-0075 preflight is proven in Lean | the taxonomy check is mandatory before WIT/host projection |
+| path-scope policy | overlap of restricted globs is equivalent to the existence of a common path, with sound diagnostic witnesses and authority uniqueness proven | overlaps under different authorities reject exactly, across the logical/physical layers, reporting the common path |
 
-Phase 3 の current-policy slice は #1683 の checker test で固定した。完全な
-resource-qualified classifier と Lean contract の correspondence は引き続き
-metadata API 導入後の作業である。
+Phase 3's current-policy slice is pinned by #1683's checker tests. Full
+correspondence between the resource-qualified classifier and the Lean
+contract remains work that follows the metadata API.

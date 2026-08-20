@@ -6722,11 +6722,144 @@ fn field_show_expr(fname: String, fty: TypeExpr, known_types: Array[String]) -> 
   show_for_typed(fty, EDot(EIdent("self", -1), fname, -1, -1), known_types)
 }
 
+// ---- #2136: a synthesized helper binds the type variables it mentions ----
+//
+// The `Array[e]` helpers below are described as MONOMORPHIC, and for a concrete
+// element type they are. But `e` is read off a declaration (`struct Box[T] { xs:
+// Array[T] }`) or off a generic function's `==` operand, so it can be a TYPE
+// VARIABLE — and the synthesized `let __arr_equals__T = (a: Array[T], b:
+// Array[T]) -> Bool { .. }` then names a `T` that NOTHING in the generated
+// declaration binds. It only type-checks because an unknown type name silently
+// becomes a rigid type constructor (#2125); the moment that hole closes, the
+// compiler's own generated code stops checking.
+//
+// So the helper binds them: `[T](a: Array[T], b: Array[T]) -> Bool`. Which names
+// are variables is not a guess — `dtd_type_param_names` holds the names the
+// program itself binds as type parameters, and a name that is ALSO a declared
+// struct/enum name is left alone (there it denotes the declared type, and
+// binding it would change a working program).
+let dtd_type_param_names: Array[String] = empty_str_array()
+
+fn push_name_once(acc: Array[String], name: String) -> Unit {
+  if str_array_contains(acc, name) {
+    ()
+  } else {
+    Array::push(acc, name)
+  }
+}
+
+fn push_names_once(acc: Array[String], names: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(names) {
+    push_name_once(acc, Array::get(names, i))
+    i = i + 1
+  }
+}
+
+fn collect_expr_type_param_names(e: Expr, acc: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, _, _, _, _) => push_names_once(acc, tparams),
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut i = 0
+  while i < Array::length(kids) {
+    collect_expr_type_param_names(Array::get(kids, i), acc)
+    i = i + 1
+  }
+}
+
+/// Fill `dtd_type_param_names` with every type-parameter name this program
+/// binds — `struct Box[T]`, `enum Tree[T]`, and every `[T](..) -> ..` function
+/// or lambda — minus any that is also a declared struct/enum name. Called from
+/// `desugar_derives`, which runs before every site that generates an array
+/// helper. (#2136.)
+fn type_param_names_reset(stmts: Array[Stmt], known_types: Array[String]) -> Unit {
+  Array::truncate(dtd_type_param_names, 0)
+  let found = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, _, _, _, _, tparams) => push_names_once(found, tparams),
+      SEnum(_, _, tparams, _, _) => push_names_once(found, tparams),
+      SLet(_, _, _, _, e) => collect_expr_type_param_names(e, found),
+      SLetMut(_, _, e) => collect_expr_type_param_names(e, found),
+      SLetPat(_, e) => collect_expr_type_param_names(e, found),
+      SExpr(e) => collect_expr_type_param_names(e, found),
+      STest(_, e) => collect_expr_type_param_names(e, found),
+      SBench(_, e) => collect_expr_type_param_names(e, found),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(found) {
+    let n = Array::get(found, j)
+    if str_array_contains(known_types, n) {
+      ()
+    } else {
+      Array::push(dtd_type_param_names, n)
+    }
+    j = j + 1
+  }
+}
+
+/// The type variables `ty` mentions, appended to `acc` in first-occurrence
+/// order. (#2136.)
+fn collect_ty_var_names(ty: TypeExpr, acc: Array[String]) -> Unit {
+  match ty {
+    TyName(n) => if str_array_contains(dtd_type_param_names, n) {
+      push_name_once(acc, n)
+    } else {
+      ()
+    },
+    TyApp(n, args) => {
+      if str_array_contains(dtd_type_param_names, n) {
+        push_name_once(acc, n)
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_ty_var_names(Array::get(args, i), acc)
+        i = i + 1
+      }
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      while i < Array::length(ts) {
+        collect_ty_var_names(Array::get(ts, i), acc)
+        i = i + 1
+      }
+    },
+    TyFn(ps, ret, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        collect_ty_var_names(Array::get(ps, i), acc)
+        i = i + 1
+      }
+      collect_ty_var_names(ret, acc)
+    },
+    _ => ()
+  }
+}
+
+/// The type-parameter list a synthesized `Array[elem_ty]` helper must carry:
+/// empty for a concrete element type (the helper stays monomorphic), and the
+/// mentioned type variables otherwise. (#2136.)
+fn arr_helper_tparams(elem_ty: TypeExpr) -> Array[String] {
+  let out = empty_str_array()
+  collect_ty_var_names(elem_ty, out)
+  out
+}
+
 /// `let __arr_to_string__<key> = (a: Array[t]) -> String {
 ///    "[" ++ join(show(a[0]), ", ", show(a[1]), ...) ++ "]" }` — a monomorphic,
 /// fully-recursive array to-string. Element rendering goes through
 /// `show_for_typed`, so `Array[Foo]` / `Array[Array[Int]]` recurse structurally
-/// instead of pointer-stringifying aggregate elements. (#694 Layer 2.)
+/// instead of pointer-stringifying aggregate elements. (#694 Layer 2.) When the
+/// element type is a type variable the helper is generic over it instead —
+/// see the `dtd_type_param_names` block above (#2136).
 fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let elem_get = ECall(EIdent("Array::get", -1), Array::slice([
     EIdent("a", -1),
@@ -6746,9 +6879,9 @@ fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let body = ELetMut("__as_i", EInt(0), ELetMut("__as_acc", EString("["), ESeq(while_loop, closed), -1), -1)
   let arr_ty = TyApp("Array", Array::slice([elem_ty], 0, 1))
   let params = Array::slice([("a", Some(arr_ty))], 0, 1)
-  let no_tp = array_empty()
+  let tparams = arr_helper_tparams(elem_ty)
   let no_tb = array_empty()
-  SLet(false, false, arr_to_string_name(elem_ty), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+  SLet(false, false, arr_to_string_name(elem_ty), None, EFn(tparams, no_tb, params, Some(TyName("String")), None, body))
 }
 
 /// `let P::to_string = (self: P) -> String { "P { x: " ++ show(x) ++ ", ... }" }`
@@ -7163,7 +7296,10 @@ fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String])
 /// `let __arr_equals__<key> = (a: Array[t], b: Array[t]) -> Bool { ... }` — a
 /// monomorphic, fully-recursive array structural equality. Element compare goes
 /// through `eq_for_typed`, so `Array[Foo]` / `Array[Array[Int]]` recurse
-/// correctly instead of identity-comparing aggregate elements. (#695.)
+/// correctly instead of identity-comparing aggregate elements. (#695.) When `t`
+/// is a type variable the helper is generic over it — `[T](a: Array[T], b:
+/// Array[T])` — instead of naming a `T` nothing binds; see the
+/// `dtd_type_param_names` block above (#2136).
 fn gen_arr_equals_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let len_a = ECall(EIdent("Array::length", -1), Array::slice([EIdent("a", -1)], 0, 1), -1)
   let len_b = ECall(EIdent("Array::length", -1), Array::slice([EIdent("b", -1)], 0, 1), -1)
@@ -7187,9 +7323,9 @@ fn gen_arr_equals_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let body = EIf(EBinOp("!=", len_a, len_b), EBool(false), body_eq)
   let arr_ty = TyApp("Array", Array::slice([elem_ty], 0, 1))
   let params = Array::slice([("a", Some(arr_ty)), ("b", Some(arr_ty))], 0, 2)
-  let no_tp = array_empty()
+  let tparams = arr_helper_tparams(elem_ty)
   let no_tb = array_empty()
-  SLet(false, false, arr_equals_name(elem_ty), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
+  SLet(false, false, arr_equals_name(elem_ty), None, EFn(tparams, no_tb, params, Some(TyName("Bool")), None, body))
 }
 
 /// One field's equality expression: `a.f == b.f` for scalar/param fields, or a
@@ -8330,6 +8466,11 @@ fn collect_decl_type_names(stmts: Array[Stmt]) -> Array[String] {
 export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let gen = empty_stmt_list()
   let known_types = collect_decl_type_names(stmts)
+  // #2136: the type variables a generated `Array[e]` helper has to bind. Filled
+  // here because this is the first pass that generates one, and read again by
+  // `emit_recorded_arr_equals`, which runs later in the same
+  // `desugar_trait_dicts` call.
+  type_param_names_reset(stmts, known_types)
   // #694 Layer 2: collect `Array[e]` element types referenced by Show/Hash-
   // deriving types' fields/payloads, so each gets a `__arr_to_string__<key>`
   // helper. A worklist closes nesting (`Array[Array[Int]]` -> `Array[Int]`).

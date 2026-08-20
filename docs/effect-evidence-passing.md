@@ -2466,10 +2466,13 @@ replay エンジンを codegen から物理削除した。着地は 4 パーツ:
   専用テスト文字列のみ)。
 - 非 Error handle で evidence 移行できない形は一律 hard error
   (`err_effect_handle_replay_removed.vibe` が needle
-  "replay engine was removed" で pin)。旧 silent replay は消滅。
+  "cannot be compiled here" で pin。#2137 以前はこの needle を
+  "replay engine was removed" と記していたが、gate が grep していたのは
+  一貫して前者で、後者は #2137 でメッセージから削除された)。旧 silent
+  replay は消滅。
 
 検証: stage2==stage3 fixpoint、compiler gate 55/55 (新設 55 = vacuous 46 /
-reject needle "replay engine was removed"、40ao = shadowed 47 の evidence
+reject needle "cannot be compiled here"、40ao = shadowed 47 の evidence
 化、4b = FileIo 深再帰が evidence 経由で 42)、unit battery 469/469
 (fs/http/quickcheck/tutorial の test-block handle 群が evidence で green、
 fs mock は正しい意味論で不変、http_e2e は ambient Http + 直接呼び出しに
@@ -2485,7 +2488,8 @@ wasip3 `future<T>`/`stream<T>` との言語表面整合の決定は
 drive する資料 p69-75 の Coroutine 形がそのまま通ることを
 `fixtures/effect_talk_coroutine_status_test.vibe` で新規に pin、(b) 高階
 エフェクト (effectful block を op 引数に取る形) は evidence migration が
-closure を追えず needle "replay engine was removed" の診断で reject
+closure を追えず `edp_higher_order_error_msg` (needle
+"cannot be compiled here: operation") の診断で reject
 (純粋 block なら通る — `effect_talk_tracing_span_test.vibe`)、(c) 格納した
 継続を別の `handle` で包んでも元 driver に配送され続ける (handler switch は
 silent no-op だった — **#1347 で診断が入り silent ではなくなった**、

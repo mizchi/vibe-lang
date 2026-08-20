@@ -1238,28 +1238,69 @@ fn row_item_base_name(item: String) -> String {
   String::substring(item, 0, end)
 }
 
-/// #1345 / ADR-0088: is this effect a CAPABILITY (resource kind, resolved by
-/// a host/provider) as opposed to an algebraic effect (discharged by an
-/// in-process handler) or a core ambient effect?
+/// #1345 / ADR-0088: the effect labels that are CAPABILITIES (resource kind,
+/// resolved by a host/provider) as opposed to algebraic effects (discharged by
+/// an in-process handler) or core ambient effects.
 ///
 /// PROVISIONAL. ADR-0084's three-way classification is the real home for this
 /// (#1343) and is unimplemented; this list is derived from ADR-0088's own
 /// definition applied to the effects the builtin registry actually tags, so
 /// the checker has something principled to reject against in the meantime.
 ///
+/// This must hold exactly the labels the compiler's own
+/// `standard_host_provider_resource_defaults` calls standard host providers.
+/// The parser package must not depend on the compiler, so the two lists cannot
+/// share a definition; `capability_effect_names` exists so a test can compare
+/// them instead of a reader having to (#2110).
+///
+/// #1460: `Console` is the merged tty capability. Stdin/Stdout/Stderr are
+/// still listed because they are still declarable until the Phase 3 sweep;
+/// both spellings are capabilities, so `allows` accepts either meanwhile.
+///
 /// `Async` is deliberately EXCLUDED even though it is builtin-tagged: it is
 /// ADR-0089's suspension effect, discharged by the runtime driver, and it
 /// carries no resource kind to grant. Classifying it by "is it builtin" would
 /// get that wrong -- which is exactly why the list is written out rather than
 /// derived from the registry.
+let capability_effect_name_list: Array[String] = [
+  "Fs",
+  "Http",
+  "Socket",
+  "Env",
+  "Console",
+  "Stdin",
+  "Stdout",
+  "Stderr",
+  "Process",
+  "Profiler"
+]
+
+/// The capability labels above, as data. Exported so the compiler-side test
+/// that keeps this list and the standard host provider table in step can
+/// enumerate it rather than restate it (#2110).
+export fn capability_effect_names() -> Array[String] {
+  let out = Array::slice([""], 0, 0)
+  let mut i = 0
+  while i < Array::length(capability_effect_name_list) {
+    Array::push(out, Array::get(capability_effect_name_list, i))
+    i = i + 1
+  }
+  out
+}
+
+/// Is this effect a capability? See `capability_effect_name_list`.
 fn is_capability_effect_name(name: String) -> Bool {
-  name == "Fs" || name == "Http" || name == "Socket" || name == "Env" ||
-  // #1460: `Console` is the merged tty capability. Stdin/Stdout/Stderr are
-  // still listed because they are still declarable until the Phase 3 sweep;
-  // both spellings are capabilities, so `allows` accepts either meanwhile.
-  name == "Console" ||
-  name == "Stdin" || name == "Stdout" || name == "Stderr" ||
-  name == "Process" || name == "Profiler"
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(capability_effect_name_list) {
+    if Array::get(capability_effect_name_list, i) == name {
+      found = true
+      i = Array::length(capability_effect_name_list)
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 /// ADR-0088: `Error` / `Exception[E]`. Spelled here rather than imported from

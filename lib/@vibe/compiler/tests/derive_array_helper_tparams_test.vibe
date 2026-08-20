@@ -1,0 +1,219 @@
+// #2136: the synthesized `Array[e]` helpers bind the type variables they
+// mention.
+//
+// `desugar_derives` generates one `__arr_equals__<key>` / `__arr_to_string__
+// <key>` per distinct array element type it finds in the program. The element
+// type is read off a declaration (`struct Box[T] { xs: Array[T] }`) or off a
+// generic function's `==` operand, so it can be a TYPE VARIABLE — and the
+// helper used to be emitted with an EMPTY type-parameter list, producing
+//
+//   let __arr_equals__T = (a: Array[T], b: Array[T]) -> Bool { .. }
+//
+// whose signature names a `T` that nothing binds. It checked only because an
+// unknown type name silently becomes a rigid type constructor (#2125), so this
+// generated code was the explicit blocker for closing that hole.
+//
+// These tests read the type-parameter list straight off the synthesized `EFn`,
+// so they fail the moment a helper goes back to mentioning an unbound variable.
+// A concrete element type must stay MONOMORPHIC (empty list) — binding names
+// that are not variables would be the opposite bug.
+
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn type_expr_str(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyUnit => "Unit",
+    TyApp(n, args) => {
+      let mut s = String::concat(n, "[")
+      let mut i = 0
+      while i < Array::length(args) {
+        if i > 0 {
+          s = String::concat(s, ",")
+        } else {
+          ()
+        }
+        s = String::concat(s, type_expr_str(Array::get(args, i)))
+        i = i + 1
+      }
+      String::concat(s, "]")
+    },
+    TyTuple(ts) => {
+      let mut s = "("
+      let mut i = 0
+      while i < Array::length(ts) {
+        if i > 0 {
+          s = String::concat(s, ",")
+        } else {
+          ()
+        }
+        s = String::concat(s, type_expr_str(Array::get(ts, i)))
+        i = i + 1
+      }
+      String::concat(s, ")")
+    },
+    _ => "?"
+  }
+}
+
+fn param_type_str(t: Option[TypeExpr]) -> String {
+  match t {
+    Some(x) => type_expr_str(x),
+    None => "_"
+  }
+}
+
+fn comma_join(xs: Array[String]) -> String {
+  let mut s = ""
+  let mut i = 0
+  while i < Array::length(xs) {
+    if i > 0 {
+      s = String::concat(s, ",")
+    } else {
+      ()
+    }
+    s = String::concat(s, Array::get(xs, i))
+    i = i + 1
+  }
+  s
+}
+
+/// Every generated declaration whose name starts with `prefix`, rendered as
+/// `name[tparams](param types)` and separated by `; `. Empty when the pass
+/// generated none.
+fn generated_helper_sigs(src: String, prefix: String) -> String {
+  handle {
+    generated_helper_sigs_impl(src, prefix)
+  } with Exception {
+    Throw(msg) => String::concat("throw: ", msg)
+  }
+}
+
+fn generated_helper_sigs_impl(src: String, prefix: String) -> String with Exception {
+  let stmts = parse_program(lex(src))
+  desugar_trait_dicts(stmts)
+  let out = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(tparams, _, params, _, _, _)) => if String::starts_with(name, prefix) {
+        let ptys = []
+        let mut j = 0
+        while j < Array::length(params) {
+          let (_, pty) = Array::get(params, j)
+          Array::push(ptys, param_type_str(pty))
+          j = j + 1
+        }
+        Array::push(out, String::concat(name, String::concat("[", String::concat(comma_join(tparams), String::concat("](", String::concat(comma_join(ptys), ")"))))))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut s = ""
+  let mut k = 0
+  while k < Array::length(out) {
+    if k > 0 {
+      s = String::concat(s, "; ")
+    } else {
+      ()
+    }
+    s = String::concat(s, Array::get(out, k))
+    k = k + 1
+  }
+  s
+}
+
+/// The checker's verdict on the program AFTER the derive/trait-dict desugar has
+/// appended its generated helpers — empty means clean. This is the claim that
+/// matters beyond the shape: a bound type parameter must not turn the helper
+/// into a program the checker rejects.
+fn desugared_check_message(src: String) -> String {
+  handle {
+    let stmts = parse_program(lex(src))
+    desugar_trait_dicts(stmts)
+    let _ = check_program(stmts)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+//# Misc
+
+test "2136: a generic struct's array-equality helper binds its element variable" {
+  inspect(generated_helper_sigs("struct Box[T] { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__T[T](Array[T],Array[T])")
+}
+
+test "2136: a generic struct's array-show helper binds its element variable" {
+  inspect(generated_helper_sigs("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }", "__arr_to_string__"), content = "__arr_to_string__T[T](Array[T])")
+}
+
+test "2136: a concrete element type keeps the helper monomorphic" {
+  inspect(generated_helper_sigs("struct Box { xs: Array[Int] } derive(Eq, Show)\nlet main = () -> Unit { () }", "__arr_"), content = "__arr_equals__Int[](Array[Int],Array[Int]); __arr_to_string__Int[](Array[Int])")
+}
+
+test "2136: a tuple element type binds every variable it mentions" {
+  inspect(generated_helper_sigs("struct Pair[A, B] { xs: Array[(A, B)] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__Tup_A_B[A,B](Array[(A,B)],Array[(A,B)])")
+}
+
+test "2136: a nested array element type binds through every layer" {
+  inspect(generated_helper_sigs("struct Nest[T] { xs: Array[Array[T]] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__Array_T[T](Array[Array[T]],Array[Array[T]]); __arr_equals__T[T](Array[T],Array[T])")
+}
+
+test "2136: a generic enum payload binds its element variable" {
+  inspect(generated_helper_sigs("enum Tree[T] { Leaf(Array[T]); Node(T) } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__T[T](Array[T],Array[T])")
+}
+
+test "2136: a generic function's bare-array `==` binds its element variable" {
+  inspect(generated_helper_sigs("fn same[T](a: Array[T], b: Array[T]) -> Bool { a == b }\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__T[T](Array[T],Array[T])")
+}
+
+/// A declared type whose name happens to be spelled like a type parameter is
+/// NOT a variable: leaving it alone is what keeps the helper resolving to that
+/// type's own `equals`.
+test "2136: a declared type name is never bound as a type parameter" {
+  inspect(generated_helper_sigs("struct T { v: Int }\nstruct Holder { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }", "__arr_equals__"), content = "__arr_equals__T[](Array[T],Array[T])")
+}
+
+/// The generated program still type-checks — a bound `[T]` must not cost the
+/// helper the checker's approval.
+test "2136: the desugared generic-struct program still checks clean" {
+  inspect(desugared_check_message("struct Box[T] { xs: Array[T] } derive(Eq)\nlet main = () -> Unit { () }"), content = "")
+}
+
+test "2136: the desugared concrete-struct program still checks clean" {
+  inspect(desugared_check_message("struct Box { xs: Array[Int] } derive(Eq, Show)\nlet main = () -> Unit { () }"), content = "")
+}
+
+test "2136: the desugared tuple-element program still checks clean" {
+  inspect(desugared_check_message("struct Pair[A, B] { xs: Array[(A, B)] } derive(Eq)\nlet main = () -> Unit { () }"), content = "")
+}
+
+test "2136: the desugared nested-array program still checks clean" {
+  inspect(desugared_check_message("struct Nest[T] { rows: Array[Array[T]] } derive(Eq)\nlet main = () -> Unit { () }"), content = "")
+}
+
+test "2136: the desugared generic-struct show program still checks clean" {
+  inspect(desugared_check_message("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }"), content = "")
+}

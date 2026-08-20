@@ -1,0 +1,196 @@
+//# The handle-eligibility diagnostic must describe the set it rejects (#2137)
+
+// The message this pass emits when a `handle` survives the ADR-0076 evidence
+// migration used to read:
+//
+//   "... so the handled body may only: perform directly, call a named
+//    top-level `fn`, or call a closure literal that carries an effect row
+//    annotation. A call through a local binding or a closure parameter hides
+//    the perform and is what this rejects"
+//
+// Both halves were false. Measured on stage2 before the rewrite, ALL of these
+// compile: a call through a closure PARAMETER whose type carries the row, a
+// call through a local BINDING whose type carries the row, a call through a
+// local binding whose closure literal is written inside the handled body, and
+// a call through a local binding that merely aliases a performing top-level
+// `fn`. A reader following the old message went looking for a rejection that
+// never comes, and the two shapes that DO fail here fail for reasons it never
+// mentioned.
+//
+// So this file pins the two things together: the accept/reject verdict for
+// each shape, and the message the rejected ones actually produce. Splitting
+// them is what let the message drift away from the behaviour in the first
+// place -- an assertion on the text alone stays green while the rule under it
+// moves, and an assertion on the verdict alone never notices the prose.
+//
+// Related: #1511 (the eligibility rule and the first rewrite of this message),
+// #1514 (naming the culprit call), #2109 (first-order builtins are visible).
+
+//# Imports
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+//# Misc
+
+/// The shared prelude: an effect and a top-level `fn` that performs it.
+/// `body` supplies whatever the case under test adds.
+fn program(body: String) -> String {
+  "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once() -> Int with Ask {\n  perform Ask::Get()\n}\n\n\{body}"
+}
+
+fn compiles_linear(src: String) -> Bool {
+  handle {
+    let bytes = compile_source_wasi(src, "__no_entry__")
+    Bytes::length(bytes) > 8
+  } with Exception {
+    Throw(_) => false
+  }
+}
+
+fn compiles_gc(src: String) -> Bool {
+  handle {
+    let bytes = compile_source_gc_only(src, "__no_entry__")
+    Bytes::length(bytes) > 8
+  } with Exception {
+    Throw(_) => false
+  }
+}
+
+fn compiles_both(src: String) -> Bool with Exception {
+  compiles_linear(src) && compiles_gc(src)
+}
+
+/// The diagnostic a rejected program produces, or "" when it compiles.
+/// `effect_lowering_prelude` throws its first error as the message string.
+fn reject_message(src: String) -> String {
+  handle {
+    let _ = compile_source_wasi(src, "__no_entry__")
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+//# Tests -- shapes the message CLAIMED were rejected, and are not
+
+test "#2137: a call through a closure parameter carrying the row compiles" {
+  // The old message said a closure parameter "hides the perform and is what
+  // this rejects". It does not: the row on the parameter's type is what makes
+  // the call visible.
+  let src = program("fn apply(f: () -> Int with Ask) -> Int with Ask {\n  f()\n}\n\ntest \"t\" {\n  let r = handle {\n    apply(ask_once)\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "#2137: a call through a local binding carrying the row compiles" {
+  // The other half of the old culprit list. A local binding is fine when its
+  // type carries the row -- which is exactly the edit the rewritten message
+  // now suggests.
+  let src = program("test \"t\" {\n  let side: (Int) -> Int with Ask = (n: Int) -> Int with Ask {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "#2137: a local closure written inside the handled body compiles" {
+  // Rowless, locally bound, called from the handled body -- and accepted,
+  // because the traversal that decides eligibility is scope-tracked and sees
+  // the literal's own body. Moving the `let` inward is the third repair the
+  // rewritten message offers.
+  let src = program("test \"t\" {\n  let r = handle {\n    let side = (n: Int) -> Int {\n      n\n    }\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "#2137: a local binding aliasing a performing top-level fn compiles" {
+  // #2137 reported this shape as rejected by the #1347 `can never fire` check.
+  // Measured on stage2 (2026-08-20) it compiles: the #1261 eta-wrap turns the
+  // alias into a row-carrying closure before eligibility is asked.
+  let src = program("test \"t\" {\n  let alias = ask_once\n  let r = handle {\n    alias()\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+test "#2137: a call to a top-level fn compiles" {
+  // The control: the one form the old message named as eligible, and still is.
+  let src = program("fn side(n: Int) -> Int {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(compiles_both(src))
+}
+
+//# Tests -- shapes that ARE rejected, and what the message says about them
+
+test "#2137: a local closure outside the handled body is rejected, and named" {
+  // The shape docs/cheatsheet.md and book/src/05_effects.vibe.md both use as
+  // the example. `side` is a rowless closure bound OUTSIDE the handled body,
+  // so the scope-tracked traversal that checks the body never sees its
+  // definition and cannot tell whether calling it performs `Ask`.
+  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(!compiles_linear(src))
+  let msg = reject_message(src)
+  assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
+  // The culprit is named (#1514), through the EXACT clause spelling
+  // cli_support.vibe's verify_culprit_off_marker parses to check the
+  // `[@off=N:M]` span before any lane resolves it to `line:col` (#1596).
+  // Rewording this clause silently disables that check, so pin it verbatim.
+  assert(String::contains(msg, "(here: the call to 'side')"))
+  // ... and every repair offered is one this file proves above.
+  assert(String::contains(msg, "top-level `fn`"))
+  assert(String::contains(msg, "with Ask"))
+  assert(String::contains(msg, "move its `let` inside the handled body"))
+  // ... and the claims that were false are gone.
+  assert(!String::contains(msg, "closure parameter"))
+  assert(!String::contains(msg, "the handled body may only"))
+}
+
+test "#2137: a call through an expression says so instead of naming nothing" {
+  // An immediately-applied closure literal: the callee is not a name at all,
+  // so there is nothing to quote. The old message fell back to its enumeration
+  // with the culprit clause silently dropped.
+  let src = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  assert(!compiles_linear(src))
+  let msg = reject_message(src)
+  assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
+  assert(String::contains(msg, "calls through an expression rather than a name"))
+  assert(!String::contains(msg, "the handled body may only"))
+}
+
+test "#2137: an opaque callee one level down is not blamed on the handled body" {
+  // The handled body here calls a named top-level `fn` -- the very form the
+  // old message listed as eligible -- and is still rejected, because
+  // `ask_once_via` reaches its `perform` through a rowless PARAMETER. The old
+  // message told this reader to do what the program already does.
+  let src = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
+  assert(!compiles_linear(src))
+  let msg = reject_message(src)
+  assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
+  assert(String::contains(msg, "No call in the handled body itself is opaque"))
+  assert(String::contains(msg, "look one level down"))
+  assert(!String::contains(msg, "the handled body may only"))
+  // The repair it offers -- give the parameter the row -- compiles.
+  let repaired = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int with Ask) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int with Ask {\n      n\n    })\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
+  assert(compiles_both(repaired))
+}
+
+test "#2137: no branch of this diagnostic names a pass that no longer exists" {
+  // Every branch used to end with "the replay engine that used to accept this
+  // shape was removed". #1511 already flagged compiler-internal vocabulary as
+  // unactionable and moved it to the end; #2137 removed it. The ADR reference
+  // stays -- that one resolves to a document a reader can open.
+  let opaque_name = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let opaque_expr = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let deeper = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
+  let msgs = [
+    reject_message(opaque_name),
+    reject_message(opaque_expr),
+    reject_message(deeper)
+  ]
+  let mut i = 0
+  while i < Array::length(msgs) {
+    let m = Array::get(msgs, i)
+    assert(String::length(m) > 0)
+    assert(!String::contains(m, "replay engine"))
+    assert(String::contains(m, "ADR-0076"))
+    i = i + 1
+  }
+}
