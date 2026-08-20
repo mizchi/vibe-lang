@@ -322,6 +322,14 @@ perform directly, call a named top-level `fn`, or call a closure literal that
 carries an effect row annotation.
 ```
 
+> この引用は 2026-08-07 当時のメッセージ。**#2137 でこの文面は書き換えられた**
+> — 下の「実際の適格性はこの診断文が言うより狭い」という観測がまさにその
+> issue の内容で、列挙されていた「拒否される形」のうち 4 つは実際には
+> コンパイルできる。現行の文面は
+> `lib/@vibe/compiler/codegen/common_base/inline_direct_perform.vibe` と
+> [cheatsheet](cheatsheet.md) の表を参照。ここでの結論 ((a)/(b)/(c) の選択)
+> は文面の変更に影響されない。
+
 **2つの配置を試して、両方拒否された:**
 
 1. handler を `lib/@vibe/cli/dispatch.vibe` に置き、import した

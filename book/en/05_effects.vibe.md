@@ -110,15 +110,19 @@ state consider `let mut` first. The criteria are in
 ## What a `handle` can see
 
 `handle { answer_of(...) }` above compiles because `answer_of` is a named
-top-level `fn`. Every `perform` a `handle` covers has to be statically visible
-to it: a direct `perform`, a call to a named top-level `fn`, or a closure
-literal that carries an effect-row annotation.
+top-level `fn`. Every `perform` a `handle` covers has to be visible to it, so
+the compiler has to be able to tell, for each call in the handled body, what
+that call performs.
 
-A call through a local binding hides the perform. That shape type-checks and is
-still rejected — rewrite the call, not the types.
+Most calls are visible: a top-level `fn`, a builtin like `println`, a closure
+whose binding or parameter carries the effect row, and a closure written inside
+the handled body. What is *not* visible is a rowless closure the handled body
+only sees as a name from an outer scope — the compiler has no definition to
+look at and no row to read. That shape type-checks and is still rejected;
+rewrite the call, not the types.
 
 ```vibe skip
-// skip: ineligible handle — a local closure hides the perform from the handler
+// skip: ineligible handle — a rowless closure bound outside the handled body
 effect Ask {
   Once() -> Int
 }
@@ -134,16 +138,16 @@ fn main() -> Int {
   }
 }
 // error (measured with `vibe check`): handle of effect 'Ask' cannot be compiled
-// here. Every perform this handle covers has to be statically visible to it, so
-// the handled body may only: perform directly, call a named top-level `fn`, or
-// call a closure literal that carries an effect row annotation. A call through
-// a local binding or a closure parameter hides the perform and is what this
-// rejects (here: the call to 'bump') -- move the `handle` into the function
-// that performs, or replace the indirect call with a direct one.
+// here: this handle cannot see what one call in its body performs (here: the
+// call to 'bump'). Make that call visible -- declare 'bump' as a top-level
+// `fn`, give the binding or parameter it arrives through an effect row (`with
+// Ask`), or move its `let` inside the handled body. Moving the `handle` into
+// the function that performs works too.
 ```
 
-The last sentence is the rewrite: move the `handle` into the function that
-performs, or replace `bump(...)` with a direct call (or a top-level `fn`).
+Any one of the four repairs the message lists fixes it. The smallest here is to
+hoist `bump` to a top-level `fn`; writing `let bump: (Int) -> Int with Ask =
+...`, or moving the `let` inside the `handle`, works just as well.
 
 ## Effect polymorphism
 

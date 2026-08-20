@@ -227,6 +227,7 @@ capability かどうかでは分かれない (`Profiler::now_us` は capability 
 - **拒否される形を名指しした** — 「ローカル束縛やクロージャ引数越しの呼び出しが
   perform を隠す」。旧文言は許される形しか挙げておらず、読み手は自分の
   コードがどれに当たらないかを消去法で当てる必要があった
+  (**この名指しは誤りだった — 末尾の「更新: #2137」節を見ること**)
 - ADR 参照は末尾に残した (設計記録を追いたい読み手のため)
 
 | # | L | A | C | 計 |
@@ -307,3 +308,39 @@ mean = 39/10 = 3.9 → **repair_convergence = 4.9**。FS compile API が consume
 source snapshot を診断側へ輸送できるまでは、誤った位置を出すより L=0 を選ぶ。
 残る減点はケース08の位置情報1点。以降スコアを動かす場合も、上の
 「追加候補」節の運用に従う。
+
+## 更新: #2137 — 08 の文言が嘘をついていた
+
+`#1511 の (c)` 節の「**拒否される形を名指しした**」が**誤りだった**。
+2026-08-20 に stage2 で実測すると、名指しされた形のうち次はすべて
+**コンパイルできる**:
+
+| handled body が呼ぶもの | 実測 |
+|---|---|
+| row を持つクロージャ**引数** (`f: () -> Int with Ask`) | ok |
+| row を持つローカル**束縛** | ok |
+| handled body の**中で**定義した row 無しクロージャ | ok |
+| performing な top-level `fn` の**別名** (`let alias = ask_once`) | ok |
+| first-order builtin (`println` など、#2109) | ok |
+
+実際に落ちるのは「この pass が中を見られない呼び出し」の一形だけで、しかも
+08 のように**その呼び出しが handled body に無い**ケース (needing 関数の中の
+row 無し引数経由) もある。旧文言はそこで「handled body に許されるのは…」と
+述べており、**08 のプログラムが既に満たしている形**を助言していた。
+
+書き直しは 3 分岐にした — 犯人を名指しできるとき / 呼び出しが名前でないとき
+(即時適用ラムダ、`(t.0)(x)`) / 犯人が handled body に無いとき。どの分岐も、
+実測して通ることを確認した編集だけを挙げる。`diag.grep` は新しい文言に更新
+した。**`(here: the call to 'bump')` は据え置き** — これは装飾ではなく
+`verify_culprit_off_marker` が犯人名を取り出す綴りで、変えると `[@off=N:M]`
+が未検証のまま流れて #1596 の「依存モジュール由来の offset を entry の行に
+解決してしまう」が復活する。
+
+**スコアは動かない** (08 は L=0 / A=1 / C=2 = 3 のまま、mean 3.9 →
+repair_convergence 4.9)。rubric の A が測るのは「編集を述べているか」なので、
+嘘の編集を正しい編集に替えても点にはならない。L の残り 1 点も従来どおり
+FS compile レーンの snapshot 輸送待ち。
+
+accept/reject と文言の対は
+`lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe` が押さえて
+おり、受理される形の実測表は `docs/cheatsheet.md` にある。

@@ -1199,11 +1199,26 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         // fn_names are recomputed here (error path only): the erasure and
         // migration passes above have mutated `stmts` since the vhe_* sets
         // were built.
+        //
+        // #2137: the message must describe the set this pass ACTUALLY
+        // rejects. It used to enumerate three eligible forms ("perform
+        // directly, call a named top-level `fn`, or call a closure literal
+        // that carries an effect row annotation") and then name two culprits
+        // ("a call through a local binding or a closure parameter"), and both
+        // halves were wrong in the direction that wastes the reader's time.
+        // Measured on stage2, all accepted: a call through a closure PARAMETER
+        // whose type carries the row (`fn apply(f: () -> Int with Ask)`), a
+        // call through a local BINDING whose type carries the row, a call
+        // through a local binding whose closure literal is defined inside the
+        // handled body, a call to a first-order builtin (#2109), and a call to
+        // a local binding that merely aliases a top-level `fn`. What the pass
+        // rejects is narrower and has one shape: a call it cannot see through,
+        // so it cannot prove the handle covers the performs reached by it.
         let li_fn_defs = edp_collect_fn_defs(stmts)
         let li_fn_names = edp_all_fn_names(li_fn_defs)
         let li_inert = edp_pure_fn_names(li_fn_defs)
         edp_append_free_host_inert_names(stmts, li_inert)
-        let (culprit_raw, culprit_off) = edp_live_handle_opaque_info(stmts, keep, bad, li_inert, li_fn_names)
+        let (culprit_opaque, culprit_raw, culprit_off) = edp_live_handle_opaque_info(stmts, keep, bad, li_inert, li_fn_names)
         // Un-mangle ONLY names the rename walk generated: a user-authored
         // `__edpsh_0_helper` (in `user_edpsh`, or the walk never ran) must be
         // reported verbatim -- stripping it would name a `helper` that does
@@ -1213,15 +1228,15 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
         } else {
           culprit_raw
         }
-        // #1591: when no opaque call exists -- the body really does only
-        // call named top-level `fn`s, the very form the enumeration below
-        // says is allowed -- check for the one named-callee shape that
-        // still breaks static visibility: a callee that discharges this
-        // same effect around its own whole body but RE-PERFORMS it from a
-        // handler arm (see edp_live_handle_dirty_selfdischarge's doc
-        // comment). Name it and say what about it is the problem, instead
-        // of emitting an enumeration this program already satisfies.
-        let (ds_raw, ds_off) = if String::length(culprit_raw) == 0 {
+        // #1591: when no opaque call exists -- every call in the handled
+        // body IS one this pass can see through -- check for the one
+        // named-callee shape that still breaks static visibility: a callee
+        // that discharges this same effect around its own whole body but
+        // RE-PERFORMS it from a handler arm (see
+        // edp_live_handle_dirty_selfdischarge's doc comment). Name it and say
+        // what about it is the problem, instead of emitting advice this
+        // program already follows.
+        let (ds_raw, ds_off) = if !culprit_opaque {
           edp_live_handle_dirty_selfdischarge(stmts, keep, bad, li_fn_defs)
         } else {
           ("", -1)
@@ -1240,7 +1255,12 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
           ds_head = String::concat(ds_head, String::concat(" around its own body, but one of its handler arms performs ", bad))
           ds_head = String::concat(ds_head, " again -- that re-perform escapes '")
           ds_head = String::concat(ds_head, ds_nm)
-          ds_head = String::concat(ds_head, "' into this handle's body, where it is not statically visible. Move that perform out of the handler arm (compute the value before the `handle`), or wrap the arm's perform in its own `handle`. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)")
+          // #2137: the trailing "the replay engine that used to accept this
+          // shape was removed" is gone from all four branches. It names a pass
+          // that no longer exists in the tree, so it cannot be acted on and
+          // cannot be looked up -- the ADR reference is the design record a
+          // curious reader wants, and it stays.
+          ds_head = String::concat(ds_head, "' into this handle's body, where this handle cannot see it. Move that perform out of the handler arm (compute the value before the `handle`), or wrap the arm's perform in its own `handle`. (ADR-0076 evidence-passing migration.)")
           let ds_marked = if ds_off >= 0 {
             String::concat(ds_head, String::concat(" [@off=", String::concat(__to_string(ds_off), String::concat(":", String::concat(__to_string(ds_off + String::length(ds_nm)), "]")))))
           } else {
@@ -1248,13 +1268,43 @@ export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[St
           }
           Array::push(errs, ds_marked)
         } else {
-          let head = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here. Every perform this handle covers has to be statically visible to it, so the handled body may only: perform directly, call a named top-level `fn`, or call a closure literal that carries an effect row annotation. A call through a local binding or a closure parameter hides the perform and is what this rejects")
-          let named = if String::length(culprit) > 0 {
-            String::concat(head, String::concat(" (here: the call to '", String::concat(culprit, "')")))
+          let lead = String::concat(String::concat("handle of effect '", bad), "' cannot be compiled here: ")
+          let full = if culprit_opaque && String::length(culprit) > 0 {
+            // The common shape, and the only one that can name an edit point:
+            // the handled body calls `culprit`, and this pass cannot see what
+            // `culprit` performs. Each of the three repairs below is measured
+            // to compile (see the #2137 note above); "move the `handle`" is
+            // the fallback when none of them fits.
+            //
+            // The ` (here: the call to 'X')` clause is LOAD-BEARING, not
+            // decoration: cli_support.vibe's verify_culprit_off_marker{,
+            // _snapshot} find the culprit name through that exact spelling and
+            // check the `[@off=N:M]` span really spells it in the entry file
+            // before any lane resolves the marker to `line:col` (#1596).
+            // Without the clause the marker passes through unverified, and a
+            // culprit living in a DEPENDENCY module resolves against the entry
+            // file's text -- a confident wrong line, the failure #1596 closed.
+            let mut m = String::concat(lead, "this handle cannot see what one call in its body performs (here: the call to '")
+            m = String::concat(m, String::concat(culprit, "'). Make that call visible -- declare '"))
+            m = String::concat(m, String::concat(culprit, "' as a top-level `fn`, give the binding or parameter it arrives through an effect row (`with "))
+            String::concat(m, String::concat(bad, "`), or move its `let` inside the handled body. Moving the `handle` into the function that performs works too. (ADR-0076 evidence-passing migration.)"))
+          } else if culprit_opaque {
+            // The callee is not a bare name: an immediately-applied closure
+            // literal, a call through a field, an element, a tuple slot.
+            // There is nothing to name, so say what shape to change.
+            String::concat(lead, "the handled body calls through an expression rather than a name, and this handle cannot see what that call performs. Give the callee a name it can see -- a top-level `fn`, or a `let` bound to the closure literal inside the handled body -- or move the `handle` into the function that performs. (ADR-0076 evidence-passing migration.)")
           } else {
-            head
+            // Every call in the handled body is one this pass CAN see through,
+            // so the shape that defeats the migration is deeper: typically a
+            // `perform` reached through a parameter or a non-top-level binding
+            // inside a function the body calls. Saying "the handled body may
+            // only ..." here named forms this program already uses.
+            let mut m = String::concat(lead, String::concat("every `perform ", bad))
+            m = String::concat(m, "` this handle covers has to be visible to it, and one of them is not. No call in the handled body itself is opaque to this pass, so look one level down -- in the functions the body calls that carry `with ")
+            m = String::concat(m, String::concat(bad, "`, a `perform "))
+            m = String::concat(m, String::concat(bad, "` reached through a parameter or through a binding that is not a top-level `fn` is invisible here. Give that parameter or binding an effect row (`with "))
+            String::concat(m, String::concat(bad, "`), or move the `handle` into the function that performs. (ADR-0076 evidence-passing migration.)"))
           }
-          let full = String::concat(named, " -- move the `handle` into the function that performs, or replace the indirect call with a direct one. (ADR-0076 evidence-passing migration; the replay engine that used to accept this shape was removed.)")
           let marked = if culprit_off >= 0 {
             if String::length(culprit) > 0 {
               String::concat(full, String::concat(" [@off=", String::concat(__to_string(culprit_off), String::concat(":", String::concat(__to_string(culprit_off + String::length(culprit)), "]")))))
@@ -3018,15 +3068,23 @@ fn edp_first_opaque_call_info_exprs(es: Array[Expr], inert: Array[String], fn_na
 }
 
 /// Find the first `handle` whose arm list claims effect `ename` (the desc
-/// edp_first_live_replay_handle just reported) and name the first opaque call
-/// in its BODY. Returns ("", -1) when the handle is found but its body has no
-/// opaque call (it survived for another reason), or when no such handle is in
-/// reachable code (should not happen when called with a live desc).
-fn edp_live_handle_opaque_info_expr(expr: Expr, ename: String, inert: Array[String], fn_names: Array[String]) -> (Bool, String, Int) {
+/// edp_first_live_replay_handle just reported) and describe the first opaque
+/// call in its BODY.
+///
+/// The first component of the result is "a handle site was found"; the second
+/// is "that site's body really does contain a call this analysis cannot see
+/// through". #2137: the two must be reported separately, because the name is
+/// EMPTY in two very different situations and the diagnostic has to say
+/// different things about them -- an opaque call whose callee is not a bare
+/// name (an immediately-applied closure literal, a call through a field or an
+/// element) versus no opaque call in the body at all, where the shape that
+/// defeats the migration is somewhere else entirely and blaming the handled
+/// body would be a false statement.
+fn edp_live_handle_opaque_info_expr(expr: Expr, ename: String, inert: Array[String], fn_names: Array[String]) -> (Bool, Bool, String, Int) {
   match expr {
     EHandle(body, arms) => if edp_handle_own_effect_desc(arms) == ename {
-      let (_, nm, off) = edp_first_opaque_call_info(body, inert, fn_names)
-      (true, nm, off)
+      let (opaque, nm, off) = edp_first_opaque_call_info(body, inert, fn_names)
+      (true, opaque, nm, off)
     } else {
       edp_live_handle_opaque_info_exprs(expr_children(expr), ename, inert, fn_names)
     },
@@ -3034,26 +3092,31 @@ fn edp_live_handle_opaque_info_expr(expr: Expr, ename: String, inert: Array[Stri
   }
 }
 
-fn edp_live_handle_opaque_info_exprs(es: Array[Expr], ename: String, inert: Array[String], fn_names: Array[String]) -> (Bool, String, Int) {
+fn edp_live_handle_opaque_info_exprs(es: Array[Expr], ename: String, inert: Array[String], fn_names: Array[String]) -> (Bool, Bool, String, Int) {
   let mut i = 0
   let mut found = false
+  let mut opaque = false
   let mut nm = ""
   let mut off = -1
   while i < Array::length(es) && !found {
-    let (f, n, o) = edp_live_handle_opaque_info_expr(Array::get(es, i), ename, inert, fn_names)
+    let (f, op, n, o) = edp_live_handle_opaque_info_expr(Array::get(es, i), ename, inert, fn_names)
     found = f
+    opaque = op
     nm = n
     off = o
     i = i + 1
   }
-  (found, nm, off)
+  (found, opaque, nm, off)
 }
 
 /// Stmt-level driver; mirrors edp_first_live_replay_handle's walk order and
 /// its dead-`fn` exemption so it lands on the same handle the desc came from.
-fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: String, inert: Array[String], fn_names: Array[String]) -> (String, Int) {
+/// Returns (an opaque call is in the handled body, its callee name or "" when
+/// the callee is not a bare name, its source offset or -1).
+fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: String, inert: Array[String], fn_names: Array[String]) -> (Bool, String, Int) {
   let mut i = 0
   let mut found = false
+  let mut opaque = false
   let mut nm = ""
   let mut off = -1
   while i < Array::length(stmts) && !found {
@@ -3070,33 +3133,38 @@ fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: Str
         if dead_fn {
           ()
         } else {
-          let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+          let (f, op, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
           found = f
+          opaque = op
           nm = n
           off = o
         }
       },
       SLetMut(_, _, expr) => {
-        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        let (f, op, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
         found = f
+        opaque = op
         nm = n
         off = o
       },
       SExpr(expr) => {
-        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        let (f, op, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
         found = f
+        opaque = op
         nm = n
         off = o
       },
       STest(_, expr) => {
-        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        let (f, op, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
         found = f
+        opaque = op
         nm = n
         off = o
       },
       SBench(_, expr) => {
-        let (f, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
+        let (f, op, n, o) = edp_live_handle_opaque_info_expr(expr, ename, inert, fn_names)
         found = f
+        opaque = op
         nm = n
         off = o
       },
@@ -3104,7 +3172,7 @@ fn edp_live_handle_opaque_info(stmts: Array[Stmt], keep: Array[Bool], ename: Str
     }
     i = i + 1
   }
-  (nm, off)
+  (opaque, nm, off)
 }
 
 /// A culprit callee that went through edp_alpha_rename_shadowed carries a
