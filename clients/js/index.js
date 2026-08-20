@@ -4,7 +4,29 @@ import {
   createWebSocketTransport,
 } from "./lsp.js";
 
-const DEFAULT_WASM_PATH = "_build/wasm-gc/release/build/lib/lib.wasm";
+// The committed distributable, which is the only vibe wasm this repository
+// actually has. The previous default was
+// "_build/wasm-gc/release/build/lib/lib.wasm" -- a MoonBit-host build output
+// from `src/lib`, and NOTHING has produced that path since `src/` was retired
+// in #594, so `createVibeService()` with no wasmPath always threw. The
+// committed artifact exports every name ensureExportFunctions requires
+// (memory, vibe_init, vibe_check, vibe_check_project, vibe_format,
+// vibe_ide_outline, vibe_ide_peek_def, vibe_ide_search) and answers with real
+// diagnostics.
+//
+// It is STALE: last built for #900, and it rejects `fn` declarations
+// ("expected expr, got `fn`") while still typechecking `let`. Nothing in the
+// tree rebuilds it -- see clients/wasm/README.md. Pass `wasmPath` or
+// `wasmModule` when you have something newer.
+//
+// Resolved against THIS module, not the caller's working directory (#2138
+// review). A bare "clients/wasm/vibe.wasm" is interpreted by fs.readFile
+// relative to process.cwd() and by fetch relative to the page, so the
+// no-argument createVibeService() worked only when the caller happened to be
+// standing in the repository root -- which is why the check that proved the
+// previous fix had to chdir there first. The artifact sits next to this file;
+// import.meta.url is what knows where that is.
+const DEFAULT_WASM_PATH = new URL("../wasm/vibe.wasm", import.meta.url);
 const DEFAULT_INPUT_PTR = 1024;
 const DEFAULT_OUTPUT_PTR = 32768;
 const DEFAULT_OUTPUT_CAP = 32768;

@@ -1,26 +1,34 @@
 # clients/wasm
 
-`clients/wasm/vibe.wasm` は selfhost compiler を `wasm-gc` release でビルドした配布用成果物です。
+`clients/wasm/vibe.wasm` is a distributable build of the selfhost compiler for
+the `wasm-gc` release target. It exports `vibe_check` and friends, and
+`clients/js/` binds to it.
 
-## Update
+## Rebuilding
 
-```bash
-pkf run build-wasm-vibe
-```
+**Nothing in this repository rebuilds it.** The artifact is committed, last
+produced under the MoonBit host (#900) by a task that went with that host in
+#594; there is no `wasm-gc` release build of the compiler in the tree today to
+replace it. Until one exists, treat the committed binary as the artifact — do
+not expect a command to regenerate it.
 
-GitHub Release 用の versioned asset をローカルで組むときは:
+This README previously showed `pkf run build-wasm-vibe`, which names no task.
 
-```bash
-pkf run build-release-assets -- v0.0.1
-```
+The artifact is **stale**: it rejects `fn` declarations (`expected expr, got
+`fn``) while still typechecking `let`, so it predates the current syntax.
+`clients/js/` defaults to it anyway, because its previous default
+(`_build/wasm-gc/release/build/lib/lib.wasm`, a MoonBit-host output) has had
+no producer since #594 and made `createVibeService()` throw unconditionally.
 
 ## Smoke test with wasmtime
 
+The committed artifact does still run:
+
 ```bash
-pkf run test-wasm-vibe-wasmtime
+bash scripts/test_wasm_vibe_wasmtime.sh
 ```
 
-内部では以下を実行します:
+which is:
 
 ```bash
 wasmtime run -W gc=y -W function-references=y --invoke vibe_check clients/wasm/vibe.wasm 1024 0 4096 4096

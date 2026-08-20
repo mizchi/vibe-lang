@@ -14,9 +14,6 @@ in #594; new command behavior is added only in `lib/@vibe/compiler/` /
 | `build` | User | Produce a standalone `.wasm` binary from a `.vibe` file (debug or release) |
 | `compile` | User | Full-featured compilation with format selection (WASM, Component, WIT, IR, WAC) |
 | `serve` | User | Compile an HTTP handler + compose with the wasi-http P3 adapter + `wasmtime serve` (#537) |
-| `compile-lite` | Internal | Minimal compile path for strict performance benchmarking |
-| `precompile` | User (advanced) | Batch-compile a directory of `.vibe` modules to `.wasm` |
-| `compile-closure-payload` | Internal | Compile a materialized closure payload to WASM |
 
 ## User-Facing Commands
 
@@ -139,20 +136,6 @@ VIBE_HTTP_ADAPTER_BODY_STREAM=1 scripts/build_wasi_http_p3_full_adapter.sh \
   `scripts/test_serve_async_lift_gate.sh` (async lift, same String contract),
   `scripts/test_serve_body_stream_gate.sh` (`HostStream` body, byte-exact echo).
 
-### precompile
-
-Batch-compile all `.vibe` modules in one or more directories to `.wasm`. Useful for precompiling library/prelude modules ahead of time.
-
-```
-vibe precompile <dir...>
-vibe precompile --out-dir dist <dir...>
-vibe precompile --wasm-js-string <dir...>
-vibe precompile -Os <dir...>
-```
-
-- Skips `_test.vibe` and `_bench.vibe` files.
-- Output directory structure mirrors input, with the first path component stripped (e.g., `lib/@vibe/builtin/foo.vibe` -> `dist/prelude/foo.wasm`).
-
 ### test
 
 Run test blocks in one or more files or directories.
@@ -226,22 +209,29 @@ The pre-#594 MoonBit-host `shell` variants (`--tui`, `--ai`, `--no-posix`)
 and the separate `shell-stdin` command were retired; `vibe shell` reads
 stdin line-oriented whenever stdin is not a tty.
 
-### fetch / update-lock
+### fetch / verify
 
-Resolve imports and synchronize the lock file (`index.lock`). `update-lock` is an alias for `fetch` -- they are identical.
-
-```
-vibe fetch <file>
-vibe update-lock <file>    # same as fetch
-```
-
-### fmt
-
-Normalize and format vibe source files.
+Vendor the dependencies named in `vibe.deps` and synchronize the lock file.
+`vibe verify` re-checks already-vendored deps against `vibe.lock`.
 
 ```
-vibe fmt <file...>
-vibe fmt --dry-run <file...>
+vibe fetch [--frozen] [dir]
+vibe verify [dir]
+```
+
+There is no `vibe update-lock`; it was an alias and is gone.
+
+### Formatting (no `vibe fmt`)
+
+The CST-token formatter is real, but it is **not** a CLI verb -- `vibe fmt`
+answers `unknown command`. It is reached through the script, or the task that
+formats the whole tree:
+
+```bash
+bash scripts/vibe_fmt.sh <file.vibe>            # rewrite in place
+bash scripts/vibe_fmt.sh --check <file.vibe>    # exit 1 if not formatted
+bash scripts/vibe_fmt.sh --stdout <file.vibe>   # print, do not write
+pkf run fmt                                     # all of lib/**/*.vibe + *.vpkg
 ```
 
 **Collection wrapping** (ADR-0107, #2103/#2104). A bracket literal is written
@@ -289,85 +279,47 @@ vibe normalize --check <file.vibe>    # exit 1 if not normalized (no write)
 vibe normalize --stdout <file.vibe>   # print the result (no write)
 ```
 
-### init / new
+### new
 
-- `vibe init [dir]` -- Create `index.vibe`, `index.lock`, and `.vibe/` in the target directory.
-- `vibe new <dir>` -- Scaffold a new project (init + `main.vibex`).
+- `vibe new <dir>` -- Scaffold a starter project.
+
+There is no `vibe init`; scaffolding is `vibe new`.
 
 ### Other User Commands
 
 | Command | Description |
 |---------|-------------|
-| `bench <file\|dir...>` | Run compiled `bench {}` blocks with optional `--runs`, `--warmup`, `--n` |
-| `bench-file <file>` | Run benchmarks in a single file |
-| `hash <file>` | Compute normalized AST hash |
-| `save <file>` | Save module to content-addressed store |
-| `finalize` | Refactor scratch/db source (`--db`, `--export`, `--library`, `--print`, `--dry-run`) |
-| `apply <file>` | Resolve lock + graph head and apply artifacts |
-| `symbols [--json] <file>` | List symbols and index inclusion status |
+| `bench <file\|dir...>` | Run compiled `bench {}` blocks with optional `--iters`, `--warmup` |
+| `allocs <file>` | Possible heap-allocation sites (`FN KIND OFFSET` per line) |
+| `symbols [--legend] <file>` | Declaration outline (`NAME KIND START END [DOC]` per line) |
 | `rc-classify <file>` | RC classifier sets (`NAME SET[,SET...]`; empty = none) |
 | `rc-plan [--fn NAME] <file>` | Perceus plan (`FN BINDING ACTION COUNT`; empty = no actions) |
-| `explain-import <file>` | Visualize import ref normalization and lock lookup |
-| `clean` | Remove build artifacts |
-| `lsp` | Start LSP server (stdin/stdout) |
-| `ide <subcommand>` | Symbol/type index queries (`outline`, `peek-def`, `search`) |
-| `lsif [-o out.lsif] <file>` | Emit LSIF index |
-| `expand <file>` | Macro/import expansion |
-| `history reset` | Reset scratch namespace history/db |
+| `deps [--direct] <file>` | Resolved import closure, dependency first |
+| `grep --pattern '<pat>' [paths]` | AST pattern search, with checker-backed filters |
+| `hash [--write] <pkg_dir>` | Package content hash |
+| `add <name> <url> [dir]` | Add a dependency to `vibe.deps` and fetch it |
+| `pkg publish\|install\|add\|yank\|update` | Package registry operations |
+| `context-pack [--out FILE]` | Cheatsheet + verified golden examples as one file (#820) |
+| `lsp` | Start the stdio LSP server |
+| `self update [--cli-wasm <path>]` | Refresh the compiler wasm and rebuild the `.cwasm` |
+| `version` | Print toolchain versions |
+
+`vibe help` prints the authoritative list; `runtime/vibe` is where it is
+defined, and `scripts/check_doc_commands.sh` compares every command shown in
+this repository's documents against it.
+
+This table used to list `save`, `finalize`, `apply`, `explain-import`, `clean`,
+`ide`, `lsif`, `expand` and `history reset`. The CLI answers `unknown command`
+to every one of them (measured 2026-08-20).
 
 ## Internal Commands
 
-These commands are used by the vibe toolchain internally (e.g., by `build --debug` or the session worker). They may change without notice and are not intended for direct use.
-
-### compile-lite
-
-Minimal compile path used for strict performance comparisons (benchmarking the compiler itself). Strips all optional features: no coverage, no debug errors, no HTTP host imports, no Component Model.
-
-```
-vibe compile-lite [--wasm|--wasm-linear|--wasm-gc] [--no-dce] [--in-memory] [--profile-tsv path] [-O<level>] [-o out] <file>
-```
-
-- `--in-memory`: Compile without writing output to disk (pure compile-time measurement).
-- `--profile-tsv`: Write detailed phase timing (load/type/compile/write) to a TSV file.
-- `--profile-callstack`: Write call-stack profiling data.
-
-### compile-closure-payload
-
-Compile a materialized closure payload (produced by `emit-closure-payload`) to WASM.
-
-```
-vibe compile-closure-payload <in> <out> [mvp|no-dce]
-```
-
-### emit-module-source
-
-Extract entry-pruned module source from a database file.
-
-```
-vibe emit-module-source <in> <out> <entry>
-```
-
-### emit-closure-payload
-
-Materialize transitive closure payload from a source file.
-
-```
-vibe emit-closure-payload <in> <out>
-```
-
-### session-http / session-json
-
-Opt-in persistent session workers that accelerate `run`/`check`/`test` by keeping compilation state in memory.
-
-- `session-http --port N`: HTTP-based session (localhost).
-- `session-json`: stdin/stdout JSON protocol.
-
-### Other Internal Commands
-
-| Command | Description |
-|---------|-------------|
-| `write-file` | Materialize a selector to an output file |
-| `index <build\|query\|verify\|wal\|ref>` | Advanced graph index operations |
+There is no longer an internal command surface on the `vibe` binary. The
+`compile-lite`, `compile-closure-payload`, `emit-module-source`,
+`emit-closure-payload`, `session-http`, `session-json`, `write-file` and
+`index` commands this section used to document are all answered with
+`unknown command`; the work they named is reached from the gate scripts and
+the compiler entries directly.
 
 ## Shell Mode Comparison
 
@@ -391,8 +343,4 @@ removed in #594; both are covered by piping into `vibe shell`.)
 
 | Variable | Description |
 |----------|-------------|
-| `VIBE_RUN_BACKEND=release\|monolithic` | Disable linked debug fast path for `run` |
-| `VIBE_USE_SESSION_HTTP=1` | Enable persistent session worker for run/check/test |
-| `VIBE_LINKED_CACHE_BACKGROUND=1` | Enable background linked debug cache build after `run` |
 | `VIBE_TEST_JOBS` | Default parallelism for `test` (max 16) |
-| `VIBE_TEST_COVERAGE=1` | Required to enable `--coverage` in compile |

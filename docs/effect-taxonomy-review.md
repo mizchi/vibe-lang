@@ -188,15 +188,21 @@ preopen への拡張が必要になる(wasmtime はネイティブに複数 preo
 preopen 相当の仕組みが無いので、そちらは provider 側の単純な
 equality/allow-list チェックで足りる(confinement ほどの複雑さは無い)。
 
-### IaC への拡張(SST 型)
+### Extending to IaC (SST-style)
 
-ADR-0075 が既に参照している SST Resource Linking の方向性に素直に伸ばせる。
+This extends naturally along the SST Resource Linking direction ADR-0075
+already cites. **None of the following exists** -- `vibe plan` and `vibe apply`
+are proposed here, and the CLI answers `unknown command` to both. The block is
+tagged as text rather than shell so it does not read as something to run.
 
-```bash
-vibe plan   # main から到達可能な resource 宣言を集約 → インフラグラフを
-            # 純粋データとして生成・レビュー可能にする(compile は cloud に触れない)
-vibe apply  # provider が実プロビジョニングを実行し、論理名→物理 ID を bind
-vibe run    # BindingLock を読み、main の宣言 row が host.provides に含まれるか検査してから実行
+```text
+vibe plan   # aggregate the resource declarations reachable from `main` into an
+            # infrastructure graph, as pure reviewable data (compile never
+            # touches the cloud)
+vibe apply  # the provider does the real provisioning and binds logical name ->
+            # physical ID
+vibe run    # read the BindingLock and check that `main`'s declared row is
+            # contained in host.provides before running
 ```
 
 ## ADR-0060 への提案: region は「retrofit」ではなく「opt-in 追加」

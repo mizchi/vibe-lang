@@ -1451,9 +1451,22 @@ resolves as one.
 offsets, and iteration yields byte-valued `Int`. Unicode code-point and
 grapheme operations are not part of this API.
 
-`String::replace` / `replace_all` are **not** builtins — they are library
-functions and need `import @vibe/builtin { String::replace }`. Calling one
-without the import is `unknown name: String::replace`.
+<!-- import-required-builtins: the authoritative list. scripts/check_cheatsheet_signatures.sh
+     requires this paragraph to name EXACTLY the entries in the Signature reference
+     tables that `lookup_builtin` does not know -- no more, no less. -->
+
+These are **not builtins** — they are library functions, and calling one without
+its import is `unknown name`. The Signature reference documents them next to the
+real builtins, which is why they are listed here.
+
+From `@vibe/builtin` (`import @vibe/builtin { ... }`):
+`String::replace`, `String::replace_all`, `String::trim_start`,
+`String::trim_end`, `String::count`.
+
+From `@vibe/json` (`import @vibe/json { ... }`):
+`Json::parse`, `Json::stringify`, `Json::type_of`, `Json::get`, `Json::index`,
+`Json::is_null`, `Json::length`, `Json::keys`, `Json::stringify_lines`,
+`Json::parse_lines`.
 
 **Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
 `push` は償却 O(1)):
@@ -1570,17 +1583,21 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 | `Array::find` | `(Array[T], (T) -> Bool) -> Option[T]` |
 
 **Builder**: `ArrayBuilder::new() -> ArrayBuilder[T]`,
-`push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`。
-`MapBuilder::new() -> MapBuilder[K, V]`, `set(MapBuilder[K, V], K, V) -> Unit`,
-`freeze(MapBuilder[K, V]) -> Map[K, V]`。`for-in` 内包表記は内部でこの builder
-操作へ脱糖される。
+`push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`.
+`MapBuilder::new() -> MapBuilder[String, V]`,
+`set(MapBuilder[String, V], String, V) -> Unit`,
+`freeze(MapBuilder[String, V]) -> Map[String, V]` — String-keyed, like `Map`.
+A `for-in` comprehension desugars to these builder operations internally.
 
-**Map**: `get: (Map[K, V], K) -> V` (無ければ throw),
-`set: (Map[K, V], K, V) -> Map[K, V]` (新しい map を返す),
-`get_or: (Map[K, V], K, V) -> V`, `has_key: (Map[K, V], K) -> Bool`,
-`keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`。
+**Map** — the builtin `Map` is **String-keyed**, not generic in its key.
+`Map::set(m, 7, 1)` is `argument type mismatch for Map::set: expected String,
+got Int`. For a generic key, use `MutMap[K, V]` from `@vibe/core`.
+`get: (Map[String, V], String) -> V` (throws when absent),
+`set: (Map[String, V], String, V) -> Map[String, V]` (returns a new map),
+`has_key: (Map[String, V], String) -> Bool`,
+`keys: (Map[String, V]) -> Array[String]`,
+`values: (Map[String, V]) -> Array[V]`.
 
-**Record**: `record_set: (Record, String, V) -> Record`。
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
@@ -1588,7 +1605,10 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 
 **変換**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
-`to_string: (Any) -> String`。
+`__to_string: (Any) -> String`. **A bare `to_string` cannot be called** —
+`to_string(1)` is read as a dot-call on `Int`, and answers
+``dot-call syntax is not supported for the builtin method `Int::to_string` ``.
+Use the per-type spelling (`Int::to_string(1)`) or `__to_string(x)`.
 
 **I/O** (effect 必須). tty の現行名は `Console`。`Stdin` / `Stdout` /
 `Stderr` は同じ host import を共有する **legacy ラベル**で、row は相互に
@@ -1597,7 +1617,7 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 
 | 関数 | シグネチャ | effect |
 |---|---|---|
-| `sh` | `(String) -> Unit` | `Process` |
+| `sh` | `(String) -> String` (captured stdout) | `Process` |
 | `sh_lines` | `(String) -> Array[String]` | `Process` |
 | `Console::write_stream` | `(String) -> Unit` | `Console` |
 | `Console::write_char` | `(Int) -> Unit` | `Console` |

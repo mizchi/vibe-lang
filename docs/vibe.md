@@ -933,7 +933,7 @@ CLI:
 - `pkf run component-run -- script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
 - `pkf run component-run-moonix -- script.vibe` builds the same component and runs it via moonix.
 - TUI completion sources: builtins + PATH commands + history.
-- `pkf run install` installs the CLI to `~/.local/bin/vibe` (see `docs/install.md` for the toolchain layout).
+- `bash install/install.sh` installs the CLI (see `docs/install.md` for the toolchain layout; `VIBE_HOME` / `VIBE_BIN_DIR` choose where).
 - Imports are loaded recursively (imports of imports) for hashing and import-rename resolution.
 - Import cycle reporting is implemented for path-based import graphs
   (diagnostic stage: `import`, message prefix: `import cycle:`).
@@ -965,9 +965,10 @@ Bench:
 - 互換の expression benchmark モード（legacy）:
   - legacy expr mode (`--expr`, `--case`, `--cases`) は廃止
   - `bench {}` を含む `.vibe` file を `vibe bench <file>` で実行する
-- コンパイラ内部のマイクロベンチは `pkf run bench-typechecker` / `bench-symbol-index` /
-  `bench-advanced-graph` / `bench-array-build` / `bench-char-conversion` /
-  `bench-jsonschema` などの pkf タスクで実行する。
+- コンパイラ内部のマイクロベンチは `bench {}` を持つファイルを `vibe bench` に
+  直接渡す (`lib/@vibe/compiler/checker_bench.vibe` / `codegen_bench.vibe` /
+  `fmt_bench.vibe`、stdlib 側は `bench/`)。pkf タスクとして残っているのは
+  `bench-compile-hotspots` / `bench-http` / `bench-module-job-pool` の 3 つ。
 - `vibe index ref push <scope> <index-file>` / `pull <scope> <out-file>` maps advanced graph snapshots to git/bit refs under
   `refs/bit/index/<scope>/graph/head`.
 - `vibe index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to

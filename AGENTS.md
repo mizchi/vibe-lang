@@ -183,7 +183,7 @@ pkf run test              # operation gate (commit 前の主チェック)
 pkf run test-affected     # affected tests only, import-graph selected (#988)
 pkf run test-local        # flaker lane (directory-based selection — see caveat)
 pkf run full-gate         # complete operation gate
-pkf run run -- args       # run main with args
+pkf run run -- prog.vibex # run a .vibex root (entry `main`); args after a 2nd --
 # 型検査 / 診断: vibe check <file.vibe> (空出力 = clean、診断ありは exit 1)
 # selfhost の CST-token formatter (lib/@vibe/compiler/fmt/format.vibe,
 # scripts/vibe_fmt.sh, #854/#1138) は実装済みで `bash scripts/vibe_fmt.sh
@@ -723,7 +723,18 @@ seed under `lib/@vibe|@vibex` and no explicit compiler was given
 `VIBE_TEST_QUIET_COMPILER_NOTE=1`). Pinned by `scripts/vibe_test_smoke.sh`
 (`pkf run test-vibe-test`).
 
-Two related rules, both learned the same way:
+**This is about any oracle, not just `vibe test`.** A gate that asks the
+compiler a question has to be told WHICH compiler, and the ones that pick for
+themselves all pick the same wrong way: newest generation on disk, else the
+committed seed. On a clean CI run that answers from the seed while the
+checkout's stage2 is still building; on a reused workspace it answers from an
+unrelated generation. Either way the gate is green about a compiler that does
+not contain the change. A `new Task` whose script probes the compiler needs
+`deps { selfhostGeneration }` and should be handed that generation's artifact
+explicitly (`check_rc_default.sh`, `check_cheatsheet_signatures.sh` and
+`check_package_sibling_scope.sh` each take an env override for exactly this).
+
+Three related rules, all learned the same way:
 
 - **Establish the baseline before changing anything.** Run the failing case
   first and confirm it reproduces *through the compiler you are about to
@@ -732,6 +743,12 @@ Two related rules, both learned the same way:
 - **Never test argument order with a commutative operator.** `x + y` gives the
   right answer whether or not arguments were reordered; use `x - y`. A
   reordering bug survived a "fix verified" claim this way (#1899).
+- **A gate must not be able to see itself.** Twice in #2138 a checker counted
+  its own text as evidence: `check_task_inputs.sh` matched the tool names
+  inside its own regex literal, and `check_doc_commands.sh` read a variable
+  name out of its own comment and certified the reference it was meant to
+  reject. Exclude the checker's own file from whatever corpus it scans, and
+  Red-test with a probe that must fail.
 
 ## Before Commit
 

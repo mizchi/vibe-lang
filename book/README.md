@@ -24,7 +24,7 @@ Open `_build/book/index.html` in a browser. On `main`,
 GitHub Pages (`https://mizchi.github.io/vibe-lang/`). The repo Pages
 source is already **GitHub Actions**. This replaces the old playground
 artifact at that URL; the playground still lives in `playground/`
-(`pkf run playground-dev`).
+(an ordinary vite app: `cd playground && pnpm install && pnpm dev`).
 
 ## Layout
 

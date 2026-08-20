@@ -137,13 +137,22 @@ A trailing `?` on an `allows` item is the optional grade. A required
 types it as `Attempt[T, String]` (`NotGranted` / `Errored` / `Granted`)
 and only accepts it on an optional `allows`.
 
-Codegen does **not** lower `perform?` yet. Measured on this compiler:
-the example typechecks, then ICE
-(`perform?` reached code generation unresolved). Until that lands,
-keep it in `skip` — do not pretend it runs.
+Codegen does **not** lower `perform?` yet, so **the compiler rejects it**
+(#2145):
+
+> \`perform?\` is not lowered yet (#2145): the checker types it as
+> \`Attempt[T, String]\`, but code generation cannot emit it. Use a REQUIRED
+> capability and plain \`perform\` — drop the \`?\` from both the \`allows\` item
+> and the \`perform\` — and handle the failure with \`try\`/\`handle\` instead of
+> matching \`Attempt\`.
+
+`vibe check` says the same thing, so you learn it before you build. It used to
+typecheck clean and then die at code generation with "this is a bug in the
+compiler and not in your program", which is not something a reader of this
+chapter could act on.
 
 ```vibe skip
-// skip: checker accepts Attempt[String, String]; codegen does not bind perform?
+// skip: rejected by the checker -- codegen does not lower perform? (#2145)
 fn main() -> Int with () allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("config.json")
   match a {

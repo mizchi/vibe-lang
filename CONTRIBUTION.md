@@ -12,26 +12,28 @@ MoonBit toolchain is required (the original MoonBit host was retired in #594;
 see [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md)).
 
 The task runner is [pkfire](https://github.com/mizchi/pkfire) (`pkf`), defined
-in `Taskfile.pkl` (238 tasks). If you're working with an AI coding agent on
+in `Taskfile.pkl`. If you're working with an AI coding agent on
 this repo, see [CLAUDE.md](CLAUDE.md) for the full agent-facing workflow and
 gotchas — this document is the human-readable overview of the same territory.
 
 ## Development
 
 ```bash
-pkf run            # check + test (release-check)
-pkf run fmt        # format code
-pkf run check      # type check
-pkf run test       # run tests
-pkf run test-local # affected local tests via flaker (fast inner loop)
-pkf run test-unit           # selfhost unit tests (allowlist-gated)
-pkf run full-gate           # full selfhost operation gate
-pkf run test-integration-deno  # deno integration tests (artifact-only wasm-gc)
-pkf run coverage            # selfhost suite coverage aggregation
-pkf run release-check       # full check before release (fmt + info + check + test + gates)
-pkf run playground-dev      # current wasm build で playground を起動
-pkf run playground-build    # GitHub Pages 向け playground を build
+pkf run                # default: release-check (full sign-off)
+pkf run test           # operation gate — the main pre-commit check
+pkf run test-affected  # only the tests the change can reach (fast inner loop)
+pkf run test-unit      # selfhost unit tests (allowlist-gated)
+pkf run full-gate      # full selfhost operation gate
+pkf run fmt            # format lib/**/*.vibe and lib/**/*.vpkg
+pkf run coverage       # selfhost suite coverage aggregation
+pkf run release-check  # fmt + check + test + gates, before release
 ```
+
+Type checking is a CLI verb rather than a task: `vibe check <file.vibe>`
+(empty output = clean, diagnostics one per line + exit 1).
+
+The playground is an ordinary vite app with no pkf task — `cd playground &&
+pnpm install && pnpm dev` (or `pnpm build`).
 
 Coverage は selfhost テストスイート基準で測る:
 - 集計: `pkf run coverage`
@@ -65,106 +67,68 @@ workflows, but it applies equally to manual development.
 - `clients/js/lsp.js` / `clients/js/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
 
 `clients/wasm/` には配布用 wasm を置く:
-- `clients/wasm/vibe.wasm` — selfhost compiler をビルドした成果物
-- `pkf run build-wasm-vibe` で更新
-- `pkf run test-wasm-vibe-wasmtime` で `wasmtime --invoke vibe_check` 疎通確認
+- `clients/wasm/vibe.wasm` — selfhost compiler をビルドした成果物。
+  **これを再生成する仕組みはリポジトリに無い** (最後の生成は MoonBit host 時代
+  の #900、当時のタスクは #594 で host ごと撤去された)。コミット済みバイナリ
+  そのものが成果物。
+- `bash scripts/test_wasm_vibe_wasmtime.sh` で `wasmtime --invoke vibe_check`
+  疎通確認 (コミット済み成果物に対しては現在も通る)
 - `pkf run build-release-assets v0.0.1` で GitHub Release 添付用の versioned asset を `dist/release/v0.0.1/` に生成
 - `v*` tag push で `.github/workflows/release.yml` が `vibe-v*.wasm` と checksum を GitHub Release に公開
 
 ## CLI (development reference)
 
-These examples run scripts through the task runner (`pkf run run -- ...`),
-which is how you'd exercise the CLI while developing the compiler itself. For
-the user-facing `vibe <command>` reference, see
-[docs/cli-commands.md](docs/cli-commands.md).
+`pkf run run` is **not** a CLI multiplexer. It is `scripts/vibe_run.sh`, which
+takes one `.vibex` executable root with entry `main` (ADR-0075) — so the
+`pkf run run -- compile ...` / `-- test ...` / `-- ide ...` forms this section
+used to show could never work, and neither could their targets: there is no
+`.vibex` under `examples/`, and `ide`, `index`, `lsif` and `shell-stdin` are
+answered `unknown command` by the CLI.
+
+Install the CLI to exercise it:
 
 ```bash
-# Run vibe script
-pkf run run -- examples/basics.vibe
-# (comprehensive syntax tour)
-pkf run run -- examples/syntax.vibe
-
-# Run unstable async examples (required for await/sleep/yield runtime execution)
-pkf run run -- --unstable-async examples/async.vibe
-# flags can also be placed before command
-pkf run run -- --unstable-async run examples/async.vibe
-
-# Run tests in script
-pkf run run -- test examples/*.vibe
-# For async tests
-pkf run run -- test --unstable-async examples/async.vibe
-
-# Compile to WASM
-pkf run run -- compile --wasm examples/wasm/sleep_demo.vibe -o /tmp/out.wasm
-# Compile + optimize with wite (-Oz default)
-pkf run run -- compile --wasm --wite examples/wasm/sleep_demo.vibe -o /tmp/out.opt.wasm
-# Compile + optimize with explicit level
-pkf run run -- compile --component -O3 script.vibe -o out.component.opt.wasm
-
-# Compile to Component Model WASM
-pkf run run -- compile --component script.vibe -o out.component.wasm
-
-# Generate component embedding WIT for wasm-tools/wkg pipeline
-pkf run run -- compile --wit-component script.vibe -o out.component.wit
-
-# (stdio builtins are wired through wasi:cli/stdin|stdout + wasi:io/streams)
-
-# Interactive shell
-pkf run run -- shell
-
-# Line shell for stdio/pipeline environments
-pkf run run -- shell-stdin --no-prompt
-# Enable unstable async in line shell
-pkf run run -- shell-stdin --unstable-async
-
-# IDE-like symbol queries
-pkf run run -- ide outline examples/syntax.vibe
-pkf run run -- ide peek-def some_fn examples/syntax.vibe
-pkf run run -- ide search Option examples/syntax.vibe
-# JS-backed ide command
-pkf run ide-js -- outline examples/syntax.vibe
-pkf run ide-js -- peek-def some_fn examples/syntax.vibe
-pkf run ide-js -- search Option examples/syntax.vibe
-# `ide-js` は entry から相対 import を再帰収集して project request を生成する
-
-# Advanced graph index PoC (build/query/verify)
-pkf run run -- index build examples/syntax.vibe -o /tmp/advanced-graph-index.json
-pkf run run -- index query symbol add /tmp/advanced-graph-index.json
-pkf run run -- index verify /tmp/advanced-graph-index.json
-
-# Emit LSIF from the same symbol index backend
-pkf run run -- lsif -o /tmp/vibe.lsif examples/syntax.vibe
-
-# Build component + run with wasmtime (explicit invoke for non-command component)
-pkf run component-run -- lib/@vibe/builtin/test_import_test.vibe
-# stdin 経由の実行も可能:
-printf 'A' | pkf run component-run -- your_stdio_script.vibe
-# stream TUI デモ:
-printf 'hello\nworld\n' | pkf run component-run -- examples/wasm/tui_stream_demo.vibe
-# 簡易デモ実行タスク:
-pkf run demo-tui-stream
-
-# moonix で実行（moonix の CLI 差分はランチャで吸収）
-pkf run component-run-moonix -- lib/@vibe/builtin/test_import_test.vibe
-
-# Install CLI to ~/.local/bin/vibe
-pkf run install
+VIBE_HOME=~/.vibe VIBE_BIN_DIR=~/.local/bin bash install/install.sh
 ```
 
-Notes:
-- Script-level stdio execution goes through `pkf run component-run -- <file.vibe>`
-  (moonix 実行は `pkf run component-run-moonix -- <file.vibe>`, 必要なら
-  `MOONIX_BIN=/path/to/moonix`; `component-run-moonix` は `moonix` 未導入時に
-  `scripts/bootstrap_moonix_bin.sh` を自動試行する)。
-- Components import `wasi:cli/stdin|stdout@0.2.0` and `wasi:io/streams@0.2.0`
-  directly, so they run on a component / p3-compatible host.
-- Backend 契約: selfhost CLI では `--wasm` = linear (production default)、
-  `--wasm-gc` は未配線 (throw)。詳細は
-  [docs/spec/memory-contract.md](docs/spec/memory-contract.md)。
-- The old MoonBit-host wasi CLIs (`vibe_wasi` / `vibe_compile_wasi` under
-  `src/cmd/`) were retired with the MoonBit host in #594; the distributed
-  compiler wasm is now built from selfhost source (`pkf run build-wasm-vibe`,
-  or the installer's seed → stage1 → stage2 build).
+```bash
+# Type-check + diagnose. Empty output = clean; diagnostics one per line, exit 1.
+vibe check examples/basics.vibe
+vibe check --single-file examples/basics.vibe   # buffer scope, no import resolution
+
+# Compile to wasm (the file needs an exported `main`)
+vibe compile examples/perform_handle.vibe -o /tmp/out.wasm
+vibe compile --component script.vibe -o out.component.wasm
+vibe compile --wit script.vibe                  # the WIT world for its effect surface
+
+# Tests and benches
+vibe test lib/@vibe/builtin/bool_test.vibe
+vibe test lib/@vibe/builtin                     # a directory expands to *_test.vibe
+vibe bench lib/@vibe/builtin/iterator_bench.vibe
+
+# Compiled REPL
+vibe shell
+
+# Editor queries — the same analysis the LSP serves, from the shell
+vibe symbols  examples/basics.vibe
+vibe type-at  examples/basics.vibe 3 7
+vibe deps     examples/basics.vibe
+vibe grep --pattern 'Iterator::map($(a:args))' lib
+```
+
+Without installing, the two wrappers the gates themselves use:
+
+```bash
+bash scripts/vibe_test.sh lib/@vibe/builtin/bool_test.vibe   # compile + run test blocks
+bash scripts/vibe_run.sh  scripts/review_lint.vibex          # run a .vibex root
+```
+
+`scripts/vibe_test.sh` compiles with the **committed seed** unless you pass
+`VIBE_TEST_CLI_WASM=<stage2.wasm>` — when the change under test is in the
+compiler, an unset value answers for a compiler that does not contain it.
+
+For the user-facing command reference see
+[docs/cli-commands.md](docs/cli-commands.md).
 
 ## WASM Execution
 
@@ -174,18 +138,18 @@ Notes:
 # Build Rust host runtime
 pkf run build-async-host
 
-# Run sleep demo
-pkf run sleep-demo
-
-# Run any WASM with sleep support
-pkf run run -- compile --wasm your_script.vibe -o /tmp/out.wasm
+# Compile, then run the wasm on the async host
+vibe compile your_script.vibe -o /tmp/out.wasm
 pkf run run-wasm-async -- /tmp/out.wasm
 ```
+
+(There is no `pkf run sleep-demo`; `examples/wasm/sleep_demo.vibe` is compiled
+and run with the two commands above.)
 
 ### With wasmtime (basic)
 
 ```bash
-pkf run run -- compile --wasm script.vibe -o /tmp/out.wasm
+vibe compile script.vibe -o /tmp/out.wasm
 wasmtime /tmp/out.wasm
 ```
 
@@ -283,24 +247,34 @@ WASM GC fixtures live in `fixtures/wasm_gc/*.vibe` and check for `struct.new/get
 `vibe bench` は `bench {}` ブロックを言語機能として実行する:
 
 ```bash
-pkf run run -- bench examples/simple_bench.vibe
+vibe bench examples/simple_bench.vibe
 ```
 
 `<file|dir...>` 指定時の canonical backend は `--backend compiled` で、`--backend wasm` は互換 alias として受け付ける。
 legacy の式ベンチ (`--expr/--case/--cases`) は廃止。`bench {}` を含む `.vibe` file を渡す。
 compiled bench path ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
 
-コンパイラ内部のマイクロベンチ (pkf tasks):
+コンパイラ内部のマイクロベンチは pkf タスクではなく `bench {}` ブロックを
+持つファイルで、`vibe bench` に直接渡す:
 
 ```bash
-pkf run bench-typechecker      # 型検査スループット
-pkf run bench-symbol-index     # シンボルインデックス構築
-pkf run bench-advanced-graph   # graph index build/query
-pkf run bench-array-build      # 配列構築
-pkf run bench-char-conversion  # 文字コード変換
-pkf run bench-jsonschema       # jsonschema 検証
-pkf run bench-bundle-size-monitor-strict  # bundle-size budget チェック
+vibe bench lib/@vibe/compiler/checker_bench.vibe   # 型検査
+vibe bench lib/@vibe/compiler/codegen_bench.vibe   # codegen
+vibe bench lib/@vibe/compiler/fmt_bench.vibe       # formatter
+vibe bench bench/bench_string.vibe                 # stdlib 側は bench/ 以下
 ```
+
+タスクとして残っているのは以下の3つ:
+
+```bash
+pkf run bench-compile-hotspots -- <stage2.wasm>  # 実コンパイルの self-time 表
+pkf run bench-http
+pkf run bench-module-job-pool
+```
+
+(`bench-typechecker` / `bench-symbol-index` / `bench-advanced-graph` /
+`bench-array-build` / `bench-char-conversion` / `bench-jsonschema` /
+`bench-bundle-size-monitor-strict` はいずれも存在しないタスクだった。)
 
 ## Task management
 

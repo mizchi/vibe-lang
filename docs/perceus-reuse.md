@@ -13,7 +13,7 @@ liveness), ADR-0090(region), ADR-0091(`#zero_alloc`),
 
 Perceus RC は production default(ADR-0055 #493 cutover)だが、実装は
 dup/drop/alias-dup の挿入と borrow 推論まで — **drop-guided reuse / FBIP /
-TRMC / COW はどれも未実装**である(`rc-port.md` Phase 3.5 が明記)。結果:
+TRMC / COW はどれも未実装**である(`rc-port.md` の rc-check elision 節が明記)。結果:
 
 - RC の実行時コストは bump 比 wall **~1.6–2.1×**。主因は dup/drop と、
   match で分解して作り直す関数型スタイルの「drop 直後に同レイアウトを
@@ -107,7 +107,7 @@ Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が
 ## Non-goals
 
 - COW / `MakeUnique`(vibe の Array/Map は無条件 in-place であり、COW 化は
-  別議論。rc-port.md Phase 3.5 の結論を維持)。
+  別議論。rc-port.md の rc-check elision 節の結論を維持)。
 - 循環回収(region = ADR-0090 が引き受ける)。
 - wasm-gc backend(RC 自体が linear 専用)。
 - fip/fbip の独立注釈(Decision 4 のとおり `#zero_alloc` に一本化)。

@@ -1,13 +1,17 @@
 # Coverage strategy
 
-> **Status:** MoonBit host が退役 (#594) したため、下記 1)
-> `coverage-moon` と 2) `coverage-deno` は `src/` 依存で **動かない**（driver
-> script も削除済み）。3) の vibe ソース span coverage も計測側
-> (`vibe compile --coverage`) が MoonBit host 専用で、コンパイラには移植され
-> ていない。**現在動くのは下記「0) コンパイラの関数
-> カバレッジ」**。1〜3 は歴史的経緯として残す。
+> **Status (measured 2026-08-20).** Working: the selfhost `#cov` lane
+> (`pkf run coverage*`) and the per-file `--coverage` flags on
+> `scripts/vibe_test.sh` / `scripts/vibe_run.sh`.
+>
+> **`pkf run coverage-wasm-std` does NOT work, and exits 0 anyway.** It calls
+> `scripts/coverage_wasm_source.sh` — a file that no longer exists in the tree.
+> Measured: 21 of 21
+> cases fail with `No such file or directory`, the report says
+> `kpi 0.00% / lines 0/0 / branches 0/0`, and the task **exits 0** because
+> `VIBE_WASM_STD_COVERAGE_STRICT` defaults to `0`. Tracked in #2153.
 
-## 0) コンパイラの関数 / 分岐カバレッジ（#cov）
+## コンパイラの関数 / 分岐カバレッジ（#cov）
 
 コンパイラ自身を **計測ビルド**して、ワークロード実行時にどの compiler
 関数が呼ばれたか（関数カバレッジ）と、どの `if`/`match` 分岐が実行されたか
@@ -500,113 +504,57 @@ line/branch は span 配線が前提で別途実装が必要。関数レベル�
 未テスト経路の検出」には十分有効（例: dead な `__to_string` inline path のような
 穴は missed_fns に現れる）。
 
----
+## vibe ソース span ベース WASM カバレッジ
 
-以下は MoonBit host 時代の coverage（歴史的経緯、現在は動かない）。
+vibe ソース基準の line/branch ヒットは、**runner が書く `.cov.json`** から
+集計する (`VIBE_COV_OUT` / `VIBE_COV_RAW=1` — `scripts/coverage_drivers.sh`,
+`scripts/vibe_run.sh`)。
 
-このプロジェクトでは coverage を 3 つに分けて測る。
+**`vibe compile --coverage` は何もしない。** 実測 (2026-08-20): 同じソースを
+`--coverage` 付き / 無しでコンパイルすると、出力 `.wasm` も併走する
+`.funcmap` も**バイト単位で同一**。`.funcmap` (`NAME<TAB>INDEX`) は
+`--coverage` とは無関係に FS compile が常に書くもので、消費するのは
+coverage ではなく失敗時のスタック注釈 (`scripts/vibe_test.sh`,
+`test_vibe_break_line.sh`, `test_vibe_step.sh`)。
 
-1. MoonBit 本体コードの行カバレッジ
-2. WASM 成果物をホストから呼ぶ統合導線のカバレッジ
-3. vibe ソース span ベースの WASM 実行カバレッジ（line/branch）
-
-## 1) MoonBit 本体カバレッジ
-
-`moon test --enable-coverage` + `moon coverage report` を使う。
-
-```bash
-just coverage-moon
-```
-
-生成物:
-- `_build/coverage/moon/summary.txt`
-- `_build/coverage/moon/moonbit-cobertura.xml`
-- `_build/coverage/moon/html/index.html`
-
-環境変数:
-- `VIBE_MOON_COVERAGE_TARGET` (`native` / `wasm` / `wasm-gc` / `js`)
-- `VIBE_MOON_COVERAGE_PACKAGE` (例: `parser`)
-- `VIBE_MOON_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
-- `VIBE_MOON_COVERAGE_DIR` (出力先ディレクトリ)
-
-例:
+動く経路:
 
 ```bash
-VIBE_MOON_COVERAGE_TARGET=wasm-gc \
-VIBE_MOON_COVERAGE_PACKAGE=parser \
-VIBE_MOON_COVERAGE_MIN_LINE=70 \
-just coverage-moon
+# テストファイル単位 (JSON は _build/vibe_test/coverage/ へ)
+bash scripts/vibe_test.sh --coverage lib/@vibe/builtin/bool_test.vibe
+
+# .vibex を走らせて計測 (_build/vibe_run/<name>.cov.json)
+bash scripts/vibe_run.sh --coverage prog.vibex
 ```
 
-## 2) WASM 統合カバレッジ
+実測例:
 
-`tests/integration-deno/` は `src/lib` の wasm-gc 成果物を
-`WebAssembly.instantiate` で直接テストする。ここは Deno coverage で測る。
-
-```bash
-just coverage-deno
+```
+ok   lib/@vibe/builtin/bool_test.vibe  [cov fn 20/32, branch 6/6]
+[vibe-test] coverage: functions 20/32 (62.50%), branches 6/6 (100.00%)
 ```
 
-生成物:
-- `_build/coverage/deno/summary.txt`
-- `_build/coverage/deno/lcov.info`
-- `_build/coverage/deno/html/index.html`
+**壊れている経路**: `pkf run coverage-wasm-std` /
+`scripts/coverage_scratch_sidecar.sh` はどちらも
+`scripts/coverage_wasm_source.sh` を呼ぶ — no longer exists (現存しない)。
+`scripts/coverage_wasm_source.mjs` (`<wasm-file> <map-json>` を取る driver) は
+その wrapper 経由でしか呼ばれないので、到達不能。#2153。
 
-環境変数:
-- `VIBE_DENO_COVERAGE_FILTER` (テスト絞り込み)
-- `VIBE_DENO_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
-- `VIBE_DENO_COVERAGE_DIR` (出力先ディレクトリ)
+`VIBE_WASM_SOURCE_COVERAGE_*` (`MODE` / `NO_DCE` / `RUN_TESTS` /
+`ALLOW_TRAP` / `DIR`) は `coverage_wasm_std.sh` と
+`coverage_scratch_sidecar.sh` が読むが、上記のとおり両方とも今は機能しない。
 
-例:
-
-```bash
-VIBE_DENO_COVERAGE_FILTER='vibe wasm api' \
-VIBE_DENO_COVERAGE_MIN_LINE=60 \
-just coverage-deno
-```
-
-## WASM での考え方
-
-WASM で「何を coverage と見なすか」を分離するのが実務的:
-
-- コンパイラ/型検査などの本体ロジック: MoonBit coverage
-- wasm export の API 契約とホスト接続: Deno coverage
-
-この分離により、`wasm-gc` 実行経路の回帰と API 回帰を同時に監視できる。
-
-## 3) vibe ソース span ベース WASM カバレッジ
-
-`vibe compile --coverage` で生成する `.cov.json` と wasm カウンタを使って、
-vibe ソース基準の line/branch ヒットを集計する。
-
-```bash
-just coverage-wasm-source fixtures/pattern_coverage_test.vibe
-```
-
-生成物:
-- `_build/coverage/wasm-source/<entry>.summary.txt`
-- `_build/coverage/wasm-source/<entry>.report.json`
-- `_build/coverage/wasm-source/<entry>.wasm.cov.json`
-
-環境変数:
-- `VIBE_WASM_SOURCE_COVERAGE_MODE` (`wasm` / `wasm-js-string`)
-- `VIBE_WASM_SOURCE_COVERAGE_NO_DCE` (`0` / `1`)
-- `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS` (`0` / `1`)
-- `VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP` (`0` / `1`)
-- `VIBE_WASM_SOURCE_COVERAGE_DIR` (出力先ディレクトリ)
-
-実装上の制約:
-- `compile --coverage` は test 専用で、`VIBE_TEST_COVERAGE=1` が必要
-- 通常開発では `coverage-wasm-source` ツール経由でのみ生成する
-- `VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS=1` で `test {}` を実行可能
-  (`compile --coverage --coverage-run-tests`)
+かつてここに載っていた `VIBE_TEST_COVERAGE=1` は**どこからも読まれていない**。
+`vibe test --coverage` も存在しない (インストール済み CLI は
+`not found: --coverage` と答える) — `bash scripts/vibe_test.sh --coverage` が
+その役割を担う。
 
 ### @vibe/builtin 一括計測
 
 `@vibe/builtin/**/*_test.vibe` をまとめて回すときは:
 
 ```bash
-just coverage-wasm-std
+pkf run coverage-wasm-std
 ```
 
 生成物:
@@ -658,22 +606,8 @@ line 率は `line point` の重複ではなく `raw.lines` の unique line 数�
 ```bash
 VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE=50 \
 VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE=55 \
-just coverage-wasm-std
+pkf run coverage-wasm-std
 ```
-
-## Coverage の有用性判定（2026-02-11）
-
-実測（このリポジトリ現状）:
-- MoonBit coverage (`just coverage-moon`): `18718/29541` (`63.36%`)
-- Deno integration coverage (`just coverage-deno`): `All files line 69.9%`
-- @vibe/builtin wasm coverage (`just coverage-wasm-std`): `626/626` (`100.00%`)
-
-運用判断:
-- `coverage-moon` はコンパイラ/型検査本体の回帰検知に有効（本命KPI）。
-- `coverage-deno` は wasm export 契約と JS バインディング回帰の検知に有効。
-- `coverage-wasm-std` は std テストシナリオの抜け検知に有効（backend matrix + strict 併用）。
-- 逆に、coverage 単体では意味論の正しさは保証しないため、
-  golden / integration / fixture テストとセットで見る。
 
 ## 一括実行
 
@@ -683,6 +617,5 @@ pkf run coverage-suite-branch-gate # branch coverage gate
 pkf run coverage-suite-next-branches  # 未到達分岐の提案
 ```
 
-> 旧 `coverage-moon` / `coverage-deno` / `coverage-wasm-source` / `coverage-wasm-std`
-> は MoonBit host 退役 (#594) で撤去済み。現在動くのは上記 selfhost-suite 系のみ
-> (セクション 0 参照)。
+> `coverage-wasm-std` is a live `pkf` task over
+> `scripts/coverage_wasm_std.sh`.

@@ -135,13 +135,21 @@ authority is a separate clause
 `Attempt[T, String]` (`NotGranted` / `Errored` / `Granted`) として型付けし、
 optional な `allows` の下でのみ受理する。
 
-codegen はまだ `perform?` を lowering **しない**。このコンパイラでの実測:
-例は型検査を通り、その後 ICE になる
-(`perform?` reached code generation unresolved)。これが着地するまでは
-`skip` に留めること — 動くふりをしない。
+codegen はまだ `perform?` を lowering **しない**ので、**コンパイラはこれを
+拒否する** (#2145):
+
+> \`perform?\` is not lowered yet (#2145): the checker types it as
+> \`Attempt[T, String]\`, but code generation cannot emit it. Use a REQUIRED
+> capability and plain \`perform\` — drop the \`?\` from both the \`allows\` item
+> and the \`perform\` — and handle the failure with \`try\`/\`handle\` instead of
+> matching \`Attempt\`.
+
+`vibe check` も同じことを言うので、ビルドする前に分かる。かつては型検査を
+通ってから codegen で「this is a bug in the compiler and not in your program」
+と落ちていたが、それはこの章の読者が対処できる文言ではない。
 
 ```vibe skip
-// skip: checker accepts Attempt[String, String]; codegen does not bind perform?
+// skip: rejected by the checker -- codegen does not lower perform? (#2145)
 fn main() -> Int with () allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("config.json")
   match a {

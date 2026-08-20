@@ -78,7 +78,7 @@ programs (largest on `variant_float`, which allocates the most distinct heap
 shapes: an array of enum values). See
 `docs/archive/adr/0038-perceus-rc-binary-optimization.md` for the RC binary
 size optimizations already applied (br_table dispatch, conditional free-list,
-etc.) and `docs/spec/rc-port.md` for RC's overall status (Phase 3, drop
+etc.) and `docs/spec/rc-cutover-readiness.md` for RC's overall status (drop
 codegen, in progress).
 
 ### #1056 rc-check elision pass — measured impact on this suite: none (expected)

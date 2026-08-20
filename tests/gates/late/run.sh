@@ -2247,7 +2247,7 @@ echo "[compiler-gate] operation-level fix-it precision ok"
 #        separately would otherwise ship a pack that lies about its own
 #        examples.
 echo "[compiler-gate] 67/67 vibe context-pack generator (#820 sub-item 3)"
-if ! bash eval/lang-review/run_golden.sh; then
+if ! LANG_REVIEW_STAGE2="$stage2_wasm" bash eval/lang-review/run_golden.sh; then
   echo "[compiler-gate] FAIL: eval/lang-review/run_golden.sh -- the golden corpus context-pack bundles no longer compiles/runs as claimed" >&2
   exit 1
 fi
@@ -2255,7 +2255,7 @@ fi
 # on (rubric dimension 8). It is a TWO-WAY ratchet -- a diagnostic that stops
 # firing, whose wording drifts, OR that starts firing on a case recorded as
 # silent all fail here, because each of those invalidates the recorded score.
-if ! bash eval/lang-review/run_repair.sh; then
+if ! LANG_REVIEW_STAGE2="$stage2_wasm" bash eval/lang-review/run_repair.sh; then
   echo "[compiler-gate] FAIL: eval/lang-review/run_repair.sh -- the diagnostics the repair_convergence score was measured against changed; re-score in eval/lang-review/repair/README.md" >&2
   exit 1
 fi
@@ -4530,7 +4530,7 @@ echo "[compiler-gate] resource declaration identity rules ok"
 # before the loop below had checked anything, so a failing run announced a
 # pass and then printed FAIL; "vs" states the subject without the verdict.
 # The counted result is echoed after the loop.
-echo "[compiler-gate] 92/92 fixtures/typecheck verdicts vs expected.tsv (#138)"
+echo "[compiler-gate] 92/92 fixtures/typecheck verdicts vs expected.tsv, no-entry lane (#138, #2142)"
 # These 61 fixtures came with `.diag` snapshots of the RETIRED MoonBit host's
 # rendered diagnostic. No current path emits that shape, no harness read them,
 # and every one was stale -- so they were documentation of an expectation

@@ -113,7 +113,7 @@ the repo; not the user manual.
 | [spec/memory-contract.md](spec/memory-contract.md) | `internal/design/` | Linear / wasm-gc / RC |
 | [spec/profiling.md](spec/profiling.md) | `internal/design/` | |
 | [spec/rc-cutover-readiness.md](spec/rc-cutover-readiness.md) | `internal/design/` | ADR-0055 status |
-| [spec/rc-port.md](spec/rc-port.md) | `internal/design/` | ADR-0055 plan |
+| [spec/rc-port.md](spec/rc-port.md) | `internal/design/` | ADR-0055 design record |
 | [spec/show-trait-design.md](spec/show-trait-design.md) | `internal/design/` | |
 | [spec/simd-api-design.md](spec/simd-api-design.md) | `internal/design/` | |
 | [spec/structured-shell-design.md](spec/structured-shell-design.md) | `internal/design/` | |

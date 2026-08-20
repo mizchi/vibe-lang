@@ -8,8 +8,8 @@ This directory contains runnable examples of vibe language features.
 - `syntax.vibe`: advanced syntax tour (Generics/Struct/Exception/wasm types)
 
 ```bash
-pkf run run -- test examples/basics.vibe
-pkf run run -- test examples/syntax.vibe
+vibe test examples/basics.vibe
+vibe test examples/syntax.vibe
 ```
 
 ## Language Features
@@ -35,7 +35,7 @@ pkf run run -- test examples/syntax.vibe
   [CONTRIBUTION.md の Bench セクション](../CONTRIBUTION.md#bench)）
 
 ```bash
-pkf run run -- bench examples/simple_bench.vibe
+vibe bench examples/simple_bench.vibe
 ```
 
 ## Core Library

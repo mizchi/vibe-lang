@@ -157,28 +157,28 @@ let v = None |> unwrap_or(0)
 ## Running Tests
 
 ```bash
-# Run with the default compiled backend
-just run test \
-  @vibe/builtin/builtin_traits_test.vibe \
-  @vibe/builtin/bool_test.vibe \
-  @vibe/builtin/cmp_test.vibe \
-  @vibe/builtin/char_test.vibe \
-  @vibe/builtin/bytes_test.vibe \
-  @vibe/builtin/int_test.vibe \
-  @vibe/builtin/float_test.vibe \
-  @vibe/builtin/double_test.vibe \
-  @vibe/builtin/array_test.vibe \
-  @vibe/builtin/option_test.vibe \
-  @vibe/builtin/result_test.vibe \
-  @vibe/builtin/string_test.vibe \
-  @vibe/builtin/io_test.vibe
+# every test in the package
+bash scripts/vibe_test.sh lib/@vibe/builtin
 
-# Validate WASM compilation (import/export usage)
-just run compile --wasm @vibe/builtin/test_import.vibe -o /tmp/test.wasm
-wasmtime run --invoke _start /tmp/test.wasm  # -> 484 (untagged: 121)
+# one file
+bash scripts/vibe_test.sh lib/@vibe/builtin/string_test.vibe
 ```
+
+`scripts/vibe_test.sh` takes any number of files or directories. It compiles
+with the **committed seed** by default; when you are testing a change to the
+compiler itself, pass `VIBE_TEST_CLI_WASM=<stage2.wasm>` or the run answers for
+a compiler that does not contain it.
+
+This section previously showed `just run test <13 files>` and
+`just run compile --wasm @vibe/builtin/test_import.vibe`. There is no Justfile
+— the runner is pkfire — and three of those paths had moved: `test_import.vibe`
+is now `test_import_test.vibe`, `io_test.vibe` moved to `@vibe/console`, and
+`result_test.vibe` is gone.
 
 ## Notes
 
-- `@vibe/builtin/test_import.vibe` is only for compilation validation (no `test` blocks).
-- `@vibe/console/tui.vibe` (formerly `@vibe/builtin/io.vibe`) depends on runtime builtins, so it is exercised via the native/compiled test path rather than pure Core WASM (`--wasm`) today.
+- `@vibe/builtin/test_import_test.vibe` exists to validate that a module's
+  import/export surface compiles.
+- `@vibe/console/tui.vibe` (formerly `@vibe/builtin/io.vibe`) depends on runtime
+  builtins, so it is exercised through the compiled test path rather than as
+  pure Core WASM.
