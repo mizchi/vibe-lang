@@ -308,56 +308,46 @@ parse できることを確認した上で、bump なしで通している。**�
 > tree を直接解決させ (`VIBE_EMIT_MERGED_SOURCE`)、成果物の tracking もやめた
 > ので、この世代遅れも `drift detected` ゲートも今は存在しない。
 
-### bootstrap bump の手順 (更新版)
+### Bootstrap bump procedure
 
-`seed-release.yml` は **tag push ではなく `workflow_dispatch`** で手動起動する
-— tag を push した時点の commit の `bootstrap/seed.json` はすでに「新しい」
-seed を指しているため (`adopt` がそう書き換える)、tag push を trigger に
-すると CI がその新しい seed 自身の (まだ存在しない) release から stage0 を
-fetch しようとする自己参照になってしまう。`workflow_dispatch` の
-`prior_seed_ref` 入力で「どの既存 (公開済み) seed を stage0 として使うか」を
-明示することでこれを避ける。
+Run `seed-release.yml` manually through **`workflow_dispatch`, not a tag push**.
+After adoption, `bootstrap/seed.json` already points at the new seed. A tag-push
+job would therefore try to fetch the new seed's not-yet-published release as
+its own stage0. The required `prior_seed_ref` input breaks that cycle by naming
+an existing, published seed to use as stage0.
 
-1. `scripts/generations.sh build --stage3` で stage2 candidate を作り、
-   gate (上記) を通す。
-2. `scripts/generations.sh adopt --artifact <stage2.wasm> --name <name> \
-   --tag seed/<name> --source-commit <commit>` — `bootstrap/seed.json` を
-   更新 (artifact は `bootstrap/seed/compiler.wasm` へコピー、sha256/tag を
-   記録)。**`--tag` には必ず `seed/` prefix を付ける**。
-3. `bootstrap/seed.json` の更新を独立 commit にして PR、merge。
-4. merge 後、GitHub Actions の `seed-release` workflow を `workflow_dispatch`
-   で手動起動する。入力:
-   - `tag`: ステップ2で指定した `seed/<name>`。
-   - `source_ref`: merge commit (省略時はデフォルトブランチの HEAD)。
-   - `prior_seed_ref`: **必須**。`source_ref` 自身の `bootstrap/seed.json`
-     は (adopt がそう書き換えるので) 常にこれから publish しようとしている
-     「新しい」seed 自身を指しており、stage0 として使えない — 省略可能な
-     self-reference は存在しない。2 通りのケースがある:
-     - **#1000 part 2 の移行時点の最初の release**: `bootstrap/seed/compiler.wasm`
-       (または旧名 `selfhost_compiler.wasm`) がまだ git-tracked だった
-       commit (この移行 PR より前の main の任意の commit) を指す。CI は
-       その commit から artifact を `git show` で直接取り出す (release 不要)。
-     - **それ以降の通常の bump**: source を実際に変える前、直近の
-       `seed/*` release がまだ有効だった commit を指す。CI はその commit の
-       `bootstrap/seed.json` を一時的に読み込み、そこに pin された release
-       から `scripts/ensure_seed.sh` で fetch する。
-   - CI はどちらのケースかを自動判定 (`prior_seed_ref` で対象パスが
-     git-tracked かどうかを試す) し、prior artifact を確保 →
-     `scripts/generations.sh build --stage3` で決定論的に再構築 →
-     `scripts/generations.sh adopt` でこのワークスペース限定 (uncommitted)
-     に artifact を確定 → asset を publish。
-5. 公開された release は **prerelease** として Releases 一覧に載る。以降、
-   `bootstrap/seed.json` の pin を見た全ての CI/ローカル環境が
-   `scripts/ensure_seed.sh` 経由でこの release から自動的に fetch する。
-   (この repo は GitHub の "immutable releases" 設定が有効なため、
-   release は一旦 `draft: true` で作成して asset を添付し、その直後の
-   別ステップで `gh release edit --draft=false` により publish する
-   — `prerelease: true` だけだと asset upload 前に `release.published`
-   が発火し、asset 添付が `immutable release` エラーで失敗するため。
-   同じ tag への再 dispatch は、その tag の release が既に publish 済み
-   なら (immutable のため二度と draft に戻せない) ワークフロー冒頭の
-   preflight で早期に fail する — 対処は `gh release delete <tag> --yes
-   --cleanup-tag` で削除してから再実行するか、別の tag を使うこと。)
+1. Build a stage2 candidate with `scripts/generations.sh build --stage3` and
+   pass the gates above.
+2. Run `scripts/generations.sh adopt --artifact <stage2.wasm> --name <name> \
+   --tag seed/<name> --source-commit <commit>`. This updates
+   `bootstrap/seed.json`, copies the artifact to `bootstrap/seed/compiler.wasm`,
+   and records its sha256 and tag. The tag must have the `seed/` prefix.
+3. Commit the `bootstrap/seed.json` update separately, but do not merge the PR
+   yet. Fresh CI runners fetch the seed from the new tag, so every bootstrap
+   bump gate returns 404 until that release exists.
+4. Dispatch the GitHub Actions `seed-release` workflow with that commit as
+   `source_ref`:
+   - `tag`: the `seed/<name>` chosen in step 2.
+   - `source_ref`: the committed bootstrap-bump branch revision.
+   - `prior_seed_ref`: required. It cannot default to `source_ref`, whose own
+     manifest already points at the unpublished new seed. Use one of:
+     - For the initial #1000 part 2 migration, a commit that still tracks
+       `bootstrap/seed/compiler.wasm` (or the old `selfhost_compiler.wasm`).
+       CI extracts the artifact directly with `git show`.
+     - For normal later bumps, a commit from before the source change whose
+       `bootstrap/seed.json` points at the latest valid published `seed/*`
+       release. CI temporarily reads that manifest and fetches its artifact.
+   - CI detects which case applies, acquires the prior artifact, rebuilds
+     deterministically through stage3, adopts the candidate in its workspace,
+     and publishes the assets.
+5. Verify that the released compiler sha256 matches `bootstrap/seed.json`, then
+   create or rerun the PR and merge only after CI is Green.
+6. The published release appears as a **prerelease**. All CI and local callers
+   that read the pin can then fetch it through `scripts/ensure_seed.sh`.
+   Because immutable releases are enabled, the workflow first creates a draft,
+   attaches every asset, and only then publishes it with
+   `gh release edit --draft=false`. Re-dispatching an already-published tag
+   fails at preflight; delete that release and tag or choose a new tag.
 
 ### 既存の git 履歴中のバイナリ blob
 
