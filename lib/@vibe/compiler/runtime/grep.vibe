@@ -707,7 +707,32 @@ fn grep_match_name(pname: String, tname: String, binds: Array[(String, String, I
   if kind == "" {
     pname == tname
   } else if kind == "id" {
-    grep_bind(binds, var, tname, -1, false)
+    // #2132: a metavariable can be the QUALIFIER of a qualified name --
+    // `with $(e:id) { Get(..) => .. }` reaches here as `__vgm_id__e::Get`,
+    // because the parser resolves an arm's operation against the handled
+    // effect. `grep_meta_of` decodes the variable as `e::Get`, so the literal
+    // `Get` used to be swallowed into the variable NAME and never compared:
+    // the pattern matched `Log::Emit` and reported it under the nonsense key
+    // `$e::Get`. Split the suffix back off and require it to match.
+    let sep = String::index_of(var, "::")
+    if sep < 0 {
+      grep_bind(binds, var, tname, 0 - 1, false)
+    } else {
+      let mvar = var[0: sep]
+      let suffix = var[sep + 2: String::length(var)]
+      let tsep = String::index_of(tname, "::")
+      if tsep < 0 {
+        false
+      } else {
+        let tqual = tname[0: tsep]
+        let tsuffix = tname[tsep + 2: String::length(tname)]
+        if suffix != tsuffix {
+          false
+        } else {
+          grep_bind(binds, mvar, tqual, 0 - 1, false)
+        }
+      }
+    }
   } else {
     false
   }

@@ -284,6 +284,39 @@ test "grep: `$(a:arms)` matches a handler whose arms are not known in advance (#
   assert(String::contains(hits, "$a=Ask::Get(n) => resume((n + 1))"))
 }
 
+/// The same handler shape but a DIFFERENT effect and operation, so a pattern
+/// naming one operation must not find the other.
+fn handle_other_src() -> String {
+  "effect Log {\n  Emit(String) -> Unit\n}\n\nfn r2() -> Int {\n  handle {\n    perform Log::Emit(\"x\")\n    7\n  } with Log {\n    Emit(m) => resume(())\n  }\n}\n"
+}
+
+test "grep: a literal operation in an arm is compared, not swallowed (#2132)" {
+  // `with $(e:id) { Get(..) => .. }` reaches the matcher as
+  // `__vgm_id__e::Get`, because the parser resolves an arm's operation against
+  // the handled effect. `grep_meta_of` decodes the variable as `e::Get`, so
+  // `Get` used to become part of the variable NAME and was never compared: the
+  // pattern matched `Log::Emit` too, and reported it under the nonsense key
+  // `$e::Get`. A search that returns hits you did not ask for is worse than
+  // one that errors -- the extra hit looks like an answer.
+  let getp = "handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => resume($(v:exp)) }"
+  assert(String::contains(scan(handle_src(), getp), "handle {"))
+  assert(!String::contains(scan(handle_other_src(), getp), "a.vibe"))
+  // ...and the mirror, so this is about comparing the name and not about
+  // rejecting the second file for some other reason.
+  let emitp = "handle { $(b:exp) } with $(e:id) { Emit($(p:pat)) => resume($(v:exp)) }"
+  assert(String::contains(scan(handle_other_src(), emitp), "handle {"))
+  assert(!String::contains(scan(handle_src(), emitp), "a.vibe"))
+}
+
+test "grep: the qualifier metavariable captures the EFFECT, under its own name" {
+  // `$(e:id)` stands for the effect, so it binds `Ask` -- not the whole
+  // qualified `Ask::Get`, and not under the key `$e::Get`, which is not a
+  // variable anyone wrote.
+  let hits = scan(handle_src(), "handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => resume($(v:exp)) }")
+  assert(String::contains(hits, "$e=Ask"))
+  assert(!String::contains(hits, "$e::Get"))
+}
+
 test "grep: `$(a:arms)` needs at least one arm to stand for" {
   // A handler with no arms is not a thing the parser produces, but the hole
   // must not quietly match an empty list either -- that would make the
