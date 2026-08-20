@@ -38,9 +38,9 @@
 # in the index but left lying around unstaged, which is exactly the staged-
 # snapshot guarantee the hook exists to provide.
 #
-# VIBE_DOC_CITATION_DOCS_ROOT points the scan at a different tree (the hook sets
-# it to the staged snapshot). Resolution still happens against the real
-# repository, so a doc and the file it cites must move together.
+# VIBE_DOC_CITATION_DOCS_ROOT points the scan at a different tree. The hook also
+# sets VIBE_DOC_CITATION_REPO_ROOT to that staged snapshot, so both the document
+# and every cited path must exist in the tree that will actually be committed.
 #
 # Usage: bash scripts/check_doc_path_citations.sh [--list]
 #   --list  print every unresolved citation including allowlisted ones, and
@@ -51,11 +51,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-allowlist="scripts/doc_path_citation_allowlist.txt"
+tree_root="${VIBE_DOC_CITATION_REPO_ROOT:-$repo_root}"
+allowlist="$tree_root/scripts/doc_path_citation_allowlist.txt"
 list_mode=0
 [ "${1:-}" = "--list" ] && list_mode=1
 
-python3 - "$allowlist" "$list_mode" "${VIBE_DOC_CITATION_DOCS_ROOT:-.}" "$repo_root" <<'PY'
+python3 - "$allowlist" "$list_mode" "${VIBE_DOC_CITATION_DOCS_ROOT:-$tree_root}" "$tree_root" <<'PY'
 import io, os, re, sys
 
 allowlist_path, list_mode = sys.argv[1], sys.argv[2] == "1"

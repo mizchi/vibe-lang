@@ -42,7 +42,7 @@ async モデルへ寄せていくための設計判断を定める。北極星�
   → `read-via-stream: func() -> tuple<stream<u8>, future<result<_, error-code>>>`。
 - `wasi:http` は 0.2 の `proxy` world を廃し、**`wasi:http/service`** と
   **`wasi:http/middleware`** の 2 world に（vendored submodule で確認:
-  `deps/wasmtime/crates/wasi-http/src/p3/wit/deps/http.wit` の `world service` /
+  `lib/@vibe/wasi/wit/p3/deps/http.wit` の `world service` /
   `world middleware`）。
 - ランタイム: wasmtime **45** は 0.3 を **release candidate** として
   フラグ付きで実行（`-W component-model-async=y -W

@@ -67,4 +67,29 @@ VIBE_PRECOMMIT_PROJECT_ROOT="$TMP_ROOT" \
   VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe" \
   "$CHECK_SCRIPT" >/dev/null
 
+# A cited path that exists only as an untracked working-tree file must not make
+# a staged document pass. CI checks a clean checkout, so the hook must resolve
+# citations against the staged snapshot too.
+git -C "$TMP_ROOT" checkout -- lib/@vibe/compiler/checker/pass.vibe
+mkdir -p "$TMP_ROOT/docs" "$TMP_ROOT/vendor/local-only"
+cat > "$TMP_ROOT/docs/reference.md" <<'EOF'
+See `vendor/local-only/schema.wit`.
+EOF
+: > "$TMP_ROOT/vendor/local-only/schema.wit"
+git -C "$TMP_ROOT" add docs/reference.md
+
+if VIBE_PRECOMMIT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_ARCH_LINT_RULES="$TMP_ROOT/scripts-rules.tsv" \
+  VIBE_ARCH_LINT_ALLOWLIST="$TMP_ROOT/scripts-allowlist.tsv" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/citation-fail.out" 2>&1; then
+  echo "precommit self-test: untracked cited path hid a staged dangling citation" >&2
+  exit 1
+fi
+if ! rg -q 'vendor/local-only/schema.wit' "$TMP_ROOT/citation-fail.out"; then
+  echo "precommit self-test: missing staged dangling-citation diagnostic" >&2
+  cat "$TMP_ROOT/citation-fail.out" >&2
+  exit 1
+fi
+
 echo "precommit self-test: ok"
