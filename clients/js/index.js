@@ -18,7 +18,15 @@ import {
 // ("expected expr, got `fn`") while still typechecking `let`. Nothing in the
 // tree rebuilds it -- see clients/wasm/README.md. Pass `wasmPath` or
 // `wasmModule` when you have something newer.
-const DEFAULT_WASM_PATH = "clients/wasm/vibe.wasm";
+//
+// Resolved against THIS module, not the caller's working directory (#2138
+// review). A bare "clients/wasm/vibe.wasm" is interpreted by fs.readFile
+// relative to process.cwd() and by fetch relative to the page, so the
+// no-argument createVibeService() worked only when the caller happened to be
+// standing in the repository root -- which is why the check that proved the
+// previous fix had to chdir there first. The artifact sits next to this file;
+// import.meta.url is what knows where that is.
+const DEFAULT_WASM_PATH = new URL("../wasm/vibe.wasm", import.meta.url);
 const DEFAULT_INPUT_PTR = 1024;
 const DEFAULT_OUTPUT_PTR = 32768;
 const DEFAULT_OUTPUT_CAP = 32768;

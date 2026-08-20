@@ -79,12 +79,28 @@ tasks = set(re.findall(r'name\s*=\s*"(' + NAMECHARS + r')"', tf)) | set(re.finda
 # sandbox the subprocess came back empty, so every VIBE_* lookup failed and 38
 # live variables were reported as unread -- loudly wrong rather than silently,
 # but wrong. Pure Python has no such dependency.
+SELF = os.path.normpath("scripts/check_doc_commands.sh")
 ENVPAT = re.compile(r'VIBE_[A-Z0-9_]+')
 read_env = set()
 for root in ("scripts", "lib", "tests", "eval", "install"):
     for dp, _, fn in os.walk(root):
         for name in fn:
-            if not name.endswith((".sh", ".mjs", ".js", ".vibe", ".vibex", ".pkl", ".ts", ".toml", ".md")):
+            # NOT .md (#2138 review). A document never READS a variable, it
+            # only mentions one -- so including markdown made this check
+            # certify itself: a README under any of these roots showing
+            # `<NAME>=1 cmd` put <NAME> into read_env before that same README's
+            # command was validated against it, and the stale reference passed
+            # because the stale reference existed.
+            #
+            # And skip THIS file. It is a .sh under scripts/, so every variable
+            # name spelled in its own comments counted as a reader -- which is
+            # how the first version of this fix failed: the comment explaining
+            # it named the probe variable, and that alone kept the probe green.
+            # Same shape as check_task_inputs.sh matching the tool names inside
+            # its own regex literal. A gate must not be able to see itself.
+            if os.path.normpath(os.path.join(dp, name)) == SELF:
+                continue
+            if not name.endswith((".sh", ".mjs", ".js", ".vibe", ".vibex", ".pkl", ".ts", ".toml")):
                 continue
             try:
                 read_env |= set(ENVPAT.findall(open(os.path.join(dp, name), encoding="utf-8", errors="replace").read()))
