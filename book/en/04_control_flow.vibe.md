@@ -1,10 +1,14 @@
-# 02 — Control flow
+# 04 — Control flow
 
-Previous: [01 Values and functions](03_values_functions.vibe.md)
+Previous: [Values and functions](03_values_functions.vibe.md)
 
 日本語版: [04_control_flow.vibe.md](../ja/04_control_flow.vibe.md)
 
-## `if` is an expression
+Everything here is an expression: `if` produces a value, and so does a
+loop. That is worth getting used to early, because it removes most of
+the reasons other languages need a mutable variable.
+
+## `if`
 
 ```vibe run
 fn main with Console {
@@ -21,13 +25,13 @@ fn main with Console {
 v = yes
 ```
 
-## `while` and early `return` (current)
+Both branches must produce the same type, since the whole `if` is one
+value.
 
-`return` leaves the whole function, not just the loop. This spelling was settled
-as "keep it" in
-[#1283](https://github.com/mizchi/vibe-lang/issues/1283) — the pattern-binding
-early exit `guard ... else { ... }` added by that same issue is covered in
-[04 Option](08_option.vibe.md#guard--bind-or-bail-out).
+## `while` and `return`
+
+`while` is the loop you already know. `return` leaves the function — not
+just the loop — which is what you want for a search:
 
 ```vibe run
 fn find_first_neg(arr: Array[Int]) -> Int {
@@ -38,11 +42,6 @@ fn find_first_neg(arr: Array[Int]) -> Int {
     }
     i = i + 1
   }
-  // An early `return i` and the implicit value at the end of the function are
-  // the same thing -- the function's result -- so this one is spelled
-  // `return -1` to match (a bare `-1` as the last expression of the body
-  // behaves identically: the while block closes as a Unit statement, which
-  // leaves `-1` standing alone as the final expression).
   return -1
 }
 
@@ -57,10 +56,11 @@ find_first_neg([3, 1, -2, 5]) = 2
 find_first_neg([1, 2]) = -1
 ```
 
-## `loop` — tail recursion with parameters
+## `loop` — a loop that carries values
 
-`loop (arg = initial, ...)` plus `continue(next values...)` plus
-`break result`. It writes a fold without any mutable variable.
+`while` needs a mutable counter. `loop` does not: it declares
+parameters, `continue` supplies the next round's values, and `break`
+ends it with a result.
 
 ```vibe run
 fn main with Console {
@@ -78,31 +78,13 @@ fn main with Console {
 sum = 45
 ```
 
-`continue(...)` and `break ...` look alike but are not symmetric, and
-**[#1284](https://github.com/mizchi/vibe-lang/issues/1284) settled this as
-"leave it as is"**. They count different things, so there is nothing to align:
+The rule to remember: **`continue` takes one value per loop parameter,
+`break` takes one result.** A bare `continue` repeats with everything
+unchanged. If you give `continue` the wrong number of values the
+compiler says so and names both counts.
 
-- `continue(a, b)` passes **the loop's parameters**. You pass exactly as many as
-  `loop (i = ..., acc = ...)` declared.
-- `break e` passes **the loop's result**. A `loop` is one expression with one
-  value, so there is always exactly one result. The parentheses in
-  `break(a, b)` are ordinary expression parentheses passing **one tuple**
-  `(a, b)`; there is no `break a, b` producing a two-valued loop result.
-
-What we did instead was make the mix-up **a compile error**. If `continue` gets
-a different number of arguments than the loop has parameters, it fails and says
-which count is which:
-
-```
-continue: this loop declares 2 parameter(s) (i, acc), but continue was given
-1 argument(s). `continue` passes a new value for EVERY loop parameter; use a
-bare `continue` to repeat with the current values unchanged. `break` is NOT
-symmetric with this — it takes the loop's single result value, so
-`break (a, b)` is one tuple. (#1284)
-```
-
-A `continue` with no arguments at all means "go round again with every parameter
-unchanged", and that still works.
+Since `break` takes a single result, returning two things means
+returning a tuple:
 
 ```vibe run
 fn main with Console {
@@ -110,11 +92,9 @@ fn main with Console {
     if i >= 3 {
       break (acc, i)
     }
-    // break(acc, i) is the tuple (acc, i)
     continue (i + 1, acc + i)
   }
   println("r = (\{r.0}, \{r.1})")
-  // r: (Int, Int) -- not `break acc, i`
 }
 ```
 
@@ -122,7 +102,10 @@ fn main with Console {
 r = (3, 3)
 ```
 
-## `for-in` returns an Array
+## `for ... in` collects
+
+A `for-in` is an expression too, and it evaluates to the `Array` of its
+body's results. Add a name before the element to get the index:
 
 ```vibe run
 fn main with Console {
@@ -133,14 +116,12 @@ fn main with Console {
   ] {
     x * 2
   }
-  // [2, 4, 6]
   let with_index = for i, x in [
     10,
     20
   ] {
     i + x
   }
-  // [10, 21]
   println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
   println("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]")
 }
@@ -151,19 +132,10 @@ doubled = [2, 4, 6]
 with_index = [10, 21]
 ```
 
-## The pipe operator
+## `|>`
 
-`x |> f` is `f(x)`. If the call contains no **bare** `_`, the value goes in as
-the first argument. A bare `_` is a pipe slot and the value lands there
-(`x |> f(a, _)` is `f(a, x)`). The same slot may repeat, so `x |> f(_, _)` is
-`f(x, x)`.
-
-A **compound** expression containing `_`, like `_ * 2`, is not a slot but a
-section lambda (`(v) -> v * 2`). So read `xs |> Array::map(_, _ * 2)` as
-`Array::map(xs, (v) -> v * 2)`. Do not conflate these two roles of `_`.
-
-A user-defined `Type::method` may be typed as `value.method(...)`, but this
-tutorial always writes the canonical form `Type::method(value, ...)`.
+`x |> f` is `f(x)`, which lets a transformation read left to right
+instead of inside out:
 
 ```vibe run
 fn pair(a: Int, b: Int) -> Int {
@@ -197,4 +169,13 @@ mapped = [2, 4, 6]
 repeated = 77
 ```
 
-Next: [03 Data](07_data.vibe.md)
+By default the piped value becomes the first argument. To put it
+somewhere else, mark the position with a bare `_`: `x |> f(a, _)` is
+`f(a, x)`, and a slot may repeat, so `7 |> pair(_, _)` is `pair(7, 7)`.
+
+A `_` inside a larger expression is a different thing — the lambda
+shorthand from the last chapter. That is why `Array::map(_, _ * 2)` has
+two of them doing unrelated jobs: the first is the pipe slot, the second
+is `(v) -> v * 2`.
+
+Next: [Types and strings](05_types_strings.vibe.md).

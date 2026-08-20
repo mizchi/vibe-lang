@@ -1,60 +1,69 @@
-# 01 — Values and functions
+# 03 — Values and functions
 
-This chapter *is* a `.vibe.md`: every ` ```vibe run ` block is really compiled
-and run by `pkf run vibe-md-tutorial`
-(`bash scripts/vibe_md.sh check book/en/*.vibe.md`), and the ` ```output `
-block right after it is that run's output, pasted in (#1142). To refresh it
-locally, run
-`bash scripts/vibe_md.sh write book/en/03_values_functions.vibe.md`.
+Previous: [A small program](02_a_small_program.vibe.md)
 
 日本語版: [03_values_functions.vibe.md](../ja/03_values_functions.vibe.md)
 
-## Values and primitive types
+The tour starts here. This chapter is `let`, the primitive types, and
+every way to write a function.
 
-`let` binds. The type annotation is optional — it is inferred.
+## Binding values
 
-`println` is a builtin, so nothing is imported here. Printing costs a
-`Stdout` row on every function that reaches it — see
-[Capabilities](14_capabilities.vibe.md).
+`let` binds a name. The type annotation is optional — it is inferred —
+and bindings do not change once made.
+
+```vibe run
+fn main with Console {
+  let x = 42
+  let name = "vibe"
+  let ratio = 0.5
+  let ready = true
+  println("\{name} \{x} \{ratio} \{ready}")
+}
+```
+
+```output
+vibe 42 0.5 true
+```
+
+The primitives are `Int`, `Double`, `Bool`, `String` and `Char`. Write
+the annotation when you want it documented or when inference has no
+opinion:
 
 ```vibe run
 fn main with Console {
   let x: Int = 42
-  // 63-bit tagged (#1877); literals go up to 2^62-1
   let d: Double = 3.14
-  // 64-bit float (the default for a decimal literal)
   let b: Bool = true
-  let s = "answer \{x}"
-  // string interpolation is \{expr}
   let c = 'A'
-  // a char literal is its character code (Int); 'A' == 65
   println("x = \{x}")
-  println("d = \{d}, to_string = \{Double::to_string(d)}")
-  // Double interpolates with \{expr} too, or use Double::to_string
-  println("d*100 as int = \{Double::to_int(d * 100.0)}")
-  // Double::to_int when you want it rounded to an integer
+  println("d = \{d}, rounded = \{Double::to_int(d * 100.0)}")
   println("b = \{b}")
-  println("s = \{s}")
   println("c = \{c}")
 }
 ```
 
 ```output
 x = 42
-d = 3.14, to_string = 3.14
-d*100 as int = 314
+d = 3.14, rounded = 314
 b = true
-s = answer 42
 c = 65
 ```
 
-Watch out: indexing a string, `s[i]`, gives you the **character code (Int)**.
-For a one-character String use `String::from_char_code(s[i])` or a slice.
+Two things to notice. `\{...}` inside a string is interpolation — any
+expression goes in there. And `'A'` printed `65`: a character literal
+*is* its code point, an `Int`. Indexing a string behaves the same way,
+so `s[0]` gives you a number, not a one-character string. When you want
+the character back, use `String::from_char_code(s[0])`.
 
-## `mut` is block-scoped
+The exact ranges and representations — `Int` is 63 bits wide, `String`
+is bytes — are in [Types and strings](05_types_strings.vibe.md). You can
+write a lot of vibe before they matter.
 
-vibe is pure by default. Local mutable state goes in a `let mut`, and leaves the
-block as a value.
+## Local mutation, in a block
+
+vibe is immutable by default. When an algorithm wants a counter, `let
+mut` gives you one, and the block it lives in evaluates to a value:
 
 ```vibe run
 fn main with Console {
@@ -71,43 +80,14 @@ fn main with Console {
 y = 2
 ```
 
-## Functions
+The mutable binding does not leave the block; `y` is an ordinary
+immutable `Int`. [Mutation, regions, and escape](06_mutation.vibe.md) is
+where this gets interesting.
 
-`fn` is a keyword ([#1280](https://github.com/mizchi/vibe-lang/issues/1280)
-landed it). It spells a function declaration and cannot be used as a binding or
-parameter name, and `fn` is the one reserved word a raw identifier does not
-rescue: `r#fn` is rejected too. Rename a colliding name to something like `fn_`.
+## Writing functions
 
-Every other reserved word DOES take `r#`, and the message says so wherever the
-word appears -- a binding, a parameter, or a function name.
-
-```vibe skip
-// skip: how reserved words are rejected -- every fragment here is a parse error
-let fn = 1
-// error: `fn` is a reserved word and cannot be used as a binding name;
-//        this keyword cannot be escaped, so choose a different name
-let r#fn = 1
-// error: the same -- a raw identifier is not an escape hatch for `fn`
-let test = 1
-// error: `test` is a reserved word and cannot be used as a binding name;
-//        write `r#test` to use it as a name
-```
-
-```vibe run
-fn main() -> Unit with Stdout {
-  // `test` is reserved (it opens a `test { ... }` block), but `r#test` is a name.
-  let r#test = 1
-  println(Int::to_string(r#test))
-}
-```
-
-```output
-1
-```
-
-All of the declaration forms below are runnable. A top-level function must be
-fully annotated, and recursion does not need `rec`. The `let` form, generics and
-labelled arguments all mean the same thing.
+`fn` declares one. Top-level functions annotate their parameters and
+return type; recursion needs no keyword.
 
 ```vibe run
 fn add(x: Int, y: Int) -> Int {
@@ -125,12 +105,10 @@ fn fact(n: Int) -> Int {
 fn identity[T](x: T) -> T {
   x
 }
-// generics
 
 let inc: (Int) -> Int = (x) -> {
   x + 1
 }
-// the let form
 
 let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
@@ -142,7 +120,6 @@ fn main with Console {
   println("identity(7) = \{identity(7)}")
   println("inc(41) = \{inc(41)}")
   println("scaled(x=4, y=2) = \{scaled(x=4, y=2)}")
-  // a labelled call
 }
 ```
 
@@ -154,20 +131,21 @@ inc(41) = 42
 scaled(x=4, y=2) = 42
 ```
 
-## Comments
+That block shows four things worth naming:
 
-`//` starts a line comment. There is no `/* */` block comment. Put a
-comment on its own line when you want it between tokens of an
-expression. `///` immediately above a declaration is that declaration's
-doc comment (hover / `vibe doc-at` pick it up). `//#` is a section
-heading used in the compiler sources — it is not a doc comment.
+- **Generics.** `fn identity[T](x: T) -> T` works for any `T`.
+  [Generics, traits, and derive](15_generics.vibe.md) adds bounds.
+- **The `let` form.** A function is a value; `let inc: (Int) -> Int =
+  (x) -> { ... }` is the same function written as a binding.
+- **Labelled parameters.** `x~: Int` means callers write `x=4`, in any
+  order, which is what you want once a function takes three `Int`s.
+- **The body is an expression.** No `return` needed — the last
+  expression is the result.
 
 ## Optional arguments
 
-A trailing `name?: T` is optional. The caller writes a bare `T` or
-omits it. The body sees `Option[T]`. Measured: `if bang` when
-`bang?: Bool` is a type error (`if condition must be Bool`) — match the
-`Option`.
+A trailing `name?: T` may be omitted by the caller. Inside the body it
+arrives as `Option[T]`, so you say what the default is by matching:
 
 ```vibe run
 fn greet(name: String, times?: Int) -> String {
@@ -189,7 +167,15 @@ hi x1
 hi x3
 ```
 
-## Lambda shorthand and placeholders
+Because the body sees an `Option`, an optional `Bool` is not directly a
+condition: `if flag` where `flag?: Bool` is a type error, and you match
+it like any other `Option`. [Option and the railway](08_option.vibe.md)
+covers the type properly.
+
+## Shorthand for small lambdas
+
+`_` stands in for an argument, which reads well when the lambda is one
+operator wide:
 
 ```vibe run
 fn main with Console {
@@ -199,9 +185,7 @@ fn main with Console {
     3
   ]
   let doubled = Array::map(xs, _ * 2)
-  // a section for (v) -> v * 2
   let total = Array::fold(xs, 0, _ + _)
-  // (acc, v) -> acc + v
   println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
   println("fold sum = \{total}")
 }
@@ -212,5 +196,21 @@ doubled = [2, 4, 6]
 fold sum = 6
 ```
 
+`_ * 2` is `(v) -> v * 2`, and `_ + _` is `(acc, v) -> acc + v` — each
+`_` takes the next argument.
+
+## Comments
+
+`//` starts a line comment; there is no block comment form, so a comment
+between the tokens of an expression goes on its own line. `///`
+immediately above a declaration is a doc comment, which hover and
+`vibe doc-at` will show you.
+
+## Names that are taken
+
+Keywords cannot be used as names, but most can be escaped with a `r#`
+prefix — `let r#test = 1` is fine even though `test` opens a test block.
+`fn` is the exception and cannot be escaped; rename the binding instead.
+The diagnostic tells you which case you are in.
+
 Next: [Control flow](04_control_flow.vibe.md).
-The contract those types keep is in [Types and strings](05_types_strings.vibe.md).

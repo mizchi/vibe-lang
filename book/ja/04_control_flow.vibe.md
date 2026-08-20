@@ -1,10 +1,14 @@
-# 02 — 制御フロー
+# 04 — 制御フロー
 
-前章: [01 値と関数](03_values_functions.vibe.md)
+前: [値と関数](03_values_functions.vibe.md)
 
-English version: [04_control_flow.vibe.md](../en/04_control_flow.vibe.md) (canonical)
+English version: [04_control_flow.vibe.md](../en/04_control_flow.vibe.md)
 
-## if は式
+ここに出てくるものはすべて式です。`if` は値を作り、ループも値を作ります。
+早めに慣れておく価値があります — 他の言語で可変変数が必要になる理由の
+ほとんどが、これで消えるからです。
+
+## `if`
 
 ```vibe run
 fn main with Console {
@@ -21,12 +25,12 @@ fn main with Console {
 v = yes
 ```
 
-## while と早期 return（現行）
+`if` 全体が1つの値なので、両方の枝は同じ型を作る必要があります。
 
-`return` は関数全体から抜ける (ループだけではない)。この構文は
-[#1283](https://github.com/mizchi/vibe-lang/issues/1283) で「維持する」と決着した —
-同じ issue で追加された、パターン束縛付きの早期脱出 `guard ... else { ... }` は
-[04 Option](08_option.vibe.md#guard--束縛するか脱出) で扱う。
+## `while` と `return`
+
+`while` は見慣れたループです。`return` はループではなく**関数**を抜けます。
+探索ではそれが欲しい挙動です:
 
 ```vibe run
 fn find_first_neg(arr: Array[Int]) -> Int {
@@ -37,10 +41,6 @@ fn find_first_neg(arr: Array[Int]) -> Int {
     }
     i = i + 1
   }
-  // 早期 return (`return i`) と関数末尾の暗黙の戻り値は同じ「関数の結果」
-  // なので、ここも揃えて `return -1` と明示している (裸の `-1` を関数
-  // 本体の最後の式として置くのも動作は同じ -- while ブロックは Unit の
-  // 文として閉じるので `-1` は独立した最終式になる)。
   return -1
 }
 
@@ -55,10 +55,10 @@ find_first_neg([3, 1, -2, 5]) = 2
 find_first_neg([1, 2]) = -1
 ```
 
-## loop — パラメータ付き末尾再帰
+## `loop` — 値を持ち回るループ
 
-`loop (引数 = 初期値, ...)` + `continue(次の値...)` + `break 結果`。
-可変変数なしで畳み込みが書ける。
+`while` には可変なカウンタが要ります。`loop` には要りません。パラメータを
+宣言し、`continue` が次の周の値を渡し、`break` が結果とともに終わらせます。
 
 ```vibe run
 fn main with Console {
@@ -76,30 +76,12 @@ fn main with Console {
 sum = 45
 ```
 
-`continue(...)` と `break ...` は見た目が似ているが対称ではない。**これは
-[#1284](https://github.com/mizchi/vibe-lang/issues/1284) で「そのまま維持する」と
-決着した**。2つが数えているものが違うからで、揃えようがない:
+覚える規則はこれだけです: **`continue` はループのパラメータ1つにつき値を
+1つ、`break` は結果を1つ取ります。** 引数なしの `continue` は全部そのままで
+もう一周します。`continue` に渡す個数を間違えると、コンパイラが両方の個数を
+挙げて指摘します。
 
-- `continue(a, b)` が渡すのは**ループのパラメータ**。`loop (i = ..., acc = ...)`
-  が宣言した個数とちょうど同じ数だけ渡す。
-- `break e` が渡すのは**ループの結果**。`loop` は値を1つ持つ式なので、結果は
-  つねに1個。`break(a, b)` の丸括弧はただの式の括弧で、`(a, b)` という
-  **タプル 1 個**を渡しているだけ (`break a, b` のような「2 値の loop 結果」
-  にはならない)。
-
-代わりに、取り違えを**コンパイルエラーで捕まえる**ようにした。`continue` の
-引数がパラメータの個数と一致しなければ、どちらの個数かを示して落ちる:
-
-```
-continue: this loop declares 2 parameter(s) (i, acc), but continue was given
-1 argument(s). `continue` passes a new value for EVERY loop parameter; use a
-bare `continue` to repeat with the current values unchanged. `break` is NOT
-symmetric with this — it takes the loop's single result value, so
-`break (a, b)` is one tuple. (#1284)
-```
-
-引数を1つも書かない `continue` は「全パラメータをそのままにもう1周」の意味で、
-これは今も有効。
+`break` が取るのは単一の結果なので、2つ返したければタプルを返します:
 
 ```vibe run
 fn main with Console {
@@ -107,11 +89,9 @@ fn main with Console {
     if i >= 3 {
       break (acc, i)
     }
-    // break(acc, i) は tuple (acc, i)
     continue (i + 1, acc + i)
   }
   println("r = (\{r.0}, \{r.1})")
-  // r: (Int, Int) -- break acc, i ではない
 }
 ```
 
@@ -119,7 +99,10 @@ fn main with Console {
 r = (3, 3)
 ```
 
-## for-in は Array を返す
+## `for ... in` は集める
+
+`for-in` も式で、本体の結果を集めた `Array` に評価されます。要素の前に
+名前を足すと添字が取れます:
 
 ```vibe run
 fn main with Console {
@@ -130,14 +113,12 @@ fn main with Console {
   ] {
     x * 2
   }
-  // [2, 4, 6]
   let with_index = for i, x in [
     10,
     20
   ] {
     i + x
   }
-  // [10, 21]
   println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
   println("with_index = [\{Array::get(with_index, 0)}, \{Array::get(with_index, 1)}]")
 }
@@ -148,18 +129,9 @@ doubled = [2, 4, 6]
 with_index = [10, 21]
 ```
 
-## パイプ演算子
+## `|>`
 
-`x |> f` は `f(x)`。call 内に**裸の** `_` がなければ、値は第 1 引数に入る。
-裸の `_` は pipe slot で、その位置に値を置く (`x |> f(a, _)` は `f(a, x)`)。
-同じ slot を繰り返してよく、`x |> f(_, _)` は `f(x, x)` になる。
-
-`_ * 2` のように `_` を含む**複合式**は slot ではなく section ラムダ
-(`(v) -> v * 2`)。従って `xs |> Array::map(_, _ * 2)` は
-`Array::map(xs, (v) -> v * 2)` と読む。この `_` の二つの役割を混同しない。
-
-ユーザー定義の `Type::method` は `value.method(...)` と入力できるが、チュートリアル
-では常に `Type::method(value, ...)` を正規形として書く。
+`x |> f` は `f(x)` です。変換を内側から外側へではなく、左から右へ読ませます:
 
 ```vibe run
 fn pair(a: Int, b: Int) -> Int {
@@ -193,4 +165,12 @@ mapped = [2, 4, 6]
 repeated = 77
 ```
 
-次章: [03 データ](07_data.vibe.md)
+既定では、渡された値は第1引数になります。別の位置に入れたいときは裸の `_` で
+場所を指定します — `x |> f(a, _)` は `f(a, x)` で、スロットは繰り返せるので
+`7 |> pair(_, _)` は `pair(7, 7)` です。
+
+もっと大きな式の中の `_` は別物で、前章のラムダ略記です。だから
+`Array::map(_, _ * 2)` には無関係な仕事をする `_` が2つあります — 最初が
+パイプのスロット、次が `(v) -> v * 2` です。
+
+次: [型と文字列](05_types_strings.vibe.md)

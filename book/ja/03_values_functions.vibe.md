@@ -1,58 +1,68 @@
-# 01 — 値と関数
+# 03 — 値と関数
 
-このチャプターは `.vibe.md` そのもの — 各 ` ```vibe run ` ブロックは
-`pkf run vibe-md-tutorial` (`bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md`)
-で実際にコンパイル・実行され、直後の ` ```output ` ブロックは実行結果を
-そのまま埋め込んだもの (#1142)。手元で更新するときは
-`bash scripts/vibe_md.sh write book/ja/03_values_functions.vibe.md`。
+前: [小さなプログラム](02_a_small_program.vibe.md)
 
-English version: [03_values_functions.vibe.md](../en/03_values_functions.vibe.md) (canonical)
+English version: [03_values_functions.vibe.md](../en/03_values_functions.vibe.md)
 
-## 値と基本型
+ツアーはここから始まります。この章は `let`、プリミティブ型、そして関数の
+書き方すべてです。
 
-束縛は `let`。型注釈は省略できる (推論される)。
+## 値を束縛する
 
-`println` は builtin なので import は不要。ただし出力する関数には
-`Stdout` row が必要になる — [Capabilities](../en/14_capabilities.vibe.md) 参照。
+`let` は名前を束縛します。型注釈は省略可能（推論されます）で、束縛は
+一度作られたら変わりません。
+
+```vibe run
+fn main with Console {
+  let x = 42
+  let name = "vibe"
+  let ratio = 0.5
+  let ready = true
+  println("\{name} \{x} \{ratio} \{ready}")
+}
+```
+
+```output
+vibe 42 0.5 true
+```
+
+プリミティブは `Int` / `Double` / `Bool` / `String` / `Char` です。
+明記したいとき、あるいは推論に手がかりがないときは注釈を書きます:
 
 ```vibe run
 fn main with Console {
   let x: Int = 42
-  // 63-bit tagged (#1877)。リテラル上限 2^62-1
   let d: Double = 3.14
-  // 64-bit float (小数点リテラルの既定)
   let b: Bool = true
-  let s = "answer \{x}"
-  // 文字列補間は \{expr}
   let c = 'A'
-  // char リテラルは文字コード (Int)。'A' == 65
   println("x = \{x}")
-  println("d = \{d}, to_string = \{Double::to_string(d)}")
-  // Double も \{expr} 補間 / Double::to_string で出せる
-  println("d*100 as int = \{Double::to_int(d * 100.0)}")
-  // 整数に丸めたいときは Double::to_int
+  println("d = \{d}, rounded = \{Double::to_int(d * 100.0)}")
   println("b = \{b}")
-  println("s = \{s}")
   println("c = \{c}")
 }
 ```
 
 ```output
 x = 42
-d = 3.14, to_string = 3.14
-d*100 as int = 314
+d = 3.14, rounded = 314
 b = true
-s = answer 42
 c = 65
 ```
 
-注意: 文字列の添字 `s[i]` は **文字コード (Int)** を返す。1 文字の String が
-欲しいときは `String::from_char_code(s[i])` か slice を使う。
+気づいてほしい点が2つ。文字列中の `\{...}` は補間で、任意の式が入ります。
+そして `'A'` は `65` と印字されました — 文字リテラルはそのコードポイント
+そのもの、つまり `Int` です。文字列の添字も同じで、`s[0]` は数値であって
+1文字の文字列ではありません。文字に戻したいときは
+`String::from_char_code(s[0])` を使います。
 
-## mut はブロックスコープ
+正確な範囲と表現 — `Int` の幅が63ビットであることや `String` がバイト列で
+あること — は[型と文字列](05_types_strings.vibe.md)にあります。それが
+効いてくるまでには、かなりの量の vibe が書けます。
 
-vibe は純粋がデフォルト。ローカルな可変状態は `let mut` で、ブロックの外へは
-値として出す。
+## ブロックの中のミューテーション
+
+vibe は既定で不変です。アルゴリズムがカウンタを欲しがるときは `let mut` が
+あり、それが住むブロックは値に評価されます:
 
 ```vibe run
 fn main with Console {
@@ -69,42 +79,14 @@ fn main with Console {
 y = 2
 ```
 
-## 関数
+可変な束縛はブロックの外に出ません。`y` はただの不変な `Int` です。
+面白くなるのは[ミューテーション・region・エスケープ](06_mutation.vibe.md)
+からです。
 
-`fn` は予約語 ([#1280](https://github.com/mizchi/vibe-lang/issues/1280) で着地済み)。
-関数宣言の綴りは `fn` で、binding・引数の名前には使えない。しかも `fn` は
-raw identifier が救わない唯一の予約語で、`r#fn` も拒否される。既存の名前が
-衝突したら `fn_` などへ rename する。
+## 関数を書く
 
-他の予約語は `r#` で使える。診断もそう言う — binding でも引数でも関数名でも
-同じ説明になる。
-
-```vibe skip
-// skip: 予約語の拒否例 (どれも parse error になることを示す断片)
-let fn = 1
-// error: `fn` is a reserved word and cannot be used as a binding name;
-//        this keyword cannot be escaped, so choose a different name
-let r#fn = 1
-// error: 同上 — `fn` に raw identifier の escape hatch は無い
-let test = 1
-// error: `test` is a reserved word and cannot be used as a binding name;
-//        write `r#test` to use it as a name
-```
-
-```vibe run
-fn main() -> Unit with Stdout {
-  // `test` は予約語 (`test { ... }` ブロックを開く) だが、`r#test` は名前。
-  let r#test = 1
-  println(Int::to_string(r#test))
-}
-```
-
-```output
-1
-```
-
-宣言形式は以下がすべて runnable。トップレベル関数は完全注釈必須、再帰に
-`rec` は不要。let 形式・ジェネリクス・ラベル付き引数も同じ意味論。
+`fn` が関数を宣言します。トップレベルの関数は引数と戻り値に注釈を付け、
+再帰にキーワードは要りません。
 
 ```vibe run
 fn add(x: Int, y: Int) -> Int {
@@ -122,12 +104,10 @@ fn fact(n: Int) -> Int {
 fn identity[T](x: T) -> T {
   x
 }
-// ジェネリクス
 
 let inc: (Int) -> Int = (x) -> {
   x + 1
 }
-// let 形式
 
 let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
@@ -139,7 +119,6 @@ fn main with Console {
   println("identity(7) = \{identity(7)}")
   println("inc(41) = \{inc(41)}")
   println("scaled(x=4, y=2) = \{scaled(x=4, y=2)}")
-  // ラベル付き呼び出し
 }
 ```
 
@@ -151,10 +130,20 @@ inc(41) = 42
 scaled(x=4, y=2) = 42
 ```
 
-## 省略引数
+このブロックには名前を付けておく価値のあるものが4つあります:
 
-末尾の `name?: T` は省略できる。呼び出し側は素の `T` を書くか省略する。
-本体が見るのは `Option[T]`。
+- **ジェネリクス。** `fn identity[T](x: T) -> T` は任意の `T` で動きます。
+  境界は[ジェネリクス・trait・derive](15_generics.vibe.md)で足します。
+- **`let` 形式。** 関数は値です。`let inc: (Int) -> Int = (x) -> { ... }` は
+  同じ関数を束縛として書いたものです。
+- **ラベル引数。** `x~: Int` と書くと呼び出し側は `x=4` と書け、順序も
+  自由です。`Int` を3つ取る関数になったら欲しくなります。
+- **本体は式。** `return` は要りません — 最後の式が結果です。
+
+## 省略可能な引数
+
+末尾の `name?: T` は呼び出し側が省略できます。本体には `Option[T]` として
+届くので、既定値は match で述べます:
 
 ```vibe run
 fn greet(name: String, times?: Int) -> String {
@@ -176,7 +165,14 @@ hi x1
 hi x3
 ```
 
-## ラムダ短縮形とプレースホルダ
+本体が見るのは `Option` なので、省略可能な `Bool` はそのままでは条件に
+なりません。`flag?: Bool` に対する `if flag` は型エラーで、他の `Option` と
+同様に match します。型そのものは
+[Option とレールウェイ](08_option.vibe.md)で扱います。
+
+## 小さいラムダの略記
+
+`_` は引数の代わりに置けます。ラムダが演算子1つ分の幅なら読みやすくなります:
 
 ```vibe run
 fn main with Console {
@@ -186,9 +182,7 @@ fn main with Console {
     3
   ]
   let doubled = Array::map(xs, _ * 2)
-  // (v) -> v * 2 の section
   let total = Array::fold(xs, 0, _ + _)
-  // (acc, v) -> acc + v
   println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
   println("fold sum = \{total}")
 }
@@ -199,4 +193,20 @@ doubled = [2, 4, 6]
 fold sum = 6
 ```
 
-次章: [02 制御フロー](04_control_flow.vibe.md)
+`_ * 2` は `(v) -> v * 2`、`_ + _` は `(acc, v) -> acc + v` です — `_` は
+順に次の引数を取ります。
+
+## コメント
+
+`//` が行コメントを始めます。ブロックコメントの形式はないので、式のトークンの
+間に挟みたいコメントは独立した行に置きます。宣言の直前の `///` はその宣言の
+doc コメントで、hover や `vibe doc-at` が拾います。
+
+## 使えない名前
+
+キーワードは名前に使えませんが、多くは `r#` 接頭辞で回避できます —
+`test` は test ブロックを開く語ですが `let r#test = 1` は通ります。
+例外は `fn` で、これは回避できないので別の名前にしてください。
+どちらの場合かは診断が教えてくれます。
+
+次: [制御フロー](04_control_flow.vibe.md)

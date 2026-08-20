@@ -1,19 +1,21 @@
-# 08 — Types and strings
+# 05 — Types and strings
+
+Previous: [Control flow](04_control_flow.vibe.md)
 
 日本語版: [05_types_strings.vibe.md](../ja/05_types_strings.vibe.md)
 
-Chapter 1 showed `Int`, `Double`, `Bool`, `String`, and `Char` as values.
-This chapter is the contract those types actually keep — the places people
-silently get a wrong answer if they guess from another language.
+You have been using `Int`, `Double`, `Bool`, `String` and `Char`. This
+is the chapter that says exactly what they are, because these are the
+types where guessing from another language gets you a wrong answer
+rather than an error.
 
-## `Int` is 63-bit, not "a machine i64"
+## `Int` is 63 bits wide
 
-ADR-0105 (#1877): the shipped representation uses **one** tag bit, so the
-honest width is 63. The range is `-2^62 .. 2^62-1`. A literal larger than
-`4611686018427387903` (`2^62-1`) is rejected as `IntLiteralOverflow`.
-Arithmetic overflow wraps as 63-bit two's complement on **every** backend
-— `max + 1` is `min`. Older text that said "62-bit / `2^61-1`" was
-describing a tag layout the compiler no longer uses.
+Not 64. The range is `-2^62 .. 2^62-1`, and a literal above
+`4611686018427387903` is rejected rather than truncated.
+
+Arithmetic that goes out of range **wraps**, as 63-bit two's complement,
+identically on every backend — so `max + 1` is `min`:
 
 ```vibe run
 fn main with Console {
@@ -35,24 +37,30 @@ hex 0xFF = 255
 (-8) >> 1 = -4
 ```
 
-`>>` is an *arithmetic* shift (sign-extending). There is no `>>>`. There is
-no `~` either — write `x ^ mask`. Bigger integers belong in
-`@vibe/core`'s `BigInt`, not in a silent promotion.
+Three things that differ from C-family languages:
 
-## `Float` and `Double`
+- `>>` is arithmetic — it sign-extends. There is no `>>>`; for a logical
+  shift, mask afterwards.
+- There is no `~`. Write `x ^ mask`.
+- Nothing is promoted silently. When you need more than 63 bits, reach
+  for `BigInt` in `@vibe/core` deliberately.
 
-A bare decimal is a `Double` (64-bit). A `Float` (32-bit) needs the `f`
-suffix: `1.5f`. Interpolation of a `Double` only prints the decimal you
-expect when the checker can see that the value is floatish (a literal, a
-float-tracked local, float arithmetic, or an annotated parameter). Pipe an
-unannotated helper result through `* 1.0` or a `Double` parameter if the
-printout looks like an integer bit pattern.
+## `Double` and `Float`
 
-## `String` is a byte string
+A decimal literal is a `Double` — 64-bit. A 32-bit `Float` takes an `f`
+suffix: `1.5f`.
 
-`s[i]` is an `Int` character code, not a one-character `String`. `'A'` is
-`65`. Indexing is a byte offset. That is the honest meaning: the memory
-is bytes, so the type is bytes (ADR-0098).
+One practical note: interpolating a `Double` prints the decimal you
+expect when the checker can see the value is floating point — a literal,
+float arithmetic, or an annotated parameter all qualify. If a printout
+looks like a large integer instead, the value reached the interpolation
+without its type; annotate the binding or the parameter.
+
+## `String` is a string of bytes
+
+This is the one that surprises people. `s[i]` is an `Int` — the byte at
+that offset — not a one-character `String`. Indices and lengths are
+byte counts.
 
 ```vibe run
 fn main with Console {
@@ -77,16 +85,21 @@ s[1:4] = ell
 length = 5
 ```
 
-The four slice spellings — `s[:]`, `s[:n]`, `s[n:]`, `s[a:b]` — also work
-on `Bytes` and `Array[T]`. They do not walk Unicode code points.
+`String::from_char_code` turns a code back into a `String`. The four
+slice forms — `s[:]`, `s[:n]`, `s[n:]`, `s[a:b]` — work the same on
+`Bytes` and on `Array[T]`.
+
+Because indices are bytes, slicing does not respect Unicode code point
+boundaries. Slicing ASCII is safe; slicing arbitrary text at an
+arbitrary index is not, and that is a deliberate choice — the memory is
+bytes, so the type says bytes rather than pretending otherwise.
 
 ## Interpolation
 
-`"hello \{x}"` is the only interpolation spelling. A value interpolates
-when the checker can find `T::to_string` (`derive(Show)`, a hand-written
-method, or a builtin renderer). Scalars, `Option`, tuples, and arrays
-already render. A user struct without Show used to print a pointer; that
-is now a compile error.
+`"hello \{x}"` is the only interpolation syntax, and any expression fits
+in the braces. A value can be interpolated when the compiler can find a
+`to_string` for its type: scalars, `Option`, tuples and arrays already
+have one, and your own types get one from `derive (Show)`.
 
 ```vibe run
 struct Point {
@@ -109,4 +122,8 @@ opt = Some(1)
 pair = (2, 3)
 ```
 
-Next: [Collections](11_collections.vibe.md).
+Leave `derive (Show)` off and interpolating a `Point` is a compile
+error, which is the intended answer — printing an address instead would
+be a wrong one.
+
+Next: [Mutation, regions, and escape](06_mutation.vibe.md).
