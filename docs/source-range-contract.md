@@ -106,8 +106,8 @@ fn f() -> Int {
 
 ```
 $ vibe grep --json --pattern 'add($(a:args))' span.vibe
-{"start":89,"end":101,"text":"add(one, two)","captures":{"a":{"text":"one, two","start":93}}}
-{"start":105,"end":108,"text":"add(1, 2)","captures":{"a":{"text":"1, 2","start":null}}}
+{"start":89,"end":101,"synthetic":false,"text":"add(one, two)","captures":{"a":{"text":"one, two","start":93}}}
+{"start":105,"end":108,"synthetic":false,"text":"add(1, 2)","captures":{"a":{"text":"1, 2","start":null}}}
 ```
 
 The first range stops at 101, the end of `two` — one byte short of the closing
@@ -121,6 +121,14 @@ recorded offset — the literal case above. It used to render `-1`, chosen over
 `0` so the output would not invent a plausible offset. Right intent, wrong
 type: `-1` is still a *number*, and a consumer slicing `src[start:]` on it
 reads from the end of the file rather than failing.
+
+A match with NO recorded offset at all reports `null` in all four position
+fields and `"synthetic":true` — the JSON spelling of what the text lane writes
+as `<synthetic>` in place of `line:col`. The two output modes are checked
+against each other by `scripts/check_source_range_contract.sh` (check 11), not
+each against its own copy of the answer. JSON used to render `-1` in those
+fields, with the same defect as the capture-level `-1` below: a number where an
+offset goes.
 
 `text` is a **printed form, not a source slice** (measured 2026-08-19).
 `f( a  +  b )` captures as `(a + b)` — parens added, whitespace runs collapsed —

@@ -165,7 +165,21 @@ test "grep: nested matches are reported as the separate sites they are" {
 
 test "grep: JSON output carries offsets and per-capture spans" {
   let src = "let a = f(1)\n"
-  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":null}}}\n]\n")
+  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"synthetic\":false,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":null}}}\n]\n")
+}
+
+test "grep: an unlocated match is null + synthetic, and the two modes agree" {
+  // #1943: the text lane has always rendered such a match as `<synthetic>`;
+  // JSON rendered `-1` in all four position fields. `-1` is a NUMBER, so a
+  // consumer slicing `src[start:end]` reads from the end of the file instead
+  // of failing. A match is unlocated when its operands are literals, which
+  // carry no offset slot.
+  let src = "let a = 3 + 4\n"
+  let out = grep_scan_source("a.vibe", src, "$(x:exp) + $(y:exp)", no_strings(), no_strings(), "", true)
+  assert(String::contains(out, "\"line\":null,\"col\":null,\"start\":null,\"end\":null,\"synthetic\":true"))
+  assert(!String::contains(out, "-1"))
+  // The text lane's spelling of the same fact.
+  assert(String::contains(scan(src, "$(x:exp) + $(y:exp)"), "<synthetic>"))
 }
 
 test "grep: no match is empty output, in both text and JSON form" {
@@ -463,7 +477,7 @@ test "grep: a reported range is a LOWER BOUND, not the match's extent" {
   let src = span_src()
   let out = scan_json(src, "add($(a:args))")
   // `add(one, two)` starts at 89; `two` ends at 101; the `)` is at 101.
-  assert(String::contains(out, "\"start\":89,\"end\":101,\"text\":\"add(one, two)\""))
+  assert(String::contains(out, "\"start\":89,\"end\":101,\"synthetic\":false,\"text\":\"add(one, two)\""))
   assert_eq(String::substring(src, 89, 101), "add(one, two")
   assert_eq(String::substring(src, 89, 102), "add(one, two)")
 }
@@ -473,7 +487,7 @@ test "grep: a match whose operands are all literals collapses to the head" {
   // an offset, so the span has nothing to widen past `add`.
   let src = span_src()
   let out = scan_json(src, "add($(a:args))")
-  assert(String::contains(out, "\"start\":105,\"end\":108,\"text\":\"add(1, 2)\""))
+  assert(String::contains(out, "\"start\":105,\"end\":108,\"synthetic\":false,\"text\":\"add(1, 2)\""))
   assert_eq(String::substring(src, 105, 108), "add")
 }
 
