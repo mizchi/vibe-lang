@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Self-test for check_task_inputs.sh: fixed cases over synthetic task blocks.
+#
+# Both directions matter. A gate that only proves it stays green would not have
+# caught the thing it exists for, and one that fires on a mention rather than an
+# invocation gets ignored -- the first cut flagged six sound tasks that way.
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_taskinputs.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+fails=0
+note() { printf 'check-task-inputs-test: ok: %s\n' "$1"; }
+bad() { printf 'check-task-inputs-test: FAIL: %s\n' "$1" >&2; fails=1; }
+
+run_case() { # run_case <label> <expect-exit> <taskfile-body>
+  local label="$1" want="$2" body="$3"
+  printf '%s\n' "$body" > "$WORK/Taskfile.pkl"
+  local got=0
+  TASK_INPUTS_TASKFILE="$WORK/Taskfile.pkl" bash scripts/check_task_inputs.sh >/dev/null 2>&1 || got=$?
+  [ "$got" = "$want" ] && note "$label" || bad "$label: expected exit $want, got $got"
+}
+
+# Runs the compiler, explicit inputs, no vibeSources -> the bug this exists for.
+run_case "compiler task without vibeSources is rejected" 1 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { "docs/cheatsheet.md" }
+}'
+
+# The same, with vibeSources -> fine.
+run_case "compiler task with vibeSources passes" 0 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...vibeSources; "docs/cheatsheet.md" }
+}'
+
+# Caching off is the other legitimate answer.
+run_case "cache = false is accepted instead" 0 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  cache = false
+  inputs { "docs/cheatsheet.md" }
+}'
+
+# A task that does not reach the compiler is none of this gate's business.
+run_case "pure-text task is not flagged" 0 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_book_links.sh"
+  inputs { "book/**/*.md" }
+}'
+
+# No explicit inputs: scriptTask defaults apply, nothing was replaced.
+run_case "task without explicit inputs is not flagged" 0 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+}'
+
+# A script named only in `inputs` is declared, not run. Flagging it was a real
+# false positive in the first cut.
+run_case "a script named only in inputs does not count as running it" 0 'local t = new Task {
+  name = "probe"
+  cmd = "node scripts/bench_report.mjs"
+  inputs { "scripts/check_freeze_surface.sh" }
+}'
+
+[ "$fails" -eq 0 ] || exit 1
+echo "check-task-inputs-test: ok (6 cases)"

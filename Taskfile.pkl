@@ -332,10 +332,17 @@ local checkFreezeSurface = new Task {
   name = "check-freeze-surface"
   description = "the frozen surface list resolves, and matches the cheatsheet's Key Builtins"
   cmd = "bash scripts/check_freeze_surface.sh"
+  // ADDITIVE, not a replacement: this gate asks the COMPILER whether every
+  // promised symbol still resolves, so lib/** is half the question. Swapping
+  // the default inputs for the documents alone would let a rename under
+  // lib/**/*.vibe drop a frozen builtin behind a cached pass -- the same
+  // under-invalidation as the doc-only case, pointed the other way. Inputs may
+  // over-approximate (a needless re-run is free); they may never under-.
   inputs {
+    ...vibeSources
+    ...scriptSources
     "docs/spec/stable-surface.md"
     "docs/cheatsheet.md"
-    "scripts/check_freeze_surface.sh"
   }
 }
 // ADR-0109: one version number, checked wherever it is written (launcher,
@@ -348,9 +355,10 @@ local checkBookLinks = new Task {
   name = "check-book-links"
   description = "every relative link in book/ resolves"
   cmd = "bash scripts/check_book_links.sh"
+  // Pure text -- no compiler -- so lib/** genuinely is not an input here.
   inputs {
+    ...scriptSources
     "book/**/*.md"
-    "scripts/check_book_links.sh"
   }
 }
 local testCheckBookLinks = scriptTask("test-check-book-links", "scripts/check_book_links_test.sh")
@@ -382,6 +390,15 @@ local testCheckSourceRangeContract =
 // omission fails differently -- so two of the three gives an error that does
 // not name the third. Checked because the cost it reveals (every shared helper
 // becomes public surface) belongs in a split's plan, not its last commit.
+// A task that RUNS the compiler must have the compiler in its cache key.
+// `scriptTask` gets that by default; a hand-written `new Task` spells `inputs`
+// out to ADD something and can end up REPLACING the defaults instead, leaving a
+// task that passes from cache after the very change it exists to catch. That
+// happened three times on one branch -- twice by me, once caught in review --
+// which is what makes it a gate rather than a note.
+local checkTaskInputs = scriptTask("check-task-inputs", "scripts/check_task_inputs.sh")
+local testCheckTaskInputs =
+  scriptTask("test-check-task-inputs", "scripts/check_task_inputs_test.sh")
 local checkPackageSiblingScope = new Task {
   name = "check-package-sibling-scope"
   description = "export + contract entry + explicit ./import are all required to reach a sibling"
@@ -428,11 +445,12 @@ local checkVersionLadder = new Task {
   name = "check-version-ladder"
   description = "the release-notes ladder and the 1.0 freeze document agree"
   cmd = "bash scripts/check_version_ladder.sh"
+  // Pure text, like check-book-links.
   inputs {
+    ...scriptSources
     "docs/release-notes-*.md"
     "docs/release-roadmap.md"
     "docs/spec/1.0-freeze.md"
-    "scripts/check_version_ladder.sh"
   }
 }
 local testCheckVersionLadder =
@@ -585,12 +603,18 @@ local testInstallHelloSmoke = new Task {
   // instead of reading it; the fix was to derive it from the documents. If
   // those documents are not inputs, a cached pass replays after a doc edit
   // and the derivation never re-runs -- undoing that fix invisibly.
+  // Documents AND compiler: this one installs and RUNS the compiler, so lib/**
+  // decides the answer as much as the documents do. #2121 found this gate
+  // green while the documented program was broken, because it RESTATED the
+  // program instead of reading it; leaving either side out of the cache key
+  // undoes that fix invisibly.
   inputs {
+    ...vibeSources
+    ...scriptSources
     "README.md"
     "docs/install.md"
     "docs/cheatsheet.md"
     "book/en/01_getting_started.vibe.md"
-    "scripts/test_vibe_install_hello.sh"
   }
 }
 local testUncaughtExceptionExit =
@@ -1388,6 +1412,8 @@ local releaseCheck = new Task {
     checkCliLineTermination
     checkCheatsheetSignatures
     checkPackageSiblingScope
+    checkTaskInputs
+    testCheckTaskInputs
     doctestGated
     vibeMdTutorialGated
     checkTutorialTranslationParity
@@ -1459,6 +1485,8 @@ tasks {
   checkCliLineTermination
   checkCheatsheetSignatures
   checkPackageSiblingScope
+  checkTaskInputs
+  testCheckTaskInputs
   testGenerateSelfhostBundle
   checkOffbuildTypecheck
   testSelfhostAsyncComponent
