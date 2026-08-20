@@ -2566,15 +2566,16 @@ echo "[compiler-gate] index bounds checks ok"
 #      reachable by a silent fallback, which compiled fine and then trapped at
 #      runtime (call_indirect on the stream's array pointer). #1350 removed the
 #      `for await` syntax and made the UNCLASSIFIED fallback the plain array
-#      loop -- which is the correct lowering for the eager Array-backed
-#      `Stream` (ADR-0012) -- so the hazard is now structural rather than
+#      loop. #1954 later replaced the structural `Stream[Int]` spelling with
+#      nominal `ByteStream`, while retaining its byte-iteration lowering, so
+#      the hazard is now structural rather than
 #      diagnostic: BOTH the annotated and the unannotated param must compile
 #      and run to 42.
 echo "[compiler-gate] 27d/27 async for-loop classification (#827/#1350)"
 fadir="_build/_gate_forawait"
 rm -rf "$fadir"; mkdir -p "$fadir"
 cat > "$fadir/ok_annot.vibe" <<'EOF'
-let consume: (Stream[Int]) -> Int = (s) -> {
+let consume: (ByteStream) -> Int = (s) -> {
   let mut sum = 0
   for x in s {
     sum = sum + x
@@ -2640,11 +2641,11 @@ for fa_case in ok_annot ok_unannot ok_unannot_factory ok_unannot_closure_factory
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$fadir/$fa_case.vibe" "$fadir/$fa_case.wasm" _start >/dev/null 2>&1 || true
   if [ ! -s "$fadir/$fa_case.wasm" ]; then
-    echo "[compiler-gate] FAIL: $fa_case for-loop over a Stream did not compile" >&2; exit 1
+    echo "[compiler-gate] FAIL: $fa_case byte-stream for-loop did not compile" >&2; exit 1
   fi
   fa_out="$(bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fadir/$fa_case.wasm" 2>/dev/null | tail -n 1)"
   if [ "$fa_out" != "42" ]; then
-    echo "[compiler-gate] FAIL: $fa_case returned '$fa_out' (expected 42 -- the array loop is the right lowering for an eager Stream; a pull-closure fallback would trap)" >&2; exit 1
+    echo "[compiler-gate] FAIL: $fa_case returned '$fa_out' (expected 42 -- ByteStream uses byte iteration; a pull-closure fallback would trap)" >&2; exit 1
   fi
 done
 rm -rf "$fadir"
