@@ -58,7 +58,9 @@ for l in lines[start:end]:
     cells = [c.strip() for c in l.strip().strip("|").split("|")]
     if len(cells) < 2:
         continue
-    names = re.findall(r'`([A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_]+)`', cells[0])
+    # Bare builtins (`sh`, `sh_lines`) live in the same tables as qualified ones.
+    # Requiring `::` silently dropped them, and dropped a real mismatch with them.
+    names = re.findall(r'`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)?)`', cells[0])
     sigs = re.findall(r'`(\([^`]*\)\s*->\s*[^`]+)`', cells[1])
     if len(names) == 1 and len(sigs) >= 1:
         pairs = [(names[0], sigs[0])]
@@ -110,6 +112,22 @@ fi
 python3 - "$DOC" "$WORK/actual.tsv" "$pair_count" <<'PY' || exit 1
 import re, sys
 doc = open(sys.argv[1], encoding="utf-8").read()
+
+def ret_type(sig):
+    # Everything after the LAST top-level `->`, with the effect row dropped: the
+    # tables carry the row in their own column, so comparing it here would report
+    # a difference in presentation rather than in meaning.
+    i = sig.rfind("->")
+    if i < 0:
+        return None
+    r = sig[i + 2:].strip()
+    r = re.split(r'\s+with\s+', r)[0].strip()
+    return "Unit" if r in ("()", "Unit") else r
+
+def is_generic(t):
+    # `?` is how the checker prints an un-instantiated variable; a lone capital
+    # is how the document writes one. Neither can be compared to the other.
+    return "?" in t or bool(re.fullmatch(r'[A-Z]', t)) or bool(re.search(r'\[[A-Z]\]', t))
 
 def arity(sig):
     m = re.match(r'\s*\(([^)]*)\)', sig)
@@ -170,7 +188,13 @@ for line in open(sys.argv[2]):
     compared += 1
     ad, aa = arity(docsig), arity(actual)
     if ad != aa:
-        mismatch.append((name, docsig, actual, ad, aa))
+        mismatch.append((name, docsig, actual, f"{ad} args", f"{aa} args"))
+        continue
+    # Arity alone would have missed `sh`, documented `-> Unit` while the registry
+    # returns `String`: same arity, different answer. Compare the return type too.
+    rd, ra = ret_type(docsig), ret_type(actual)
+    if rd and ra and not is_generic(rd) and not is_generic(ra) and rd != ra:
+        mismatch.append((name, docsig, actual, f"returns {rd}", f"returns {ra}"))
 
 fails = 0
 expected_rows = int(sys.argv[3])
@@ -183,7 +207,7 @@ for m in malformed:
     print(f"cheatsheet-signatures: FAIL: malformed probe row (want NAME\\tDOC\\tACTUAL): {m}", file=sys.stderr)
     fails = 1
 for name, d, a, ad, aa in mismatch:
-    print(f"cheatsheet-signatures: FAIL: {name} documented as {d} ({ad} args) but the checker says {a} ({aa} args)", file=sys.stderr)
+    print(f"cheatsheet-signatures: FAIL: {name} documented as {d} ({ad}) but the checker says {a} ({aa})", file=sys.stderr)
     fails = 1
 
 missing = sorted(nonbuiltin - listed)

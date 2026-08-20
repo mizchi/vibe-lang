@@ -1574,7 +1574,7 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 
 | 関数 | シグネチャ | effect |
 |---|---|---|
-| `sh` | `(String) -> Unit` | `Process` |
+| `sh` | `(String) -> String` (captured stdout) | `Process` |
 | `sh_lines` | `(String) -> Array[String]` | `Process` |
 | `Console::write_stream` | `(String) -> Unit` | `Console` |
 | `Console::write_char` | `(Int) -> Unit` | `Console` |

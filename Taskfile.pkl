@@ -324,12 +324,35 @@ local checkTaskfileFmt = new Task {
 // compiler_gate.sh runs it up front, before the selfbuild.
 local checkFixtureExecution =
   scriptTask("check-fixture-execution", "scripts/check_fixture_execution.sh")
-local checkFreezeSurface = scriptTask("check-freeze-surface", "scripts/check_freeze_surface.sh")
+// NOT `scriptTask`: this gate DERIVES its expectations from two documents, and
+// `scriptSources`/`vibeSources` hash neither. With a cached pass, a CI run that
+// restores ~/.cache/pkfire would replay it after a cheatsheet edit -- the gate
+// answering about a document it did not read (#2138 review).
+local checkFreezeSurface = new Task {
+  name = "check-freeze-surface"
+  description = "the frozen surface list resolves, and matches the cheatsheet's Key Builtins"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs {
+    "docs/spec/stable-surface.md"
+    "docs/cheatsheet.md"
+    "scripts/check_freeze_surface.sh"
+  }
+}
 // ADR-0109: one version number, checked wherever it is written (launcher,
 // release notes, roadmap ladder, stable-surface doc). Pure text -- no compiler.
 // The book is the onboarding surface; a broken chapter link ends a reader's
 // visit. Pure text -- no compiler.
-local checkBookLinks = scriptTask("check-book-links", "scripts/check_book_links.sh")
+// NOT `scriptTask`: the book IS the subject. A cached pass replayed after a
+// chapter edit is a link check that never saw the links (#2138 review).
+local checkBookLinks = new Task {
+  name = "check-book-links"
+  description = "every relative link in book/ resolves"
+  cmd = "bash scripts/check_book_links.sh"
+  inputs {
+    "book/**/*.md"
+    "scripts/check_book_links.sh"
+  }
+}
 local testCheckBookLinks = scriptTask("test-check-book-links", "scripts/check_book_links_test.sh")
 // Two doctest harnesses answer differently on the same document; the guard in
 // scripts/vibe_md.sh keeps a prose doc from reaching the *.vibe.md one.
@@ -359,8 +382,15 @@ local testCheckSourceRangeContract =
 // omission fails differently -- so two of the three gives an error that does
 // not name the third. Checked because the cost it reveals (every shared helper
 // becomes public surface) belongs in a split's plan, not its last commit.
-local checkPackageSiblingScope =
-  scriptTask("check-package-sibling-scope", "scripts/check_package_sibling_scope.sh")
+local checkPackageSiblingScope = new Task {
+  name = "check-package-sibling-scope"
+  description = "export + contract entry + explicit ./import are all required to reach a sibling"
+  cmd = "bash scripts/check_package_sibling_scope.sh"
+  inputs { ...vibeSources; ...scriptSources }
+  // Same reason as check-cheatsheet-signatures: the verdicts are the current
+  // compiler's, so it has to be the current compiler that answers.
+  deps { selfhostGeneration }
+}
 // NOT `scriptTask`: the document under test and the probe are inputs too.
 // `scriptSources` globs scripts/**/*.{sh,mjs,vibex} and `vibeSources` globs
 // lib/**, so neither docs/cheatsheet.md nor a `.vibe` probe living in scripts/
@@ -371,17 +401,40 @@ local checkCheatsheetSignatures = new Task {
   name = "check-cheatsheet-signatures"
   description = "the cheatsheet's Signature reference matches the checker's builtin table"
   cmd = "bash scripts/check_cheatsheet_signatures.sh"
+  // BOTH sides of the comparison are inputs. Listing only the document was
+  // half a fix: `lookup_builtin` lives in lib/**, so a change to the builtin
+  // tables without touching these three files would have replayed the old
+  // verdict -- the compiler-side drift this task exists to catch, passing.
   inputs {
+    ...vibeSources
+    ...scriptSources
     "docs/cheatsheet.md"
-    "scripts/check_cheatsheet_signatures.sh"
     "scripts/cheatsheet_signature_probe.vibe"
   }
+  // The oracle must be THIS checkout's compiler. Without the dep both scripts
+  // pick the newest existing generation, or fall back to the committed seed --
+  // so on a clean run they can answer from the seed while stage2 is still
+  // building, and on a reused workspace from an unrelated generation.
+  deps { selfhostGeneration }
 }
 local checkCliLineTermination =
   scriptTask("check-cli-line-termination", "scripts/check_cli_line_termination.sh")
 local checkDeclarationScale =
   scriptTask("check-declaration-scale", "scripts/check_declaration_scale.sh")
-local checkVersionLadder = scriptTask("check-version-ladder", "scripts/check_version_ladder.sh")
+// NOT `scriptTask`: reads docs/release-notes-* and docs/spec/1.0-freeze.md, so
+// the release notes are inputs -- otherwise adding one replays a cached pass
+// (#2138 review).
+local checkVersionLadder = new Task {
+  name = "check-version-ladder"
+  description = "the release-notes ladder and the 1.0 freeze document agree"
+  cmd = "bash scripts/check_version_ladder.sh"
+  inputs {
+    "docs/release-notes-*.md"
+    "docs/release-roadmap.md"
+    "docs/spec/1.0-freeze.md"
+    "scripts/check_version_ladder.sh"
+  }
+}
 local testCheckVersionLadder =
   scriptTask("test-check-version-ladder", "scripts/check_version_ladder_test.sh")
 local testCheckFreezeSurface =
@@ -523,8 +576,23 @@ local testMeasureFsHeap = scriptTask("test-measure-fs-heap", "scripts/measure_fs
 local testRunCachedVibe = scriptTask("test-run-cached-vibe", "scripts/run_cached_vibe_test.sh")
 local testSelfhostGenerations = scriptTask("test-generations", "scripts/generations_test.sh")
 local testVibeRun = scriptTask("test-vibe-run", "scripts/vibe_run_smoke.sh")
-local testInstallHelloSmoke =
-  scriptTask("test-install-hello-smoke", "scripts/test_vibe_install_hello.sh")
+local testInstallHelloSmoke = new Task {
+  name = "test-install-hello-smoke"
+  description = "the documented first program, DERIVED from the documents that teach it"
+  cmd = "bash scripts/test_vibe_install_hello.sh"
+  // The sharpest case for spelling these out. #2121 found this gate green
+  // while the documented program was broken, because it RESTATED the program
+  // instead of reading it; the fix was to derive it from the documents. If
+  // those documents are not inputs, a cached pass replays after a doc edit
+  // and the derivation never re-runs -- undoing that fix invisibly.
+  inputs {
+    "README.md"
+    "docs/install.md"
+    "docs/cheatsheet.md"
+    "book/en/01_getting_started.vibe.md"
+    "scripts/test_vibe_install_hello.sh"
+  }
+}
 local testUncaughtExceptionExit =
   scriptTask("test-uncaught-exception-exit", "scripts/test_uncaught_exception_exit.sh")
 local testVibeTest = scriptTask("test-vibe-test", "scripts/vibe_test_smoke.sh")
