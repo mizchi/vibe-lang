@@ -14,6 +14,12 @@ not expect a command to regenerate it.
 
 This README previously showed `pkf run build-wasm-vibe`, which names no task.
 
+The artifact is **stale**: it rejects `fn` declarations (`expected expr, got
+`fn``) while still typechecking `let`, so it predates the current syntax.
+`clients/js/` defaults to it anyway, because its previous default
+(`_build/wasm-gc/release/build/lib/lib.wasm`, a MoonBit-host output) has had
+no producer since #594 and made `createVibeService()` throw unconditionally.
+
 ## Smoke test with wasmtime
 
 The committed artifact does still run:
