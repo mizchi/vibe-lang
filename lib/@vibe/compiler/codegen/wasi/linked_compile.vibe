@@ -1932,6 +1932,10 @@ fn lc_expr_calls_host_stream_close(e: Expr) -> Bool {
   lc_expr_calls_name(e, "host_stream_close") || lc_expr_calls_name(e, "HostStream::close")
 }
 
+fn lc_expr_calls_host_stream_option_next(e: Expr) -> Bool {
+  lc_expr_calls_name(e, "HostStream::next")
+}
+
 /// ADR-0089 Decision 3 (#1218): every component import name a
 /// `host_stream_named` call in `e` asks for, appended to `out`. The stream
 /// sibling of lc_expr_collect_hf_names, with the SAME two hard
@@ -2757,6 +2761,10 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
   // reserve the close import in programs that only ever drain, which is
   // exactly the byte-compat property this surface is supposed to keep.
   let mut calls_host_stream_close = false
+  // The public Option-returning helper is a second suspend function. Keep it
+  // out of raw-scalar programs: besides preserving their component bytes, the
+  // suspend pass must not classify an unused helper as another boundary path.
+  let mut calls_host_stream_option_next = false
   let mut user_defines_host_stream = false
   let mut has_spawn_suspend = false
   let mut has_aw_poll = false
@@ -2814,6 +2822,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
+        if lc_expr_calls_host_stream_option_next(fbody) {
+          calls_host_stream_option_next = true
+        } else {
+          ()
+        }
         if lc_expr_has_spawn_suspend(fbody) {
           has_spawn_suspend = true
         } else {
@@ -2861,6 +2874,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
+        if lc_expr_calls_host_stream_option_next(sv) {
+          calls_host_stream_option_next = true
+        } else {
+          ()
+        }
       },
       SLetMut(_, _, mv) => {
         if lc_expr_has_async_handle(mv) {
@@ -2885,6 +2903,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         }
         if lc_expr_calls_host_stream_close(mv) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(mv) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -2915,6 +2938,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
+        if lc_expr_calls_host_stream_option_next(se) {
+          calls_host_stream_option_next = true
+        } else {
+          ()
+        }
       },
       STest(_, te) => {
         if lc_expr_has_async_handle(te) {
@@ -2942,6 +2970,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         } else {
           ()
         }
+        if lc_expr_calls_host_stream_option_next(te) {
+          calls_host_stream_option_next = true
+        } else {
+          ()
+        }
       },
       SBench(_, be) => {
         if lc_expr_has_async_handle(be) {
@@ -2966,6 +2999,11 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         }
         if lc_expr_calls_host_stream_close(be) {
           calls_host_stream_close = true
+        } else {
+          ()
+        }
+        if lc_expr_calls_host_stream_option_next(be) {
+          calls_host_stream_option_next = true
         } else {
           ()
         }
@@ -3137,29 +3175,33 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       // #1955: public source protocol. Authority remains in the Async row and
       // the stateful HostStream handle is consumed in place, so no Future or
       // redundant Self value is returned.
-      let hso_s = EIdent("__hso_s", -1)
-      let hso_v = EIdent("__hso_v", -1)
-      let hso_raw = EIdent("__hso_raw", -1)
-      let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1)
-      let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
-      let hso_suspend = ECall(EIdent("perform", -1), [
-        ECall(EIdent("Async::Suspend", -1), [
-          EBinOp("+", hso_hnd, EInt(lc_hs_req_base()))
+      if calls_host_stream_option_next {
+        let hso_s = EIdent("__hso_s", -1)
+        let hso_v = EIdent("__hso_v", -1)
+        let hso_raw = EIdent("__hso_raw", -1)
+        let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1)
+        let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
+        let hso_suspend = ECall(EIdent("perform", -1), [
+          ECall(EIdent("Async::Suspend", -1), [
+            EBinOp("+", hso_hnd, EInt(lc_hs_req_base()))
+          ], -1)
         ], -1)
-      ], -1)
-      let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
-      let hso_option = EIf(EBinOp("<", hso_raw, EInt(0)), EIdent("None", -1), ECall(EIdent("Some", -1), [
-        hso_raw
-      ], -1))
-      let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
-      let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
-      let hso_body = EIf(EBinOp("==", hso_state, EInt(3)), hso_read, EIdent("None", -1))
-      let hso_params: Array[(String, Option[TypeExpr])] = [("__hso_s", None)]
-      let hso_fn = EFn(lc_fresh_string_array(), array_empty(), hso_params, Some(TyApp("Option", [
-        TyName("Int")
-      ])), Some("Async"), hso_body)
-      let hso_binding = SLet(false, false, lc_fixed_synthetic_name("__hs_next_option", "review-lint: allow-fixed-synthetic-name"), None, hso_fn)
-      Array::push(stmts, hso_binding)
+        let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
+        let hso_option = EIf(EBinOp("<", hso_raw, EInt(0)), EIdent("None", -1), ECall(EIdent("Some", -1), [
+          hso_raw
+        ], -1))
+        let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
+        let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
+        let hso_body = EIf(EBinOp("==", hso_state, EInt(3)), hso_read, EIdent("None", -1))
+        let hso_params: Array[(String, Option[TypeExpr])] = [("__hso_s", None)]
+        let hso_fn = EFn(lc_fresh_string_array(), array_empty(), hso_params, Some(TyApp("Option", [
+          TyName("Int")
+        ])), Some("Async"), hso_body)
+        let hso_binding = SLet(false, false, lc_fixed_synthetic_name("__hs_next_option", "review-lint: allow-fixed-synthetic-name"), None, hso_fn)
+        Array::push(stmts, hso_binding)
+      } else {
+        ()
+      }
       let hsf_s = EIdent("__hsf_s", -1)
       let hsf_v = EIdent("__hsf_v", -1)
       let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1)
@@ -3215,7 +3257,13 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
           SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_next_option" || hrname == "__hs_fin" || hrname == "__hs_close" {
             ()
           } else {
-            Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hrexpr, true), true), true)))
+            let with_raw_next = lc_rename_hs_next_calls(hrexpr, true)
+            let with_option_next = if calls_host_stream_option_next {
+              lc_rename_hs_option_next_calls(with_raw_next, true)
+            } else {
+              with_raw_next
+            }
+            Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, with_option_next, true)))
           },
           SLetMut(hmname, hmty, hmexpr) => {
             Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hmexpr, true), true), true)))
