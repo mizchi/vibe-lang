@@ -386,7 +386,6 @@ removed in #594; both are covered by piping into `vibe shell`.)
 | `--syntax vibe` | Select parser mode |
 | `--unstable-async` | Enable async runtime features (experimental) |
 | `--unstable-threads` | Enable thread runtime features (experimental) |
-| `--llm` | Enable LLM/RLM capabilities (requires `VIBE_LLM_PROVIDER`) |
 
 ## Environment Variables
 

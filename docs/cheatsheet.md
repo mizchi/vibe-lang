@@ -895,7 +895,7 @@ its declarations and `handle` expressions.
 
 | policy | execution owner | current standard labels |
 |---|---|---|
-| host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` (`Stdin`/`Stdout`/`Stderr` = still-accepted legacy labels, same host imports) `Process` `Profiler` `Llm` |
+| host-provider metadata | host / provider outside the Wasm boundary | `Fs` `Http` `Socket` `Env` `Console` (`Stdin`/`Stdout`/`Stderr` = still-accepted legacy labels, same host imports) `Process` `Profiler` |
 | entry-boundary exception policy | entry boundary diagnoses an escaping exception | `Exception` / `Exception[E]` (`Error` was retired as a row spelling in #1461) |
 | runtime scheduling policy | runtime itself | `Async` |
 
