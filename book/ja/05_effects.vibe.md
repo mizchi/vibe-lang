@@ -103,15 +103,18 @@ v = 42
 ## `handle` が見えるもの
 
 上の `handle { answer_of(...) }` が通るのは、`answer_of` が名前付き top-level
-`fn` だから。`handle` が覆うすべての `perform` は静的に見えていなければなら
-ない — 直接の `perform`、名前付き top-level `fn` の呼び出し、effect-row 注釈
-付きのクロージャリテラル。
+`fn` だから。`handle` が覆うすべての `perform` はその `handle` から見えて
+いなければならない — つまり handled body の呼び出し 1 つ 1 つについて、
+コンパイラが「その呼び出しが何を perform するか」を判定できる必要がある。
 
-ローカル束縛を経由する呼び出しは perform を隠す。型検査は通ってもコンパイル
+ほとんどの呼び出しは見える — top-level `fn`、`println` のような builtin、
+束縛や引数の型が effect row を持つクロージャ、そして handled body の中で
+書かれたクロージャ。見えないのは、**外側のスコープから名前だけで届く row 無し
+のクロージャ**で、定義も row も参照できない。この形は型検査を通ってもコンパイル
 は拒否される — 直すのは型ではなく呼び出し側。
 
 ```vibe skip
-// skip: ineligible handle — a local closure hides the perform from the handler
+// skip: ineligible handle — a rowless closure bound outside the handled body
 effect Ask {
   Once() -> Int
 }
@@ -127,16 +130,16 @@ fn main() -> Int {
   }
 }
 // error (measured with `vibe check`): handle of effect 'Ask' cannot be compiled
-// here. Every perform this handle covers has to be statically visible to it, so
-// the handled body may only: perform directly, call a named top-level `fn`, or
-// call a closure literal that carries an effect row annotation. A call through
-// a local binding or a closure parameter hides the perform and is what this
-// rejects (here: the call to 'bump') -- move the `handle` into the function
-// that performs, or replace the indirect call with a direct one.
+// here: this handle cannot see what one call in its body performs (here: the
+// call to 'bump'). Make that call visible -- declare 'bump' as a top-level
+// `fn`, give the binding or parameter it arrives through an effect row (`with
+// Ask`), or move its `let` inside the handled body. Moving the `handle` into
+// the function that performs works too.
 ```
 
-直し方は最後の文どおり: `handle` を perform する関数の中へ移すか、`bump(...)`
-を直接呼び出し (または top-level `fn`) に置き換える。
+メッセージが挙げる 4 つの直し方のどれでも直る。ここで一番小さいのは `bump` を
+top-level `fn` に出すこと。`let bump: (Int) -> Int with Ask = ...` と注釈する、
+あるいは `let` を `handle` の中へ移すのも同じく有効。
 
 ## エフェクト多相
 

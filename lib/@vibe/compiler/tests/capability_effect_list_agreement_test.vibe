@@ -1,0 +1,127 @@
+//# Three lists have to agree about which effect labels are host capabilities
+//# (#2110), and nothing kept them in step:
+//#
+//#   1. `standard_host_provider_resource_defaults` (compiler/core) -- the
+//#      provider table, which decides resource kinds and entry admission.
+//#   2. `capability_effect_name_list` (parser) -- what ADR-0088's `allows`
+//#      clause accepts. The parser package must not depend on the compiler, so
+//#      this cannot be the same definition; it can only be the same content.
+//#   3. The builtins that carry a capability effect row. A row with no lowering
+//#      lets a program past the checker and into a codegen internal error.
+//#
+//# The registry->policy direction already has a guard
+//# (`verify_standard_effect_policy_coverage`). Lists 1 and 2 are guarded here
+//# in both directions, DERIVED from the two enumerations rather than restating
+//# either, so adding a provider without teaching the parser -- or the reverse
+//# -- fails by name. List 3 has no enumeration to derive from, so the last test
+//# is a named pin on the three declarations that caused this.
+
+//# Imports
+
+import @vibe/compiler/checker {
+  lookup_io
+}
+
+import @vibe/compiler/core {
+  has_standard_host_provider, standard_host_provider_names
+}
+
+import @vibe/parser {
+  capability_effect_names
+}
+
+//# Helpers
+
+/// `String::join` of an empty accumulator renders as `0` through `inspect`'s
+/// dynamic `__to_string`, which would make "nothing missing" unreadable. Say
+/// the agreed case in a word, so a failure shows the offending names instead.
+fn names_or_agreed(names: Array[String]) -> String {
+  if Array::length(names) == 0 {
+    "agreed"
+  } else {
+    String::join(names, ",")
+  }
+}
+
+fn contains_name(names: Array[String], needle: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == needle {
+      found = true
+      i = Array::length(names)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Standard host providers the parser would reject in an `allows` clause.
+fn providers_the_parser_rejects() -> String {
+  let capabilities = capability_effect_names()
+  let providers = standard_host_provider_names()
+  let out: Array[String] = Array::slice([""], 0, 0)
+  let mut i = 0
+  while i < Array::length(providers) {
+    let name = Array::get(providers, i)
+    if contains_name(capabilities, name) {
+      ()
+    } else {
+      Array::push(out, name)
+    }
+    i = i + 1
+  }
+  names_or_agreed(out)
+}
+
+/// Parser capabilities with no standard host provider behind them.
+fn capabilities_without_a_provider() -> String {
+  let capabilities = capability_effect_names()
+  let out: Array[String] = Array::slice([""], 0, 0)
+  let mut i = 0
+  while i < Array::length(capabilities) {
+    let name = Array::get(capabilities, i)
+    if has_standard_host_provider(name) {
+      ()
+    } else {
+      Array::push(out, name)
+    }
+    i = i + 1
+  }
+  names_or_agreed(out)
+}
+
+fn is_declared(name: String) -> Bool {
+  match lookup_io(name) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+//# Tests
+
+test "every standard host provider is a capability `allows` accepts" {
+  inspect(providers_the_parser_rejects(), "agreed")
+}
+
+test "every capability the parser accepts has a standard host provider" {
+  inspect(capabilities_without_a_provider(), "agreed")
+}
+
+test "the two lists still describe the same set" {
+  inspect(String::join(standard_host_provider_names(), ","), "Fs,Env,Stdin,Stdout,Stderr,Console,Process,Profiler,Http,Socket")
+  inspect(String::join(capability_effect_names(), ","), "Fs,Http,Socket,Env,Console,Stdin,Stdout,Stderr,Process,Profiler")
+}
+
+test "no LLM builtin is declared without a lowering" {
+  // #2110: these three were declared in the checker with an `Llm` effect row
+  // and no codegen arm, no host import and no `--allow-llm`. Calling one
+  // type-checked and then died at code generation claiming a compiler bug.
+  // Re-declaring any of them without also lowering it fails here by name.
+  inspect(is_declared("Llm::complete"), "false")
+  inspect(is_declared("Rlm::run"), "false")
+  inspect(is_declared("Rlm::finalize"), "false")
+  // The sibling that IS implemented (@vibe/builtin's string.vibe) stays.
+  inspect(is_declared("Lines::parse"), "true")
+}

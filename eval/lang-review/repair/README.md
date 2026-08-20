@@ -227,6 +227,7 @@ capability かどうかでは分かれない (`Profiler::now_us` は capability 
 - **拒否される形を名指しした** — 「ローカル束縛やクロージャ引数越しの呼び出しが
   perform を隠す」。旧文言は許される形しか挙げておらず、読み手は自分の
   コードがどれに当たらないかを消去法で当てる必要があった
+  (**この名指しは誤りだった — 末尾の「更新: #2137」節を見ること**)
 - ADR 参照は末尾に残した (設計記録を追いたい読み手のため)
 
 | # | L | A | C | 計 |
@@ -308,40 +309,48 @@ source snapshot を診断側へ輸送できるまでは、誤った位置を出�
 残る減点はケース08の位置情報1点。以降スコアを動かす場合も、上の
 「追加候補」節の運用に従う。
 
-## Round: #2137 — case 08's diagnostic rewritten, score unchanged
+## Update: #2137 — case 08's message was lying
 
-`diag.grep` for `08_handle_ineligible` was re-recorded because the message it
-pins was rewritten. Two of the four phrases it required described shapes the
-compiler **accepts**:
+The `#1511 (c)` claim that the message "**names the rejected forms**" was
+**wrong**. Measured on stage2 2026-08-20, every one of these named forms
+**compiles**:
 
-> the handled body may only: perform directly, call a named top-level `fn`, or
-> call a closure literal that carries an effect row annotation. A call through a
-> local binding or a closure parameter hides the perform and is what this
-> rejects
+| the handled body calls | measured |
+|---|---|
+| a closure **parameter** carrying the row (`f: () -> Int with Ask`) | ok |
+| a local **binding** carrying the row | ok |
+| a rowless closure defined **inside** the handled body | ok |
+| an **alias** of a performing top-level `fn` (`let alias = ask_once`) | ok |
+| a first-order builtin (`println` etc., #2109) | ok |
 
-Measured with `vibe check`: a closure parameter carrying a row, a local binding
-carrying a row, and a local alias of a performing `fn` all compile. What this
-branch actually rejects is a call to a local binding whose type carries **no
-effect row** — and it rejects that wherever the perform is, including
-`bump(1) + ask_once()`, where nothing performs through `bump` at all.
+What actually fails is one shape — a call this pass cannot see into — and, as
+in case 08, the offending call may not even be **in** the handled body (it can
+sit behind a rowless parameter inside a function the body calls). The old
+wording answered that case with "the handled body may only …", advising forms
+**the 08 program already satisfied**.
 
-**The score does not move.** Case 08's remaining deduction is L=0 (the FS repair
-lane has no position, #1596), and this changed neither the lane nor the offset.
-What changed is the naming evidence: `(here: the call to 'bump')` becomes
-`the handled body calls 'bump', a local binding whose type carries no effect
-row`, plus a named edit. `repair_convergence` stays **4.9**.
+The rewrite has three branches — the culprit can be named / the call is not a
+name (an immediately-applied lambda, `(t.0)(x)`) / the culprit is not in the
+handled body. Every branch offers only edits measured to compile. `diag.grep`
+was updated for the new wording. **`(here: the call to 'bump')` stays** — it is
+not decoration: `verify_culprit_off_marker` parses the culprit name out of that
+exact spelling, and changing it lets `[@off=N:M]` flow unverified,
+resurrecting #1596 (a dependency-module offset resolved against the entry
+file's lines).
 
-Worth noting for the C axis if it is ever re-scored: the new message names the
-exact repair this case's `fixed.vibe` performs — promoting `bump` to a top-level
-`fn` — where the old one said "replace the indirect call with a direct one",
-which describes the call site rather than the binding that has to change.
+**The score does not move** (case 08 stays L=0 / A=1 / C=2 = 3, mean 3.9 →
+repair_convergence 4.9). Rubric axis A measures whether an edit is *stated*,
+so replacing a false edit with a true one earns no point. The remaining L
+point still waits on the FS compile lane's snapshot transport, as before.
 
-The boundary itself is now pinned by `scripts/check_handle_eligibility.sh`
-(`pkf run check-handle-eligibility`): five accepted shapes, five rejected, and
-an assertion that the rejection names the missing effect row. The fifth is a
-closure PARAMETER without a row, added after review confirmed it reaches the
-same branch -- which is why the message says "call target" and not "local
-binding": there is no `let` at that site to annotate. It compiles with a
-REAL entry name, because `fixtures/typecheck/expected.tsv` uses `__no_entry__`
-and is blind to this check entirely — it records `ok` for a program `vibe check`
-rejects.
+The accept/reject-and-wording pairs are pinned by
+`lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe`, and the
+measured table of accepted forms lives in `docs/cheatsheet.md`.
+
+**Until the next bootstrap bump**, `08_handle_ineligible/diag.grep` uses only
+substrings common to the old wording (seed) and the new one (stage2) —
+`run_repair.sh` falls back to the seed where no generation stage2 exists (the
+CI late shard), and the seed emits the old wording, so needles pinning the new
+wording alone make the score depend on which compiler answered. After the
+bump, restore the new-wording needles that
+`handle_eligibility_diagnostic_test.vibe` pins.
