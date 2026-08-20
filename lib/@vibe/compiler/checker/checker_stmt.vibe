@@ -1050,6 +1050,70 @@ fn local_type_def_names(stmts: Array[Stmt]) -> Array[String] {
   names
 }
 
+/// #2125: index of the first `TypeDef` in `defs` named `name`, or
+/// -1. Mirrors `find_typedef`'s first-match-wins rule.
+fn typedef_index_of(defs: Array[TypeDef], name: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(defs) && found < 0 {
+    let matched = match Array::get(defs, i) {
+      TDEnum(n, _, _) => n == name,
+      TDStruct(n, _, _, _) => n == name,
+      TDAlias(n, _, _) => n == name,
+      TDEffect(n, _, _) => n == name,
+      TDEffectSet(n, _) => n == name
+    }
+    if matched {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2125: claim a `defs` slot for every enum/struct/suberror
+/// DECLARED IN THIS statement list, before anything resolves a type
+/// expression. Without it, `resolve_type_expr` falls through to
+/// `CtNamed(name, [])` for (a) a type's reference to ITSELF (its payloads are
+/// resolved before its own `Array::push(defs, ..)`) and (b) a reference to a
+/// type declared later in the same list. Both are indistinguishable from an
+/// un-instantiated generic formal, which `check_assignable` tolerates.
+///
+/// `STypeAlias` is deliberately NOT pre-claimed: a placeholder alias body
+/// would be a lie (an alias resolves THROUGH to its target, so an empty
+/// placeholder would silently retarget every early reference), whereas a
+/// placeholder enum/struct only needs its head to resolve. A forward
+/// reference to a later alias therefore stays unresolved.
+fn preclaim_local_type_defs(stmts: Array[Stmt], from: Int, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> Unit {
+  let mut i = from
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, name, params, _, _) => if typedef_index_of(defs, name) < 0 {
+        Array::push(defs, TDEnum(name, params, array_empty()))
+        Array::push(type_def_binders, array_empty())
+      } else {
+        ()
+      },
+      SSuberror(_, name, _) => if typedef_index_of(defs, name) < 0 {
+        Array::push(defs, TDEnum(name, array_empty(), array_empty()))
+        Array::push(type_def_binders, array_empty())
+      } else {
+        ()
+      },
+      SStruct(_, name, _, _, mut_fields, tparams) => if typedef_index_of(defs, name) < 0 {
+        Array::push(defs, TDStruct(name, array_empty(), mut_fields, tparams))
+        Array::push(type_def_binders, array_empty())
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn string_array_contains(items: Array[String], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -1274,6 +1338,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     }
   }
   let mut idx = i
+  // #2125: see preclaim_local_type_defs.
+  preclaim_local_type_defs(stmts, idx, defs, type_def_binders)
   let mut cur_env = env
   let mut cur_s = s
   let mut cur_c = c
@@ -1625,6 +1691,14 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // The local TDEnum uses this check's ids; published authority retains
         // the name-parameterized shape and rebinds it at each importer.
         let published_variants = array_empty()
+        // #2125: this enum's slot in `defs` is already claimed (see
+        // preclaim_local_type_defs), so a recursive occurrence of `name` in
+        // its own payloads resolves to `CtEnum(name)` instead of falling
+        // through to `CtNamed(name, [])`. The ctor-signature loop below
+        // resolves the same payload text AFTER the registration and therefore
+        // already saw the resolved form; the two disagreed.
+        let self_def_index = typedef_index_of(defs, name)
+        Array::set(type_def_binders, self_def_index, param_var_ids)
         let mut vi = 0
         while vi < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, vi)
@@ -1643,8 +1717,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           Array::push(published_variants, (vname, named_vtypes))
           vi = vi + 1
         }
-        Array::push(defs, TDEnum(name, params, resolved_variants))
-        Array::push(type_def_binders, param_var_ids)
+        Array::set(defs, self_def_index, TDEnum(name, params, resolved_variants))
         let mut env1 = env_bind(env, name, CtEnum(name))
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
@@ -1767,6 +1840,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         let ctor_result_type = CtEnum(name)
         let resolved_variants = array_empty()
         let mut vi = 0
+        // #2125: see the SEnum arm.
+        let self_suberr_index = typedef_index_of(defs, name)
         while vi < Array::length(variants) {
           let (vname, vtypes) = Array::get(variants, vi)
           let resolved_vtypes = array_empty()
@@ -1778,8 +1853,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           Array::push(resolved_variants, (vname, resolved_vtypes))
           vi = vi + 1
         }
-        Array::push(defs, TDEnum(name, array_empty(), resolved_variants))
-        Array::push(type_def_binders, array_empty())
+        Array::set(defs, self_suberr_index, TDEnum(name, array_empty(), resolved_variants))
         let mut env1 = env_bind(env, name, CtEnum(name))
         let mut ci2 = 0
         while ci2 < Array::length(variants) {
@@ -1813,6 +1887,10 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
         let resolved_fields = array_empty()
+        // #2125: this struct's slot is already claimed before its own field
+        // types are resolved, so a recursive occurrence resolves to
+        // `CtStruct(name)`.
+        let self_struct_index = typedef_index_of(defs, name)
         let mut fi = 0
         while fi < Array::length(field_defs) {
           let (fname, ftype_expr) = Array::get(field_defs, fi)
@@ -1826,8 +1904,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // #829: record the declared type params — a param name resolves above
         // to a rigid `CtNamed(param, [])` (no such typedef/builtin), which is
         // exactly what the checker's literal instantiation substitutes.
-        Array::push(defs, TDStruct(name, resolved_fields, mut_fields, tparams))
-        Array::push(type_def_binders, array_empty())
+        Array::set(defs, self_struct_index, TDStruct(name, resolved_fields, mut_fields, tparams))
         let field_types = array_empty()
         let mut fj = 0
         while fj < Array::length(resolved_fields) {
