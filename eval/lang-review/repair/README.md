@@ -344,3 +344,10 @@ FS compile レーンの snapshot 輸送待ち。
 accept/reject と文言の対は
 `lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe` が押さえて
 おり、受理される形の実測表は `docs/cheatsheet.md` にある。
+
+`08_handle_ineligible/diag.grep` は**次の bootstrap bump まで**、旧文言 (seed)
+と新文言 (stage2) の両方に含まれる部分文字列だけを needle にしている —
+`run_repair.sh` は generation の stage2 が無い環境 (CI の late shard) では
+seed に fallback し、seed は旧文言を出すため、新文言専用の needle は
+コンパイラの選ばれ方でスコアが変わる嘘の検証になる。bump 後は
+`handle_eligibility_diagnostic_test.vibe` が押さえている新文言へ戻すこと。
