@@ -1572,10 +1572,10 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 
 **変換**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
-`__to_string: (Any) -> String`。**裸の `to_string` は呼べない** —
-`to_string(1)` は `Int::to_string` への dot-call と解釈され
-``dot-call syntax is not supported for the builtin method `Int::to_string` ``
-になる。型ごとの綴り (`Int::to_string(1)`) か `__to_string(x)` を使う。
+`__to_string: (Any) -> String`. **A bare `to_string` cannot be called** —
+`to_string(1)` is read as a dot-call on `Int`, and answers
+``dot-call syntax is not supported for the builtin method `Int::to_string` ``.
+Use the per-type spelling (`Int::to_string(1)`) or `__to_string(x)`.
 
 **I/O** (effect 必須). tty の現行名は `Console`。`Stdin` / `Stdout` /
 `Stderr` は同じ host import を共有する **legacy ラベル**で、row は相互に

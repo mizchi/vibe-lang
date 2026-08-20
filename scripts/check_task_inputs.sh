@@ -34,8 +34,13 @@ src = open(TASKFILE, encoding="utf-8").read()
 # The `scripts/` prefix is required, not decoration: without it this detector
 # matched the tool names inside its OWN regex literal and flagged itself. Every
 # real invocation in the tree names the script by path.
+# Any directory, not just scripts/ (#2138 review): a wrapper under
+# tests/gates/**/ invokes ensure_generated.sh and the wasm runner exactly the
+# way one under scripts/ does, and requiring the `scripts/` prefix missed it.
+# A path separator is still required -- that is what keeps this detector from
+# matching the tool names inside its own regex literal.
 TOOL_RE = re.compile(
-    r"scripts/(?:run_wasm_vibe_host_runner|generations|vibe_cli|vibe_test|"
+    r"[\w./-]+/(?:run_wasm_vibe_host_runner|generations|vibe_cli|vibe_test|"
     r"vibe_run|ensure_generated|build_cli_wasm|build_cli_core)")
 # Aggregators dispatch the lane scripts dynamically, so none of the tool names
 # above appear in them literally (#2138 review). A task whose command is
@@ -89,7 +94,7 @@ for m in re.finditer(r"new Task \{", src):
     # a self-test whose command touches nothing.
     cmd_m = re.search(r'cmd\s*=\s*(#?)"(.*?)"\1', block, re.S)
     cmd = cmd_m.group(2) if cmd_m else ""
-    scripts = re.findall(r'(scripts/[A-Za-z0-9_./-]+\.(?:sh|mjs))', cmd)
+    scripts = re.findall(r'((?:scripts|tests|eval|bench)/[A-Za-z0-9_./-]+\.(?:sh|mjs))', cmd)
     hot = [s for s in scripts if AGGREGATOR_RE.search(s) or reaches_compiler(s)]
     if not hot:
         continue
