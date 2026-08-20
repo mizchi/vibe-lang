@@ -1063,7 +1063,7 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
 /// `Future[T]` — the two-element array `[state, payload]`.
 ///
 /// Slot 0 is the state, slot 1 the value. Only `ready` (0) exists today: every
-/// in-tree future source (`Future::ready`, `Stream::next`, and
+/// in-tree future source (`Future::ready` and
 /// user code that returns `Future[T]` by calling `Future::ready`) resolves
 /// eagerly, so `await` reads slot 1 unconditionally. Carrying the state slot
 /// now is what lets a PENDING source be added without a second representation
@@ -1354,7 +1354,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     // #1538: the eager `Stream::empty` / `once` / `map` / `filter` / `fold`
     // aliases used to live here, backed by the Array machinery. They are
     // retired -- ADR-0089 Decision 3 makes AsyncIter the one iteration story.
-    // `Stream::next` and the `ByteStream` pair keep their own branches below.
+    // The nominal `ByteStream` conversion pair keeps its own branches below.
     //
     // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over the
     // same growable-array runtime layout ArrayBuilder uses, so push aliases
@@ -1847,22 +1847,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       ce(buf, resolved, local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "Stream::next" {
-      // Stream::next(s) : Future[Option[T]] (docs/spec §2.4). On the eager
-      // Array-backed model `next` peeks the head: Some(s[0]) if non-empty else
-      // None. Synthesize the Option expression and reuse the existing ctor +
-      // Array::length/get lowering via `ce`. (await unwraps the ready future.)
-      let s_expr = Array::get(args, 0)
-      let synth = ELet("__nx_s", s_expr, EIf(ECall(EIdent("lt", -1), [
-        EInt(0),
-        ECall(EIdent("Array::length", -1), [EIdent("__nx_s", -1)], -1)
-      ], -1), ECall(EIdent("Some", -1), [
-        ECall(EIdent("Array::get", -1), [EIdent("__nx_s", -1), EInt(0)], -1)
-      ], -1), ECall(EIdent("None", -1), array_empty(), -1)), -1)
-      ce(buf, future_ready_expr(synth), local_names, next_local, ctx, ld)
-    }
     else if !prefer_bound_call && fname == "String::to_bytes" {
-      // String::to_bytes(s) : Stream[Int]  (ByteStream, docs/spec §2.4/§4.1).
+      // String::to_bytes(s) : ByteStream (ADR-0089 D4/D5, #1954).
       // Eagerly materialise the string's bytes into the Array that backs a
       // Stream[Int], so request/response bodies can be consumed with the Stream
       // combinators. Synthesized as a `let mut arr = []; while i < length(s) {
@@ -1887,8 +1873,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ], -1), loop_body), EIdent("__tb_arr", -1)), -1), -1), -1)
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
-    else if !prefer_bound_call && fname == "Stream::to_string" {
-      // Stream::to_string(bs) : String  (ByteStream -> String, docs/spec
+    else if !prefer_bound_call && fname == "ByteStream::to_string" {
+      // ByteStream::to_string(bs) : String (docs/spec
       // §M2c-2). Collect a Stream[Int] of byte codes into a String, e.g. to
       // build a response body. Synthesized as `let parts = []; while i <
       // length(bs) { Array::push(parts, String::from_char_code(bs[i])); i = i +
@@ -5167,7 +5153,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     // Array::length/get/set builtins (identical arity), re-lowered through
     // `ce` so they get the same RC/perceus treatment as ordinary source.
     // make/blit are synthesized as source-shaped `let`/`while` ASTs (mirrors
-    // String::to_bytes / Stream::to_string above) rather than hand-emitted
+    // String::to_bytes / ByteStream::to_string above) rather than hand-emitted
     // wasm, so the perceus loop-borrow dup logic (EWhile's population of
     // ctx.loop_borrowed_names, compile_expr_tail2.vibe:287) correctly dups
     // the repeatedly-pushed `init` value across FixedArray::make's loop

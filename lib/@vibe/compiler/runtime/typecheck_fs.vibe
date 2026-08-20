@@ -674,12 +674,14 @@ fn trait_projection_map_type_bounds(ty: Type, mappings: Array[(String, String)])
 /// values. A second pass then imports only traits required by selected value
 /// schemes. Conflicting aliases fail closed instead of making import order an
 /// unobservable authority choice.
-fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(String, Type)], names: Array[(String, Option[String])], unresolved: Array[String]) -> Array[(String, String)] {
+fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(String, Type)], names: Array[ImportItem], unresolved: Array[String]) -> Array[(String, String)] {
   let mappings = array_empty()
   let mut i = 0
   // Pass one: reserve explicit trait aliases before inspecting value bounds.
   while i < Array::length(names) {
-    let (name, alias) = Array::get(names, i)
+    let item = Array::get(names, i)
+    let name = item.name
+    let alias = item.alias
     if trait_defined(dep_env, name) {
       let local_name = match alias {
         Some(value) => value,
@@ -707,7 +709,7 @@ fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(S
   // require. Explicit aliases above therefore always retain their spelling.
   i = 0
   while i < Array::length(names) {
-    let (name, _) = Array::get(names, i)
+    let name = Array::get(names, i).name
     if !trait_defined(dep_env, name) {
       match env_lookup_flat(dep_bindings, name) {
         Some(ty) => trait_projection_collect_type_bounds(ty, mappings, dep_env),
@@ -918,13 +920,15 @@ fn typedef_projection_add_named(name: String, dep_defs: Array[TypeDef], selected
   }
 }
 
-fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[(String, Option[String])]) -> Array[TypeDef] {
+fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[ImportItem]) -> Array[TypeDef] {
   let dep_defs = env_type_defs(dep_env)
   let selectable = env_selectable_type_defs(dep_env)
   let selected = array_empty()
   let mut i = 0
   while i < Array::length(names) {
-    let (name, alias) = Array::get(names, i)
+    let item = Array::get(names, i)
+    let name = item.name
+    let alias = item.alias
     let before = Array::length(selected)
     if contains_str(selectable, name) {
       typedef_projection_add_named(name, dep_defs, selected)
@@ -976,7 +980,7 @@ fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[(String, Option[
   selected
 }
 
-fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[(String, Option[String])], tail: TypeEnv) -> TypeEnv {
+fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[ImportItem], tail: TypeEnv) -> TypeEnv {
   let defs = dependency_typedef_projection(dep_env, names)
   if Array::length(defs) == 0 {
     tail
@@ -987,7 +991,9 @@ fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[(String, Option[S
     let published = env_selectable_type_defs(dep_env)
     let mut i = 0
     while i < Array::length(names) {
-      let (source, alias) = Array::get(names, i)
+      let item = Array::get(names, i)
+      let source = item.name
+      let alias = item.alias
       if contains_str(published, source) {
         Array::push(selectable, match alias {
           Some(local) => local,
@@ -1082,7 +1088,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
   out
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[(String, Option[String])], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)]) -> TypeEnv {
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)]) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -1109,7 +1115,9 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     if j >= nlen {
       nacc
     } else {
-      let (name, alias) = Array::get(names, j)
+      let item = Array::get(names, j)
+      let name = item.name
+      let alias = item.alias
       let bound_name = match alias {
         Some(a) => a,
         None => name
@@ -2085,7 +2093,9 @@ fn interface_public_value_names(stmts: Array[Stmt]) -> Array[String] {
       SReExport(_, reexports) => {
         let mut j = 0
         while j < Array::length(reexports) {
-          let (name, alias) = Array::get(reexports, j)
+          let item = Array::get(reexports, j)
+          let name = item.name
+          let alias = item.alias
           Array::push(names, match alias {
             Some(value) => value,
             None => name
@@ -2125,7 +2135,9 @@ fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arr
       SReExport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let (source_name, alias) = Array::get(items, j)
+          let item = Array::get(items, j)
+          let source_name = item.name
+          let alias = item.alias
           let local_name = match alias {
             Some(value) => value,
             None => source_name
@@ -2198,7 +2210,9 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
       SReExport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let (source, alias) = Array::get(items, j)
+          let item = Array::get(items, j)
+          let source = item.name
+          let alias = item.alias
           Array::push(names, match alias {
             Some(local) => local,
             None => source

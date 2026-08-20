@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Pat, Stmt, TypeExpr
+  Expr, ImportItem, Pat, Stmt, TypeExpr
 }
 
 import ./parser_base.vibe {
@@ -173,7 +173,7 @@ fn parse_export_names_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[Strin
   }
 }
 
-fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[String])], context: Option[ParserBinderContext]) -> (Array[(String, Option[String])], Int) with Exception {
+fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[ImportItem], context: Option[ParserBinderContext]) -> (Array[ImportItem], Int) with Exception {
   match peek(tokens, pos) {
     TComma => match peek(tokens, pos + 1) {
       TRBrace => (ArrayBuilder::freeze(b), pos + 2),
@@ -188,7 +188,7 @@ fn parse_import_items_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[(Stri
   }
 }
 
-fn parse_import_items(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[String])], Int) with Exception {
+fn parse_import_items(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[ImportItem], Int) with Exception {
   match peek(tokens, pos) {
     TRBrace => (empty_import_items(), pos + 1),
     _ => {
@@ -209,16 +209,22 @@ fn parse_import_items(tokens: Array[Token], pos: Int, context: Option[ParserBind
 /// resolves it exactly like any other aliased import. `only` is a
 /// contextual keyword (matched by ident text, not a reserved token) to
 /// avoid reserving "only" globally.
-fn qualify_import_items(mod_name: String, items: Array[(String, Option[String])]) -> Array[(String, Option[String])] {
+fn qualify_import_items(mod_name: String, items: Array[ImportItem]) -> Array[ImportItem] {
   let b = ArrayBuilder::new()
   let mut i = 0
   while i < Array::length(items) {
-    let (name, alias_opt) = Array::get(items, i)
+    let item = Array::get(items, i)
+    let name = item.name
+    let alias_opt = item.alias
     let local = match alias_opt {
       Some(alias) => alias,
       None => name
     }
-    ArrayBuilder::push(b, (name, Some(String::concat(mod_name, String::concat(".", local)))))
+    ArrayBuilder::push(b, ImportItem::{
+      kind: item.kind,
+      name,
+      alias: Some(String::concat(mod_name, String::concat(".", local)))
+    })
     i = i + 1
   }
   ArrayBuilder::freeze(b)

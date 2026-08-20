@@ -1758,35 +1758,15 @@ fn slice_receiver_is_invalid(receiver: Type, receiver_had_error: Bool) -> Bool {
   }
 }
 
-/// #827: `Stream[T]` is `CtNamed` (head_kind 0 = tolerated), so the Array
+/// `ByteStream` is `CtNamed` (head_kind 0 = tolerated), so the Array
 /// builtins' receiver head check let `Array::length(stream)` / `Array::get(s,
 /// 0)` through — observably leaking the eager Array-backed representation
 /// (ADR-0012) into user programs. Recognise a Stream receiver so the Array
 /// head-check sites can reject it explicitly; head_kind itself is unchanged
 /// (other CtNamed heads stay tolerated, the #826 discipline).
-fn is_stream_named_type(t: Type) -> Bool {
+fn is_bytestream_named_type(t: Type) -> Bool {
   match t {
-    CtNamed(n, _) => n == "Stream",
-    _ => false
-  }
-}
-
-/// #1538: `HostStream` is a state-3 cell, while legacy `Stream[T]` is an eager
-/// array. `CtNamed` normally remains permissive because a bare name can be an
-/// unresolved generic parameter, but these two compiler-owned names have
-/// incompatible representations. Reject only this boundary; do not widen
-/// nominal concreteness or change ordinary user-defined/generic `CtNamed`
-/// assignability.
-fn host_stream_to_legacy_stream_conflict(expected: Type, actual: Type) -> Bool {
-  match expected {
-    CtNamed(expected_name, _) => if expected_name == "Stream" {
-      match actual {
-        CtNamed(actual_name, _) => actual_name == "HostStream",
-        _ => false
-      }
-    } else {
-      false
-    },
+    CtNamed(n, _) => n == "ByteStream",
     _ => false
   }
 }
@@ -2130,10 +2110,9 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       // type parameter never triggers it.
       let expected_zonked = subst_apply(s, expected)
       let actual_zonked = subst_apply(s, actual)
-      let host_stream_conflict = host_stream_to_legacy_stream_conflict(expected_zonked, actual_zonked)
       let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
       let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
-      if host_stream_conflict || stdin_stream_conflict || nominal_conflict {
+      if stdin_stream_conflict || nominal_conflict {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
         s
       } else if structural {
@@ -6658,9 +6637,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let as_recv_head = head_kind(subst_apply(s3, obj_ty))
           if as_recv_head != 0 && as_recv_head != 9 {
             Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), off_marker_len(callee_off, String::length(name)))))
-          } else if is_stream_named_type(subst_apply(s3, obj_ty)) {
-            // #827: Stream is CtNamed (head 0 = tolerated) but is NOT an Array.
-            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a Stream, not an Array (iterate it with `for` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
+          } else if is_bytestream_named_type(subst_apply(s3, obj_ty)) {
+            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
           } else {
             ()
           }
@@ -6699,9 +6677,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           let ag_recv_head = head_kind(subst_apply(s2, obj_ty))
           if ag_recv_head != 0 && ag_recv_head != 9 {
             Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), off_marker_len(callee_off, String::length(name)))))
-          } else if is_stream_named_type(subst_apply(s2, obj_ty)) {
-            // #827: Stream is CtNamed (head 0 = tolerated) but is NOT an Array.
-            Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), String::concat(" is a Stream, not an Array (iterate it with `for` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
+          } else if is_bytestream_named_type(subst_apply(s2, obj_ty)) {
+            Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
           } else {
             ()
           }
@@ -7085,11 +7062,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let got_head = head_fold_char(head_kind(subst_apply(s2, at)))
                   if got_head != 0 && got_head != want_head {
                     Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
-                  } else if want_head == 9 && is_stream_named_type(subst_apply(s2, at)) {
-                    // #827: Stream is CtNamed (head 0 = tolerated), so the eager
-                    // Array-backed representation leaked through every Array
-                    // builtin (`Array::length(stream)` compiled and ran).
-                    Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), String::concat(" is a Stream, not an Array (iterate it with `for` / Stream::*)", off_marker_len(callee_off, String::length(name))))))
+                  } else if want_head == 9 && is_bytestream_named_type(subst_apply(s2, at)) {
+                    Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
                   } else {
                     ()
                   }
@@ -8312,7 +8286,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let collection_class = match it_resolved {
         CtArray(_) => 1,
         CtString => 1,
-        CtNamed(nm, _) => if nm == "Map" || nm == "Stream" {
+        CtNamed(nm, _) => if nm == "Map" || nm == "ByteStream" {
           1
         } else if nm == "HostStream" {
           0
@@ -8392,7 +8366,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // array-backed stream and this loop silently iterated the 2-word
           // `[state, handle]` cell.
           (CtInt, c1)
-        } else if nm == "Stream" || type_name_has_iterator_impl(env, nm) {
+        } else if nm == "ByteStream" {
+          (CtInt, c1)
+        } else if type_name_has_iterator_impl(env, nm) {
           fresh_var(c1)
         } else (CtUnknown, c1),
         CtStruct(nm) => if type_name_has_iterator_impl(env, nm) {

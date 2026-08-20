@@ -363,7 +363,7 @@ programs.
 ```vibe skip
 // doctest-skip: form catalogue: bare surface forms, not a compilable program (the `./lib.vibe` it imports is illustrative)
 import ./lib.vibe { foo, bar as baz }
-import ./lib.vibe { type Pair, trait Show, foo }
+import ./lib.vibe { type Pair, struct Point, enum Color, effect Console, trait Show, foo }
 import ./lib.vibe { Int }
 import ./lib.vibe { Int::to_string as int_to_string }
 
@@ -376,10 +376,24 @@ export ./lib.vibe { helper }
 Rules:
 
 - Imports are source-first: `import <module-ref> { items }`.
-- `type` and `trait` item qualifiers select non-value namespaces.
+- Values are always imported as bare symbols. This includes declarations
+  written with either `let` or `fn` because `fn` is declaration sugar for a
+  value binding; `fn` and `let` are not import-item qualifiers.
+- In the current Phase A syntax, declaration-kind qualifiers are optional.
+  When present, `struct`, `enum`, `effect`, and `trait` request that exact
+  exported declaration kind. A mismatch is rejected with an actionable
+  diagnostic such as ``import requests `struct Color`, but `Color` is exported
+  as an enum``.
+- `type` is temporarily migration-compatible: it accepts a type alias, struct,
+  or enum. This preserves existing imports that used `type` as a broad
+  type-namespace selector before exact kinds were retained in the AST.
+- Phase B is not implemented yet. After the bootstrap compiler understands the
+  new syntax, `type` will narrow to type aliases and non-value imports will
+  eventually require a qualifier. Bare value imports will remain unchanged.
 - `Name::member` imports a single type/module member.
 - `import <module-ref> { Name }` may activate a namespace for `Name::*`.
-- `export <module-ref> { ... }` re-exports selected items from another module.
+- `export <module-ref> { ... }` re-exports selected items from another module
+  and uses the same optional qualifiers and kind checks.
 - Legacy `use <module-ref> { ... }` is not part of the current surface syntax.
 
 Which module refs a given file is *allowed* to import — package boundaries,

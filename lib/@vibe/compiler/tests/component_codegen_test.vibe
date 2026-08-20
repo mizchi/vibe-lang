@@ -27,6 +27,8 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_async_stdin_provider_fixture,
   comp_emit_component_wasm_async_trampolined,
   comp_emit_component_wasm_async_trampolined_p1,
+  comp_emit_component_wasm_async_wit_future_fixture,
+  comp_emit_component_wasm_async_wit_future_mixed_fixture,
   comp_emit_component_wasm_future_value,
   comp_emit_component_wasm_host_future_value,
   comp_emit_component_wasm_stdin_provider_shadow,
@@ -38,9 +40,19 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_with_string_lift,
   comp_emit_memhost_realloc_fixture,
   comp_emit_stream_trampoline_fixture,
+  comp_emit_wit_async_future_import_surface,
+  comp_emit_wit_http_client_send_surface,
+  comp_emit_wit_http_error_code_type_surface,
+  comp_emit_wit_outbound_http_dual_fetch_surface,
   comp_generate_string_trampoline,
   comp_generate_string_trampoline_packed,
-  comp_reject_unsatisfiable_selfcontained_imports
+  comp_reject_unsatisfiable_selfcontained_imports,
+  comp_wit_async_payload_landing_layout,
+  comp_wit_http_body_boundary_contract,
+  comp_wit_http_world_contract,
+  comp_wit_outbound_http_request_descriptor,
+  comp_wit_outbound_http_response_body_contract,
+  comp_wit_outbound_http_response_descriptor
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -58,6 +70,131 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_memory_section,
   emit_name,
   emit_type_section
+}
+
+test "component WIT async import: versioned interface owns future<Int> function (#2064)" {
+  let comp = comp_emit_wit_async_future_import_surface("example:prices/api@1.0.0", "get-price", "future<s64>")
+  assert(component_bytes_contains(comp, "example:prices/api@1.0.0") == 1)
+  assert(component_bytes_contains(comp, "get-price") == 1)
+  assert(component_bytes_contains(comp, "[async-lower]get-price") == 0)
+}
+
+test "component WIT async import: unversioned or unmapped contracts fail closed (#2064)" {
+  let unversioned = handle {
+    let _ = comp_emit_wit_async_future_import_surface("example:prices/api", "get-price", "future<s64>")
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  let unmapped = handle {
+    let _ = comp_emit_wit_async_future_import_surface("example:prices/api@1.0.0", "get-price", "future<price-record>")
+    false
+  } with Exception {
+    Throw(_) => true
+  }
+  assert(unversioned && unmapped)
+}
+
+test "component WIT async import: record payload has a canonical landing layout (#2064)" {
+  let descriptor = "future<record{amount:s64,currency:string}>"
+  let comp = comp_emit_wit_async_future_import_surface("example:prices/api@1.0.0", "get-price", descriptor)
+  assert(component_bytes_contains(comp, "amount") == 1)
+  assert(component_bytes_contains(comp, "currency") == 1)
+  assert(comp_wit_async_payload_landing_layout(descriptor) == "size=16,align=8;amount@0:s64;currency@8:string")
+}
+
+test "component WIT async import: enum payload uses one discriminant lane (#2064)" {
+  let descriptor = "future<enum{cheap,expensive}>"
+  let comp = comp_emit_wit_async_future_import_surface("example:prices/api@1.0.0", "get-band", descriptor)
+  assert(component_bytes_contains(comp, "cheap") == 1)
+  assert(component_bytes_contains(comp, "expensive") == 1)
+  assert(comp_wit_async_payload_landing_layout(descriptor) == "size=1,align=1;discriminant@0:u8")
+}
+
+test "component WIT async import: malformed aggregate payloads fail closed (#2064)" {
+  let malformed_record = handle {
+    let _ = comp_emit_wit_async_future_import_surface("example:prices/api@1.0.0", "get-price", "future<record{amount:bytes}>")
+    false
+  } with Exception {
+    Throw(message) => String::contains(message, "unsupported record field type")
+  }
+  let malformed_enum = handle {
+    let _ = comp_emit_wit_async_future_import_surface("example:prices/api@1.0.0", "get-band", "future<enum{cheap,}>")
+    false
+  } with Exception {
+    Throw(message) => String::contains(message, "enum case must not be empty")
+  }
+  assert(malformed_record && malformed_enum)
+}
+
+test "outbound HTTP Future<Response> keeps the streaming body nominal (#2066)" {
+  let request = comp_wit_outbound_http_request_descriptor()
+  let response = comp_wit_outbound_http_response_descriptor()
+  assert(request == "record{method:string,url:string,headers:string,body:stream<u8>}")
+  assert(response == "future<record{status:s32,headers:string,body:stream<u8>}>")
+  assert(comp_wit_outbound_http_response_body_contract() == "stream<u8> -> HostStream (host-owned readable; close is idempotent)")
+  assert(comp_wit_async_payload_landing_layout(response) == "size=16,align=4;status@0:s32;headers@4:string;body@12:stream<u8>")
+}
+
+test "outbound HTTP Future<Response> emits a versioned nominal import (#2066)" {
+  let comp = comp_emit_wit_async_future_import_surface("wasi:http/outgoing-handler@0.3.0", "handle", comp_wit_outbound_http_response_descriptor())
+  assert(component_bytes_contains(comp, "wasi:http/types@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "wasi:http/outgoing-handler@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "status") == 1)
+  assert(component_bytes_contains(comp, "body") == 1)
+}
+
+test "outbound HTTP dual fetch surface owns two async request paths (#2066)" {
+  let comp = comp_emit_wit_outbound_http_dual_fetch_surface()
+  assert(component_bytes_contains(comp, "wasi:http/types@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "wasi:http/outgoing-handler@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "fetch-left") == 1)
+  assert(component_bytes_contains(comp, "fetch-right") == 1)
+  assert(component_bytes_contains(comp, "method") == 1)
+  assert(component_bytes_contains(comp, "url") == 1)
+}
+
+test "HTTP service and middleware worlds keep client and handler directions explicit (#2066)" {
+  assert(comp_wit_http_world_contract("service") == "import types; import client; export handler")
+  assert(comp_wit_http_world_contract("middleware") == "import types; import handler; import client; export handler")
+}
+
+test "HTTP body ownership rejects collected and reused stream boundaries (#2066)" {
+  assert(comp_wit_http_body_boundary_contract("request", "HostStream") == "request: own stream<u8> -> HostStream; consume once; close idempotent")
+  assert(comp_wit_http_body_boundary_contract("response", "HostStream") == "response: own stream<u8> -> HostStream; consume once; close idempotent")
+  let collected = handle {
+    let _ = comp_wit_http_body_boundary_contract("response", "String")
+    false
+  } with Exception {
+    Throw(message) => String::contains(message, "must remain streaming")
+  }
+  let reused = handle {
+    let _ = comp_wit_http_body_boundary_contract("request-reused", "HostStream")
+    false
+  } with Exception {
+    Throw(message) => String::contains(message, "already-consumed")
+  }
+  assert(collected && reused)
+}
+
+test "ratified HTTP error-code surface includes every payload closure (#2066)" {
+  let comp = comp_emit_wit_http_error_code_type_surface()
+  assert(component_bytes_contains(comp, "DNS-error-payload") == 1)
+  assert(component_bytes_contains(comp, "TLS-alert-received-payload") == 1)
+  assert(component_bytes_contains(comp, "field-size-payload") == 1)
+  assert(component_bytes_contains(comp, "HTTP-response-content-coding") == 1)
+  assert(component_bytes_contains(comp, "internal-error") == 1)
+  assert(component_bytes_contains(comp, "error-code") == 1)
+}
+
+test "ratified HTTP client send owns request and response resources (#2066)" {
+  let comp = comp_emit_wit_http_client_send_surface()
+  assert(component_bytes_contains(comp, "wasi:http/types@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "wasi:http/client@0.3.0") == 1)
+  assert(component_bytes_contains(comp, "request") == 1)
+  assert(component_bytes_contains(comp, "response") == 1)
+  assert(component_bytes_contains(comp, "error-code") == 1)
+  assert(component_bytes_contains(comp, "send") == 1)
 }
 
 //# Functions
@@ -1226,6 +1363,26 @@ fn build_main_i64_core_hostfuture_named() -> Bytes {
   emit_i64_const(body, 42)
   emit_code_section(out, [body])
   bytebuf_to_bytes(out)
+}
+
+test "component async WIT future: core metadata selects a real interface import (#2064)" {
+  let comp = comp_emit_component_wasm_async_wit_future_fixture()
+  assert(component_bytes_contains(comp, "example:prices/api@1.0.0") == 1)
+  assert(component_bytes_contains(comp, "get-price") == 1)
+  assert(component_bytes_contains(comp, "get-tax") == 1)
+  assert(component_bytes_contains(comp, "example:inventory/api@2.1.0") == 1)
+  assert(component_bytes_contains(comp, "get-stock") == 1)
+  assert(component_bytes_contains(comp, "wit_future_get$example:prices/api@1.0.0#get-price") == 1)
+}
+
+test "component async WIT future: mixed root payload ABI fails closed (#2064)" {
+  let rejected = handle {
+    let _ = comp_emit_component_wasm_async_wit_future_mixed_fixture()
+    false
+  } with Exception {
+    Throw(msg) => String::contains(msg, "cannot mix runner-private future<u32> root imports with WIT-derived future<s64>")
+  }
+  assert(rejected)
 }
 
 // ADR-0089 (c) (#1218): two NAMED host futures compose into two component

@@ -244,24 +244,20 @@ let-floating (#1536 (a) v3, 追記42) で書けるようになった。
 ただの operation で、特別扱いされるのは **payload 帯の意味づけ**と、
 `await_poll_pass` がそれを合成する点だけ。同期 effect の意味論は不変。
 
-### 2.4 stream 系の型 — 今 3 つある
+### 2.4 Stream types
 
-north star は **AsyncIter** (`next(Self) -> Future[Option[(T, Self)]]`、
-ADR-0089 Decision 3) への一本化だが、**今日の実装には 3 つの表現が併存する**。
-混同すると静かに壊れるので、区別を明示する:
+The language has three deliberately distinct stream roles:
 
 | 型 | 実行時表現 | 用途 | 位置づけ |
 |---|---|---|---|
-| `Stream[T]` | `Array[T]` (eager) | `next`、`String::to_bytes`/`Stream::to_string` | **legacy**。eager combinator (`empty`/`once`/`map`/`filter`/`fold`) は #1538 で**退役済み**。残るのは `next` (綴りは未決定) と ByteStream 対 |
-| `HostStream` | 2 語セル `[3, handle]` | `host_stream_named`/`host_stream_next`/`host_stream_close` | **generic named-host-stream 専用**の p3 境界実体。stream の readable handle 1本しか保持できず、completion future を伴う provider の所有/lifecycle は表せない (§3.18.3) |
-| AsyncIter | trait (`lib/@vibe/builtin/async_iter.vibe`) | `for x in it` の pull protocol | 目標形、host stream とは未接続 |
+| `ByteStream` | nominal byte sequence | `String::to_bytes` / `ByteStream::to_string` and WIT `stream<u8>` boundaries | Boundary specialization; never a generic guest stream |
+| `HostStream` | two-word cell `[3, handle]` | `host_stream_named` / `host_stream_next` / `host_stream_close` | Host-owned named-stream protocol; its final `next` API is tracked by #1955 |
+| AsyncIter | trait (`lib/@vibe/builtin/async_iter.vibe`) | guest pull iteration | Guest-only protocol; rejected in WIT signatures |
 
-`host_stream_named` の戻り型が `Stream[Int]` **ではない**のは #1341 の実測に
-よる: 同じ静的型だと `for` が array パスを選び、cell の 2 語 (state 3 +
-handle) を足して**それらしい小さい数**を返していた (期待 42 に対し 4)。
-診断も trap も無い最悪の失敗形だったので、**型で分けた**。今は
-`Stream::next` を host stream に適用すると型エラーになる (host 側の読みは
-`host_stream_next`)。
+The removed `Stream[T]` type was an eager Array-backed prototype. It no longer
+resolves as a compiler-owned nominal type, and `Stream::next` and
+`Stream::to_string` no longer resolve as builtins. This prevents an Array-backed
+guest value from being advertised as a component stream.
 
 `for x in s { ... }` は iterand の型で eager ループか await ループかが決まる。
 **`for await` という別綴りは #1350 で廃止** — iteration が suspend しうる
@@ -271,8 +267,10 @@ handle) を足して**それらしい小さい数**を返していた (期待 42
 `HostStream` なら、囲む row に `Async` が要る。desugar が await ループを
 選ぶのと同じビットを見ているので、両者の判定は定義上一致する。
 
-`ByteStream = Stream[Int]` (WASI `stream<u8>` / HTTP body) は現在 legacy 側
-に属する。p3 の `stream.read` へ繋ぐのは未着手。
+`ByteStream` is nominal even though the current linear conversion lowering
+materializes bytes internally. Array builtins reject it, so that representation
+is not part of the source contract. Exact-byte and empty-stream conversion are
+covered by the linear/component gates.
 
 ### 2.5 `Task[T]` は撤去済み (#1227)
 
@@ -2064,7 +2062,7 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 |---|---|---|
 | **suspend lowering の適格性** (#1536) | row-variable callee と residual literal-param flow が `scps_calls_ok` を通らない。row-free closure-param flow、eager `await(Stream::next(s))` retarget、sequence-HEAD let 連鎖の float (`for` 駆動 terminal)、direct if-condition/match-scrutinee は済み (§2.2 末尾) | — (ADR-0076 本体) |
 | **AsyncIter への一本化** (#1538) | eager `Stream[T]` combinator の退役 / AsyncIter 上への再実装。`Stream::next` protocol と host stream read の接続 | 上の適格性 |
-| **stdin provider / `StdinStream` の p3 接続** (#1539) | **atomic public source route + additive compiler-owned direct chunk operation まで実装**: unforgeable nominal `StdinStream`、exact authority/effects、exact `vibe.stdin_provider_*` raw imports、tagged-i64 bridge、任意 core composer、stdin-first sniff、`StdinStream::read_chunk` を実装。pull-closure/direct-`for` adapter は transitive HOF effect evidence (#1536) 待ち。既存 `stdin_stream(chunk_size)` は standalone-capable のまま未変更 (§3.18.3) | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` manual while-loop chunks (linear/RC, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import は不使用 |
+| **stdin provider / `StdinStream` P3 connection** (#1539, #1956) | **The atomic public source route and compiler-owned direct chunk operation are implemented.** `StdinStream` is nominal and unforgeable, carries exact authority/effects, uses the exact `vibe.stdin_provider_*` raw imports and tagged-i64 bridge, and supports arbitrary-core composition plus stdin-first sniffing. `StdinStream::read_chunk` is the only chunked pull surface; the legacy standalone `stdin_stream(chunk_size)` closure has been removed. A direct `for` adapter still waits for transitive HOF effect evidence (#1536). | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` manual while-loop chunks (linear/RC, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import remains unused. |
 | **実 provider = `wasi:http` incoming-body** (#1540) | serve composition と host-stream composition の統合が要る (§3.19 に構造的な理由と 3 点の分解) | — |
 | **M-conc-2: 真の subtask spawn** (#1537) | waitable-set / `future.cancel-*` による実並行・キャンセル。ADR-0068 の nursery を backend へ落とす | ADR-0076 CPS/suspend lowering |
 | **M1b-3c-1c: interleaving spawn の emitter** (#1537) | ABI 側の問いは §3.11 で解決済み (`waitable-set.wait` の完了順ディスパッチだけで足りる)。残るのは await をまたぐ task 状態の表現 = ADR-0076 の CPS/suspend lowering | 同上 |

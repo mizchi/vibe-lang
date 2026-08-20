@@ -22,6 +22,8 @@ import ./checker_pattern.vibe {
 
 import @vibe/compiler/core {
   Expr,
+  ImportItem,
+  ImportKind,
   Pat,
   Stmt,
   Subst,
@@ -830,14 +832,16 @@ fn import_cache_lookup(cache: Array[(String, Type)], name: String, i: Int) -> Op
   }
 }
 
-fn bind_stmt_imports(env: TypeEnv, names: Array[(String, Option[String])]) -> TypeEnv {
+fn bind_stmt_imports(env: TypeEnv, names: Array[ImportItem]) -> TypeEnv {
   let env_bindings = env_flat_bindings(env)
   let import_cache = array_empty()
   let nlen = Array::length(names)
   let mut i = 0
   let mut acc = env
   while i < nlen {
-    let (name, alias) = Array::get(names, i)
+    let item = Array::get(names, i)
+    let name = item.name
+    let alias = item.alias
     let bound_name = match alias {
       Some(a) => a,
       None => name
@@ -1061,6 +1065,93 @@ fn string_array_contains(items: Array[String], wanted: String) -> Bool {
     }
   }
   found
+}
+
+fn import_item_local_name(item: ImportItem) -> String {
+  match item.alias {
+    Some(name) => name,
+    None => item.name
+  }
+}
+
+fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] {
+  match find_typedef(env_type_defs(initial_env), item.name) {
+    Some(def) => match def {
+      TDAlias(_, _, _) => Some("type alias"),
+      TDStruct(_, _, _, _) => Some("struct"),
+      TDEnum(_, _, _) => Some("enum"),
+      TDEffect(_, _, _) => Some("effect"),
+      TDEffectSet(_, _) => None
+    },
+    None => {
+      let local = import_item_local_name(item)
+      if trait_defined(initial_env, local) || trait_defined(initial_env, item.name) {
+        Some("trait")
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn import_kind_label(kind: ImportKind) -> String {
+  match kind {
+    ImportType => "type alias",
+    ImportStruct => "struct",
+    ImportEnum => "enum",
+    ImportEffect => "effect",
+    ImportTrait => "trait"
+  }
+}
+
+fn import_kind_matches(expected: ImportKind, actual: String) -> Bool {
+  match expected {
+    // Phase A bootstrap compatibility: the committed seed spells every
+    // data type import as `type`, including structs and enums.
+    ImportType => actual == "type alias" || actual == "struct" || actual == "enum",
+    _ => actual == import_kind_label(expected)
+  }
+}
+
+fn import_kind_article(label: String) -> String {
+  if label == "enum" || label == "effect" {
+    "an"
+  } else {
+    "a"
+  }
+}
+
+fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    match item.kind {
+      None => (),
+      Some(expected) => match imported_decl_kind(item, initial_env) {
+        None => (),
+        Some(actual) => {
+          let wanted = import_kind_label(expected)
+          if !import_kind_matches(expected, actual) {
+            Array::push(errors, "import kind mismatch: `\{item.name}` is \{import_kind_article(actual)} \{actual}, not \{import_kind_article(wanted)} \{wanted}")
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
+fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(_, items) => check_import_item_kinds(items, initial_env, errors),
+      SReExport(_, items) => check_import_item_kinds(items, initial_env, errors),
+      SModule(_, _, body) => check_import_kinds(body, initial_env, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
 }
 
 fn seed_imported_type_defs(stmts: Array[Stmt], initial_env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]]) -> (Int, Int) {
@@ -1352,7 +1443,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SImport(_, rstnames) => {
         let mut rn_i = 0
         while rn_i < Array::length(rstnames) {
-          let (rn_name, rn_alias) = Array::get(rstnames, rn_i)
+          let item = Array::get(rstnames, rn_i)
+          let rn_name = item.name
+          let rn_alias = item.alias
           let rn_bound = match rn_alias {
             Some(a) => a,
             None => rn_name
@@ -1368,7 +1461,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SReExport(_, rstnames) => {
         let mut rn_i = 0
         while rn_i < Array::length(rstnames) {
-          let (rn_name, rn_alias) = Array::get(rstnames, rn_i)
+          let item = Array::get(rstnames, rn_i)
+          let rn_name = item.name
+          let rn_alias = item.alias
           let rn_bound = match rn_alias {
             Some(a) => a,
             None => rn_name
@@ -2317,7 +2412,9 @@ fn canonicalize_stdin_provider_type_import_heads_reporting_change(stmts: Array[S
       SImport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let (original, alias_opt) = Array::get(items, j)
+          let item = Array::get(items, j)
+          let original = item.name
+          let alias_opt = item.alias
           match alias_opt {
             Some(alias) => if original == "StdinStream" {
               Array::push(aliases, (alias, original))
@@ -3285,6 +3382,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       desugar_railway_binds(stmts)
       let errors = ArrayBuilder::new()
       let frozen_errors = ArrayBuilder::freeze(errors)
+      check_import_kinds(stmts, initial_env, frozen_errors)
       canonicalize_stdin_provider_type_import_heads(stmts)
       collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
       // #1455 step 3: see check_program.
@@ -3530,7 +3628,10 @@ fn walk_binder_expr(expr: Expr, node: BinderAuthorityNode, scope: Array[SourceBi
         }
         true
       },
-      Some(Synthetic(_, _)) => true,
+      // Lowering-only identifiers have no source occurrence to publish. A
+      // source-located use resolving to a synthetic binder would be an
+      // unsupported provenance lane and must invalidate the observation.
+      Some(Synthetic(_, _)) => off < 0,
       None => true
     },
     ELet(_, _, _, _) => walk_binder_let_like(children, achildren, node, scope, out, false),
@@ -4147,7 +4248,9 @@ export fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, St
       SImport(path, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          let (orig, alias) = Array::get(items, j)
+          let item = Array::get(items, j)
+          let orig = item.name
+          let alias = item.alias
           let local = match alias {
             Some(a) => a,
             None => orig

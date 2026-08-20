@@ -1102,12 +1102,6 @@ scps_check_reject() {
 scps_run_inspect "effect_closure_param_inert.vibe" "inertparam"
 # Delegation pin now lives in
 # fixtures/effect_closure_param_inert_transitive_test.vibe (#1973).
-# #1536 (a), eager Stream slice: Stream::next must retarget before suspend
-# CPS evaluates a resume-value Async handler. The fixture also pins its
-# Array-backed ready Future[Option[T]] result and one evaluation (Some(41)+1).
-scps_run_inspect "effect_stream_next_suspend_retarget.vibe" "streamnext"
-# Hygiene pin (user `__sn_next` + shadowed Future::ready, empty layout = 7)
-# now lives in fixtures/effect_stream_next_retarget_hygiene_test.vibe (#1973).
 # #1723: a local pure closure shadows a top-level function whose callback
 # parameter carries the suspend effect. The prepass must leave the literal on
 # the plain convention; Done-wrapping it returns a step pointer instead of 8.

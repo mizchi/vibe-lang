@@ -81,32 +81,16 @@ test "await inside EFn without effect annotation reports error" {
   assert(Array::length(errors) > 0)
 }
 
-// --- Stream[T] (async iterator) ---
-
-/// `Stream::next(String::to_bytes(""))`
-///
-/// #1538 retired the eager producers (`Stream::empty` / `once`), so the one
-/// remaining way to spell a `Stream[Int]` is the ByteStream half.
-fn stream_next_call() -> Expr {
-  ECall(EIdent("Stream::next", -1), [
-    ECall(EIdent("String::to_bytes", -1), [EString("")], -1)
-  ], -1)
-}
-
-test "Stream::next is a registered effectful builtin (Async)" {
-  match lookup_builtin("Stream::next") {
-    Some(ty) => match ty {
-      CtFn(_, _, Some(_)) => assert(true),
-      _ => assert(false)
-    },
-    None => assert(false)
-  }
-}
+// --- nominal ByteStream boundary ---
 
 /// #1538: the eager combinators are RETIRED. They must not resolve at all --
 /// a lingering registration would keep the eager Array-backed model reachable
 /// and let `Stream[T]` grow a second meaning next to AsyncIter.
-test "the eager Stream combinators no longer resolve (#1538)" {
+test "the legacy Stream surface no longer resolves (#1954)" {
+  match lookup_builtin("Stream::next") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
   match lookup_builtin("Stream::empty") {
     Some(_) => assert(false),
     None => assert(true)
@@ -129,34 +113,80 @@ test "the eager Stream combinators no longer resolve (#1538)" {
   }
 }
 
-/// The ByteStream pair survives and stays pure -- it is the only producer of a
-/// `Stream[Int]` left, so `Stream::next` above depends on it.
-test "the ByteStream pair is still registered (#1538)" {
+/// Byte conversion is nominal: no generic `Stream[T]` is exposed by either
+/// direction, and the old `Stream::to_string` spelling is retired.
+test "the nominal ByteStream conversion pair is registered (#1954)" {
   match lookup_builtin("String::to_bytes") {
     Some(ty) => match ty {
-      CtFn(_, _, None) => assert(true),
+      CtFn(params, ret, None) => {
+        assert(Array::length(params) == 1)
+        match Array::get(params, 0) {
+          CtString => assert(true),
+          _ => assert(false)
+        }
+        match ret {
+          CtNamed(n, args) => {
+            assert(n == "ByteStream")
+            assert(Array::length(args) == 0)
+          },
+          _ => assert(false)
+        }
+      },
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+  match lookup_builtin("ByteStream::to_string") {
+    Some(ty) => match ty {
+      CtFn(params, ret, None) => {
+        assert(Array::length(params) == 1)
+        match ret {
+          CtString => assert(true),
+          _ => assert(false)
+        }
+        match Array::get(params, 0) {
+          CtNamed(n, args) => {
+            assert(n == "ByteStream")
+            assert(Array::length(args) == 0)
+          },
+          _ => assert(false)
+        }
+      },
       _ => assert(false)
     },
     None => assert(false)
   }
   match lookup_builtin("Stream::to_string") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "the nominal HostStream lifecycle surface is registered (#1955)" {
+  match lookup_builtin("HostStream::next") {
     Some(ty) => match ty {
-      CtFn(_, _, None) => assert(true),
+      CtFn(params, CtOption(CtInt), Some(effect)) => {
+        assert(effect == "Async")
+        assert(Array::length(params) == 1)
+        match Array::get(params, 0) {
+          CtNamed(name, args) => {
+            assert(name == "HostStream")
+            assert(Array::length(args) == 0)
+          },
+          _ => assert(false)
+        }
+      },
       _ => assert(false)
     },
     None => assert(false)
   }
-}
-
-test "Stream::next outside async context reports effectful-call error" {
-  let errors = check_async_effects_expr(stream_next_call(), EnvEmpty, false)
-  assert(Array::length(errors) > 0)
-  assert(is_call_err(Array::get(errors, 0)))
-}
-
-test "Stream::next inside async context is OK" {
-  let errors = check_async_effects_expr(stream_next_call(), EnvEmpty, true)
-  assert(eq(Array::length(errors), 0))
+  match lookup_builtin("HostStream::close") {
+    Some(ty) => match ty {
+      CtFn(params, CtUnit, None) => assert(Array::length(params) == 1),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
 }
 
 // --- Task[T] retirement (#1227) ---
@@ -193,4 +223,3 @@ test "the eager Task::* prototype is retired -- no longer registered builtins" {
     None => assert(true)
   }
 }
-

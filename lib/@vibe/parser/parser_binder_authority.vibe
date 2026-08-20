@@ -139,6 +139,7 @@ enum StoredBinderAuthority {
 /// Atomically produced exact-source parse result, compatibility rows, and the
 /// sidecar built in the same exhaustive walk against that exact final AST.
 export struct LocatedProgramBinderAuthority {
+  source: String;
   program: StoredLocatedProgram;
   binders: Array[SourceBinder];
   nodes: StoredBinderAuthority
@@ -170,6 +171,11 @@ export fn located_program_binder_authority_program(authority: LocatedProgramBind
   match authority.program {
     StoredLocatedProgramValue(program) => detach_stmts(program)
   }
+}
+
+/// Exact parser-owned bytes from which this authority was atomically built.
+export fn located_program_binder_authority_source(authority: LocatedProgramBinderAuthority) -> String {
+  authority.source
 }
 
 export fn located_program_binder_authority_rows(authority: LocatedProgramBinderAuthority) -> Array[SourceBinder] {
@@ -651,9 +657,9 @@ fn validate_stmt(stmt: Stmt, rows: Array[SourceBinder], source: String, at: Int)
       let slots = ArrayBuilder::new()
       let mut next = at
       for item in items {
-        let local = match item.1 {
+        let local = match item.alias {
           Some(alias) => alias,
-          None => item.0
+          None => item.name
         }
         match validate_slot(local, StatementImportBinder, rows, source, next) {
           Some(slot) => {
@@ -782,6 +788,7 @@ export fn parse_source_located_with_binder_authority(source: String) -> Option[L
   } && binder_capture_is_eligible(context) {
     match build_program_binder_authority(program, rows, source) {
       Some(nodes) => Some(LocatedProgramBinderAuthority::{
+        source: source,
         program: StoredLocatedProgramValue(program),
         binders: rows,
         nodes: stored_authority_nodes(nodes, 0)

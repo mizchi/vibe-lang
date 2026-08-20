@@ -215,6 +215,36 @@ test "#1957: imported names keep their import-slot identity" {
   }
 }
 
+test "#1957: aliased imports keep the local import-slot identity" {
+  let source = "import @vibe/core { array_empty as fresh }\nfn f() -> Int {\n  let _u = fresh\n  1\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let names = find_offsets(source, "fresh")
+        assert_eq(Array::length(names), 2)
+        assert_eq(binder_start_for(rows, Array::get(names, 1)), Array::get(names, 0))
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "#1957: offsets remain byte-precise after UTF-8 source" {
+  let source = "// 日本語\nfn f() -> Int {\n  let value = 1\n  value\n}\n"
+  match parse_source_located_with_binder_authority(source) {
+    Some(authority) => match check_program_binder_occurrence_observation(authority) {
+      Some(rows) => {
+        let names = find_offsets(source, "value")
+        assert_eq(Array::length(names), 2)
+        assert_eq(binder_start_for(rows, Array::get(names, 1)), Array::get(names, 0))
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
 test "#1957: loop-lowering source binders stay distinct from synthetic rows" {
   let source = "fn f() -> Int {\n  loop (acc = 1) {\n    break acc\n  }\n}\n"
   match parse_source_located_with_binder_authority(source) {

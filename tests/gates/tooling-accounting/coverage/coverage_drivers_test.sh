@@ -30,12 +30,10 @@ while read -r entry file label; do
   }
 done <<< "$driver_rows"
 
-# `Stream::next` is effectful and returns a Future.  A coverage probe that
-# matches the Future directly is rejected by `check_program`; cov_async_one
-# catches that exception and returns 0, making the driver look healthy while
-# the intended codegen branch stays dark.
-grep -Fq 'export let main: () -> Int with Async = () -> { match await(Stream::next' scripts/coverage/cov_async.vibe || {
-  echo "coverage_drivers_test: Stream::next probe must await inside an Async entry" >&2
+# #1954: the conversion must exercise the nominal consumer spelling rather
+# than the retired generic Stream surface.
+grep -Fq 'ByteStream::to_string(s)' scripts/coverage/cov_async.vibe || {
+  echo "coverage_drivers_test: nominal ByteStream conversion probe is missing" >&2
   exit 1
 }
 
