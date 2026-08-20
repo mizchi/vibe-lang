@@ -315,20 +315,10 @@ load / type / bundle / parse / codegen に span を張り、codegen の中に
 置き換えた。**stage2 のビルドは通ったが、CLI 本体
 (`lib/@vibe/cli/main.vibex`) のコンパイルが落ちた。**
 
-```
-handle of effect 'Trace' cannot be compiled here. Every perform this handle
-covers has to be statically visible to it, so the handled body may only:
-perform directly, call a named top-level `fn`, or call a closure literal that
-carries an effect row annotation.
-```
-
-> この引用は 2026-08-07 当時のメッセージ。**#2137 でこの文面は書き換えられた**
-> — 下の「実際の適格性はこの診断文が言うより狭い」という観測がまさにその
-> issue の内容で、列挙されていた「拒否される形」のうち 4 つは実際には
-> コンパイルできる。現行の文面は
-> `lib/@vibe/compiler/codegen/common_base/inline_direct_perform.vibe` と
-> [cheatsheet](cheatsheet.md) の表を参照。ここでの結論 ((a)/(b)/(c) の選択)
-> は文面の変更に影響されない。
+落としたのは handle 適格性検査 (`handle of effect 'Trace' cannot be
+compiled here`, `inline_direct_perform.vibe`)。受理される callee の形の
+実測表と現行の診断文は [cheatsheet](cheatsheet.md) の
+"A `handle` that type-checks can still fail to compile" 節にある。
 
 **2つの配置を試して、両方拒否された:**
 
@@ -337,14 +327,14 @@ carries an effect row annotation.
 2. handler を perform の隣 (`file_compile.vibe` 内) に移し、**同一ファイルの
    named top-level `fn` を直接**包む
 
-2 はエラー文が「許される形」として明示的に列挙している形そのものである。
-つまり**実際の適格性はこの診断文が言うより狭い**。理由はおそらく、migration が
-handled body の関数の**中まで**追う必要があり、
-`compile_file_fs_mode_traced` の中で perform に挟まれて呼ばれている
+2 が包むのは named top-level `fn` — それ自体は適格な callee の形 — なのに
+拒否される。つまり適格性は「handled body が直接呼ぶものの形」だけでは
+決まらない: この検査は handle が覆う**すべての** perform を静的に追う必要が
+あり、`compile_file_fs_mode_traced` の中で perform に挟まれて呼ばれている
 `collect_source_groups_fs` / `prepare_file_fs_from_source_groups_persistent_cached` /
-`compile_wasi_module` などのどれかが、追えない形 (local binding 経由・
-row 変数付き callee) を含むため。診断に位置情報が無いので
-(#1511)、どの呼び出しかは二分探索しないと分からない。
+`compile_wasi_module` などのどれかが、追えない形 (row 無しの binding 経由・
+row 変数付き callee) を含むためである。#2137 以降の診断は見えない呼び出しを
+名指しする (犯人が依存モジュール側にあるときは位置は付かない、#1596)。
 
 **これは §3 の結論を否定しない。** §3 が測ったのは effect 機構のコストで、
 それは今も 5.4ns / アロケーションゼロ / row tax ゼロである。落ちたのは
