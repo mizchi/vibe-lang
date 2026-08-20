@@ -1,0 +1,125 @@
+//# Imports
+
+// #2125 step 3: an unknown type name used to be accepted wherever a type may
+// appear, and the annotation then behaved as a WILDCARD at argument positions
+// -- `fn takes(x: Intt) -> Int { 1 }` accepted both `takes(1)` and
+// `takes("s")`, with `vibe check` exiting 0.
+//
+// `collect_unknown_type_names` (checker_resolve.vibe) is the detection half
+// and is pinned by `unknown_type_name_test.vibe`. This file pins the
+// ENFORCEMENT half: `report_unknown_type_names` wired into the annotation
+// sites that introduce a type -- a function literal's parameters and return
+// type, a local `let` annotation, and a top-level binding's annotation.
+//
+// The negative cases matter as much as the positives. A name that resolves to
+// nothing is not automatically a typo, and each of the shapes below is a
+// legitimate one that an over-eager rule rejects:
+//   - a generic formal, INCLUDING one only the enclosing declaration binds
+//     (a nested lambda resolves its own parameters with its own, empty,
+//     type-parameter list, so `shadow` cannot answer this -- the env can);
+//   - a trait's own element type parameter, which the uniform representation
+//     erases and `relax_unknown_named` deliberately relaxes to `CtUnknown`;
+//   - a region token, which is spelled in type-argument position
+//     (`MutList[T, r]`, ADR-0090) and is a value, not a type;
+//   - a compiler-owned nominal head with no `TypeDef` behind it
+//     (`is_wellknown_nominal_head`).
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The first checker diagnostic for `source`, or "" when it type-checks.
+/// A ` [@fn=name]` suffix is the #1941 side-channel marker: the annotation
+/// carries no offset of its own, so the diagnostic anchors on the declaration
+/// name and `locate_type_error` turns that into a real `line:col` at the CLI
+/// boundary.
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+//# Reported
+
+test "#2125: a typo in a parameter annotation is reported" {
+  inspect(first_check_error("fn takes(x: Intt) -> Int {\n  1\n}\n"), content = "unknown type `Intt` in parameter `x` [@fn=takes]")
+}
+
+test "#2125: the annotation is no longer a wildcard at the call site" {
+  // The headline shape: the SAME slot accepted both an Int and a String.
+  let src = "fn takes(x: Intt) -> Int {\n  1\n}\n\nfn main() -> Unit {\n  let _ = takes(1)\n  let _ = takes(\"s\")\n  ()\n}\n"
+  inspect(first_check_error(src), content = "unknown type `Intt` in parameter `x` [@fn=takes]")
+}
+
+test "#2125: a typo in a return type is reported" {
+  inspect(first_check_error("fn f() -> Intt {\n  1\n}\n"), content = "unknown type `Intt` in the return type [@fn=f]")
+}
+
+test "#2125: a typo in a local let annotation is reported" {
+  inspect(first_check_error("fn f() -> Int {\n  let y: Intt = 1\n  2\n}\n"), content = "unknown type `Intt` in a local let annotation [@fn=y]")
+}
+
+test "#2125: a typo in a top-level binding's annotation is reported" {
+  inspect(first_check_error("let x: Intt = 1\n"), content = "unknown type `Intt` in the annotation of `x` [@fn=x]")
+}
+
+test "#2125: an unknown APPLIED head is reported too" {
+  // `Frobnicate[Int]` resolves to `CtNamed(\"Frobnicate\", [Int])` -- the
+  // TyApp arm falls through the same way the TyName arm does.
+  inspect(first_check_error("fn g(x: Frobnicate[Int]) -> Int {\n  1\n}\n"), content = "unknown type `Frobnicate` in parameter `x` [@fn=g]")
+}
+
+test "#2125: an unknown name nested inside a known head is reported" {
+  inspect(first_check_error("fn g(xs: Array[Intt]) -> Int {\n  1\n}\n"), content = "unknown type `Intt` in parameter `xs` [@fn=g]")
+}
+
+//# Not reported
+
+test "#2125: a generic formal is not a typo" {
+  inspect(first_check_error("fn f[T](x: T) -> T {\n  x\n}\n"), content = "")
+}
+
+test "#2125: a formal reached only through the ENV is not a typo" {
+  // The lambda binds no type parameters of its own, so `shadow` is empty at
+  // its parameter annotation and the enclosing `T` is invisible to it. The
+  // env still binds `T` to the formal's `CtVar`.
+  let src = "fn outer[T](xs: Array[T]) -> Int {\n  let g = (a: T) -> Int {\n    1\n  }\n  g(Array::get(xs, 0))\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2125: a body-level annotation naming a formal is not a typo" {
+  inspect(first_check_error("fn f[T](x: T) -> T {\n  let y: T = x\n  y\n}\n"), content = "")
+}
+
+test "#2125: a trait's own element type parameter is not a typo" {
+  // `T` in the impl method's signature is `trait Iterator[T]`'s, and the impl
+  // block binds nothing to shadow it.
+  let src = "trait Iterator[T] {\n  next(Self) -> Option[(T, Self)]\n}\n\nstruct LazyIter[T] {\n  pull: (Int) -> Option[(T, Int)];\n  state: Int\n}\n\nimpl Iterator for LazyIter {\n  next(self) -> Option[(T, LazyIter)] {\n    match (self.pull)(self.state) {\n      Some(p) => {\n        let (v, ns) = p\n        Some((v, LazyIter::{ pull: self.pull, state: ns }))\n      },\n      None => None\n    }\n  }\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2125: a region token in type-argument position is not a typo" {
+  // ADR-0090: `MutList[T, r]`'s second argument names the region TOKEN, which
+  // is an ordinary value binding, not a type.
+  let src = "fn f() -> Int {\n  region r {\n    let xs: MutList[Int, r] = MutList::empty(r)\n    MutList::length(xs)\n  }\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2125: a compiler-owned nominal head with no TypeDef is not a typo" {
+  inspect(first_check_error("fn f(b: StringBuilder) -> Int {\n  1\n}\n"), content = "")
+  inspect(first_check_error("fn f(b: FixedArray[Int]) -> Int {\n  1\n}\n"), content = "")
+}
+
+test "#2125: a real declared type is not a typo, in either order" {
+  inspect(first_check_error("struct P {\n  x: Int\n}\n\nfn f(p: P) -> Int {\n  p.x\n}\n"), content = "")
+  inspect(first_check_error("fn f(p: P) -> Int {\n  p.x\n}\n\nstruct P {\n  x: Int\n}\n"), content = "")
+}

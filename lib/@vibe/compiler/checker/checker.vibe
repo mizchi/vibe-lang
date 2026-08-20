@@ -55,7 +55,7 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  collect_unknown_type_names, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import ./checker_spawnable.vibe {
@@ -128,12 +128,76 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
       // `find_fn_anchor_off` already prefers `fn name` then `let name`, so the
       // binder is recoverable from the name alone.
       let unlocated = String::index_of(msg, " [@") < 0
-      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ")
+      // #2125: `unknown type` is reported from a function literal's parameter
+      // and return annotations, which carry no offset of their own -- so it
+      // anchors on the declaration name exactly like the two above.
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `")
       if anchorable && unlocated {
         Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
       }
       i = i + 1
     }
+  }
+}
+
+/// #2125: true when a trait in scope declares `name` as one of ITS OWN type
+/// parameters -- the `T` of `trait Iterator[T] { next(Self) -> Option[T] }`.
+///
+/// Such a name is deliberately unresolvable, and that is not an oversight: the
+/// uniform representation ERASES a trait's element params, so every use is
+/// relaxed to `CtUnknown` (see `relax_unknown_named`). An `impl` method spells
+/// them in its own signature -- `next(self) -> Option[(T, LazyIter)]` -- with
+/// no binder of its own to shadow them, so it reaches annotation resolution
+/// looking exactly like a typo. Scoped to names some trait actually declares,
+/// rather than exempting `impl` bodies wholesale, so a genuine typo inside one
+/// is still reported.
+fn env_trait_declares_type_param(env: TypeEnv, name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => env_trait_declares_type_param(rest, name),
+    EnvTraitDef(_, params, _, _, rest, header_params, _) => string_array_has(params, name) || string_array_has(header_params, name) || env_trait_declares_type_param(rest, name),
+    EnvTraitImpl(_, _, rest) => env_trait_declares_type_param(rest, name),
+    EnvTraitImplGen(_, params, _, _, rest) => string_array_has(params, name) || env_trait_declares_type_param(rest, name),
+    EnvMutCell(_, _, rest) => env_trait_declares_type_param(rest, name),
+    EnvTypeDefs(_, _, rest) => env_trait_declares_type_param(rest, name),
+    EnvCached(_, _, rest) => env_trait_declares_type_param(rest, name),
+    EnvFlat(_) => false
+  }
+}
+
+/// #2125: report every type name in `te` that resolves to NOTHING, so a typo
+/// stops behaving as a wildcard. `resolve_type_expr_shadowed` turns such a
+/// name into `CtNamed(name, [])` -- the same shape as an un-instantiated
+/// generic formal, whose unify failures `check_assignable` must tolerate so as
+/// not to over-reject polymorphic code.
+///
+/// `shadow` is not the authority on what a formal is: a lambda nested in a
+/// generic function resolves its own parameters with its OWN (empty)
+/// `tparams`, so the enclosing `T` is invisible there. The ENV is, and it
+/// answers two questions at once, which is why the test is "bound at all"
+/// rather than "bound to a `CtVar`":
+///   - a type formal is bound to a `CtVar` by whichever binder introduced it
+///     (that is exactly what `resolve_tparams_in` reads), so this covers every
+///     binder including ones nobody has enumerated;
+///   - a REGION TOKEN is bound as an ordinary value and is spelled in
+///     type-argument position (`MutList[T, outer_region]`, ADR-0090), so it
+///     reaches this walk looking like a type name and is not one.
+export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, where_label: String, errors: Array[String]) -> Unit {
+  let out = array_empty()
+  collect_unknown_type_names(te, defs, shadow, out)
+  let mut i = 0
+  while i < Array::length(out) {
+    let name = Array::get(out, i)
+    let bound_in_env = match env_lookup(env, name) {
+      Some(_) => true,
+      None => false
+    }
+    if bound_in_env || env_trait_declares_type_param(env, name) {
+      ()
+    } else {
+      Array::push(errors, String::concat(String::concat(String::concat("unknown type `", name), "` in "), where_label))
+    }
+    i = i + 1
   }
 }
 
@@ -7489,6 +7553,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // equality. `env` already binds each formal to a fresh `CtVar` (see
             // the EFn arm's `tp_env`), so the mapping is available right here.
             let resolved = resolve_tparams_in(resolve_type_expr(ann_te, defs), env)
+            // #2125: a body-level `let y: Intt = ..` annotation. `shadow` is
+            // empty here by construction (the ascription lambda carries no
+            // formals of its own); the env is what knows the enclosing
+            // declaration's, which is exactly the #2130 mapping above.
+            report_unknown_type_names(ann_te, defs, array_empty(), env, "a local let annotation", errors)
             let actual = subst_apply(ns0, at)
             // #981: `check_assignable` now runs the #844 same-name concrete
             // `CtNamed` check itself (its tolerate branch calls
@@ -8678,6 +8747,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
             let resolved = resolve_type_expr_shadowed(te, defs, tparams)
             let pt2 = resolve_tparams_in(resolved, fn_env)
+            // #2125: an unresolvable name here becomes a wildcard at every
+            // call site, so `f("s")` and `f(1)` both pass the SAME slot.
+            report_unknown_type_names(te, defs, tparams, fn_env, String::concat(String::concat("parameter `", name), "`"), errors)
             (pt2, s1, c1)
           },
           None => {
@@ -8709,7 +8781,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // rejected it once the #941 railway-conflict report landed. CtUnknown
       // unifies with anything, so the EReturn check is inert for it.
       let annotated_body_env = match ret_ty {
-        Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env)),
+        Some(rte) => {
+          // #2125: see the parameter arm above.
+          report_unknown_type_names(rte, defs, tparams, fn_env, "the return type", errors)
+          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env))
+        },
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
       let (return_provenance, return_c) = fresh_var(c1)

@@ -1835,7 +1835,7 @@ export let lazy_iter_arr = [T](xs: Array[T]) -> LazyIter[T] {
 EOF
 # (a) positive: direct element arithmetic compiles + runs (10+20+30+40 = 100).
 cat > "$eidir/pos.vibe" <<'EOF'
-import ./li.vibe { lazy_iter_arr }
+import ./li.vibe { LazyIter, lazy_iter_arr }
 let sum_direct = (src: LazyIter[Int]) -> Int {
   let mut total = 0
   for x in src { total = total + x }
@@ -1858,7 +1858,7 @@ if [ "$ei_out" != "100" ]; then
 fi
 # (b) negative: Int accumulator + String element must be a type error.
 cat > "$eidir/neg.vibe" <<'EOF'
-import ./li.vibe { lazy_iter_arr }
+import ./li.vibe { LazyIter, lazy_iter_arr }
 let bad = (src: LazyIter[String]) -> Int {
   let mut total = 0
   for x in src { total = total + x }
