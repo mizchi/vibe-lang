@@ -194,8 +194,39 @@ else
   bad "top-level let + literal value: got [$unloc], want it to name 'bad_one'"
 fi
 
+# 11. An UNLOCATED result must not emit a number where an offset goes, and the
+#     two output modes must agree about which results those are.
+#
+#     `vibe grep`'s text lane has always rendered such a match as `<synthetic>`
+#     in place of `line:col`. Its JSON lane rendered `-1` in all four position
+#     fields (#1943) -- and `-1` is a NUMBER, so a consumer slicing `src[start:]`
+#     reads from the end of the file instead of failing. That is the same defect
+#     the capture-level `start` had, and the same class as a wrong unit: the
+#     answer is about a position nobody asked about, with no error.
+#
+#     A match comes out unlocated when its operands are literals, which carry no
+#     offset slot -- the gap this file's check 10 also exists for.
+cat > "$WORK/synth.vibe" <<'SYNTH'
+fn add(a: Int, b: Int) -> Int { a + b }
+
+fn main() -> Unit {
+  let _ = 3 + 4
+}
+SYNTH
+gj="$(run "$WORK/synth.vibe" gj VIBE_GREP=1 VIBE_GREP_JSON=1 'VIBE_GREP_PATTERN=$(a:exp) + $(b:exp)')"
+gt="$(run "$WORK/synth.vibe" gt VIBE_GREP=1 'VIBE_GREP_PATTERN=$(a:exp) + $(b:exp)')"
+if grep -q -- '-1' <<<"$gj"; then
+  bad "vibe grep --json emits -1 in a position field; an unlocated result must be null: [$gj]"
+elif ! grep -q '"synthetic":true' <<<"$gj"; then
+  bad "vibe grep --json does not mark the unlocated match synthetic: [$gj]"
+elif ! grep -q '<synthetic>' <<<"$gt"; then
+  bad "vibe grep text lane no longer renders <synthetic>, so the two modes disagree: [$gt]"
+else
+  note "an unlocated grep match is null + synthetic in JSON and <synthetic> in text"
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "source-range-contract: see docs/source-range-contract.md -- a surface changed its position unit" >&2
   exit 1
 fi
-echo "source-range-contract: ok (10 checks; byte col $BYTE_COL, codepoint col $CP_COL, UTF-16 col $want_u16 all distinct)"
+echo "source-range-contract: ok (11 checks; byte col $BYTE_COL, codepoint col $CP_COL, UTF-16 col $want_u16 all distinct)"

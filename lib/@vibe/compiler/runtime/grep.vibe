@@ -2276,7 +2276,49 @@ fn grep_render_line(hit: GrepHit, line: Int, col: Int) -> String {
 }
 
 fn grep_render_json(ctx: GrepTyped, typed: Bool, hit: GrepHit, line: Int, col: Int) -> String {
-  let head = String::concat("{\"path\":\"", String::concat(grep_json_escape(hit.path), String::concat("\",\"line\":", String::concat(grep_int(line), String::concat(",\"col\":", String::concat(grep_int(col), String::concat(",\"start\":", String::concat(grep_int(hit.offset), String::concat(",\"end\":", String::concat(grep_int(hit.end_offset), String::concat(",\"text\":\"", String::concat(grep_json_escape(hit.text), "\",\"captures\":{"))))))))))))
+  // #1943: the two output modes have to agree. The TEXT lane already renders an
+  // unlocated match honestly, as `<synthetic>` in place of `line:col`; JSON
+  // rendered `-1` in all four position fields, which a consumer reads as an
+  // offset and slices from the END of the file. Same defect the capture-level
+  // `start` had, and the same fix: `null` fails loudly, and `synthetic` says
+  // which kind of row this is without the reader inferring it from a sentinel.
+  //
+  // A match comes out unlocated when its operands are literals -- literals
+  // carry no offset slot, the same gap that leaves type errors unlocated.
+  let synth = hit.offset < 0
+  let line_field = if synth {
+    "null"
+  } else {
+    grep_int(line)
+  }
+  let col_field = if synth {
+    "null"
+  } else {
+    grep_int(col)
+  }
+  let start_field = if hit.offset < 0 {
+    "null"
+  } else {
+    grep_int(hit.offset)
+  }
+  let end_field = if hit.end_offset < 0 {
+    "null"
+  } else {
+    grep_int(hit.end_offset)
+  }
+  let synth_field = if synth {
+    "true"
+  } else {
+    "false"
+  }
+  let mut head = String::concat("{\"path\":\"", grep_json_escape(hit.path))
+  head = String::concat(head, String::concat("\",\"line\":", line_field))
+  head = String::concat(head, String::concat(",\"col\":", col_field))
+  head = String::concat(head, String::concat(",\"start\":", start_field))
+  head = String::concat(head, String::concat(",\"end\":", end_field))
+  head = String::concat(head, String::concat(",\"synthetic\":", synth_field))
+  head = String::concat(head, String::concat(",\"text\":\"", grep_json_escape(hit.text)))
+  head = String::concat(head, "\",\"captures\":{")
   let mut body = ""
   let mut i = 0
   while i < Array::length(hit.captures) {
