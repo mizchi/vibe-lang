@@ -1426,11 +1426,18 @@ grapheme operations are not part of this API.
      requires this paragraph to name EXACTLY the entries in the Signature reference
      tables that `lookup_builtin` does not know -- no more, no less. -->
 
-These are **not builtins** — they are library functions in `@vibe/builtin` and
-need `import @vibe/builtin { ... }`. Calling one without the import is
-`unknown name: String::replace`:
+These are **not builtins** — they are library functions, and calling one without
+its import is `unknown name`. The Signature reference documents them next to the
+real builtins, which is why they are listed here.
+
+From `@vibe/builtin` (`import @vibe/builtin { ... }`):
 `String::replace`, `String::replace_all`, `String::trim_start`,
 `String::trim_end`, `String::count`.
+
+From `@vibe/json` (`import @vibe/json { ... }`):
+`Json::parse`, `Json::stringify`, `Json::type_of`, `Json::get`, `Json::index`,
+`Json::is_null`, `Json::length`, `Json::keys`, `Json::stringify_lines`,
+`Json::parse_lines`.
 
 **Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
 `push` は償却 O(1)):
@@ -1554,10 +1561,9 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 
 **Map**: `get: (Map[K, V], K) -> V` (無ければ throw),
 `set: (Map[K, V], K, V) -> Map[K, V]` (新しい map を返す),
-`get_or: (Map[K, V], K, V) -> V`, `has_key: (Map[K, V], K) -> Bool`,
+`has_key: (Map[K, V], K) -> Bool`,
 `keys: (Map[K, V]) -> Array[K]`, `values: (Map[K, V]) -> Array[V]`。
 
-**Record**: `record_set: (Record, String, V) -> Record`。
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
@@ -1565,7 +1571,10 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 
 **変換**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
-`to_string: (Any) -> String`。
+`__to_string: (Any) -> String`。**裸の `to_string` は呼べない** —
+`to_string(1)` は `Int::to_string` への dot-call と解釈され
+``dot-call syntax is not supported for the builtin method `Int::to_string` ``
+になる。型ごとの綴り (`Int::to_string(1)`) か `__to_string(x)` を使う。
 
 **I/O** (effect 必須). tty の現行名は `Console`。`Stdin` / `Stdout` /
 `Stderr` は同じ host import を共有する **legacy ラベル**で、row は相互に

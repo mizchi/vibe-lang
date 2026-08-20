@@ -337,8 +337,11 @@ exact repair this case's `fixed.vibe` performs — promoting `bump` to a top-lev
 which describes the call site rather than the binding that has to change.
 
 The boundary itself is now pinned by `scripts/check_handle_eligibility.sh`
-(`pkf run check-handle-eligibility`): five accepted shapes, four rejected, and
-an assertion that the rejection names the missing effect row. It compiles with a
+(`pkf run check-handle-eligibility`): five accepted shapes, five rejected, and
+an assertion that the rejection names the missing effect row. The fifth is a
+closure PARAMETER without a row, added after review confirmed it reaches the
+same branch -- which is why the message says "call target" and not "local
+binding": there is no `let` at that site to annotate. It compiles with a
 REAL entry name, because `fixtures/typecheck/expected.tsv` uses `__no_entry__`
 and is blind to this check entirely — it records `ok` for a program `vibe check`
 rejects.

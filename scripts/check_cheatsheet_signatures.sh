@@ -52,8 +52,32 @@ try:
     end = next(i for i, l in enumerate(lines) if i > start and l.startswith("## "))
 except StopIteration:
     sys.exit(0)
+# The reference documents roughly half its APIs in PROSE rather than tables
+# (#2138 review): Array, Map, Record, JSON, Lines, the builders, assertions.
+# Discarding every non-table line left those free to drift while this gate
+# reported success.
+#
+# A bare name there takes its receiver from the most recent `X::` seen, else
+# from the bolded heading. That is the heuristic #2124 warned about -- a
+# receiver "sticking" across sub-sections -- so it is confined to THIS section
+# and to a strict `NAME (args) -> ret` shape, and a qualified name re-anchors
+# the receiver (which is what keeps ArrayBuilder's `freeze` from being read as
+# MapBuilder's). It is checked, not trusted: every extracted name goes to
+# `lookup_builtin`, and one that resolves to nothing is reported like any other.
+HEADING_RECEIVER = {"Array": "Array", "Map": "Map", "JSON": "Json"}
+recv = None
 for l in lines[start:end]:
     if not l.startswith("|"):
+        hm = re.match(r'\s*\*\*([^*]+)\*\*', l)
+        if hm:
+            recv = HEADING_RECEIVER.get(hm.group(1).strip())
+        for m in re.finditer(r'`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)?)\s*:?\s*(\([^`]*\)\s*->\s*[^`]+)`', l):
+            nm, sig = m.group(1), m.group(2).strip()
+            if "::" in nm:
+                recv = nm.split("::")[0]
+                print(f"{nm}\t{sig}")
+            else:
+                print(f"{recv + '::' + nm if recv else nm}\t{sig}")
         continue
     cells = [c.strip() for c in l.strip().strip("|").split("|")]
     if len(cells) < 2:
@@ -129,6 +153,29 @@ def is_generic(t):
     # is how the document writes one. Neither can be compared to the other.
     return "?" in t or bool(re.fullmatch(r'[A-Z]', t)) or bool(re.search(r'\[[A-Z]\]', t))
 
+def params(sig):
+    """The top-level parameter types, split on commas outside brackets."""
+    m = re.match(r'\s*\(([^)]*)\)', sig)
+    if not m:
+        return None
+    inner = m.group(1).strip()
+    if inner == "":
+        return []
+    out, depth, cur = [], 0, ""
+    for ch in inner:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur.strip()); cur = ""
+        else:
+            cur += ch
+    out.append(cur.strip())
+    # The document names its parameters (`(s: String, i: Int)`); the checker does
+    # not. Compare the TYPES, so the two spellings of the same signature agree.
+    return [re.sub(r'^[a-z_][A-Za-z0-9_]*\s*:\s*', '', t) for t in out]
+
 def arity(sig):
     m = re.match(r'\s*\(([^)]*)\)', sig)
     if not m:
@@ -157,13 +204,21 @@ if mi < 0:
           file=sys.stderr)
     sys.exit(1)
 after = doc[doc.index("-->", mi) + 3:]
-# The paragraph is the first non-empty block after the marker.
-block = ""
-for para in after.split("\n\n"):
-    if para.strip():
-        block = para
+# Everything from the marker to the next section, not just the first paragraph:
+# the caveat groups its names by package, so it spans several. Reading one
+# paragraph silently dropped every group but the first, which reads as "these
+# names are undocumented" -- a failure that points at the document when the
+# fault is here.
+block_lines = []
+for line in after.split("\n"):
+    if line.startswith("**") or line.startswith("#"):
         break
-listed = set(re.findall(r'`([A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_]+)`', block))
+    block_lines.append(line)
+block = "\n".join(block_lines)
+# Bare names too (`to_string`): a library function does not have to be
+# qualified, and requiring `::` here would make one unlistable -- so it could
+# never be reconciled and the gate would fail forever.
+listed = set(re.findall(r'`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)?)`', block))
 if not listed:
     print("cheatsheet-signatures: FAIL: the import-required-builtins paragraph names no "
           "`Type::fn` at all, so this gate would accept anything", file=sys.stderr)
@@ -195,6 +250,18 @@ for line in open(sys.argv[2]):
     rd, ra = ret_type(docsig), ret_type(actual)
     if rd and ra and not is_generic(rd) and not is_generic(ra) and rd != ra:
         mismatch.append((name, docsig, actual, f"returns {rd}", f"returns {ra}"))
+        continue
+    # Arity plus return type still let a REORDERING through -- the review's
+    # example, `String::substring` documented as `(Int, String, Int) -> String`,
+    # has the same arity and the same return. Compare the parameter types too,
+    # position by position, skipping any pair where either side is generic.
+    pd, pa = params(docsig), params(actual)
+    if pd is not None and pa is not None and len(pd) == len(pa):
+        for i, (a, b) in enumerate(zip(pd, pa)):
+            if is_generic(a) or is_generic(b) or a == b:
+                continue
+            mismatch.append((name, docsig, actual, f"arg {i + 1} is {a}", f"arg {i + 1} is {b}"))
+            break
 
 fails = 0
 expected_rows = int(sys.argv[3])
@@ -211,7 +278,25 @@ for name, d, a, ad, aa in mismatch:
     fails = 1
 
 missing = sorted(nonbuiltin - listed)
-extra = sorted(listed - nonbuiltin)
+# `listed - nonbuiltin` conflates two states, and the message below asserted the
+# wrong one of them: a caveat name the reference DOCUMENTS and the checker calls
+# a builtin (drop it from the caveat), versus a caveat name the reference does
+# not document at all -- about which nothing was measured. Reporting the second
+# as "the checker says it IS a builtin now" is a claim this gate never checked.
+documented = set()
+for l in open(sys.argv[2]):
+    parts = l.rstrip("\n").split("\t")
+    if len(parts) == 3:
+        documented.add(parts[0])
+extra = sorted((listed - nonbuiltin) & documented)
+undocumented = sorted(listed - nonbuiltin - documented)
+if undocumented:
+    print("cheatsheet-signatures: FAIL: the import caveat names these, but the Signature", file=sys.stderr)
+    print("  reference gives them no signature -- nothing was measured about them. Give", file=sys.stderr)
+    print("  each one a signature there, or drop it from the caveat:", file=sys.stderr)
+    for n in undocumented:
+        print(f"    {n}", file=sys.stderr)
+    fails = 1
 if missing:
     print("cheatsheet-signatures: FAIL: documented as a signature but NOT a builtin, and not named in the import caveat:", file=sys.stderr)
     for n in missing:
