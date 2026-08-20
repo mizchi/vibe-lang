@@ -2344,74 +2344,6 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
 /// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
 /// Import projection supplies the selected trait authority and implementations,
 /// so this is enforced identically for standalone and FS/import checking.
-/// #2145: `perform?` typechecks but codegen does not lower it.
-///
-/// `book/en/10_capabilities.vibe.md` documents the optional-capability perform,
-/// #1961 landed the checker half (PRs #2089/#2090) and was closed as completed,
-/// and the codegen half never followed. Measured on the seed and on stage2:
-/// `vibe check` on a `perform?` program is CLEAN and exit 0, and compiling the
-/// same file dies with
-///
-///   internal compiler error: `perform?` (local, @call) reached code generation
-///   unresolved. ... this is a bug in the compiler and not in your program
-///
-/// Two things are wrong with that. The message is not actionable -- it asks the
-/// reader to report a bug in a feature the book told them to use -- and
-/// `vibe check` answering "clean" is itself the defect: AGENTS.md requires the
-/// CLI to answer "does this file compile" on its own, so a clean check followed
-/// by a failed build is a hole in the diagnostic, not a caller's mistake.
-///
-/// Rejecting here fixes both surfaces at once, and follows the precedent
-/// directly below in `check_program`: an undispatchable `T::m` is rejected in
-/// the checker precisely to avoid `reached code generation unresolved`.
-///
-/// Delete this when codegen lowers `perform?`; the fixture that pins the
-/// message will fail and say so.
-fn scan_perform_optional(expr: Expr, out: Array[String]) -> Unit {
-  match expr {
-    ECall(callee, _, _) => match callee {
-      EIdent(name, _) => if name == "perform?" {
-        let msg = "`perform?` is not lowered yet (#2145): the checker types it as `Attempt[T, String]`, but code generation cannot emit it. Use a REQUIRED capability and plain `perform` -- drop the `?` from both the `allows` item and the `perform` -- and handle the failure with `try`/`handle` instead of matching `Attempt`."
-        // One message per program: the fix is the same wherever the second
-        // occurrence is, and repeating it per call site buries it.
-        if Array::length(out) == 0 {
-          Array::push(out, msg)
-        } else {
-          ()
-        }
-      } else {
-        ()
-      },
-      _ => ()
-    },
-    _ => ()
-  }
-  let children = expr_children(expr)
-  let mut i = 0
-  while i < Array::length(children) {
-    scan_perform_optional(Array::get(children, i), out)
-    i = i + 1
-  }
-}
-
-fn collect_unlowered_perform_optional_errors(stmts: Array[Stmt]) -> Array[String] {
-  let out = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => scan_perform_optional(body, out),
-      SLetMut(_, _, body) => scan_perform_optional(body, out),
-      SExpr(e) => scan_perform_optional(e, out),
-      STest(_, e) => scan_perform_optional(e, out),
-      SBench(_, e) => scan_perform_optional(e, out),
-      SExample(_, e) => scan_perform_optional(e, out),
-      _ => ()
-    }
-    i = i + 1
-  }
-  out
-}
-
 fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(msgs) {
@@ -3309,17 +3241,6 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // build_gens in desugar_trait_dict.vibe.
   push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
-  // AFTER the effect pass, and only when nothing else fired. `perform?` on a
-  // REQUIRED allows has its own, sharper message ("`perform?` requires optional
-  // `allows ...?`; write that grade, or use plain `perform`") which
-  // collect_async_effect_errors produces -- and `check_program` throws
-  // frozen_errors[0], so pushing this generic one earlier DISPLACED it. The
-  // #1961 required-allows test caught exactly that.
-  if Array::length(frozen_errors) == 0 {
-    push_error_strings(collect_unlowered_perform_optional_errors(stmts), frozen_errors)
-  } else {
-    ()
-  }
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
   check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
@@ -3652,17 +3573,6 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // is covered too.
       push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
       collect_async_effect_errors(expanded_stmts, env, frozen_errors)
-      // AFTER the effect pass, and only when nothing else fired. `perform?` on a
-      // REQUIRED allows has its own, sharper message ("`perform?` requires optional
-      // `allows ...?`; write that grade, or use plain `perform`") which
-      // collect_async_effect_errors produces -- and `check_program` throws
-      // frozen_errors[0], so pushing this generic one earlier DISPLACED it. The
-      // #1961 required-allows test caught exactly that.
-      if Array::length(frozen_errors) == 0 {
-        push_error_strings(collect_unlowered_perform_optional_errors(stmts), frozen_errors)
-      } else {
-        ()
-      }
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.
       check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)

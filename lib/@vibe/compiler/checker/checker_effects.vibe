@@ -92,7 +92,8 @@ export enum EffectError {
   // source parser. EHandle does not retain its source effect name, so this
   // diagnostic deliberately names the structural problem instead.
   EEEmptyHandle;
-  EEPerformQuestionRequiresOptional(String, Int)
+  EEPerformQuestionRequiresOptional(String, Int);
+  EEPerformQuestionUnlowered(String, Int)
 }
 
 //# Functions
@@ -209,6 +210,18 @@ export fn effect_error_to_string(err: EffectError) -> String {
     EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect",
     EEPerformQuestionRequiresOptional(operation, off) => {
       let body = String::concat("`perform?` requires optional `allows ", String::concat(operation, "?`; write that grade, or use plain `perform`"))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
+    // #2145: the grade is right and the checker types it as `Attempt`, but
+    // codegen cannot emit `perform?`. Reported from the same site as the
+    // grade error and mutually exclusive with it, so the sharper message wins
+    // by construction rather than by ordering.
+    EEPerformQuestionUnlowered(operation, off) => {
+      let body = String::concat("`perform?` is not lowered yet (#2145): the checker types it as `Attempt[T, String]`, but code generation cannot emit it. Use a REQUIRED capability and plain `perform` -- drop the `?` from `allows ", String::concat(operation, "?` and from the `perform` -- and handle the failure with `try`/`handle` instead of matching `Attempt`."))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
@@ -2682,7 +2695,12 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             if name == "perform?" && Array::length(args) == 1 {
               match perform_question_op_name(Array::get(args, 0)) {
                 Some(op_name) => if decl_authorizes_optional_op(declared, op_name) {
-                  ()
+                  // The grade is right; the remaining problem is that codegen
+                  // does not lower `perform?` at all (#2145). This pass already
+                  // walks every expression and already stops on `perform?`, so
+                  // it costs nothing here -- and it carries `call_off`, which a
+                  // separate scan could not.
+                  Array::push(errors, EEPerformQuestionUnlowered(op_name, call_off))
                 } else {
                   Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
                 },

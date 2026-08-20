@@ -17,16 +17,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-STAGE2="${SIBLING_SCOPE_STAGE2:-}"
-if [ -n "$STAGE2" ]; then
-  [ -f "$STAGE2" ] || { echo "package-sibling-scope: SIBLING_SCOPE_STAGE2=$STAGE2 does not exist" >&2; exit 1; }
-else
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    [ -s "${gen}stage2.wasm" ] && { STAGE2="${gen}stage2.wasm"; break; }
-  done
-  [ -n "${STAGE2:-}" ] || STAGE2="bootstrap/seed/compiler.wasm"
-  [ -s "$STAGE2" ] || { echo "package-sibling-scope: no compiler available" >&2; exit 1; }
-fi
+. "$(dirname "$0")/resolve_stage2.sh"
+STAGE2="$(resolve_stage2 package-sibling-scope "${SIBLING_SCOPE_STAGE2:-}")" || exit 1
 
 # Under the preopen dir: the loader resolves these paths from inside wasm.
 WORK="$ROOT_DIR/_build/_sibling_scope"

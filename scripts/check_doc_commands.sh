@@ -103,9 +103,27 @@ for root in ("scripts", "lib", "tests", "eval", "install"):
             if not name.endswith((".sh", ".mjs", ".js", ".vibe", ".vibex", ".pkl", ".ts", ".toml")):
                 continue
             try:
-                read_env |= set(ENVPAT.findall(open(os.path.join(dp, name), encoding="utf-8", errors="replace").read()))
+                body = open(os.path.join(dp, name), encoding="utf-8", errors="replace").read()
             except OSError:
-                pass
+                continue
+            # Drop WHOLE-LINE comments before harvesting names. A comment does
+            # not read a variable either -- `# VIBE_X was removed` in some
+            # adjacent script kept a stale documented command green, which is
+            # the same self-certification as reading .md, one file over
+            # (#2138 review).
+            #
+            # Whole-line only, deliberately. Stripping from the first `#`
+            # anywhere would also cut `X="a#b$VIBE_Y"`, dropping a REAL read
+            # and turning a live variable into a false failure. Over-reporting
+            # is the safe direction for this gate; under-reporting is not, so
+            # the conservative rule is the one that cannot invent findings.
+            kept = []
+            for ln in body.split("\n"):
+                t = ln.lstrip()
+                if t.startswith("#") or t.startswith("//"):
+                    continue
+                kept.append(ln)
+            read_env |= set(ENVPAT.findall("\n".join(kept)))
 try:
     read_env |= set(ENVPAT.findall(open("Taskfile.pkl", encoding="utf-8").read()))
 except OSError:
