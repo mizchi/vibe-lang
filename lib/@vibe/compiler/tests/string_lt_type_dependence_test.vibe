@@ -172,12 +172,28 @@ test "2128: a lambda's tuple parameter compares contents" {
   assert(!f(("buf", "acc_bits")))
 }
 
-test "2128 (deferred): TWO container hops still compare addresses" {
-  // An array OF arrays of tuples. This pass reads one recorded shape; it does
-  // not walk a chain of them, so the inner array's element shape is not
-  // reachable from the outer name. #2128 keeps this.
+test "2128: TWO container hops compare contents" {
+  // An array OF arrays of tuples. This used to be an ADDRESS comparison, and
+  // this test asserted `a < b` -- the wrong answer -- to pin that.
+  //
+  // The pass still reads one recorded shape and never walks a chain. What was
+  // missing is that `Array::get` recorded NO shape for its result, so the outer
+  // name's shape sat one level too deep to be read and the inner name had none
+  // at all. `dtd_elem_projecting_shape` peels exactly one `[..]` per call, so a
+  // chain of reads peels a chain without anything walking one.
   let xs = [[("buf", "acc_bits")]]
   let inner = Array::get(xs, 0)
   let (a, b) = Array::get(inner, 0)
-  assert(a < b)
+  assert(!(a < b))
+  assert(b < a)
+}
+
+test "2128: THREE container hops compare contents" {
+  // One hop per call composes, so depth is not a special case.
+  let deep = [[[("buf", "acc_bits")]]]
+  let d1 = Array::get(deep, 0)
+  let d2 = Array::get(d1, 0)
+  let (c, d) = Array::get(d2, 0)
+  assert(!(c < d))
+  assert(d < c)
 }

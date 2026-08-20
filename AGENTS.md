@@ -484,14 +484,21 @@ completion / signature help を提供する。詳細は
   `Array[(String, String)]` の要素、tuple を返す関数、入れ子 tuple、
   注釈付き tuple 引数 (lambda の引数を含む) — いずれも内容比較になる。
 
-  **残るのは container を 2 段またぐ場合** (`Array[Array[(String, String)]]` の
-  ように、記録された shape を鎖状に辿る必要がある形)。このパスは記録済み shape
-  を 1 つ読むだけで鎖は辿らない。そこは今も raw compare で**診断は出ない**ので、
-  順序が綴りに依らず canonical であるべき場所 (path の並びなど) では
-  `@vibe/core` の `str_lt` を使うこと — compiler 内の `sort_module_diagnostics`
-  / `plan_module_order` がそうしている。踏んだときの回避は 3 つとも有効:
+  **container を複数段またぐ場合も修正済み** (`Array[Array[(String, String)]]`、
+  `Array[Array[Array[...]]]`)。この節はかつて「記録された shape を鎖状に辿る
+  必要があるので残る」と書いていたが、原因は鎖ではなかった — `Array::get` が
+  結果に shape を**何も記録しなかった**ため、外側の名前の shape が 1 段深すぎて
+  読めず、内側の名前には shape が無かった。`dtd_elem_projecting_shape` が
+  1 呼び出しにつき `[..]` をちょうど 1 段剥がすので、読みの連鎖がそのまま
+  shape の連鎖になる (パス自体は今も鎖を辿らない)。実測: 2 段・3 段とも
+  修正前は `true` (アドレス比較)、修正後は `false` (内容比較)。
+  回帰は `lib/@vibe/compiler/tests/string_lt_type_dependence_test.vibe` (16 tests)。
+
+  型が届かない経路が万一残っていた場合の回避は 3 つとも有効:
   `(a: String, b: String)` の関数に渡す・`let a2: String = a` で注釈し直す・
-  `String::concat(a, "")` を通す。
+  `String::concat(a, "")` を通す。順序が綴りに依らず canonical であるべき場所
+  (path の並びなど) で `@vibe/core` の `str_lt` を使う
+  (`sort_module_diagnostics` / `plan_module_order`) のは今も安全側の選択。
 
   この節は長らく「MoonBit の `String <` は length-first」と書き、根拠に #594 で
   退役した `src/codegen/wasm_codegen_data.mbt` を挙げていた。length-first が

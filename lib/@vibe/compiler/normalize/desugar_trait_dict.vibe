@@ -2987,6 +2987,32 @@ fn dtd_elem_preserving_shape(fname: String, cargs: Array[Expr], struct_sets: Arr
   }
 }
 
+/// #2128: `Array::get(xs, i)` / `xs[i]` -> the shape of the array's ELEMENT.
+///
+/// The sibling of `dtd_elem_preserving_shape`: that one answers for calls whose
+/// result is another array of the same element (`filter`, `slice`, `reverse`,
+/// `concat`), this one for the call that takes an element OUT. Without it a
+/// binding of an array read recorded "" -- "not composite, stop" -- which is
+/// why two container hops (`Array[Array[(String, String)]]`) fell back to an
+/// address comparison: the outer name's shape was one level too deep to be read
+/// and the inner name had no shape at all.
+///
+/// One hop per call, so it composes: each `Array::get` peels one `[..]`, and a
+/// chain of them peels a chain. Nothing here walks a chain itself.
+fn dtd_elem_projecting_shape(fname: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let projects = fname == "Array::get" || fname == "__index"
+  if projects && Array::length(cargs) == 2 {
+    let sh = infer_shape(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
+    if String::starts_with(sh, "[") {
+      shape_inner(sh)
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+}
+
 /// #1880: the scalar type of an arithmetic/literal expression, for a `for-in`
 /// BODY only.
 ///
@@ -3196,8 +3222,15 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
             // #1880: checked AFTER the two lookups above, so a user binding
             // with one of these names still wins.
             let preserved = dtd_elem_preserving_shape(fname, cargs, struct_sets, var_types, fn_returns)
+            let projected = if String::length(preserved) > 0 {
+              ""
+            } else {
+              dtd_elem_projecting_shape(fname, cargs, struct_sets, var_types, fn_returns)
+            }
             if String::length(preserved) > 0 {
               preserved
+            } else if String::length(projected) > 0 {
+              projected
             } else {
               match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
                 Some(t) => t,
