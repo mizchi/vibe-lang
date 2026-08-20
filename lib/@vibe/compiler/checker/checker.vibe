@@ -112,7 +112,7 @@ fn off_marker_len(off: Int, len: Int) -> String {
 /// instead of falling through to the synthetic `0:0` LSP range. Only
 /// rewrites errors that still have no side-channel marker. Exported for
 /// checker_stmt's top-level SLet path (the leftover `fn f() -> Int { "s" }`).
-export fn attach_unlocated_return_fn_marker(errors: Array[String], from: Int, name: String) -> Unit {
+export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, name: String) -> Unit {
   if String::length(name) == 0 {
     ()
   } else {
@@ -120,7 +120,16 @@ export fn attach_unlocated_return_fn_marker(errors: Array[String], from: Int, na
     let mut i = from
     while i < n {
       let msg = Array::get(errors, i)
-      if String::starts_with(msg, "return type mismatch") && String::index_of(msg, " [@") < 0 {
+      // #1941: `binding type mismatch` joins `return type mismatch` here. A
+      // top-level `let a: Int = "x"` anchors on the VALUE, and a literal value
+      // has no offset -- so that one diagnostic came out with no position at
+      // all, while the same code inside a function was located (the local lane
+      // goes through `ascribe_wrap`, which carries the binder offset).
+      // `find_fn_anchor_off` already prefers `fn name` then `let name`, so the
+      // binder is recoverable from the name alone.
+      let unlocated = String::index_of(msg, " [@") < 0
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ")
+      if anchorable && unlocated {
         Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
       }
       i = i + 1
@@ -4400,7 +4409,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       ELet(name, val, body, _) => {
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
-        attach_unlocated_return_fn_marker(errors, err_before, name)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
         // #938 value restriction: a builder is a MUTABLE container, so its
         // element var must stay un-quantified — generalizing
         // `CtNamed("ArrayBuilder", [v])` would re-instantiate a fresh v at
@@ -4428,7 +4437,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
       ELetMut(name, val, body, _) => {
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
-        attach_unlocated_return_fn_marker(errors, err_before, name)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
         // `loop` desugars to `let mut __loop_result = 0; while true { ...
         // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
         // the 0 is only a slot placeholder, but binding its CtInt here pinned
@@ -4459,7 +4468,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         let (tv, c1b) = fresh_var(c1)
         let err_before = Array::length(errors)
         let (vt, ns, nc) = ce(val, env_bind(cenv, name, tv), defs, s1, c1b, errors, tytab, capture, lane)
-        attach_unlocated_return_fn_marker(errors, err_before, name)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
         let s2 = match unify(tv, vt, ns) {
           Some(su) => su,
           None => ns

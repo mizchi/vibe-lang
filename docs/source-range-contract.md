@@ -142,3 +142,23 @@ An offset-less span is reported as `null` for a capture and `-1` for a hit
 span (JSON), or `<synthetic>` (`vibe grep` text, #2035), and a still-unlocated diagnostic as the empty LSP range `0:0-0:0`
 with `data.synthetic: true` (#2050). Those are the honest markers; a plausible
 `0:0` is not one, and none of the surfaces above emit one any more.
+
+## Every type error carries a position
+
+A diagnostic with **no** position fails this contract more completely than one
+in the wrong unit: there is nothing for a client to convert. Two shapes used to
+escape, both because a literal value carries no offset slot in the AST:
+
+- a **local** `let a: Int = "x"` — closed by anchoring the synthetic ascription
+  call on the binder name (`ascribe_wrap`),
+- a **top-level** `let a: Int = "x"` — closed by tagging the binder name with
+  the `[@fn=NAME]` side channel, which `find_fn_anchor_off` already resolved for
+  `fn name` *and* `let name`. The top-level lane keeps its annotation on `SLet`
+  rather than going through `ascribe_wrap`, which is why it needed the second
+  mechanism rather than the first.
+
+The value's own offset still wins wherever it exists — `let a: Int = f()`
+reports at `f()`, because that is where the edit goes. The binder is only the
+fallback. Both are pinned by `scripts/check_source_range_contract.sh` checks 9
+and 10, the second of which asserts the *failing* binder is named rather than
+the first `let` in the file.

@@ -163,8 +163,35 @@ else
   note "the LSP JSON start is not the byte column"
 fi
 
+# 9. EVERY type error carries a position (#1941). The contract is about which
+#    UNIT a position is in, and a diagnostic with no position at all fails it
+#    more completely than a wrong unit does -- there is nothing for a client to
+#    convert. The shape that used to escape: a top-level `let` whose value is a
+#    LITERAL. Literals carry no offset slot, so the value-anchored path had
+#    nothing to report; the binder name is the fallback. The same code inside a
+#    function was already located, which is what made the gap easy to miss.
+cat > "$WORK/unlocated.vibe" <<'UNLOC'
+let x: Int = 1
+let y: Int = 2
+let bad_one: Int = "not an int"
+
+fn main() -> Unit { }
+UNLOC
+unloc="$(run "$WORK/unlocated.vibe" unloc VIBE_CHECK_ONLY=1; cat "$WORK/unloc.diag" 2>/dev/null || true)"
+if grep -qE 'unlocated\.vibe: line 3:' <<<"$unloc"; then
+  note "a top-level let bound to a literal reports a position, on its own line"
+else
+  bad "top-level let + literal value: got [$unloc], want a 'line 3:' position"
+fi
+# ...and it must name the RIGHT binder, not merely the first `let` in the file.
+if grep -qF 'binding type mismatch for bad_one' <<<"$unloc"; then
+  note "the located binder is the failing one"
+else
+  bad "top-level let + literal value: got [$unloc], want it to name 'bad_one'"
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "source-range-contract: see docs/source-range-contract.md -- a surface changed its position unit" >&2
   exit 1
 fi
-echo "source-range-contract: ok (8 checks; byte col $BYTE_COL, codepoint col $CP_COL, UTF-16 col $want_u16 all distinct)"
+echo "source-range-contract: ok (10 checks; byte col $BYTE_COL, codepoint col $CP_COL, UTF-16 col $want_u16 all distinct)"

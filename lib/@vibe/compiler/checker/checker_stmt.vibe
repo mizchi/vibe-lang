@@ -56,7 +56,7 @@ import @vibe/compiler/core {
 
 import ./checker.vibe {
   TypedOccurrenceRoleLaneCapture,
-  attach_unlocated_return_fn_marker,
+  attach_unlocated_decl_name_marker,
   bind_function_dependency_contracts,
   check_assignable,
   check_expr,
@@ -1452,7 +1452,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
         }
-        attach_unlocated_return_fn_marker(errors, err_before, name)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).
         let (ns, t) = match ann {
@@ -1468,7 +1468,12 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // = f()` is wrong at `f()`, and that is also where the edit goes.
             // -1 (unlocated, as before) for a literal RHS -- EInt/EString/
             // EBool/EFloat carry no offset in the AST.
+            let ann_err_before = Array::length(errors)
             let ns_b = check_assignable(resolved_te, actual_v, ns0, errors, String::concat("binding type mismatch for ", name), top_stmt_expr_off(val))
+            // #1941: a literal value carries no offset, so anchor the binder
+            // name instead of emitting the one unlocated diagnostic left in
+            // this lane.
+            attach_unlocated_decl_name_marker(errors, ann_err_before, name)
             // Prefer the RHS's real instantiated type over the erasing bare
             // annotation when `resolved_te` is a bare generic-struct
             // reference that `actual_v` already concretely instantiates, so a
@@ -1503,7 +1508,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         Array::push(errors, top_level_reject_msg("top-level `let mut` bindings are not allowed; move it into fn main", val))
         let err_before = Array::length(errors)
         let (vt, ns0, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
-        attach_unlocated_return_fn_marker(errors, err_before, name)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
         let ns = match ann {
           Some(te) => check_assignable(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, String::concat("binding type mismatch for ", name), 0 - 1),
           None => ns0
