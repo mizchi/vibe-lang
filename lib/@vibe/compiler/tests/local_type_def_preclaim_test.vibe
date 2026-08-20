@@ -1,0 +1,155 @@
+//# Imports
+
+// #2125: `defs` was filled in WALK ORDER, so a type expression resolved before
+// its own declaration was registered fell through
+// `resolve_type_expr_shadowed`'s `None` branch to `CtNamed(name, [])` --
+// spelled exactly like an un-instantiated generic formal, which
+// `check_assignable` must tolerate so as not to over-reject polymorphic code.
+// A locally declared type name therefore stopped being checked at every site
+// reached before its declaration.
+//
+// `preclaim_local_type_defs` (checker/checker_stmt.vibe) claims a `defs` slot
+// for every enum / struct / suberror declared in the statement list before the
+// walk starts, so the head always resolves; each declaration's arm then
+// `Array::set`s its own slot instead of pushing.
+//
+// These tests pin both halves of that change:
+//   - the behavioural win -- a forward reference to an annotated top-level
+//     binding is type-checked again, and a self-recursive type agrees with
+//     itself across the two sites that resolve the same payload text;
+//   - the reporting that now runs against the PLACEHOLDER defs the pre-pass
+//     installs (#1078 constructor-name collisions, duplicate declarations),
+//     which must keep firing in both declaration orders.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/compiler/codegen {
+  desugar_trait_dicts
+}
+
+//# Functions
+
+/// The first checker diagnostic for `source`, or "" when it type-checks.
+/// Positions are added by `locate_type_error` at the CLI boundary, so the
+/// payload here is the bare message.
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+/// As `first_check_error`, but with the derive desugar run first -- the shape
+/// the FS-compile lane checks. A duplicate `enum`/`struct` NAME is reported
+/// through the `T::equals` that `derive`/structural-equality generation emits
+/// per declaration, so it is only visible on this side of the desugar.
+fn first_desugared_check_error(source: String) -> String {
+  handle {
+    let stmts = parse_program(lex(source))
+    desugar_trait_dicts(stmts)
+    let _ = check_program(stmts)
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+//# The behavioural wins
+
+test "#2125: a self-recursive enum agrees with itself" {
+  // Before the pre-pass the payload text `T2` was resolved on BOTH sides of
+  // this enum's own `Array::push(defs, ..)`: the `TDEnum` read
+  // `CtNamed(T2, [])` (pattern destructuring) while the constructor signature
+  // read `CtEnum(T2)` (construction). They only agreed because a `CtNamed`
+  // head is tolerated.
+  let src = "enum T2 { A; B(String, T2) }\n\nfn f(t: T2) -> T2 {\n  match t {\n    A => t,\n    B(_, rest) => B(\"x\", rest)\n  }\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2125: a self-recursive enum's payload types are still enforced" {
+  // The other direction of the same agreement: swapping the payloads must be
+  // rejected, so the fix is not "the recursive slot became a wildcard".
+  let src = "enum T2 { A; B(String, T2) }\n\nfn f(t: T2) -> T2 {\n  match t {\n    A => t,\n    B(_, rest) => B(rest, \"x\")\n  }\n}\n"
+  inspect(first_check_error(src), content = "argument type mismatch for B: expected String, got T2")
+}
+
+test "#2125: a self-recursive struct resolves its own field type" {
+  let src = "struct Node { label: String; kids: Array[Node] }\n\nfn label_of(n: Node) -> String {\n  n.label\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2125: a forward reference to an annotated top-level binding is checked" {
+  // The silent-wrong this issue is about, reachable from ordinary source: the
+  // top-level `let` hoist (checker_stmt.vibe) resolves `rows`'s annotation
+  // before the walk reaches `enum Color`, so `Color` used to become a
+  // `CtNamed` that unified with anything at an assignable position.
+  let src = "enum Color { Red }\n\nenum Other { X }\n\nfn a() -> Other {\n  rows\n}\n\nlet rows: Color = Color::Red\n"
+  inspect(first_check_error(src), content = "return type mismatch: expected Other, got Color [@fn=a]")
+}
+
+test "#2125: the same program with the binding declared first is unchanged" {
+  let src = "enum Color { Red }\n\nenum Other { X }\n\nlet rows: Color = Color::Red\n\nfn a() -> Other {\n  rows\n}\n"
+  inspect(first_check_error(src), content = "return type mismatch: expected Other, got Color [@fn=a]")
+}
+
+//# Reporting that runs against the placeholder defs
+
+test "#1078: a constructor-name collision is reported in both orders" {
+  // `find_other_enum_declaring_variant` scans `defs`, which now holds
+  // PLACEHOLDER `TDEnum`s (empty variant lists) for declarations the walk has
+  // not reached yet. The scan runs from each enum's own arm, after that arm
+  // filled its slot, so the later declaration still sees the earlier one's
+  // real variants -- a collision is caught whichever enum is written first.
+  let first = "enum E1 { Mk; Other1 }\n\nenum E2 { Mk; Other2 }\n"
+  let second = "enum E2 { Mk; Other2 }\n\nenum E1 { Mk; Other1 }\n"
+  inspect(String::contains(first_check_error(first), "constructor name collision: Mk"), content = "true")
+  inspect(String::contains(first_check_error(second), "constructor name collision: Mk"), content = "true")
+}
+
+test "#2125: a duplicate local enum name is still reported" {
+  // The pre-pass claims ONE slot for a repeated name (`typedef_index_of` is
+  // first-match-wins, mirroring `find_typedef`), and both arms `Array::set`
+  // it. Duplicate reporting is independent of that slot and must keep firing.
+  let src = "enum D { A1 }\n\nenum D { B1 }\n"
+  inspect(first_desugared_check_error(src), content = "duplicate declaration: D::equals")
+}
+
+test "#2125: a duplicate local struct name is still reported" {
+  let src = "struct S { x: Int }\n\nstruct S { y: Int }\n"
+  inspect(first_desugared_check_error(src), content = "duplicate declaration: S::equals")
+}
+
+test "#2147 review: a repeated type name keeps first-declaration-wins" {
+  // Codex on #2147: the arms `Array::set` their slot, so a declaration must
+  // own the slot it fills. Taking any same-named slot let the SECOND
+  // declaration replace the FIRST's definition -- measured on the first
+  // enforcement commit, `s.a` reported `unknown field 'a' on struct S`
+  // although the first declaration declares it. `find_typedef` is
+  // first-match-wins, and this pins that it still is.
+  let src = "struct S {\n  a: Int\n}\n\nstruct S {\n  b: String\n}\n\nfn f(s: S) -> Int {\n  s.a\n}\n"
+  inspect(first_check_error(src), content = "")
+  let shadowed = "struct S {\n  a: Int\n}\n\nstruct S {\n  b: String\n}\n\nfn f(s: S) -> String {\n  s.b\n}\n"
+  inspect(first_check_error(shadowed), content = "unknown field 'b' on struct S")
+}
+
+//# The deliberate omission
+
+test "#2125: a type alias is deliberately NOT pre-claimed" {
+  // An alias resolves THROUGH to its target, so a placeholder body would be a
+  // lie -- every reference reached before the real declaration would silently
+  // retarget. An enum/struct placeholder only needs its head. The cost is
+  // that a forward reference to a LATER alias stays unresolved, i.e. this
+  // program is still accepted although `rows` is a String and `a` returns
+  // Int. Pinned deliberately: change this expectation only together with a
+  // decision about how an alias head should be pre-claimed.
+  let src = "fn a() -> Int {\n  rows\n}\n\nlet rows: MyAlias = \"s\"\n\ntype MyAlias = String\n"
+  inspect(first_check_error(src), content = "")
+}

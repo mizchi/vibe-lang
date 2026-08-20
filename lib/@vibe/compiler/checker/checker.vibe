@@ -32,6 +32,7 @@ import @vibe/compiler/core {
   subst_apply,
   subst_bounds_for,
   trait_method_sig_binders_deep,
+  type_constructor_name,
   type_implements_trait,
   type_name_has_iterator_impl,
   type_to_string,
@@ -55,7 +56,7 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  collect_unknown_type_names, collect_unknown_type_names_regionwise, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import ./checker_spawnable.vibe {
@@ -128,12 +129,200 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
       // `find_fn_anchor_off` already prefers `fn name` then `let name`, so the
       // binder is recoverable from the name alone.
       let unlocated = String::index_of(msg, " [@") < 0
-      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ")
+      // #2125: `unknown type` is reported from a function literal's parameter
+      // and return annotations, which carry no offset of their own -- so it
+      // anchors on the declaration name exactly like the two above.
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `")
       if anchorable && unlocated {
         Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
       }
       i = i + 1
     }
+  }
+}
+
+/// #2125: the env key prefix under which an `impl` method's body carries the
+/// trait type parameters its signature may legally leave unbound. One key per
+/// NAME, bound only around the value being checked -- never into the
+/// environment the statement returns -- so it cannot reach a published or
+/// cached env.
+let trait_erased_type_param_prefix: String = "__trait_erased_tp__"
+
+/// True when some entry of `methods` declares a method named `method_name`.
+fn trait_methods_declare(methods: Array[(String, Array[TypeExpr], TypeExpr)], method_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(methods) && !found {
+    let (mname, _, _) = Array::get(methods, i)
+    if mname == method_name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// True when `env` records an impl of `trait_name` for the type named
+/// `type_name` -- the binder that licenses the trait's erased parameters
+/// inside that impl's methods.
+fn env_has_trait_impl_for(env: TypeEnv, trait_name: String, type_name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_constructor_name(target) == type_name) || env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_constructor_name(target) == type_name) || env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvMutCell(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvTypeDefs(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvCached(_, _, rest) => env_has_trait_impl_for(rest, trait_name, type_name),
+    EnvFlat(_) => false
+  }
+}
+
+fn collect_impl_erased_type_params(chain: TypeEnv, full: TypeEnv, type_name: String, method_name: String, out: Array[String]) -> Unit {
+  match chain {
+    EnvEmpty => (),
+    EnvBind(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvTraitDef(trait_name, params, _, methods, rest, header_params, _) => {
+      if trait_methods_declare(methods, method_name) && env_has_trait_impl_for(full, trait_name, type_name) {
+        let mut pi = 0
+        while pi < Array::length(params) {
+          Array::push(out, Array::get(params, pi))
+          pi = pi + 1
+        }
+        let mut hi = 0
+        while hi < Array::length(header_params) {
+          Array::push(out, Array::get(header_params, hi))
+          hi = hi + 1
+        }
+      } else {
+        ()
+      }
+      collect_impl_erased_type_params(rest, full, type_name, method_name, out)
+    },
+    EnvTraitImpl(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvTraitImplGen(_, _, _, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvMutCell(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvTypeDefs(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvCached(_, _, rest) => collect_impl_erased_type_params(rest, full, type_name, method_name, out),
+    EnvFlat(_) => ()
+  }
+}
+
+/// #2125: bind the erased type parameters an IMPL METHOD's signature may
+/// legally spell without a binder of its own -- the `T` of
+/// `trait Iterator[T]` in `impl Iterator for LazyIter { next(self) ->
+/// Option[(T, LazyIter)] }`. The uniform representation erases those
+/// parameters and `relax_unknown_named` relaxes every use to `CtUnknown`, so
+/// they resolve to nothing and look exactly like a typo.
+///
+/// Codex on #2147 (round 2): PROVENANCE, not a name shape. `parse_impl_methods`
+/// lowers an impl to `let <Type>::<method> = (..) -> ..` emitted after its
+/// `SImpl`, so the impl is already in the env when the method is checked --
+/// this asks the env the question the impl answers: does a trait in scope
+/// declare a method of THIS name, carry type parameters, and have an impl for
+/// THIS type? A qualified name alone is not that question, and treating it as
+/// one exempted every associated function: `fn Array::bad(x: T) -> Int { 1 }`
+/// compiled clean whenever any in-scope trait declared a `T` (measured).
+export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> TypeEnv {
+  let sep = String::index_of(binding_name, "::")
+  if sep < 0 {
+    env
+  } else {
+    let type_name = String::substring(binding_name, 0, sep)
+    let method_name = String::substring(binding_name, sep + 2, String::length(binding_name))
+    let names = array_empty()
+    collect_impl_erased_type_params(env, env, type_name, method_name, names)
+    let mut out = env
+    let mut i = 0
+    while i < Array::length(names) {
+      out = env_bind(out, String::concat(trait_erased_type_param_prefix, Array::get(names, i)), CtUnit)
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #2125: report every type name in `te` that resolves to NOTHING, so a typo
+/// stops behaving as a wildcard. `resolve_type_expr_shadowed` turns such a
+/// name into `CtNamed(name, [])` -- the same shape as an un-instantiated
+/// generic formal, whose unify failures `check_assignable` must tolerate so as
+/// not to over-reject polymorphic code.
+///
+/// Every exemption below is a BINDER in scope for this annotation, which is
+/// the whole rule -- an unresolved name that no binder introduces is a typo:
+///
+///   1. a type formal. `shadow` is not the authority on what one is: a lambda
+///      nested in a generic function resolves its own parameters with its OWN
+///      (empty) `tparams`, so the enclosing `T` is invisible there. The env is
+///      -- whichever binder introduced the formal bound it to a `CtVar`, which
+///      is exactly what `resolve_tparams_in` reads.
+///   2. a trait's own erased type parameter, and only where an actual IMPL
+///      binds it -- see `trait_erased_type_param_env`, which asks the env for
+///      the impl rather than inferring one from the binding's name.
+///
+/// Those two are TYPES, so they are exempt wherever a type may appear. The
+/// other two binders are NOT types, so their exemption is positional as well
+/// as name-based -- `collect_unknown_type_names_regionwise` accepts them only
+/// in a region-argument slot (Codex round 3 on #2147; before that,
+/// `fn f(x: r) -> Int with r { 1 }` accepted both `f(1)` and `f("s")`):
+///
+///   3. a REGION TOKEN bound by an enclosing `region r { .. }` (ADR-0090),
+///      spelled in the region slot of `MutList[Int, r]`. Recognised by the
+///      rigid skolem the region binder binds it to (`#region_<n>`, a name no
+///      source can spell), NOT by "some value has this name" -- that would let
+///      `let Intt = 1` excuse `x: Intt`.
+///   4. a region ROW VARIABLE declared by this very signature:
+///      `fn fill(l: MutList[Int, r]) -> Unit with r`. Nothing binds `r` as a
+///      value there; the binder is the row, so the call site passes its
+///      variables in `row_binders`.
+export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  // Which of the unresolved names are region-ish binders at all. Asked over
+  // the name candidates first because the positional walk below takes a set,
+  // and `#region_` skolem membership is an env question this file owns.
+  let candidates = array_empty()
+  collect_unknown_type_names(te, defs, shadow, candidates)
+  let region_binders = array_empty()
+  let mut ci = 0
+  while ci < Array::length(candidates) {
+    let candidate = Array::get(candidates, ci)
+    let is_region_token = match env_lookup(env, candidate) {
+      Some(t) => match t {
+        CtNamed(bound_name, _) => String::starts_with(bound_name, "#region_"),
+        _ => false
+      },
+      None => false
+    }
+    if (is_region_token || string_array_has(row_binders, candidate)) && !string_array_has(region_binders, candidate) {
+      Array::push(region_binders, candidate)
+    } else {
+      ()
+    }
+    ci = ci + 1
+  }
+  let out = array_empty()
+  collect_unknown_type_names_regionwise(te, defs, shadow, region_binders, out)
+  let mut i = 0
+  while i < Array::length(out) {
+    let name = Array::get(out, i)
+    let is_type_formal = match env_lookup(env, name) {
+      Some(t) => match t {
+        CtVar(_) => true,
+        _ => false
+      },
+      None => false
+    }
+    let trait_erased_by_impl = match env_lookup(env, String::concat(trait_erased_type_param_prefix, name)) {
+      Some(_) => true,
+      None => false
+    }
+    if is_type_formal || trait_erased_by_impl {
+      ()
+    } else {
+      Array::push(errors, String::concat(String::concat(String::concat("unknown type `", name), "` in "), where_label))
+    }
+    i = i + 1
   }
 }
 
@@ -1888,6 +2077,39 @@ fn effect_label_is_exempt(lbl: String) -> Bool {
   } else {
     true
   }
+}
+
+/// #2147 review (round 2): the row entries that are effect VARIABLES -- the
+/// only entries a row declares as binders. Mirrors `is_effect_var_name`
+/// (core/types.vibe), which is file-private there; three other copies in the
+/// tree already spell it out the same way.
+fn row_label_is_variable(label: String) -> Bool {
+  let len = String::length(label)
+  if len == 1 {
+    // A source-level effect variable: a single lowercase letter (`with e`).
+    String::char_code_at(label, 0) >= 97 && String::char_code_at(label, 0) <= 122
+  } else if len >= 2 {
+    // A FRESH effect variable minted by `instantiate` (`$N`).
+    String::char_code_at(label, 0) == 36
+  } else {
+    false
+  }
+}
+
+fn row_variable_labels(row: Option[String]) -> Array[String] {
+  let out = array_empty()
+  let labels = row_labels(row)
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    if row_label_is_variable(label) {
+      Array::push(out, label)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn row_labels(row: Option[String]) -> Array[String] {
@@ -7463,6 +7685,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // equality. `env` already binds each formal to a fresh `CtVar` (see
             // the EFn arm's `tp_env`), so the mapping is available right here.
             let resolved = resolve_tparams_in(resolve_type_expr(ann_te, defs), env)
+            // #2125: a body-level `let y: Intt = ..` annotation. `shadow` is
+            // empty here by construction (the ascription lambda carries no
+            // formals of its own); the env is what knows the enclosing
+            // declaration's, which is exactly the #2130 mapping above.
+            report_unknown_type_names(ann_te, defs, array_empty(), env, array_empty(), "a local let annotation", errors)
             let actual = subst_apply(ns0, at)
             // #981: `check_assignable` now runs the #844 same-name concrete
             // `CtNamed` check itself (its tolerate branch calls
@@ -8637,6 +8864,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut fn_env = env_bind(tp_env, "__capture_boundary__", CtUnit)
       let mut s1 = s0
       let mut c1 = c0
+      // #2125: the row VARIABLES this signature's own effect row declares.
+      // A region row variable is declared there and nowhere else --
+      // `fn fill(l: MutList[Int, r]) -> Unit with r` binds `r` by the row, so
+      // the annotations below must not read it as a type name (#1863's helper
+      // signatures are exactly this).
+      //
+      // Codex on #2147 (round 2): VARIABLES only. A concrete label in the same
+      // row binds nothing, and taking the whole row let
+      // `fn f(x: Async) -> Int with Async` keep `Async` as a wildcard
+      // `CtNamed` (measured) -- the very shape this issue is about.
+      let declared_row_binders = row_variable_labels(effect)
       let param_types = array_empty()
       let mut pi = 0
       while pi < plen {
@@ -8654,6 +8892,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
             let resolved = resolve_type_expr_shadowed(te, defs, tparams)
             let pt2 = resolve_tparams_in(resolved, fn_env)
+            // #2125: an unresolvable name here becomes a wildcard at every
+            // call site, so `f("s")` and `f(1)` both pass the SAME slot.
+            //
+            // A `__dict_`-prefixed parameter is already rejected outright by
+            // the #1869 reserved-prefix rule (desugar_trait_dict.vibe), and
+            // that is the actionable edit -- reporting its annotation on top
+            // would only bury it, since a witness dictionary's type has no
+            // TypeDef either.
+            if String::starts_with(name, "__dict_") {
+              ()
+            } else {
+              report_unknown_type_names(te, defs, tparams, fn_env, declared_row_binders, String::concat(String::concat("parameter `", name), "`"), errors)
+            }
             (pt2, s1, c1)
           },
           None => {
@@ -8685,7 +8936,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // rejected it once the #941 railway-conflict report landed. CtUnknown
       // unifies with anything, so the EReturn check is inert for it.
       let annotated_body_env = match ret_ty {
-        Some(rte) => env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env)),
+        Some(rte) => {
+          // #2125: see the parameter arm above.
+          report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
+          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env))
+        },
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
       let (return_provenance, return_c) = fresh_var(c1)
