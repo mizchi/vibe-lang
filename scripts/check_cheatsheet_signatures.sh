@@ -328,20 +328,24 @@ for line in open(sys.argv[2]):
     if rd and ra and not compatible(rd, ra):
         mismatch.append((name, docsig, actual, f"returns {rd}", f"returns {ra}"))
         continue
-    # The documented effect column against the checker's row. Gated on the
-    # DOCUMENT naming exactly one effect: a blank column claims nothing, and a
-    # prose cell ("Console (legacy)") is not a row to compare. It is NOT gated on
-    # the actual row being non-empty -- that was the review's finding: dropping
-    # an effect from a builtin emptied `aeff` and skipped the comparison, so a
-    # row still promising `Process` passed. An absent actual row is a mismatch,
-    # and the loudest kind: the document claims an effect the checker does not
-    # have.
+    # The documented effect column against the checker's row.
+    #
+    # A prose cell ("Console (legacy)") yields no `doceff`, so it is not
+    # compared -- only a cell naming exactly one effect is a row to compare
+    # against. Beyond that the comparison is symmetric: see below.
     aeff = ""
     m_eff = re.search(r'\bwith\s+([A-Za-z_][A-Za-z0-9_:]*)\s*$', actual.strip())
     if m_eff:
         aeff = m_eff.group(1)
-    if doceff and doceff != aeff:
-        mismatch.append((name, docsig, actual, f"effect {doceff}",
+    # BOTH directions (#2138 review, two rounds). Gating on `doceff` alone
+    # closed only half of it: a documented effect the checker lacks was caught,
+    # but a checker row the DOCUMENT omits was not -- so a pure-looking entry
+    # that gained `with Process`, or an effect cell deleted from the I/O table,
+    # passed. Measured: making it symmetric flags nothing in the current
+    # corpus, and Red-tested by blanking `Console::write_stream`'s cell.
+    if (doceff or aeff) and doceff != aeff:
+        mismatch.append((name, docsig, actual,
+                         f"effect {doceff}" if doceff else "no documented effect",
                          f"effect {aeff}" if aeff else "no effect row"))
         continue
     # Arity plus return type still let a REORDERING through -- the review's

@@ -41,12 +41,15 @@ The diagnostic names the callee (`bump`) and its `line:col`. Fix: lift
 `4611686018427387903`. `max + 1` wraps to `-4611686018427387904` on
 every backend. Text that still says `2^61-1` / 62-bit is stale.
 
-## `perform?` typechecks; codegen does not
+## `perform?` is rejected by the checker
 
 `perform? Fs::read_file(p)` is typed as `Attempt[T, String]` on
-`allows Fs::read_file?`. Compiling it ICE's:
-`perform?` reached code generation unresolved. Do not put a
-`` ```vibe run `` block around it until lowering exists.
+`allows Fs::read_file?`, but codegen cannot lower it, so the checker
+rejects it (#2145): *"`perform?` is not lowered yet"*, naming the edit —
+drop the `?` from both the `allows` item and the `perform`.
+
+`vibe check` reports it too, so you see it before you build. Until #2145
+lands it ICE'd instead, after a clean check.
 
 ## Interpolation needs a renderer
 
