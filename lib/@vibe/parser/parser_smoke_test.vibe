@@ -443,3 +443,41 @@ test "reserved word: a non-word token still gets the plain expectation" {
   assert(String::contains(parse_error("let 42 = 1"), "expected binding name after 'let', got 'int'"))
   assert(String::contains(parse_error("fn f( -> Int { 1 }"), "expected parameter name, got '->'"))
 }
+
+// #2126 regression. The parser's six binder-error sites bind the offending
+// token in a catch-all arm (`token => ..`) and hand it to `tk_name`, which
+// OWNS its parameter (`tk_name tok drop 1` in the Perceus plan). Before the
+// codegen fix that binding carried no reference of its own, so the callee
+// released one the binder never held and freed the scrutinee -- an element of
+// the token array. A later read of the same index then got freed memory whose
+// tag matched no constructor, and `tk_name`'s exhaustive match reported it as
+// `RuntimeError: unreachable`, from a DIFFERENT function than the one that
+// bound it.
+//
+// The tree used to spell these `_ =>` plus a second `peek` to dodge it. That
+// workaround is gone, so these tests are what keeps it gone: they run the
+// RECOVERING parser, which continues past the first error and re-reads the
+// token array afterwards, which is what made the free observable.
+test "2126: the recovering parser survives a reserved word in a parameter" {
+  let src = "fn f(test: Int) -> Int { 1 }"
+  let (toks, starts, _ends) = lex_with_offsets(src)
+  let (_stmts, errs) = parse_program_recovering(toks, starts, src)
+  assert(Array::length(errs) > 0)
+  assert(String::contains(Array::get(errs, 0), "reserved word"))
+}
+
+test "2126: ...and at the other binder positions" {
+  let cases = [
+    "let test = 1",
+    "fn main() -> Unit { let test = 1 }",
+    "fn test() -> Int { 1 }"
+  ]
+  let mut i = 0
+  while i < Array::length(cases) {
+    let src = Array::get(cases, i)
+    let (toks, starts, _ends) = lex_with_offsets(src)
+    let (_stmts, errs) = parse_program_recovering(toks, starts, src)
+    assert(Array::length(errs) > 0)
+    i = i + 1
+  }
+}

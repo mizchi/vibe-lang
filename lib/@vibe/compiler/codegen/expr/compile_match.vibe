@@ -1399,6 +1399,25 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
       let bind_local = Array::length(local_names)
       emit_local_get(buf, scrut_local)
       emit_local_set(buf, bind_local)
+      // #2126: a catch-all binder ALIASES the scrutinee. Every other binding
+      // path dups (bind_match_pat dups each PBind payload, see its doc); this
+      // one did not, so the binding carried no reference of its own. Handing
+      // it to a callee that OWNS its parameter -- `tk_name tok drop 1`, and
+      // `tk_name` is not in the borrow_param set -- made the callee release a
+      // reference the binder never held, freeing the scrutinee out from under
+      // whatever still pointed at it. When the scrutinee is an array element
+      // (`match peek(toks, pos) { .. token => f(token) }`) that is the array's
+      // element: a later read of the same index gets freed memory whose tag
+      // matches no constructor, which an exhaustive match reports as
+      // `unreachable` and a match with a `_` arm consumes silently.
+      //
+      // The Perceus plan cannot cover this: it has no rows for the enclosing
+      // function at all, so no PaDup was ever planned to insert here.
+      if ctx.enable_rc && ctx.rc_dup_func_idx >= 0 {
+        emit_rc_dup_guarded(buf, bind_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
       Array::push(local_names, bname)
       ce(buf, __catch_body, local_names, Array::length(local_names), ctx, ld_catch)
     } else {
