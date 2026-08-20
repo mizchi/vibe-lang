@@ -3655,10 +3655,15 @@ main().catch((err) => {
       process.env.VIBE_OUTPUT;
     if (outputPath) {
       try {
-        fs.writeFileSync(`${outputPath}.diag`, "expression too deeply nested (stack overflow while type-checking)\n");
+        // #2134: this said only "expression too deeply nested", which sends
+        // the reader to look at their expressions. The overflow is just as
+        // often the TOP-LEVEL DECLARATION COUNT -- the checker recurses per
+        // statement, and `x + 0` bodies overflow at ~4000 declarations on
+        // node's default stack. Name both levers, and the knob.
+        fs.writeFileSync(`${outputPath}.diag`, "stack overflow while type-checking: either one expression nests too deeply, or the file has too many top-level declarations (the checker recurses once per statement). Split the file, or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.\n");
       } catch (_) {}
     }
-    console.error("[vibe] stack overflow: expression too deeply nested");
+    console.error("[vibe] stack overflow while type-checking: one expression nests too deeply, or the file has too many top-level declarations. Split the file, or raise the host stack with VIBE_NODE_STACK_SIZE=<KB>.");
     process.exit(1);
   }
   // #cov: even a failed run (parse/type error, trap) exercised many branches

@@ -40,4 +40,43 @@ if [ -n "$VIBE_NODE_WASM_FLAGS" ]; then
   fi
 fi
 
+# #2134: node's default JS stack (~1 MB) is what caps a module's top-level
+# declaration count -- nothing in the compiler does. The checker recurses once
+# per top-level statement, so a VALID file stops compiling at ~1300
+# declarations (1200 ok, 1400 fail, 3/3 each way), and the SIZE of each
+# declaration is irrelevant: the bodies here are `x + 0`. The relationship is
+# linear in the stack -- `--stack-size=4000` moves the same ceiling to ~5000
+# declarations (3000 and 5000 ok, 8000 not).
+#
+# Measure this ONLY on content that has never compiled before. One successful
+# compile writes a persistent `_build/vibe_selfhost_module_header_v2_*` row,
+# and from then on that exact source compiles on the default stack -- so
+# re-probing a file you already got through reports a ceiling several times
+# too high (this cost three wrong numbers in #2134 before the cache was
+# spotted). scripts/check_declaration_scale.sh generates unique content per run.
+#
+# The value is bounded by the OS thread stack, because a --stack-size larger
+# than the thread's own stack makes node SEGFAULT instead of raising a
+# catchable RangeError -- turning a legible diagnostic into a crash. Half of
+# `ulimit -s` leaves room for the C++ frames V8 interleaves with JS ones.
+if [ -z "${VIBE_NODE_STACK_SIZE:-}" ]; then
+  vibe_ulimit_kb="$(ulimit -s 2>/dev/null || echo 8192)"
+  case "$vibe_ulimit_kb" in
+    ''|*[!0-9]*) VIBE_NODE_STACK_SIZE=4000 ;;
+    *)
+      vibe_half=$((vibe_ulimit_kb / 2))
+      if [ "$vibe_half" -lt 4000 ]; then
+        VIBE_NODE_STACK_SIZE="$vibe_half"
+      else
+        VIBE_NODE_STACK_SIZE=4000
+      fi
+      ;;
+  esac
+fi
+# Below node's own default (~984 KB) the flag would LOWER the ceiling, so only
+# raise it. `VIBE_NODE_STACK_SIZE=0` disables it (used by the gate's Red case).
+if [ "${VIBE_NODE_STACK_SIZE}" -gt 1200 ] 2>/dev/null; then
+  node_flags+=("--stack-size=${VIBE_NODE_STACK_SIZE}")
+fi
+
 exec node "${node_flags[@]}" "$PROJECT_ROOT/scripts/wasm_vibe_host_runner.js" "$@"
