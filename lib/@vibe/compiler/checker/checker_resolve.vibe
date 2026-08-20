@@ -203,9 +203,51 @@ fn is_wellknown_nominal_head(name: String) -> Bool {
 /// This is the separate question, asked where a declaration INTRODUCES an
 /// annotation and an error sink is in hand.
 export fn collect_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[String]) -> Unit {
+  collect_unknown_type_names_walk(te, defs, shadow, array_empty(), false, out)
+}
+
+/// `Array` and `Option` are structural heads that `resolve_type_expr_shadowed`
+/// special-cases before any lookup, so they are never unknown -- and their
+/// arguments are ELEMENT types, never a region slot.
+fn ty_head_is_structural(name: String) -> Bool {
+  name == "Array" || name == "Option"
+}
+
+fn type_name_list_contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2125 (Codex round 3 on #2147): as `collect_unknown_type_names`, but a name
+/// in `region_binders` is accepted AT A REGION-ARGUMENT POSITION and nowhere
+/// else.
+///
+/// A region token and a row variable are not types. Exempting them by NAME
+/// therefore re-opened this issue's own hole wherever one was written where a
+/// type belongs -- measured before this: `fn f(x: r) -> Int with r { 1 }`
+/// accepted both `f(1)` and `f("s")`, and `region r { let x: r = 1 }` accepted
+/// `let y: r = "s"` beside it.
+///
+/// The region slot is the LAST type argument of a non-structural application
+/// (`MutList[Int, r]`, `MutMap[K, V, r]`, `TaskGroup[T, r]`) -- the same
+/// last-argument convention `is_region_tagged_ty` reads in checker.vibe. A
+/// name in any other position is a type reference and is looked up like one.
+export fn collect_unknown_type_names_regionwise(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], region_binders: Array[String], out: Array[String]) -> Unit {
+  collect_unknown_type_names_walk(te, defs, shadow, region_binders, false, out)
+}
+
+fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], region_binders: Array[String], at_region_slot: Bool, out: Array[String]) -> Unit {
   match te {
     TyUnit => (),
-    TyName(name) => if is_shadowed_tyvar(shadow, name) {
+    TyName(name) => if is_shadowed_tyvar(shadow, name) || (at_region_slot && type_name_list_contains(region_binders, name)) {
       ()
     } else {
       match resolve_builtin(name) {
@@ -221,12 +263,17 @@ export fn collect_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow:
       }
     },
     TyApp(name, args) => {
-      for a in args {
-        collect_unknown_type_names(a, defs, shadow, out)
+      // Only this application's own LAST argument is a region slot; the flag
+      // never propagates further down, and each nested application recomputes
+      // it for its own arguments.
+      let last_index = Array::length(args) - 1
+      let head_takes_region_slot = !ty_head_is_structural(name)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_unknown_type_names_walk(Array::get(args, i), defs, shadow, region_binders, head_takes_region_slot && i == last_index, out)
+        i = i + 1
       }
-      // `Array` and `Option` are structural heads that `resolve_type_expr_shadowed`
-      // special-cases before any lookup, so they are never unknown.
-      if name == "Array" || name == "Option" || is_shadowed_tyvar(shadow, name) {
+      if ty_head_is_structural(name) || is_shadowed_tyvar(shadow, name) {
         ()
       } else {
         match find_typedef(defs, name) {
@@ -239,15 +286,21 @@ export fn collect_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow:
         }
       }
     },
-    TyTuple(elems) => for e in elems {
-      collect_unknown_type_names(e, defs, shadow, out)
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_unknown_type_names_walk(Array::get(elems, i), defs, shadow, region_binders, false, out)
+        i = i + 1
+      }
     },
     TyFn(params, ret, _) => {
-      for p in params {
-        collect_unknown_type_names(p, defs, shadow, out)
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_unknown_type_names_walk(Array::get(params, i), defs, shadow, region_binders, false, out)
+        i = i + 1
       }
       let ret_box = Array::slice([ret], 0, 1)
-      collect_unknown_type_names(Array::get(ret_box, 0), defs, shadow, out)
+      collect_unknown_type_names_walk(Array::get(ret_box, 0), defs, shadow, region_binders, false, out)
     }
   }
 }

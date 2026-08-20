@@ -56,7 +56,7 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  collect_unknown_type_names, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  collect_unknown_type_names, collect_unknown_type_names_regionwise, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import ./checker_spawnable.vibe {
@@ -258,29 +258,57 @@ export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> Typ
 ///      (empty) `tparams`, so the enclosing `T` is invisible there. The env is
 ///      -- whichever binder introduced the formal bound it to a `CtVar`, which
 ///      is exactly what `resolve_tparams_in` reads.
-///   2. a REGION TOKEN bound by an enclosing `region r { .. }` (ADR-0090). It
-///      is an ordinary value binding spelled in type-argument position
-///      (`MutList[Int, r]`), so it reaches this walk looking like a type name.
-///      Recognised by the rigid skolem the region binder binds it to
-///      (`#region_<n>`, a name no source can spell), NOT by "some value has
-///      this name" -- that would let `let Intt = 1` excuse `x: Intt`.
-///   3. a region ROW VARIABLE declared by this very signature:
-///      `fn fill(l: MutList[Int, r]) -> Unit with r`. Nothing binds `r` as a
-///      value there; the binder is the row, so the call site passes its
-///      labels in `row_binders`.
-///   4. a trait's own erased type parameter, and only where an actual IMPL
+///   2. a trait's own erased type parameter, and only where an actual IMPL
 ///      binds it -- see `trait_erased_type_param_env`, which asks the env for
 ///      the impl rather than inferring one from the binding's name.
+///
+/// Those two are TYPES, so they are exempt wherever a type may appear. The
+/// other two binders are NOT types, so their exemption is positional as well
+/// as name-based -- `collect_unknown_type_names_regionwise` accepts them only
+/// in a region-argument slot (Codex round 3 on #2147; before that,
+/// `fn f(x: r) -> Int with r { 1 }` accepted both `f(1)` and `f("s")`):
+///
+///   3. a REGION TOKEN bound by an enclosing `region r { .. }` (ADR-0090),
+///      spelled in the region slot of `MutList[Int, r]`. Recognised by the
+///      rigid skolem the region binder binds it to (`#region_<n>`, a name no
+///      source can spell), NOT by "some value has this name" -- that would let
+///      `let Intt = 1` excuse `x: Intt`.
+///   4. a region ROW VARIABLE declared by this very signature:
+///      `fn fill(l: MutList[Int, r]) -> Unit with r`. Nothing binds `r` as a
+///      value there; the binder is the row, so the call site passes its
+///      variables in `row_binders`.
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  // Which of the unresolved names are region-ish binders at all. Asked over
+  // the name candidates first because the positional walk below takes a set,
+  // and `#region_` skolem membership is an env question this file owns.
+  let candidates = array_empty()
+  collect_unknown_type_names(te, defs, shadow, candidates)
+  let region_binders = array_empty()
+  let mut ci = 0
+  while ci < Array::length(candidates) {
+    let candidate = Array::get(candidates, ci)
+    let is_region_token = match env_lookup(env, candidate) {
+      Some(t) => match t {
+        CtNamed(bound_name, _) => String::starts_with(bound_name, "#region_"),
+        _ => false
+      },
+      None => false
+    }
+    if (is_region_token || string_array_has(row_binders, candidate)) && !string_array_has(region_binders, candidate) {
+      Array::push(region_binders, candidate)
+    } else {
+      ()
+    }
+    ci = ci + 1
+  }
   let out = array_empty()
-  collect_unknown_type_names(te, defs, shadow, out)
+  collect_unknown_type_names_regionwise(te, defs, shadow, region_binders, out)
   let mut i = 0
   while i < Array::length(out) {
     let name = Array::get(out, i)
-    let bound_by_binder = match env_lookup(env, name) {
+    let is_type_formal = match env_lookup(env, name) {
       Some(t) => match t {
         CtVar(_) => true,
-        CtNamed(bound_name, _) => String::starts_with(bound_name, "#region_"),
         _ => false
       },
       None => false
@@ -289,7 +317,7 @@ export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: 
       Some(_) => true,
       None => false
     }
-    if bound_by_binder || string_array_has(row_binders, name) || trait_erased_by_impl {
+    if is_type_formal || trait_erased_by_impl {
       ()
     } else {
       Array::push(errors, String::concat(String::concat(String::concat("unknown type `", name), "` in "), where_label))

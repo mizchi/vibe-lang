@@ -163,6 +163,31 @@ test "#1869: a reserved `__dict_` parameter reports the reserved name, not its t
   inspect(String::contains(msg, "unknown type"), content = "false")
 }
 
+test "#2147 review: a row variable is not a type HEAD" {
+  // Codex on #2147 (round 3): the region/row exemptions were name-based, so a
+  // row variable written where a TYPE belongs was excused and the parameter
+  // went back to being a wildcard. Measured before the fix: this compiled, and
+  // both `f(1)` and `f("s")` passed the same slot.
+  let src = "fn f(x: r) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2147 review: a region token is not a type HEAD either" {
+  // The skolem-token half of the same blindness: inside `region r { .. }`,
+  // `r` is bound (to the rigid `#region_<n>` skolem), so a bare `x: r`
+  // annotation was excused. Measured before the fix: `let y: r = "s"` beside
+  // `let x: r = 1` was accepted.
+  let src = "fn main() -> Int {\n  region r {\n    let x: r = 1\n    0\n  }\n}\n"
+  inspect(String::contains(first_check_error(src), "unknown type `r`"), content = "true")
+}
+
+test "#2147 review: the region SLOT of a container still accepts the token" {
+  // The position the exemption exists for, both spellings: the row variable
+  // in a signature (#1863, above) and the skolem token inside its own region.
+  let src = "fn main() -> Int {\n  region r {\n    let xs: MutList[Int, r] = MutList::empty(r)\n    MutList::push(xs, 1)\n    MutList::length(xs)\n  }\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
 test "#2125: a region token in type-argument position is not a typo" {
   // ADR-0090: `MutList[T, r]`'s second argument names the region TOKEN, which
   // is an ordinary value binding, not a type.
