@@ -8,7 +8,7 @@ hello world, then the build tool. Details live in
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/scripts/installer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 . "$HOME/.vibe/env"
 vibe version
 ```
@@ -16,7 +16,7 @@ vibe version
 From a checkout of this repository:
 
 ```bash
-bash scripts/install.sh
+bash install/install.sh
 ```
 
 You get a `vibe` dispatcher, a `viberun` host, and the stdlib under

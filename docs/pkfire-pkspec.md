@@ -58,18 +58,16 @@ Highlights (post-#594 selfhost-only):
 
 Two helper factories keep the file readable:
 
-- `justTask(name)` — wraps a recipe whose body stays in the justfile
 - `scriptTask(name, "scripts/X.sh")` — wraps a single-shell-script recipe
 
 Run from the repo root:
 
 ```bash
 pkf list
-pkf run check
 pkf run test
 pkf run run -- examples/hello.vibe
 pkf graph --format tree
-pkf run --explain-cache check
+pkf run --explain-cache test
 ```
 
 The cache lives in `~/.cache/pkfire` (global, per-user); `.pkfire/` in the

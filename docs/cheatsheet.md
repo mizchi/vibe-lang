@@ -1555,11 +1555,11 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 | `Array::find` | `(Array[T], (T) -> Bool) -> Option[T]` |
 
 **Builder**: `ArrayBuilder::new() -> ArrayBuilder[T]`,
-`push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`。
+`push(ArrayBuilder[T], T) -> Unit`, `freeze(ArrayBuilder[T]) -> Array[T]`.
 `MapBuilder::new() -> MapBuilder[String, V]`,
 `set(MapBuilder[String, V], String, V) -> Unit`,
-`freeze(MapBuilder[String, V]) -> Map[String, V]` — String-keyed, like `Map`.`for-in` 内包表記は内部でこの builder
-操作へ脱糖される。
+`freeze(MapBuilder[String, V]) -> Map[String, V]` — String-keyed, like `Map`.
+A `for-in` comprehension desugars to these builder operations internally.
 
 **Map** — the builtin `Map` is **String-keyed**, not generic in its key.
 `Map::set(m, 7, 1)` is `argument type mismatch for Map::set: expected String,

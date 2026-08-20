@@ -141,7 +141,17 @@ def ret_type(sig):
     # Everything after the LAST top-level `->`, with the effect row dropped: the
     # tables carry the row in their own column, so comparing it here would report
     # a difference in presentation rather than in meaning.
-    i = sig.rfind("->")
+    # The LAST top-level `->`, i.e. outside any parentheses -- `rfind` alone
+    # would already be right for a trailing callback-free return, but a
+    # signature ending in a function type needs the depth check.
+    depth, i = 0, -1
+    for j, ch in enumerate(sig):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "-" and depth == 0 and sig[j:j + 2] == "->":
+            i = j
     if i < 0:
         return None
     r = sig[i + 2:].strip()
@@ -158,6 +168,10 @@ def norm(t):
     correspond to a variable on the other side, not to a concrete type.
     """
     t = t.strip()
+    # The checker prints Unit as `()`; the document writes `Unit`. Now that
+    # nested function types are compared, that difference shows up INSIDE a
+    # callback (`(T) -> Unit` vs `(?) -> ()`) and is presentation, not drift.
+    t = re.sub(r'\(\s*\)', 'Unit', t)
     # `?` is how the checker prints an un-instantiated variable; a lone capital
     # (optionally with digits) is how the document writes one.
     t = re.sub(r'(?<![A-Za-z0-9_])\?', 'VAR', t)
@@ -187,12 +201,32 @@ def compatible(doc, actual):
     # Structural: same shape with VAR matching only VAR.
     return re.sub(r'VAR', '#', d) == re.sub(r'VAR', '#', a)
 
+def paren_body(sig):
+    """The text inside the OUTERMOST parentheses, matched by balance.
+
+    `[^)]*` stops at the first nested `)`, so `(Array[?], (?) -> Bool)` was read
+    as `Array[?], (?` -- the callback's own return type and every parameter
+    after it were invisible, and drift there compared equal (#2138 review).
+    """
+    i = sig.find("(")
+    if i < 0:
+        return None
+    depth = 0
+    for j in range(i, len(sig)):
+        if sig[j] == "(":
+            depth += 1
+        elif sig[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return sig[i + 1:j]
+    return None
+
 def params(sig):
     """The top-level parameter types, split on commas outside brackets."""
-    m = re.match(r'\s*\(([^)]*)\)', sig)
-    if not m:
+    inner = paren_body(sig)
+    if inner is None:
         return None
-    inner = m.group(1).strip()
+    inner = inner.strip()
     if inner == "":
         return []
     out, depth, cur = [], 0, ""
@@ -211,10 +245,10 @@ def params(sig):
     return [re.sub(r'^[a-z_][A-Za-z0-9_]*\s*:\s*', '', t) for t in out]
 
 def arity(sig):
-    m = re.match(r'\s*\(([^)]*)\)', sig)
-    if not m:
+    inner = paren_body(sig)
+    if inner is None:
         return None
-    inner = m.group(1).strip()
+    inner = inner.strip()
     if inner == "":
         return 0
     depth, n = 0, 1

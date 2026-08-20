@@ -510,69 +510,15 @@ line/branch は span 配線が前提で別途実装が必要。関数レベル�
 2. WASM 成果物をホストから呼ぶ統合導線のカバレッジ
 3. vibe ソース span ベースの WASM 実行カバレッジ（line/branch）
 
-## 1) MoonBit 本体カバレッジ
+## MoonBit / Deno coverage: removed
 
-`moon test --enable-coverage` + `moon coverage report` を使う。
-
-```bash
-just coverage-moon
-```
-
-生成物:
-- `_build/coverage/moon/summary.txt`
-- `_build/coverage/moon/moonbit-cobertura.xml`
-- `_build/coverage/moon/html/index.html`
-
-環境変数:
-- `VIBE_MOON_COVERAGE_TARGET` (`native` / `wasm` / `wasm-gc` / `js`)
-- `VIBE_MOON_COVERAGE_PACKAGE` (例: `parser`)
-- `VIBE_MOON_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
-- `VIBE_MOON_COVERAGE_DIR` (出力先ディレクトリ)
-
-例:
-
-```bash
-VIBE_MOON_COVERAGE_TARGET=wasm-gc \
-VIBE_MOON_COVERAGE_PACKAGE=parser \
-VIBE_MOON_COVERAGE_MIN_LINE=70 \
-just coverage-moon
-```
-
-## 2) WASM 統合カバレッジ
-
-`tests/integration-deno/` は `src/lib` の wasm-gc 成果物を
-`WebAssembly.instantiate` で直接テストする。ここは Deno coverage で測る。
-
-```bash
-just coverage-deno
-```
-
-生成物:
-- `_build/coverage/deno/summary.txt`
-- `_build/coverage/deno/lcov.info`
-- `_build/coverage/deno/html/index.html`
-
-環境変数:
-- `VIBE_DENO_COVERAGE_FILTER` (テスト絞り込み)
-- `VIBE_DENO_COVERAGE_MIN_LINE` (行カバレッジ閾値, 整数%)
-- `VIBE_DENO_COVERAGE_DIR` (出力先ディレクトリ)
-
-例:
-
-```bash
-VIBE_DENO_COVERAGE_FILTER='vibe wasm api' \
-VIBE_DENO_COVERAGE_MIN_LINE=60 \
-just coverage-deno
-```
-
-## WASM での考え方
-
-WASM で「何を coverage と見なすか」を分離するのが実務的:
-
-- コンパイラ/型検査などの本体ロジック: MoonBit coverage
-- wasm export の API 契約とホスト接続: Deno coverage
-
-この分離により、`wasm-gc` 実行経路の回帰と API 回帰を同時に監視できる。
+This document used to carry two more coverage tracks: `moon test
+--enable-coverage` over the MoonBit host, and Deno coverage over
+`tests/integration-deno/` against `src/lib`. Both subjects are gone -- the
+MoonBit host was retired in #594, `src/` with it, and `just` was replaced by
+`pkf`. The sections are deleted rather than annotated, per the documentation
+rule that an entry whose subject no longer exists is a false statement about
+the current build, not history.
 
 ## 3) vibe ソース span ベース WASM カバレッジ
 
