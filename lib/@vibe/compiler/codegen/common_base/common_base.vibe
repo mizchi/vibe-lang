@@ -1295,6 +1295,33 @@ export fn agg_info_of_type_expr(ct: CtorTable, te: TypeExpr) -> Int {
   }
 }
 
+/// #2141: does `te`'s head name one of `tparams`? An annotation naming an
+/// enclosing binder's formal describes an ERASED value -- when the merged
+/// program also declares a struct under that spelling, annotation-driven
+/// shape seeding must not claim it, or `==` field-compares raw scalars.
+export fn ty_head_names_formal(te: TypeExpr, tparams: Array[String]) -> Bool {
+  let head = match te {
+    TyName(n) => n,
+    TyApp(n, _) => n,
+    _ => ""
+  }
+  if String::length(head) == 0 {
+    false
+  } else {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(tparams) && !found {
+      if Array::get(tparams, i) == head {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
 /// #724 round 2: program-wide (fn name -> aggregate return shape) table,
 /// filled from each top-level `let f: (..) -> R = (..) -> {..}`'s declared
 /// return type (the SLet annotation's TyFn ret, falling back to the EFn's
@@ -1306,7 +1333,7 @@ export fn compute_agg_returning(stmts: Array[Stmt], ct: CtorTable, out_names: Ar
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, name, ann, value) => match value {
-        EFn(_, _, _, fn_ret, _, _) => {
+        EFn(efn_tparams, _, _, fn_ret, _, _) => {
           let ret = match ann {
             Some(at) => match at {
               TyFn(_, r, _) => Some(r),
@@ -1316,7 +1343,13 @@ export fn compute_agg_returning(stmts: Array[Stmt], ct: CtorTable, out_names: Ar
           }
           match ret {
             Some(rte) => {
-              let info = agg_info_of_type_expr(ct, rte)
+              // #2141: a return type naming the fn's own formal is erased --
+              // see ty_head_names_formal.
+              let info = if ty_head_names_formal(rte, efn_tparams) {
+                0
+              } else {
+                agg_info_of_type_expr(ct, rte)
+              }
               if info > 0 {
                 Array::push(out_names, name)
                 Array::push(out_infos, info)

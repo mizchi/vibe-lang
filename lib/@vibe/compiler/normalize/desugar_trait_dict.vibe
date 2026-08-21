@@ -1545,12 +1545,15 @@ fn is_concrete_or_known_type_name(t: String, struct_sets: Array[(String, Array[S
 /// compare, which orders a heap String's packed `(ptr<<32)|len` value by
 /// POINTER, not content (#973's `ord_clamp("m", "a", "z")` repro).
 fn is_erased_generic_operand(l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  // #2141: an enclosing binder's formal is erased even when the (merged)
+  // program declares a same-spelled type -- the formal shadows it, so the
+  // concrete-name fast paths must not fire.
   let lg = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
-    Some(t) => !is_concrete_or_known_type_name(t, struct_sets),
+    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t, struct_sets),
     None => false
   }
   let rg = match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
-    Some(t) => !is_concrete_or_known_type_name(t, struct_sets),
+    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t, struct_sets),
     None => false
   }
   lg || rg
@@ -3902,7 +3905,17 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
         EFn(tparams, _, _, ret, _, fbody) => {
-          Array::push(out, (fname, fn_return_head_of(ret, fbody)))
+          // #2141: a return head naming the fn's OWN formal is an erased
+          // value at every call site -- record it re-spelled so a same-spelled
+          // (merged-in) declared type can never claim the call's result for
+          // struct dispatch or a struct renderer (see subst_formals_ty).
+          let head = fn_return_head_of(ret, fbody)
+          let head2 = if str_array_contains(tparams, head) {
+            mark_formal_name(head)
+          } else {
+            head
+          }
+          Array::push(out, (fname, head2))
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
         _ => ()
@@ -3914,7 +3927,14 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       // consumers below.
       SFnDecl(_, fname, body, _, _) => match body {
         EFn(tparams, _, _, ret, _, fbody) => {
-          Array::push(out, (fname, fn_return_head_of(ret, fbody)))
+          // #2141: same re-spelling as the SLet arm above.
+          let head = fn_return_head_of(ret, fbody)
+          let head2 = if str_array_contains(tparams, head) {
+            mark_formal_name(head)
+          } else {
+            head
+          }
+          Array::push(out, (fname, head2))
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
         _ => ()
@@ -5310,7 +5330,9 @@ fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(String,
       // THIS PASS generated -- see dtd_derived_renderers. Set at a throw site,
       // where the call is synthesized; clear at an interpolation, where the
       // user wrote it.
-      if !is_scalar_type_name(tn) && fn_exists(fn_returns, target) && target != Array::get(dtd_show_self_fn, 0) && (!derived_only || has_derived_renderer(tn)) {
+      // #2141: an enclosing binder's formal shadows a same-spelled declared
+      // type -- its values are NOT that struct, so its renderer must not fire.
+      if !is_scalar_type_name(tn) && !formal_in_scope(tn) && fn_exists(fn_returns, target) && target != Array::get(dtd_show_self_fn, 0) && (!derived_only || has_derived_renderer(tn)) {
         target
       } else {
         ""
@@ -5338,7 +5360,10 @@ fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(String,
 /// by name, and that is not a missing renderer.
 fn interp_missing_show_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-    Some(tn) => if !is_scalar_type_name(tn) && struct_set_has(struct_sets, tn) && !fn_exists(fn_returns, String::concat(tn, "::to_string")) {
+    // #2141: an enclosing binder's formal shadows a same-spelled declared
+    // type. Its values are erased, not renderless-struct-shaped -- keep the
+    // old fallback rendering instead of throwing a false "missing Show".
+    Some(tn) => if !is_scalar_type_name(tn) && !formal_in_scope(tn) && struct_set_has(struct_sets, tn) && !fn_exists(fn_returns, String::concat(tn, "::to_string")) {
       tn
     } else {
       ""
@@ -6280,12 +6305,17 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // resolves to is generated because the emission was RECORDED, not
         // because a second walk predicted the same thing -- see
         // `arr_eq_needed_record`.
-        let arr_elem = match infer_earray_elem_type(l) {
+        // #2141: an element type that names an enclosing binder's formal is
+        // re-spelled before it keys/records a helper -- see subst_formals_ty.
+        let arr_elem = match (match infer_earray_elem_type(l) {
           Some(t) => Some(t),
           None => match infer_earray_elem_type(r) {
             Some(t) => Some(t),
             None => eq_var_array_elem(l, r, var_types)
           }
+        }) {
+          Some(t) => Some(subst_scope_formals_ty(t)),
+          None => None
         }
         if empty_l || empty_r {
           let other = if empty_l {
@@ -6381,7 +6411,12 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
                       None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
                     }
                     match ty {
-                      Some(t) => if struct_set_has(struct_sets, t) {
+                      // #2141: a spelling that is a type parameter of an
+                      // enclosing binder is a FORMAL here, whatever else the
+                      // (merged) program declares under that name -- the
+                      // struct dispatch would call `T::equals` on erased
+                      // operands and read garbage.
+                      Some(t) => if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
                         let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
                           rl,
                           rr
@@ -6491,7 +6526,13 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       }
     },
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
-    EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)),
+    EFn(tp, bs, ps, ret, eff, body) => {
+      // #2141: the binder frame scopes the body -- see dtd_scope_formals.
+      scope_formals_push(tp)
+      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)
+      scope_formals_pop()
+      EFn(tp, bs, ps, ret, eff, rbody)
+    },
     EDot(obj, field, off, fdoff) => {
       let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       match anon_dot_rewrite(obj, field, off, robj, var_types) {
@@ -6580,7 +6621,13 @@ fn rewrite_stmt(stmt: Stmt, gens: Array[(String, Array[(String, String, Int)])],
           let binds = dict_binds_of(threaded, traits)
           let new_params = thread_dict_params(threaded, params)
           let seeded = seed_var_types(params, tparams, toplevel_vars)
+          // #2141 (Codex P1 on #2183): this dict-threaded path unwraps the
+          // EFn itself, so rewrite_expr's EFn arm never pushes the binder
+          // frame for it -- a `[T: Trait]` formal colliding with an imported
+          // `struct T` still dispatched `T::equals` on erased operands.
+          scope_formals_push(tparams)
           let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
+          scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
         },
         _ => stmt
@@ -6786,6 +6833,154 @@ fn field_show_expr(fname: String, fty: TypeExpr, known_types: Array[String]) -> 
 // binding it would change a working program).
 let dtd_type_param_names: Array[String] = empty_str_array()
 
+// ---- #2141: the LEXICAL type-parameter scope during the rewrite ----
+//
+// `dtd_type_param_names` is a program-wide UNION minus declared type names, so
+// it cannot say "the `T` HERE is a formal" when the same spelling is also a
+// declared type. The #2141 guard rejects that collision for a LOCALLY declared
+// type, but an IMPORTED `struct T` next to a formal `T` is legal (pinned by
+// derive_array_helper_interference_test) -- and at the merged codegen run the
+// import IS in `struct_sets`, so spelling-keyed dispatch sent a formal-typed
+// `a == b` to `T::equals` and read garbage (measured: `eqv[T](1, 2)` answered
+// true).
+//
+// This stack is the scope-precise answer: `rewrite_expr`'s EFn arm pushes the
+// binder frame around the body and pops it after, so a decision site can ask
+// whether a spelling is a type parameter OF AN ENCLOSING BINDER -- where the
+// formal shadows any same-spelled declared type, exactly like a value binding
+// would.
+let dtd_scope_formals: Array[String] = empty_str_array()
+
+let dtd_scope_formal_marks: Array[Int] = [0]
+
+fn scope_formals_reset() -> Unit {
+  Array::truncate(dtd_scope_formals, 0)
+  Array::truncate(dtd_scope_formal_marks, 0)
+}
+
+fn scope_formals_push(tparams: Array[String]) -> Unit {
+  Array::push(dtd_scope_formal_marks, Array::length(dtd_scope_formals))
+  let mut i = 0
+  while i < Array::length(tparams) {
+    Array::push(dtd_scope_formals, Array::get(tparams, i))
+    i = i + 1
+  }
+}
+
+fn scope_formals_pop() -> Unit {
+  if Array::length(dtd_scope_formal_marks) == 0 {
+    ()
+  } else {
+    let mark = Array::get(dtd_scope_formal_marks, Array::length(dtd_scope_formal_marks) - 1)
+    Array::truncate(dtd_scope_formal_marks, Array::length(dtd_scope_formal_marks) - 1)
+    Array::truncate(dtd_scope_formals, mark)
+  }
+}
+
+fn formal_in_scope(n: String) -> Bool {
+  str_array_contains(dtd_scope_formals, n)
+}
+
+// #2141: a formal's spelling, re-spelled so no declared type can collide with
+// it. A generated helper's KEY, BINDER and element semantics all derive from
+// the element TypeExpr's spellings -- `Array[T]` where `T` is a formal next to
+// a (merged-in) `struct T` used to key the CONCRETE helper `__arr_equals__T`,
+// lose its binder to the #2136 subtraction, and compare elements with
+// `T::equals` (measured: `same[T]([1,2], [1,3])` answered true). Re-spelling
+// the formal at the classification site makes every downstream decision
+// follow: distinct key, bound binder (collect_ty_var_names recognizes the
+// prefix), and the raw `==` element compare a variable requires.
+let scope_formal_mark_prefix: String = "__Vfp_"
+
+fn mark_formal_name(n: String) -> String {
+  String::concat(scope_formal_mark_prefix, n)
+}
+
+fn is_marked_formal_name(n: String) -> Bool {
+  String::starts_with(n, scope_formal_mark_prefix)
+}
+
+/// Re-spell every name in `ty` that `is_formal` answers true for. Used with
+/// `formal_in_scope` at rewrite sites (the lexical stack is live there) and
+/// with a declaration's own tparams at the derive-generation sites (where the
+/// declaration IS the scope).
+fn subst_formals_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(n) => if str_array_contains(formals, n) {
+      TyName(mark_formal_name(n))
+    } else {
+      ty
+    },
+    TyApp(n, args) => {
+      let out = empty_type_exprs()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, subst_formals_ty(Array::get(args, i), formals))
+        i = i + 1
+      }
+      if str_array_contains(formals, n) {
+        TyApp(mark_formal_name(n), out)
+      } else {
+        TyApp(n, out)
+      }
+    },
+    TyTuple(ts) => {
+      let out = empty_type_exprs()
+      let mut i = 0
+      while i < Array::length(ts) {
+        Array::push(out, subst_formals_ty(Array::get(ts, i), formals))
+        i = i + 1
+      }
+      TyTuple(out)
+    },
+    _ => ty
+  }
+}
+
+fn subst_scope_formals_ty(ty: TypeExpr) -> TypeExpr {
+  subst_formals_ty(ty, dtd_scope_formals)
+}
+
+/// #2141, derive side: a declaration's OWN tparams are the scope its field
+/// types were written in. Re-spell them before any generator reads the field
+/// types, so a `struct Box[T]` next to a same-spelled (merged-in) declared
+/// type generates variable-semantics helpers for `T`, not struct-semantics.
+fn subst_field_formals(fields: Array[(String, TypeExpr)], formals: Array[String]) -> Array[(String, TypeExpr)] {
+  if Array::length(formals) == 0 {
+    fields
+  } else {
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(fields) {
+      let (fname, fty) = Array::get(fields, i)
+      Array::push(out, (fname, subst_formals_ty(fty, formals)))
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn subst_variant_formals(variants: Array[(String, Array[TypeExpr])], formals: Array[String]) -> Array[(String, Array[TypeExpr])] {
+  if Array::length(formals) == 0 {
+    variants
+  } else {
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(variants) {
+      let (vname, ftypes) = Array::get(variants, i)
+      let tys = empty_type_exprs()
+      let mut j = 0
+      while j < Array::length(ftypes) {
+        Array::push(tys, subst_formals_ty(Array::get(ftypes, j), formals))
+        j = j + 1
+      }
+      Array::push(out, (vname, tys))
+      i = i + 1
+    }
+    out
+  }
+}
+
 fn push_name_once(acc: Array[String], name: String) -> Unit {
   if str_array_contains(acc, name) {
     ()
@@ -6854,13 +7049,16 @@ fn type_param_names_reset(stmts: Array[Stmt], known_types: Array[String]) -> Uni
 /// order. (#2136.)
 fn collect_ty_var_names(ty: TypeExpr, acc: Array[String]) -> Unit {
   match ty {
-    TyName(n) => if str_array_contains(dtd_type_param_names, n) {
+    // #2141: a `__Vfp_`-marked name IS a formal by construction (see
+    // subst_formals_ty) -- the program-wide set cannot know it, since the
+    // marked spelling never appears in source.
+    TyName(n) => if str_array_contains(dtd_type_param_names, n) || is_marked_formal_name(n) {
       push_name_once(acc, n)
     } else {
       ()
     },
     TyApp(n, args) => {
-      if str_array_contains(dtd_type_param_names, n) {
+      if str_array_contains(dtd_type_param_names, n) || is_marked_formal_name(n) {
         push_name_once(acc, n)
       } else {
         ()
@@ -7228,7 +7426,16 @@ fn result_eq_match(lhs: Expr, rhs: Expr) -> Expr {
 /// The runtime `eq` builtin is type-blind (it identity-compares aggregates), so
 /// structural equality MUST be resolved here at the AST level where the static
 /// type is known. (#695.)
-fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+  // #2141 (Codex round on #2183): re-spell in-scope formals for the WHOLE
+  // type at the entry, not per-arm -- a composite shape reaching typed-eq
+  // dispatch at rewrite time must never leave a sibling `TyName(<formal>)`
+  // unmarked for the `known_types` arm below. Measured: no current channel
+  // feeds such a shape (annotation shapes mentioning tparams are skipped at
+  // seed_var_types / collect_fn_eq_return_shape), so today this subsumes the
+  // Array-arm re-spelling; at generation time the scope stack is empty and
+  // this is the identity.
+  let fty = subst_scope_formals_ty(fty0)
   match fty {
     TyName(n) => if n == "Double" || n == "Float" {
       // Under RC a Double is a BOXED heap value, so a raw `==` between two
@@ -7322,6 +7529,8 @@ fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String])
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
       // #1526: the second (and last) site that references a helper.
+      // #2141: the entry re-spelling above already marked any in-scope formal
+      // in this element type.
       arr_eq_needed_record(Array::get(args, 0))
       ECall(EIdent(arr_equals_name(Array::get(args, 0)), -1), Array::slice([
         lhs,
@@ -8525,7 +8734,10 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, name, fields, derives, _, _) => {
+      SStruct(_, name, fields0, derives, _, decl_tparams) => {
+        // #2141: the declaration's tparams scope its field types -- re-spell
+        // them before any generator reads them (see subst_field_formals).
+        let fields = subst_field_formals(fields0, decl_tparams)
         // `derive(Hash)` also needs the structural `to_string`: a Hash type's
         // stable Map-key string is its structural representation (#638), so
         // generate `to_string` for Show OR Hash.
@@ -8573,7 +8785,9 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
           ()
         }
       },
-      SEnum(_, ename, _, variants, derives) => {
+      SEnum(_, ename, decl_tparams, variants0, derives) => {
+        // #2141: same re-spelling as the SStruct arm, for payload types.
+        let variants = subst_variant_formals(variants0, decl_tparams)
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
           Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
           derived_renderer_record(ename)
@@ -8632,18 +8846,24 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
-      SStruct(_, _, fields, _, _, _) => {
+      // #2141: read the fields/payloads through the same decl-tparams
+      // re-spelling the generator arms use, or this walk predicts an
+      // unsubstituted DUPLICATE helper next to the substituted one the
+      // generated `equals` actually calls.
+      SStruct(_, _, fields, _, _, decl_tparams) => {
+        let sfields = subst_field_formals(fields, decl_tparams)
         let mut fi = 0
-        while fi < Array::length(fields) {
-          let (_, fty) = Array::get(fields, fi)
+        while fi < Array::length(sfields) {
+          let (_, fty) = Array::get(sfields, fi)
           collect_array_elem_types(fty, elem_types, elem_keys)
           fi = fi + 1
         }
       },
-      SEnum(_, _, _, variants, _) => {
+      SEnum(_, _, decl_tparams, variants, _) => {
+        let svariants = subst_variant_formals(variants, decl_tparams)
         let mut vi = 0
-        while vi < Array::length(variants) {
-          let (_, ftypes) = Array::get(variants, vi)
+        while vi < Array::length(svariants) {
+          let (_, ftypes) = Array::get(svariants, vi)
           let mut ti = 0
           while ti < Array::length(ftypes) {
             collect_array_elem_types(Array::get(ftypes, ti), elem_types, elem_keys)
@@ -12948,6 +13168,9 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // #1526: same reason -- the recorded set must describe THIS run's output.
   arr_eq_needed_reset()
   bytes_eq_needed_reset()
+  // #2141: a throw mid-rewrite leaves frames on the lexical binder stack;
+  // reset so a later run on another program cannot see them.
+  scope_formals_reset()
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)

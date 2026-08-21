@@ -1,21 +1,20 @@
-// #2136 review follow-up: the helper type-variable classification reads a
-// program-wide set of type-parameter spellings (`dtd_type_param_names`), so an
-// UNRELATED generic function `fn id[T]` makes the spelling `T` count as a
-// variable even where it denotes a concrete imported type. The synthesized
-// array-equals helper for `Holder` below therefore binds `[T]`
-// (measured: `__arr_equals__T[T](Array[T],Array[T])`).
+// #2136 review follow-up, semantics updated by #2141: `Holder` below holds an
+// array of a concrete IMPORTED type `T` while an unrelated generic `fn id[T]`
+// binds the same spelling. These tests pin that the collision stays
+// BEHAVIORALLY harmless for the derive helper: element comparison remains
+// structural, so `derive(Eq)` on a struct holding an array of the imported
+// type keeps answering by content. If a classification change ever routes
+// this through erased/raw equality, these fail.
 //
-// These tests pin that the over-binding stays BEHAVIORALLY harmless: element
-// comparison remains structural, so `derive(Eq)` on a struct holding an array
-// of the imported type keeps answering by content. If a classification change
-// ever routes this through erased/raw equality, these fail.
-//
-// The inverse corner — a genuine formal sharing a spelling with a LOCALLY
-// declared struct (`struct T` + `fn same[T](..) { a == b }`) — stays unbound
-// (`__arr_equals__T[]`) and miscompares at runtime. That is a pre-existing
-// hole, identical on main's stage2 from before #2136's fix; it is filed
-// separately and deliberately not pinned here, because pinning a wrong answer
-// as expected would freeze it.
+// History: before #2141's scope-precise classification this held because the
+// program-wide binder set (`dtd_type_param_names`) made the helper OVER-bind
+// (`__arr_equals__T[T]`) -- accidentally structural. Now it holds by
+// construction: `Holder` declares no tparams, so its field's `T` is the
+// concrete type and keys the concrete helper, while a formal `T` elsewhere is
+// re-spelled (`__Vfp_T`) and keys its own generic helper. The inverse corner
+// -- a formal next to a LOCALLY declared `struct T` -- is rejected at the
+// binder (type_param_shadowing_guard_test), and the cross-module formal
+// collision is pinned correct by generic_formal_shadow_import_test.
 
 import ./derive_array_helper_interference_dep.vibe {
   T

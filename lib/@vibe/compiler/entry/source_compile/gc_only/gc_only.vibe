@@ -41,7 +41,7 @@ import @vibe/compiler/codegen/gc {
 // weight as before (core/ast.vibe added no real code of its own), still
 // skips types.vibe/import_alias_rewrite.vibe/dce.vibe/... entirely.
 import @vibe/ast {
-  Expr, Stmt
+  Expr, Stmt, TypeExpr
 }
 
 //# Functions
@@ -181,6 +181,72 @@ fn expand_interp_stmts(stmts: Array[Stmt]) -> Unit with Exception {
   desugar_trait_dicts(stmts)
 }
 
+/// #2141: see the wasi_only twin (preprocess_strip.vibe) -- a stripped
+/// binder's spelling left in an annotation lets a same-spelled imported
+/// struct claim the erased value at codegen's annotation-driven shape
+/// seeding. Re-spell the stripped formals (`__Vfp_<name>`).
+fn gc_strip_subst_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(n) => if gc_strip_names_contains(formals, n) {
+      TyName(String::concat("__Vfp_", n))
+    } else {
+      ty
+    },
+    TyApp(n, args) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, gc_strip_subst_ty(Array::get(args, i), formals))
+        i = i + 1
+      }
+      if gc_strip_names_contains(formals, n) {
+        TyApp(String::concat("__Vfp_", n), out)
+      } else {
+        TyApp(n, out)
+      }
+    },
+    TyTuple(ts) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(ts) {
+        Array::push(out, gc_strip_subst_ty(Array::get(ts, i), formals))
+        i = i + 1
+      }
+      TyTuple(out)
+    },
+    _ => ty
+  }
+}
+
+fn gc_strip_names_contains(names: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn gc_strip_subst_params(params: Array[(String, Option[TypeExpr])], formals: Array[String]) -> Array[(String, Option[TypeExpr])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pann) = Array::get(params, i)
+    let pann2 = match pann {
+      Some(te) => Some(gc_strip_subst_ty(te, formals)),
+      None => None
+    }
+    Array::push(out, (pname, pann2))
+    i = i + 1
+  }
+  out
+}
+
 fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit {
   let empty_tp = array_empty()
   let empty_bounds = array_empty()
@@ -189,7 +255,12 @@ fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit {
     match Array::get(stmts, i) {
       SLet(sl_exp, sl_rec, sl_name, sl_ann, sl_expr) => match sl_expr {
         EFn(tparams, _, params, ret, eff, body) => if Array::length(tparams) > 0 {
-          Array::set(stmts, i, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params, ret, eff, body)))
+          let params2 = gc_strip_subst_params(params, tparams)
+          let ret2 = match ret {
+            Some(rte) => Some(gc_strip_subst_ty(rte, tparams)),
+            None => None
+          }
+          Array::set(stmts, i, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params2, ret2, eff, body)))
         }
         ,
         _ => ()

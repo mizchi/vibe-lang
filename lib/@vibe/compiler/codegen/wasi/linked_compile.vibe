@@ -209,6 +209,7 @@ import @vibe/compiler/codegen/common_base {
   resolve_local,
   rewrite_self_tail_calls,
   suspend_cps_pass,
+  ty_head_names_formal,
   wrap_entry_exception_boundary
 }
 
@@ -233,6 +234,7 @@ import @vibe/compiler/codegen/common_extractors {
   get_ecall_callee,
   get_efloat_value,
   get_efn_params,
+  get_efn_tparams,
   get_eforin_body,
   get_eforin_iter,
   get_eforin_name,
@@ -3395,6 +3397,71 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
 /// check-lane caller must pass a merged AST it is about to discard.
 /// `iw_names`/`iw_wats` receive the extracted inline-wasm texts (the compile
 /// path emits them later; check discards them).
+
+/// #2141: the lc prelude's own generic strip (above) must re-spell stripped
+/// formals in annotations -- twin of preprocess_strip.vibe's strip_subst_ty.
+fn lc_strip_subst_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(n) => if lc_strip_names_contains(formals, n) {
+      TyName(String::concat("__Vfp_", n))
+    } else {
+      ty
+    },
+    TyApp(n, args) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_strip_subst_ty(Array::get(args, i), formals))
+        i = i + 1
+      }
+      if lc_strip_names_contains(formals, n) {
+        TyApp(String::concat("__Vfp_", n), out)
+      } else {
+        TyApp(n, out)
+      }
+    },
+    TyTuple(ts) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(ts) {
+        Array::push(out, lc_strip_subst_ty(Array::get(ts, i), formals))
+        i = i + 1
+      }
+      TyTuple(out)
+    },
+    _ => ty
+  }
+}
+
+fn lc_strip_names_contains(names: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn lc_strip_subst_params(params: Array[(String, Option[TypeExpr])], formals: Array[String]) -> Array[(String, Option[TypeExpr])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pann) = Array::get(params, i)
+    let pann2 = match pann {
+      Some(te) => Some(lc_strip_subst_ty(te, formals)),
+      None => None
+    }
+    Array::push(out, (pname, pann2))
+    i = i + 1
+  }
+  out
+}
+
 export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String]) -> Array[String] with Exception {
   let errs = lc_fresh_string_array()
   // ADR-0091 Phase 1: enforce `#zero_alloc` markers before any lowering
@@ -3775,7 +3842,19 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       },
       SLet(sl_exp, sl_rec, sl_name, sl_ann, sl_expr) => match sl_expr {
         EFn(tparams, _, params, ret, eff, body) => if Array::length(tparams) > 0 {
-          Array::set(stmts, pi, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params, ret, eff, body)))
+          // #2141: re-spell the stripped formals in the annotations
+          // (`__Vfp_<name>`) BEFORE dropping the binder. This strip runs
+          // ahead of the __bi param-shape seeding below, so an annotation
+          // still spelling `T` would let a same-spelled (merged-in) struct
+          // claim the erased param and `a == b` field-compare raw scalars
+          // (measured: `eqv[T](1, 2)` answered true; the seeding gate alone
+          // could not see it -- the binder list was already empty here).
+          let params2 = lc_strip_subst_params(params, tparams)
+          let ret2 = match ret {
+            Some(rte) => Some(lc_strip_subst_ty(rte, tparams)),
+            None => None
+          }
+          Array::set(stmts, pi, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params2, ret2, eff, body)))
         }
         ,
         _ => ()
@@ -6399,6 +6478,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           // #724 round 2: seed the aggregate-shape log from ANNOTATED params
           // (param slot i = local i), so `p == q` on tuple/struct/enum-typed
           // params compares structurally.
+          // #2141: a param annotated with the fn's OWN type parameter is an
+          // ERASED value even when the merged program declares a same-spelled
+          // struct -- seeding its shape made `eqv[T](a: T, b: T) { a == b }`
+          // field-compare raw scalars (measured: eqv(1, 2) answered true).
+          let __bi_tparams = get_efn_tparams(__bi_expr)
           let sig_ptypes = fn_type_param_types(__sf_slet_type)
           let mut psi = 0
           while psi < Array::length(lc_norm_params) {
@@ -6418,7 +6502,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
             }
             match pann {
               Some(pte) => {
-                let pinfo = agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+                let pinfo = if ty_head_names_formal(pte, __bi_tparams) {
+                  0
+                } else {
+                  agg_info_of_type_expr(compile_ctx.ctor_table, pte)
+                }
                 if pinfo > 0 {
                   Array::push(compile_ctx.agg_local_slots, psi * 256 + pinfo)
                   // #811: agg_local_exprs is the index-aligned PARALLEL of
