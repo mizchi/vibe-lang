@@ -4,14 +4,11 @@ Previous: [Capabilities](14_capabilities.vibe.md)
 
 日本語版: [15_generics.vibe.md](../ja/15_generics.vibe.md)
 
-A type parameter is written `[T]`. A bound is written `[T: Eq + Ord]`.
-The same `+` joins effect names on a row (`with Exception + Fs`) so a
-comma never has to mean two things.
+Writing the same function once for every type is the problem generics
+solve. A type parameter goes in `[T]`, and a constraint on it goes in
+`[T: Eq]`.
 
-## Generic functions and structs
-
-A top-level `fn` needs full annotations. Type arguments on a struct
-literal can be inferred from the fields, or pinned with `Box[Int]::{ ... }`.
+## One definition, many types
 
 ```vibe run
 struct Box[T] {
@@ -34,13 +31,16 @@ fn main with Console {
 id = 42
 ```
 
-## `derive`
+`identity` works for any `T`. `Box[T]` holds any `T`, and the literal
+above did not need to say which — it was inferred from `v: 41`. Pin it
+explicitly with `Box[Int]::{ ... }` when inference has nothing to go on.
 
-`derive (Eq, Ord, Show, Hash, Default)` is the usual way to get the
-operations a struct or enum is expected to have. `Eq` is a marker:
-structural `==` is generated as `T::equals`. `Ord` gives
-`T::compare -> Int` (`-1` / `0` / `1`). `Show` gives `T::to_string`,
-which interpolation also uses.
+A top-level `fn` annotates its parameters and return type in full,
+generic or not; inference fills in the call site, not the declaration.
+
+## `derive` gives you the usual operations
+
+Most types want equality, ordering, and a printable form. Ask for them:
 
 ```vibe run
 enum Color {
@@ -60,13 +60,15 @@ neq = false
 show = Green
 ```
 
+`derive (Eq, Ord, Show, Hash, Default)` are the five. `Eq` makes `==`
+structural for the type, `Ord` gives `T::compare` returning `-1` / `0` /
+`1`, and `Show` gives `T::to_string`, which is also what string
+interpolation calls.
+
 ## Traits you write
 
-A marker trait (no methods) is for bounds the compiler already
-understands, like `Eq`. A method-bearing trait carries a witness
-dictionary, and that is what you want for user code. Marker `impl`s on
-`Array` / `Bytes` do **not** satisfy `[T: Eq]` — the element type has
-been erased, so `==` would silently become reference equality.
+A trait with methods is a contract, and a bound on it means "the caller
+passes an implementation":
 
 ```vibe run
 trait Measured {
@@ -97,11 +99,30 @@ fn main with Console {
 size_of = 3
 ```
 
-`Send` is not a user trait. The compiler judges it structurally
-(primitives, tuples, `Option` of Send parts, immutable structs/enums).
-`impl Send for X` is an error. See [Concurrency](17_concurrency.vibe.md).
+`size_of` has no idea what `T` is. `T::measure` reaches the
+implementation through a witness the caller supplies, which is how the
+bound turns into a working call.
 
-`Default` is a builtin. `import @vibe/core { Default }` if generic code
-needs to call `T::default()`. `derive(Default)` registers the impl.
+That witness is also the limit. A bound like `[T: Eq]` needs one, and a
+container whose element type has been erased has none — so passing an
+`Array[Int]` to `fn eq2[T: Eq](a: T, b: T)` is **rejected**:
+
+```
+no impl `Eq` for `Array[Int]`
+```
+
+You are told, at compile time. [Equality](16_equality.vibe.md) has the
+rest of that story.
+
+## Two you do not implement
+
+`Send` is judged structurally by the compiler — primitives, tuples,
+`Option` of `Send` parts, immutable structs and enums — so `impl Send for
+X` is an error rather than a way to promise something. See
+[Concurrency](17_concurrency.vibe.md).
+
+`Default` is a builtin; `derive(Default)` registers the implementation.
+Generic code that calls `T::default()` needs
+`import @vibe/core { Default }`.
 
 Next: [Equality](16_equality.vibe.md).

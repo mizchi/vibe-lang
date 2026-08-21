@@ -11,10 +11,10 @@ addresses instead.
 There is exactly one boundary, and it is a compile error rather than a
 wrong answer — see the end of the chapter.
 
-## What already compares by value
+## The ordinary cases
 
-Scalars, tuples, structs/enums with `derive(Eq)`, `Bytes` (by content),
-and `Array[T]` when the element type is known.
+Scalars, tuples, structs and enums with `derive(Eq)`, `Bytes` by
+content, and arrays.
 
 ```vibe run
 struct Point {

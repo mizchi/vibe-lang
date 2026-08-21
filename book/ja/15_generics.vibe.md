@@ -2,16 +2,12 @@
 
 前: [ケーパビリティ](14_capabilities.vibe.md)
 
-English version: [15_generics.vibe.md](../en/15_generics.vibe.md) (canonical)
+English version: [15_generics.vibe.md](../en/15_generics.vibe.md)
 
-型パラメータは `[T]`、境界は `[T: Eq + Ord]` と書く。同じ `+` が row の
-effect 名も繋ぐ (`with Exception + Fs`) ので、カンマが 2 つの意味を持つ
-必要はない。
+同じ関数を型ごとに書き直す — それがジェネリクスの解く問題です。型引数は
+`[T]` に、その制約は `[T: Eq]` に書きます。
 
-## ジェネリックな関数と struct
-
-トップレベルの `fn` には完全な注釈が要る。struct リテラルの型引数は
-フィールドから推論するか、`Box[Int]::{ ... }` で明示できる。
+## 定義は一つ、型は多数
 
 ```vibe run
 struct Box[T] {
@@ -34,12 +30,16 @@ fn main with Console {
 id = 42
 ```
 
-## `derive`
+`identity` はどんな `T` でも動きます。`Box[T]` もどんな `T` でも持て、上の
+リテラルはどの型かを書いていません — `v: 41` から推論されました。推論の
+手がかりが無いときは `Box[Int]::{ ... }` と明示します。
 
-`derive (Eq, Ord, Show, Hash, Default)` が、struct や enum に期待される
-操作を得る通常の手段。`Eq` はマーカーで、構造的な `==` が `T::equals`
-として生成される。`Ord` は `T::compare -> Int` (`-1` / `0` / `1`) を与える。
-`Show` は `T::to_string` を与え、文字列補間もこれを使う。
+トップレベルの `fn` は、ジェネリックかどうかに関わらず引数と戻り値を
+完全に注釈します。推論が埋めるのは呼び出し側であって、宣言側ではありません。
+
+## `derive` が定番の操作をくれる
+
+たいていの型は等価性・順序・表示可能な形を欲しがります。それを要求します。
 
 ```vibe run
 enum Color {
@@ -59,13 +59,14 @@ neq = false
 show = Green
 ```
 
+`derive (Eq, Ord, Show, Hash, Default)` の5つです。`Eq` はその型の `==` を
+構造的にし、`Ord` は `-1` / `0` / `1` を返す `T::compare` を与え、`Show` は
+`T::to_string` を与えます。文字列補間が呼ぶのもこれです。
+
 ## 自分で書く trait
 
-メソッドを持たないマーカー trait は、`Eq` のようにコンパイラが既に理解して
-いる境界のためのもの。メソッドを持つ trait は witness 辞書を運ぶので、
-ユーザーコードで欲しいのはこちら。`Array` / `Bytes` へのマーカー `impl` は
-`[T: Eq]` を**満たさない** — 要素型が消去されており、`==` が黙って
-参照等価になってしまうため。
+メソッドを持つ trait は契約で、それを境界にするというのは「呼び出し側が
+実装を渡す」という意味になります。
 
 ```vibe run
 trait Measured {
@@ -96,11 +97,27 @@ fn main with Console {
 size_of = 3
 ```
 
-`Send` はユーザー trait ではない。コンパイラが構造的に判定する
-(プリミティブ、タプル、Send な要素の `Option`、immutable な struct / enum)。
-`impl Send for X` はエラー。[並行処理](17_concurrency.vibe.md) を参照。
+`size_of` は `T` が何かを知りません。`T::measure` は呼び出し側が供給する
+witness を通って実装に届きます。境界が実際に動く呼び出しになるのはこの
+仕組みによります。
 
-`Default` は builtin。ジェネリックなコードから `T::default()` を呼ぶ必要が
-あれば `import @vibe/core { Default }`。`derive(Default)` が impl を登録する。
+その witness が限界でもあります。`[T: Eq]` のような境界は witness を要求し、
+要素型が消去されたコンテナはそれを持ちません。だから
+`fn eq2[T: Eq](a: T, b: T)` に `Array[Int]` を渡すと**拒否されます**。
+
+```
+no impl `Eq` for `Array[Int]`
+```
+
+コンパイル時に知らされます。続きは[等価性](16_equality.vibe.md)にあります。
+
+## 自分では実装しない2つ
+
+`Send` はコンパイラが構造的に判定します — プリミティブ、タプル、`Send` な
+部品の `Option`、不変な struct と enum。なので `impl Send for X` は約束の
+手段ではなくエラーです。[並行性](17_concurrency.vibe.md) を参照。
+
+`Default` は組み込みで、`derive(Default)` が実装を登録します。`T::default()`
+を呼ぶジェネリックなコードには `import @vibe/core { Default }` が要ります。
 
 次: [等価性](16_equality.vibe.md)。
