@@ -23,6 +23,17 @@ reject_compiler_gate_block() {
   fi
 }
 
+require_job_block() {
+  local job="$1"
+  local pattern="$2"
+  local block
+  block="$(sed -n "/^  ${job}:/,/^  [a-zA-Z0-9_-]*:/p" "$workflow")"
+  if ! grep -qE "$pattern" <<<"$block"; then
+    echo "[ci-compiler-gate-layout] ${job} missing '$pattern'" >&2
+    exit 1
+  fi
+}
+
 require '^  compiler-gate-preflight:$' "$workflow"
 require '^  compiler-examples:$' "$workflow"
 require '^  compiler-stage2-oracles:$' "$workflow"
@@ -41,6 +52,11 @@ reject_compiler_gate_block 'lint_review_regressions.sh'
 reject_compiler_gate_block 'check_playground_presets.sh'
 reject_compiler_gate_block 'doctest_extract_run.sh'
 require 'COMPILER_GATE_SKIP_STAGE2_ORACLES: "1"' "$workflow"
+require_job_block compiler-stage2-oracles "wasmtime: 'true'"
+require_job_block compiler-docs "wasmtime: 'true'"
+require_job_block compiler-playground "wasmtime: 'true'"
+require_job_block compiler-examples "wasmtime: 'true'"
+require_job_block review-regressions "wasmtime: 'true'"
 
 require 'path: ~/.cache/pkfire-mbt' '.github/actions/setup-vibe/action.yml'
 require 'github.job' '.github/actions/setup-vibe/action.yml'
