@@ -1164,6 +1164,182 @@ fn preclaim_local_type_defs(stmts: Array[Stmt], from: Int, defs: Array[TypeDef],
   }
 }
 
+/// #2125 (field enforcement): erased names each trait's synthesized
+/// `<Trait>Dict` witness struct may spell in its fields -- `Self`, the
+/// trait's type parameters, and each method's own generic binders.
+/// `desugar_trait_dict`'s `make_dict_struct_stmt` copies the trait method
+/// signatures verbatim; the pass runs after checking in the ordinary lane,
+/// but whole-program lanes re-check its output, so the checker does see
+/// those fields. Provenance, not name shape alone (the #1869/#2147 lesson):
+/// the struct name must be the trait's dict spelling AND the field must be a
+/// method that trait declares. One row per trait:
+/// (dict struct name, method names, erased names).
+fn collect_trait_dict_erasures(stmts: Array[Stmt]) -> Array[(String, String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, methods, method_gens, tparams) => {
+        let dict_name = String::concat(tname, "Dict")
+        // One row PER METHOD (Codex on #2162): `Self` and the trait's own
+        // params are trait-wide, but a method's generic binders are in scope
+        // only for that method's field -- a trait-wide union let field `a`
+        // spell method `b`'s binder and stay a wildcard.
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, _, _) = Array::get(methods, mi)
+          let erased = array_empty()
+          Array::push(erased, "Self")
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(erased, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gmname, gnames, _) = Array::get(method_gens, gi)
+            if gmname == mname {
+              let mut gni = 0
+              while gni < Array::length(gnames) {
+                Array::push(erased, Array::get(gnames, gni))
+                gni = gni + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          Array::push(out, (dict_name, mname, erased))
+          mi = mi + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2125 (field/payload enforcement): the deferred-name sentinels in this
+/// statement list. A materialized vpkg types module references names it can
+/// neither declare nor import (a contract-`opaque` name defined in a sibling
+/// impl -- types -> impl would be an import cycle -- or a name from another
+/// package); those resolve to the intentional bare-`CtNamed` contract
+/// artifact, and `contract_types_module_text` carries them IN-BAND as a
+/// `let __vpkg_deferred_type_names_<uniq>__: String = "N1 N2"` binding, so
+/// the exemption travels with the text through every lane -- per-module,
+/// cached, or injected into a whole-program merge (where the names resolve
+/// anyway and the exemption is inert).
+fn collect_deferred_type_name_sentinels(stmts: Array[Stmt]) -> Array[(Array[String], Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, lname, _, value) => if String::starts_with(lname, "__vpkg_deferred_type_names_") {
+        match value {
+          EString(names) => {
+            // `<protected decls> : <deferred names>` -- names before the `:`
+            // are the declarations the exemption applies to (Codex round 3 on
+            // #2162: unscoped, a merge-lane sentinel excused an unrelated
+            // declaration misspelling one of these names). A sentinel with no
+            // `:` protects nothing.
+            let protected = array_empty()
+            let deferred = array_empty()
+            let parts = String::split(names, " ")
+            let mut seen_sep = false
+            let mut pi = 0
+            while pi < Array::length(parts) {
+              let p = Array::get(parts, pi)
+              if p == ":" {
+                seen_sep = true
+              } else if p == "" {
+                ()
+              } else if seen_sep {
+                Array::push(deferred, p)
+              } else {
+                Array::push(protected, p)
+              }
+              pi = pi + 1
+            }
+            if seen_sep && Array::length(deferred) > 0 {
+              Array::push(out, (protected, deferred))
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The deferred names whose sentinel protects `decl_name`, or empty.
+fn deferred_names_for_decl(rows: Array[(Array[String], Array[String])], decl_name: String) -> Array[String] {
+  let mut i = 0
+  let mut found = array_empty()
+  while i < Array::length(rows) {
+    let (protected, deferred) = Array::get(rows, i)
+    if string_array_contains(protected, decl_name) {
+      found = deferred
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2125 (field/payload enforcement): the shadow list for a DECLARATION's
+/// unknown-type report -- the declaration's own type parameters, any
+/// trait-dict erased names, plus this statement list's deferred-name
+/// sentinels (see `collect_deferred_type_name_sentinels`).
+fn decl_report_shadow(tparams: Array[String], dict_erased: Array[String], deferred: Array[String]) -> Array[String] {
+  if Array::length(dict_erased) == 0 && Array::length(deferred) == 0 {
+    tparams
+  } else {
+    let s2 = array_empty()
+    let mut si = 0
+    while si < Array::length(tparams) {
+      Array::push(s2, Array::get(tparams, si))
+      si = si + 1
+    }
+    let mut di = 0
+    while di < Array::length(dict_erased) {
+      Array::push(s2, Array::get(dict_erased, di))
+      di = di + 1
+    }
+    let mut fi = 0
+    while fi < Array::length(deferred) {
+      Array::push(s2, Array::get(deferred, fi))
+      fi = fi + 1
+    }
+    s2
+  }
+}
+
+/// The erased-name row for `struct_name`/`field_name`, or empty when no
+/// trait in this statement list declares that dict/method pair.
+fn trait_dict_erasure_for(erasures: Array[(String, String, Array[String])], struct_name: String, field_name: String) -> Array[String] {
+  let mut i = 0
+  let mut found = array_empty()
+  while i < Array::length(erasures) {
+    let (dname, mname, erased) = Array::get(erasures, i)
+    if dname == struct_name && mname == field_name {
+      found = erased
+      i = Array::length(erasures)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 fn string_array_contains(items: Array[String], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -1522,6 +1698,12 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   // #2125: see preclaim_local_type_defs.
   let preclaim_from = Array::length(defs)
   preclaim_local_type_defs(stmts, idx, defs, type_def_binders)
+  // #2125 (field enforcement): see collect_trait_dict_erasures. Computed from
+  // the statement LIST because reorder_type_decls_first hoists a synthesized
+  // `<Trait>Dict` struct above its trait declaration, so the env cannot
+  // answer at the struct's own check point.
+  let trait_dict_erasures = collect_trait_dict_erasures(stmts)
+  let deferred_type_names = collect_deferred_type_name_sentinels(stmts)
   // Slots this list's declarations have already taken (see own_typedef_slot).
   let taken_type_def_slots = array_empty()
   let mut cur_env = env
@@ -1908,6 +2090,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let named_vtypes = array_empty()
           let mut ti = 0
           while ti < Array::length(vtypes) {
+            // #2125: an unknown name in a payload otherwise becomes a wildcard
+            // `CtNamed` -- same hole as the annotation sites.
+            report_unknown_type_names(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
             // #1512: `params` shadow `defs`, so the substitution below still
             // finds `CtNamed(<param>, [])` when an import bound that name.
             let named_vt = resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params)
@@ -2096,6 +2281,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         let mut fi = 0
         while fi < Array::length(field_defs) {
           let (fname, ftype_expr) = Array::get(field_defs, fi)
+          // #2125: an unknown name in a field type otherwise becomes a
+          // wildcard `CtNamed` -- same hole as the annotation sites. A
+          // synthesized `<Trait>Dict` witness struct spells `Self` and the
+          // trait's erased params verbatim (whole-program lanes re-check the
+          // desugar's output); those are shadowed under the provenance
+          // `collect_trait_dict_erasures` establishes.
+          let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
+          let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
+          report_unknown_type_names(ftype_expr, defs, report_shadow, env, array_empty(), String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
