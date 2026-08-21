@@ -136,3 +136,21 @@ lane 内の順序は blocker → P 順。gate スクリプトへのエントリ�
 - クローズは「fix commit が main にあること」を確認してから行う
   （2026-08-07 の検証: #1500 = `36e7869`、#1503 = `d9a50f6`+`7585b74`、
   #1525 = `ab031d2`。#1508/#1520/#1514 は部分着地なので open のまま残した）
+
+## `tutorial-breakage`
+
+A runnable block in [The Vibe Book](../book/README.md) that stops working on
+the current compiler is **P1 (cannot write it / it crashes)**: a reader
+following the canonical tour cannot run it. If it type-checks and returns a
+wrong value instead, it is **P0 (silent-wrong)** like anything else.
+
+Label such issues `tutorial-breakage` so they are easy to find. The label does
+not override priority — the order of work still falls out of P0 / P1 and
+`blocker` exactly as above. Whether the answer is a compiler fix or a language
+change follows the same triage, and the repository rule that an
+implementation-driven restriction must not become something the tutorial asks
+the reader to memorize.
+
+(This rule previously existed only in `docs/tutorial/README-ja.md`, which was a
+Japanese-only document for a directory that has since become a pointer. Internal
+documents get one language — English — per the policy in AGENTS.md.)
