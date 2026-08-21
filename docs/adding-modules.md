@@ -153,8 +153,10 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
   an ordinary user enum with no special treatment whatsoever.
 - **Qualified constructor patterns** such as `Result::Ok(v) =>` have worked since
   #742 (including against an enum you declared yourself, as above).
-- **Name `Type::method` explicitly in the import list** (`Json::get` and the
-  like) — there is no implicit companion import as there was in the host era.
+- Importing the owner declaration activates its namespace: for example,
+  `import @vibe/core { struct MutMap }` makes exported `MutMap::*` members
+  available. Name `Type::method` explicitly only when importing a narrower
+  surface or assigning the member an alias.
 - **Stringifying a Double**: `"\{x}"` is only correct where the value is
   statically known to be floatish — a literal, a float-tracked local, float
   arithmetic, or an annotated parameter (#744). Route the result of a plain user

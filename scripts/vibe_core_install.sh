@@ -4,7 +4,7 @@
 # hashes. After installing, external-style consumers can write:
 #
 #   require @vibe/core <x.y.z> = #<package-hash>
-#   import @vibe/core { sha1, type List, ... }
+#   import @vibe/core { sha1, enum List, ... }
 #
 # (In-repo consumers can skip the store entirely and use a relative bare
 # directory import of lib/@vibe/core.) The CLI wasm defaults to the committed

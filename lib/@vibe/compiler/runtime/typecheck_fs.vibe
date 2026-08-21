@@ -21,8 +21,10 @@ import @vibe/compiler/checker {
   check_program_type_table,
   check_program_with_env_result,
   check_program_with_projected_import_env_result,
+  detect_redundant_namespace_imports,
   detect_unbound_nonunit_returns,
   detect_unused_imports,
+  import_item_kind_errors,
   typing_semantics_seed
 }
 
@@ -1096,6 +1098,12 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   }
   let dep_bindings = env_flat_bindings(dep_env)
   let dep_selectable_type_defs = env_selectable_type_defs(dep_env)
+  let kind_errors = import_item_kind_errors(names, dep_env)
+  let mut kei = 0
+  while kei < Array::length(kind_errors) {
+    Array::push(unresolved, Array::get(kind_errors, kei))
+    kei = kei + 1
+  }
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
   let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, unresolved)
@@ -5213,6 +5221,13 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Exceptio
               let (_, _, wmsg) = Array::get(import_warns, wi)
               Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
               wi = wi + 1
+            }
+            let redundant_import_warns = detect_redundant_namespace_imports(stmts)
+            let mut rwi = 0
+            while rwi < Array::length(redundant_import_warns) {
+              let (_, _, wmsg) = Array::get(redundant_import_warns, rwi)
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
+              rwi = rwi + 1
             }
             // #1340 (ADR-0071): the #1302 "generic effect declarations are
             // unchecked" declaration-site warning is retired — generic

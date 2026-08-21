@@ -7,9 +7,7 @@ Rust book は hello-world のあとで一度立ち止まり、数当てゲーム
 `fn` を使って、リスト中の単語を数える。まだ見ていない構文もある。それが狙い。
 
 ```vibe run
-import @vibe/core {
-  type MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
-}
+import @vibe/core { struct MutMap }
 
 struct Tally {
   word: String; count: Int

@@ -965,7 +965,7 @@ cat > "$cdir6f/consumer.vibe" <<EOF
 require @vibe/core 0.2.0 = $core_pin
 
 import @vibe/core {
-  sha1, encode_uleb128, read_uleb128, type List, from_array, contains
+  sha1, encode_uleb128, read_uleb128, enum List, from_array, contains
 }
 export let _start: () -> Int = () -> {
   assert(sha1("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d")

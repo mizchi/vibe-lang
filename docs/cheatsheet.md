@@ -1350,21 +1350,15 @@ Values use the bare item spelling, including values declared with `fn` or
 import @vibe/console { effect Console, struct Tty, println }
 ```
 
-Phase A accepts bare items for compatibility and also accepts the optional
-`type`, `struct`, `enum`, `effect`, and `trait` qualifiers. Written qualifiers
-are checked: `struct`, `enum`, `effect`, and `trait` require that exact exported
-declaration kind. For example, requesting `struct Color` when `Color` is an enum
-is rejected with a diagnostic that identifies both the requested and exported
+Bare items remain accepted for compatibility. The optional `type`, `struct`,
+`enum`, `effect`, and `trait` qualifiers are exact: `type` requests a type alias,
+and each other qualifier requests the correspondingly named declaration kind.
+For example, requesting `type Color` or `struct Color` when `Color` is an enum is
+rejected with a diagnostic that identifies both the requested and exported
 kinds. Selective re-exports use the same rules.
 
-`type` is temporarily broader in Phase A and accepts a type alias, struct, or
-enum. Existing code used it as a type-namespace selector, so narrowing it in the
-same bootstrap generation would prevent the compiler from rebuilding itself.
-
-Phase B is planned, not current behavior: after the bootstrap compiler accepts
-the new item syntax, `type` will mean exactly a type alias, and qualifiers will
-eventually become mandatory for non-value imports. Bare value imports will stay
-bare.
+A later migration will make qualifiers mandatory for non-value imports. Bare
+value imports will stay bare.
 
 ### Same-named traits from two packages are rejected (#1910)
 
