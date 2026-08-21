@@ -3997,33 +3997,51 @@ export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
 export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
   let defs = collect_alias_type_defs(stmts)
   let out: Array[String] = []
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, name, _, value) =>
-      match value {
-        EFn(tparams, _, _, ret, _, fbody) =>
-        match ret {
-          Some(rt) => match resolve_type_expr_core_shadowed(rt, defs, tparams) {
-            CtDouble => Array::push(out, name),
-            // The annotation resolved to a NAME rather than a type: a type
-            // variable, or an alias the checker could not see through either.
-            // It cannot decide the representation, so ask the body, which is
-            // the one thing that does know (#2185 review).
-            CtNamed(_, _) => if float_body_shape(fbody) {
-              Array::push(out, name)
-            } else {
+  // The body fallback below can classify `fn f() -> A { d() }` only once `d`
+  // is already known, so one statement-order pass would answer by declaration
+  // order (#2185 review). Repeat while the round added something; `out` only
+  // grows, so this terminates, and the bound is the statement count.
+  let mut rounds = 0
+  let mut changed = true
+  while changed && rounds <= Array::length(stmts) {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, name, _, value) =>
+        match value {
+          EFn(tparams, _, _, ret, _, fbody) =>
+          match ret {
+            Some(rt) => if array_contains_str(out, name) {
               ()
+            } else {
+              match resolve_type_expr_core_shadowed(rt, defs, tparams) {
+                CtDouble => {
+                  Array::push(out, name)
+                  changed = true
+                },
+                // The annotation resolved to a NAME rather than a type: a type
+                // variable, or an alias the checker could not see through
+                // either. It cannot decide the representation, so ask the
+                // body, which is the one thing that does know (#2185 review).
+                CtNamed(_, _) => if float_body_shape(fbody, out) {
+                  Array::push(out, name)
+                  changed = true
+                } else {
+                  ()
+                },
+                _ => ()
+              }
             },
-            _ => ()
+            None => ()
           },
-          None => ()
+          _ => ()
         },
         _ => ()
-      },
-      _ => ()
+      }
+      i = i + 1
     }
-    i = i + 1
+    rounds = rounds + 1
   }
   out
 }
@@ -4050,16 +4068,26 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// compile_call / backend_expr: a literal, float arithmetic, or either arm of
 /// an `if`, walked through the block forms to the tail expression. Anything it
 /// cannot see stays false, which is the pre-existing answer.
-fn float_body_shape(e: Expr) -> Bool {
+fn float_body_shape(e: Expr, known: Array[String]) -> Bool {
   match e {
     EFloat(_) => true,
-    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (float_body_shape(l) || float_body_shape(r)),
-    EUnaryOp(op, x) => op == "-" && float_body_shape(x),
-    ESeq(_, b) => float_body_shape(b),
-    ELet(_, _, b, _) => float_body_shape(b),
-    ELetRec(_, _, b) => float_body_shape(b),
-    ELetMut(_, _, b, _) => float_body_shape(b),
-    EIf(_, t, f) => float_body_shape(t) || float_body_shape(f),
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (float_body_shape(l, known) || float_body_shape(r, known)),
+    EUnaryOp(op, x) => op == "-" && float_body_shape(x, known),
+    ESeq(_, b) => float_body_shape(b, known),
+    ELet(_, _, b, _) => float_body_shape(b, known),
+    ELetRec(_, _, b) => float_body_shape(b, known),
+    ELetMut(_, _, b, _) => float_body_shape(b, known),
+    EIf(_, t, f) => float_body_shape(t, known) || float_body_shape(f, known),
+    // A CALL is a float when the callee is one -- either a builtin that
+    // produces one, or a user function already in the table. Without this
+    // `fn f() -> A { d() }` over a `-> Double` d was omitted and rendered raw
+    // bits on BOTH lanes (192 linear, 4612811918334230528 gc; #2185 review).
+    // Same callee list as the sibling classifiers in compile_call /
+    // backend_expr, which is the point: one notion of "this is a float".
+    ECall(callee, _, _) => match callee {
+      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || array_contains_str(known, cn),
+      _ => false
+    },
     _ => false
   }
 }
