@@ -8,8 +8,10 @@ Previous: [Generics, traits, and derive](15_generics.vibe.md)
 structs with equal fields are equal, and nothing here quietly compares
 addresses instead.
 
-There is exactly one boundary, and it is a compile error rather than a
-wrong answer — see the end of the chapter.
+Two edges are worth knowing, and neither one answers wrongly: an
+unannotated empty array **traps** instead of comparing once you push
+into it (a bug, #2157), and a generic `T` with no `Eq` witness is a
+**compile error**. Both are below.
 
 ## The ordinary cases
 
@@ -99,7 +101,7 @@ comparing **traps at run time** rather than answering (#2157). The
 annotation is the fix, and it is the only reason this chapter asks you
 to write one.
 
-## The one boundary: a generic `T` with no witness
+## The compile-time edge: a generic `T` with no witness
 
 Inside `fn f[T: Eq](a: T, b: T)`, the element type is gone by the time
 code is generated, so `==` is answered by the `Eq` witness the caller
@@ -138,7 +140,8 @@ fn main with Console {
 no impl `Eq` for `Array[Int]`
 ```
 
-That is the whole of it. You are told at compile time; you never get a
-comparison that silently answers by address.
+That is the whole of it. Between the two edges you are always told —
+at compile time for the missing witness, and by a trap for the
+unannotated empty array — and neither one silently answers by address.
 
 Next: [Concurrency](17_concurrency.vibe.md).
