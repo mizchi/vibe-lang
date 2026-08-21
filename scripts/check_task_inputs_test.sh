@@ -195,6 +195,20 @@ run_tree_case "directly executed nested compiler wrapper is rejected" 1 'local t
   inputs { ...vibeSources }
 }'
 
+printf '%s\n' '#!/usr/bin/env bash' 'source scripts/inner.sh' > "$WORK/scripts/outer.sh"
+run_tree_case "source nested compiler wrapper is rejected" 1 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/outer.sh"
+  inputs { ...vibeSources }
+}'
+
+printf '%s\n' '#!/usr/bin/env bash' '. scripts/inner.sh' > "$WORK/scripts/outer.sh"
+run_tree_case "dot-source nested compiler wrapper is rejected" 1 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/outer.sh"
+  inputs { ...vibeSources }
+}'
+
 # Nested release wrappers reach the seed through another script; direct-only
 # inspection would miss this compiler identity dependency.
 run_case "nested seed wrapper with only vibeSources is rejected" 1 'local t = new Task {
@@ -226,4 +240,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (22 cases)"
+echo "check-task-inputs-test: ok (24 cases)"

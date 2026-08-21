@@ -102,6 +102,7 @@ AGGREGATOR_RE = re.compile(
 EXEC_RE = re.compile(
     r"(?:^|[;&|(\s])(?:bash|sh|env|exec|node|spawnSync|spawn|execSync|execFileSync)(?=\s|\()"
 )
+SOURCE_RE = re.compile(r"(?:^|[;&|(\s])(?:source|\.)\s+")
 COMMENT_RE = re.compile(r"^\s*(#|//|\*)")
 SEED_RE = re.compile(r"bootstrap/seed(?:\.json|/compiler\.wasm)")
 SCRIPT_PATH_RE = re.compile(r"((?:scripts|tests|eval|bench)/[A-Za-z0-9_./-]+\.(?:sh|mjs))")
@@ -127,7 +128,7 @@ def reaches_compiler(script, seen=None):
             continue
         if SEED_RE.search(line) or (TOOL_RE.search(line) and EXEC_RE.search(line)):
             return True
-        if not EXEC_RE.search(line) and not DIRECT_SCRIPT_RE.search(line):
+        if not EXEC_RE.search(line) and not DIRECT_SCRIPT_RE.search(line) and not SOURCE_RE.search(line):
             continue
         nested = SCRIPT_PATH_RE.findall(line)
         nested += [os.path.join(os.path.dirname(script), name) for name in SCRIPT_BASENAME_RE.findall(line)]
