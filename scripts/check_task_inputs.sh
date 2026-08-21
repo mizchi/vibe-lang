@@ -42,13 +42,27 @@ probe_inputs_safe = bool(
 # scriptTask wrappers are deliberately classified as a group: some execute the
 # compiler through several shell layers, which text inspection cannot prove
 # individually. The shared factory must therefore carry the complete identity.
-script_task_m = re.search(
-    r"local\s+function\s+scriptTask\b.*?inputs\s*\{(.*?)\}", src, re.S
-)
+script_task_decl = re.search(r"local\s+function\s+scriptTask\b", src)
+script_task_inputs = None
+if script_task_decl:
+    brace = src.find("{", script_task_decl.end())
+    depth, end = 0, brace
+    while brace >= 0 and end < len(src):
+        if src[end] == "{":
+            depth += 1
+        elif src[end] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        end += 1
+    factory_block = src[brace : end + 1] if brace >= 0 and depth == 0 else ""
+    script_task_inputs = re.search(r"inputs\s*\{(.*?)\}", factory_block, re.S)
 script_task_safe = bool(
-    script_task_m and "compilerProbeInputs" in script_task_m.group(1) and probe_inputs_safe
+    script_task_inputs
+    and "compilerProbeInputs" in script_task_inputs.group(1)
+    and probe_inputs_safe
 )
-script_task_bad = bool(script_task_m and not script_task_safe)
+script_task_bad = bool(script_task_decl and not script_task_safe)
 
 # A script "reaches the compiler" when it EXECUTES one of these, not when it
 # mentions one. A first cut matched any occurrence of `stage2` and flagged six

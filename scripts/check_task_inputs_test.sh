@@ -63,6 +63,16 @@ run_case "scriptTask with only vibeSources is rejected" 1 'local function script
   inputs { ...vibeSources; ...scriptSources }
 }'
 
+run_case "scriptTask without inputs is rejected" 1 'local function scriptTask(taskName: String, script: String): Task = new Task {
+  name = taskName
+  cmd = "bash \(script)"
+}
+local later = new Task {
+  name = "later"
+  cmd = "bash scripts/check_book_links.sh"
+  inputs { ...compilerProbeInputs }
+}'
+
 run_case "scriptTask with compilerProbeInputs passes" 0 'local compilerProbeInputs = new {
   ...vibeSources
   "bootstrap/seed.json"
@@ -119,4 +129,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (12 cases)"
+echo "check-task-inputs-test: ok (13 cases)"
