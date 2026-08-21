@@ -1,0 +1,81 @@
+//# Functions
+
+// #2158: codegen is untyped, so the only thing that made a Double look like a
+// Double was the SHAPE of the expression producing it (a float literal, float
+// arithmetic, an explicit `Double`/`Float` annotation). A plain call to a
+// function DECLARED `-> Double` had none of those, so `__to_string` — which
+// string interpolation lowers to — fell through to its runtime bit-pattern
+// heuristic and printed the raw f64 bits as an Int (`half(5.0)` rendered as
+// `404`, and `let a = half(5.0); "${a}"` as `232`).
+//
+// The assertions below call `__to_string` directly rather than interpolating:
+// that IS what `"${e}"` lowers to, and the flat low-level entry these tests
+// compile through does not run the interpolation pre-pass.
+//
+// The fix records the declared return type of every user function in
+// CompileCtx.float_ret_fns during the pre-pass, and both copies of the
+// floatish classifier (cc_expr_is_floatish in compile_call.vibe and
+// expr_is_floatish in compile_expr_tail.vibe) consult it.
+
+fn half(x: Double) -> Double {
+  x / 2.0
+}
+
+fn halff(x: Float) -> Float {
+  x / 2.0
+}
+
+fn quarter(x: Double) -> Double {
+  half(half(x))
+}
+
+fn count(n: Int) -> Int {
+  n + 1
+}
+
+//# Tests
+
+test "#2158: a call to a `-> Double` function stringifies as a Double" {
+  assert_true(__to_string(half(5.0)) == "2.5")
+}
+
+test "#2158: a let bound to a `-> Double` call stringifies as a Double" {
+  let a = half(5.0)
+  assert_true(__to_string(a) == "2.5")
+}
+
+test "#2158: `-> Float` is classified the same way" {
+  let a = halff(5.0)
+  assert_true(__to_string(a) == "2.5")
+  assert_true(__to_string(halff(5.0)) == "2.5")
+}
+
+test "#2158: a `-> Double` function calling another one" {
+  let a = quarter(10.0)
+  assert_true(__to_string(a) == "2.5")
+  assert_true(__to_string(quarter(10.0)) == "2.5")
+}
+
+test "#2158: an explicit annotation still works (the shape that never broke)" {
+  let a: Double = half(5.0)
+  assert_true(__to_string(a) == "2.5")
+}
+
+test "#2158: arithmetic on a call result still works" {
+  assert_true(__to_string(half(5.0) + 0.0) == "2.5")
+  let a = half(5.0)
+  assert_true(__to_string(a + a) == "5")
+}
+
+test "#2158: two call results compare by value, not by box identity" {
+  let a = half(5.0)
+  let b = half(5.0)
+  assert_true(a == b)
+  assert_true(!(a == half(4.0)))
+}
+
+test "#2158: a `-> Int` function is NOT reclassified as a float" {
+  let n = count(41)
+  assert_true(__to_string(n) == "42")
+  assert_true(__to_string(count(41)) == "42")
+}

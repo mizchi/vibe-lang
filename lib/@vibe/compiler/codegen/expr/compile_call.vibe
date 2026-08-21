@@ -491,6 +491,26 @@ fn cc_slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
   result
 }
 
+/// #2158: is `fname` a user function DECLARED to return Double/Float?
+///
+/// The table is built once, in the pre-pass in wasi/linked_compile.vibe, so
+/// this is a linear scan over a small list rather than a type lookup --
+/// codegen has no types to look up (see CompileCtx.float_ret_fns).
+export fn cc_fn_returns_float(ctx: CompileCtx, fname: String) -> Bool {
+  let arr = ctx.float_ret_fns
+  let mut i = Array::length(arr) - 1
+  let mut found = false
+  while i >= 0 {
+    if Array::get(arr, i) == fname {
+      found = true
+      i = -1
+    } else {
+      i = i - 1
+    }
+  }
+  found
+}
+
 fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   // fbox (#797): mirror of expr_is_floatish's EDot tuple-projection case --
   // `t.N` on a tracked tuple-literal binding recurses into the backing
@@ -574,6 +594,14 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
     if is_eident(callee) {
       let fname = get_eident_name(callee)
       if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+        true
+      } else if cc_fn_returns_float(ctx, fname) {
+        // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.
+        // Without this the call fell through to the runtime bit-pattern
+        // heuristic, so `"\{half(5.0)}"` rendered the f64 as an integer --
+        // compiling clean and printing a plausible wrong number. The declared
+        // return type was right there in the signature; codegen just had no
+        // table to read it from. CompileCtx.float_ret_fns is that table.
         true
       } else if fname == "__rec_field" {
         // fbox (#797): mirror of expr_is_floatish's tuple-projection case --
