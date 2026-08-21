@@ -253,6 +253,13 @@ fn count_param_region_occurrences(t: Type, defs: Array[TypeDef], param: String, 
     CtNamed(head, targs) => if head == param && Array::length(targs) == 0 {
       Array::set(counts, 0, Array::get(counts, 0) + 1)
     } else {
+      // As in the walk: a head that resolves to a declaration has ordinary
+      // parameters (a shadowing `struct TaskHandle[A, B, C]` grants no slot);
+      // the compiler-owned mapping applies only to the unresolved lane.
+      let has_typedef = match find_typedef(defs, head) {
+        Some(_) => true,
+        None => false
+      }
       let followed = if depth <= 8 {
         match find_typedef(defs, head) {
           Some(td) => match td {
@@ -270,7 +277,11 @@ fn count_param_region_occurrences(t: Type, defs: Array[TypeDef], param: String, 
       if followed {
         ()
       } else {
-        let slot = ty_region_slot_index(head, Array::length(targs))
+        let slot = if has_typedef {
+          0 - 1
+        } else {
+          ty_region_slot_index(head, Array::length(targs))
+        }
         let mut j = 0
         while j < Array::length(targs) {
           let child = Array::get(targs, j)
@@ -396,8 +407,15 @@ fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: A
       // Only this application's own region-slot argument (constructor-specific
       // -- see `ty_region_slot_index`) is exempt; the flag never propagates
       // further down, and each nested application recomputes it for its own
-      // arguments.
-      let slot_index = ty_region_slot_index(name, Array::length(args))
+      // arguments. The slot is granted only when the head does NOT resolve to
+      // a declaration (Codex round 3 on #2159): a user `struct TaskHandle[A,
+      // B, C]` shadowing the compiler-owned spelling has ordinary parameters,
+      // so the compiler-owned mapping applies only in the unresolved
+      // wellknown-head lane. An alias's slots come from its body instead.
+      let slot_index = match find_typedef(defs, name) {
+        Some(_) => 0 - 1,
+        None => ty_region_slot_index(name, Array::length(args))
+      }
       let alias_flags = alias_region_slot_flags(name, defs)
       let mut i = 0
       while i < Array::length(args) {
