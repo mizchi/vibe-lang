@@ -91,8 +91,8 @@ The old `pkf run selfhost-trial-gate` compatibility alias was removed in
 That task checks the following together:
 
 - `generation-gate`: fixed seed -> stage1 -> stage2 -> stage3
-- `post-generation-gate` (`scripts/gate.sh --post-generation` -> `compiler_gate.sh`):
-  the full sign-off set
+- `post-generation-gate` (`scripts/compiler_gate.sh early mid late`): the
+  non-bootstrap sign-off lanes, using the stage produced by `generation-gate`
 
 The old host-comparison lanes (`test-selfhost-corpus-gate` / `perf-kpi` /
 `rss-kpi` / component parity) were retired with their scripts when the
