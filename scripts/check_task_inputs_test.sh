@@ -56,6 +56,28 @@ local t = new Task {
   inputs { ...compilerProbeInputs; "docs/cheatsheet.md" }
 }'
 
+run_case "commented compilerProbeInputs source is rejected" 1 'local compilerProbeInputs = new {
+  // ...vibeSources
+  "bootstrap/seed.json"
+}
+local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...compilerProbeInputs }
+}'
+
+run_case "commented task compilerProbeInputs is rejected" 1 'local compilerProbeInputs = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+}
+local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { // ...compilerProbeInputs
+    "docs/cheatsheet.md"
+  }
+}'
+
 # The shared wrapper factory must not bypass the seed-aware input set.
 run_case "scriptTask with only vibeSources is rejected" 1 'local function scriptTask(taskName: String, script: String): Task = new Task {
   name = taskName
@@ -137,4 +159,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (14 cases)"
+echo "check-task-inputs-test: ok (16 cases)"

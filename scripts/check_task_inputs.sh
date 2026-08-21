@@ -26,6 +26,10 @@ import re, sys, os
 TASKFILE = os.environ.get("TASK_INPUTS_TASKFILE", "Taskfile.pkl")
 src = open(TASKFILE, encoding="utf-8").read()
 
+def active_pkl(text):
+    """Drop Pkl line comments before checking whether an input is active."""
+    return re.sub(r"//.*$", "", text, flags=re.M)
+
 # The shared compiler-probe input set is safe only while it contains both
 # halves of the compiler identity: selfhost sources and the bootstrap seed.
 probe_inputs_m = re.search(
@@ -33,10 +37,11 @@ probe_inputs_m = re.search(
     src,
     re.S,
 )
+probe_inputs_body = active_pkl(probe_inputs_m.group(1)) if probe_inputs_m else ""
 probe_inputs_safe = bool(
     probe_inputs_m
-    and "vibeSources" in probe_inputs_m.group(1)
-    and '"bootstrap/seed.json"' in probe_inputs_m.group(1)
+    and "vibeSources" in probe_inputs_body
+    and '"bootstrap/seed.json"' in probe_inputs_body
 )
 
 # scriptTask wrappers are deliberately classified as a group: some execute the
@@ -57,9 +62,10 @@ if script_task_decl:
         end += 1
     factory_block = src[brace : end + 1] if brace >= 0 and depth == 0 else ""
     script_task_inputs = re.search(r"inputs\s*\{(.*?)\}", factory_block, re.S)
+script_task_inputs_body = active_pkl(script_task_inputs.group(1)) if script_task_inputs else ""
 script_task_safe = bool(
     script_task_inputs
-    and "compilerProbeInputs" in script_task_inputs.group(1)
+    and "compilerProbeInputs" in script_task_inputs_body
     and probe_inputs_safe
 )
 script_task_bad = bool(script_task_decl and not script_task_safe)
@@ -155,7 +161,7 @@ for m in re.finditer(r"new Task \{", src):
     if not hot:
         continue
     checked += 1
-    has_compiler_inputs = "compilerProbeInputs" in block and probe_inputs_safe
+    has_compiler_inputs = "compilerProbeInputs" in active_pkl(block) and probe_inputs_safe
     if not has_compiler_inputs:
         why = "declares no `inputs` at all" if "inputs" not in block else "does not include a complete compiler input set"
         fails.append((name, hot[0], why))
