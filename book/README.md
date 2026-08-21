@@ -39,6 +39,30 @@ artifact at that URL; the playground still lives in `playground/`
 The former `docs/tutorial/` chapters live here now. `docs/tutorial/README.md`
 is a pointer.
 
+## What the check does and does not prove
+
+`bash scripts/vibe_md.sh check` compiles and runs each `` ```vibe run `` block
+and compares it against the `` ```output `` block that follows. That proves the
+code and the recorded output are true of the current compiler. It proves
+nothing about the prose, the choice of API, or the order the chapters teach in
+— those are review's job.
+
+The whole book is checked by the required `compiler-gate` CI job, which passes
+`VIBE_MD_STAGE2` explicitly from the stage2 built in the same checkout;
+`pkf run release-check` depends on `vibe-md-tutorial-gated`, which carries the
+same guarantee. Neither allows a silent fallback to the committed seed, so a
+chapter cannot go green by accident on an older compiler.
+
+## When to use ` ```vibe skip `
+
+Only for examples that are **deliberately** not runnable: syntax that is
+rejected on purpose, target syntax that is not implemented yet, illustrative
+paths that do not exist. Put the reason in a comment on the block's first line,
+and attach a tracking issue for anything unimplemented. When it becomes
+runnable, turn it into `vibe run` with a real `output` block.
+
+Never move code to `skip` because its test broke.
+
 ## Chapter map
 
 See [SUMMARY.md](SUMMARY.md). The parts follow *The Rust Programming
@@ -47,4 +71,4 @@ mutation (the ownership analog), data, packages, collections, effects,
 generics, concurrency, and tooling.
 
 Start at [Installation and Hello, vibe](en/01_getting_started.vibe.md)
-or jump to [A small program](en/19_a_small_program.vibe.md).
+or jump to [A small program](en/02_a_small_program.vibe.md).

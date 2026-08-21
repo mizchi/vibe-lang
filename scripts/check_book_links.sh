@@ -5,7 +5,7 @@
 # chapter 2 is finished with the language. When this was written, 28 of the
 # book's 130 relative links were broken, including EVERY navigation link in the
 # Japanese book -- `[02 制御フロー](02_control_flow-ja.vibe.md)` when the file
-# is `book/ja/02_control_flow.vibe.md`. That is rename fallout from
+# is `book/ja/04_control_flow.vibe.md`. That is rename fallout from
 # `docs/tutorial/NN_x-ja.vibe.md` -> `book/ja/NN_x.vibe.md`, and nothing read
 # the links back, so the Japanese book had been unnavigable end to end.
 #
@@ -22,7 +22,7 @@
 #
 # A link to the file it appears in is also reported. It RESOLVES, so a
 # plain existence check calls it fine -- and every "English version" link in
-# book/ja/ was one, `[01_values_functions.vibe.md](01_values_functions.vibe.md)`
+# book/ja/ was one, `[03_values_functions.vibe.md](03_values_functions.vibe.md)`
 # from inside book/ja/, missing the `../src/`. Seven chapters offered a link to
 # the canonical English text that led back to the translation.
 #

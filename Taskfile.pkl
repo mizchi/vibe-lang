@@ -371,6 +371,54 @@ local checkBookLinks = new Task {
   }
 }
 local testCheckBookLinks = scriptTask("test-check-book-links", "scripts/check_book_links_test.sh")
+// A resolving link and a correct one are different questions. check-book-links
+// answers the first; this answers the second, against book/SUMMARY.md as the
+// single reading order -- headings numbered by position, and Previous/Next
+// naming the SUMMARY neighbours, in BOTH languages.
+// NOT `scriptTask`, for the same reason as check-book-links: the book is the
+// subject, so a cached pass replayed after a chapter edit checks nothing.
+local checkBookOrder = new Task {
+  name = "check-book-order"
+  description = "chapter headings and Previous/Next follow book/SUMMARY.md, en and ja"
+  cmd = "bash scripts/check_book_order.sh"
+  inputs {
+    ...scriptSources
+    "book/**/*.md"
+  }
+}
+// The book's ```vibe skip blocks each claim a rejection and quote a
+// diagnostic, and the doctest harness cannot look at them -- it runs `vibe
+// run` blocks and skips these by definition. One had rotted into
+// demonstrating the fix instead of the failure (#2156 review). Needs a
+// compiler, so callers that build a stage2 should hand it over via
+// VIBE_SKIP_BLOCK_CLI_WASM. Not `scriptTask`, same reason as its siblings.
+local checkBookSkipBlocks = new Task {
+  name = "check-book-skip-blocks"
+  description = "every ```vibe skip block is still rejected, with its quoted diagnostic"
+  cmd = "bash scripts/check_book_skip_blocks.sh"
+  // vibeSources too: the ANSWER comes from the compiler, so a compiler change
+  // can start accepting a skip block or reword its diagnostic without touching
+  // a script or a chapter. Without this the cache key is unchanged and
+  // release-check replays a pass that recompiled nothing (#2156 review) --
+  // the same "a cached pass has checked nothing" reasoning that keeps this
+  // out of scriptTask, one level up.
+  inputs {
+    ...scriptSources
+    ...vibeSources
+    "book/**/*.md"
+    // vibeSources is lib/** only, so a SEED-ONLY bootstrap bump changes the
+    // stage2 selfhostGeneration builds while leaving this key untouched, and
+    // the previous verdict replays against a compiler that no longer exists
+    // (#2156 review). The sibling compiler-probing gates share this gap --
+    // filed as #2165 rather than changing their caching from this PR.
+    "bootstrap/seed.json"
+  }
+  // Same reason as check-rc-default and check-package-sibling-scope: the
+  // verdict is the current compiler's, so the current compiler has to exist
+  // before this runs. As siblings in release-check's deps this could go first
+  // and answer from the seed (#2156 review).
+  deps { selfhostGeneration }
+}
 // Two doctest harnesses answer differently on the same document; the guard in
 // scripts/vibe_md.sh keeps a prose doc from reaching the *.vibe.md one.
 local testVibeMdGuard = scriptTask("test-vibe-md-guard", "scripts/vibe_md_guard_test.sh")
@@ -1486,6 +1534,8 @@ local releaseCheck = new Task {
     checkVersionLadder
     testCheckBookLinks
     checkBookLinks
+    checkBookOrder
+    checkBookSkipBlocks
     testVibeMdGuard
     checkSourceRangeContract
     testCheckSourceRangeContract
@@ -1560,6 +1610,8 @@ tasks {
   checkVersionLadder
   testCheckVersionLadder
   checkBookLinks
+  checkBookOrder
+  checkBookSkipBlocks
   testCheckBookLinks
   testVibeMdGuard
   checkSourceRangeContract

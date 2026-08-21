@@ -1,9 +1,8 @@
-# 1 — Installation and Hello, vibe
+# 01 — Installation and Hello, vibe
 
-Install vibe, write `hello`, and confirm the toolchain answers questions
-about your source. This is the Rust book's Chapter 1 slot: install,
-hello world, then the build tool. Details live in
-[docs/install.md](../../docs/install.md).
+Previous: [Introduction](00_introduction.md)
+
+日本語版: [01_getting_started.vibe.md](../ja/01_getting_started.vibe.md)
 
 ## Install
 
@@ -13,29 +12,13 @@ curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/insta
 vibe version
 ```
 
-From a checkout of this repository:
-
-```bash
-bash install/install.sh
-```
-
-You get a `vibe` dispatcher, a `viberun` host, and the stdlib under
-`$VIBE_HOME/lib`. The compiler itself is a wasm module.
+From a checkout of this repository, `bash install/install.sh` does the
+same thing. You get the `vibe` command, a `viberun` host, and the
+standard library. The compiler itself is a wasm module.
 
 ## Hello
 
-A program is a `fn main` with an explicit effect row. The current tty
-capability is **`Console`**, and that is what this hello declares. The
-`println` builtin still carries the **legacy** `Stdout` label internally;
-declaring `Console` authorizes it, because `Console` is the union of the
-legacy three. The reverse does not hold — see
-[Capabilities](10_capabilities.vibe.md).
-
-Two spellings are legal. The **bare** `with Console` is the usual hello.
-The **split** form `with () allows Console` says the same thing more
-loudly: nothing algebraic, one capability. Mixing a
-capability into `with` *after* you wrote `allows` is a parse error
-(`Stdout` must appear in `allows`, not `with`).
+Put this in `hello.vibex`:
 
 ```vibe run
 fn main with Console {
@@ -47,28 +30,54 @@ fn main with Console {
 hello, vibe
 ```
 
-`println` is a builtin -- no import -- and its row is not optional: drop
-`with Console` and the checker reports an effect row mismatch. It names
-`Stdout`, the label the builtin carries internally; `Console` is the
-current capability and authorizes it (#2107, #2102). The same program as a script file is usually named
-`hello.vibex` and run with `vibe run hello.vibex`.
-
-## Check, then run
-
-vibe treats the CLI as an editor-shaped query surface. Empty output means
-clean.
-
 ```bash
-vibe check hello.vibex     # empty = compiles
-vibe run hello.vibex       # compile + execute
-vibe test hello_test.vibe  # run test { } blocks
+vibe run hello.vibex
 ```
 
-If you are in this repository, the chapters themselves are the test:
+`println` is built in, so there is nothing to import.
+
+The interesting part is `with Console`. It is the program's permission
+to write to the terminal, and it is required: delete it and the program
+does not compile. That is the language's one big idea, showing up in the
+smallest program it has — a function states what it is allowed to do,
+and the compiler holds it to that.
+
+You will meet the same shape again for failure (`with Exception`) and
+for reading files (`allows Fs::read_file`).
+[Capabilities](14_capabilities.vibe.md) is where it is finished.
+
+## Ask the compiler questions
+
+vibe's CLI is built to be queried, not just run. The convention
+throughout is **empty output means clean**.
 
 ```bash
-bash scripts/vibe_md.sh check book/en/01_getting_started.vibe.md
+vibe check hello.vibex     # typecheck; prints nothing if it compiles
+vibe run   hello.vibex     # compile and execute
+vibe test  hello_test.vibe # run its test { } blocks
 ```
 
-Next: [A small program](19_a_small_program.vibe.md).
-The language tour continues at [Values and functions](01_values_functions.vibe.md).
+`vibe check` is the one to reach for while writing. It answers "does
+this compile" on its own, one diagnostic per line, and exits non-zero if
+there is anything to say.
+
+There are more of these — `vibe symbols`, `vibe type-at`, `vibe deps` —
+and they exist so an editor, or you, or a script can ask the compiler
+what it knows. [The CLI as an IDE](18_cli.vibe.md) covers them.
+
+## A project, when you want one
+
+```bash
+vibe new myapp
+cd myapp
+vibe run main.vibex
+```
+
+`vibe new` writes two files: `main.vibex`, the entry point, and
+`vibe.deps`, where dependencies go. That is the whole scaffold — a
+package contract (`index.vpkg`) is something you add when you have
+something to publish, and [Modules and packages](09_modules_packages.vibe.md)
+picks that up. You do not need any of it for a single file, which is why
+this chapter did not start there.
+
+Next: [A small program](02_a_small_program.vibe.md).

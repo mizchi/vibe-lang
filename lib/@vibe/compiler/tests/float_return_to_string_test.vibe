@@ -1,0 +1,187 @@
+//# Functions
+
+// #2158: codegen is untyped, so the only thing that made a Double look like a
+// Double was the SHAPE of the expression producing it (a float literal, float
+// arithmetic, an explicit `Double`/`Float` annotation). A plain call to a
+// function DECLARED `-> Double` had none of those, so `__to_string` — which
+// string interpolation lowers to — fell through to its runtime bit-pattern
+// heuristic and printed the raw f64 bits as an Int (`half(5.0)` rendered as
+// `404`, and `let a = half(5.0); "${a}"` as `232`).
+//
+// The assertions below call `__to_string` directly rather than interpolating:
+// that IS what `"${e}"` lowers to, and the flat low-level entry these tests
+// compile through does not run the interpolation pre-pass.
+//
+// The fix records the declared return type of every user function in
+// CompileCtx.float_ret_fns during the pre-pass, and both copies of the
+// floatish classifier (cc_expr_is_floatish in compile_call.vibe and
+// expr_is_floatish in compile_expr_tail.vibe) consult it.
+
+fn half(x: Double) -> Double {
+  x / 2.0
+}
+
+fn halff(x: Float) -> Float {
+  x / 2.0
+}
+
+fn quarter(x: Double) -> Double {
+  half(half(x))
+}
+
+fn count(n: Int) -> Int {
+  n + 1
+}
+
+fn value() -> Double {
+  2.5
+}
+
+type ShadowedByTparam = Double
+
+fn id_tp[ShadowedByTparam](x: ShadowedByTparam) -> ShadowedByTparam {
+  x
+}
+
+type Hop0 = Double
+
+type Hop1 = Hop0
+
+type Hop2 = Hop1
+
+type Hop3 = Hop2
+
+type Hop4 = Hop3
+
+type Hop5 = Hop4
+
+type Hop6 = Hop5
+
+type Hop7 = Hop6
+
+type Hop8 = Hop7
+
+type Hop9 = Hop8
+
+type Hop10 = Hop9
+
+type Hop11 = Hop10
+
+type Hop12 = Hop11
+
+type Hop13 = Hop12
+
+type Hop14 = Hop13
+
+type Hop15 = Hop14
+
+type AliasedDouble = Double
+
+type AliasedTwice = AliasedDouble
+
+fn deep_alias() -> Hop15 {
+  2.5
+}
+
+fn aliased() -> AliasedDouble {
+  2.5
+}
+
+fn aliased_twice() -> AliasedTwice {
+  2.5
+}
+
+//# Tests
+
+test "#2158: a call to a `-> Double` function stringifies as a Double" {
+  assert_true(__to_string(half(5.0)) == "2.5")
+}
+
+test "#2158: a let bound to a `-> Double` call stringifies as a Double" {
+  let a = half(5.0)
+  assert_true(__to_string(a) == "2.5")
+}
+
+test "#2158: `-> Float` is classified the same way" {
+  let a = halff(5.0)
+  assert_true(__to_string(a) == "2.5")
+  assert_true(__to_string(halff(5.0)) == "2.5")
+}
+
+test "#2158: a `-> Double` function calling another one" {
+  let a = quarter(10.0)
+  assert_true(__to_string(a) == "2.5")
+  assert_true(__to_string(quarter(10.0)) == "2.5")
+}
+
+test "#2158: an explicit annotation still works (the shape that never broke)" {
+  let a: Double = half(5.0)
+  assert_true(__to_string(a) == "2.5")
+}
+
+test "#2158: arithmetic on a call result still works" {
+  assert_true(__to_string(half(5.0) + 0.0) == "2.5")
+  let a = half(5.0)
+  assert_true(__to_string(a + a) == "5")
+}
+
+test "#2158: two call results compare by value, not by box identity" {
+  let a = half(5.0)
+  let b = half(5.0)
+  assert_true(a == b)
+  assert_true(!(a == half(4.0)))
+}
+
+test "#2156 review: a local binding SHADOWS the float-return table" {
+  // float_ret_fns is keyed by NAME, and `value` is declared `-> Double` at
+  // the top of this file. A local binding of the same name is a different
+  // callable, so the table must not answer for it -- it did, and this printed
+  // 0 instead of 1: the Int went through the float rendering path. Measured
+  // both ways before the guard landed (1 before #2158, 0 after), so this is a
+  // regression the #2158 fix introduced, not a pre-existing gap.
+  let value = () -> Int {
+    1
+  }
+  assert_true(__to_string(value()) == "1")
+}
+
+test "#2156 review: the shadow is scoped -- the top-level name still works" {
+  // The counterpart: masking must key on the binding actually in scope, not
+  // disable the table for the name everywhere it appears.
+  assert_true(__to_string(value()) == "2.5")
+}
+
+test "#2158: a `-> Int` function is NOT reclassified as a float" {
+  let n = count(41)
+  assert_true(__to_string(n) == "42")
+  assert_true(__to_string(count(41)) == "42")
+}
+
+test "#2156 review: a `type` alias onto Double is classified" {
+  // The raw spelling check matched `TyName("Double")`, so a declared
+  // `-> AliasedDouble` was invisible and __to_string printed 180 for 2.5.
+  // Measured wrong on the PRE-#2158 compiler too, so this is a remaining gap
+  // of that bug rather than a regression it introduced.
+  assert_true(__to_string(aliased()) == "2.5")
+  let a = aliased()
+  assert_true(__to_string(a) == "2.5")
+}
+
+test "#2156 review: an alias chain is followed" {
+  assert_true(__to_string(aliased_twice()) == "2.5")
+}
+
+test "#2156 review: a long alias chain is followed to the end" {
+  // The bound was a flat 16 AND the primitive test ran only at the top of the
+  // loop, so a 16-alias chain exited without testing the name it had just
+  // stepped to: this printed 176 instead of 2.5. The bound is now the alias
+  // count, the exact acyclic maximum.
+  assert_true(__to_string(deep_alias()) == "2.5")
+}
+
+test "#2156 review: a type parameter shadows a float alias" {
+  // `type ShadowedByTparam = Double` exists, but the function's own type
+  // parameter of that name shadows it -- the return is the type variable,
+  // not a float. Following the alias printed 0 instead of 1.
+  assert_true(__to_string(id_tp(1)) == "1")
+}
