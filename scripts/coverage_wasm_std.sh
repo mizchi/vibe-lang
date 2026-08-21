@@ -15,6 +15,11 @@ EXCLUDE="${VIBE_WASM_STD_COVERAGE_EXCLUDE:-}"
 # These variables belonged to the removed wasm-source compiler/report format.
 # Reject them rather than accepting knobs that no longer affect the result.
 legacy_vars=(
+  VIBE_WASM_SOURCE_COVERAGE_ALLOW_TRAP
+  VIBE_WASM_SOURCE_COVERAGE_DIR
+  VIBE_WASM_SOURCE_COVERAGE_MODE
+  VIBE_WASM_SOURCE_COVERAGE_NO_DCE
+  VIBE_WASM_SOURCE_COVERAGE_RUN_TESTS
   VIBE_WASM_STD_COVERAGE_ALLOW_TRAP
   VIBE_WASM_STD_COVERAGE_DIR
   VIBE_WASM_STD_COVERAGE_MATRIX
