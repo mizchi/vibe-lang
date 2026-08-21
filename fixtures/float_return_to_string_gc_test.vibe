@@ -72,6 +72,28 @@ fn as_f32_gc() -> f32 {
   2.5
 }
 
+// #2178: a type parameter shadowing a `Double` alias, in RETURN position.
+// `f` returns the type VARIABLE, not a float. The gc entry runs
+// `strip_generic_type_params` before codegen, so the float table was built
+// from an EFn whose type params had already been zeroed -- the name then
+// resolved through the alias to Double and `__to_string(f(1))` rendered the
+// tagged Int 7 as f64 bits, printing 0. Linear prints 7 on both its lanes.
+//
+// The value was never wrong (`f(1) == 7` held on gc too); only the render
+// was, because on this lane the static classification is the ONLY signal.
+type ShadowedRet = Double
+
+fn tp_shadow_ret[ShadowedRet](x: Int) -> ShadowedRet {
+  7
+}
+
+// The control that must KEEP being classified: a generic function whose
+// return really is Double. Excluding every generic fn would have traded this
+// bug for its mirror image.
+fn generic_returns_double[T](x: T) -> Double {
+  2.5
+}
+
 //# Tests
 
 test "#2158 gc: a call to a `-> Double` function stringifies as a Double" {
@@ -130,4 +152,12 @@ test "#2166 gc: a parameterized alias onto Double is classified" {
 test "#2166 gc: the f64 and f32 spellings are floats" {
   assert_true(__to_string(as_f64_gc()) == "2.5")
   assert_true(__to_string(as_f32_gc()) == "2.5")
+}
+
+test "#2178 gc: a type parameter shadowing a Double alias is not a float" {
+  assert_true(__to_string(tp_shadow_ret(1)) == "7")
+}
+
+test "#2178 gc: a generic function really returning Double still is one" {
+  assert_true(__to_string(generic_returns_double(1)) == "2.5")
 }

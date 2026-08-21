@@ -913,6 +913,25 @@ fn gc_body_is_to_string_forward(body: Expr, pname: String) -> Bool {
 /// touches a reference-lane value coexist with the island: it simply is not a
 /// candidate, and any attempt to pass a reference into it is still rejected
 /// component-wide by `gc_direct_abi_expr_kind`.
+/// #2178: the float-return table, computed BEFORE `strip_generic_type_params`.
+///
+/// Same reason as `gc_direct_abi_pre_erasure_generic_names` and
+/// `gc_to_string_resolves_to_show_wrapper` right below: that pass zeroes every
+/// top-level generic fn's type_params, and this classification NEEDS them.
+/// `type ShadowD = Double; fn f[ShadowD](x: Int) -> ShadowD` returns the type
+/// VARIABLE, and `compute_float_returning_names` excludes it by passing the
+/// function's own type params as the resolver's `shadow` set. Post-strip that
+/// set is empty, the name resolves through the alias to Double, `f` is recorded
+/// as float-returning, and `__to_string(f(1))` renders the tagged Int 7 as f64
+/// bits -- it printed 0 (#2178, measured; linear prints 7 on both its lanes).
+///
+/// The value itself is fine on gc (`f(1) == 7` is true); only the render is
+/// wrong, because on this lane the static classification is the ONLY signal --
+/// there is no runtime tag to fall back on.
+export fn gc_float_ret_pre_erasure_names(stmts: Array[Stmt]) -> Array[String] {
+  compute_float_returning_names(stmts)
+}
+
 export fn gc_direct_abi_pre_erasure_generic_names(stmts: Array[Stmt]) -> Array[String] {
   let names = array_empty()
   let mut i = 0
@@ -1028,9 +1047,9 @@ fn gc_unresolved_import_message(err: String, stmts: Array[Stmt]) -> Option[Strin
   }
 }
 
-export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
+export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], float_ret_fn_names: Array[String]) -> Bytes with Exception {
   handle {
-    compile_wasi_module_gc_impl(stmts, entry_name, gc_to_string_is_wrapper, direct_abi_generic_names)
+    compile_wasi_module_gc_impl(stmts, entry_name, gc_to_string_is_wrapper, direct_abi_generic_names, float_ret_fn_names)
   } with Exception {
     Throw(err) => match gc_unresolved_import_message(err, stmts) {
       Some(better) => throw(better),
@@ -1039,7 +1058,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   }
 }
 
-fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
+fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], float_ret_fn_names: Array[String]) -> Bytes with Exception {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   gc_add_ref_twins(stmts)
@@ -1079,7 +1098,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   }
   let fn_names_list = array_empty()
   // #2158: one shared walk, in common_analysis (#2156 review).
-  let gc_float_ret_fn_names = compute_float_returning_names(stmts)
+  // #2178: a PARAMETER, not computed here -- by this point
+  // `strip_generic_type_params` has zeroed every generic fn's type params, and
+  // this classification needs them. See gc_float_ret_pre_erasure_names.
+  let gc_float_ret_fn_names = float_ret_fn_names
   let fn_param_counts = array_empty()
   let fn_needs_env_list = array_empty()
   let user_func_stmts = array_empty()

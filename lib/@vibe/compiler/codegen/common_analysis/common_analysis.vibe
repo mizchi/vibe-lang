@@ -4002,10 +4002,19 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) =>
       match value {
-        EFn(tparams, _, _, ret, _, _) =>
+        EFn(tparams, _, _, ret, _, fbody) =>
         match ret {
           Some(rt) => match resolve_type_expr_core_shadowed(rt, defs, tparams) {
             CtDouble => Array::push(out, name),
+            // The annotation resolved to a NAME rather than a type: a type
+            // variable, or an alias the checker could not see through either.
+            // It cannot decide the representation, so ask the body, which is
+            // the one thing that does know (#2185 review).
+            CtNamed(_, _) => if float_body_shape(fbody) {
+              Array::push(out, name)
+            } else {
+              ()
+            },
             _ => ()
           },
           None => ()
@@ -4017,6 +4026,42 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
     i = i + 1
   }
   out
+}
+
+/// Is this function body statically float-shaped?
+///
+/// Only consulted when the declared return type resolves to a bare NAME, i.e.
+/// the annotation could not decide. That happens for a type variable and for
+/// an alias the checker itself leaves unresolved -- `type A = B[Double]` above
+/// `type B[T] = T`, which the checker stores as `CtNamed("B", [CtDouble])` and
+/// therefore accepts with EITHER an Int or a Double body.
+///
+/// Both of those are real programs and they need opposite answers:
+///
+///   fn f() -> A { 1 }     -> Int;    rendering it as f64 bits printed 0
+///   fn f() -> A { 2.5 }   -> Double; NOT rendering it as one printed 192
+///
+/// #2185's first attempt restricted the alias table instead, which fixed the
+/// first and broke the second -- a swap, not a fix (#2185 review, measured on
+/// five compilers). The annotation is genuinely ambiguous here; the body is
+/// not, so the body decides.
+///
+/// Best-effort by construction, exactly like the sibling shape classifiers in
+/// compile_call / backend_expr: a literal, float arithmetic, or either arm of
+/// an `if`, walked through the block forms to the tail expression. Anything it
+/// cannot see stays false, which is the pre-existing answer.
+fn float_body_shape(e: Expr) -> Bool {
+  match e {
+    EFloat(_) => true,
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (float_body_shape(l) || float_body_shape(r)),
+    EUnaryOp(op, x) => op == "-" && float_body_shape(x),
+    ESeq(_, b) => float_body_shape(b),
+    ELet(_, _, b, _) => float_body_shape(b),
+    ELetRec(_, _, b) => float_body_shape(b),
+    ELetMut(_, _, b, _) => float_body_shape(b),
+    EIf(_, t, f) => float_body_shape(t) || float_body_shape(f),
+    _ => false
+  }
 }
 
 /// The type table `compute_float_returning_names` resolves against.
