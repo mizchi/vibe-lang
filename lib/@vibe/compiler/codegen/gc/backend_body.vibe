@@ -66,6 +66,7 @@ import @vibe/compiler/codegen/common_base {
   resolve_func,
   resolve_local,
   rewrite_self_tail_calls,
+  ty_head_names_formal,
   wrap_entry_exception_boundary
 }
 
@@ -2057,7 +2058,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     let stmt = Array::get(user_func_stmts, bi)
     match stmt {
       SLet(_, _, gc_fn_name, gc_fn_ann, expr) => match expr {
-        EFn(_, _, params, _, _, body) => {
+        EFn(gc_fn_tparams, _, params, _, _, body) => {
           let body_buf = bytebuf_new()
           let local_names = array_empty()
           let gc_agg_slots_f = array_empty()
@@ -2101,17 +2102,23 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
             }
             match pann {
               Some(pte) => {
-                let pinfo = agg_info_of_type_expr(CtorTable::{
-                  names: ctor_names_list,
-                  tags: ctor_tags_list,
-                  field_counts: ctor_field_counts_list,
-                  type_names: ctor_type_names_list,
-                  struct_names: struct_names,
-                  struct_field_names: struct_field_names,
-                  struct_field_is_ref: struct_field_is_ref,
-                  names_sorted: gc_ctor_names_sorted,
-                  names_sorted_pos: gc_ctor_names_sorted_pos
-                }, pte)
+                // #2141: a param annotated with the fn's own formal is erased
+                // -- see ty_head_names_formal (the linear lane's twin gate).
+                let pinfo = if ty_head_names_formal(pte, gc_fn_tparams) {
+                  0
+                } else {
+                  agg_info_of_type_expr(CtorTable::{
+                    names: ctor_names_list,
+                    tags: ctor_tags_list,
+                    field_counts: ctor_field_counts_list,
+                    type_names: ctor_type_names_list,
+                    struct_names: struct_names,
+                    struct_field_names: struct_field_names,
+                    struct_field_is_ref: struct_field_is_ref,
+                    names_sorted: gc_ctor_names_sorted,
+                    names_sorted_pos: gc_ctor_names_sorted_pos
+                  }, pte)
+                }
                 if pinfo > 0 {
                   Array::push(gc_agg_slots_f, psi * 256 + pinfo)
                 } else {
