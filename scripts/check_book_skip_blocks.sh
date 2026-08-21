@@ -23,24 +23,24 @@
 # nothing compared. Quoting is therefore mandatory, not optional -- an
 # unquoted block is a claim with no evidence attached.
 #
-# WHICH COMPILER: passed explicitly via VIBE_SKIP_BLOCK_CLI_WASM, or the
-# newest generation, else the committed seed. A gate that asks the compiler a
-# question has to be told which compiler (AGENTS.md); callers that build a
-# stage2 should hand it over rather than let the fallback pick.
+# WHICH COMPILER: resolve_stage2 -- explicit VIBE_SKIP_BLOCK_CLI_WASM, else the
+# generation built from HEAD, else newest (loudly), else the seed (loudly). A
+# gate that asks the compiler a question has to be told which compiler
+# (AGENTS.md).
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-cli="${VIBE_SKIP_BLOCK_CLI_WASM:-}"
-if [ -z "$cli" ]; then
-  gen="$(ls -t _build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
-  if [ -n "$gen" ] && [ -s "$gen" ]; then
-    cli="$gen"
-  else
-    bash scripts/ensure_seed.sh >/dev/null
-    cli="bootstrap/seed/compiler.wasm"
-  fi
-fi
+# resolve_stage2 rather than a hand-rolled fallback: it prefers the generation
+# whose directory carries HEAD's short sha, falls back loudly, and is the same
+# resolution every other compiler-probing gate uses. Mine picked `ls -t`, which
+# on a reused workspace selects an unrelated generation, and dropped to the
+# seed in silence -- the exact failure AGENTS.md's "Which compiler answered?"
+# describes, in a gate written to stop documentation from lying (#2156 review).
+# The task also carries `deps { selfhostGeneration }` so the checkout's stage2
+# exists before this runs.
+. "$(dirname "$0")/resolve_stage2.sh"
+cli="$(resolve_stage2 check-book-skip-blocks "${VIBE_SKIP_BLOCK_CLI_WASM:-}")" || exit 1
 echo "check-book-skip-blocks: compiler = $cli"
 
 # Repo-local, not `mktemp -d` under /tmp. The runner reads and writes real
