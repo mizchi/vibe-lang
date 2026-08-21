@@ -169,6 +169,10 @@ ratchet: `VIBE_SUITE_MIN_BRANCH_UNION_HIT` (絶対数) と
 `VIBE_SUITE_MIN_BRANCH_UNION_RATE` (率)。entry を足すと分母がその import
 closure ぶん増える entry-weighted rate と違い、union の rate は
 「テストを足せば上がる」ので率のラチェットとして意味を持つ。
+Function union is protected symmetrically by
+`VIBE_SUITE_MIN_FUNCTION_UNION_HIT` and
+`VIBE_SUITE_MIN_FUNCTION_UNION_RATE`; disabling the diluted entry-weighted
+function rate must not remove the source-function regression gate.
 
 ### コンパイラ自身を計測
 

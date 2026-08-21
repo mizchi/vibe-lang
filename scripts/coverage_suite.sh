@@ -42,6 +42,8 @@
 #   VIBE_SUITE_MIN_BRANCH_RATE       — opt-in entry-weighted BRANCH floor
 #   VIBE_SUITE_MIN_FN_HIT            — minimum ABSOLUTE covered functions
 #   VIBE_SUITE_MIN_BRANCH_HIT        — minimum ABSOLUTE covered branches
+#   VIBE_SUITE_MIN_FUNCTION_UNION_HIT — minimum UNION covered functions
+#   VIBE_SUITE_MIN_FUNCTION_UNION_RATE — minimum UNION function rate
 #   VIBE_SUITE_MIN_BRANCH_UNION_HIT  — minimum UNION covered branches
 #   VIBE_SUITE_MIN_BRANCH_UNION_RATE — minimum UNION branch rate
 #
@@ -123,10 +125,10 @@ MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
 MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-0}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-42000}"
 MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
-# #1556: branch UNION floors. Unlike the entry-weighted numbers above, these
-# count each source branch once no matter how many entries link it, so the
-# rate is the one the issue's "branch coverage >= 60%" target is stated
-# against. Raise as coverage improves; lowering needs a rationale in the PR.
+# Union floors count each source function/branch once no matter how many
+# entries link it. Unlike entry-weighted rates, these are source metrics and
+# can be ratcheted directly. Raise as coverage improves; lowering needs a
+# rationale in the PR.
 #
 # Baseline (2026-08-13, 575 entries, all green, at 85f2ace): branch union
 # 25,131/45,638 (55.07%), function union 12,820/14,907 (86.00%). Note how far
@@ -148,9 +150,13 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # unchanged (55.07%) -- numerator and denominator grew together, which is what
 # de-merging distinct functions should do.
 #
-# Unlike the entry-weighted RATE floors, this rate is safe to ratchet: adding a
-# test entry cannot dilute it (a branch is counted once no matter how many
-# entries link it), so a new entry can only hold it level or push it up.
+# #2175 review: retiring the diluted function-rate floor without a function
+# union ratchet would leave only MIN_FN_HIT=42,000 against 111,304 weighted
+# hits. Current source-function union is 16,040/18,147 (88.39%) locally and
+# 16,046/18,147 (88.42%) in CI. Keep a small reproducibility margin while
+# preventing a large loss of actually executed source functions.
+MIN_FUNCTION_UNION_HIT="${VIBE_SUITE_MIN_FUNCTION_UNION_HIT:-15800}"
+MIN_FUNCTION_UNION="${VIBE_SUITE_MIN_FUNCTION_UNION_RATE:-88}"
 MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-26000}"
 MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-57}"
 
@@ -264,4 +270,4 @@ esac
 VIBE_TEST_CLI_WASM="$cli_abs" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
   | tee "$run_log" || true
 
-python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" "$MIN_BRANCH_UNION_HIT" "$MIN_BRANCH_UNION"
+python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" "$MIN_BRANCH_UNION_HIT" "$MIN_BRANCH_UNION" "$MIN_FUNCTION_UNION_HIT" "$MIN_FUNCTION_UNION"

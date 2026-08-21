@@ -192,13 +192,16 @@ def build_report(run_log, cov_dir):
 
 
 def main(argv):
-    # The last two (branch-union ratchet, #1556) are optional so an older
-    # caller keeps working; omitting them measures and prints without gating.
+    # Union ratchets are optional so an older caller keeps working; omitting
+    # them measures and prints without gating.
     run_log, cov_dir, report_path, min_point, min_line, min_branch, min_fn_hit, min_branch_hit = argv[:8]
     min_branch_union_hit, min_branch_union_rate = (argv[8:] + ["0", "0"])[:2]
+    min_function_union_hit, min_function_union_rate = (argv[10:] + ["0", "0"])[:2]
     min_point, min_line, min_branch = map(float, (min_point, min_line, min_branch))
     min_fn_hit, min_branch_hit = int(min_fn_hit), int(min_branch_hit)
     min_branch_union_hit, min_branch_union_rate = int(min_branch_union_hit), float(min_branch_union_rate)
+    min_function_union_hit = int(min_function_union_hit)
+    min_function_union_rate = float(min_function_union_rate)
     report = build_report(run_log, cov_dir)
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as output:
@@ -228,6 +231,12 @@ def main(argv):
         failures.append(f"entry-weighted covered functions {function['hit']} < min {min_fn_hit} (FN_HIT ratchet)")
     if branch["hit"] < min_branch_hit:
         failures.append(f"entry-weighted covered branches {branch['hit']} < min {min_branch_hit} (BRANCH_HIT ratchet)")
+    if union["hit"] < min_function_union_hit:
+        failures.append(
+            f"union covered functions {union['hit']} < min {min_function_union_hit} (FUNCTION_UNION_HIT ratchet)")
+    if union["rate"] < min_function_union_rate:
+        failures.append(
+            f"function union coverage {union['rate']}% < min {min_function_union_rate}% (FUNCTION_UNION)")
     # #1556: the branch-union floors are the metric the 60% target is stated
     # against.  Skipped when the union is only a lower bound -- gating on a
     # number the run could not measure exactly would fail for the wrong reason.
