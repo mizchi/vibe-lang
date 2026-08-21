@@ -67,6 +67,7 @@ GATE=0
 MAX_PAGES="${VIBE_FS_HEAP_MAX_PAGES:-}"
 OUT_DIR="${VIBE_FS_HEAP_OUT_DIR:-$PROJECT_ROOT/_build/measure_fs_heap}"
 RUNNER="${VIBE_FS_HEAP_RUNNER:-$SCRIPT_DIR/run_wasm_vibe_host_runner.sh}"
+SKIP_PREPARE="${VIBE_FS_HEAP_SKIP_PREPARE:-0}"
 KEEP_RUN_DIR="${VIBE_FS_HEAP_KEEP_RUN_DIR:-0}"
 RUN_DIR=""
 PAIR_DIR=""
@@ -74,6 +75,17 @@ WARM_NEXT=""
 LOCK_DIR=""
 LOCK_HELD=0
 ACTIVE_PID=""
+
+prepare_generated() {
+  if [ "$SKIP_PREPARE" = 1 ]; then
+    if [ "$RUNNER" = "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" ]; then
+      echo "measure_fs_heap: VIBE_FS_HEAP_SKIP_PREPARE=1 requires an explicit test runner" >&2
+      exit 2
+    fi
+    return 0
+  fi
+  bash "$SCRIPT_DIR/ensure_generated.sh" >&2
+}
 
 # Also sanitize the artifact-preparation step below: it executes the same host
 # runner and must not inherit controls that would perturb a later measurement.
@@ -210,7 +222,7 @@ if [ "$COMPARE" = 1 ]; then
   fi
   # Prepare deterministic ignored inputs before attesting the source snapshot.
   # Child lanes repeat this as a no-op freshness check.
-  bash "$SCRIPT_DIR/ensure_generated.sh" >&2
+  prepare_generated
   input_hash_before="$(compiler_input_hash)"
 
   # Both lanes consume one private snapshot, not the caller's mutable pathname.
@@ -271,7 +283,7 @@ RUN_DIR="$(mktemp -d "$OUT_DIR/run.XXXXXX")"
 # compiler bundles. A direct opt-in measurement must prepare them too; otherwise
 # a clean checkout would fail before reaching a memory boundary. These are build
 # outputs only and remain outside the commit.
-bash "$SCRIPT_DIR/ensure_generated.sh" >&2
+prepare_generated
 
 if [ -z "$BASE_COMPILER" ]; then
   BASE_COMPILER="$RUN_DIR/base_compiler.wasm"
