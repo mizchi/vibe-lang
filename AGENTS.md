@@ -28,8 +28,13 @@ MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row 
 `==` の全文脈構造的統一 (ADR-0097, #1526 — **実測 2026-08-19 では silent な
 参照等価はもう残っていない**。裸 / 名前経由 / tuple 内 / struct 内・入れ子配列・
 `Array[String]` / `Array[(Int, Int)]` / `Array[Struct]`・関数戻り値経由・
-空リテラル束縛 (注釈あり・なし両方) がすべて構造的で、長さ違い・要素違いは
-false になる。この節はかつてこの 4 つを「残る参照等価」として列挙していたが、
+空リテラル束縛がすべて構造的で、長さ違い・要素違いは false になる。
+**ただし注釈の無い `let xs = []` だけは push 後の比較で実行時に trap する**
+(#2157、実測 2026-08-21)。黙って誤るのではなく落ちるので P1。注釈を付けた形
+(`let xs: Array[Int] = []`) は push 後も構造的で、それは
+`fixtures/structural_eq_contexts_test.vibe` の "annotated empty bindings
+stay structural after a push" が押さえている。
+この節はかつてこの 4 つを「残る参照等価」として列挙していたが、
 実測では 3 つは構造的。4 つ目 — 消去された型変数 (`[T: Eq]` の `T`) — は
 witness を使うので、`Eq` を持つ型 (`Int` / `String` / `derive(Eq)` の struct)
 では正しく動き、witness の無い container を渡すと**拒否される**
