@@ -1021,7 +1021,22 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt]) -> String 
   if Array::length(tds) == 0 {
     ""
   } else {
-    let text = contract_types_module_text(tds)
+    // #2125: `uniq` keeps the deferred-names sentinel binding (see
+    // contract_types_module_text) collision-free across contracts whose
+    // modules meet in one whole-program merge.
+    let uniq_sb = StringBuilder::new()
+    let mut uci = 0
+    while uci < String::length(vpkg_path) {
+      let uc = String::char_code_at(vpkg_path, uci)
+      let u_ident = (uc >= '0' && uc <= '9') || (uc >= 'a' && uc <= 'z') || (uc >= 'A' && uc <= 'Z') || uc == '_'
+      if u_ident {
+        StringBuilder::push(uniq_sb, vpkg_path[uci: uci + 1])
+      } else {
+        StringBuilder::push(uniq_sb, "_")
+      }
+      uci = uci + 1
+    }
+    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb))
     let raw_key = compact_string_fingerprint(String::concat(vpkg_path, String::concat("|", text)))
     // Identifier-safe basename: the import-path grammar (parser_base.vibe's
     // collect_import_path) lexes path segments as identifier/keyword tokens,
@@ -1128,7 +1143,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       // types module live under different roots when VIBE_BUILD_CACHE_DIR
       // rebases the caches, so one can survive a clean of the other. A
       // missing file falls through to full regeneration (idempotent write).
-      let cached_hit = if String::starts_with(cached_prefix, "v2\n") {
+      let cached_hit = if String::starts_with(cached_prefix, "v3\n") {
         let rest = cached_prefix[3: String::length(cached_prefix)]
         let nl = String::index_of(rest, "\n")
         if nl < 0 {
@@ -1152,7 +1167,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       } else {
         ""
       }
-      if cached_hit != "" || String::starts_with(cached_prefix, "v2\n\n") {
+      if cached_hit != "" || String::starts_with(cached_prefix, "v3\n\n") {
         cached_hit
       } else {
         let vpkg_raw = Fs::read_file(vpkg_path)
@@ -1171,7 +1186,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
           let types_rel = relative_spelling_from_dir(dir_of_path(vpkg_path), types_path)
           String::concat(contract_types_module_line("import", types_rel, contract_type_family_defs(vpkg_type_defs)), shared_text)
         }
-        Fs::write_file(prefix_cache_path, String::concat("v2\n", String::concat(types_path, String::concat("\n", prefix_text))))
+        Fs::write_file(prefix_cache_path, String::concat("v3\n", String::concat(types_path, String::concat("\n", prefix_text))))
         prefix_text
       }
     }
@@ -1926,7 +1941,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // verify the file still exists (see the prefix cache's twin comment). A
   // missing file falls through to full regeneration, which re-materializes
   // it idempotently.
-  if String::starts_with(cached_facade, "v2\n") {
+  if String::starts_with(cached_facade, "v3\n") {
     let fc_rest = cached_facade[3: String::length(cached_facade)]
     let fc_nl = String::index_of(fc_rest, "\n")
     if fc_nl >= 0 {
@@ -2040,7 +2055,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // the fingerprint pass and the reads above — see the comment at
   // fresh_fp_sb's construction).
   let fresh_closure_fp = compact_string_fingerprint(StringBuilder::freeze(fresh_fp_sb))
-  Fs::write_file(persistent_contract_facade_cache_path(path, fresh_closure_fp), String::concat("v2\n", String::concat(facade_types_path, String::concat("\n", facade_final))))
+  Fs::write_file(persistent_contract_facade_cache_path(path, fresh_closure_fp), String::concat("v3\n", String::concat(facade_types_path, String::concat("\n", facade_final))))
   facade_final
 }
 

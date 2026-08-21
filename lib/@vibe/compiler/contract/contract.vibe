@@ -878,12 +878,149 @@ export fn contract_type_family_defs(type_defs: Array[Stmt]) -> Array[Stmt] {
 /// `contract_facade_marker` / `vpkg_shared_import_marker`).
 export let vpkg_types_module_marker: String = "// vibe: vpkg contract types module (#1840)\n"
 
+/// #2125: the type-name heads `tds` reference minus the names `tds` declare
+/// -- the names this module can neither declare nor import: a
+/// contract-`opaque` name whose definition lives in a sibling impl
+/// (types -> impl would be an import cycle), or a name from another package.
+/// Those resolve to the intentional bare `CtNamed` contract artifact.
+fn ctm_deferred_type_names(tds: Array[Stmt]) -> Array[String] {
+  let declared = array_empty()
+  let referenced = array_empty()
+  let mut i = 0
+  while i < Array::length(tds) {
+    match Array::get(tds, i) {
+      SStruct(_, sname, fields, _, _, stp) => {
+        Array::push(declared, sname)
+        let mut ti = 0
+        while ti < Array::length(stp) {
+          Array::push(declared, Array::get(stp, ti))
+          ti = ti + 1
+        }
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fte) = Array::get(fields, fi)
+          ctm_collect_type_expr_heads(fte, referenced)
+          fi = fi + 1
+        }
+      },
+      SEnum(_, ename, eparams, variants, _) => {
+        Array::push(declared, ename)
+        let mut pi = 0
+        while pi < Array::length(eparams) {
+          Array::push(declared, Array::get(eparams, pi))
+          pi = pi + 1
+        }
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, vtypes) = Array::get(variants, vi)
+          let mut vti = 0
+          while vti < Array::length(vtypes) {
+            ctm_collect_type_expr_heads(Array::get(vtypes, vti), referenced)
+            vti = vti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      STypeAlias(_, aname, aparams, body) => {
+        Array::push(declared, aname)
+        let mut api = 0
+        while api < Array::length(aparams) {
+          Array::push(declared, Array::get(aparams, api))
+          api = api + 1
+        }
+        ctm_collect_type_expr_heads(body, referenced)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = array_empty()
+  let mut ri = 0
+  while ri < Array::length(referenced) {
+    let n = Array::get(referenced, ri)
+    let is_builtin = match resolve_builtin(n) {
+      Some(_) => true,
+      None => n == "Array" || n == "Option"
+    }
+    if is_builtin || ctm_str_list_has(declared, n) || ctm_str_list_has(out, n) {
+      ()
+    } else {
+      Array::push(out, n)
+    }
+    ri = ri + 1
+  }
+  out
+}
+
+fn ctm_collect_type_expr_heads(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyUnit => (),
+    TyName(n) => Array::push(out, n),
+    TyApp(n, args) => {
+      Array::push(out, n)
+      let mut i = 0
+      while i < Array::length(args) {
+        ctm_collect_type_expr_heads(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        ctm_collect_type_expr_heads(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        ctm_collect_type_expr_heads(Array::get(params, i), out)
+        i = i + 1
+      }
+      ctm_collect_type_expr_heads(ret, out)
+    }
+  }
+}
+
+fn ctm_str_list_has(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == wanted {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2125: the sentinel binding name prefix the checker's field/payload
+/// unknown-type enforcement recognises (see checker_stmt's
+/// `collect_deferred_type_name_sentinels`). Spelled here once; the checker
+/// mirrors the spelling.
+export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names_"
+
 /// #1840: the materialized types module's source text — the contract's
 /// type-family definitions verbatim (they are already exported by
 /// `classify_contract_stmts`), behind the idempotency marker.
-export fn contract_types_module_text(tds: Array[Stmt]) -> String {
+///
+/// #2125: when the definitions reference names the module can neither declare
+/// nor import, a sentinel `let <prefix><uniq>__: String = "N1 N2"` binding
+/// carries them IN-BAND, so every lane that checks this text — per-module,
+/// cached, or injected into a whole-program merge — exempts exactly those
+/// names at field/payload positions without any process-lifetime registry.
+/// `uniq` keeps the binding name collision-free when several contracts'
+/// modules meet in one merge.
+export fn contract_types_module_text(tds: Array[Stmt], uniq: String) -> String {
   let lines = array_empty()
   Array::push(lines, vpkg_types_module_marker)
+  let deferred = ctm_deferred_type_names(tds)
+  if Array::length(deferred) == 0 {
+    ()
+  } else {
+    Array::push(lines, "let \{vpkg_deferred_type_names_prefix}\{uniq}__: String = \"\{String::join(deferred, " ")}\"\n")
+  }
   let mut i = 0
   while i < Array::length(tds) {
     Array::push(lines, print_stmt(Array::get(tds, i)))
