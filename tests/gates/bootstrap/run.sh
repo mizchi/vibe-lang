@@ -90,7 +90,7 @@ stage2_wasm="${latest_gen}stage2.wasm"
 # this checkout. This caught the entry's missing Stdout row and keeps direct
 # build prerequisites plus the compile/build/check command surface live.
 echo "[compiler-gate] 3cli/3 selfhost split CLI core"
-VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" \
+VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" VIBE_RC=1 \
   bash scripts/test_cli_core.sh
 
 # #1553: a real compiled-CLI smoke. The protocol test above validates the
