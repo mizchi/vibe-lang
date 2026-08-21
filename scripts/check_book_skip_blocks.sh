@@ -43,7 +43,15 @@ if [ -z "$cli" ]; then
 fi
 echo "check-book-skip-blocks: compiler = $cli"
 
-work="$(mktemp -d)"
+# Repo-local, not `mktemp -d` under /tmp. The runner reads and writes real
+# paths here (VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw), so /tmp does work on
+# this host -- measured -- but that is undocumented behavior to lean a
+# required gate on, and every other compiler probe in scripts/ stays inside
+# the tree. #2156 review raised the preopen question; this removes it rather
+# than answering it.
+work="$ROOT_DIR/_build/book_skip_blocks"
+rm -rf "$work"
+mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
 
 python3 - "$work" <<'PY' > "$work/blocks.tsv"
