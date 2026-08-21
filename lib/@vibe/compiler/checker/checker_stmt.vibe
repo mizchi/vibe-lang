@@ -3418,17 +3418,25 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
 /// comparison stays structural; pinned by
 /// derive_array_helper_interference_test.vibe), and rejecting it would break
 /// working programs whose dependency happens to export a colliding name.
-fn tps_local_type_names(stmts: Array[Stmt]) -> Array[String] {
-  let out = array_empty()
+fn tps_local_type_names_into(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SStruct(_, name, _, _, _, _) => Array::push(out, name),
       SEnum(_, name, _, _, _) => Array::push(out, name),
+      // #2141: `module` blocks are rejected by the parser (#728), so source
+      // cannot produce an SModule -- recursed anyway so a synthetic or
+      // legacy producer stays covered.
+      SModule(_, _, body) => tps_local_type_names_into(body, out),
       _ => ()
     }
     i = i + 1
   }
+}
+
+fn tps_local_type_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  tps_local_type_names_into(stmts, out)
   out
 }
 
@@ -3516,6 +3524,30 @@ fn collect_reserved_type_prefix_errors(stmts: Array[Stmt], errors: Array[String]
       SStruct(_, name, _, _, _, _) => tps_reserved_prefix_report("struct", name, errors),
       SEnum(_, name, _, _, _) => tps_reserved_prefix_report("enum", name, errors),
       STypeAlias(_, name, _, _) => tps_reserved_prefix_report("type alias", name, errors),
+      // #2141: unreachable from source (#728 removed module blocks);
+      // recursed for any synthetic/legacy producer.
+      SModule(_, _, body) => collect_reserved_type_prefix_errors(body, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, tparams) => tps_report(tparams, local_types, tps_decl_label("struct", name), name, errors),
+      SEnum(_, name, tparams, _, _) => tps_report(tparams, local_types, tps_decl_label("enum", name), name, errors),
+      SLet(_, _, name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+      SLetMut(name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+      SLetPat(_, e) => tps_scan_expr(e, local_types, "a `let` pattern binding", "", errors),
+      SExpr(e) => tps_scan_expr(e, local_types, "a top-level expression", "", errors),
+      STest(name, e) => tps_scan_expr(e, local_types, tps_decl_label("test", name), "", errors),
+      SBench(name, e) => tps_scan_expr(e, local_types, tps_decl_label("bench", name), "", errors),
+      // #2141: unreachable from source (#728 removed module blocks);
+      // recursed for any synthetic/legacy producer.
+      SModule(_, _, body) => tps_scan_stmts(body, local_types, errors),
       _ => ()
     }
     i = i + 1
@@ -3528,21 +3560,7 @@ fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]
   if Array::length(local_types) == 0 {
     ()
   } else {
-    let mut i = 0
-    while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SStruct(_, name, _, _, _, tparams) => tps_report(tparams, local_types, tps_decl_label("struct", name), name, errors),
-        SEnum(_, name, tparams, _, _) => tps_report(tparams, local_types, tps_decl_label("enum", name), name, errors),
-        SLet(_, _, name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
-        SLetMut(name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
-        SLetPat(_, e) => tps_scan_expr(e, local_types, "a `let` pattern binding", "", errors),
-        SExpr(e) => tps_scan_expr(e, local_types, "a top-level expression", "", errors),
-        STest(name, e) => tps_scan_expr(e, local_types, tps_decl_label("test", name), "", errors),
-        SBench(name, e) => tps_scan_expr(e, local_types, tps_decl_label("bench", name), "", errors),
-        _ => ()
-      }
-      i = i + 1
-    }
+    tps_scan_stmts(stmts, local_types, errors)
   }
 }
 
