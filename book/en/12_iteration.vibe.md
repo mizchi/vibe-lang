@@ -1,4 +1,6 @@
-# 17 — Iteration
+# 12 — Iteration
+
+Previous: [Collections](11_collections.vibe.md)
 
 日本語版: [12_iteration.vibe.md](../ja/12_iteration.vibe.md)
 

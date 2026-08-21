@@ -1,4 +1,6 @@
-# 12 — The CLI as an IDE
+# 18 — The CLI as an IDE
+
+Previous: [Concurrency](17_concurrency.vibe.md)
 
 日本語版: [18_cli.vibe.md](../ja/18_cli.vibe.md)
 

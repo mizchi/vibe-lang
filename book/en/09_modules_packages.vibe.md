@@ -1,47 +1,25 @@
-# 07 — Modules and packages
+# 09 — Modules and packages
 
-Previous: [06 Tests](10_tests.vibe.md)
-(run from the repository root, or in an environment where @vibe/core has been
-materialized)
+Previous: [Option and the railway](08_option.vibe.md)
 
 日本語版: [09_modules_packages.vibe.md](../ja/09_modules_packages.vibe.md)
 
-## export and relative import
+One file is one module. Nothing in it is visible to another file unless
+you write `export`, and nothing arrives in your file unless you write
+`import`. Those two words are most of what you need.
 
-This first section is the part a beginner needs: one file is one module, mark
-what you want visible with `export`, and the consumer imports selectively —
-a local two-file module. The package contract / pin / publish material in the
-second half is an advanced distribution workflow, and you can skip it until you
-need it.
+## Two files
 
-```vibe skip
-// skip: a syntax overview (./lib.vibe and ./subdir are illustrative paths that
-// do not exist in this repository) -- the working example is the run block
-// below, which imports triple from support/mathx.vibe
-// support/mathx.vibe
+Here is a real one. [support/mathx.vibe](support/mathx.vibe) contains an
+exported function:
+
+```vibe
 export fn triple(x: Int) -> Int {
   x * 3
 }
-
-// the consumer
-import ./support/mathx.vibe {
-  triple
-}
-import ./lib.vibe {
-  f as renamed
-}
-// rename
-import ./subdir {
-  helper
-}
-// a directory import -> index.vibe(i)
 ```
 
-An import path cannot escape the entry file's root directory — that is the
-sandbox rule.
-
-Here it is for real, importing `triple` from
-[support/mathx.vibe](support/mathx.vibe):
+and this chapter imports it by relative path, naming what it wants:
 
 ```vibe run
 import ./support/mathx.vibe {
@@ -57,11 +35,20 @@ fn main with Console {
 triple(14) = 42
 ```
 
-## @scope/name packages
+Two variations on the import line:
 
-`@scope/name` is searched in ADR-0065's resolution order: `.vibe/store/`
-(pin-verified) → the workspace `lib/` → `VIBE_LIB` (default `~/.vibe/lib`, where
-the curl installer puts the stdlib).
+- `import ./lib.vibe { f as renamed }` renames on the way in, for when
+  two modules disagree about a good name.
+- `import ./subdir { helper }` imports a *directory*, which resolves to
+  its `index.vibe`.
+
+An import may not climb out of the entry file's directory tree. That is
+a sandbox rule, not a style rule: a program cannot reach code you did
+not put inside it.
+
+## Packages by name
+
+An import starting with `@` names a package rather than a path:
 
 ```vibe run
 import @vibe/core {
@@ -79,21 +66,19 @@ length(sha1("vibe")) = 40
 hex_encode("hi") = 6869
 ```
 
-## Advanced: the contract (`index.vpkg`) and versions
+The name is looked for in three places, in order: the project's pinned
+store, the workspace's own `lib/`, and the installed standard library.
+The first hit wins, so a local copy shadows the installed one while you
+are working on it.
 
-> The canonical statement of the boundary, visibility and pin rules is the
-> "現行モデル" section of
-> [docs/module-system-oracle.md](../../docs/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
-> (#1269). What follows is the tutorial-level summary.
+## The contract file
 
-A package's boundary is its `index.vpkg` — a **contract** listing the public API
-as bodyless declarations, which the compiler checks the implementation against.
-Since #1128 the structured header (`name =` / `version =` / `description =` /
-`deps = { ... }`) is the standard form:
+A package does not export whatever its files happen to export. It
+declares a public API in `index.vpkg` — a **contract** of bodyless
+declarations — and the compiler checks the implementation against it. If
+they disagree, that is a compile error, not a surprise for a consumer.
 
 ```text
-// An example index.vpkg header (see docs/adding-modules.md). The header is not
-// vibe syntax, hence ```text -- for the real spelling read lib/@vibe/*/index.vpkg
 name = @you/counter
 version = 1.0.0
 description =
@@ -103,58 +88,49 @@ deps = {}
 generated_hash =
 
 type Counter
-// bodyless: the definition lives on the impl side
 fn add(x: Int, y: Int) -> Int
-// a mismatched implementation is a compile error
 ```
 
-Ordinary `*.vibe` files in the same directory are implicit build roots.
-Subdirectories are not walked recursively, so import or export the sources you
-need relative to the root. `*_test.vibe` and `*_bench.vibe` are excluded from
-the normal build and hash, but when run explicitly they may use the
-package-private modules and shared imports of the nearest `index.vpkg`.
-`_*.vibe` and `*.draft.vibe` are not implicit roots either, but when explicitly
-imported they inherit the same shared imports and count toward the package hash.
+`type Counter` with no definition means consumers get the name but not
+the representation, so you can change it later. The header above the
+declarations is not vibe syntax — it is package metadata, and
+[docs/adding-modules.md](../../docs/adding-modules.md) is the reference
+for it.
 
-## Advanced: pins — the content hash is the only truth
+The practical consequence, and the thing that surprises people: to share
+a helper between two files of the *same* package, exporting it is not
+enough. It also has to be declared in the contract and imported
+explicitly by the file that wants it. Package-private-by-default is the
+rule.
 
-A reproducible build pins the **content hash** on the require line. The build
-re-verifies that hash offline every time, so neither the location nor the
-transport has to be trusted.
+## Reproducible builds
+
+When you depend on someone else's package, the version number is not
+what gets verified — the **content hash** is:
 
 ```text
-// The require directive sits in the module header, independent of
-// import/export. A directive is not vibe syntax, hence ```text (the loader's
-// accepted forms are what contract.vibe's "malformed require line" diagnostic
-// describes)
 require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
-// compute <40hex> with `vibe hash`
-
-import @vibe/core {
-  sha1
-}
 ```
 
-Under `VIBE_REQUIRE_PINS=1` (the release/publish freeze) unpinned dev-mode
-resolution becomes an error.
+The build re-checks that hash offline on every build, so neither the
+registry nor the network has to be trusted between builds. `vibe hash`
+computes the value. Set `VIBE_REQUIRE_PINS=1` and an unpinned dependency
+becomes an error, which is what a release build should do.
 
-## Advanced: distribution commands (`vibe pkg` / scripts/vibe_pkg.sh)
+## Publishing
 
-With an installed toolchain it is `vibe pkg <cmd>`; inside the repo it is
-`scripts/vibe_pkg.sh <cmd>` (the same implementation). publish and yank append
-to the transparency log (`$VIBE_HOME/log`, #805), and install verifies the
-inclusion proof against it.
+When you are ready to hand a package to someone else:
 
 ```bash
-vibe pkg publish lib/@you/pkg                 # semver gate + cache + append to the log
-vibe pkg install @you/pkg@1.0.0               # materialize into ~/.vibe/lib (log-verified)
-vibe pkg add github:owner/repo/dir@ref [#pin] # fetch from git with hash verification
-vibe pkg yank @you/pkg@1.0.0                  # mark withdrawn (append-only)
-vibe pkg update @you/pkg                      # move to the latest non-yanked (shows the contract diff)
+vibe pkg publish lib/@you/pkg     # version check, then append to the log
+vibe pkg install @you/pkg@1.0.0   # fetch and verify against the log
+vibe pkg add github:owner/repo/dir@ref
+vibe pkg yank @you/pkg@1.0.0      # withdraw a version
+vibe pkg update @you/pkg          # move to the newest, showing the contract diff
 ```
 
-More detail: [docs/adding-modules.md](../../docs/adding-modules.md) /
-[docs/registry-design.md](../../docs/registry-design.md)
+Publish and yank append to a transparency log, and install verifies its
+proof — so a version cannot be swapped underneath you after the fact.
+[docs/registry-design.md](../../docs/registry-design.md) has the design.
 
-— that is the end of the tour. From the [README](../README.md) you can re-run any
-chapter.
+Next: [Writing tests](10_tests.vibe.md).

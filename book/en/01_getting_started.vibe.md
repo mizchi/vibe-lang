@@ -1,5 +1,7 @@
 # 01 — Installation and Hello, vibe
 
+Previous: [Introduction](00_introduction.md)
+
 日本語版: [01_getting_started.vibe.md](../ja/01_getting_started.vibe.md)
 
 ## Install

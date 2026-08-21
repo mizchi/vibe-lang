@@ -1,59 +1,94 @@
-# 06 — テストとツーリング
+# 10 — テストを書く
 
-前章: [05 エフェクト](13_effects.vibe.md)
+前: [モジュールとパッケージ](09_modules_packages.vibe.md)
 
-English version: [10_tests.vibe.md](../en/10_tests.vibe.md) (canonical)
+English version: [10_tests.vibe.md](../en/10_tests.vibe.md)
 
-## test ブロック
-
-テストはソースファイルに `test "名前" { ... }` を書くだけ。`*_test.vibe` に
-まとめるのが規約。
+テストは、普通のソースファイルに書く `test "name" { ... }` ブロックです。
+入れるフレームワークも、import するものもありません。
 
 ```vibe
-test "assert_eq for numbers, assert for booleans" {
-  assert_eq(1 + 1, 2)
-  assert(2 < 3)
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+test "double works" {
+  assert_eq(double(21), 42)
+  assert(double(0) == 0)
 }
 ```
 
-型にかかわらず `assert_eq(actual, expected)` を標準の等値 assertion とする。
-String も内容で比較されるので、連結・関数の返り値・変数経由でも
-`assert_eq` をそのまま使える。
+慣習として `_test.vibe` で終わるファイルに置きます。そうするとビルドが
+配布パッケージから除外できます。
 
 ```bash
-vibe test file_test.vibe             # 1 ファイル
-vibe test a_test.vibe b_test.vibe    # 複数ファイル
-vibe test tests/                     # ディレクトリ以下の *_test.vibe 全部
+vibe test demo_test.vibe             # 1ファイル
+vibe test a_test.vibe b_test.vibe    # 複数
+vibe test tests/                     # 配下のすべての *_test.vibe
 ```
 
-## CLI ツーリング
+通ったファイルは1行で報告されます:
+
+```console
+$ vibe test demo_test.vibe
+ok:   demo_test.vibe
+```
+
+## 失敗したとき
+
+期待値を 43 に変えると、レポートはテスト名を挙げ、両側を見せて止まります:
+
+```console
+$ vibe test demo_test.vibe
+assert_eq failed
+  expected: 43
+  actual:   42
+
+FAIL: demo_test.vibe
+  failing test: double works
+```
+
+`assert_eq(actual, expected)` は比較可能な任意の型で使え、文字列は内容で
+比較します — なので連結の結果や関数の戻り値に対して、何も変換せずそのまま
+表明できます。素の `Bool` には `assert(cond)` を使います。
+
+## `inspect` — 期待値をツールに書かせる
+
+値が**どう見えるべきか**は分かっているが打ち込みたくない、まして書式が
+正当に変わるたびに打ち直したくない、ということはよくあります。`inspect` は
+期待される描画結果をソース中に置き、その保守をツールがやります:
+
+```vibe
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+test "inspect records the value" {
+  inspect(double(3), "6")
+}
+```
+
+`--update` を付けて実行すると、古くなった期待値がコードの実際の出力に
+書き換えられます:
 
 ```bash
-vibe run app.vibex           # コンパイルして fn main を実行
-vibe check app.vibe          # 型検査のみ
-vibe compile app.vibex -o app.wasm
-vibe bench file.vibe         # bench {} ブロックを計測 (ns/op, ops/sec)
-
-# エディタ級のクエリ (LSP と同じ AST 解析)
-vibe symbols file.vibe               # 宣言アウトライン
-vibe type-at file.vibe <line> <col>  # カーソル位置の型
-vibe check file.vibe                 # 全診断 (空出力 = clean)
-vibe lsp                             # LSP サーバ (stdio)
-
-# パッケージの内容 hash (require pin に使う)
-vibe hash lib/@vibe/core
+vibe test --update demo_test.vibe
 ```
 
-## このチュートリアル自身も実行可能ドキュメント
+そして差分を読みます。それがワークフローです — ツールが提案し、人が
+レビューする。文字列を手で保守するよりずっと良く、差分を読まなかった場合は
+`assert_eq` よりずっと悪い。見ずに受け入れたスナップショットは、何も表明して
+いないテストです。
 
-この章まで含め `book/en/*.vibe.md` と `book/ja/*.vibe.md` はすべて #1142 の `.vibe.md` 形式
-— ` ```vibe run ` ブロックは実際にコンパイル・実行され、直後の
-` ```output ` は本物の実行結果。手元で検証・再生成するには:
+答えが分かっていて、それが重要なら `assert_eq` を。手で書き出すことだけが
+テストを書かない理由になっているような、大きめの構造の形には `inspect` を
+使ってください。
 
-```bash
-bash scripts/vibe_md.sh check book/en/*.vibe.md book/ja/*.vibe.md   # 検証 (embedded output が古ければ FAIL)
-bash scripts/vibe_md.sh write book/en/*.vibe.md book/ja/*.vibe.md   # 実行して output を書き直す
-pkf run vibe-md-tutorial                                # check のタスク化
-```
+## 直接呼べないものをテストする
 
-次章: [07 モジュールとパッケージ](09_modules_packages.vibe.md)
+テストはパッケージの内側にあるので、その内部に手が届きます — テストファイルは
+利用者には使えないモジュールを使えます。テストのためだけに export しなくても
+ヘルパーをテストできるのはこのためです。テストをコードの隣に置く理由が
+これです。
+
+次: [コレクション](11_collections.vibe.md)

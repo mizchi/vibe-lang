@@ -1,4 +1,6 @@
-# 18 — Equality
+# 16 — Equality
+
+Previous: [Generics, traits, and derive](15_generics.vibe.md)
 
 日本語版: [16_equality.vibe.md](../ja/16_equality.vibe.md)
 

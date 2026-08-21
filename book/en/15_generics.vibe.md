@@ -1,4 +1,6 @@
-# 16 — Generics, traits, and derive
+# 15 — Generics, traits, and derive
+
+Previous: [Capabilities](14_capabilities.vibe.md)
 
 日本語版: [15_generics.vibe.md](../ja/15_generics.vibe.md)
 

@@ -1,4 +1,6 @@
-# 15 — Collections
+# 11 — Collections
+
+Previous: [Writing tests](10_tests.vibe.md)
 
 日本語版: [11_collections.vibe.md](../ja/11_collections.vibe.md)
 

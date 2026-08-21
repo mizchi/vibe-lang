@@ -1,4 +1,6 @@
-# 14 — Pitfalls (measured)
+# 20 — Pitfalls (measured)
+
+Previous: [Targeting wasm](19_wasm.vibe.md)
 
 日本語版: [20_pitfalls.vibe.md](../ja/20_pitfalls.vibe.md)
 

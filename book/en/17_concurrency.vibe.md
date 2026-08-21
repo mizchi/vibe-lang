@@ -1,4 +1,6 @@
-# 11 — Concurrency
+# 17 — Concurrency
+
+Previous: [Equality](16_equality.vibe.md)
 
 日本語版: [17_concurrency.vibe.md](../ja/17_concurrency.vibe.md)
 

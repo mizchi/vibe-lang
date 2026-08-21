@@ -1,4 +1,6 @@
-# 10 — Capabilities
+# 14 — Capabilities
+
+Previous: [Effects](13_effects.vibe.md)
 
 日本語版: [14_capabilities.vibe.md](../ja/14_capabilities.vibe.md)
 

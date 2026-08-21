@@ -1,4 +1,6 @@
-# 13 — Targeting wasm
+# 19 — Targeting wasm
+
+Previous: [The CLI as an IDE](18_cli.vibe.md)
 
 日本語版: [19_wasm.vibe.md](../ja/19_wasm.vibe.md)
 

@@ -1,75 +1,97 @@
-# 06 — Tests and tooling
+# 10 — Writing tests
 
-Previous: [05 Effects](13_effects.vibe.md)
+Previous: [Modules and packages](09_modules_packages.vibe.md)
 
 日本語版: [10_tests.vibe.md](../ja/10_tests.vibe.md)
 
-## The test block
-
-A test is just a `test "name" { ... }` written in a source file. The convention
-is to collect them in `*_test.vibe`.
+A test is a `test "name" { ... }` block written in an ordinary source
+file. There is no framework to install and nothing to import.
 
 ```vibe
-test "assert_eq for numbers, assert for booleans" {
-  assert_eq(1 + 1, 2)
-  assert(2 < 3)
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+test "double works" {
+  assert_eq(double(21), 42)
+  assert(double(0) == 0)
 }
 ```
 
-`assert_eq(actual, expected)` is the standard equality assertion whatever the
-type. Strings compare by content, so `assert_eq` works directly on
-concatenations, function results, and values reached through a variable.
+By convention they live in files ending `_test.vibe`, so that the build
+can leave them out of your shipped package.
 
 ```bash
-vibe test file_test.vibe             # one file
-vibe test a_test.vibe b_test.vibe    # several files
-vibe test tests/                     # every *_test.vibe under a directory
+vibe test demo_test.vibe             # one file
+vibe test a_test.vibe b_test.vibe    # several
+vibe test tests/                     # every *_test.vibe underneath
 ```
 
-## `inspect` snapshots
+A passing file says so in one line:
 
-`inspect(value, "expected")` is the snapshot assertion. The expected
-string lives in the source. `vibe test --update` rewrites it. You do
-not import anything — the checker desugars the call before typing.
+```console
+$ vibe test demo_test.vibe
+ok:   demo_test.vibe
+```
+
+## When one fails
+
+Change the expected value to 43 and the report names the test, shows
+both sides, and stops:
+
+```console
+$ vibe test demo_test.vibe
+assert_eq failed
+  expected: 43
+  actual:   42
+
+FAIL: demo_test.vibe
+  failing test: double works
+```
+
+`assert_eq(actual, expected)` works for any type that can be compared,
+and compares strings by content — so you can assert directly on a
+concatenation or on whatever a function returned, without converting
+anything first. `assert(cond)` is for a plain `Bool`.
+
+## `inspect` — let the tool write the expectation
+
+Often you know what a value should *look* like but do not want to type
+it out, and you especially do not want to retype it every time the
+format changes legitimately. `inspect` puts the expected rendering in
+the source, and the tool maintains it:
 
 ```vibe
-test "a number" {
-  inspect(1 + 1, "2")
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+test "inspect records the value" {
+  inspect(double(3), "6")
 }
 ```
 
-New tests in this repository should use `inspect`, not a `__DATA__`
-sidecar and not a `.diag` file.
-
-## CLI tooling
+Run with `--update` and any stale expectation is rewritten to what the
+code actually produced:
 
 ```bash
-vibe run app.vibex           # compile, then run fn main
-vibe check app.vibe          # type check only
-vibe compile app.vibex -o app.wasm
-vibe bench file.vibe         # measure bench {} blocks (ns/op, ops/sec)
-
-# editor-grade queries (the same AST analysis the LSP uses)
-vibe symbols file.vibe               # declaration outline
-vibe type-at file.vibe <line> <col>  # the type at the cursor
-vibe check file.vibe                 # all diagnostics (empty output = clean)
-vibe lsp                             # LSP server (stdio)
-
-# a package's content hash (what a require pin uses)
-vibe hash lib/@vibe/core
+vibe test --update demo_test.vibe
 ```
 
-## This tutorial is itself an executable document
+Then you read the diff. That is the workflow: the tool proposes, you
+review. It is much better than hand-maintaining a string, and much worse
+than `assert_eq` if you have not read the diff — a snapshot you accepted
+without looking is a test that asserts nothing.
 
-Every chapter under `book/en/`, this one included, is in the `.vibe.md`
-format from #1142: the ` ```vibe run ` blocks really are compiled and run, and
-the ` ```output ` right after each one is the real result. To verify or
-regenerate them locally:
+Use `assert_eq` when you know the answer and it matters. Use `inspect`
+for the shape of a bigger structure, where writing it out by hand is the
+only thing stopping you from testing it at all.
 
-```bash
-bash scripts/vibe_md.sh check book/en/*.vibe.md   # verify (FAILs if the embedded output is stale)
-bash scripts/vibe_md.sh write book/en/*.vibe.md   # run and rewrite the output blocks
-pkf run vibe-md-tutorial                           # the same check as a task
-```
+## Testing what you cannot call directly
 
-Next: [07 Modules and packages](09_modules_packages.vibe.md)
+Tests live inside the package, so they can reach its internals — a test
+file may use modules that consumers cannot, which is what lets you test
+a helper without exporting it just for the test. This is the reason
+tests belong beside the code rather than in a separate tree.
+
+Next: [Collections](11_collections.vibe.md).
