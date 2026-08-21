@@ -12,6 +12,7 @@ import @vibe/compiler/core {
   builtin_registry,
   bytebuf_push,
   canonical_builtin_name,
+  expr_children,
   is_borrow_ret_builtin,
   is_exception_throw_operation,
   resolve_type_expr_core_shadowed,
@@ -4062,17 +4063,56 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// so no binder can mask anything, and the "you did not carry the local
 /// bindings / the parameters" class of bug cannot arise.
 fn body_is_definitely_int(e: Expr) -> Bool {
+  tail_is_definitely_int(e) && all_returns_definitely_int(e)
+}
+
+/// The value the body FALLS OUT of -- its tail expression.
+fn tail_is_definitely_int(e: Expr) -> Bool {
   match e {
     EInt(_) => true,
-    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && body_is_definitely_int(l) && body_is_definitely_int(r),
-    EUnaryOp(op, x) => op == "-" && body_is_definitely_int(x),
-    ESeq(_, b) => body_is_definitely_int(b),
-    ELet(_, _, b, _) => body_is_definitely_int(b),
-    ELetRec(_, _, b) => body_is_definitely_int(b),
-    ELetMut(_, _, b, _) => body_is_definitely_int(b),
-    EIf(_, t, f) => body_is_definitely_int(t) && body_is_definitely_int(f),
-    EReturn(x) => body_is_definitely_int(x),
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && tail_is_definitely_int(l) && tail_is_definitely_int(r),
+    EUnaryOp(op, x) => op == "-" && tail_is_definitely_int(x),
+    ESeq(_, b) => tail_is_definitely_int(b),
+    ELet(_, _, b, _) => tail_is_definitely_int(b),
+    ELetRec(_, _, b) => tail_is_definitely_int(b),
+    ELetMut(_, _, b, _) => tail_is_definitely_int(b),
+    EIf(_, t, f) => tail_is_definitely_int(t) && tail_is_definitely_int(f),
+    EReturn(x) => tail_is_definitely_int(x),
     _ => false
+  }
+}
+
+/// Every `return` ANYWHERE in the body returns a provably-Int value.
+///
+/// The tail is not the only way out. `if flag { return 2.5 } else { return 3.5 }
+/// ; 1` falls out of an Int literal that is not even reachable, and reading
+/// only the tail declared it definitely-Int -- so the Double it actually
+/// returns rendered through the non-float path, on both lanes (#2185 review).
+///
+/// The walk descends via `expr_children` rather than a per-constructor match,
+/// and that is deliberate: this predicate is only sound if it finds EVERY
+/// `return`, and an enumeration that silently misses a form fails in the
+/// dangerous direction. Enumerating constructors one at a time is what the
+/// previous design of this file did, six review rounds running.
+///
+/// A nested `EFn` is where the recursion stops -- a lambda's `return` belongs
+/// to the lambda, not to the function being classified.
+fn all_returns_definitely_int(e: Expr) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => true,
+    EReturn(x) => tail_is_definitely_int(x) && all_returns_definitely_int(x),
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut ok = true
+      while i < Array::length(kids) {
+        if !all_returns_definitely_int(Array::get(kids, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    }
   }
 }
 
