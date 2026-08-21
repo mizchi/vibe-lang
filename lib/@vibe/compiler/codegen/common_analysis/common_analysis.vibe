@@ -3974,9 +3974,9 @@ export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
 /// Aliases: `type MyD = Double; fn f() -> MyD` returns a Double, and matching
 /// the raw spelling `TyName("Double")` missed it -- `__to_string(f())`
 /// printed 180 for 2.5. Only zero-parameter aliases are followed; a
-/// parameterized alias does not name Double. The hop limit is a cycle guard,
-/// not a depth policy: a `type A = B; type B = A` pair must terminate here
-/// rather than in codegen.
+/// parameterized alias does not name Double. Chain length is bounded by the
+/// alias count, so a cycle terminates without capping valid chains -- see
+/// float_ret_name_is_floatish.
 export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
   let alias_names: Array[String] = []
   let alias_targets: Array[String] = []
@@ -4002,11 +4002,17 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) =>
       match value {
-        EFn(_, _, _, ret, _, _) =>
+        // The function's OWN type parameters shadow any alias of the same
+        // name: with `type D = Double`, `fn id[D](x: D) -> D` returns the
+        // type variable, not a float. Following the alias recorded `id` as
+        // float-returning and `__to_string(id(1))` printed 0 instead of 1
+        // (#2156 review, measured). A bare type variable that shadows
+        // nothing is already excluded -- it resolves to no primitive.
+        EFn(tparams, _, _, ret, _, _) =>
         match ret {
           Some(rt) =>
           match rt {
-            TyName(rtn) => if float_ret_name_is_floatish(alias_names, alias_targets, rtn) {
+            TyName(rtn) => if !array_contains_str(tparams, rtn) && float_ret_name_is_floatish(alias_names, alias_targets, rtn) {
               Array::push(out, name)
             } else {
               ()
@@ -4025,14 +4031,29 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
 }
 
 /// Does `n` name Double/Float, directly or through zero-parameter aliases?
+///
+/// The step bound is `alias count + 1`, which is the exact acyclic maximum: a
+/// chain that never revisits an alias cannot be longer than the number of
+/// aliases. So no valid chain is rejected, and a cycle still terminates.
+///
+/// It was a flat 16, and that WAS a depth policy despite the comment claiming
+/// otherwise -- worse, the primitive test ran only at the top of the loop, so
+/// reaching the bound by increment exited without testing the name just
+/// stepped to. A 16-alias chain onto Double printed 176 instead of 2.5
+/// (#2156 review, measured). `done` is now a separate flag so the test runs
+/// after every hop including the last.
 fn float_ret_name_is_floatish(alias_names: Array[String], alias_targets: Array[String], n: String) -> Bool {
+  let limit = Array::length(alias_names) + 1
   let mut cur = n
-  let mut hops = 0
+  let mut steps = 0
   let mut found = false
-  while hops < 16 {
+  let mut done = false
+  while !done {
     if cur == "Double" || cur == "Float" {
       found = true
-      hops = 16
+      done = true
+    } else if steps >= limit {
+      done = true
     } else {
       let mut k = Array::length(alias_names) - 1
       let mut next = ""
@@ -4045,10 +4066,10 @@ fn float_ret_name_is_floatish(alias_names: Array[String], alias_targets: Array[S
         }
       }
       if String::length(next) == 0 {
-        hops = 16
+        done = true
       } else {
         cur = next
-        hops = hops + 1
+        steps = steps + 1
       }
     }
   }
