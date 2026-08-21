@@ -893,23 +893,30 @@ export let vpkg_types_module_marker: String = "// vibe: vpkg contract types modu
 /// wildcard behavior (every other position now reports); the sentinel
 /// enumerates that residual greppably, and closing it needs a contract-level
 /// provenance declaration first.
-fn ctm_deferred_type_names(tds: Array[Stmt]) -> Array[String] {
+/// Returns (declared type names, deferred names). A declaration's own
+/// generic binders shadow its references LOCALLY only (Codex round 3 on
+/// #2162: a module-wide `declared` let `struct Box[Counter]`'s binder hide
+/// `struct Holder`'s reference to the contract-`opaque` `Counter`, dropping
+/// it from the sentinel and rejecting a valid contract).
+fn ctm_deferred_type_names(tds: Array[Stmt]) -> (Array[String], Array[String]) {
   let declared = array_empty()
   let referenced = array_empty()
   let mut i = 0
   while i < Array::length(tds) {
+    let scratch = array_empty()
+    let binders = array_empty()
     match Array::get(tds, i) {
       SStruct(_, sname, fields, _, _, stp) => {
         Array::push(declared, sname)
         let mut ti = 0
         while ti < Array::length(stp) {
-          Array::push(declared, Array::get(stp, ti))
+          Array::push(binders, Array::get(stp, ti))
           ti = ti + 1
         }
         let mut fi = 0
         while fi < Array::length(fields) {
           let (_, fte) = Array::get(fields, fi)
-          ctm_collect_type_expr_heads(fte, referenced)
+          ctm_collect_type_expr_heads(fte, scratch)
           fi = fi + 1
         }
       },
@@ -917,7 +924,7 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> Array[String] {
         Array::push(declared, ename)
         let mut pi = 0
         while pi < Array::length(eparams) {
-          Array::push(declared, Array::get(eparams, pi))
+          Array::push(binders, Array::get(eparams, pi))
           pi = pi + 1
         }
         let mut vi = 0
@@ -925,7 +932,7 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> Array[String] {
           let (_, vtypes) = Array::get(variants, vi)
           let mut vti = 0
           while vti < Array::length(vtypes) {
-            ctm_collect_type_expr_heads(Array::get(vtypes, vti), referenced)
+            ctm_collect_type_expr_heads(Array::get(vtypes, vti), scratch)
             vti = vti + 1
           }
           vi = vi + 1
@@ -935,12 +942,22 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> Array[String] {
         Array::push(declared, aname)
         let mut api = 0
         while api < Array::length(aparams) {
-          Array::push(declared, Array::get(aparams, api))
+          Array::push(binders, Array::get(aparams, api))
           api = api + 1
         }
-        ctm_collect_type_expr_heads(body, referenced)
+        ctm_collect_type_expr_heads(body, scratch)
       },
       _ => ()
+    }
+    let mut si = 0
+    while si < Array::length(scratch) {
+      let sn = Array::get(scratch, si)
+      if ctm_str_list_has(binders, sn) {
+        ()
+      } else {
+        Array::push(referenced, sn)
+      }
+      si = si + 1
     }
     i = i + 1
   }
@@ -959,7 +976,7 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> Array[String] {
     }
     ri = ri + 1
   }
-  out
+  (declared, out)
 }
 
 fn ctm_collect_type_expr_heads(te: TypeExpr, out: Array[String]) -> Unit {
@@ -1025,11 +1042,15 @@ export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names
 export fn contract_types_module_text(tds: Array[Stmt], uniq: String) -> String {
   let lines = array_empty()
   Array::push(lines, vpkg_types_module_marker)
-  let deferred = ctm_deferred_type_names(tds)
+  let (decl_names, deferred) = ctm_deferred_type_names(tds)
   if Array::length(deferred) == 0 {
     ()
   } else {
-    Array::push(lines, "let \{vpkg_deferred_type_names_prefix}\{uniq}__: String = \"\{String::join(deferred, " ")}\"\n")
+    // `<declared> : <deferred>` -- the checker scopes the exemption to the
+    // declarations named BEFORE the `:` (Codex round 3 on #2162: in a
+    // whole-program merge an unscoped sentinel would excuse an unrelated
+    // declaration that misspelled or forgot to import one of these names).
+    Array::push(lines, "let \{vpkg_deferred_type_names_prefix}\{uniq}__: String = \"\{String::join(decl_names, " ")} : \{String::join(deferred, " ")}\"\n")
   }
   let mut i = 0
   while i < Array::length(tds) {
