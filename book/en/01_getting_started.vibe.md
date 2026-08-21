@@ -73,9 +73,11 @@ cd myapp
 vibe run main.vibex
 ```
 
-`vibe new` scaffolds a package: an entry point, a contract file, and a
-place for dependencies. You do not need it for a single file, which is
-why this chapter did not start there.
-[Modules and packages](09_modules_packages.vibe.md) picks it up.
+`vibe new` writes two files: `main.vibex`, the entry point, and
+`vibe.deps`, where dependencies go. That is the whole scaffold — a
+package contract (`index.vpkg`) is something you add when you have
+something to publish, and [Modules and packages](09_modules_packages.vibe.md)
+picks that up. You do not need any of it for a single file, which is why
+this chapter did not start there.
 
 Next: [A small program](02_a_small_program.vibe.md).
