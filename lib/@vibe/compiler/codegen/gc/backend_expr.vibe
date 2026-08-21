@@ -893,7 +893,7 @@ fn gc_native_array_join_arg_is_safe(arg: Expr, name: String, abi_names: Array[St
 /// i64 fallback for an ELet after its name has already been pushed into
 /// `local_names`. Keeping it separate makes the native-literal branch above
 /// unable to accidentally feed a reference to the legacy local.set path.
-fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   let local_idx = next_local
   if gc_expr_is_floatish(value, local_names, ctx) {
     Array::push(ctx.gc_float_locals, local_idx)
@@ -955,6 +955,7 @@ fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[St
   Array::push(ctx.gc_agg_local_slots, local_idx * 256 + agg_entry)
   let nl = ce(buf, value, local_names, next_local + 1, ld)
   emit_local_set(buf, local_idx)
+  Array::set(local_names, name_slot, name)
   ce(buf, body, local_names, nl, ld)
 }
 
@@ -1401,7 +1402,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     ECall(callee, args, _) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body, _) => {
       let local_idx = next_local
+      let name_slot = Array::length(local_names)
       Array::push(local_names, name)
+      // A non-recursive binder is not visible in its own initializer. Reserve
+      // its wasm slot but hide the source name until the body (#2160; mirrors
+      // the linear lane's #1120 masking).
+      Array::set(local_names, name_slot, "")
       match value {
         // #1702: a record literal bound to a local that never leaves field-read
         // position lives in a real wasm-gc struct instead of linear memory.
@@ -1446,9 +1452,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             }
             emit_struct_new(buf, ctx.gc_native_struct_type_base + ns_struct_idx)
             emit_local_set(buf, local_idx)
+            Array::set(local_names, name_slot, name)
             ce(buf, body, local_names, ns_nl, ld)
           } else {
-            gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+            gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
           }
         },
         EArray(native_elems) => if ctx.gc_native_array_frame_ok && ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
@@ -1467,9 +1474,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             emit_array_set(buf, ctx.gc_native_array_type_idx)
             ni = ni + 1
           }
+          Array::set(local_names, name_slot, name)
           ce(buf, body, local_names, native_nl, ld)
         } else {
-          gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+          gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
         },
         EIdent(source, _) => {
           let source_slot = find_local_slot(local_names, source)
@@ -1478,9 +1486,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             Array::push(ctx.gc_native_array_local_types, local_idx)
             emit_local_get(buf, source_slot)
             emit_local_set(buf, local_idx)
+            Array::set(local_names, name_slot, name)
             ce(buf, body, local_names, next_local + 1, ld)
           } else {
-            gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+            gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
           }
         },
         ECall(_, _, _) => if gc_direct_abi_result_is_native(value, ctx) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
@@ -1488,11 +1497,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           Array::push(ctx.gc_native_array_local_types, local_idx)
           let native_nl = ce(buf, value, local_names, next_local + 1, ld)
           emit_local_set(buf, local_idx)
+          Array::set(local_names, name_slot, name)
           ce(buf, body, local_names, native_nl, ld)
         } else {
-          gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+          gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
         },
-        _ => gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+        _ => gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
       }
     },
     ELetRec(name, value, body) => {
