@@ -246,7 +246,8 @@ for m in re.finditer(r"new Task \{", active_src):
     # worst case, not the safe one: an empty cache key replays the first result
     # after any change (#2138 review). `scriptTask` one-liners are excluded
     # above precisely because they DO inherit the defaults.
-    if re.search(r"cache\s*=\s*false", pkl_syntax_only(active_block)):
+    cache_syntax = pkl_syntax_only(active_block)
+    if re.search(r"(?m)^[ \t]*cache[ \t]*=[ \t]*false[ \t]*(?:;[ \t]*)?(?:$|})", cache_syntax):
         continue
     # From the COMMAND only. Reading the whole block also picked up scripts
     # named in `inputs`, which a task declares but does not run -- that flagged
