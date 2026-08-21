@@ -39,6 +39,16 @@ PY
 
 stage2_wasm="${latest_gen}stage2.wasm"
 
+VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
+  bash scripts/test_rc_bootstrap.sh
+
+# CI runs the stage2 consumer oracles in their own cached job. Keep the local
+# bootstrap lane complete by default, while letting the fixpoint job publish
+# its stage2 without serializing unrelated consumers behind the selfbuild.
+if [ "${COMPILER_GATE_SKIP_STAGE2_ORACLES:-0}" = "1" ]; then
+  exit 0
+fi
+
 # #2148: build and exercise the supported split CLI entry with the stage2 from
 # this checkout. This caught the entry's missing Stdout row and keeps direct
 # build prerequisites plus the compile/build/check command surface live.
@@ -133,5 +143,3 @@ VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
 # ~1.7x wall, ~2.9x output size; see #705 final benchmark), not a
 # correctness blocker. seed->stage1 must still run bump: the pinned seed
 # predates RC ("not EFn" on VIBE_RC=1).
-VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
-  bash scripts/test_rc_bootstrap.sh

@@ -25,6 +25,9 @@ reject_compiler_gate_block() {
 
 require '^  compiler-gate-preflight:$' "$workflow"
 require '^  compiler-examples:$' "$workflow"
+require '^  compiler-stage2-oracles:$' "$workflow"
+require '^  compiler-docs:$' "$workflow"
+require '^  compiler-playground:$' "$workflow"
 require '^  review-regressions:$' "$workflow"
 require 'pkf run ci-compiler-gate-preflight' "$workflow"
 require 'pkf run ci-check-examples-typecheck' "$workflow"
@@ -35,6 +38,9 @@ require 'bash tests/gates/bootstrap/preflight.sh' "$bootstrap"
 reject_compiler_gate_block 'fetch-depth: 0'
 reject_compiler_gate_block 'check_examples_typecheck.sh'
 reject_compiler_gate_block 'lint_review_regressions.sh'
+reject_compiler_gate_block 'check_playground_presets.sh'
+reject_compiler_gate_block 'doctest_extract_run.sh'
+require 'COMPILER_GATE_SKIP_STAGE2_ORACLES: "1"' "$workflow"
 
 require 'path: ~/.cache/pkfire-mbt' '.github/actions/setup-vibe/action.yml'
 require 'github.job' '.github/actions/setup-vibe/action.yml'

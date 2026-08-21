@@ -146,7 +146,57 @@ jobs:
         env:
           COMPILER_GATE_LANE: bootstrap
           COMPILER_GATE_SKIP_PREFLIGHT: "1"
+          COMPILER_GATE_SKIP_STAGE2_ORACLES: "1"
         run: bash scripts/compiler_gate.sh
+      - name: Stage stage2 for downstream gates (#821)
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          mkdir -p _build/ci-artifacts
+          cp "${gen}stage2.wasm" _build/ci-artifacts/stage2.wasm
+      - name: Upload stage2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-stage2
+          path: _build/ci-artifacts/stage2.wasm
+          if-no-files-found: error
+
+  compiler-stage2-oracles:
+    name: compiler-gate (stage2 oracles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/ensure_seed.sh
+          bash scripts/ensure_generated.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Install wasm-tools
+        env:
+          WASM_TOOLS_VERSION: "1.253.0"
+        run: |
+          mkdir -p "$PWD/compiler-tools"
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/compiler-tools/"
+          echo "$PWD/compiler-tools" >> "$GITHUB_PATH"
+      - name: Stage cached compiler
+        run: |
+          mkdir -p _build/selfhost/generations/ci-oracles
+          cp _build/_ci_shard_gen/stage2.wasm _build/selfhost/generations/ci-oracles/stage2.wasm
+      - name: Stage2 consumer oracles
+        run: bash tests/gates/bootstrap/stage2_oracles.sh "$PWD/_build/_ci_shard_gen/stage2.wasm"
       - name: Upload incremental shadow decision diff (#1548)
         # compiler_gate.sh step 3aa writes the shadow planner vs current
         # compiler decision diff (only after a successful oracle run).
@@ -194,6 +244,34 @@ jobs:
         # test in here too so that path is gated (it was previously defined
         # but never invoked by any workflow).
         run: bash scripts/vibe_normalize_smoke.sh
+
+  compiler-docs:
+    name: compiler-gate (docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/ensure_seed.sh
+          bash scripts/ensure_generated.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Stage cached compiler
+        run: |
+          mkdir -p _build/selfhost/generations/ci-docs
+          cp _build/_ci_shard_gen/stage2.wasm _build/selfhost/generations/ci-docs/stage2.wasm
       - name: Tutorial executable-docs check (#1142)
         # book/**/*.vibe.md's ```vibe run blocks are compiled and run
         # against the freshly-built stage2 and their embedded ```output must
@@ -247,6 +325,34 @@ jobs:
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface_test.sh
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface.sh
+
+  compiler-playground:
+    name: compiler-gate (playground)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/ensure_seed.sh
+          bash scripts/ensure_generated.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Stage cached compiler
+        run: |
+          mkdir -p _build/selfhost/generations/ci-playground
+          cp _build/_ci_shard_gen/stage2.wasm _build/selfhost/generations/ci-playground/stage2.wasm
       - name: playground preset type-check
         # playground/src/main.ts embeds its starter programs as TypeScript
         # template literals, so they are vibe source no vibe tool ever saw. Two
@@ -257,17 +363,6 @@ jobs:
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
           PLAYGROUND_STAGE2="${gen}stage2.wasm" bash scripts/check_playground_presets.sh
-      - name: Stage stage2 for downstream gates (#821)
-        run: |
-          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
-          mkdir -p _build/ci-artifacts
-          cp "${gen}stage2.wasm" _build/ci-artifacts/stage2.wasm
-      - name: Upload stage2 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: compiler-stage2
-          path: _build/ci-artifacts/stage2.wasm
-          if-no-files-found: error
 
   # The examples ratchet takes roughly four minutes and needs only a stage2,
   # not the bootstrap fixpoint. Start it at t=0 from the same content-addressed
@@ -1056,7 +1151,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, compiler-gate-preflight, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
+    needs: [compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1068,6 +1163,18 @@ jobs:
           fi
           if [ "${{ needs.compiler-gate-preflight.result }}" != "success" ]; then
             echo "::error::compiler-gate-preflight did not succeed (${{ needs.compiler-gate-preflight.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-stage2-oracles.result }}" != "success" ]; then
+            echo "::error::compiler-stage2-oracles did not succeed (${{ needs.compiler-stage2-oracles.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-docs.result }}" != "success" ]; then
+            echo "::error::compiler-docs did not succeed (${{ needs.compiler-docs.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-playground.result }}" != "success" ]; then
+            echo "::error::compiler-playground did not succeed (${{ needs.compiler-playground.result }})"
             exit 1
           fi
           if [ "${{ needs.compiler-examples.result }}" != "success" ]; then
