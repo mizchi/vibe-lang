@@ -56,6 +56,14 @@ known_lane() {
   return 1
 }
 
+lane_sources() {
+  local lane="$1"
+  printf '%s\n' "$(gate_lane_script "$lane")"
+  if [ "$lane" = "bootstrap" ]; then
+    printf '%s\n' "$ROOT_DIR/tests/gates/bootstrap/preflight.sh"
+  fi
+}
+
 is_success_banner() {
   local rest="$1"
   case "$rest" in
@@ -93,8 +101,8 @@ while IFS=$'\t' read -r id lane title; do
   if [ ! -f "$script" ]; then
     echo "[gate-registry] FAIL: missing lane entrypoint $script" >&2
     fail=1
-  elif ! grep -F -q "$title" "$script"; then
-    echo "[gate-registry] FAIL: id '$id' title not found in $script" >&2
+  elif ! xargs grep -F -q "$title" < <(lane_sources "$lane"); then
+    echo "[gate-registry] FAIL: id '$id' title not found in lane '$lane' sources" >&2
     fail=1
   fi
 done < "$REGISTRY"
@@ -112,7 +120,7 @@ if [ -z "$ids" ]; then
 fi
 
 for lane in $GATE_LANES; do
-  script="$(gate_lane_script "$lane")"
+  while IFS= read -r script; do
   if [ ! -f "$script" ]; then
     echo "[gate-registry] FAIL: missing lane entrypoint $script" >&2
     fail=1
@@ -148,6 +156,7 @@ for lane in $GATE_LANES; do
         ;;
     esac
   done < <(grep -oE '"(fixtures|lib|docs|scripts|tests)/[^"$]+"' "$script" | tr -d '"' || true)
+  done < <(lane_sources "$lane")
 done
 
 # A lane step that COMPILES something and then checks the artifact
@@ -157,7 +166,7 @@ done
 # bisecting to find which step it was. `|| true` on the invocation hands the
 # verdict to the check that was written for it.
 for lane in $GATE_LANES; do
-  script="$(gate_lane_script "$lane")"
+  while IFS= read -r script; do
   [ -f "$script" ] || continue
   awk -v script="$script" '
     # remember the line where a runner invocation starts
@@ -181,6 +190,7 @@ for lane in $GATE_LANES; do
     }
     END { exit(bad ? 1 : 0) }
   ' "$script" || fail=1
+  done < <(lane_sources "$lane")
 done
 
 if [ "$fail" -ne 0 ]; then

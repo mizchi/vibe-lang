@@ -42,6 +42,39 @@ local function scriptTask(taskName: String, script: String): Task = new Task {
   inputs { ...vibeSources; ...scriptSources }
 }
 
+// CI-only slices use fixed artifact paths so pkfire can hash the exact stage2
+// they consume and safely replay successful verdicts from its CAS.
+local ciCompilerGatePreflight = new Task {
+  name = "ci-compiler-gate-preflight"
+  description = "stage-independent compiler-gate preflight"
+  cmd =
+    "bash tests/gates/bootstrap/preflight.sh && mkdir -p _build/pkfire && printf 'ok\\n' > _build/pkfire/ci-compiler-gate-preflight.ok"
+  inputs {
+    ...vibeSources
+    ...scriptSources
+    "tests/gates/**/*.sh"
+    "tests/gates/registry.tsv"
+    "fixtures/**/*.vibe"
+    "bootstrap/seed.json"
+  }
+  outputs { "_build/pkfire/ci-compiler-gate-preflight.ok" }
+}
+
+local ciCheckExamplesTypecheck = new Task {
+  name = "ci-check-examples-typecheck"
+  description = "type-check examples against CI's content-addressed stage2"
+  cmd =
+    "EXAMPLES_STAGE2=_build/_ci_shard_gen/stage2.wasm bash scripts/check_examples_typecheck.sh && mkdir -p _build/pkfire && printf 'ok\\n' > _build/pkfire/ci-check-examples-typecheck.ok"
+  inputs {
+    ...vibeSources
+    ...scriptSources
+    "examples/**/*.vibe"
+    "install/**/*"
+    "_build/_ci_shard_gen/stage2.wasm"
+  }
+  outputs { "_build/pkfire/ci-check-examples-typecheck.ok" }
+}
+
 // === Quick Commands ===
 
 local fmt = new Task {
@@ -1570,6 +1603,8 @@ local checkRelease = new Task {
 // === Task registration ===
 
 tasks {
+  ciCompilerGatePreflight
+  ciCheckExamplesTypecheck
   fmt
   preCommit
   formalCheck

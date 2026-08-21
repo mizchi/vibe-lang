@@ -15,6 +15,12 @@ printf '\0asm\1\0\0\0' > "$BASE"
 RUNNER="$TMP_DIR/fake_runner.sh"
 RUN_LOG="$TMP_DIR/run.log"
 
+# The fake runner validates the measurement protocol and never imports the
+# compiler tree. Bundle preparation is production setup, not part of this
+# test's contract, and used to dominate this fast test with repeated 25 MB
+# regeneration.
+export VIBE_FS_HEAP_SKIP_PREPARE=1
+
 cat > "$RUNNER" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -62,6 +68,19 @@ if [ "${VIBE_PROFILE_MEMORY_MARKS:-}" = "1" ]; then
 fi
 EOF
 chmod +x "$RUNNER"
+
+# Skipping production bundle preparation is test-runner authority, not a way
+# to run the real measurement against stale generated inputs.
+set +e
+VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/skip-prepare-real-runner" \
+  bash "$SCRIPT" --cold --base "$BASE" >"$TMP_DIR/skip-prepare.stdout" 2>"$TMP_DIR/skip-prepare.stderr"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "measure_fs_heap test: production runner accepted VIBE_FS_HEAP_SKIP_PREPARE=1" >&2
+  exit 1
+fi
+grep -q 'VIBE_FS_HEAP_SKIP_PREPARE=1 requires an explicit test runner' "$TMP_DIR/skip-prepare.stderr"
 
 # Ambient runner/compiler controls must not change the lane or its measured
 # guest pages. The marked/unmarked outputs are identical, so parity must pass.
