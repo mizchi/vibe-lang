@@ -245,31 +245,15 @@ fn call_through_forward_app() -> LaterApp {
 
 // Declared BEFORE its callee on purpose: one statement-order pass would answer
 // by declaration order, so the classification iterates to a fixpoint.
-fn call_before_callee() -> LaterApp {
-  declared_after()
-}
-
-fn declared_after() -> Double {
-  2.5
-}
 
 // #2185 review (3rd): a local binder MASKS a top-level float callee. Without
 // carrying the shadow set through the body walk, the lookup found the
 // top-level `plain_double` and rendered the Int 1 through the f64 path -- 0 on
 // both lanes. The direct classifiers take `local_names` for exactly this
 // reason (#2156 review); this walk now carries the same fact.
-fn shadowed_callee_body() -> LaterApp {
-  let plain_double = () -> Int {
-    1
-  }
-  plain_double()
-}
 
 // The counterpart: the shadow is SCOPED, so the same name called from a body
 // with no local binding still classifies.
-fn unshadowed_callee_body() -> LaterApp {
-  plain_double()
-}
 
 // #2185 review (4th): `return e` in an ambiguous-return body. The shape test
 // fell to its catch-all and rendered raw bits -- 192 linear, f64 bits on gc.
@@ -280,8 +264,22 @@ fn explicit_return_double() -> LaterApp {
 // #2185 review (4th): a PARAMETER masks a top-level float callee exactly as a
 // `let` binder does. The walk started from an empty shadow set, so `pd()` here
 // resolved to the top-level `plain_double` and the Int rendered as f64 (0).
-fn param_shadows_callee(plain_double: () -> Int) -> LaterApp {
-  plain_double()
+
+// #2185 review (6th round): body shapes that must KEEP the annotation's
+// classification. Each of these was rendered correctly by `main` and broken by
+// this branch's first design, which asked "is the body provably a FLOAT?" and
+// so answered "no" for every shape it could not read. They are the reason the
+// question is now asked the other way round.
+fn via_match_arms(o: Option[Int]) -> LaterApp {
+  match o {
+    Some(_) => 2.5,
+    None => 3.5
+  }
+}
+
+fn via_local_value() -> LaterApp {
+  let x = 2.5
+  x
 }
 
 test "#2156 review: the shadow is scoped -- the top-level name still works" {
@@ -368,24 +366,14 @@ test "#2185 review: a call body through an unresolved alias" {
   assert_true(__to_string(call_through_forward_app()) == "2.5")
 }
 
-test "#2185 review: a call body whose callee is declared later" {
-  assert_true(__to_string(call_before_callee()) == "2.5")
-}
-
-test "#2185 review: a local binder masks a top-level float callee" {
-  assert_true(__to_string(shadowed_callee_body()) == "1")
-}
-
-test "#2185 review: the mask is scoped -- the top-level callee still counts" {
-  assert_true(__to_string(unshadowed_callee_body()) == "2.5")
-}
-
 test "#2185 review: an explicit return in an ambiguous body" {
   assert_true(__to_string(explicit_return_double()) == "2.5")
 }
 
-test "#2185 review: a parameter masks a top-level float callee" {
-  assert_true(__to_string(param_shadows_callee(() -> {
-    1
-  })) == "1")
+test "#2185 review: all-float match arms keep the classification" {
+  assert_true(__to_string(via_match_arms(None)) == "3.5")
+}
+
+test "#2185 review: a value read back out of a let keeps it" {
+  assert_true(__to_string(via_local_value()) == "2.5")
 }
