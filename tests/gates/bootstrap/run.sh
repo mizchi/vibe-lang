@@ -8,56 +8,9 @@ GATES_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 # shellcheck disable=SC1090
 source "$GATES_LIB"
 
-
-echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
-bash scripts/check_builtin_parity.sh
-
-# #2001 Phase 0: the lane registry must stay exhaustive before any
-# selfbuild work. A missing row or a missing lane script is silent
-# coverage, which outranks a red selfbuild.
-bash scripts/check_gate_registry.sh
-
-# #1348: inline-dispatched builtins that the closure-capture analysis does not
-# know about are a latent miscompile (invalid module / null-function trap).
-# Static check, so it runs here with the other pre-build checks.
-bash scripts/check_inline_builtin_capture.sh
-
-# #1587: a fixture with `test` blocks that no lane runs is coverage that does
-# not exist. Pure shell + grep (~2s), so it runs before the multi-minute
-# selfbuild rather than after it.
-node scripts/generate_runtime_fixture_tests.test.mjs
-bash scripts/check_fixture_execution.sh
-
-# #1821 / Codex review on #1822: the token formatter may conservatively miss
-# an ambiguous `Name {` shape, but the public writer must never replace valid
-# source with a candidate that no parser accepts.
-bash scripts/vibe_fmt_parse_guard_test.sh
-
-# B2 parser binder-context routing is intentionally semantically inert, so its
-# no-fallback proof is structural. Keep the large source-body assertion table
-# out of the Vibe unit and run the strict scanner directly under Node.
-echo "[compiler-gate] parser binder-context spine"
-node --test scripts/parser_binder_context_spine.test.mjs
-
-# Capability-only gate for the future TDRE5 immutable cache publisher. The
-# builtin remains unused by compiler source until the bootstrap seed is bumped.
-node scripts/test_immutable_publish_plumbing.js
-
-echo "[compiler-gate] 1-2/3 generated compiler artifacts"
-# This used to be a SYNC CHECK: regenerate the five artifacts into a temp dir
-# and assert the committed copies matched byte for byte. The artifacts are no
-# longer committed (see scripts/ensure_generated.sh), so the same generation
-# now simply produces them -- identical work, minus a failure mode that could
-# only ever mean "someone forgot to run the regen".
-#
-# Warm (fingerprint unchanged since the last run) this is ~1s.
-bash scripts/ensure_generated.sh
-
-# #1553: exercise the measurement protocol with a fake runner. This validates
-# isolation and fail-closed parsing without running the costly real full-CLI
-# memory measurement, which remains opt-in via `pkf run measure-fs-heap`.
-echo "[compiler-gate] 2a/3 FS heap measurement protocol"
-bash scripts/measure_fs_heap_test.sh
+if [ "${COMPILER_GATE_SKIP_PREFLIGHT:-0}" != "1" ]; then
+  bash tests/gates/bootstrap/preflight.sh
+fi
 
 echo "[compiler-gate] 3/3 selfbuild seed->stage1->stage2->stage3"
 # ensure_generated just wrote the flat module source from the current tree, so
@@ -85,6 +38,16 @@ print(f"[compiler-gate] fixpoint ok: stage2==stage3 ({s2[:12]})")
 PY
 
 stage2_wasm="${latest_gen}stage2.wasm"
+
+VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
+  bash scripts/test_rc_bootstrap.sh
+
+# CI runs the stage2 consumer oracles in their own cached job. Keep the local
+# bootstrap lane complete by default, while letting the fixpoint job publish
+# its stage2 without serializing unrelated consumers behind the selfbuild.
+if [ "${COMPILER_GATE_SKIP_STAGE2_ORACLES:-0}" = "1" ]; then
+  exit 0
+fi
 
 # #2148: build and exercise the supported split CLI entry with the stage2 from
 # this checkout. This caught the entry's missing Stdout row and keeps direct
@@ -180,5 +143,3 @@ VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
 # ~1.7x wall, ~2.9x output size; see #705 final benchmark), not a
 # correctness blocker. seed->stage1 must still run bump: the pinned seed
 # predates RC ("not EFn" on VIBE_RC=1).
-VIBE_RC_BOOTSTRAP_REUSE_GEN="${latest_gen}generation.json" \
-  bash scripts/test_rc_bootstrap.sh

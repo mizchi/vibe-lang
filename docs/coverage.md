@@ -121,7 +121,7 @@ Entry-weighted rates are reported for historical continuity, but they are not
 gated by default. Adding one test entry adds its whole import closure to their
 denominator, so a larger test suite can lower those rates while both the
 covered-function and covered-branch counts increase. The default gate instead
-uses absolute hit ratchets plus the source-union rate. Set
+uses absolute hit ratchets plus the explicit branch source-coverage KPI. Set
 `VIBE_SUITE_MIN_POINT_RATE` or `VIBE_SUITE_MIN_BRANCH_RATE` only for an explicit
 diagnostic experiment that needs an entry-weighted floor.
 
@@ -165,10 +165,13 @@ diagnostic experiment that needs an entry-weighted floor.
   `branch_union.exact` が `false` になり、値は**下限**として表示される。
   この場合 ratchet は測れなかった数値で落とさないようスキップされる
 
-ratchet: `VIBE_SUITE_MIN_BRANCH_UNION_HIT` (絶対数) と
-`VIBE_SUITE_MIN_BRANCH_UNION_RATE` (率)。entry を足すと分母がその import
-closure ぶん増える entry-weighted rate と違い、union の rate は
-「テストを足せば上がる」ので率のラチェットとして意味を持つ。
+ratchet: `VIBE_SUITE_MIN_BRANCH_UNION_HIT` (absolute count) and
+`VIBE_SUITE_MIN_BRANCH_UNION_RATE` (the explicit #1556 branch-coverage KPI).
+The union removes repeated imports across entries, but its source universe can
+still expand when a test first imports a module. Function union therefore uses
+`VIBE_SUITE_MIN_FUNCTION_UNION_HIT` as its default monotonic ratchet; its rate
+is reported and can be enabled explicitly with
+`VIBE_SUITE_MIN_FUNCTION_UNION_RATE`, but defaults to zero.
 
 ### コンパイラ自身を計測
 
