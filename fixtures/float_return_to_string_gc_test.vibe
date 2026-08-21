@@ -1,0 +1,75 @@
+//# Functions
+
+// #2158 on the wasm-gc lane (#2156 review). The linear fix recorded declared
+// `-> Double` / `-> Float` return types on CompileCtx; the gc lane has its own
+// CompileCtxGc and its own two copies of the floatish classifier, so it went
+// on rendering a Double that arrived through a CALL as its raw f64 bits.
+// Fixing only linear meant `float_return_to_string_test.vibe` asserted the bug
+// was gone while `VIBE_TEST_BACKEND=gc` still printed a wrong number.
+//
+// This file is written so it runs on BOTH lanes -- no imports, so the gc
+// backend's one-file-at-a-time compilation is satisfied -- and the gc lane is
+// exercised by fixtures/*_gc_test.vibe selection in the gate.
+
+fn half(x: Double) -> Double {
+  x / 2.0
+}
+
+fn halff(x: Float) -> Float {
+  x / 2.0
+}
+
+fn quarter(x: Double) -> Double {
+  half(half(x))
+}
+
+fn count(n: Int) -> Int {
+  n + 1
+}
+
+fn value() -> Double {
+  2.5
+}
+
+//# Tests
+
+test "#2158 gc: a call to a `-> Double` function stringifies as a Double" {
+  assert_true(__to_string(half(5.0)) == "2.5")
+}
+
+test "#2158 gc: a let bound to a `-> Double` call stringifies as a Double" {
+  let a = half(5.0)
+  assert_true(__to_string(a) == "2.5")
+}
+
+test "#2158 gc: `-> Float` is classified the same way" {
+  assert_true(__to_string(halff(5.0)) == "2.5")
+}
+
+test "#2158 gc: a `-> Double` function calling another one" {
+  assert_true(__to_string(quarter(10.0)) == "2.5")
+}
+
+test "#2158 gc: a `-> Int` function is NOT reclassified as a float" {
+  assert_true(__to_string(count(41)) == "42")
+}
+
+test "#2156 review gc: the top-level name still resolves" {
+  assert_true(__to_string(value()) == "2.5")
+}
+
+// The linear fixture's companion case -- a LOCAL binding shadowing a
+// top-level `-> Double` function -- is deliberately absent here. It cannot be
+// written on the gc lane yet: calling a local lambda that shadows a top-level
+// function name traps on gc regardless of any float involvement. Measured on
+// stage2 both with and WITHOUT this commit's change, so it is pre-existing and
+// unrelated to the float-return table:
+//
+//   fn value() -> Int { 9 }
+//   let value = () -> Int { 1 }
+//   value() == 1        // gc: trap `unreachable`;  linear: ok
+//   let value = 1       // gc: ok -- a non-function shadow is fine
+//
+// Filed as #2160. The guard itself IS shared: gc_fn_returns_float takes
+// local_names for the same reason its linear twin does, so when that gc bug is
+// fixed this case can be added here unchanged.

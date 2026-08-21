@@ -1077,6 +1077,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     ()
   }
   let fn_names_list = array_empty()
+  // #2158: filled by the classification walk below.
+  let gc_float_ret_fn_names = array_empty()
   let fn_param_counts = array_empty()
   let fn_needs_env_list = array_empty()
   let user_func_stmts = array_empty()
@@ -1085,11 +1087,27 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     let stmt = Array::get(stmts, i)
     match stmt {
       SLet(_, _, name, _, expr) => match expr {
-        EFn(_, _, params, _, _, _) => {
+        EFn(_, _, params, gc_ret, _, _) => {
           Array::push(fn_names_list, name)
           Array::push(fn_param_counts, Array::length(params))
           Array::push(fn_needs_env_list, true)
           Array::push(user_func_stmts, stmt)
+          // #2158: record a declared `-> Double` / `-> Float` so a CALL to
+          // this function is recognizable as a float at the call site. This
+          // walk already visits every top-level function before any body is
+          // compiled, which is the property the table needs (a body compiled
+          // early may call a function declared later).
+          match gc_ret {
+            Some(gc_rt) => match gc_rt {
+              TyName(gc_rtn) => if gc_rtn == "Double" || gc_rtn == "Float" {
+                Array::push(gc_float_ret_fn_names, name)
+              } else {
+                ()
+              },
+              _ => ()
+            },
+            None => ()
+          }
           0
         },
         _ => 0
@@ -2194,6 +2212,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
             gc_const_svals: gc_const_svals_l,
             gc_global_names: gc_global_names_l,
             gc_float_locals: gc_float_slots_f,
+            gc_float_ret_fns: gc_float_ret_fn_names,
             gc_bool_locals: gc_bool_slots_f,
             gc_native_array_locals: direct_param_slots_f,
             gc_native_array_local_types: array_empty(),
@@ -2291,6 +2310,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
       gc_const_svals: gc_const_svals_l,
       gc_global_names: gc_global_names_l,
       gc_float_locals: array_empty(),
+      gc_float_ret_fns: gc_float_ret_fn_names,
       gc_bool_locals: array_empty(),
       gc_native_array_locals: array_empty(),
       gc_native_array_local_types: array_empty(),

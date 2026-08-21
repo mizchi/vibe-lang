@@ -263,6 +263,25 @@ fn gc_resolve_builtin_last(ft: FuncTable, name: String) -> Int {
 /// checking ctx.gc_float_locals -- mirrors bc_expr_is_boolish below, so a
 /// name reused with a non-float binding in a sibling scope is not
 /// misclassified via its old, now-stale slot entry.
+/// #2158: does `fname` name a user function DECLARED `-> Double` / `-> Float`?
+///
+/// Exported because the gc lane keeps TWO copies of the floatish classifier
+/// (bc_expr_is_floatish here, gc_expr_is_floatish in backend_expr.vibe, which
+/// imports this file) and the linear lane keeps two more. The classifier
+/// bodies have to stay duplicated -- backend_call cannot import backend_expr
+/// without a cycle -- but the table lookup does not, and #2158 already had to
+/// be fixed twice on the linear lane for exactly that reason.
+///
+/// `local_names` first: the table is keyed by NAME, and a local binding of
+/// the same name is a different callable (#2156 review).
+export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fname: String) -> Bool {
+  if find_local_slot(local_names, fname) >= 0 {
+    false
+  } else {
+    array_contains_str(ctx.gc_float_ret_fns, fname)
+  }
+}
+
 fn bc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
@@ -273,7 +292,7 @@ fn bc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -
     EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (bc_expr_is_floatish(l, local_names, ctx) || bc_expr_is_floatish(r, local_names, ctx)),
     EUnaryOp(op, x) => op == "-" && bc_expr_is_floatish(x, local_names, ctx),
     ECall(fcallee, _, _) => match fcallee {
-      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float",
+      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
       _ => false
     },
     _ => false
