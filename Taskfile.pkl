@@ -33,6 +33,15 @@ local scriptSources: Listing<String> = new {
   "scripts/**/*.vibex"
 }
 
+// Inputs shared by every gate whose verdict comes from the checkout compiler.
+// `vibeSources` covers the selfhost source, while the seed manifest selects the
+// bootstrap compiler that builds stage2. Omitting either can replay a cached
+// pass for a different compiler (#2165).
+local compilerProbeInputs: Listing<String> = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+}
+
 // --- Helper factories ---
 
 /// Single-script wrapper — common pattern.
@@ -404,14 +413,8 @@ local checkBookSkipBlocks = new Task {
   // out of scriptTask, one level up.
   inputs {
     ...scriptSources
-    ...vibeSources
+    ...compilerProbeInputs
     "book/**/*.md"
-    // vibeSources is lib/** only, so a SEED-ONLY bootstrap bump changes the
-    // stage2 selfhostGeneration builds while leaving this key untouched, and
-    // the previous verdict replays against a compiler that no longer exists
-    // (#2156 review). The sibling compiler-probing gates share this gap --
-    // filed as #2165 rather than changing their caching from this PR.
-    "bootstrap/seed.json"
   }
   // Same reason as check-rc-default and check-package-sibling-scope: the
   // verdict is the current compiler's, so the current compiler has to exist
@@ -481,7 +484,7 @@ local checkRcDefault = new Task {
   description = "the compiler's linear default backend, and the document that names it, agree"
   cmd = "bash scripts/check_rc_default.sh"
   inputs {
-    ...vibeSources
+    ...compilerProbeInputs
     ...scriptSources
     "docs/spec/rc-cutover-readiness.md"
   }
@@ -528,7 +531,7 @@ local checkPackageSiblingScope = new Task {
   name = "check-package-sibling-scope"
   description = "export + contract entry + explicit ./import are all required to reach a sibling"
   cmd = "bash scripts/check_package_sibling_scope.sh"
-  inputs { ...vibeSources; ...scriptSources }
+  inputs { ...compilerProbeInputs; ...scriptSources }
   // Same reason as check-cheatsheet-signatures: the verdicts are the current
   // compiler's, so it has to be the current compiler that answers.
   deps { selfhostGeneration }
@@ -548,7 +551,7 @@ local checkCheatsheetSignatures = new Task {
   // tables without touching these three files would have replayed the old
   // verdict -- the compiler-side drift this task exists to catch, passing.
   inputs {
-    ...vibeSources
+    ...compilerProbeInputs
     ...scriptSources
     "docs/cheatsheet.md"
     "scripts/cheatsheet_signature_probe.vibe"

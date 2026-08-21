@@ -35,6 +35,27 @@ run_case "compiler task with vibeSources passes" 0 'local t = new Task {
   inputs { ...vibeSources; "docs/cheatsheet.md" }
 }'
 
+# Compiler-probing gates use the shared superset, which also keys on the seed.
+run_case "compiler task with complete compilerProbeInputs passes" 0 'local compilerProbeInputs = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+}
+local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...compilerProbeInputs; "docs/cheatsheet.md" }
+}'
+
+# Merely naming the helper is not enough: its seed half is part of the oracle.
+run_case "compilerProbeInputs without seed is rejected" 1 'local compilerProbeInputs = new {
+  ...vibeSources
+}
+local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...compilerProbeInputs; "docs/cheatsheet.md" }
+}'
+
 # Caching off is the other legitimate answer.
 run_case "cache = false is accepted instead" 0 'local t = new Task {
   name = "probe"
@@ -81,4 +102,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (8 cases)"
+echo "check-task-inputs-test: ok (10 cases)"

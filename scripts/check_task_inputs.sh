@@ -13,7 +13,8 @@
 # under-approximate (that costs a wrong answer).
 #
 # The rule: if a task's command reaches the compiler, its inputs must include
-# `vibeSources`, or it must set `cache = false`.
+# `vibeSources` directly or through `compilerProbeInputs`, or it must set
+# `cache = false`.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -24,6 +25,19 @@ import re, sys, os
 # Overridable so the self-test can drive synthetic task blocks.
 TASKFILE = os.environ.get("TASK_INPUTS_TASKFILE", "Taskfile.pkl")
 src = open(TASKFILE, encoding="utf-8").read()
+
+# The shared compiler-probe input set is safe only while it contains both
+# halves of the compiler identity: selfhost sources and the bootstrap seed.
+probe_inputs_m = re.search(
+    r"local\s+compilerProbeInputs(?:\s*:[^=]+)?\s*=\s*new\s*\{(.*?)\}",
+    src,
+    re.S,
+)
+probe_inputs_safe = bool(
+    probe_inputs_m
+    and "vibeSources" in probe_inputs_m.group(1)
+    and '"bootstrap/seed.json"' in probe_inputs_m.group(1)
+)
 
 # A script "reaches the compiler" when it EXECUTES one of these, not when it
 # mentions one. A first cut matched any occurrence of `stage2` and flagged six
@@ -99,8 +113,11 @@ for m in re.finditer(r"new Task \{", src):
     if not hot:
         continue
     checked += 1
-    if "vibeSources" not in block:
-        why = "declares no `inputs` at all" if "inputs" not in block else "does not include `...vibeSources`"
+    has_compiler_inputs = "vibeSources" in block or (
+        "compilerProbeInputs" in block and probe_inputs_safe
+    )
+    if not has_compiler_inputs:
+        why = "declares no `inputs` at all" if "inputs" not in block else "does not include a complete compiler input set"
         fails.append((name, hot[0], why))
 
 for name, script, why in fails:
@@ -108,11 +125,11 @@ for name, script, why in fails:
           file=sys.stderr)
     print(f"  but it {why} and does not set `cache = false`. A change under", file=sys.stderr)
     print("  lib/**/*.vibe would replay a cached pass.", file=sys.stderr)
-    print("  Add `...vibeSources` to the list -- spelling inputs out should ADD to the",
+    print("  Add `...vibeSources` or `...compilerProbeInputs` to the list -- spelling inputs out should ADD to the",
           file=sys.stderr)
     print("  defaults, not replace them.", file=sys.stderr)
 
 if fails:
     sys.exit(1)
-print(f"check-task-inputs: ok ({checked} compiler-touching tasks with explicit inputs all key on lib/**)")
+print(f"check-task-inputs: ok ({checked} compiler-touching tasks with explicit inputs all key on compiler sources)")
 PY
