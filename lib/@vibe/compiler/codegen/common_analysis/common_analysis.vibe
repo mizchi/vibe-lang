@@ -3974,9 +3974,22 @@ export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
 /// Aliases: `type MyD = Double; fn f() -> MyD` returns a Double, and matching
 /// the raw spelling `TyName("Double")` missed it -- `__to_string(f())`
 /// printed 180 for 2.5. Only zero-parameter aliases are followed; a
-/// parameterized alias does not name Double. Chain length is bounded by the
-/// alias count, so a cycle terminates without capping valid chains -- see
+/// parameterized alias does not itself name Double. Chain length is bounded by
+/// the alias count, so a cycle terminates without capping valid chains -- see
 /// float_ret_name_is_floatish.
+///
+/// WHAT THIS DOES NOT COVER, and why that is a boundary rather than a bug list:
+/// this is a SYNTACTIC over-approximation, because codegen has no types. A
+/// return written through a parameterized alias -- `type Box[T] = T;
+/// fn value() -> Box[Double]` -- is a `TyApp`, not a `TyName`, and is missed:
+/// `__to_string(value())` prints 180 rather than 2.5 (measured, #2166).
+///
+/// Covering it means substituting type arguments into an alias target here,
+/// i.e. re-deriving a piece of the type system inside an untyped pass, and the
+/// next shape after that needs the next piece. The thing that actually closes
+/// the class is the checker's normalized return type reaching codegen. Until
+/// then this table covers what it can name directly, and #2166 tracks the rest
+/// -- rather than growing an ad-hoc resolver one reported shape at a time.
 export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
   let alias_names: Array[String] = []
   let alias_targets: Array[String] = []
