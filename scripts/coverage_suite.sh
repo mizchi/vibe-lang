@@ -36,21 +36,21 @@
 # treating top_branch_union_gaps as a to-do list.
 #
 # Thresholds (percent, env-overridable; this file is the ONE place they are
-# defined — raise them as coverage improves, lowering needs a rationale in
-# the PR):
-#   VIBE_SUITE_MIN_POINT_RATE        — minimum entry-weighted FUNCTION rate
+# defined):
+#   VIBE_SUITE_MIN_POINT_RATE        — opt-in entry-weighted FUNCTION floor
 #   VIBE_SUITE_MIN_LINE_RATE         — minimum CASE PASS rate (entries green)
-#   VIBE_SUITE_MIN_BRANCH_RATE       — minimum entry-weighted BRANCH rate
+#   VIBE_SUITE_MIN_BRANCH_RATE       — opt-in entry-weighted BRANCH floor
 #   VIBE_SUITE_MIN_FN_HIT            — minimum ABSOLUTE covered functions
 #   VIBE_SUITE_MIN_BRANCH_HIT        — minimum ABSOLUTE covered branches
 #   VIBE_SUITE_MIN_BRANCH_UNION_HIT  — minimum UNION covered branches
 #   VIBE_SUITE_MIN_BRANCH_UNION_RATE — minimum UNION branch rate
 #
-# Among the ENTRY-WEIGHTED metrics the ABSOLUTE minimums are the primary
-# ratchet: adding a test entry can only raise them, while their RATE floors
-# would punish it (a new entry grows the denominator by its whole import
-# closure). Those rates are kept as loose floors. The UNION rate has no such
-# problem and is ratcheted directly.
+# Among the ENTRY-WEIGHTED metrics only the ABSOLUTE minimums are ratchets:
+# adding a test entry can only raise them, while rate floors punish it (a new
+# entry grows the denominator by its whole import closure). The rates remain
+# in the report and can be gated explicitly through the env overrides, but
+# their defaults are zero. The UNION rate has no such problem and is ratcheted
+# directly.
 #
 # Baseline (2026-07-03, 93 allowlist entries, full-visibility #716 stage2):
 #   functions 2263/6491 (34.86%), branches 3814/41967 (9.09%), cases 92/93
@@ -111,9 +111,16 @@ cd "$ROOT"
 # just under current; the ABSOLUTE mins (the real ratchet) are RAISED to
 # just under current instead (12,000 -> 42,000 fn, 29,000 -> 113,000
 # branch), which protects strictly more coverage than the old floors did.
-MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-13}"
+#
+# Rebased 2026-08-21: with 1,008 entries, the entry-weighted rates diluted to
+# 12.35% / 5.50% while absolute hits reached 111,304 / 282,489 and source
+# union stayed at 88.42% / 58.73%. Main had been red before and after #2156
+# despite every one of the 1,008 entries passing. Repeatedly lowering a rate
+# whose denominator grows with each entry is not a ratchet, so the default
+# rate floors are retired. Absolute-hit and union ratchets below remain active.
+MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-0}"
 MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
-MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-6}"
+MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-0}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-42000}"
 MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # #1556: branch UNION floors. Unlike the entry-weighted numbers above, these

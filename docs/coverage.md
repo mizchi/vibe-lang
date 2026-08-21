@@ -117,6 +117,14 @@ entry ごとの program 固有**なので entry 間で比較してはいけな�
 `branch.per_fn[fn].mask` (branch 1つにつき `'1'`/`'0'` 1文字、ordinal 昇順)
 がこの ordinal を公開しており、report 側はこれを OR して union を出す。
 
+Entry-weighted rates are reported for historical continuity, but they are not
+gated by default. Adding one test entry adds its whole import closure to their
+denominator, so a larger test suite can lower those rates while both the
+covered-function and covered-branch counts increase. The default gate instead
+uses absolute hit ratchets plus the source-union rate. Set
+`VIBE_SUITE_MIN_POINT_RATE` or `VIBE_SUITE_MIN_BRANCH_RATE` only for an explicit
+diagnostic experiment that needs an entry-weighted floor.
+
 > **重要 — この指標が測っているのは「テストプログラム自身の実行」であって
 > 「テストで検証された機能」ではない。**
 >
