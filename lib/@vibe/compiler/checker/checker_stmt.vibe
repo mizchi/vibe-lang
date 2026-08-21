@@ -3489,7 +3489,41 @@ fn tps_decl_label(kind: String, name: String) -> String {
   String::concat(kind, String::concat(" `", String::concat(name, "`")))
 }
 
+/// #2141 (Codex P1 on #2183): the `__Vfp_` prefix is the desugar's re-spelling
+/// of a type-parameter -- `is_marked_formal_name` treats any matching spelling
+/// as compiler-generated, so a USER-DECLARED type borrowing the prefix
+/// (`struct __Vfp_Point`) would be classified as a variable and its arrays
+/// silently compared with erased equality. Reserve the prefix at the one place
+/// user source can introduce a colliding meaning: a type DECLARATION. Binders
+/// and annotations need no rule of their own -- a binder spelled `__Vfp_X` is
+/// genuinely a formal (nothing declared can collide once declarations are
+/// rejected), and an undeclared annotation is already an unknown type (#2125).
+/// Generated code never declares a `__Vfp_`-prefixed type (helpers are `let`
+/// functions; witness structs are `<Trait>Dict`), so the post-desugar merged
+/// re-check lane stays clean.
+fn tps_reserved_prefix_report(kind: String, name: String, errors: Array[String]) -> Unit {
+  if String::starts_with(name, "__Vfp_") {
+    Array::push(errors, String::concat(kind, String::concat(" `", String::concat(name, "` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename the type (#2141)"))))
+  } else {
+    ()
+  }
+}
+
+fn collect_reserved_type_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => tps_reserved_prefix_report("struct", name, errors),
+      SEnum(_, name, _, _, _) => tps_reserved_prefix_report("enum", name, errors),
+      STypeAlias(_, name, _, _) => tps_reserved_prefix_report("type alias", name, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  collect_reserved_type_prefix_errors(stmts, errors)
   let local_types = tps_local_type_names(stmts)
   if Array::length(local_types) == 0 {
     ()

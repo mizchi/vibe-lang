@@ -6621,7 +6621,13 @@ fn rewrite_stmt(stmt: Stmt, gens: Array[(String, Array[(String, String, Int)])],
           let binds = dict_binds_of(threaded, traits)
           let new_params = thread_dict_params(threaded, params)
           let seeded = seed_var_types(params, tparams, toplevel_vars)
+          // #2141 (Codex P1 on #2183): this dict-threaded path unwraps the
+          // EFn itself, so rewrite_expr's EFn arm never pushes the binder
+          // frame for it -- a `[T: Trait]` formal colliding with an imported
+          // `struct T` still dispatched `T::equals` on erased operands.
+          scope_formals_push(tparams)
           let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
+          scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
         },
         _ => stmt
