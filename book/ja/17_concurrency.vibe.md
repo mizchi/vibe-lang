@@ -1,65 +1,90 @@
-# 17 — 並行処理
+# 17 — 並行性
 
 前: [等価性](16_equality.vibe.md)
 
-English version: [17_concurrency.vibe.md](../en/17_concurrency.vibe.md) (canonical)
+English version: [17_concurrency.vibe.md](../en/17_concurrency.vibe.md)
 
-vibe の公開並行モデルは **shared-nothing structured concurrency**
-(ADR-0068)。OS スレッドを spawn することはない。`TaskGroup` を走らせ、
-そこへ仕事を spawn し、join する。
+vibe でスレッドを spawn することはありません。`TaskGroup` を開き、そこへ
+仕事を spawn し、結果を join します。そしてグループは、それを開いた呼び出し
+より長生きしません。すべてがスコープに収まっていて、それが残りを検査可能に
+しています。
 
 パッケージは `@vibe/concurrent`。
 
-## 何が検査されるか
+## spawn して join する
 
-`TaskGroup::run` は新しい region を作る。body の**返り値**がその region の
-`TaskGroup` / `TaskHandle` / `Sender` / `Receiver` を持ち出す場合、
-コンパイラはそのプログラムを拒否する。
-
-`TaskGroup::spawn` / `::spawn_suspend` は `Spawnable` — 同一 region または
-`Send` な capture — を強制する。ただし呼び先が**リテラルに綴られている**
-ときに限る。import で rename したり `let spawn = TaskGroup::spawn` と
-束縛したりすると、この検査は素通りする。`adopt` / `settle` は現時点で
-対象外。
-
-```vibe skip
-// skip: 契約のスケッチ — lib/@vibe/concurrent と fixtures/region_ok_basic.vibe を参照
+```vibe run
 import @vibe/concurrent {
   TaskGroup, TaskHandle
 }
 
-fn main with Exception {
+fn main with Console + Exception {
   let answer = TaskGroup::run((n) -> {
     let h = TaskGroup::spawn(n, () -> {
       21 * 2
     })
     TaskHandle::join(h)
   })
-  // answer == 42
+  println("answer = \{answer}")
 }
 ```
 
-`Send` は構造的に判定される。スカラー、タプル、Send な要素の `Option`、
-`mut` フィールドを持たず Send な要素だけからなる struct / enum は spawn を
-越えられる。`Array` / `Bytes`、クロージャ、`mut` フィールドを持つ struct は
-越えられない。`FrozenArray[T]` は Send 可能な配列としてまさにこのために
-存在する。永続 `Map` は**自動的には** `Send` にならない。
+```output
+answer = 42
+```
 
-## suspend とブロッキング
+`TaskGroup::run` は本体にグループ `n` を渡します。`spawn` はその中で仕事を
+始めてハンドルを返し、`join` が値を待ちます。`run` が返った時点でグループは
+終わっていて、後片付けを覚えておくべき動作中のものは残りません。
 
-`sleep` はインスタンス全体をブロックする。`sleep_wait` はタスクを park
-するので兄弟タスクが走れる。stack 駆動 API のチャネル `send` / `recv` は
-スケジューラの制御フローをブロックし、`send_wait` / `recv_wait` は
-suspend する。
+## spawn を越えられるもの
 
-このパッケージの `Async` effect は `Suspend(Int) -> Int`。これは
-ライブラリの effect であって言語のキーワードではない。
+spawn された仕事は自分の制御下にない場所で走るので、何を捕獲するかは移動して
+安全なものに限られます。それが `Send` の判定で、コンパイラが構造的に行います
+— `impl Send` を書くことはありません。
+
+| 越えられる | 越えられない |
+|---|---|
+| スカラー、タプル | クロージャ |
+| `Send` な部品の `Option` | `Array`、`Bytes` |
+| `Send` な部品でできた struct と enum (`mut` フィールド無し) | `mut` フィールドを持つもの |
+
+`FrozenArray[T]` はまさにこのために在ります — 送れる配列です。永続的な `Map`
+は自動的に `Send` にはなりません。
+
+## グループは外へ出られない
+
+`TaskGroup::run` はリージョンを開き、そこに属するもの — グループ、ハンドル、
+Sender、Receiver — は本体が返す値に含められません。ハンドルを返すことは、
+既に終わったグループに属する何かを受け取ることになるので、コンパイラが
+拒否します。
+
+知っておく価値のある穴が一つ: spawn の検査は `TaskGroup::spawn` が字面通りに
+書かれたときに働きます。改名を経由すると (`let spawn = TaskGroup::spawn`)
+検査を素通りします。
+
+## 中断とブロック
+
+待つ操作にはそれぞれ2種類あり、違いは「兄弟タスクが走れるか」です。
+
+| インスタンスをブロックする | タスクを中断する |
+|---|---|
+| `sleep` | `sleep_wait` |
+| `send` / `recv` | `send_wait` / `recv_wait` |
+
+`TaskGroup` の中では `_wait` の形を選ぶこと。ブロックする方は呼び出し元だけ
+でなく全体を止めます。
+
+中断はこのパッケージの `Async` エフェクトが運び、`Suspend(Int) -> Int` と
+宣言されています。他と同じライブラリのエフェクトであってキーワードではなく、
+row にも同じように現れます。
 
 ## shared-nothing
 
-メッセージは値である。長期的な意味論はタスク間の deep-copy スナップショット。
-現状はまだ全体が 1 つのヒープを共有しているので、送るのは immutable な
-データにすること。マルチスレッド化が来ても shared-nothing のままとする
-(`TaskGroup` + `Send` / region 検査が既にその形を表している)。
+メッセージは値で、意図されている意味論はタスク間のディープコピーです。今日は
+まだ全タスクが一つのヒープを共有しているので、不変なデータを送れば両者は
+一致します。本物のスレッドが載っても模型は shared-nothing のままです —
+`TaskGroup` と `Send`・リージョン検査が既にその形を述べていて、だから今から
+強制されています。
 
-次: [CLI を IDE として使う](18_cli.vibe.md)。
+次: [IDE としての CLI](18_cli.vibe.md)。

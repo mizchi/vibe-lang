@@ -4,18 +4,14 @@ Previous: [Concurrency](17_concurrency.vibe.md)
 
 日本語版: [18_cli.vibe.md](../ja/18_cli.vibe.md)
 
-vibe's command line is the same semantic surface an editor gets over LSP.
-The first reader is an LLM. That forces a few rules:
+Everything an editor gets from the language server, you can ask for from
+the shell. The answers are shaped so you can pipe them: one record per
+line, fixed field order, and **empty output means nothing is wrong**.
 
-- one record per line, fixed field order
-- empty output means clean
-- a message names the edit, not a pass
+That last one is worth internalising. `vibe check` printing nothing is
+the success case.
 
-If a command cannot answer the question, that is a compiler bug, not a
-workflow problem. Do not memorize a workaround — fix the command or
-file an issue.
-
-## Questions the CLI can answer
+## Questions you can ask
 
 ```bash
 vibe check file.vibe                # empty = this file compiles (imports resolved)

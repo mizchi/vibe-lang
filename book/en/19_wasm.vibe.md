@@ -22,9 +22,15 @@ VIBE_TEST_BACKEND=gc vibe test foo_test.vibe  # wasm-gc
 vibe build --release app.vibe                 # standalone .wasm
 ```
 
-Not every program is valid on both. HOF / Iterator gaps still exist on
-gc. Prefer linear unless you need a gc-only feature. Bench caches key
-on the backend, so switching linear → gc recompiles.
+Linear is the default and the lane everything is tested on. The gc lane
+is the **pure-test** lane: it gates out host imports as a group, so
+anything touching HTTP or the filesystem is linear-only. Divergences are
+tracked one row per builtin in
+`scripts/builtin_parity_classification.tsv` and machine-checked at the
+gate — read that file rather than guessing which of the two a given name
+is on.
+
+Bench caches key on the backend, so switching linear → gc recompiles.
 
 ## Feature levels
 

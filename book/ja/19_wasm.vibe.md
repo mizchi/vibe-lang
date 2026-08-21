@@ -22,10 +22,15 @@ VIBE_TEST_BACKEND=gc vibe test foo_test.vibe  # wasm-gc
 vibe build --release app.vibe                 # standalone .wasm
 ```
 
-すべてのプログラムが両方で有効なわけではない。gc には HOF / Iterator の
-穴がまだある。gc 限定の機能が要るのでなければ linear を選ぶこと。bench
-キャッシュはバックエンドを鍵に含むので、linear → gc の切り替えでは
-再コンパイルされる。
+linear が既定で、すべてがテストされているレーンです。gc は **pure-test**
+レーンで、ホスト import をまとめて除外します。つまり HTTP やファイルシステム
+に触れるものは linear 専用です。差分は
+`scripts/builtin_parity_classification.tsv` に builtin ごとに1行で記録され、
+gate で機械的に検査されています。どちらのレーンにあるかは推測せずこの
+ファイルを読んでください。
+
+bench キャッシュはバックエンドを鍵に含むので、linear → gc の切り替えでは
+再コンパイルされます。
 
 ## Feature level
 
