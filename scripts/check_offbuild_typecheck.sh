@@ -100,7 +100,10 @@ while IFS= read -r f; do
     failed=$((failed + 1))
     echo "[offbuild-typecheck] FAIL $f" >&2
     head -3 "$out.diag" >&2
-    if [ "$runner_status" -ne 0 ]; then
+    if [ "$runner_status" -eq 124 ]; then
+      echo "[offbuild-typecheck] runner also timed out after 300 seconds" >&2
+      head -3 "$runner_err" >&2
+    elif [ "$runner_status" -ne 0 ]; then
       echo "[offbuild-typecheck] runner also exited $runner_status" >&2
       head -3 "$runner_err" >&2
     fi
@@ -114,6 +117,10 @@ while IFS= read -r f; do
     head -3 "$runner_err" >&2
   fi
   rm -f "$out" "$out.diag" "$runner_err"
+  if [ "$runner_status" -eq 124 ]; then
+    echo "[offbuild-typecheck] aborting after runner timeout; remaining sources were not checked" >&2
+    exit 1
+  fi
 done < "$listing"
 
 if [ "$failed" -gt 0 ]; then
