@@ -121,6 +121,7 @@ import @vibe/compiler/codegen/builtin_bodies {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  compute_float_returning_names,
   bmask_has,
   collect_free_vars,
   collect_strings_stmts,
@@ -232,7 +233,6 @@ import @vibe/compiler/codegen/common_extractors {
   get_ecall_callee,
   get_efloat_value,
   get_efn_params,
-  get_efn_ret,
   get_eforin_body,
   get_eforin_iter,
   get_eforin_name,
@@ -3745,8 +3745,9 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
   let lc_scalar_ret_names = sorted_names_of(compute_scalar_returning_names(stmts))
   let fn_names_list = lc_fresh_string_array()
-  // #2158: filled in the classification pass below.
-  let float_ret_fn_names = lc_fresh_string_array()
+  // #2158: one shared walk, in common_analysis -- see its doc comment for why
+  // this is not inlined here any more (#2156 review).
+  let float_ret_fn_names = compute_float_returning_names(stmts)
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
   let fn_stmt_indices = lc_fresh_int_array()
@@ -3825,22 +3826,6 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
       let __sf_etag = expr_tag(expr)
       if is_efn(expr) {
         let params = get_efn_params(expr)
-        // #2158: record a declared `-> Double` / `-> Float` so a CALL to this
-        // function is recognizable as a float at the call site. Done here, in
-        // the pre-pass, because a body compiled later may call a function
-        // declared later still -- the table has to be complete before any
-        // body is compiled.
-        match get_efn_ret(expr) {
-          Some(rt) => match rt {
-            TyName(rtn) => if rtn == "Double" || rtn == "Float" {
-              Array::push(float_ret_fn_names, name)
-            } else {
-              ()
-            },
-            _ => ()
-          },
-          None => ()
-        }
         Array::push(fn_names_list, name)
         Array::push(fn_param_counts, Array::length(params))
         Array::push(fn_needs_env_list, true)

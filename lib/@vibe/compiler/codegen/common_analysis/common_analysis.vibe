@@ -3957,3 +3957,100 @@ export fn region_mutbytes_exit_copy(arg: Expr) -> Expr {
 export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
   region_array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1), "__mutlist_exit")
 }
+
+/// #2158: names of user functions whose DECLARED return type is `Double` or
+/// `Float`, with `type` aliases resolved.
+///
+/// codegen is untyped, so a call `half(5.0)` is just an ECall; without this
+/// table the syntactic floatish classifiers cannot tell it from an
+/// Int-valued call and `__to_string` falls through to a runtime bit-pattern
+/// heuristic that renders an f64 as a plausible-looking integer.
+///
+/// ONE copy on purpose. This started as an inline walk in wasi's pre-pass,
+/// was duplicated into the gc pre-pass when the fix had to be made twice, and
+/// the alias gap below then had to be found in both (#2156 review). The walk
+/// is cheap and the stmt list is right here in either caller.
+///
+/// Aliases: `type MyD = Double; fn f() -> MyD` returns a Double, and matching
+/// the raw spelling `TyName("Double")` missed it -- `__to_string(f())`
+/// printed 180 for 2.5. Only zero-parameter aliases are followed; a
+/// parameterized alias does not name Double. The hop limit is a cycle guard,
+/// not a depth policy: a `type A = B; type B = A` pair must terminate here
+/// rather than in codegen.
+export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
+  let alias_names: Array[String] = []
+  let alias_targets: Array[String] = []
+  let mut ai = 0
+  while ai < Array::length(stmts) {
+    match Array::get(stmts, ai) {
+      STypeAlias(_, aname, aparams, atarget) => if Array::length(aparams) == 0 {
+        Array::push(alias_names, aname)
+        Array::push(alias_targets, match atarget {
+          TyName(tn) => tn,
+          _ => ""
+        })
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    ai = ai + 1
+  }
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) =>
+      match value {
+        EFn(_, _, _, ret, _, _) =>
+        match ret {
+          Some(rt) =>
+          match rt {
+            TyName(rtn) => if float_ret_name_is_floatish(alias_names, alias_targets, rtn) {
+              Array::push(out, name)
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          None => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Does `n` name Double/Float, directly or through zero-parameter aliases?
+fn float_ret_name_is_floatish(alias_names: Array[String], alias_targets: Array[String], n: String) -> Bool {
+  let mut cur = n
+  let mut hops = 0
+  let mut found = false
+  while hops < 16 {
+    if cur == "Double" || cur == "Float" {
+      found = true
+      hops = 16
+    } else {
+      let mut k = Array::length(alias_names) - 1
+      let mut next = ""
+      while k >= 0 {
+        if Array::get(alias_names, k) == cur {
+          next = Array::get(alias_targets, k)
+          k = -1
+        } else {
+          k = k - 1
+        }
+      }
+      if String::length(next) == 0 {
+        hops = 16
+      } else {
+        cur = next
+        hops = hops + 1
+      }
+    }
+  }
+  found
+}

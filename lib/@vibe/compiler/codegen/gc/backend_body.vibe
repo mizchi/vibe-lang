@@ -25,6 +25,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  compute_float_returning_names,
   collect_free_vars,
   collect_strings_stmts,
   emit_closure_call_tail,
@@ -1077,8 +1078,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     ()
   }
   let fn_names_list = array_empty()
-  // #2158: filled by the classification walk below.
-  let gc_float_ret_fn_names = array_empty()
+  // #2158: one shared walk, in common_analysis (#2156 review).
+  let gc_float_ret_fn_names = compute_float_returning_names(stmts)
   let fn_param_counts = array_empty()
   let fn_needs_env_list = array_empty()
   let user_func_stmts = array_empty()
@@ -1087,27 +1088,11 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     let stmt = Array::get(stmts, i)
     match stmt {
       SLet(_, _, name, _, expr) => match expr {
-        EFn(_, _, params, gc_ret, _, _) => {
+        EFn(_, _, params, _, _, _) => {
           Array::push(fn_names_list, name)
           Array::push(fn_param_counts, Array::length(params))
           Array::push(fn_needs_env_list, true)
           Array::push(user_func_stmts, stmt)
-          // #2158: record a declared `-> Double` / `-> Float` so a CALL to
-          // this function is recognizable as a float at the call site. This
-          // walk already visits every top-level function before any body is
-          // compiled, which is the property the table needs (a body compiled
-          // early may call a function declared later).
-          match gc_ret {
-            Some(gc_rt) => match gc_rt {
-              TyName(gc_rtn) => if gc_rtn == "Double" || gc_rtn == "Float" {
-                Array::push(gc_float_ret_fn_names, name)
-              } else {
-                ()
-              },
-              _ => ()
-            },
-            None => ()
-          }
           0
         },
         _ => 0
