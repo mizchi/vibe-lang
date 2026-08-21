@@ -79,9 +79,7 @@ hello vibe
 キーの特殊化を選ぶので、よくあるケースで hash/eq のクロージャを渡さずに済む。
 
 ```vibe run
-import @vibe/core {
-  struct MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
-}
+import @vibe/core { struct MutMap }
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
   match o {

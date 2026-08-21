@@ -8,9 +8,7 @@ chapter is that slot: tally words in a list, using a struct, an
 seen every construct yet. That is the point.
 
 ```vibe run
-import @vibe/core {
-  struct MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
-}
+import @vibe/core { struct MutMap }
 
 struct Tally {
   word: String; count: Int
