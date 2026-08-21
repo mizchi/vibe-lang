@@ -1,20 +1,14 @@
-# 17 — 反復
+# 12 — 反復
 
-English version: [12_iteration.vibe.md](../en/12_iteration.vibe.md) (canonical)
+前: [コレクション](11_collections.vibe.md)
 
-vibe は 2 層に分けている (ADR-0099)。
+English version: [12_iteration.vibe.md](../en/12_iteration.vibe.md)
 
-1. **eager な `Array::*`** — `map`、`fold`、`filter`、`for x in xs`。
-   結果は即座に配列になる。
-2. **pull な `AsyncIter`** — suspend できる `next`。生産側がストリームで
-   あって、既に手元にあるコレクションではないときに使う。
+vibe の反復はほとんどが「配列を一度なめる eager な一巡」で済む。この章は
+その一巡と、それをつなぐ `|>` 演算子、そして相手が「すでに手元にある
+コレクション」でない場合にどこを見るか。
 
-prelude に遅延イテレータのコンビネータ連鎖は無い。配列を 1 回走査したい
-なら `Array::*` の呼び出しか `for` を書く。pull したいなら `for await`
-ではなく pull 型を使う (`for await` は削除された。suspend は effect row に
-載る)。
-
-## eager な配列ツール
+## 配列を一度なめる
 
 ```vibe run
 fn main with Console {
@@ -43,17 +37,17 @@ sum = 10
 doubled[3] = 8
 ```
 
-`xs` が `Array` (または他の builtin コレクション) のとき、
-`for x in xs { body }` は結果を**集める**。ループの値は `Array[T]`。
-pull クロージャや trait イテレータは文の形なので、それに対して
-`let xs = for ...` とは書けない。`ArrayBuilder` に自分で溜めること。
+`for x in xs { body }` は**集める**。`xs` が `Array`（または他の組み込み
+コレクション）なら、このループは式で、その値は `Array[T]` になる。だから
+`doubled` は添字で引ける。`for i, x in xs` と書けば添字も束縛される。
 
-`for i, x in xs` はインデックスも束縛する。
+`Array::map` / `Array::filter` / `Array::fold` は同じ仕事を関数として
+行う。呼び出し側で読みやすい方を選べばよく、どちらも同じ一巡。
 
 ## パイプ
 
-`|>` はパイプされた値を第 1 引数として前置する。裸の `_` がスロットを
-示している場合はそこへ入る。
+`|>` は左側の値を右側の第一引数として渡す。裸の `_` で位置を指定した場合は
+そこに入る。
 
 ```vibe run
 fn main with Console {
@@ -74,12 +68,19 @@ trimmed length = 4
 ys[1] = 20
 ```
 
-`xs |> Array::map(_, _ * 10)` は `Array::map(xs, (v) -> v * 10)` と読む —
-1 つ目の `_` はパイプのスロット、2 つ目はセクション。
+`xs |> Array::map(_, _ * 10)` は `Array::map(xs, (v) -> v * 10)` と読む。
+2つの `_` は別物で、1つ目はパイプの差し込み位置、2つ目はセクション —
+その引数についてのラムダの略記。
 
-メソッド形式の `xs.length()` は型としては通る。コミットするソースでは
-`Type::method(recv, args)` を好む (`vibe normalize` が復元可能なケースを
-書き換える)。builtin のレシーバは `Type::method` の綴りのままで、
-`Array` / `String` に裸のメソッド糖衣は無い。
+## 配列でない場合
 
-次章: [等価性](16_equality.vibe.md)。
+組み立てるべき遅延コンビネータの鎖は無い。`Array::*` の呼び出しと `for`
+が eager 層であり、それで全部。
+
+もう一つの層は、値が時間をかけて届く場合 — ストリーム、ソケット、分割して
+読むファイル。そこでは手元にコレクションが無いので pull する。`next` が
+中断しうるイテレータになる。中断は専用のループ構文ではなく effect row が
+運ぶので、`for await` のような別形は存在しない。
+[並行性](17_concurrency.vibe.md) を参照。
+
+次: [エフェクト](13_effects.vibe.md)。

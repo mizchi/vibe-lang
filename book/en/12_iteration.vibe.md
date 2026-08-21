@@ -4,19 +4,12 @@ Previous: [Collections](11_collections.vibe.md)
 
 日本語版: [12_iteration.vibe.md](../ja/12_iteration.vibe.md)
 
-vibe keeps two layers (ADR-0099):
+Almost all iteration in vibe is one eager pass over an array. This
+chapter is that pass, the `|>` operator that chains it, and where to
+look when the thing you are iterating is not a collection you already
+hold.
 
-1. **Eager `Array::*`** — `map`, `fold`, `filter`, `for x in xs`. The
-   result is an array, immediately.
-2. **Pull `AsyncIter`** — a `next` that can suspend. Used when the
-   producer is a stream, not a collection you already hold.
-
-There is no lazy iterator combinator chain in the prelude. If you want
-one pass over an array, write the `Array::*` call or a `for`. If you
-want to pull, use the pull type, not `for await` (`for await` was
-removed; suspend lives on the effect row).
-
-## Eager array tools
+## One pass over an array
 
 ```vibe run
 fn main with Console {
@@ -45,17 +38,19 @@ sum = 10
 doubled[3] = 8
 ```
 
-`for x in xs { body }` **collects** when `xs` is an `Array` (or another
-builtin collection). The value of the loop is `Array[T]`. A pull
-closure or a trait iterator is statement-shaped: you cannot write
-`let xs = for ...` on it. Accumulate into an `ArrayBuilder` yourself.
+`for x in xs { body }` **collects**. When `xs` is an `Array` or another
+builtin collection, the loop is an expression whose value is `Array[T]` —
+which is why `doubled` can be indexed. `for i, x in xs` binds the index
+too.
 
-`for i, x in xs` binds the index too.
+`Array::map`, `Array::filter` and `Array::fold` do the same work as
+plain functions. Pick whichever reads better at the call site; both are
+the same single pass.
 
-## Pipe
+## Piping
 
-`|>` prepends the piped value as the first argument, unless a bare `_`
-marks the slot.
+`|>` passes the value on the left as the first argument on the right,
+unless a bare `_` marks the slot:
 
 ```vibe run
 fn main with Console {
@@ -76,12 +71,20 @@ trimmed length = 4
 ys[1] = 20
 ```
 
-`xs |> Array::map(_, _ * 10)` reads as `Array::map(xs, (v) -> v * 10)` —
-the first `_` is a pipe slot, the second is a section.
+`xs |> Array::map(_, _ * 10)` reads as `Array::map(xs, (v) -> v * 10)`.
+The two underscores are different things: the first is the pipe slot,
+the second is a section — shorthand for a lambda over that argument.
 
-Method-style `xs.length()` is legal to type. Committed source prefers
-`Type::method(recv, args)` (`vibe normalize` rewrites the recoverable
-cases). Builtin receivers keep the `Type::method` spelling; there is no
-bare-method sugar for `Array` / `String`.
+## When it is not an array
 
-Next: [Equality](16_equality.vibe.md).
+There is no lazy combinator chain to assemble. An `Array::*` call and a
+`for` are the eager layer, and they are the whole of it.
+
+The second layer is for values that arrive over time — a stream, a
+socket, a file read in pieces. There you are not holding a collection,
+so you pull: an iterator whose `next` may suspend. Suspension rides on
+the effect row rather than on a special loop keyword, which is why there
+is no separate `for await` form. See
+[Concurrency](17_concurrency.vibe.md).
+
+Next: [Effects](13_effects.vibe.md).

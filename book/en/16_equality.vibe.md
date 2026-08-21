@@ -70,4 +70,4 @@ When in doubt, write the comparison you mean (`Array::length` plus a
 loop, or a `derive(Eq)` type you control). Do not assume `==` on a
 generic `T` is structural.
 
-Next: [A small program](02_a_small_program.vibe.md).
+Next: [Concurrency](17_concurrency.vibe.md).

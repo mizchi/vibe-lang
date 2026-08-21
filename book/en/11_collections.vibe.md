@@ -4,23 +4,13 @@ Previous: [Writing tests](10_tests.vibe.md)
 
 日本語版: [11_collections.vibe.md](../ja/11_collections.vibe.md)
 
-vibe names a collection so you can read its mutability off the spelling.
+Arrays, builders, and maps. vibe also has a naming rule that tells you
+which of them mutate, and you will be able to read it off the names by
+the end of this chapter.
 
-- A **bare** name is persistent: every "mutating" operation returns a new
-  value (`Map`, conceptually `Set`).
-- A **`Mut-` prefix** is an in-place handle (`MutMap`, `MutSet`).
-- An **`XBuilder` suffix** is a throwaway grower. Finish it and stop
-  holding it. `StringBuilder` ends with `::build`. `ArrayBuilder` /
-  `MapBuilder` still end with `::freeze` (the `build` verb is the planned
-  one).
-- A **`Frozen-` prefix** is immutable *and* `Send`-eligible
-  (`FrozenArray[T]`). Persistent is not the same as Frozen.
+## Arrays
 
-`Array` and `Bytes` predate the rule and stay low-level mutable
-primitives. Their operations have the same meaning on linear, RC, and
-wasm-gc.
-
-## `Array`
+`Array` is the primitive sequence: index it, map over it, push to it.
 
 ```vibe run
 fn main with Console {
@@ -45,9 +35,14 @@ doubled[2] = 6
 after push, length = 4
 ```
 
-`Array::push` grows the receiver **in place**. Every alias of that array
-sees the new length. Prefer `ArrayBuilder` when you accumulate once and
-then only read.
+The one thing to remember: `Array::push` grows the receiver **in place**,
+so every alias of that array sees the new length. An `Array` is a mutable
+handle, not a value.
+
+## Building one
+
+When you fill a collection once and then only read it, build it and
+freeze it. `ArrayBuilder::freeze` hands back an ordinary `Array`.
 
 ```vibe run
 fn main with Console {
@@ -63,7 +58,9 @@ fn main with Console {
 built length = 2, [0] = 10
 ```
 
-## `StringBuilder`
+Strings work the same way, and here it matters for a different reason:
+assembling a string with repeated concatenation is quadratic, while a
+builder is linear.
 
 ```vibe run
 fn main with Console {
@@ -78,11 +75,11 @@ fn main with Console {
 hello vibe
 ```
 
-## `MutMap`
+## Maps
 
-General-purpose maps live in `@vibe/core`. `MutMap::new_string` /
-`::new_int` pick a key specialization so you do not pass hash/eq
-closures for the common cases.
+`MutMap` is the general-purpose map, from `@vibe/core`. `::new_string`
+and `::new_int` pick a key specialization, so the common cases need no
+hash or equality closure from you.
 
 ```vibe run
 import @vibe/core {
@@ -113,11 +110,38 @@ a = 7
 z = -1
 ```
 
-The old `HashMap` name is a transparent alias of `MutMap`. New code
-writes `MutMap`. `vibe check` warns on the old function names.
+`get` returns `Option`, so a missing key is a value you handle rather
+than a crash or a zero. Setting a key that already exists replaces it —
+`"a"` was set twice and the size stayed 2.
 
-`Map` (no prefix) is a small assoc list. For a persistent map that you
-will grow, use `MapHamt` from `@vibex/immut` — `Map` is O(n) per lookup
-and has burned the compiler itself.
+## Reading mutability off the name
 
-Next: [Mutation](06_mutation.vibe.md).
+You have now used three of the four shapes. The rule behind them:
+
+| spelling | meaning | examples |
+|---|---|---|
+| bare | persistent — an "update" returns a new value | `Map` |
+| `Mut-` prefix | in-place handle | `MutMap`, `MutSet` |
+| `-Builder` suffix | throwaway grower; finish it, then stop holding it | `ArrayBuilder`, `StringBuilder` |
+| `Frozen-` prefix | immutable *and* allowed to cross a task boundary | `FrozenArray[T]` |
+
+Persistent and `Frozen` are different questions. Persistent is about what
+an update does; `Frozen` is about whether the value is `Send` — see
+[Concurrency](17_concurrency.vibe.md).
+
+Builders finish with `::build` for `StringBuilder`, `::freeze` for
+`ArrayBuilder` and `MapBuilder`.
+
+`Array` and `Bytes` are older than this rule and stay low-level mutable
+primitives. Their operations mean the same thing on every backend.
+
+## Which map
+
+Reach for `MutMap`. `Map` without a prefix is a small assoc list with
+O(n) lookup — fine for a handful of keys, wrong for anything hot. For a
+persistent map you intend to grow, use `MapHamt` from `@vibex/immut`.
+
+If you meet `HashMap` in older code it is a transparent alias of
+`MutMap`; `vibe check` warns on the old function names.
+
+Next: [Iteration](12_iteration.vibe.md).

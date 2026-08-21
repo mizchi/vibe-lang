@@ -104,4 +104,4 @@ size_of = 3
 `Default` is a builtin. `import @vibe/core { Default }` if generic code
 needs to call `T::default()`. `derive(Default)` registers the impl.
 
-Next: [Iteration](12_iteration.vibe.md).
+Next: [Equality](16_equality.vibe.md).

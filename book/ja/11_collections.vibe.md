@@ -1,22 +1,15 @@
-# 15 — コレクション
+# 11 — コレクション
 
-English version: [11_collections.vibe.md](../en/11_collections.vibe.md) (canonical)
+前: [テストを書く](10_tests.vibe.md)
 
-vibe は、綴りから可変性が読めるようにコレクションを命名している。
+English version: [11_collections.vibe.md](../en/11_collections.vibe.md)
 
-- **裸の名前**は永続的で、「変更」操作はすべて新しい値を返す
-  (`Map`、概念的には `Set`)。
-- **`Mut-` 接頭辞**は in-place なハンドル (`MutMap`、`MutSet`)。
-- **`XBuilder` 接尾辞**は使い捨ての growth 用。作り終えたら手放すこと。
-  `StringBuilder` は `::build` で終わる。`ArrayBuilder` / `MapBuilder` は
-  まだ `::freeze` で終わる (`build` という動詞に寄せる予定)。
-- **`Frozen-` 接頭辞**は immutable **かつ** `Send` 可能 (`FrozenArray[T]`)。
-  永続的であることと Frozen であることは別。
+配列とビルダーとマップ。vibe には「どれが変更されるか」を名前から読める
+命名規則もあり、この章の終わりには名前を見ただけで判断できるようになる。
 
-`Array` と `Bytes` はこの規則より前からあり、低レベルな可変プリミティブの
-ままにしてある。これらの操作は linear・RC・wasm-gc のどれでも同じ意味を持つ。
+## 配列
 
-## `Array`
+`Array` は基本の列。添字で読み、map をかけ、push する。
 
 ```vibe run
 fn main with Console {
@@ -41,8 +34,13 @@ doubled[2] = 6
 after push, length = 4
 ```
 
-`Array::push` はレシーバを**その場で**伸ばす。その配列のすべての別名が
-新しい長さを見る。一度溜めてあとは読むだけなら `ArrayBuilder` を選ぶこと。
+覚えることは一つ。`Array::push` はレシーバを**その場で**伸ばすので、その
+配列の別名すべてが新しい長さを見る。`Array` は値ではなく可変のハンドル。
+
+## 組み立てる
+
+一度詰めたあとは読むだけ、という場合はビルダーで作って freeze する。
+`ArrayBuilder::freeze` が返すのは普通の `Array`。
 
 ```vibe run
 fn main with Console {
@@ -58,7 +56,8 @@ fn main with Console {
 built length = 2, [0] = 10
 ```
 
-## `StringBuilder`
+文字列も同じ形だが、理由が違う。連結を繰り返して文字列を組み立てると
+O(n²) になり、ビルダーなら線形で済む。
 
 ```vibe run
 fn main with Console {
@@ -73,10 +72,11 @@ fn main with Console {
 hello vibe
 ```
 
-## `MutMap`
+## マップ
 
-汎用のマップは `@vibe/core` にある。`MutMap::new_string` / `::new_int` は
-キーの特殊化を選ぶので、よくあるケースで hash/eq のクロージャを渡さずに済む。
+汎用のマップは `@vibe/core` の `MutMap`。`::new_string` と `::new_int` が
+キーの特殊化を選ぶので、よくある場合にハッシュや等価判定のクロージャを
+渡す必要はない。
 
 ```vibe run
 import @vibe/core {
@@ -107,11 +107,38 @@ a = 7
 z = -1
 ```
 
-古い `HashMap` という名前は `MutMap` の透過的な別名。新しいコードでは
-`MutMap` と書く。古い関数名には `vibe check` が警告する。
+`get` は `Option` を返すので、キーが無い場合はクラッシュでもゼロでもなく
+「扱う値」になる。既にあるキーへの `set` は置き換え — `"a"` は二度 set
+したがサイズは 2 のまま。
 
-`Map` (接頭辞なし) は小さな連想リスト。伸ばしていく永続マップが欲しい
-なら `@vibex/immut` の `MapHamt` を使うこと — `Map` は lookup が O(n) で、
-コンパイラ自身がそれで焼かれたことがある。
+## 名前から可変性を読む
 
-次章: [ミューテーション](06_mutation.vibe.md)。
+ここまでで4つの形のうち3つを使った。その規則:
+
+| 綴り | 意味 | 例 |
+|---|---|---|
+| 裸 | 永続的 — 「更新」は新しい値を返す | `Map` |
+| `Mut-` 接頭辞 | in-place なハンドル | `MutMap`, `MutSet` |
+| `-Builder` 接尾辞 | 使い捨ての growth 用。作り終えたら手放す | `ArrayBuilder`, `StringBuilder` |
+| `Frozen-` 接頭辞 | immutable **かつ** タスク境界を越えられる | `FrozenArray[T]` |
+
+永続的であることと `Frozen` であることは別の問いを指す。永続的とは更新の
+振る舞いのことで、`Frozen` はその値が `Send` かどうか —
+[並行性](17_concurrency.vibe.md) を参照。
+
+ビルダーの終端は `StringBuilder` が `::build`、`ArrayBuilder` と
+`MapBuilder` が `::freeze`。
+
+`Array` と `Bytes` はこの規則より前からあり、低レベルな可変プリミティブの
+ままにしてある。これらの操作はどのバックエンドでも同じ意味を持つ。
+
+## どのマップを使うか
+
+まず `MutMap`。接頭辞の無い `Map` は小さな連想リストで、探索が O(n) —
+キーが数個なら十分だが、ホットな場所では誤り。育てる前提の永続マップが
+要るなら `@vibex/immut` の `MapHamt` を使う。
+
+古いコードで `HashMap` に出会ったら、それは `MutMap` の透過的な別名。
+古い関数名には `vibe check` が警告する。
+
+次: [反復](12_iteration.vibe.md)。

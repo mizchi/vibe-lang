@@ -186,4 +186,4 @@ capabilities should not force a higher feature level than the remaining
 code uses. A program that never reaches `Http` should not demand a
 networking-capable runtime.
 
-Next: [Concurrency](17_concurrency.vibe.md).
+Next: [Generics, traits, and derive](15_generics.vibe.md).
