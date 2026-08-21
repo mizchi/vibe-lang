@@ -84,7 +84,7 @@ closures for the common cases.
 
 ```vibe run
 import @vibe/core {
-  type MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
+  struct MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
 }
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {

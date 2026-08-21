@@ -8,7 +8,7 @@ Rust book は hello-world のあとで一度立ち止まり、数当てゲーム
 
 ```vibe run
 import @vibe/core {
-  type MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
+  struct MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
 }
 
 struct Tally {

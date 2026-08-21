@@ -9,7 +9,7 @@ seen every construct yet. That is the point.
 
 ```vibe run
 import @vibe/core {
-  type MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
+  struct MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
 }
 
 struct Tally {
