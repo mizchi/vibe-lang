@@ -13,60 +13,71 @@
 > `moonbit-host-final-2026-06-23` (`59ef040`). Migration record:
 > [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md).
 
-## 設計ポリシー (迷ったらここに照らして決める)
+## Design policy (hold an unclear decision up against this)
 
-設計判断で迷ったら、以下の 3 本柱に照らす。柱同士が衝突したときの優先順位は
-**「黙って誤らない」> 表現の正直さ > 表面の書き味**。ポリシーで決めきれない
-ものは issue にして 3 軸ラベル ([docs/issue-triage.md](docs/issue-triage.md)) を付ける。
+Three pillars. When they conflict, the order is **never be silently wrong** >
+honesty of representation > pleasantness of the surface syntax. Anything the
+policy cannot settle becomes an issue with the three-axis labels
+([docs/issue-triage.md](docs/issue-triage.md)).
 
-**1. モダンな構文、副作用を明示する静的型付け関数型言語** (系譜: Rust /
-MoonBit / Koka / Verse)。副作用は戻り値ラッパではなく effect row で表す。
-**型と診断は LLM の評価ループに最適化する** — 最悪の壊れ方は「黙って誤る」で
-あり triage でも P0 = silent-wrong が「落ちる」より上 (P1)。診断は内部用語
-(pass 名・ADR 番号) ではなく**効く編集を先頭に**。1 つの概念に 1 つの綴り —
-ただし以下は**決定済み・実装はこれから** (現在の挙動と混同しないこと):
-`==` の全文脈構造的統一 (ADR-0097, #1526 — **実測 2026-08-19 では silent な
-参照等価はもう残っていない**。裸 / 名前経由 / tuple 内 / struct 内・入れ子配列・
-`Array[String]` / `Array[(Int, Int)]` / `Array[Struct]`・関数戻り値経由・
-空リテラル束縛がすべて構造的で、長さ違い・要素違いは false になる。
-**ただし注釈の無い `let xs = []` だけは push 後の比較で実行時に trap する**
-(#2157、実測 2026-08-21)。黙って誤るのではなく落ちるので P1。注釈を付けた形
-(`let xs: Array[Int] = []`) は push 後も構造的で、それは
-`fixtures/structural_eq_contexts_test.vibe` の "annotated empty bindings
-stay structural after a push" が押さえている。
-この節はかつてこの 4 つを「残る参照等価」として列挙していたが、
-実測では 3 つは構造的。4 つ目 — 消去された型変数 (`[T: Eq]` の `T`) — は
-witness を使うので、`Eq` を持つ型 (`Int` / `String` / `derive(Eq)` の struct)
-では正しく動き、witness の無い container を渡すと**拒否される**
-(`fn eq2[T: Eq](a: T, b: T) { a == b }` に `Array[Int]` → ``no impl `Eq` for
-`Array[Int]` ``)。silent-wrong ではなく診断であり、それが ADR-0097 完了まで
-残す意図的なゲート。回帰は `fixtures/structural_eq_contexts_test.vibe` が
-押さえている。cheatsheet の「`Array` / `Bytes` の `==` (#1526)」が契約の全文)、
-反復の eager `Array::*` + pull AsyncIter 2 層化 (ADR-0099,
-#1559)、`Exception` を正として `Error` を 1.0 freeze で deprecated (ADR-0085,
-#1564)。docs のコード例は doctest が現行コンパイラで検査する — 仕様と実装を
-食い違わせない。
+**1. Modern syntax; a statically typed functional language that makes effects
+explicit** (lineage: Rust / MoonBit / Koka / Verse). Effects are carried by an
+effect row, not by a return-value wrapper. **Types and diagnostics are tuned
+for an LLM's evaluation loop** — the worst way to break is to be silently
+wrong, which is why triage ranks P0 = silent-wrong above "it crashes" (P1). A
+diagnostic leads with **the edit that fixes it**, not with internal terms
+(pass names, ADR numbers). One concept, one spelling — with these **decided
+but not yet implemented** (do not confuse them with today's behavior):
+structural `==` in every context (ADR-0097, #1526 — **measured 2026-08-19,
+no silent reference equality is left**. Bare, through a name, inside a tuple,
+inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
+`Array[Struct]`, through a function's return value, and empty-literal bindings
+are all structural, and a difference in length or in elements is `false`.
+**The one exception is an unannotated `let xs = []`, which traps at runtime
+when compared after a push** (#2157, measured 2026-08-21). It crashes rather
+than answering wrongly, so it is P1. The annotated form
+(`let xs: Array[Int] = []`) stays structural after a push, and that is pinned
+by "annotated empty bindings stay structural after a push" in
+`fixtures/structural_eq_contexts_test.vibe`.
+This paragraph used to list four cases as "remaining reference equality";
+measurement showed three of them are structural. The fourth — an erased type
+variable (the `T` of `[T: Eq]`) — goes through a witness, so it is correct for
+types that have `Eq` (`Int`, `String`, a `derive(Eq)` struct) and is
+**rejected** for a container with no witness (`fn eq2[T: Eq](a: T, b: T) { a
+== b }` applied to `Array[Int]` gives ``no impl `Eq` for `Array[Int]` ``).
+That is a diagnostic, not silent-wrong, and it is the deliberate gate that
+stays until ADR-0097 is done. `fixtures/structural_eq_contexts_test.vibe`
+holds the regression. The cheatsheet's "`==` on `Array` / `Bytes` (#1526)" is
+the full contract), eager `Array::*` plus a pull `AsyncIter` as two layers of
+iteration (ADR-0099, #1559), and `Exception` as the truth with `Error`
+deprecated at the 1.0 freeze (ADR-0085, #1564). Code examples in `docs/` are
+checked by doctest against the current compiler — the spec and the
+implementation do not get to disagree.
 
-**2. wasm 上でセルフホストし、wasm の最新機能を使う**。コンパイラは vibe 製で
-committed seed からビルドする。**内部表現は wasm / WIT と摩擦のない表現に
-寄せる** — 値は tagged i64、String は byte string (byte offset インデックス、
-ADR-0098 — メモリの実態と一致する正直な意味論)、WIT 境界に出られるものは
-nominal 規則で決める (ADR-0089 D4/D5)。継続表現は wasm-gc (型主導参照レーン
-ADR-0095)・stack switching (今日は stackful lift + `waitable-set`、JSPI は
-別 backend)・threads を前提に設計する。マルチスレッドは**当面 shared-nothing**
-(`TaskGroup` + `Send`/region 検査が既にこの形) で、将来の実スレッド化を
-見据えた表現を選ぶ。
+**2. Self-hosted on wasm, using wasm's newest features.** The compiler is
+written in vibe and built from the committed seed. **Internal representations
+stay close to what wasm and WIT can express without friction** — a value is a
+tagged i64, a `String` is a byte string (indexed by byte offset, ADR-0098 —
+semantics that match what the memory actually is), and what may cross the WIT
+boundary is decided by nominal rules (ADR-0089 D4/D5). Continuations are
+designed around wasm-gc (the type-driven reference lane, ADR-0095), stack
+switching (today a stackful lift plus `waitable-set`; JSPI is a separate
+backend), and threads. Multithreading is **shared-nothing for now**
+(`TaskGroup` plus the `Send`/region checks already have this shape), and
+representations are chosen with real threads in view.
 
-**3. Vibe Coding の時代に合わせ、権限と副作用を明示的にコントロールできる**。
-Deno のパーミッション × Koka の effect system: capability は row が運び、
-呼び出し側の式は素の関数呼び出しのまま。認可は build → apply → instantiate の
-**最早フェーズで一回だけ**確定し、run 中 authority 不変 (ADR-0075/0084/0088)。
-Notebook 駆動の開発に合わせた**インクリメンタルビルド** (`vibe check` レーンは
-typing reuse が default-on、semantic module 単位へ拡張中 #1379)。**ビルド時に
-決まる Capability で、対象プラットフォームの wasm runtime 仕様に合わせた
-プログレッシブなコード生成** — `--allow-*` は const-fold + DCE で不許可
-capability のコードを落とし、生成 wasm は要求する feature level を宣言する
-([docs/wasm/feature-levels.md](docs/wasm/feature-levels.md))。
+**3. Fit for the age of Vibe Coding: authority and effects are explicitly
+controllable.** Deno's permissions crossed with Koka's effect system — a
+capability rides the row, and the expression at the call site stays an
+ordinary function call. Authorization is settled **once, in the earliest
+phase** of build → apply → instantiate, and authority does not change during a
+run (ADR-0075/0084/0088). **Incremental builds** for notebook-driven
+development (the `vibe check` lane has typing reuse on by default and is being
+extended to semantic-module granularity, #1379). **Capabilities fixed at build
+time drive progressive code generation for the target platform's wasm runtime**
+— `--allow-*` drops the code for capabilities that were not granted, via
+const-fold plus DCE, and the generated wasm declares the feature level it
+requires ([docs/wasm/feature-levels.md](docs/wasm/feature-levels.md)).
 
 ## Language and documentation policy (English-first)
 
