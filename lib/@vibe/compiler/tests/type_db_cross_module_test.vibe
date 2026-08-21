@@ -271,6 +271,26 @@ test "merged trait and type names remain ambiguous after per-source validation" 
   assert(message == "")
 }
 
+test "colliding published kinds validate the requested qualifier" {
+  let env = EnvTypeDefs([TDStruct("X", [], [], [])], ["X"], EnvTraitDef("X", [], false, [
+  ], EnvEmpty, [], []))
+  let invalid = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./dep.vibe { enum X }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(String::contains(invalid, "import kind mismatch"))
+  assert(projected_import_kind_error("import ./provider.vibe { struct Record }") == "")
+  let trait_message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./dep.vibe { trait X }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(trait_message == "")
+}
+
 test "private declarations report exportability instead of an ineffective kind edit" {
   let message = typedef_surface_pair_error("/tmp/vibe_private_kind_followup", "struct Hidden { value: Int }\nexport fn public() -> Int { 1 }", "import ./dep.vibe { type Hidden }\nexport let value = 1\n")
   assert(String::contains(message, "is not exported by"))

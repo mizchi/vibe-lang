@@ -1354,11 +1354,11 @@ fn string_array_contains(items: Array[String], wanted: String) -> Bool {
   found
 }
 
-fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv, builtin_authority: Bool) -> Option[String] {
+fn imported_decl_kind(item: ImportItem, expected: ImportKind, initial_env: TypeEnv, builtin_authority: Bool) -> Option[String] {
   let defs = env_type_defs(initial_env)
   let selectable_defs = env_selectable_type_defs(initial_env)
   let mut found: Option[String] = None
-  let mut ambiguous = false
+  let mut matching: Option[String] = None
   let mut i = 0
   while i < Array::length(defs) {
     let candidate = if string_array_contains(selectable_defs, item.name) {
@@ -1393,12 +1393,16 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv, builtin_authority:
       None
     }
     match candidate {
-      Some(kind) => match found {
-        Some(previous) => if previous != kind {
-          ambiguous = true
-        } else (),
-        None => {
+      Some(kind) => {
+        if found == None {
           found = Some(kind)
+        } else {
+          ()
+        }
+        if import_kind_matches(expected, kind) {
+          matching = Some(kind)
+        } else {
+          ()
         }
       },
       None => ()
@@ -1406,27 +1410,26 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv, builtin_authority:
     i = i + 1
   }
   let has_trait = trait_defined(initial_env, item.name)
-  if ambiguous || (found != None && has_trait) {
-    // A merged checker environment no longer carries the source-module
-    // identity of TypeDef rows. The dependency projection boundary validates
-    // each import against its still-separated module environment; guessing
-    // here would make the result depend on merge order.
-    None
+  if has_trait && import_kind_matches(expected, "trait") {
+    Some("trait")
   } else {
-    match found {
+    match matching {
       Some(kind) => Some(kind),
-      None => {
-        if has_trait {
-          Some("trait")
-        } else if (builtin_authority || string_array_contains(selectable_defs, item.name)) && resolve_builtin(item.name) != None {
-          // Opaque primitive declarations from @vibe/builtin are represented
-          // by their canonical value-type binding rather than a TypeDef row.
-          // Their contract spelling is still `type Int`, `type String`, etc.
-          Some("type alias")
-        } else if env_lookup_flat(env_flat_bindings(initial_env), item.name) != None {
-          Some("value")
-        } else {
-          None
+      None => match found {
+        Some(kind) => Some(kind),
+        None => {
+          if has_trait {
+            Some("trait")
+          } else if (builtin_authority || string_array_contains(selectable_defs, item.name)) && resolve_builtin(item.name) != None {
+            // Opaque primitive declarations from @vibe/builtin are represented
+            // by their canonical value-type binding rather than a TypeDef row.
+            // Their contract spelling is still `type Int`, `type String`, etc.
+            Some("type alias")
+          } else if env_lookup_flat(env_flat_bindings(initial_env), item.name) != None {
+            Some("value")
+          } else {
+            None
+          }
         }
       }
     }
@@ -1461,7 +1464,7 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, built
     let item = Array::get(items, i)
     match item.kind {
       None => (),
-      Some(expected) => match imported_decl_kind(item, initial_env, builtin_authority) {
+      Some(expected) => match imported_decl_kind(item, expected, initial_env, builtin_authority) {
         None => (),
         Some(actual) => {
           let wanted = import_kind_label(expected)

@@ -462,9 +462,9 @@ test "vpkg #deprecated type alias warns even when source_groups hold the facade"
   let entry_path = "/tmp/vibe_cli_support_dep_vpkg_entry.vibe"
   let vpkg_src = "#deprecated(\"use MutMap\")\ntype HashMap[K, V] = MutMap[K, V]\n"
   let entry_src = "import ./index.vpkg {\n  HashMap\n}\nfn take(m: HashMap[String, Int]) -> Int {\n  1\n}\n"
-  let facade = "export type HashMap[K, V] = MutMap[K, V]\n"
   Fs::write_bytes(vpkg_path, string_to_bytes(vpkg_src))
   Fs::write_bytes(entry_path, string_to_bytes(entry_src))
+  let facade = ingest_source_text_fs(vpkg_path, vpkg_src)
   let groups = [("g", [(entry_path, entry_src), (vpkg_path, facade)])]
   let lines = check_deprecated_warnings_from_source_groups(entry_path, groups)
   assert(Array::length(lines) > 0)
@@ -521,6 +521,22 @@ test "synthetic vpkg warnings require an exact physical snapshot" {
     ("g", [(path, expanded)])
   ])
   assert(Array::length(warnings) == 0)
+}
+
+test "contract facade warnings use the physical vpkg source" {
+  let dir = "/tmp/vibe_cli_support_contract_facade_warning"
+  let path = dir + "/index.vpkg"
+  let physical = "import ./dep.vibe { MutMap, MutMap::get }\n\nfn value() -> Int\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(path, string_to_bytes(physical))
+  Fs::write_bytes(dir + "/dep.vibe", string_to_bytes("export fn value() -> Int { 1 }\n"))
+  let _prepared = ingest_source_text_fs(path, physical)
+  let facade = ingest_source_text_fs(path, physical)
+  let warnings = check_redundant_import_warnings_from_source_groups(path, [
+    ("g", [(path, facade)])
+  ])
+  assert(Array::length(warnings) == 1)
+  assert(String::contains(Array::get(warnings, 0), "remove 'MutMap::get'"))
 }
 
 test "shipped HashMap type alias in core/index.vpkg is still a transparent alias" {

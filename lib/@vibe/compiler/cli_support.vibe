@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Stmt
+  Stmt, is_contract_ext
 }
 
 import @vibe/compiler/checker {
@@ -21,7 +21,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/contract {
-  vpkg_shared_import_marker
+  contract_facade_marker, parse_contract_program, vpkg_shared_import_marker
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -514,8 +514,9 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
   }
   if count == 1 {
     match found {
-      Some(source) => if String::starts_with(source, vpkg_shared_import_marker) {
-        // The loader prepends inherited `.vpkg` imports to the checked entry.
+      Some(source) => if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+        // The loader prepends inherited `.vpkg` imports or replaces a contract
+        // with its generated facade before checking.
         // Warning locations must refer to the physical file. Re-ingest the
         // current bytes and require the complete synthetic snapshot to match;
         // a suffix comparison would accept a file whose leading bytes changed.
@@ -539,6 +540,25 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
   }
 }
 
+fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stmt]] with Exception {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  if is_contract_ext(input_path) {
+    handle {
+      let (_, _, stmts) = parse_contract_program(tokens)
+      Some(stmts)
+    } with Exception {
+      Throw(_) => None
+    }
+  } else {
+    let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+    if Array::length(parse_diags) > 0 {
+      None
+    } else {
+      Some(stmts)
+    }
+  }
+}
+
 /// Redundant import warnings derived from the exact source snapshot consumed
 /// by the successful linked check. Missing or duplicate entry identity is
 /// fail-closed: no warning is safer than describing unchecked contents.
@@ -547,20 +567,19 @@ export fn check_redundant_import_warnings_from_source_groups(input_path: String,
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
-  let (tokens, starts, _ends) = lex_with_offsets(source)
-  let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
-  if Array::length(parse_diags) > 0 {
-    array_empty()
-  } else {
-    let rows = detect_redundant_namespace_imports(stmts)
-    let out = array_empty()
-    let mut i = 0
-    while i < Array::length(rows) {
-      let (_, _, msg) = Array::get(rows, i)
-      Array::push(out, locate_type_error(source, String::concat("warning: ", msg)))
-      i = i + 1
-    }
-    out
+  match checked_warning_stmts(input_path, source) {
+    Some(stmts) => {
+      let rows = detect_redundant_namespace_imports(stmts)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(rows) {
+        let (_, _, msg) = Array::get(rows, i)
+        Array::push(out, locate_type_error(source, String::concat("warning: ", msg)))
+        i = i + 1
+      }
+      out
+    },
+    None => array_empty()
   }
 }
 
@@ -571,13 +590,10 @@ export fn check_deprecated_warnings_from_source_groups(input_path: String, sourc
     Some(snapshot) => snapshot,
     None => return array_empty()
   }
-  let (tokens, starts, _ends) = lex_with_offsets(entry_source)
   ingestion_pipeline_telemetry_add(17, 1)
-  let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)
-  if Array::length(parse_diags) > 0 {
-    return array_empty()
-  } else {
-    ()
+  let entry_stmts = match checked_warning_stmts(input_path, entry_source) {
+    Some(stmts) => stmts,
+    None => return array_empty()
   }
   // #1262 follow-up: markers come from the LOADER's resolved set, not from a
   // second path-joining resolver. The old collection could not resolve
