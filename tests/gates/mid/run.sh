@@ -1579,10 +1579,12 @@ rm -rf "$svdir"
 #     name-keyed, unpruned design as gc_bool_locals pre-#1030 (a KNOWN
 #     LATENT BUG noted but not fixed there); now slot-indexed and pruned
 #     the same way.
-echo "[compiler-gate] 40k/40 gc-lane to_string(Bool) regressions (#1015)"
+echo "[compiler-gate] 40k/40 gc-lane call/to_string regressions (#1015, #2160)"
 gcbdir="_build/_gate_gc_to_string_bool"
 rm -rf "$gcbdir"; mkdir -p "$gcbdir"
-for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test; do
+# gc_scratch_name_collision.vibe intentionally stays out of the linear unit
+# lane because it guards GC-backend scratch naming specifically.
+for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test gc_local_top_level_shadow_test gc_scratch_name_collision; do
   VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/${gcb_fixture}.vibe" "$gcbdir/${gcb_fixture}.wasm" __no_entry__ >/dev/null 2>&1 || true
@@ -1598,7 +1600,7 @@ for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_boo
   fi
 done
 rm -rf "$gcbdir"
-echo "[compiler-gate] gc-lane to_string(Bool) regressions ok"
+echo "[compiler-gate] gc-lane call/to_string regressions ok"
 
 # 40l. handle-replay side-effect corruption regression guard (M2,
 #      eval/lang-review/findings/2026-07-12-r2.md; tracked by ADR-0076/#817).
