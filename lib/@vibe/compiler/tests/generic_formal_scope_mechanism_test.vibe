@@ -1,0 +1,50 @@
+//# Imports
+
+// #2141 mechanism pins: the desugar's binder-scope stack decides whether a
+// spelling is a formal HERE, so `==` on formal-typed operands never takes a
+// same-spelled declared type's struct dispatch. These run the checkout's
+// desugar in-process on a merged-shaped stmt list (the guard is a checker
+// pass and is deliberately not involved), so they pin the classification
+// itself rather than end-to-end behavior -- that lives in
+// generic_formal_shadow_import_test.vibe.
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+//# Functions
+
+fn desugared(source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
+//# Tests
+
+test "#2141: unbounded formal ==  next to a declared struct stays undispatched" {
+  let src = "struct T {\n  v: Int\n}\n\nfn eqv[T](a: T, b: T) -> Bool {\n  a == b\n}\n"
+  inspect(String::contains(desugared(src), "T::equals(a, b)"), content = "false")
+}
+
+test "#2141 (Codex P1 on #2183): the dict-threaded generic path scopes its binders too" {
+  // A method-bearing bound routes the fn through rewrite_stmt's threaded arm,
+  // which unwraps the EFn itself -- the binder frame must be pushed there as
+  // well, or the collision dispatches `T::equals` on erased operands.
+  let src = "trait M {\n  m(Self) -> Int\n}\n\nstruct T {\n  v: Int\n}\n\nimpl M for T {\n  m(self) -> Int {\n    self.v\n  }\n}\n\nfn keq[T: M](a: T, b: T) -> Bool {\n  a == b\n}\n"
+  inspect(String::contains(desugared(src), "T::equals(a, b)"), content = "false")
+}
+
+test "#2141: the array helper for a formal keys and binds the re-spelled variable" {
+  let src = "struct T {\n  v: Int\n}\n\nfn same[T](a: Array[T], b: Array[T]) -> Bool {\n  a == b\n}\n"
+  let out = desugared(src)
+  inspect(String::contains(out, "__arr_equals____Vfp_T(a, b)"), content = "true")
+  // the struct's own `T::equals` DEFINITION legitimately exists; what must
+  // not exist is a dispatch of it from the formal's helper or call site
+  inspect(String::contains(out, "T::equals(a, b)"), content = "false")
+  inspect(String::contains(out, "T::equals(Array::get"), content = "false")
+}

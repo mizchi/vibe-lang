@@ -10,6 +10,76 @@ import @vibe/core {
 
 //# Functions
 
+/// #2141: when a binder `[T]` is stripped below, an annotation still spelling
+/// `T` becomes a dangling name -- and codegen's annotation-driven shape
+/// seeding (linked_compile / backend_body param seeds, compute_agg_returning)
+/// then reads it against the MERGED ctor table, where a same-spelled imported
+/// `struct T` claims it and `a == b` on erased operands field-compares raw
+/// scalars (measured: `eqv[T](1, 2)` answered true). Re-spell the stripped
+/// formals (`__Vfp_<name>`, the same marking the trait-dict desugar uses) so
+/// no declared type can collide with them.
+fn strip_subst_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(n) => if strip_names_contains(formals, n) {
+      TyName(String::concat("__Vfp_", n))
+    } else {
+      ty
+    },
+    TyApp(n, args) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, strip_subst_ty(Array::get(args, i), formals))
+        i = i + 1
+      }
+      if strip_names_contains(formals, n) {
+        TyApp(String::concat("__Vfp_", n), out)
+      } else {
+        TyApp(n, out)
+      }
+    },
+    TyTuple(ts) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(ts) {
+        Array::push(out, strip_subst_ty(Array::get(ts, i), formals))
+        i = i + 1
+      }
+      TyTuple(out)
+    },
+    _ => ty
+  }
+}
+
+fn strip_names_contains(names: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn strip_subst_params(params: Array[(String, Option[TypeExpr])], formals: Array[String]) -> Array[(String, Option[TypeExpr])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pann) = Array::get(params, i)
+    let pann2 = match pann {
+      Some(te) => Some(strip_subst_ty(te, formals)),
+      None => None
+    }
+    Array::push(out, (pname, pann2))
+    i = i + 1
+  }
+  out
+}
+
 export fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit {
   let empty_tp = array_empty()
   let empty_bounds = array_empty()
@@ -18,7 +88,14 @@ export fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit {
     match Array::get(stmts, i) {
       SLet(sl_exp, sl_rec, sl_name, sl_ann, sl_expr) => match sl_expr {
         EFn(tparams, _, params, ret, eff, body) => if Array::length(tparams) > 0 {
-          Array::set(stmts, i, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params, ret, eff, body)))
+          // #2141: re-spell the stripped formals in the annotations -- see
+          // strip_subst_ty.
+          let params2 = strip_subst_params(params, tparams)
+          let ret2 = match ret {
+            Some(rte) => Some(strip_subst_ty(rte, tparams)),
+            None => None
+          }
+          Array::set(stmts, i, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params2, ret2, eff, body)))
         }
         ,
         _ => ()

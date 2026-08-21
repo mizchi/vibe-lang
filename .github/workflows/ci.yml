@@ -165,9 +165,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-vibe
         with:
           node-version: 24
+          wasmtime: 'true'
       - name: Generated compiler fingerprint
         id: genfp
         run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
@@ -190,6 +191,16 @@ jobs:
         with:
           path: _build/_ci_shard_gen
           key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Install wasmtime
+        # #2184: must run BEFORE "Build stage2 on cache miss" -- the build's
+        # validate step shells out to the wasmtime binary. Later steps (the
+        # oracles, KPI, size ratchet) need it too, so it stays unconditional.
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Build stage2 on cache miss
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
@@ -204,13 +215,6 @@ jobs:
           curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
           cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/compiler-tools/"
           echo "$PWD/compiler-tools" >> "$GITHUB_PATH"
-      - name: Install wasmtime
-        env:
-          WASMTIME_VERSION: v47.0.2
-        run: |
-          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
-          echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Stage cached compiler
         run: |
           mkdir -p _build/selfhost/generations/ci-oracles
@@ -270,9 +274,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-vibe
         with:
           node-version: 24
+          wasmtime: 'true'
       - name: Generated compiler fingerprint
         id: genfp
         run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
@@ -282,6 +287,21 @@ jobs:
         with:
           path: _build/_ci_shard_gen
           key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Install wasmtime (cold stage2 build only)
+        # #2184: generations.sh's "validate stageN compiler -> sample" step
+        # shells out to a wasmtime BINARY, so the cold-cache build below needs
+        # it on PATH. A warm cache skips the build and never touches it --
+        # which is how this job passed until the first fingerprint-moving
+        # change ran it cold: the stage2 cache key includes the compiler-source
+        # fingerprint, so EVERY compiler-touching PR takes the cold path.
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Build stage2 on cache miss
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
@@ -351,9 +371,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-vibe
         with:
           node-version: 24
+          wasmtime: 'true'
       - name: Generated compiler fingerprint
         id: genfp
         run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
@@ -363,6 +384,21 @@ jobs:
         with:
           path: _build/_ci_shard_gen
           key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Install wasmtime (cold stage2 build only)
+        # #2184: generations.sh's "validate stageN compiler -> sample" step
+        # shells out to a wasmtime BINARY, so the cold-cache build below needs
+        # it on PATH. A warm cache skips the build and never touches it --
+        # which is how this job passed until the first fingerprint-moving
+        # change ran it cold: the stage2 cache key includes the compiler-source
+        # fingerprint, so EVERY compiler-touching PR takes the cold path.
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Build stage2 on cache miss
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
@@ -418,6 +454,7 @@ jobs:
       - uses: ./.github/actions/setup-vibe
         with:
           node-version: 24
+          wasmtime: 'true'
           pkfire: 'true'
           pkfire-cache: 'true'
       - name: Cache stage2
@@ -426,6 +463,21 @@ jobs:
         with:
           path: _build/_ci_shard_gen
           key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Install wasmtime (cold stage2 build only)
+        # #2184: generations.sh's "validate stageN compiler -> sample" step
+        # shells out to a wasmtime BINARY, so the cold-cache build below needs
+        # it on PATH. A warm cache skips the build and never touches it --
+        # which is how this job passed until the first fingerprint-moving
+        # change ran it cold: the stage2 cache key includes the compiler-source
+        # fingerprint, so EVERY compiler-touching PR takes the cold path.
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Build stage2
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
@@ -468,15 +520,31 @@ jobs:
           key: gen-v1-${{ steps.genfp.outputs.fp }}
       - name: Ensure generated compiler artifacts
         run: bash scripts/ensure_generated.sh
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-vibe
         with:
           node-version: 24
+          wasmtime: 'true'
       - name: Cache stage2
         id: stage2-cache
         uses: actions/cache@v4
         with:
           path: _build/_ci_shard_gen
           key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Install wasmtime (cold stage2 build only)
+        # #2184: generations.sh's "validate stageN compiler -> sample" step
+        # shells out to a wasmtime BINARY, so the cold-cache build below needs
+        # it on PATH. A warm cache skips the build and never touches it --
+        # which is how this job passed until the first fingerprint-moving
+        # change ran it cold: the stage2 cache key includes the compiler-source
+        # fingerprint, so EVERY compiler-touching PR takes the cold path.
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Build stage2
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |

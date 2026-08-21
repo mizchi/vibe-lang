@@ -12,8 +12,9 @@
 # over-approximate (a needless re-run costs time); they may never
 # under-approximate (that costs a wrong answer).
 #
-# The rule: if a task's command reaches the compiler, its inputs must include
-# `vibeSources`, or it must set `cache = false`.
+# The rule: if a cached task's command reaches the compiler, its inputs must
+# include `compilerProbeInputs` (selfhost sources + bootstrap seed), or it must
+# set `cache = false`.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -23,7 +24,141 @@ import re, sys, os
 
 # Overridable so the self-test can drive synthetic task blocks.
 TASKFILE = os.environ.get("TASK_INPUTS_TASKFILE", "Taskfile.pkl")
+INPUT_ROOT = os.environ.get("TASK_INPUTS_ROOT", ".")
 src = open(TASKFILE, encoding="utf-8").read()
+
+def active_pkl(text):
+    """Drop Pkl comments without treating comment markers in strings as syntax."""
+    out = []
+    i = 0
+    string_hashes = None
+    while i < len(text):
+        if string_hashes is not None:
+            close = '"' + ('#' * string_hashes)
+            if text.startswith(close, i):
+                out.append(close)
+                i += len(close)
+                string_hashes = None
+            elif string_hashes == 0 and text[i] == "\\" and i + 1 < len(text):
+                out.append(text[i:i + 2])
+                i += 2
+            else:
+                out.append(text[i])
+                i += 1
+            continue
+        if text.startswith("//", i):
+            newline = text.find("\n", i + 2)
+            if newline < 0:
+                break
+            out.append("\n")
+            i = newline + 1
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            comment = text[i + 2:] if end < 0 else text[i + 2:end]
+            out.append("\n" * comment.count("\n"))
+            i = len(text) if end < 0 else end + 2
+            continue
+        if text[i] == '"':
+            out.append('"')
+            string_hashes = 0
+            i += 1
+            continue
+        if text[i] == "#":
+            j = i
+            while j < len(text) and text[j] == "#":
+                j += 1
+            if j < len(text) and text[j] == '"':
+                out.append(text[i:j + 1])
+                string_hashes = j - i
+                i = j + 1
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+def pkl_syntax_only(text):
+    """Mask Pkl strings so path values cannot satisfy syntax-token checks."""
+    out = []
+    i = 0
+    string_hashes = None
+    while i < len(text):
+        if string_hashes is not None:
+            close = '"' + ('#' * string_hashes)
+            if text.startswith(close, i):
+                out.append(" " * len(close))
+                i += len(close)
+                string_hashes = None
+            elif string_hashes == 0 and text[i] == "\\" and i + 1 < len(text):
+                out.append("  ")
+                i += 2
+            else:
+                out.append("\n" if text[i] == "\n" else " ")
+                i += 1
+            continue
+        if text[i] == '"':
+            out.append(" ")
+            string_hashes = 0
+            i += 1
+            continue
+        if text[i] == "#":
+            j = i
+            while j < len(text) and text[j] == "#":
+                j += 1
+            if j < len(text) and text[j] == '"':
+                out.append(" " * (j + 1 - i))
+                string_hashes = j - i
+                i = j + 1
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+def has_spread(body, name):
+    syntax = pkl_syntax_only(body)
+    return bool(re.search(r"\.\.\.\s*" + re.escape(name) + r"\b", syntax))
+
+active_src = active_pkl(src)
+
+# The shared compiler-probe input set is safe only while it contains both
+# halves of the compiler identity: selfhost sources and the bootstrap seed.
+probe_inputs_m = re.search(
+    r"local\s+compilerProbeInputs(?:\s*:[^=]+)?\s*=\s*new\s*\{(.*?)\}",
+    active_src,
+    re.S,
+)
+probe_inputs_body = probe_inputs_m.group(1) if probe_inputs_m else ""
+probe_inputs_safe = bool(
+    probe_inputs_m
+    and has_spread(probe_inputs_body, "vibeSources")
+    and '"bootstrap/seed.json"' in probe_inputs_body
+)
+
+# scriptTask wrappers are deliberately classified as a group: some execute the
+# compiler through several shell layers, which text inspection cannot prove
+# individually. The shared factory must therefore carry the complete identity.
+script_task_decl = re.search(r"local\s+function\s+scriptTask\b", active_src)
+script_task_inputs = None
+if script_task_decl:
+    brace = active_src.find("{", script_task_decl.end())
+    depth, end = 0, brace
+    while brace >= 0 and end < len(active_src):
+        if active_src[end] == "{":
+            depth += 1
+        elif active_src[end] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        end += 1
+    factory_block = active_src[brace : end + 1] if brace >= 0 and depth == 0 else ""
+    script_task_inputs = re.search(r"inputs\s*\{(.*?)\}", factory_block, re.S)
+script_task_inputs_body = script_task_inputs.group(1) if script_task_inputs else ""
+script_task_safe = bool(
+    script_task_inputs
+    and has_spread(script_task_inputs_body, "compilerProbeInputs")
+    and probe_inputs_safe
+)
+script_task_bad = bool(script_task_decl and not script_task_safe)
 
 # A script "reaches the compiler" when it EXECUTES one of these, not when it
 # mentions one. A first cut matched any occurrence of `stage2` and flagged six
@@ -50,36 +185,60 @@ AGGREGATOR_RE = re.compile(
     r"scripts/(?:compiler_gate\.sh|unit_test_runner\.sh|pkfire/gates_shard\.sh|"
     r"test_affected\.sh|coverage_suite\.sh|coverage_corpus\.sh)")
 # The line must also look like it is RUNNING something.
-EXEC_RE = re.compile(r"\b(bash|sh|env|exec|node|spawnSync|spawn|execSync|execFileSync)\b")
+EXEC_RE = re.compile(
+    r"(?:^|[;&|(\s])(?:bash|sh|env|exec|node|spawnSync|spawn|execSync|execFileSync)(?=\s|\()"
+)
+SOURCE_RE = re.compile(r"(?:^|[;&|(\s])(?:source|\.)\s+")
 COMMENT_RE = re.compile(r"^\s*(#|//|\*)")
+SEED_RE = re.compile(r"bootstrap/seed(?:\.json|/compiler\.wasm)")
+SCRIPT_PATH_RE = re.compile(r"((?:scripts|tests|eval|bench)/[A-Za-z0-9_./-]+\.(?:sh|mjs))")
+SCRIPT_BASENAME_RE = re.compile(r"([A-Za-z0-9_.-]+\.(?:sh|mjs))")
+DIRECT_SCRIPT_RE = re.compile(
+    r'(?:^|[;&|!(])\s*"?(?:\./|\.\./|\$[A-Za-z_][A-Za-z0-9_]*/|scripts/|tests/|eval/|bench/)'
+    r'[^"\s;|]+\.(?:sh|mjs)(?=["\s;|)]|$)'
+)
 
-def reaches_compiler(script):
+def reaches_compiler(script, seen=None):
+    seen = set() if seen is None else seen
+    # A checker must not certify itself from regex literals or test fixtures.
+    if os.path.normpath(script) == "scripts/check_task_inputs.sh" or script in seen:
+        return False
+    seen.add(script)
     try:
-        lines = open(script, encoding="utf-8", errors="replace").read().split("\n")
+        path = os.path.join(INPUT_ROOT, script)
+        lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
     except OSError:
         return False
     for line in lines:
         if COMMENT_RE.match(line):
             continue
-        if TOOL_RE.search(line) and EXEC_RE.search(line):
+        if SEED_RE.search(line) or (TOOL_RE.search(line) and EXEC_RE.search(line)):
             return True
+        if not EXEC_RE.search(line) and not DIRECT_SCRIPT_RE.search(line) and not SOURCE_RE.search(line):
+            continue
+        nested = SCRIPT_PATH_RE.findall(line)
+        nested += [os.path.join(os.path.dirname(script), name) for name in SCRIPT_BASENAME_RE.findall(line)]
+        for child in nested:
+            if child != script and (AGGREGATOR_RE.search(child) or reaches_compiler(child, seen)):
+                return True
     return False
 
 # Hand-written `new Task { ... }` blocks only; scriptTask() one-liners inherit
-# the safe defaults.
+# the complete compiler identity checked above.
 fails = []
 checked = 0
-for m in re.finditer(r"new Task \{", src):
+for m in re.finditer(r"new Task \{", active_src):
     start = m.start()
     depth, k = 0, start + len("new Task ") - 1
     while True:
-        if src[k] == "{": depth += 1
-        elif src[k] == "}":
+        if active_src[k] == "{": depth += 1
+        elif active_src[k] == "}":
             depth -= 1
             if depth == 0: break
         k += 1
-    block = src[start:k + 1]
-    name_m = re.search(r'name\s*=\s*"([^"]+)"', block)
+    block = active_src[start:k + 1]
+    active_block = active_pkl(block)
+    name_m = re.search(r'name\s*=\s*"([^"]+)"', active_block)
     if not name_m:
         continue
     name = name_m.group(1)
@@ -87,32 +246,41 @@ for m in re.finditer(r"new Task \{", src):
     # worst case, not the safe one: an empty cache key replays the first result
     # after any change (#2138 review). `scriptTask` one-liners are excluded
     # above precisely because they DO inherit the defaults.
-    if re.search(r"cache\s*=\s*false", block):
+    if re.search(r"cache\s*=\s*false", pkl_syntax_only(active_block)):
         continue
     # From the COMMAND only. Reading the whole block also picked up scripts
     # named in `inputs`, which a task declares but does not run -- that flagged
     # a self-test whose command touches nothing.
-    cmd_m = re.search(r'cmd\s*=\s*(#?)"(.*?)"\1', block, re.S)
+    cmd_m = re.search(r'cmd\s*=\s*(#?)"(.*?)"\1', active_block, re.S)
     cmd = cmd_m.group(2) if cmd_m else ""
-    scripts = re.findall(r'((?:scripts|tests|eval|bench)/[A-Za-z0-9_./-]+\.(?:sh|mjs))', cmd)
+    scripts = SCRIPT_PATH_RE.findall(cmd)
     hot = [s for s in scripts if AGGREGATOR_RE.search(s) or reaches_compiler(s)]
     if not hot:
         continue
     checked += 1
-    if "vibeSources" not in block:
-        why = "declares no `inputs` at all" if "inputs" not in block else "does not include `...vibeSources`"
+    inputs_m = re.search(r"inputs\s*\{(.*?)\}", active_block, re.S)
+    has_compiler_inputs = bool(
+        inputs_m and has_spread(inputs_m.group(1), "compilerProbeInputs") and probe_inputs_safe
+    )
+    if not has_compiler_inputs:
+        why = "declares no `inputs` at all" if not inputs_m else "does not include a complete compiler input set"
         fails.append((name, hot[0], why))
 
 for name, script, why in fails:
     print(f"check-task-inputs: FAIL: task `{name}` runs {script}, which reaches the compiler,",
           file=sys.stderr)
-    print(f"  but it {why} and does not set `cache = false`. A change under", file=sys.stderr)
-    print("  lib/**/*.vibe would replay a cached pass.", file=sys.stderr)
-    print("  Add `...vibeSources` to the list -- spelling inputs out should ADD to the",
+    print(f"  but it {why} and does not set `cache = false`. A compiler identity", file=sys.stderr)
+    print("  change would replay a cached pass.", file=sys.stderr)
+    print("  Add `...compilerProbeInputs` to the list -- spelling inputs out should ADD to the",
           file=sys.stderr)
     print("  defaults, not replace them.", file=sys.stderr)
 
-if fails:
+if script_task_bad:
+    print("check-task-inputs: FAIL: scriptTask inputs do not include the complete", file=sys.stderr)
+    print("  `...compilerProbeInputs` set; indirect compiler wrappers can replay", file=sys.stderr)
+    print("  a cached pass after a bootstrap seed change.", file=sys.stderr)
+
+if fails or script_task_bad:
     sys.exit(1)
-print(f"check-task-inputs: ok ({checked} compiler-touching tasks with explicit inputs all key on lib/**)")
+print(f"check-task-inputs: ok ({checked} compiler-touching tasks with explicit inputs and scriptTask all key on compiler sources)")
 PY
