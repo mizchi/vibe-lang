@@ -183,8 +183,15 @@ fn is_wellknown_nominal_head(name: String) -> Bool {
   || name == "FixedArray"
   || name == "Attempt"
   || name == "PromptText"
-  || name == "Self"
 }
+// `Self` is deliberately NOT in the list (Codex round 4 on #2147): it is a
+// type only inside a trait declaration's method signatures, and those are
+// resolved by the trait machinery, never by `report_unknown_type_names`'s
+// annotation sites. Anywhere this check CAN see it -- a plain fn, an impl
+// method, a let annotation -- `Self` resolves to the same wildcard
+// `CtNamed("Self", [])` a typo does (`subst_self_in_type` replaces it only
+// when typing a trait-method call), so it is reported like one. Inside an
+// impl, spell the concrete receiver type, which is what the tree does.
 
 /// #2125: the type names `te` mentions that resolve to NOTHING -- neither a
 /// formal in `shadow`, nor a builtin, nor a declaration in `defs`. Appended to
@@ -213,6 +220,25 @@ fn ty_head_is_structural(name: String) -> Bool {
   name == "Array" || name == "Option"
 }
 
+/// The heads whose LAST type argument is a region slot (ADR-0090): the
+/// region-bound containers, plus the task/channel types `is_region_tagged_ty`
+/// (checker.vibe) recognises by the same last-argument convention. A
+/// user-declared type's parameters are never region slots, so this is an
+/// explicit allowlist rather than "every non-structural head" -- that
+/// generalisation let `struct Pair[A, B]` + `fn f(x: Pair[Int, r]) -> Int
+/// with r` accept `r` in an ordinary type-argument position (Codex round 4 on
+/// #2147). A region-bearing head missing from this list fails LOUD -- its
+/// region token gets reported as an unknown type -- not silently.
+fn ty_head_takes_region_slot(name: String) -> Bool {
+  name == "MutList"
+  || name == "MutMap"
+  || name == "MutBytes"
+  || name == "TaskGroup"
+  || name == "TaskHandle"
+  || name == "Sender"
+  || name == "Receiver"
+}
+
 fn type_name_list_contains(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -236,10 +262,11 @@ fn type_name_list_contains(names: Array[String], name: String) -> Bool {
 /// accepted both `f(1)` and `f("s")`, and `region r { let x: r = 1 }` accepted
 /// `let y: r = "s"` beside it.
 ///
-/// The region slot is the LAST type argument of a non-structural application
-/// (`MutList[Int, r]`, `MutMap[K, V, r]`, `TaskGroup[T, r]`) -- the same
-/// last-argument convention `is_region_tagged_ty` reads in checker.vibe. A
-/// name in any other position is a type reference and is looked up like one.
+/// The region slot is the LAST type argument of a REGION-BEARING application
+/// (`MutList[Int, r]`, `MutMap[K, V, r]`, `TaskGroup[T, r]` -- the
+/// `ty_head_takes_region_slot` allowlist, mirroring the last-argument
+/// convention `is_region_tagged_ty` reads in checker.vibe). A name in any
+/// other position is a type reference and is looked up like one.
 export fn collect_unknown_type_names_regionwise(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], region_binders: Array[String], out: Array[String]) -> Unit {
   collect_unknown_type_names_walk(te, defs, shadow, region_binders, false, out)
 }
@@ -267,7 +294,7 @@ fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: A
       // never propagates further down, and each nested application recomputes
       // it for its own arguments.
       let last_index = Array::length(args) - 1
-      let head_takes_region_slot = !ty_head_is_structural(name)
+      let head_takes_region_slot = ty_head_takes_region_slot(name)
       let mut i = 0
       while i < Array::length(args) {
         collect_unknown_type_names_walk(Array::get(args, i), defs, shadow, region_binders, head_takes_region_slot && i == last_index, out)

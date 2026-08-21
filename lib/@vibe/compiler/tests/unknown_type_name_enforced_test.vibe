@@ -204,3 +204,31 @@ test "#2125: a real declared type is not a typo, in either order" {
   inspect(first_check_error("struct P {\n  x: Int\n}\n\nfn f(p: P) -> Int {\n  p.x\n}\n"), content = "")
   inspect(first_check_error("fn f(p: P) -> Int {\n  p.x\n}\n\nstruct P {\n  x: Int\n}\n"), content = "")
 }
+
+test "#2147 review round 4: a user struct's last argument is not a region slot" {
+  // The round-3 positional fix marked the last argument of EVERY
+  // non-Array/Option application as a region slot, so a declared row variable
+  // was excused inside an ordinary generic struct's arguments. Measured before
+  // this fix: this compiled clean and `r` stayed a wildcard. The region slot
+  // belongs to the `ty_head_takes_region_slot` heads only.
+  let src = "struct Pair[A, B] {\n  a: A;\n  b: B\n}\n\nfn f(x: Pair[Int, r]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2147 review round 4: Self outside a trait declaration is reported" {
+  // `Self` was in `is_wellknown_nominal_head`, so a plain fn's `x: Self`
+  // stayed the wildcard `CtNamed(\"Self\", [])` -- `subst_self_in_type`
+  // replaces it only when typing a trait-method call, which never happens
+  // here. Measured before this fix: clean, with or without a trait in scope.
+  inspect(first_check_error("fn f(x: Self) -> Int {\n  1\n}\n"), content = "unknown type `Self` in parameter `x` [@fn=f]")
+  let with_trait = "trait Show2[T] {\n  show2(Self) -> T\n}\n\nfn f(x: Self) -> Int {\n  1\n}\n"
+  inspect(first_check_error(with_trait), content = "unknown type `Self` in parameter `x` [@fn=f]")
+}
+
+test "#2147 review round 4: Self inside a trait declaration stays legal" {
+  // The one place `Self` is a type. Trait-method signatures are resolved by
+  // the trait machinery, not by `report_unknown_type_names`' annotation
+  // sites, and the impl spells the concrete receiver type.
+  let src = "trait Default2 {\n  default2() -> Self\n}\n\nimpl Default2 for Int {\n  default2() -> Int {\n    0\n  }\n}\n\nfn main() -> Unit {\n  let _ = Int::default2()\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
