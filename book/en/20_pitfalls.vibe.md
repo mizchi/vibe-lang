@@ -108,10 +108,47 @@ the binding.
 `let xs = for x in arr { x * 2 }` works for `Array`. A pull iterator in
 the same position is a located error. Accumulate with `ArrayBuilder`.
 
-## Double interpolation
+## A `Double` from a function prints as garbage (#2158)
 
-`"\{d}"` for a `Double` is only trustworthy when the checker can see
-the value is floatish. An unannotated helper result may print as an
-integer bit pattern. Annotate the parameter or write `d * 1.0`.
+Interpolating a `Double` that arrives through a **call** renders the raw
+bits as an integer. It compiles clean and prints a plausible wrong
+number — this is the worst-behaved thing in this chapter.
+
+```vibe skip
+// skip: prints wrong numbers rather than failing -- see #2158
+fn half(a: Double) -> Double { a / 2.0 }
+
+fn main with Console {
+  let bound = half(5.0)
+  println("\{bound}")        // 232   -- wrong
+  println("\{half(5.0)}")    // 404   -- wrong
+}
+```
+
+`half` is annotated in full and it makes no difference: the renderer
+decides from the syntax at the interpolation site, not from the declared
+return type. Three spellings that do work:
+
+```vibe run
+fn half(a: Double) -> Double {
+  a / 2.0
+}
+
+fn main with Console {
+  let annotated: Double = half(5.0)
+  println("annotate the binding = \{annotated}")
+  println("add arithmetic       = \{half(5.0) + 0.0}")
+  println("to_string            = \{Double::to_string(half(5.0))}")
+}
+```
+
+```output
+annotate the binding = 2.5
+add arithmetic       = 2.5
+to_string            = 2.5
+```
+
+Annotating the *parameter* does nothing; it is the binding at the use
+site that matters.
 
 Next: [Appendix](99_appendix.md).
