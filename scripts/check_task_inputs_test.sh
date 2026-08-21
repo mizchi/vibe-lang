@@ -21,6 +21,15 @@ run_case() { # run_case <label> <expect-exit> <taskfile-body>
   [ "$got" = "$want" ] && note "$label" || bad "$label: expected exit $want, got $got"
 }
 
+run_tree_case() { # run_tree_case <label> <expect-exit> <taskfile-body>
+  local label="$1" want="$2" body="$3"
+  printf '%s\n' "$body" > "$WORK/Taskfile.pkl"
+  local got=0
+  TASK_INPUTS_ROOT="$WORK" TASK_INPUTS_TASKFILE="$WORK/Taskfile.pkl" \
+    bash scripts/check_task_inputs.sh >/dev/null 2>&1 || got=$?
+  [ "$got" = "$want" ] && note "$label" || bad "$label: expected exit $want, got $got"
+}
+
 # Runs the compiler, explicit inputs, no vibeSources -> the bug this exists for.
 run_case "compiler task without vibeSources is rejected" 1 'local t = new Task {
   name = "probe"
@@ -128,6 +137,16 @@ run_case "compiler task with no inputs at all is rejected" 1 'local t = new Task
   cmd = "bash scripts/check_freeze_surface.sh"
 }'
 
+# Directly executed scripts are calls too, even without a bash/node token.
+mkdir -p "$WORK/scripts"
+printf '%s\n' '#!/usr/bin/env bash' '"$SCRIPT_DIR/inner.sh"' > "$WORK/scripts/outer.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'bash scripts/vibe_run.sh sample.vibe' > "$WORK/scripts/inner.sh"
+run_tree_case "directly executed nested compiler wrapper is rejected" 1 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/outer.sh"
+  inputs { ...vibeSources }
+}'
+
 # Nested release wrappers reach the seed through another script; direct-only
 # inspection would miss this compiler identity dependency.
 run_case "nested seed wrapper with only vibeSources is rejected" 1 'local t = new Task {
@@ -159,4 +178,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (16 cases)"
+echo "check-task-inputs-test: ok (17 cases)"

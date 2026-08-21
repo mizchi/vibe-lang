@@ -24,6 +24,7 @@ import re, sys, os
 
 # Overridable so the self-test can drive synthetic task blocks.
 TASKFILE = os.environ.get("TASK_INPUTS_TASKFILE", "Taskfile.pkl")
+INPUT_ROOT = os.environ.get("TASK_INPUTS_ROOT", ".")
 src = open(TASKFILE, encoding="utf-8").read()
 
 def active_pkl(text):
@@ -102,6 +103,10 @@ COMMENT_RE = re.compile(r"^\s*(#|//|\*)")
 SEED_RE = re.compile(r"bootstrap/seed(?:\.json|/compiler\.wasm)")
 SCRIPT_PATH_RE = re.compile(r"((?:scripts|tests|eval|bench)/[A-Za-z0-9_./-]+\.(?:sh|mjs))")
 SCRIPT_BASENAME_RE = re.compile(r"([A-Za-z0-9_.-]+\.(?:sh|mjs))")
+DIRECT_SCRIPT_RE = re.compile(
+    r'(?:^|[;&|!(])\s*"?(?:\./|\.\./|\$[A-Za-z_][A-Za-z0-9_]*/|scripts/|tests/|eval/|bench/)'
+    r'[^"\s;|]+\.(?:sh|mjs)(?=["\s;|)]|$)'
+)
 
 def reaches_compiler(script, seen=None):
     seen = set() if seen is None else seen
@@ -110,7 +115,8 @@ def reaches_compiler(script, seen=None):
         return False
     seen.add(script)
     try:
-        lines = open(script, encoding="utf-8", errors="replace").read().split("\n")
+        path = os.path.join(INPUT_ROOT, script)
+        lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
     except OSError:
         return False
     for line in lines:
@@ -118,7 +124,7 @@ def reaches_compiler(script, seen=None):
             continue
         if SEED_RE.search(line) or (TOOL_RE.search(line) and EXEC_RE.search(line)):
             return True
-        if not EXEC_RE.search(line):
+        if not EXEC_RE.search(line) and not DIRECT_SCRIPT_RE.search(line):
             continue
         nested = SCRIPT_PATH_RE.findall(line)
         nested += [os.path.join(os.path.dirname(script), name) for name in SCRIPT_BASENAME_RE.findall(line)]
