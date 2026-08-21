@@ -83,6 +83,7 @@ total=0
 skipped=0
 failed=0
 out="$(mktemp -u)"
+runner_err="$out.stderr"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   if printf '%s' "$f" | grep -Eq "$EXCLUDE_RE"; then
@@ -90,20 +91,29 @@ while IFS= read -r f; do
     continue
   fi
   total=$((total + 1))
-  rm -f "$out" "$out.diag"
+  rm -f "$out" "$out.diag" "$runner_err"
   runner_status=0
   VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_CHECK_ONLY=1 \
     timeout 300 bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main "$STAGE2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || runner_status=$?
+    --invoke cli_main "$STAGE2" "$f" "$out" __no_entry__ >/dev/null 2>"$runner_err" || runner_status=$?
   if [ -s "$out.diag" ]; then
     failed=$((failed + 1))
     echo "[offbuild-typecheck] FAIL $f" >&2
     head -3 "$out.diag" >&2
+    if [ "$runner_status" -ne 0 ]; then
+      echo "[offbuild-typecheck] runner also exited $runner_status" >&2
+      head -3 "$runner_err" >&2
+    fi
   elif [ "$runner_status" -ne 0 ]; then
     failed=$((failed + 1))
-    echo "[offbuild-typecheck] FAIL $f: compiler runner exited $runner_status without a diagnostic" >&2
+    if [ "$runner_status" -eq 124 ]; then
+      echo "[offbuild-typecheck] FAIL $f: compiler runner timed out after 300 seconds without a diagnostic" >&2
+    else
+      echo "[offbuild-typecheck] FAIL $f: compiler runner exited $runner_status without a diagnostic" >&2
+    fi
+    head -3 "$runner_err" >&2
   fi
-  rm -f "$out" "$out.diag"
+  rm -f "$out" "$out.diag" "$runner_err"
 done < "$listing"
 
 if [ "$failed" -gt 0 ]; then
