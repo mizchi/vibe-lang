@@ -253,6 +253,24 @@ fn declared_after() -> Double {
   2.5
 }
 
+// #2185 review (3rd): a local binder MASKS a top-level float callee. Without
+// carrying the shadow set through the body walk, the lookup found the
+// top-level `plain_double` and rendered the Int 1 through the f64 path -- 0 on
+// both lanes. The direct classifiers take `local_names` for exactly this
+// reason (#2156 review); this walk now carries the same fact.
+fn shadowed_callee_body() -> LaterApp {
+  let plain_double = () -> Int {
+    1
+  }
+  plain_double()
+}
+
+// The counterpart: the shadow is SCOPED, so the same name called from a body
+// with no local binding still classifies.
+fn unshadowed_callee_body() -> LaterApp {
+  plain_double()
+}
+
 test "#2156 review: the shadow is scoped -- the top-level name still works" {
   // The counterpart: masking must key on the binding actually in scope, not
   // disable the table for the name everywhere it appears.
@@ -339,4 +357,12 @@ test "#2185 review: a call body through an unresolved alias" {
 
 test "#2185 review: a call body whose callee is declared later" {
   assert_true(__to_string(call_before_callee()) == "2.5")
+}
+
+test "#2185 review: a local binder masks a top-level float callee" {
+  assert_true(__to_string(shadowed_callee_body()) == "1")
+}
+
+test "#2185 review: the mask is scoped -- the top-level callee still counts" {
+  assert_true(__to_string(unshadowed_callee_body()) == "2.5")
 }

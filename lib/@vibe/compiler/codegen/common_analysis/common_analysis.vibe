@@ -4024,7 +4024,7 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
                 // variable, or an alias the checker could not see through
                 // either. It cannot decide the representation, so ask the
                 // body, which is the one thing that does know (#2185 review).
-                CtNamed(_, _) => if float_body_shape(fbody, out) {
+                CtNamed(_, _) => if float_body_shape(fbody, out, array_empty()) {
                   Array::push(out, name)
                   changed = true
                 } else {
@@ -4068,28 +4068,49 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// compile_call / backend_expr: a literal, float arithmetic, or either arm of
 /// an `if`, walked through the block forms to the tail expression. Anything it
 /// cannot see stays false, which is the pre-existing answer.
-fn float_body_shape(e: Expr, known: Array[String]) -> Bool {
+fn float_body_shape(e: Expr, known: Array[String], shadowed: Array[String]) -> Bool {
   match e {
     EFloat(_) => true,
-    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (float_body_shape(l, known) || float_body_shape(r, known)),
-    EUnaryOp(op, x) => op == "-" && float_body_shape(x, known),
-    ESeq(_, b) => float_body_shape(b, known),
-    ELet(_, _, b, _) => float_body_shape(b, known),
-    ELetRec(_, _, b) => float_body_shape(b, known),
-    ELetMut(_, _, b, _) => float_body_shape(b, known),
-    EIf(_, t, f) => float_body_shape(t, known) || float_body_shape(f, known),
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (float_body_shape(l, known, shadowed) || float_body_shape(r, known, shadowed)),
+    EUnaryOp(op, x) => op == "-" && float_body_shape(x, known, shadowed),
+    ESeq(_, b) => float_body_shape(b, known, shadowed),
+    // A local binder MASKS a top-level name of the same spelling for the rest
+    // of the body. Without this, `fn f() -> A { let d = () -> Int { 1 }; d() }`
+    // found the top-level `d` in the table and rendered the Int 1 through the
+    // f64 path -- 0 on both lanes (#2185 review). The direct classifiers take
+    // `local_names` for exactly this reason (cc_fn_returns_float,
+    // gc_fn_returns_float, #2156 review); this walk now carries the same fact.
+    ELet(n, _, b, _) => float_body_shape(b, known, name_list_with(shadowed, n)),
+    ELetRec(n, _, b) => float_body_shape(b, known, name_list_with(shadowed, n)),
+    ELetMut(n, _, b, _) => float_body_shape(b, known, name_list_with(shadowed, n)),
+    EIf(_, t, f) => float_body_shape(t, known, shadowed) || float_body_shape(f, known, shadowed),
     // A CALL is a float when the callee is one -- either a builtin that
-    // produces one, or a user function already in the table. Without this
-    // `fn f() -> A { d() }` over a `-> Double` d was omitted and rendered raw
-    // bits on BOTH lanes (192 linear, 4612811918334230528 gc; #2185 review).
-    // Same callee list as the sibling classifiers in compile_call /
-    // backend_expr, which is the point: one notion of "this is a float".
+    // produces one, or a user function already in the table -- and is NOT
+    // locally shadowed. Without the call arm at all, `fn f() -> A { d() }`
+    // over a `-> Double` d was omitted and rendered raw bits on BOTH lanes
+    // (192 linear, 4612811918334230528 gc; #2185 review). Same callee list as
+    // the sibling classifiers in compile_call / backend_expr, which is the
+    // point: one notion of "this is a float".
     ECall(callee, _, _) => match callee {
-      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || array_contains_str(known, cn),
+      EIdent(cn, _) => !array_contains_str(shadowed, cn) && (cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || array_contains_str(known, cn)),
       _ => false
     },
     _ => false
   }
+}
+
+/// `names` plus `n`, as a NEW array. The shadow set must not leak between
+/// sibling subtrees -- pushing in place would let a binder inside one `if`
+/// branch mask a call in the other.
+fn name_list_with(names: Array[String], n: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(out, Array::get(names, i))
+    i = i + 1
+  }
+  Array::push(out, n)
+  out
 }
 
 /// The type table `compute_float_returning_names` resolves against.
