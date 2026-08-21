@@ -184,6 +184,20 @@ fn forward_aliased() -> DeclaredLater {
 
 type DeclaredLater = Double
 
+// #2177 review: a name declared as BOTH a `Double` alias and a struct. The
+// checker preclaims the struct and `find_typedef` is first-match-wins, so
+// `-> Collide` is the STRUCT -- the alias table must agree, or a
+// struct-returning function gets recorded as float-returning. The collector
+// therefore pushes nominal placeholders before the aliases, in the same order
+// `preclaim_local_type_defs` does.
+type Collide = Double
+
+struct Collide { value: Int } derive (Show)
+
+fn returns_struct() -> Collide {
+  Collide::{ value: 7 }
+}
+
 test "#2156 review: the shadow is scoped -- the top-level name still works" {
   // The counterpart: masking must key on the binding actually in scope, not
   // disable the table for the name everywhere it appears.
@@ -242,4 +256,10 @@ test "#2166: the f64 and f32 spellings are floats" {
 
 test "#2166: an alias declared AFTER the function that returns it" {
   assert_true(__to_string(forward_aliased()) == "2.5")
+}
+
+test "#2177 review: a struct outranks a same-named Double alias" {
+  // Renders through the Show renderer. If the alias won, `returns_struct`
+  // would be in the float table and this would render f64 bits instead.
+  assert_true(__to_string(returns_struct()) == "Collide { value: 7 }")
 }

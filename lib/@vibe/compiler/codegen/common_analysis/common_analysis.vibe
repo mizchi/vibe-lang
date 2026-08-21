@@ -18,7 +18,8 @@ import @vibe/compiler/core {
   canonical_builtin_name,
   is_borrow_ret_builtin,
   is_exception_throw_operation,
-  sorted_names_of
+  sorted_names_of,
+  type_to_string
 }
 
 import @vibe/core {
@@ -4021,33 +4022,47 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-/// The alias table `compute_float_returning_names` resolves against.
+/// The type table `compute_float_returning_names` resolves against.
 ///
-/// Built order-INDEPENDENTLY, deliberately unlike `check_stmts`. The checker
-/// does not pre-claim an `STypeAlias` (a placeholder alias body would be a lie
-/// -- an alias resolves THROUGH to its target, so an empty placeholder would
-/// silently retarget every early reference), so a forward reference to a later
-/// alias stays unresolved there. codegen must not inherit that: today
-/// `fn f() -> Later { 2.5 }` above `type Later = Double` compiles and renders
-/// 2.5, and answering "not a float" for it would be a silent-wrong regression
-/// -- the exact class this table exists to close. Measured before the change,
-/// not assumed.
+/// It mirrors what `check_stmts` has in `defs` when it resolves a return
+/// annotation, in two respects that both matter for the answer:
 ///
-/// So every alias body is resolved against every other, repeated until no
-/// unresolved hop can remain: `n + 1` passes over `n` aliases is the acyclic
-/// maximum, since a chain that never revisits an alias is at most `n` long. A
-/// cycle simply stops changing. `n` is single digits per compilation unit (32
-/// aliases in all of `lib/`), so the quadratic pass count costs nothing.
+/// (1) NOMINAL PRECEDENCE. `preclaim_local_type_defs` pushes an enum/struct
+/// placeholder for every declaration before any alias is resolved, and
+/// `find_typedef` is first-match-wins, so a name declared as BOTH a struct and
+/// an alias resolves to the struct. Collecting aliases alone would pick the
+/// alias and could classify a struct-returning function as float-returning
+/// (#2177 review). Placeholders are therefore pushed first, in statement
+/// order, exactly as the checker pushes them.
 ///
-/// Only aliases are collected: a struct or enum return type is never a float,
-/// so their TypeDefs cannot change an answer here.
+/// (2) ORDER INDEPENDENCE for the aliases themselves -- and here it
+/// deliberately differs from `check_stmts`, which does NOT pre-claim an
+/// `STypeAlias` (a placeholder alias body would be a lie: an alias resolves
+/// THROUGH to its target, so an empty placeholder would silently retarget
+/// every early reference). A forward reference to a later alias stays
+/// unresolved there. codegen must not inherit that: measured before the
+/// change, `fn f() -> Later { 2.5 }` above `type Later = Double` compiles and
+/// renders 2.5 today, and answering "not a float" for it would be a
+/// silent-wrong regression -- the exact class this table exists to close.
+///
+/// So alias bodies are re-resolved until the table stops changing, capped at
+/// `n + 1` passes: a chain that never revisits an alias is at most `n` long,
+/// so that is the acyclic maximum, and a cycle stops changing on its own. The
+/// early exit is what keeps the common case cheap -- with no forward
+/// reference the table is stable after the first pass and the second one ends
+/// it, instead of running all `n + 1` (#2177 review). Measured: the flat
+/// module source the compiler actually compiles has 5 aliases.
 fn collect_alias_type_defs(stmts: Array[Stmt]) -> Array[TypeDef] {
+  let nominal: Array[TypeDef] = []
   let alias_names: Array[String] = []
   let alias_params: Array[Array[String]] = []
   let alias_targets: Array[TypeExpr] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
+      SEnum(_, ename, eparams, _, _) => Array::push(nominal, TDEnum(ename, eparams, array_empty())),
+      SSuberror(_, sname, _) => Array::push(nominal, TDEnum(sname, array_empty(), array_empty())),
+      SStruct(_, stname, _, _, mut_fields, tparams) => Array::push(nominal, TDStruct(stname, array_empty(), mut_fields, tparams)),
       STypeAlias(_, aname, aparams, atarget) => {
         Array::push(alias_names, aname)
         Array::push(alias_params, aparams)
@@ -4058,18 +4073,33 @@ fn collect_alias_type_defs(stmts: Array[Stmt]) -> Array[TypeDef] {
     i = i + 1
   }
   let n = Array::length(alias_names)
-  let mut defs: Array[TypeDef] = []
+  let mut defs = nominal
+  let mut prev = ""
   let mut pass = 0
-  while pass <= n {
+  let mut done = false
+  while !done {
     let next: Array[TypeDef] = []
+    let mut k = 0
+    while k < Array::length(nominal) {
+      Array::push(next, Array::get(nominal, k))
+      k = k + 1
+    }
+    let mut sig = ""
     let mut j = 0
     while j < n {
       let ps = Array::get(alias_params, j)
-      Array::push(next, TDAlias(Array::get(alias_names, j), ps, resolve_type_expr_shadowed(Array::get(alias_targets, j), defs, ps)))
+      let resolved = resolve_type_expr_shadowed(Array::get(alias_targets, j), defs, ps)
+      Array::push(next, TDAlias(Array::get(alias_names, j), ps, resolved))
+      sig = String::concat(sig, String::concat(type_to_string(resolved), " |#| "))
       j = j + 1
     }
     defs = next
     pass = pass + 1
+    if sig == prev || pass > n {
+      done = true
+    } else {
+      prev = sig
+    }
   }
   defs
 }
