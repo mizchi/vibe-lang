@@ -25,6 +25,19 @@ if [ "$#" -lt 1 ]; then
   exit 2
 fi
 
+# EXACTLY one file. `src="$1"` below silently ignored any extra arguments, so
+# `vibe_fmt.sh a b` formatted `a`, left `b` untouched, and exited 0 -- a green
+# that means nothing. That is how an unformatted file reached CI in #2156:
+# the caller passed two paths, saw success, and only vibe-fmt-check disagreed.
+# Loop over the files at the call site instead; the formatter is per-file by
+# construction (its output path is per process, see below).
+if [ "$#" -gt 1 ]; then
+  echo "vibe_fmt.sh: takes ONE file, got $#: $*" >&2
+  echo "  for several: for f in ...; do bash scripts/vibe_fmt.sh \"\$f\"; done" >&2
+  echo "  for the whole tree: pkf run fmt" >&2
+  exit 2
+fi
+
 src="$1"
 case "$src" in
   "$ROOT_DIR"/*) src_rel="${src#"$ROOT_DIR"/}" ;;
