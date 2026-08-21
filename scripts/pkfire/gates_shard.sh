@@ -40,10 +40,8 @@ case "$shard" in
     # `set -e` and everything after it silently never ran:
     #   test_selfhost_cli_component_preview2.sh, test_selfhost_cli_command_parity.sh,
     #   test_selfhost_cli_direct_parity.sh, test_selfhost_cutover_gate.sh
-    # The split CLI core is a supported entry point used by vibe_cli.sh. Keep
-    # its build and command surface in the CLI shard so its effect row and
-    # generated-source prerequisites cannot rot unnoticed (#2148).
-    bash scripts/test_cli_core.sh
+    # test_cli_core.sh runs in the active compiler-gate bootstrap lane. Do not
+    # duplicate its multi-command selfhost build in this legacy manual shard.
     bash scripts/test_cli_preview2_package.sh
     bash scripts/test_cli_command_component.sh
     bash scripts/test_cli_direct_component.sh
