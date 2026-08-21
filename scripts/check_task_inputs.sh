@@ -89,10 +89,20 @@ AGGREGATOR_RE = re.compile(
     r"scripts/(?:compiler_gate\.sh|unit_test_runner\.sh|pkfire/gates_shard\.sh|"
     r"test_affected\.sh|coverage_suite\.sh|coverage_corpus\.sh)")
 # The line must also look like it is RUNNING something.
-EXEC_RE = re.compile(r"\b(bash|sh|env|exec|node|spawnSync|spawn|execSync|execFileSync)\b")
+EXEC_RE = re.compile(
+    r"(?:^|[;&|(\s])(?:bash|sh|env|exec|node|spawnSync|spawn|execSync|execFileSync)(?=\s|\()"
+)
 COMMENT_RE = re.compile(r"^\s*(#|//|\*)")
+SEED_RE = re.compile(r"bootstrap/seed(?:\.json|/compiler\.wasm)")
+SCRIPT_PATH_RE = re.compile(r"((?:scripts|tests|eval|bench)/[A-Za-z0-9_./-]+\.(?:sh|mjs))")
+SCRIPT_BASENAME_RE = re.compile(r"([A-Za-z0-9_.-]+\.(?:sh|mjs))")
 
-def reaches_compiler(script):
+def reaches_compiler(script, seen=None):
+    seen = set() if seen is None else seen
+    # A checker must not certify itself from regex literals or test fixtures.
+    if os.path.normpath(script) == "scripts/check_task_inputs.sh" or script in seen:
+        return False
+    seen.add(script)
     try:
         lines = open(script, encoding="utf-8", errors="replace").read().split("\n")
     except OSError:
@@ -100,8 +110,15 @@ def reaches_compiler(script):
     for line in lines:
         if COMMENT_RE.match(line):
             continue
-        if TOOL_RE.search(line) and EXEC_RE.search(line):
+        if SEED_RE.search(line) or (TOOL_RE.search(line) and EXEC_RE.search(line)):
             return True
+        if not EXEC_RE.search(line):
+            continue
+        nested = SCRIPT_PATH_RE.findall(line)
+        nested += [os.path.join(os.path.dirname(script), name) for name in SCRIPT_BASENAME_RE.findall(line)]
+        for child in nested:
+            if child != script and (AGGREGATOR_RE.search(child) or reaches_compiler(child, seen)):
+                return True
     return False
 
 # Hand-written `new Task { ... }` blocks only; scriptTask() one-liners inherit
@@ -133,7 +150,7 @@ for m in re.finditer(r"new Task \{", src):
     # a self-test whose command touches nothing.
     cmd_m = re.search(r'cmd\s*=\s*(#?)"(.*?)"\1', block, re.S)
     cmd = cmd_m.group(2) if cmd_m else ""
-    scripts = re.findall(r'((?:scripts|tests|eval|bench)/[A-Za-z0-9_./-]+\.(?:sh|mjs))', cmd)
+    scripts = SCRIPT_PATH_RE.findall(cmd)
     hot = [s for s in scripts if AGGREGATOR_RE.search(s) or reaches_compiler(s)]
     if not hot:
         continue

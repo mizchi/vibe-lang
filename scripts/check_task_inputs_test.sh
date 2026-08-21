@@ -106,6 +106,14 @@ run_case "compiler task with no inputs at all is rejected" 1 'local t = new Task
   cmd = "bash scripts/check_freeze_surface.sh"
 }'
 
+# Nested release wrappers reach the seed through another script; direct-only
+# inspection would miss this compiler identity dependency.
+run_case "nested seed wrapper with only vibeSources is rejected" 1 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/build_release_assets.sh v0.0.0"
+  inputs { ...vibeSources; ...scriptSources }
+}'
+
 # An aggregator dispatches the lane scripts dynamically, so it contains none of
 # the tool names literally -- it has to be classified by name.
 run_case "aggregator wrapper is treated as compiler-running" 1 'local t = new Task {
@@ -129,4 +137,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (13 cases)"
+echo "check-task-inputs-test: ok (14 cases)"
