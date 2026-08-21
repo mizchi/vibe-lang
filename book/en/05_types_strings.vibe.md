@@ -4,57 +4,13 @@ Previous: [Control flow](04_control_flow.vibe.md)
 
 日本語版: [05_types_strings.vibe.md](../ja/05_types_strings.vibe.md)
 
-You have been using `Int`, `Double`, `Bool`, `String` and `Char`. This
-is the chapter that says exactly what they are, because these are the
-types where guessing from another language gets you a wrong answer
-rather than an error.
+You have been using `Int`, `Double`, `Bool`, `String` and `Char`
+without being told much about them, and mostly that has been fine.
+This chapter covers the two places where it stops being fine: text is
+bytes, and printing a value needs a way to print it.
 
-## `Int` is 63 bits wide
-
-Not 64. The range is `-2^62 .. 2^62-1`, and a literal above
-`4611686018427387903` is rejected rather than truncated.
-
-Arithmetic that goes out of range **wraps**, as 63-bit two's complement,
-identically on every backend — so `max + 1` is `min`:
-
-```vibe run
-fn main with Console {
-  let max = 4611686018427387903
-  println("max = \{max}")
-  println("max + 1 = \{max + 1}")
-  println("hex 0xFF = \{0xFF}")
-  println("1 << 4 = \{1 << 4}")
-  let neg = 0 - 8
-  println("(-8) >> 1 = \{neg >> 1}")
-}
-```
-
-```output
-max = 4611686018427387903
-max + 1 = -4611686018427387904
-hex 0xFF = 255
-1 << 4 = 16
-(-8) >> 1 = -4
-```
-
-Three things that differ from C-family languages:
-
-- `>>` is arithmetic — it sign-extends. There is no `>>>`; for a logical
-  shift, mask afterwards.
-- There is no `~`. Write `x ^ mask`.
-- Nothing is promoted silently. When you need more than 63 bits, reach
-  for `BigInt` in `@vibe/core` deliberately.
-
-## `Double` and `Float`
-
-A decimal literal is a `Double` — 64-bit. A 32-bit `Float` takes an `f`
-suffix: `1.5f`.
-
-One practical note: interpolating a `Double` prints the decimal you
-expect when the checker can see the value is floating point — a literal,
-float arithmetic, or an annotated parameter all qualify. If a printout
-looks like a large integer instead, the value reached the interpolation
-without its type; annotate the binding or the parameter.
+The exact numeric ranges are at the end of the chapter, where you can
+find them when a number surprises you.
 
 ## `String` is a string of bytes
 
@@ -125,5 +81,49 @@ pair = (2, 3)
 Leave `derive (Show)` off and interpolating a `Point` is a compile
 error, which is the intended answer — printing an address instead would
 be a wrong one.
+
+## Decimals
+
+A decimal literal is a `Double` — 64-bit. A 32-bit `Float` takes an `f`
+suffix: `1.5f`. Both interpolate as the decimal you wrote.
+
+## How far `Int` goes
+
+Reach for this section when a number does something you did not expect;
+until then the short version is that `Int` holds whole numbers and
+overflow does not trap.
+
+`Int` is 63 bits wide, not 64. The range is `-2^62 .. 2^62-1`, and a
+literal above `4611686018427387903` is rejected rather than truncated.
+Arithmetic that goes out of range **wraps**, as 63-bit two's complement,
+identically on every backend — so `max + 1` is `min`:
+
+```vibe run
+fn main with Console {
+  let max = 4611686018427387903
+  println("max = \{max}")
+  println("max + 1 = \{max + 1}")
+  println("hex 0xFF = \{0xFF}")
+  println("1 << 4 = \{1 << 4}")
+  let neg = 0 - 8
+  println("(-8) >> 1 = \{neg >> 1}")
+}
+```
+
+```output
+max = 4611686018427387903
+max + 1 = -4611686018427387904
+hex 0xFF = 255
+1 << 4 = 16
+(-8) >> 1 = -4
+```
+
+Three things that differ from C-family languages:
+
+- `>>` is arithmetic — it sign-extends. There is no `>>>`; for a logical
+  shift, mask afterwards.
+- There is no `~`. Write `x ^ mask`.
+- Nothing is promoted silently. When you need more than 63 bits, reach
+  for `BigInt` in `@vibe/core` deliberately.
 
 Next: [Mutation, regions, and escape](06_mutation.vibe.md).
