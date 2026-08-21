@@ -4010,7 +4010,7 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
       match Array::get(stmts, i) {
         SLet(_, _, name, _, value) =>
         match value {
-          EFn(tparams, _, _, ret, _, fbody) =>
+          EFn(tparams, _, fparams, ret, _, fbody) =>
           match ret {
             Some(rt) => if array_contains_str(out, name) {
               ()
@@ -4024,7 +4024,7 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
                 // variable, or an alias the checker could not see through
                 // either. It cannot decide the representation, so ask the
                 // body, which is the one thing that does know (#2185 review).
-                CtNamed(_, _) => if float_body_shape(fbody, out, array_empty()) {
+                CtNamed(_, _) => if float_body_shape(fbody, out, param_name_list(fparams)) {
                   Array::push(out, name)
                   changed = true
                 } else {
@@ -4084,6 +4084,11 @@ fn float_body_shape(e: Expr, known: Array[String], shadowed: Array[String]) -> B
     ELetRec(n, _, b) => float_body_shape(b, known, name_list_with(shadowed, n)),
     ELetMut(n, _, b, _) => float_body_shape(b, known, name_list_with(shadowed, n)),
     EIf(_, t, f) => float_body_shape(t, known, shadowed) || float_body_shape(f, known, shadowed),
+    // `return e` carries the body's value out; the checker types the function
+    // by the inner expression, so the shape test must look through it. Without
+    // this, `fn f() -> A { return 2.5 }` fell to the catch-all and rendered
+    // raw bits -- 192 linear, f64 bits on gc (#2185 review).
+    EReturn(x) => float_body_shape(x, known, shadowed),
     // A CALL is a float when the callee is one -- either a builtin that
     // produces one, or a user function already in the table -- and is NOT
     // locally shadowed. Without the call arm at all, `fn f() -> A { d() }`
@@ -4097,6 +4102,23 @@ fn float_body_shape(e: Expr, known: Array[String], shadowed: Array[String]) -> B
     },
     _ => false
   }
+}
+
+/// The function's parameter names, as the body walk's initial shadow set.
+///
+/// A PARAMETER masks a top-level callee exactly as a `let` binder does:
+/// `fn d() -> Double { .. }` beside `fn f(d: () -> Int) -> A { d() }` must not
+/// resolve `d()` to the top-level one. Seeding the walk with an empty set let
+/// it, and the Int result rendered through the f64 path (#2185 review).
+fn param_name_list(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    Array::push(out, pn)
+    i = i + 1
+  }
+  out
 }
 
 /// `names` plus `n`, as a NEW array. The shadow set must not leak between
