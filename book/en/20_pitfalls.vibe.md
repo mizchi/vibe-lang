@@ -89,6 +89,10 @@ A bare expression at the top level is rejected (ADR-0069). Put it in
 1 + 2
 ```
 
+```
+top-level expressions are not allowed; move it into fn main (ADR-0069)
+```
+
 ## `test` / `bench` take a string or nothing
 
 `test { }` and `test "name" { }` work. `test foo { }` (a bare identifier)

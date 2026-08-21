@@ -90,6 +90,10 @@ checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し�
 1 + 2
 ```
 
+```
+top-level expressions are not allowed; move it into fn main (ADR-0069)
+```
+
 ## `test` / `bench` は文字列を取るか何も取らないか
 
 `test { }` と `test "name" { }` は通る。`test foo { }` (裸の識別子) は
