@@ -59,6 +59,11 @@ if [ ! -f "$ENTRY_PATH" ]; then
   exit 1
 fi
 
+# Compiler package implementations include generated bundles that are absent
+# from a pristine checkout. Direct callers (including scripts/vibe_cli.sh)
+# must not depend on another gate having populated them first.
+bash "$SCRIPT_DIR/ensure_generated.sh" >&2
+
 rel_path() {
   local path="$1"
   case "$path" in
