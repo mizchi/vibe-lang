@@ -1582,7 +1582,7 @@ rm -rf "$svdir"
 echo "[compiler-gate] 40k/40 gc-lane call/to_string regressions (#1015, #2160)"
 gcbdir="_build/_gate_gc_to_string_bool"
 rm -rf "$gcbdir"; mkdir -p "$gcbdir"
-for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test gc_local_top_level_shadow_test; do
+for gcb_fixture in to_string_bool_gc_test to_string_shadow_gc_test to_string_bool_scope_gc_test to_string_float_scope_gc_test gc_local_top_level_shadow_test gc_scratch_name_collision; do
   VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "fixtures/${gcb_fixture}.vibe" "$gcbdir/${gcb_fixture}.wasm" __no_entry__ >/dev/null 2>&1 || true
