@@ -1,0 +1,34 @@
+// GC-only regressions for #2182 review. The linear lane does not yet carry
+// checker-confirmed call-result types, so this file is registered explicitly
+// in the two GC fixture lists instead of using the repository-wide `_test`
+// suffix.
+
+type GenericValue = Double
+
+fn generic_return[GenericValue](x: GenericValue) -> GenericValue {
+  x
+}
+
+effect FloatProbe {
+  Read -> Double
+}
+
+fn hoisted_float_return() -> String with FloatProbe {
+  let local = () -> Double with FloatProbe {
+    perform FloatProbe::Read
+  }
+  __to_string(local())
+}
+
+test "#2182 review gc: a generic call uses its instantiated return type" {
+  assert_true(__to_string(generic_return(2.5)) == "2.5")
+}
+
+test "#2182 review gc: an effectful hoisted lambda retains its float return" {
+  let rendered = handle {
+    hoisted_float_return()
+  } with FloatProbe {
+    Read => resume(2.5)
+  }
+  assert_true(rendered == "2.5")
+}
