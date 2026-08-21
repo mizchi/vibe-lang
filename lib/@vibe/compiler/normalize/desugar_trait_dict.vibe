@@ -7426,7 +7426,16 @@ fn result_eq_match(lhs: Expr, rhs: Expr) -> Expr {
 /// The runtime `eq` builtin is type-blind (it identity-compares aggregates), so
 /// structural equality MUST be resolved here at the AST level where the static
 /// type is known. (#695.)
-fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+  // #2141 (Codex round on #2183): re-spell in-scope formals for the WHOLE
+  // type at the entry, not per-arm -- a composite shape reaching typed-eq
+  // dispatch at rewrite time must never leave a sibling `TyName(<formal>)`
+  // unmarked for the `known_types` arm below. Measured: no current channel
+  // feeds such a shape (annotation shapes mentioning tparams are skipped at
+  // seed_var_types / collect_fn_eq_return_shape), so today this subsumes the
+  // Array-arm re-spelling; at generation time the scope stack is empty and
+  // this is the identity.
+  let fty = subst_scope_formals_ty(fty0)
   match fty {
     TyName(n) => if n == "Double" || n == "Float" {
       // Under RC a Double is a BOXED heap value, so a raw `==` between two
@@ -7520,12 +7529,13 @@ fn eq_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String])
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
       // #1526: the second (and last) site that references a helper.
-      // #2141: at a REWRITE-time call the lexical stack is live and re-spells
-      // an in-scope formal; at generation time the stack is empty and this is
-      // the identity (generated types are already re-spelled).
-      let elem2 = subst_scope_formals_ty(Array::get(args, 0))
-      arr_eq_needed_record(elem2)
-      ECall(EIdent(arr_equals_name(elem2), -1), Array::slice([lhs, rhs], 0, 2), -1)
+      // #2141: the entry re-spelling above already marked any in-scope formal
+      // in this element type.
+      arr_eq_needed_record(Array::get(args, 0))
+      ECall(EIdent(arr_equals_name(Array::get(args, 0)), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
     } else {
       EBinOp("==", lhs, rhs)
     },
