@@ -1,9 +1,15 @@
 //# Imports
 
+import @vibe/compiler/checker {
+  resolve_type_expr_shadowed
+}
+
 import @vibe/compiler/core {
   Expr,
   Pat,
   Stmt,
+  Type,
+  TypeDef,
   TypeExpr,
   bsearch_leftmost,
   builtin_allocates,
@@ -3958,78 +3964,50 @@ export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
   region_array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1), "__mutlist_exit")
 }
 
-/// #2158: names of user functions whose DECLARED return type is `Double` or
-/// `Float`, with `type` aliases resolved.
+/// #2158: names of user functions whose declared return type is a float.
 ///
 /// codegen is untyped, so a call `half(5.0)` is just an ECall; without this
-/// table the syntactic floatish classifiers cannot tell it from an
-/// Int-valued call and `__to_string` falls through to a runtime bit-pattern
-/// heuristic that renders an f64 as a plausible-looking integer.
+/// table the syntactic floatish classifiers cannot tell it from an Int-valued
+/// call and `__to_string` falls through to a runtime bit-pattern heuristic
+/// that renders an f64 as a plausible-looking integer.
 ///
-/// ONE copy on purpose. This started as an inline walk in wasi's pre-pass,
-/// was duplicated into the gc pre-pass when the fix had to be made twice, and
-/// the alias gap below then had to be found in both (#2156 review). The walk
-/// is cheap and the stmt list is right here in either caller.
+/// ONE copy on purpose. This started as an inline walk in wasi's pre-pass, was
+/// duplicated into the gc pre-pass when the fix had to be made twice, and the
+/// alias gap then had to be found in both (#2156 review). The walk is cheap
+/// and the stmt list is right here in every caller.
 ///
-/// Aliases: `type MyD = Double; fn f() -> MyD` returns a Double, and matching
-/// the raw spelling `TyName("Double")` missed it -- `__to_string(f())`
-/// printed 180 for 2.5. Only zero-parameter aliases are followed; a
-/// parameterized alias does not itself name Double. Chain length is bounded by
-/// the alias count, so a cycle terminates without capping valid chains -- see
-/// float_ret_name_is_floatish.
+/// The classification is the CHECKER's, not a name match (#2166). Each
+/// declared return type goes through `resolve_type_expr_shadowed` -- the same
+/// entry point `check_stmts` uses for an `STypeAlias` body -- and the answer
+/// is whether that resolves to `CtDouble`. This replaced a hand-written scan
+/// that compared the spelling against "Double"/"Float" and walked
+/// zero-parameter aliases by name. Four separate special cases dissolved into
+/// the resolver, three of them previously WRONG:
 ///
-/// WHAT THIS DOES NOT COVER, and why that is a boundary rather than a bug list:
-/// this is a SYNTACTIC over-approximation, because codegen has no types. A
-/// return written through a parameterized alias -- `type Box[T] = T;
-/// fn value() -> Box[Double]` -- is a `TyApp`, not a `TyName`, and is missed:
-/// `__to_string(value())` prints 180 rather than 2.5 (measured, #2166).
-///
-/// Covering it means substituting type arguments into an alias target here,
-/// i.e. re-deriving a piece of the type system inside an untyped pass, and the
-/// next shape after that needs the next piece. The thing that actually closes
-/// the class is the checker's normalized return type reaching codegen. Until
-/// then this table covers what it can name directly, and #2166 tracks the rest
-/// -- rather than growing an ad-hoc resolver one reported shape at a time.
+///   * a PARAMETERIZED alias -- `type Box[T] = T; fn f() -> Box[Double]` is a
+///     `TyApp`, which a name-keyed table structurally cannot follow. Printed
+///     384 for 2.5 (#2166). Resolution substitutes the type arguments.
+///   * the spellings `f64` and `f32`, which `resolve_builtin` has always
+///     unified with Double and the name scan never listed. `fn f() -> f64`
+///     printed 192 for 2.5 -- measured while fixing #2166, previously unfiled.
+///   * alias CHAINS -- resolution is transitive, so there is no hop walk and
+///     no step bound to get wrong (an earlier bound of a flat 16 printed 176
+///     for a 16-hop chain).
+///   * a type PARAMETER shadowing an alias -- `type D = Double; fn id[D](x: D)
+///     -> D` returns the variable, not a float. That is the `shadow` argument,
+///     which is what it is for; it needed an explicit guard before.
 export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
-  let alias_names: Array[String] = []
-  let alias_targets: Array[String] = []
-  let mut ai = 0
-  while ai < Array::length(stmts) {
-    match Array::get(stmts, ai) {
-      STypeAlias(_, aname, aparams, atarget) => if Array::length(aparams) == 0 {
-        Array::push(alias_names, aname)
-        Array::push(alias_targets, match atarget {
-          TyName(tn) => tn,
-          _ => ""
-        })
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    ai = ai + 1
-  }
+  let defs = collect_alias_type_defs(stmts)
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) =>
       match value {
-        // The function's OWN type parameters shadow any alias of the same
-        // name: with `type D = Double`, `fn id[D](x: D) -> D` returns the
-        // type variable, not a float. Following the alias recorded `id` as
-        // float-returning and `__to_string(id(1))` printed 0 instead of 1
-        // (#2156 review, measured). A bare type variable that shadows
-        // nothing is already excluded -- it resolves to no primitive.
         EFn(tparams, _, _, ret, _, _) =>
         match ret {
-          Some(rt) =>
-          match rt {
-            TyName(rtn) => if !array_contains_str(tparams, rtn) && float_ret_name_is_floatish(alias_names, alias_targets, rtn) {
-              Array::push(out, name)
-            } else {
-              ()
-            },
+          Some(rt) => match resolve_type_expr_shadowed(rt, defs, tparams) {
+            CtDouble => Array::push(out, name),
             _ => ()
           },
           None => ()
@@ -4043,48 +4021,55 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-/// Does `n` name Double/Float, directly or through zero-parameter aliases?
+/// The alias table `compute_float_returning_names` resolves against.
 ///
-/// The step bound is `alias count + 1`, which is the exact acyclic maximum: a
-/// chain that never revisits an alias cannot be longer than the number of
-/// aliases. So no valid chain is rejected, and a cycle still terminates.
+/// Built order-INDEPENDENTLY, deliberately unlike `check_stmts`. The checker
+/// does not pre-claim an `STypeAlias` (a placeholder alias body would be a lie
+/// -- an alias resolves THROUGH to its target, so an empty placeholder would
+/// silently retarget every early reference), so a forward reference to a later
+/// alias stays unresolved there. codegen must not inherit that: today
+/// `fn f() -> Later { 2.5 }` above `type Later = Double` compiles and renders
+/// 2.5, and answering "not a float" for it would be a silent-wrong regression
+/// -- the exact class this table exists to close. Measured before the change,
+/// not assumed.
 ///
-/// It was a flat 16, and that WAS a depth policy despite the comment claiming
-/// otherwise -- worse, the primitive test ran only at the top of the loop, so
-/// reaching the bound by increment exited without testing the name just
-/// stepped to. A 16-alias chain onto Double printed 176 instead of 2.5
-/// (#2156 review, measured). `done` is now a separate flag so the test runs
-/// after every hop including the last.
-fn float_ret_name_is_floatish(alias_names: Array[String], alias_targets: Array[String], n: String) -> Bool {
-  let limit = Array::length(alias_names) + 1
-  let mut cur = n
-  let mut steps = 0
-  let mut found = false
-  let mut done = false
-  while !done {
-    if cur == "Double" || cur == "Float" {
-      found = true
-      done = true
-    } else if steps >= limit {
-      done = true
-    } else {
-      let mut k = Array::length(alias_names) - 1
-      let mut next = ""
-      while k >= 0 {
-        if Array::get(alias_names, k) == cur {
-          next = Array::get(alias_targets, k)
-          k = -1
-        } else {
-          k = k - 1
-        }
-      }
-      if String::length(next) == 0 {
-        done = true
-      } else {
-        cur = next
-        steps = steps + 1
-      }
+/// So every alias body is resolved against every other, repeated until no
+/// unresolved hop can remain: `n + 1` passes over `n` aliases is the acyclic
+/// maximum, since a chain that never revisits an alias is at most `n` long. A
+/// cycle simply stops changing. `n` is single digits per compilation unit (32
+/// aliases in all of `lib/`), so the quadratic pass count costs nothing.
+///
+/// Only aliases are collected: a struct or enum return type is never a float,
+/// so their TypeDefs cannot change an answer here.
+fn collect_alias_type_defs(stmts: Array[Stmt]) -> Array[TypeDef] {
+  let alias_names: Array[String] = []
+  let alias_params: Array[Array[String]] = []
+  let alias_targets: Array[TypeExpr] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, aname, aparams, atarget) => {
+        Array::push(alias_names, aname)
+        Array::push(alias_params, aparams)
+        Array::push(alias_targets, atarget)
+      },
+      _ => ()
     }
+    i = i + 1
   }
-  found
+  let n = Array::length(alias_names)
+  let mut defs: Array[TypeDef] = []
+  let mut pass = 0
+  while pass <= n {
+    let next: Array[TypeDef] = []
+    let mut j = 0
+    while j < n {
+      let ps = Array::get(alias_params, j)
+      Array::push(next, TDAlias(Array::get(alias_names, j), ps, resolve_type_expr_shadowed(Array::get(alias_targets, j), defs, ps)))
+      j = j + 1
+    }
+    defs = next
+    pass = pass + 1
+  }
+  defs
 }

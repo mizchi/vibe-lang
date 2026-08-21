@@ -145,6 +145,45 @@ test "#2156 review: a local binding SHADOWS the float-return table" {
   assert_true(__to_string(value()) == "1")
 }
 
+// #2166: a return through a PARAMETERIZED alias. `Box[Double]` is a `TyApp`,
+// which the old name-keyed table structurally could not follow -- it compared
+// the spelling against "Double"/"Float" and walked zero-parameter aliases by
+// name. `__to_string(via_generic())` printed 384 for 2.5, on BOTH backends.
+// The classification now goes through the checker's `resolve_type_expr_shadowed`,
+// which substitutes the type arguments into the alias body.
+type Box[T] = T
+
+type PairFst[A, B] = A
+
+fn via_generic() -> Box[Double] {
+  2.5
+}
+
+fn via_pair() -> PairFst[Double, Int] {
+  2.5
+}
+
+// `resolve_builtin` has always unified `f64`/`f32` with Double; the name scan
+// listed only "Double" and "Float", so these printed raw bits (192 for 2.5).
+// Found while fixing #2166 -- previously unfiled.
+fn as_f64() -> f64 {
+  2.5
+}
+
+fn as_f32() -> f32 {
+  2.5
+}
+
+// A forward reference to an alias declared LATER. The checker deliberately
+// does not pre-claim an `STypeAlias`, so this stays unresolved there -- but it
+// compiles and renders 2.5 today, so the codegen table resolves aliases
+// order-independently and must keep doing so. Pins that.
+fn forward_aliased() -> DeclaredLater {
+  2.5
+}
+
+type DeclaredLater = Double
+
 test "#2156 review: the shadow is scoped -- the top-level name still works" {
   // The counterpart: masking must key on the binding actually in scope, not
   // disable the table for the name everywhere it appears.
@@ -184,4 +223,23 @@ test "#2156 review: a type parameter shadows a float alias" {
   // parameter of that name shadows it -- the return is the type variable,
   // not a float. Following the alias printed 0 instead of 1.
   assert_true(__to_string(id_tp(1)) == "1")
+}
+
+test "#2166: a parameterized alias onto Double is classified" {
+  assert_true(__to_string(via_generic()) == "2.5")
+  let a = via_generic()
+  assert_true(__to_string(a) == "2.5")
+}
+
+test "#2166: a two-parameter alias selecting its first argument" {
+  assert_true(__to_string(via_pair()) == "2.5")
+}
+
+test "#2166: the f64 and f32 spellings are floats" {
+  assert_true(__to_string(as_f64()) == "2.5")
+  assert_true(__to_string(as_f32()) == "2.5")
+}
+
+test "#2166: an alias declared AFTER the function that returns it" {
+  assert_true(__to_string(forward_aliased()) == "2.5")
 }
