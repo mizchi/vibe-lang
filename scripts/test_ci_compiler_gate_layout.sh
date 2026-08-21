@@ -45,4 +45,29 @@ require 'COMPILER_GATE_SKIP_STAGE2_ORACLES: "1"' "$workflow"
 require 'path: ~/.cache/pkfire-mbt' '.github/actions/setup-vibe/action.yml'
 require 'github.job' '.github/actions/setup-vibe/action.yml'
 
+require_stage2_builder_wasmtime() {
+  local job="$1"
+  local block
+  block="$(sed -n "/^  ${job}:/,/^  [a-zA-Z0-9_-]*:/p" "$workflow")"
+  if ! grep -qF 'uses: ./.github/actions/setup-vibe' <<<"$block" ||
+    ! grep -qF "wasmtime: 'true'" <<<"$block"; then
+    echo "[ci-compiler-gate-layout] ${job} builds stage2 without shared wasmtime setup" >&2
+    exit 1
+  fi
+  local setup_line
+  local build_line
+  setup_line="$(grep -nF 'uses: ./.github/actions/setup-vibe' <<<"$block" | head -1 | cut -d: -f1)"
+  build_line="$(grep -nF 'scripts/generations.sh build' <<<"$block" | head -1 | cut -d: -f1)"
+  if [ -z "$build_line" ] || [ "$setup_line" -ge "$build_line" ]; then
+    echo "[ci-compiler-gate-layout] ${job} must set up wasmtime before its stage2 build" >&2
+    exit 1
+  fi
+}
+
+require_stage2_builder_wasmtime compiler-stage2-oracles
+require_stage2_builder_wasmtime compiler-docs
+require_stage2_builder_wasmtime compiler-playground
+require_stage2_builder_wasmtime compiler-examples
+require_stage2_builder_wasmtime review-regressions
+
 echo "[ci-compiler-gate-layout] ok"
