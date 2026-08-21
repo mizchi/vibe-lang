@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Type, TypeDef, TypeExpr, find_typedef, resolve_builtin
+  Type, TypeDef, TypeExpr, find_typedef, resolve_builtin, resolve_type_alias_params, resolve_type_expr_core_shadowed
 }
 
 import @vibe/core {
@@ -14,47 +14,9 @@ import @vibe/core {
 /// The alias body was resolved with its params as free `CtNamed(<param>, _)`
 /// names; replace each by the corresponding actual argument (recursively).
 export fn subst_type_params(ty: Type, params: Array[String], args: Array[Type]) -> Type {
-  match ty {
-    CtNamed(name, targs) => {
-      let mut idx = 0 - 1
-      let mut i = 0
-      while i < Array::length(params) {
-        if Array::get(params, i) == name {
-          idx = i
-        }
-        i = i + 1
-      }
-      if idx >= 0 && idx < Array::length(args) {
-        Array::get(args, idx)
-      } else {
-        CtNamed(name, for a in targs {
-          subst_type_params(a, params, args)
-        })
-      }
-    },
-    CtArray(e) => CtArray(subst_type_params(e, params, args)),
-    CtOption(e) => CtOption(subst_type_params(e, params, args)),
-    CtTuple(es) => CtTuple(for e in es {
-      subst_type_params(e, params, args)
-    }),
-    CtFn(ps, ret, eff) => {
-      let subst_params: (Array[Type]) -> Array[Type] = (types) -> {
-        let out = array_empty()
-        let mut i = 0
-        while i < Array::length(types) {
-          Array::push(out, subst_type_params(Array::get(types, i), params, args))
-          i = i + 1
-        }
-        out
-      }
-      CtFn(subst_params(ps), subst_type_params(ret, params, args), eff)
-    },
-    _ => ty
-  }
+  resolve_type_alias_params(ty, params, args)
 }
 
-/// True when `name` is one of the type formals bound by the declaration whose
-/// body we are resolving. See `resolve_type_expr_shadowed`.
 fn is_shadowed_tyvar(shadow: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -85,70 +47,7 @@ export fn resolve_type_expr(te: TypeExpr, defs: Array[TypeDef]) -> Type {
 /// lookup below finds it, and `Box[Int]` becomes `Hue`. A formal is a binder,
 /// so it wins over both `defs` and the builtins -- the shadow check runs first.
 export fn resolve_type_expr_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type {
-  match te {
-    TyUnit => CtUnit,
-    TyName(name) => if is_shadowed_tyvar(shadow, name) {
-      CtNamed(name, array_empty())
-    } else {
-      match resolve_builtin(name) {
-        Some(t) => t,
-        None => match find_typedef(defs, name) {
-          Some(td) => match td {
-            TDEnum(n, _, _) => CtEnum(n),
-            TDStruct(n, _, _, _) => CtStruct(n),
-            TDAlias(_, _, t) => t,
-            TDEffect(_, _, _) => CtNamed(name, array_empty()),
-            TDEffectSet(_, _) => CtNamed(name, array_empty())
-          },
-          None => CtNamed(name, array_empty())
-        }
-      }
-    },
-    TyApp(name, args) => {
-      let ra = for a in args {
-        resolve_type_expr_shadowed(a, defs, shadow)
-      }
-      if name == "Array" {
-        if Array::length(ra) == 1 {
-          CtArray(Array::get(ra, 0))
-        }
-        else CtNamed(name, ra)
-      } else if name == "Option" {
-        if Array::length(ra) == 1 {
-          CtOption(Array::get(ra, 0))
-        }
-        else CtNamed(name, ra)
-      } else if is_shadowed_tyvar(shadow, name) {
-        // `T[X]` where `T` is a formal: higher-kinded application is not
-        // supported, but the head is still the formal's -- never expand it as
-        // whatever `defs` happens to bind that name to.
-        CtNamed(name, ra)
-      } else {
-        // Expand a parameterized type alias `Foo[A] = Body` applied as `Foo[X]`
-        // by substituting its formal params; otherwise it stays nominal.
-        match find_typedef(defs, name) {
-          Some(td) => match td {
-            TDAlias(_, params, body) => subst_type_params(body, params, ra),
-            _ => CtNamed(name, ra)
-          },
-          None => CtNamed(name, ra)
-        }
-      }
-    },
-    TyTuple(elems) => {
-      let r = for e in elems {
-        resolve_type_expr_shadowed(e, defs, shadow)
-      }
-      CtTuple(r)
-    },
-    TyFn(params, ret, effect_name) => {
-      let ret_box = Array::slice([ret], 0, 1)
-      let rp = for p in params {
-        resolve_type_expr_shadowed(p, defs, shadow)
-      }
-      CtFn(rp, resolve_type_expr_shadowed(Array::get(ret_box, 0), defs, shadow), effect_name)
-    }
-  }
+  resolve_type_expr_core_shadowed(te, defs, shadow)
 }
 
 /// #2125: nominal heads the compiler owns itself. They resolve to
