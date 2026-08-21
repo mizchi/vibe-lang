@@ -91,13 +91,17 @@ while IFS= read -r f; do
   fi
   total=$((total + 1))
   rm -f "$out" "$out.diag"
+  runner_status=0
   VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_CHECK_ONLY=1 \
     timeout 300 bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main "$STAGE2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
+    --invoke cli_main "$STAGE2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || runner_status=$?
   if [ -s "$out.diag" ]; then
     failed=$((failed + 1))
     echo "[offbuild-typecheck] FAIL $f" >&2
     head -3 "$out.diag" >&2
+  elif [ "$runner_status" -ne 0 ]; then
+    failed=$((failed + 1))
+    echo "[offbuild-typecheck] FAIL $f: compiler runner exited $runner_status without a diagnostic" >&2
   fi
   rm -f "$out" "$out.diag"
 done < "$listing"
