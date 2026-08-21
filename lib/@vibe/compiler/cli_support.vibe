@@ -33,7 +33,7 @@ import @vibe/compiler/entry/compiler/file_compile {
 }
 
 import @vibe/compiler/loader {
-  collect_source_groups_fs, ingestion_pipeline_telemetry_add
+  collect_source_groups_fs, ingest_source_text_fs, ingestion_pipeline_telemetry_add
 }
 
 // #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
@@ -493,7 +493,7 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
   ])
 }
 
-fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] with Fs {
+fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] with Exception + Fs {
   let mut found: Option[String] = None
   let mut count = 0
   let mut gi = 0
@@ -516,13 +516,12 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
     match found {
       Some(source) => if String::starts_with(source, vpkg_shared_import_marker) {
         // The loader prepends inherited `.vpkg` imports to the checked entry.
-        // Warning locations must refer to the physical file. Re-reading is
-        // safe only when that exact text is still the suffix of the checked
-        // snapshot; otherwise suppress warnings rather than report stale or
-        // synthetic lines.
+        // Warning locations must refer to the physical file. Re-ingest the
+        // current bytes and require the complete synthetic snapshot to match;
+        // a suffix comparison would accept a file whose leading bytes changed.
         if Fs::exists(input_path) {
           let physical = Fs::read_file(input_path)
-          if String::ends_with(source, physical) {
+          if source == ingest_source_text_fs(input_path, physical) {
             Some(physical)
           } else {
             None

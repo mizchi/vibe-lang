@@ -37,6 +37,7 @@ import @vibe/compiler/core {
   env_cache,
   env_flat_bindings,
   env_lookup_flat,
+  env_selectable_type_defs,
   env_type_defs,
   expr_children,
   find_enum_typedef,
@@ -1355,36 +1356,41 @@ fn string_array_contains(items: Array[String], wanted: String) -> Bool {
 
 fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv, builtin_authority: Bool) -> Option[String] {
   let defs = env_type_defs(initial_env)
+  let selectable_defs = env_selectable_type_defs(initial_env)
   let mut found: Option[String] = None
   let mut ambiguous = false
   let mut i = 0
   while i < Array::length(defs) {
-    let candidate = match Array::get(defs, i) {
-      TDAlias(name, _, _) => if name == item.name {
-        Some("type alias")
-      } else {
-        None
-      },
-      TDStruct(name, _, _, _) => if name == item.name {
-        Some("struct")
-      } else {
-        None
-      },
-      TDEnum(name, _, _) => if name == item.name {
-        Some("enum")
-      } else {
-        None
-      },
-      TDEffect(name, _, _) => if name == item.name {
-        Some("effect")
-      } else {
-        None
-      },
-      TDEffectSet(name, _) => if name == item.name {
-        Some("effect set")
-      } else {
-        None
+    let candidate = if string_array_contains(selectable_defs, item.name) {
+      match Array::get(defs, i) {
+        TDAlias(name, _, _) => if name == item.name {
+          Some("type alias")
+        } else {
+          None
+        },
+        TDStruct(name, _, _, _) => if name == item.name {
+          Some("struct")
+        } else {
+          None
+        },
+        TDEnum(name, _, _) => if name == item.name {
+          Some("enum")
+        } else {
+          None
+        },
+        TDEffect(name, _, _) => if name == item.name {
+          Some("effect")
+        } else {
+          None
+        },
+        TDEffectSet(name, _) => if name == item.name {
+          Some("effect set")
+        } else {
+          None
+        }
       }
+    } else {
+      None
     }
     match candidate {
       Some(kind) => match found {
@@ -1412,7 +1418,7 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv, builtin_authority:
       None => {
         if has_trait {
           Some("trait")
-        } else if builtin_authority && resolve_builtin(item.name) != None {
+        } else if (builtin_authority || string_array_contains(selectable_defs, item.name)) && resolve_builtin(item.name) != None {
           // Opaque primitive declarations from @vibe/builtin are represented
           // by their canonical value-type binding rather than a TypeDef row.
           // Their contract spelling is still `type Int`, `type String`, etc.

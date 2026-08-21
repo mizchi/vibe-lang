@@ -199,6 +199,33 @@ test "ordinary value exports do not inherit builtin type authority by name" {
   assert(String::contains(message, "import kind mismatch: `i32` is a value, not a type alias"))
 }
 
+test "builtin type authority survives a re-exporting module" {
+  // A re-exported opaque builtin is transported as a selectable type name
+  // without a forgeable TypeDef payload.
+  let env = EnvTypeDefs(array_empty(), ["Int"], EnvEmpty)
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./builtin_wrapper.vibe { type Int }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(message == "")
+}
+
+test "import kind classification uses the published declaration on name collision" {
+  let env = EnvTypeDefs([
+    TDAlias("Hidden", [], CtInt),
+    TDAlias("Public", [], CtNamed("Hidden", []))
+  ], ["Public"], EnvBind("Hidden", env_value_binding(CtInt), EnvEmpty))
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./collision.vibe { type Hidden }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(String::contains(message, "import kind mismatch: `Hidden` is a value, not a type alias"))
+}
+
 test "struct imports reject enums" {
   assert(String::contains(projected_import_kind_error("import ./provider.vibe { struct Choice }"), "import kind mismatch: `Choice` is an enum, not a struct"))
 }
