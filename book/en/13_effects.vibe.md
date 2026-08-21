@@ -4,19 +4,17 @@ Previous: [Iteration](12_iteration.vibe.md)
 
 日本語版: [13_effects.vibe.md](../ja/13_effects.vibe.md)
 
-vibe is **pure by default**. A side effect is declared in the type's `with ...`
-row (the effect row) and propagates to the caller until a `handle` draws the
-boundary.
+A function in vibe is pure unless its type says otherwise. Anything it
+can do besides compute — fail, print, read a file — is named in a `with`
+clause on the signature, and that clause propagates to every caller
+until someone handles it.
 
-## The Exception boundary — perform / handle
+That is the whole mechanism. This chapter is what it looks like.
 
-`Exception` without a type argument is an erased, **abortive** (non-resumable)
-effect, and it is compatible with every kind of typed `Exception[E]`.
-`perform Exception::Throw` does not resume the continuation, and `resume` is not
-available in its handler arm — that arm's value becomes the result of the
-`handle`. An erased handler treats its payload as String/opaque and does not
-preserve type arguments across the handler. For when to reach for a typed
-exception instead, see [ADR-0085](../../docs/exception-effect.md).
+## Declaring that a function can fail
+
+`Exception` is the effect for failure. A function that may throw says so,
+and callers inherit the obligation:
 
 ```vibe run
 fn risky(x: Int) -> Int with Exception {
@@ -51,31 +49,24 @@ safe = -1
 fine = 25
 ```
 
-## Migrating from the old `Error` spelling
+`handle { body } with Exception { ... }` is the boundary. Inside it,
+`risky` may throw; outside it, `main` has no `Exception` in its row,
+because the obligation was discharged.
 
-`Error` is a parse error both in an effect row (`with Error`) and as a handler
-name (`handle { ... } with Error { ... }`). `vibe fmt` rewrites old sources to
-`Exception`. `throw("message")` still works.
+`Exception` is **abortive**: a throw does not come back. The handler arm's
+value becomes the value of the whole `handle` — that is why `safe` is
+`-1` and `fine` is `25`. There is no `resume` in an `Exception` arm.
 
-Only the operation qualifier `perform Error::Throw(...)` is still accepted, as
-internal compatibility for reading older artifacts; new source uses
-`perform Exception::Throw(...)`.
+Written without a type argument, `Exception` is erased: it accepts any
+`Exception[E]`, and its payload arrives as a string. When you want the
+error type preserved, write `Exception[E]` — see
+[the exception effect](../../docs/exception-effect.md).
 
-Rejected old spellings, `skip`ped because this is a migration note rather than a
-runnable example:
+## Declaring your own effect
 
-```vibe skip
-// Rejected source (kept in comments so `vibe fmt` does not rewrite the example):
-// fn old_row() -> Int with Error { throw("old") }
-// fn old_handler() -> Int {
-//   handle { 1 } with Error { Throw(_) => 0 }
-// }
-```
-
-## User-defined effects — perform / resume
-
-An effect is a *declaration of operations*. The implementation — the handler —
-is supplied by the caller.
+An effect declaration is a list of operations with no implementation.
+The caller supplies the implementation, in the handler. This is the part
+`Exception` is a special case of:
 
 ```vibe run
 effect Ask {
@@ -87,7 +78,6 @@ fn answer_of(q: String) -> Int with Ask {
 }
 
 fn main with Console {
-  // the handler returns a value to the perform site via resume(v) (one-shot tail-resumptive)
   let v = handle {
     answer_of("life")
   } with Ask {
@@ -101,58 +91,26 @@ fn main with Console {
 v = 42
 ```
 
-A user-defined effect is the advanced tool, for when the caller genuinely has to
-swap the implementation. It comes with the constraint of being resumptive and
-one-shot/tail-resumptive. For ordinary failure use `Exception`, and for local
-state consider `let mut` first. The criteria are in
-[Effects vs let mut](../../docs/guide/when-to-use-effects.md).
+`answer_of` does not know where the number comes from. It performs
+`Ask::Value` and continues with whatever the handler resumes — here `41`,
+so `answer_of` returns `42`. Unlike `Exception`, `Ask` **is** resumable:
+`resume(v)` sends `v` back to the `perform` site and the function carries
+on.
 
-## What a `handle` can see
+Resumption is one-shot and tail-resumptive: a handler arm resumes at most
+once, as its last act.
 
-`handle { answer_of(...) }` above compiles because `answer_of` is a named
-top-level `fn`. Every `perform` a `handle` covers has to be visible to it, so
-the compiler has to be able to tell, for each call in the handled body, what
-that call performs.
+Reach for your own effect when the caller genuinely has to swap the
+implementation — a clock in tests, a different source for a value. For
+ordinary failure use `Exception`; for local state try `let mut` first.
+[Effects vs let mut](../../docs/guide/when-to-use-effects.md) has the
+criteria.
 
-Most calls are visible: a top-level `fn`, a builtin like `println`, a closure
-whose binding or parameter carries the effect row, and a closure written inside
-the handled body. What is *not* visible is a rowless closure the handled body
-only sees as a name from an outer scope — the compiler has no definition to
-look at and no row to read. That shape type-checks and is still rejected;
-rewrite the call, not the types.
+## Rows can be variables
 
-```vibe skip
-// skip: ineligible handle — a rowless closure bound outside the handled body
-effect Ask {
-  Once() -> Int
-}
-
-fn ask_once() -> Int with Ask {
-  perform Ask::Once()
-}
-
-fn main() -> Int {
-  let bump = (x: Int) -> Int { x + 1 }
-  handle { bump(ask_once()) } with Ask {
-    Once() => resume(41)
-  }
-}
-// error (measured with `vibe check`): handle of effect 'Ask' cannot be compiled
-// here: this handle cannot see what one call in its body performs (here: the
-// call to 'bump'). Make that call visible -- declare 'bump' as a top-level
-// `fn`, give the binding or parameter it arrives through an effect row (`with
-// Ask`), or move its `let` inside the handled body. Moving the `handle` into
-// the function that performs works too.
-```
-
-Any one of the four repairs the message lists fixes it. The smallest here is to
-hoist `bump` to a top-level `fn`; writing `let bump: (Int) -> Int with Ask =
-...`, or moving the `let` inside the `handle`, works just as well.
-
-## Effect polymorphism
-
-An effect row can be a variable, which is how you write a higher-order function
-that carries whatever effects the function it was handed has.
+A higher-order function should not have to know which effects the
+function it was handed performs. Write the row as a variable and it
+carries whatever arrives:
 
 ```vibe run
 fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
@@ -168,14 +126,55 @@ fn main with Console {
 apply_twice = 40
 ```
 
-Host I/O (`Fs`, `Env`, `Http`, **`Console`**) are **capabilities**, not
-algebraic effects. On a *split* signature they belong in `allows`, not
-`with`. The current tty capability is `Console` (`Console::write_stream`,
-`read_stream`, `write_err_stream`, and the `*_char` pair). `Stdout` /
-`Stdin` / `Stderr` are still-accepted **legacy labels** that share those
-host imports. Declaring `Console` authorizes them; declaring one of them
-does **not** authorize `Console::*`, because `Console` is the wider
-capability. See [Capabilities](14_capabilities.vibe.md).
+`apply_twice` is pure when `f` is pure, and carries `Exception` when `f`
+throws. One definition, both cases, checked.
 
-Next: [Capabilities](14_capabilities.vibe.md). The package/test tour is
-[Modules](09_modules_packages.vibe.md) then [Tests](10_tests.vibe.md).
+## The one rule about `handle`
+
+A `handle` has to be able to see every `perform` it covers. For each call
+in the handled body, the compiler needs to know what that call performs.
+
+Most calls it can see: a top-level `fn`, a builtin, a closure whose
+binding or parameter carries an effect row, and a closure written inside
+the handled body. The shape it cannot see is a **rowless closure bound
+outside** the handled body — there is no definition to look at and no row
+to read. It type-checks and is still rejected:
+
+```vibe skip
+// skip: this is the rejected shape, shown for the diagnostic it produces
+effect Ask {
+  Once() -> Int
+}
+
+fn ask_once() -> Int with Ask {
+  perform Ask::Once()
+}
+
+fn main() -> Int {
+  let bump = (x: Int) -> Int { x + 1 }
+  handle { bump(ask_once()) } with Ask {
+    Once() => resume(41)
+  }
+}
+```
+
+```
+handle of effect 'Ask' cannot be compiled here: this handle cannot see what
+one call in its body performs (here: the call to 'bump'). Make that call
+visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
+it arrives through an effect row (`with Ask`), or move its `let` inside the
+handled body. Moving the `handle` into the function that performs works too.
+(ADR-0076 evidence-passing migration.)
+```
+
+The message lists four repairs and any one of them works; here the
+smallest is to make `bump` a top-level `fn`. The ADR reference at the end
+is a maintainer's note — the four repairs are the part addressed to you.
+
+## Effects you do not handle: capabilities
+
+`Fs`, `Env`, `Http` and `Console` ride the same row, but you do not write
+handlers for them — the host provides them, and what you declare is
+permission to use them. That is the next chapter.
+
+Next: [Capabilities](14_capabilities.vibe.md).

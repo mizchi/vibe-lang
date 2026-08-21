@@ -2,18 +2,18 @@
 
 前: [反復](12_iteration.vibe.md)
 
-English version: [13_effects.vibe.md](../en/13_effects.vibe.md) (canonical)
+English version: [13_effects.vibe.md](../en/13_effects.vibe.md)
 
-vibe は**純粋がデフォルト**。副作用は型の `with ...` 行 (effect row) で
-宣言し、呼び出し側は `handle` で境界を引くまで伝播する。
+vibe の関数は、型がそう言わない限り純粋です。計算以外にできること —
+失敗する、表示する、ファイルを読む — はシグネチャの `with` 節に名前が
+書かれ、その節は誰かが handle するまで呼び出し側へ伝播します。
 
-## Exception 境界 — perform / handle
+仕組みはこれで全部。この章はそれがどう見えるかです。
 
-型引数なしの `Exception` は erased な **非再開 (abortive) エフェクト**で、
-typed `Exception[E]` のどの kind とも互換である。`perform Exception::Throw` は継続を
-再開せず、handler arm で `resume` は使えない。その arm の値が `handle` の結果になる。
-erased な handler の payload は String/opaque 扱いで、handler をまたぐ型引数の保存は
-しない。typed exception との使い分けは [ADR-0085](../../docs/exception-effect.md) を参照。
+## 失敗しうることを宣言する
+
+失敗のためのエフェクトが `Exception`。throw しうる関数はそう宣言し、
+呼び出し側はその義務を引き継ぎます。
 
 ```vibe run
 fn risky(x: Int) -> Int with Exception {
@@ -48,28 +48,22 @@ safe = -1
 fine = 25
 ```
 
-## 旧 `Error` 綴りからの移行
+`handle { body } with Exception { ... }` が境界です。その内側では `risky`
+は throw してよく、外側の `main` の row に `Exception` は現れません。義務が
+そこで果たされたからです。
 
-`Error` は effect row (`with Error`) とハンドラ名
-(`handle { ... } with Error { ... }`) のどちらでも parse error になる。旧ソースは
-`vibe fmt` で `Exception` へ書き換えられる。`throw("message")` は引き続き使える。
+`Exception` は**中断的** (abortive) — throw は戻ってきません。ハンドラ腕の
+値が `handle` 全体の値になり、だから `safe` は `-1`、`fine` は `25` に
+なります。`Exception` の腕に `resume` はありません。
 
-operation 修飾子の `perform Error::Throw(...)` だけは古い生成物を読む内部互換として
-受理されるが、新しいソースでは `perform Exception::Throw(...)` を使う。
+型引数なしの `Exception` は消去された形で、どの `Exception[E]` も受け取り、
+payload は文字列として届きます。エラー型を保ちたいときは `Exception[E]` と
+書きます — [exception effect](../../docs/exception-effect.md) を参照。
 
-拒否される旧綴りの例 (実行例ではなく、移行説明のため `skip`):
+## 自分のエフェクトを宣言する
 
-```vibe skip
-// Rejected source (kept in comments so `vibe fmt` does not rewrite the example):
-// fn old_row() -> Int with Error { throw("old") }
-// fn old_handler() -> Int {
-//   handle { 1 } with Error { Throw(_) => 0 }
-// }
-```
-
-## ユーザ定義エフェクト — perform / resume
-
-エフェクトは「操作の宣言」。実装 (handler) は呼び出し側が与える。
+エフェクト宣言は、実装を持たない操作の一覧です。実装はハンドラとして
+呼び出し側が与えます。`Exception` はこの特別な場合にあたります。
 
 ```vibe run
 effect Ask {
@@ -81,7 +75,6 @@ fn answer_of(q: String) -> Int with Ask {
 }
 
 fn main with Console {
-  // handler が resume(v) で perform 地点に値を返す (one-shot tail-resumptive)
   let v = handle {
     answer_of("life")
   } with Ask {
@@ -95,56 +88,23 @@ fn main with Console {
 v = 42
 ```
 
-ユーザー定義 effect は、実装を呼び出し側から差し替える必要がある場合の advanced な
-手段である。これは resumptive かつ one-shot/tail-resumptive という制約を持つ。通常の
-失敗は `Exception` を使い、局所的な状態はまず `let mut` を検討する。判断基準は
-[Effects vs let mut](../../docs/guide/when-to-use-effects.md) を参照。
+`answer_of` はその数がどこから来るかを知りません。`Ask::Value` を perform
+し、ハンドラが resume した値で続きを実行します — ここでは `41` なので
+`answer_of` は `42` を返します。`Exception` と違い `Ask` は**再開可能**で、
+`resume(v)` が `v` を perform の位置へ返し、関数はそこから続きます。
 
-## `handle` が見えるもの
+再開は one-shot かつ末尾再開 — ハンドラの腕は最後の動作として高々一度だけ
+resume します。
 
-上の `handle { answer_of(...) }` が通るのは、`answer_of` が名前付き top-level
-`fn` だから。`handle` が覆うすべての `perform` はその `handle` から見えて
-いなければならない — つまり handled body の呼び出し 1 つ 1 つについて、
-コンパイラが「その呼び出しが何を perform するか」を判定できる必要がある。
+自分のエフェクトを持ち出すのは、呼び出し側が本当に実装を差し替える必要が
+あるときです — テストでの時計、値の別の供給元など。普通の失敗には
+`Exception` を、ローカルな状態にはまず `let mut` を試すこと。判断基準は
+[Effects vs let mut](../../docs/guide/when-to-use-effects.md) にあります。
 
-ほとんどの呼び出しは見える — top-level `fn`、`println` のような builtin、
-束縛や引数の型が effect row を持つクロージャ、そして handled body の中で
-書かれたクロージャ。見えないのは、**外側のスコープから名前だけで届く row 無し
-のクロージャ**で、定義も row も参照できない。この形は型検査を通ってもコンパイル
-は拒否される — 直すのは型ではなく呼び出し側。
+## row は変数にできる
 
-```vibe skip
-// skip: ineligible handle — a rowless closure bound outside the handled body
-effect Ask {
-  Once() -> Int
-}
-
-fn ask_once() -> Int with Ask {
-  perform Ask::Once()
-}
-
-fn main() -> Int {
-  let bump = (x: Int) -> Int { x + 1 }
-  handle { bump(ask_once()) } with Ask {
-    Once() => resume(41)
-  }
-}
-// error (measured with `vibe check`): handle of effect 'Ask' cannot be compiled
-// here: this handle cannot see what one call in its body performs (here: the
-// call to 'bump'). Make that call visible -- declare 'bump' as a top-level
-// `fn`, give the binding or parameter it arrives through an effect row (`with
-// Ask`), or move its `let` inside the handled body. Moving the `handle` into
-// the function that performs works too.
-```
-
-メッセージが挙げる 4 つの直し方のどれでも直る。ここで一番小さいのは `bump` を
-top-level `fn` に出すこと。`let bump: (Int) -> Int with Ask = ...` と注釈する、
-あるいは `let` を `handle` の中へ移すのも同じく有効。
-
-## エフェクト多相
-
-エフェクト行は変数にできる — 「渡された関数のエフェクトをそのまま持つ」
-高階関数が書ける。
+高階関数が「渡された関数がどのエフェクトを performするか」を知る必要は
+ありません。row を変数として書けば、来たものをそのまま運びます。
 
 ```vibe run
 fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
@@ -160,12 +120,56 @@ fn main with Console {
 apply_twice = 40
 ```
 
-ホスト I/O (`Fs` / `Env` / `Http` / **`Console`**) は capability で、
-代数 effect ではない。tty の現行名は `Console`（`Console::write_stream` /
-`read_stream` / `write_err_stream` と `*_char`）。上の例の `Stdout` は
-まだ受理される **legacy ラベル**で、同じ host import を共有する。
-`Console` を宣言すれば legacy ラベルも認可されるが、逆は成立しない
-（`Console` の方が広い capability のため）。詳細は英語版
-[Capabilities](../en/14_capabilities.vibe.md)。
+`apply_twice` は `f` が純粋なら純粋、`f` が throw するなら `Exception` を
+運びます。定義は一つ、両方の場合が検査されます。
+
+## `handle` についての唯一の規則
+
+`handle` は、自分が覆うすべての `perform` を見えている必要があります。
+handle された本体の各呼び出しについて、コンパイラはその呼び出しが何を
+perform するか分かる必要があります。
+
+ほとんどの呼び出しは見えます — トップレベルの `fn`、組み込み、束縛や引数が
+effect row を持つクロージャ、そして handle された本体の中に書かれた
+クロージャ。見えないのは、**row を持たず本体の外で束縛された**クロージャ
+です。見に行く定義も、読む row もありません。型検査は通り、それでも
+拒否されます。
+
+```vibe skip
+// skip: 拒否される形。出る診断を見せるための例
+effect Ask {
+  Once() -> Int
+}
+
+fn ask_once() -> Int with Ask {
+  perform Ask::Once()
+}
+
+fn main() -> Int {
+  let bump = (x: Int) -> Int { x + 1 }
+  handle { bump(ask_once()) } with Ask {
+    Once() => resume(41)
+  }
+}
+```
+
+```
+handle of effect 'Ask' cannot be compiled here: this handle cannot see what
+one call in its body performs (here: the call to 'bump'). Make that call
+visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
+it arrives through an effect row (`with Ask`), or move its `let` inside the
+handled body. Moving the `handle` into the function that performs works too.
+(ADR-0076 evidence-passing migration.)
+```
+
+メッセージは4つの直し方を挙げ、どれか一つで直ります。ここで一番小さいのは
+`bump` をトップレベルの `fn` にすること。末尾の ADR 参照はメンテナ向けの
+注記で、読者に宛てられているのは4つの直し方の部分です。
+
+## handle しないエフェクト: ケーパビリティ
+
+`Fs`・`Env`・`Http`・`Console` も同じ row に乗りますが、これらにハンドラを
+書くことはありません。実装はホストが持っていて、宣言するのは「使ってよい」
+という権限です。それが次の章です。
 
 次: [ケーパビリティ](14_capabilities.vibe.md)。
