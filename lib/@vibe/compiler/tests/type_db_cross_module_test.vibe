@@ -119,8 +119,9 @@ fn import_kind_provider_env() -> TypeEnv {
     TDAlias("Alias", [], CtInt),
     TDStruct("Record", [("value", CtInt)], [], []),
     TDEnum("Choice", [], [("First", []), ("Second", [])]),
-    TDEffect("Audit", [("Emit", [CtString], CtUnit)], [])
-  ], ["Alias", "Record", "Choice", "Audit"], EnvTraitDef("Marker", [], false, [], EnvEmpty, [
+    TDEffect("Audit", [("Emit", [CtString], CtUnit)], []),
+    TDEffectSet("Audits", ["Audit"])
+  ], ["Alias", "Record", "Choice", "Audit", "Audits"], EnvTraitDef("Marker", [], false, [], EnvBind("make", env_value_binding(CtFn([], CtInt, None)), EnvEmpty), [
   ], []))
 }
 
@@ -193,6 +194,40 @@ test "effect imports reject traits" {
 
 test "trait imports reject aliases" {
   assert(String::contains(projected_import_kind_error("import ./provider.vibe { trait Alias }"), "import kind mismatch: `Alias` is a type alias, not a trait"))
+}
+
+test "kind-qualified imports reject values and effect sets" {
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { enum make }"), "import kind mismatch: `make` is a value, not an enum"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { effect Audits }"), "import kind mismatch: `Audits` is an effect set, not an effect"))
+}
+
+test "opaque builtin type bindings retain type qualifier authority" {
+  let env = EnvBind("Int", env_value_binding(CtInt), EnvEmpty)
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import @vibe/builtin { type Int }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(message == "")
+}
+
+test "merged trait and type names remain ambiguous after per-source validation" {
+  let env = EnvTypeDefs([TDStruct("X", [], [], [])], ["X"], EnvTraitDef("X", [], false, [], EnvEmpty, [], []))
+  let source = "import ./record.vibe { struct X as RecordX }\nimport ./marker.vibe { trait X as MarkerX }"
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", source), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(message == "")
+}
+
+test "private declarations report exportability instead of an ineffective kind edit" {
+  let message = typedef_surface_pair_error("/tmp/vibe_private_kind_followup", "struct Hidden { value: Int }\nexport fn public() -> Int { 1 }", "import ./dep.vibe { type Hidden }\nexport let value = 1\n")
+  assert(String::contains(message, "is not exported by"))
+  assert(!String::contains(message, "import kind mismatch"))
 }
 
 fn imported_forall_bound_label(env: TypeEnv, name: String) -> String {

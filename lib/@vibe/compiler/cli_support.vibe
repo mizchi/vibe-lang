@@ -484,6 +484,43 @@ export fn check_deprecated_warnings(input_path: String) -> Array[String] with Ex
 /// hygiene report with an actionable removal.
 export fn check_redundant_import_warnings(input_path: String) -> Array[String] with Exception + Fs {
   let source = Fs::read_file(input_path)
+  check_redundant_import_warnings_from_source_groups(input_path, [("entry", [(input_path, source)])])
+}
+
+fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] {
+  let mut found: Option[String] = None
+  let mut count = 0
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      if path == input_path {
+        found = Some(source)
+        count = count + 1
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  if count == 1 {
+    found
+  } else {
+    None
+  }
+}
+
+/// Redundant import warnings derived from the exact source snapshot consumed
+/// by the successful linked check. Missing or duplicate entry identity is
+/// fail-closed: no warning is safer than describing unchecked contents.
+export fn check_redundant_import_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception {
+  let source = match checked_entry_source(input_path, source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
   if Array::length(parse_diags) > 0 {
@@ -504,7 +541,10 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
 /// The same warnings, from source groups the caller already has. `vibe check`
 /// uses this form so the whole lane collects exactly once.
 export fn check_deprecated_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
-  let entry_source = Fs::read_file(input_path)
+  let entry_source = match checked_entry_source(input_path, source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
   let (tokens, starts, _ends) = lex_with_offsets(entry_source)
   ingestion_pipeline_telemetry_add(17, 1)
   let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)

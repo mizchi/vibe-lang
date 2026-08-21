@@ -1211,7 +1211,11 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] 
       } else {
         None
       },
-      TDEffectSet(_, _) => None
+      TDEffectSet(name, _) => if name == item.name {
+        Some("effect set")
+      } else {
+        None
+      }
     }
     match candidate {
       Some(kind) => match found {
@@ -1226,7 +1230,9 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] 
     }
     i = i + 1
   }
-  if ambiguous {
+  let local = import_item_local_name(item)
+  let has_trait = trait_defined(initial_env, local) || trait_defined(initial_env, item.name)
+  if ambiguous || (found != None && has_trait) {
     // A merged checker environment no longer carries the source-module
     // identity of TypeDef rows. The dependency projection boundary validates
     // each import against its still-separated module environment; guessing
@@ -1236,9 +1242,15 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] 
     match found {
       Some(kind) => Some(kind),
       None => {
-        let local = import_item_local_name(item)
-        if trait_defined(initial_env, local) || trait_defined(initial_env, item.name) {
+        if has_trait {
           Some("trait")
+        } else if resolve_builtin(item.name) != None {
+          // Opaque primitive declarations from @vibe/builtin are represented
+          // by their canonical value-type binding rather than a TypeDef row.
+          // Their contract spelling is still `type Int`, `type String`, etc.
+          Some("type alias")
+        } else if env_lookup_flat(env_flat_bindings(initial_env), item.name) != None {
+          Some("value")
         } else {
           None
         }
@@ -1262,7 +1274,7 @@ fn import_kind_matches(expected: ImportKind, actual: String) -> Bool {
 }
 
 fn import_kind_article(label: String) -> String {
-  if label == "enum" || label == "effect" {
+  if label == "enum" || label == "effect" || label == "effect set" {
     "an"
   } else {
     "a"
