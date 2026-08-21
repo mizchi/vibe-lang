@@ -1,4 +1,6 @@
-# 11 — 並行処理
+# 17 — 並行処理
+
+前: [等価性](16_equality.vibe.md)
 
 English version: [17_concurrency.vibe.md](../en/17_concurrency.vibe.md) (canonical)
 
@@ -60,4 +62,4 @@ suspend する。
 データにすること。マルチスレッド化が来ても shared-nothing のままとする
 (`TaskGroup` + `Send` / region 検査が既にその形を表している)。
 
-次章: [CLI を IDE として使う](18_cli.vibe.md)。
+次: [CLI を IDE として使う](18_cli.vibe.md)。

@@ -86,13 +86,17 @@ does not.
 (ADR-0085). You will still see `Error` as an *operation qualifier* in
 older rows; do not add new ones.
 
-## `==` is not finished
+## Annotate an empty array literal
 
-Structural `==` is landing (ADR-0097). Scalars, tuples, and many structs
-compare by value. Remaining reference equality: erased type variables
-(`[T: Eq]`), some function-return paths, empty literal bindings, and
-named arrays whose element type is not a scalar. When in doubt, write
-the comparison you mean. See [Equality](16_equality.vibe.md).
+`==` compares by value, including arrays with non-scalar elements,
+arrays returned from a function, and annotated empties. The one shape
+that bites: `let xs = []` with no annotation has no element type, so
+comparing it after a push **traps at run time** instead of answering
+(#2157). Write `let xs: Array[Int] = []`.
+
+A generic `T` with no `Eq` witness is the other boundary, and that one
+is a compile error rather than a surprise — `no impl `Eq` for
+`Array[Int]``. See [Equality](16_equality.vibe.md).
 
 ## `fn` is a keyword
 

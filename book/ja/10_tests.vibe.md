@@ -91,4 +91,4 @@ vibe test --update demo_test.vibe
 ヘルパーをテストできるのはこのためです。テストをコードの隣に置く理由が
 これです。
 
-次: [コレクション](11_collections.vibe.md)
+次: [コレクション](11_collections.vibe.md)。

@@ -1,4 +1,6 @@
-# 16 — ジェネリクス・trait・derive
+# 15 — ジェネリクス・trait・derive
+
+前: [ケーパビリティ](14_capabilities.vibe.md)
 
 English version: [15_generics.vibe.md](../en/15_generics.vibe.md) (canonical)
 
@@ -101,4 +103,4 @@ size_of = 3
 `Default` は builtin。ジェネリックなコードから `T::default()` を呼ぶ必要が
 あれば `import @vibe/core { Default }`。`derive(Default)` が impl を登録する。
 
-次章: [反復](12_iteration.vibe.md)。
+次: [等価性](16_equality.vibe.md)。

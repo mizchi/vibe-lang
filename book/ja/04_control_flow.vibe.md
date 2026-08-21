@@ -173,4 +173,4 @@ repeated = 77
 `Array::map(_, _ * 2)` には無関係な仕事をする `_` が2つあります — 最初が
 パイプのスロット、次が `(v) -> v * 2` です。
 
-次: [型と文字列](05_types_strings.vibe.md)
+次: [型と文字列](05_types_strings.vibe.md)。

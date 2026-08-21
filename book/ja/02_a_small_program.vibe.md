@@ -101,4 +101,4 @@ fn main with Console {
    失敗させる。変更が `eval` だけで済み、`report` には及ばないことに注目
    してください — 失敗の経路は既に宣言済みだからです。
 
-次: [値と関数](03_values_functions.vibe.md)
+次: [値と関数](03_values_functions.vibe.md)。

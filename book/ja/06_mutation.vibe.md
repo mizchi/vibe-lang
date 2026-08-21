@@ -135,4 +135,4 @@ vibe escapes --strict file.vibe
 大半のコードは1行目で足ります。ビルダーは
 [コレクション](11_collections.vibe.md)で扱います。
 
-次: [構造体・列挙・match](07_data.vibe.md)
+次: [構造体・列挙・match](07_data.vibe.md)。

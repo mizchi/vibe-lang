@@ -1,4 +1,6 @@
-# 13 — wasm をターゲットにする
+# 19 — wasm をターゲットにする
+
+前: [CLI を IDE として使う](18_cli.vibe.md)
 
 English version: [19_wasm.vibe.md](../en/19_wasm.vibe.md) (canonical)
 
@@ -53,4 +55,4 @@ fixpoint とは、stage2 がコンパイラをコンパイルした結果が sta
 バイト列になること。MoonBit も LLVM もネイティブの vibe コンパイラも
 要らない。
 
-次章: [落とし穴](20_pitfalls.vibe.md)。
+次: [落とし穴 (実測)](20_pitfalls.vibe.md)。

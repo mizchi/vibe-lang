@@ -1,6 +1,6 @@
 # 13 — Effects (the heart of vibe)
 
-Previous: [04 Option](08_option.vibe.md)
+Previous: [Iteration](12_iteration.vibe.md)
 
 日本語版: [13_effects.vibe.md](../ja/13_effects.vibe.md)
 

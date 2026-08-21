@@ -1,4 +1,6 @@
-# 10 — ケーパビリティ
+# 14 — ケーパビリティ
+
+前: [エフェクト (vibe の核)](13_effects.vibe.md)
 
 English version: [14_capabilities.vibe.md](../en/14_capabilities.vibe.md) (canonical)
 
@@ -181,4 +183,4 @@ capability が、残りのコードが使う以上に高い feature level を強
 ない。`Http` に到達しないプログラムがネットワーク対応ランタイムを要求すべき
 ではない。
 
-次章: [並行処理](17_concurrency.vibe.md)。
+次: [ジェネリクス・trait・derive](15_generics.vibe.md)。

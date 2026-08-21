@@ -1,5 +1,7 @@
 # 01 — インストールと Hello, vibe
 
+前: [はじめに](00_introduction.md)
+
 English version: [01_getting_started.vibe.md](../en/01_getting_started.vibe.md)
 
 ## インストール
@@ -73,4 +75,4 @@ vibe run main.vibex
 依存を置く場所。1ファイルなら必要ないので、この章はそこから始めません
 でした。[モジュールとパッケージ](09_modules_packages.vibe.md)で扱います。
 
-次: [小さなプログラム](02_a_small_program.vibe.md)
+次: [小さなプログラム](02_a_small_program.vibe.md)。

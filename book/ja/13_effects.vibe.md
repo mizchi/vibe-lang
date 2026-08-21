@@ -1,6 +1,6 @@
-# 05 — エフェクト (vibe の核)
+# 13 — エフェクト (vibe の核)
 
-前章: [04 Option](08_option.vibe.md)
+前: [反復](12_iteration.vibe.md)
 
 English version: [13_effects.vibe.md](../en/13_effects.vibe.md) (canonical)
 
@@ -168,4 +168,4 @@ apply_twice = 40
 （`Console` の方が広い capability のため）。詳細は英語版
 [Capabilities](../en/14_capabilities.vibe.md)。
 
-次章: [06 テスト](10_tests.vibe.md)
+次: [ケーパビリティ](14_capabilities.vibe.md)。

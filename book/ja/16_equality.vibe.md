@@ -1,11 +1,14 @@
-# 18 — 等価性
+# 16 — 等価性
+
+前: [ジェネリクス・trait・derive](15_generics.vibe.md)
 
 English version: [16_equality.vibe.md](../en/16_equality.vibe.md) (canonical)
 
-`==` はどの文脈でも構造的等価を意味することになっている (ADR-0097)。
-表面のほとんどは既にそうなっている。まだ参照で比較する経路がいくつか
-残っているので、「黙って誤った答え」として自分で踏んで発見せずに済むよう、
-末尾に列挙する。
+`==` は値で比較する。内容の等しい配列どうしは等しく、フィールドの等しい
+struct どうしは等しい。黙ってアドレスを比べる経路は無い。
+
+境界はちょうど一つあり、それは誤った答えではなくコンパイルエラーになる —
+章の最後を参照。
 
 ## すでに値で比較されるもの
 
@@ -49,21 +52,89 @@ struct = true
 `Bytes` も内容比較で、タプルの要素や `derive(Eq)` のフィールドとして
 使ったときも同じ。
 
-## 空配列には要素型が要る
+## 例外だと思われがちなもの
 
-`let xs = []` は要素型を決めない。この形の束縛どうしは、空のままなら
-等しく比較される。あとから push してから比較すると、コンパイラは黙って
-参照等価に落ちることを拒否する — `let xs: Array[Int] = []` と注釈すること。
+要素がスカラーでない配列も、関数の戻り値として来た配列も、空から始めた
+配列も、値で比較される。最後のものは実際に走らせる価値がある — 空の配列
+2つの片方に push しても、古い答えではなく正しい答えが返る。
 
-## まだ参照等価のもの
+```vibe run
+fn mk() -> Array[Int] {
+  [
+    1,
+    2
+  ]
+}
 
-- 消去された型変数 (`[T: Eq]` の `T`) — `==` を書き換える先の要素型が
-  残っていない。
-- 型が付かないまま来た一部の関数戻り値経路と空リテラル束縛。
-- 要素型がスカラーでない、名前経由の配列。
+fn main with Console {
+  let pairs: Array[(Int, Int)] = [(1, 2)]
+  let same: Array[(Int, Int)] = [(1, 2)]
+  let other: Array[(Int, Int)] = [(1, 3)]
+  println("non-scalar elements = \{pairs == same}, differ = \{pairs == other}")
+  println("function returns    = \{mk() == mk()}")
+  let xs: Array[Int] = []
+  let ys: Array[Int] = []
+  println("empty and empty     = \{xs == ys}")
+  Array::push(xs, 1)
+  println("after one push      = \{xs == ys}")
+  Array::push(ys, 1)
+  println("after both          = \{xs == ys}")
+}
+```
 
-迷ったら意図した比較を自分で書くこと (`Array::length` とループ、あるいは
-自分が管理する `derive(Eq)` 型)。ジェネリックな `T` の `==` が構造的だと
-仮定しないこと。
+```output
+non-scalar elements = true, differ = false
+function returns    = true
+empty and empty     = true
+after one push      = false
+after both          = true
+```
 
-次章: [小さなプログラム](02_a_small_program.vibe.md)。
+空リテラルには上の `xs` / `ys` のように注釈を付けること。注釈の無い
+`let xs = []` には比較の基準になる要素型が無い。この形の束縛どうしは、
+両方が空のままなら等しく比較されるが、片方に push してから比較すると
+答えを返さず**実行時に trap する** (#2157)。注釈がその対処であり、この章が
+注釈を求める理由はそれだけ。
+
+## 唯一の境界: witness を持たない generic な `T`
+
+`fn f[T: Eq](a: T, b: T)` の内側では、コード生成の時点で要素型が消えて
+いるので、`==` には呼び出し側が渡す `Eq` の witness が答える。witness を
+持つ型なら、そのまま構造的な答えになる:
+
+```vibe run
+fn eq2[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn main with Console {
+  println("Int    same = \{eq2(1, 1)}, differ = \{eq2(1, 2)}")
+  println("String same = \{eq2("x", "x")}, differ = \{eq2("x", "y")}")
+}
+```
+
+```output
+Int    same = true, differ = false
+String same = true, differ = false
+```
+
+`Eq` の witness を持たない型なら渡すものが無いので、その呼び出しは
+**拒否される**:
+
+```vibe skip
+// skip: これはコンパイルエラー。出るメッセージを見せるための例
+fn eq2[T: Eq](a: T, b: T) -> Bool { a == b }
+
+fn main with Console {
+  println("\{eq2([1], [1])}")
+}
+```
+
+```
+no impl `Eq` for `Array[Int]`
+```
+
+以上が全部。コンパイル時に知らされるので、アドレスで黙って答える比較を
+踏むことはない。
+
+次: [並行処理](17_concurrency.vibe.md)。

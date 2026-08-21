@@ -175,4 +175,4 @@ half(3) is None = true
 以降で扱います。「そこに無い」が話の全部なら `Option` を、呼び出し側が理由を
 知るべきなら `Exception` を選んでください。
 
-次: [モジュールとパッケージ](09_modules_packages.vibe.md)
+次: [モジュールとパッケージ](09_modules_packages.vibe.md)。

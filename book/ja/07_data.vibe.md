@@ -208,4 +208,4 @@ opt is Some(_) = true
 
 `opt is Some(_)` は単独では単なる `Bool` で、たいていはそれで十分です。
 
-次: [Option とレールウェイ](08_option.vibe.md)
+次: [Option とレールウェイ](08_option.vibe.md)。

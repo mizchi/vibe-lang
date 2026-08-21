@@ -68,3 +68,5 @@ committed seed からビルドされる vibe プログラムなので、vibe を
 両者で同一で、翻訳されるのは散文だけです。
 
 *本のビルドと描画については [book/README.md](../README.md) を参照。*
+
+次: [インストールと Hello, vibe](01_getting_started.vibe.md)。

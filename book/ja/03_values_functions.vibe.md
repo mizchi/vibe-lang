@@ -209,4 +209,4 @@ doc コメントで、hover や `vibe doc-at` が拾います。
 例外は `fn` で、これは回避できないので別の名前にしてください。
 どちらの場合かは診断が教えてくれます。
 
-次: [制御フロー](04_control_flow.vibe.md)
+次: [制御フロー](04_control_flow.vibe.md)。

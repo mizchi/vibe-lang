@@ -1,4 +1,6 @@
-# 12 — CLI を IDE として使う
+# 18 — CLI を IDE として使う
+
+前: [並行処理](17_concurrency.vibe.md)
 
 English version: [18_cli.vibe.md](../en/18_cli.vibe.md) (canonical)
 
@@ -71,4 +73,4 @@ vibe check hello.vibe            # empty
 
 言語レベルの説明は [テスト](10_tests.vibe.md) を参照。
 
-次章: [wasm をターゲットにする](19_wasm.vibe.md)。
+次: [wasm をターゲットにする](19_wasm.vibe.md)。

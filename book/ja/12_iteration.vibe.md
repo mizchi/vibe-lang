@@ -83,4 +83,4 @@ ys[1] = 20
 運ぶので、`for await` のような別形は存在しない。
 [並行性](17_concurrency.vibe.md) を参照。
 
-次: [エフェクト](13_effects.vibe.md)。
+次: [エフェクト (vibe の核)](13_effects.vibe.md)。
