@@ -56,6 +56,23 @@ local t = new Task {
   inputs { ...compilerProbeInputs; "docs/cheatsheet.md" }
 }'
 
+# The shared wrapper factory must not bypass the seed-aware input set.
+run_case "scriptTask with only vibeSources is rejected" 1 'local function scriptTask(taskName: String, script: String): Task = new Task {
+  name = taskName
+  cmd = "bash \(script)"
+  inputs { ...vibeSources; ...scriptSources }
+}'
+
+run_case "scriptTask with compilerProbeInputs passes" 0 'local compilerProbeInputs = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+}
+local function scriptTask(taskName: String, script: String): Task = new Task {
+  name = taskName
+  cmd = "bash \(script)"
+  inputs { ...compilerProbeInputs; ...scriptSources }
+}'
+
 # Caching off is the other legitimate answer.
 run_case "cache = false is accepted instead" 0 'local t = new Task {
   name = "probe"
@@ -102,4 +119,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (10 cases)"
+echo "check-task-inputs-test: ok (12 cases)"

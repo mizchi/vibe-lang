@@ -39,6 +39,17 @@ probe_inputs_safe = bool(
     and '"bootstrap/seed.json"' in probe_inputs_m.group(1)
 )
 
+# scriptTask wrappers are deliberately classified as a group: some execute the
+# compiler through several shell layers, which text inspection cannot prove
+# individually. The shared factory must therefore carry the complete identity.
+script_task_m = re.search(
+    r"local\s+function\s+scriptTask\b.*?inputs\s*\{(.*?)\}", src, re.S
+)
+script_task_safe = bool(
+    script_task_m and "compilerProbeInputs" in script_task_m.group(1) and probe_inputs_safe
+)
+script_task_bad = bool(script_task_m and not script_task_safe)
+
 # A script "reaches the compiler" when it EXECUTES one of these, not when it
 # mentions one. A first cut matched any occurrence of `stage2` and flagged six
 # tasks that were fine: the word appears in a comment, in a JSON key
@@ -80,7 +91,7 @@ def reaches_compiler(script):
     return False
 
 # Hand-written `new Task { ... }` blocks only; scriptTask() one-liners inherit
-# the safe defaults.
+# the complete compiler identity checked above.
 fails = []
 checked = 0
 for m in re.finditer(r"new Task \{", src):
@@ -127,7 +138,12 @@ for name, script, why in fails:
           file=sys.stderr)
     print("  defaults, not replace them.", file=sys.stderr)
 
-if fails:
+if script_task_bad:
+    print("check-task-inputs: FAIL: scriptTask inputs do not include the complete", file=sys.stderr)
+    print("  `...compilerProbeInputs` set; indirect compiler wrappers can replay", file=sys.stderr)
+    print("  a cached pass after a bootstrap seed change.", file=sys.stderr)
+
+if fails or script_task_bad:
     sys.exit(1)
-print(f"check-task-inputs: ok ({checked} compiler-touching tasks with explicit inputs all key on compiler sources)")
+print(f"check-task-inputs: ok ({checked} compiler-touching tasks with explicit inputs and scriptTask all key on compiler sources)")
 PY
