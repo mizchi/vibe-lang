@@ -239,6 +239,82 @@ fn ty_head_takes_region_slot(name: String) -> Bool {
   || name == "Receiver"
 }
 
+/// Does `param` (an alias's own type parameter, resolved in the alias body to
+/// the rigid `CtNamed(param, [])`) occur at a REGION SLOT of `t` -- the last
+/// argument of a `ty_head_takes_region_slot` head -- following further alias
+/// hops in `defs`? (Codex on #2159: a transparent alias of a region-bearing
+/// head keeps its region slots; the surface-name rule alone regressed
+/// `type ML[T, R] = MutList[T, R]` + `fn fill(xs: ML[Int, r]) -> Unit with r`
+/// to reporting `r`.)
+fn type_param_in_region_slot(t: Type, defs: Array[TypeDef], param: String, depth: Int) -> Bool {
+  if depth > 8 {
+    false
+  } else {
+    match t {
+      CtNamed(head, targs) => {
+        let n = Array::length(targs)
+        let in_own_slot = if ty_head_takes_region_slot(head) && n > 0 {
+          match Array::get(targs, n - 1) {
+            CtNamed(a, aargs) => a == param && Array::length(aargs) == 0,
+            _ => false
+          }
+        } else {
+          false
+        }
+        if in_own_slot {
+          true
+        } else {
+          match find_typedef(defs, head) {
+            Some(td) => match td {
+              TDAlias(_, hparams, hbody) => type_param_in_region_slot(subst_type_params(hbody, hparams, targs), defs, param, depth + 1),
+              _ => type_param_in_region_slot_any(targs, defs, param, depth)
+            },
+            None => type_param_in_region_slot_any(targs, defs, param, depth)
+          }
+        }
+      },
+      CtArray(e) => type_param_in_region_slot(e, defs, param, depth),
+      CtOption(e) => type_param_in_region_slot(e, defs, param, depth),
+      CtTuple(elems) => type_param_in_region_slot_any(elems, defs, param, depth),
+      CtFn(ps, ret, _) => type_param_in_region_slot_any(ps, defs, param, depth) || type_param_in_region_slot(ret, defs, param, depth),
+      _ => false
+    }
+  }
+}
+
+fn type_param_in_region_slot_any(ts: Array[Type], defs: Array[TypeDef], param: String, depth: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) && !found {
+    found = type_param_in_region_slot(Array::get(ts, i), defs, param, depth)
+    i = i + 1
+  }
+  found
+}
+
+/// Per-argument-position region-slot flags for an application of alias
+/// `name`, or an empty array when `name` is not a `TDAlias` in `defs`. The
+/// position mapping is the alias's own parameter order, so a body that
+/// reorders (`type W[R, T] = MutList[T, R]`) exempts the argument that
+/// actually lands in the slot.
+fn alias_region_slot_flags(name: String, defs: Array[TypeDef]) -> Array[Bool] {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDAlias(_, params, body) => {
+        let flags = array_empty()
+        let mut i = 0
+        while i < Array::length(params) {
+          Array::push(flags, type_param_in_region_slot(body, defs, Array::get(params, i), 0))
+          i = i + 1
+        }
+        flags
+      },
+      _ => array_empty()
+    },
+    None => array_empty()
+  }
+}
+
 fn type_name_list_contains(names: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -295,9 +371,11 @@ fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: A
       // it for its own arguments.
       let last_index = Array::length(args) - 1
       let head_takes_region_slot = ty_head_takes_region_slot(name)
+      let alias_flags = alias_region_slot_flags(name, defs)
       let mut i = 0
       while i < Array::length(args) {
-        collect_unknown_type_names_walk(Array::get(args, i), defs, shadow, region_binders, head_takes_region_slot && i == last_index, out)
+        let at_slot = (head_takes_region_slot && i == last_index) || (i < Array::length(alias_flags) && Array::get(alias_flags, i))
+        collect_unknown_type_names_walk(Array::get(args, i), defs, shadow, region_binders, at_slot, out)
         i = i + 1
       }
       if ty_head_is_structural(name) || is_shadowed_tyvar(shadow, name) {

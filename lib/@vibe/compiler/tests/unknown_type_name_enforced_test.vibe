@@ -225,6 +225,28 @@ test "#2147 review round 4: Self outside a trait declaration is reported" {
   inspect(first_check_error(with_trait), content = "unknown type `Self` in parameter `x` [@fn=f]")
 }
 
+test "#2159 review: a transparent alias of a region-bearing head keeps its region slot" {
+  // The surface-name allowlist alone regressed this previously-accepted
+  // helper signature (Codex on #2159): resolution expands `ML[Int, r]` to
+  // `MutList[Int, r]`, so the slot must be computed through the alias too.
+  let src = "type ML[T, R] = MutList[T, R]\n\nfn fill(xs: ML[Int, r]) -> Unit with r {\n  MutList::push(xs, 1)\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2159 review: the alias's own parameter order decides the slot" {
+  // `W` reorders: its FIRST parameter lands in the region slot of the body,
+  // so `W[r, Int]` is the accepted spelling and `W[Int, r]` reports.
+  let ok = "type W[R, T] = MutList[T, R]\n\nfn fill(xs: W[r, Int]) -> Unit with r {\n  MutList::push(xs, 1)\n}\n"
+  inspect(first_check_error(ok), content = "")
+  let bad = "type W[R, T] = MutList[T, R]\n\nfn fill(xs: W[Int, r]) -> Unit with r {\n  MutList::push(xs, 1)\n}\n"
+  inspect(first_check_error(bad), content = "unknown type `r` in parameter `xs` [@fn=fill]")
+}
+
+test "#2159 review: an alias of an ordinary struct still has no region slot" {
+  let src = "struct Pair[A, B] {\n  a: A;\n  b: B\n}\n\ntype PA[A, B] = Pair[A, B]\n\nfn f(x: PA[Int, r]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
 test "#2147 review round 4: Self inside a trait declaration stays legal" {
   // The one place `Self` is a type. Trait-method signatures are resolved by
   // the trait machinery, not by `report_unknown_type_names`' annotation
