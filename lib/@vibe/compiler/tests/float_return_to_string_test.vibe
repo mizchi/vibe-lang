@@ -198,6 +198,31 @@ fn returns_struct() -> Collide {
   Collide::{ value: 7 }
 }
 
+// #2177 review: an alias body that APPLIES a later parameterized alias. The
+// checker does not pre-claim an `STypeAlias`, so it stores `LaterApp` as the
+// unresolved `CtNamed("LaterBox", [CtDouble])` -- which is precisely why it
+// accepts an Int body here. A table that resolves it to Double anyway records
+// `int_through_forward_app` as float-returning and renders the tagged Int as
+// f64 bits: this printed 0 instead of 1.
+type LaterApp = LaterBox[Double]
+
+type LaterBox[T] = T
+
+fn int_through_forward_app() -> LaterApp {
+  1
+}
+
+// The counterpart that must KEEP resolving: a bare name naming a later alias.
+// Measured correct on the pre-#2177 compiler and the committed seed, so making
+// alias bodies order-dependent across the board would have regressed it.
+type FwdName = FwdTarget
+
+type FwdTarget = Double
+
+fn double_through_forward_name() -> FwdName {
+  2.5
+}
+
 test "#2156 review: the shadow is scoped -- the top-level name still works" {
   // The counterpart: masking must key on the binding actually in scope, not
   // disable the table for the name everywhere it appears.
@@ -262,4 +287,14 @@ test "#2177 review: a struct outranks a same-named Double alias" {
   // Renders through the Show renderer. If the alias won, `returns_struct`
   // would be in the float table and this would render f64 bits instead.
   assert_true(__to_string(returns_struct()) == "Collide { value: 7 }")
+}
+
+test "#2177 review: an alias applying a LATER parameterized alias stays unresolved" {
+  // Out-resolving the checker retypes a program it accepted on the strength
+  // of not knowing. The value is an Int and must render as one.
+  assert_true(__to_string(int_through_forward_app()) == "1")
+}
+
+test "#2177 review: a bare name naming a later alias still resolves" {
+  assert_true(__to_string(double_through_forward_name()) == "2.5")
 }

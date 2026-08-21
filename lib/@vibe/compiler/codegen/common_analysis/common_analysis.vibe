@@ -4042,6 +4042,20 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// renders 2.5 today, and answering "not a float" for it would be a
 /// silent-wrong regression -- the exact class this table exists to close.
 ///
+/// The order independence stops at an APPLICATION, and that boundary is not a
+/// nicety: `type A = B[Double]` above `type B[T] = T` is stored by the checker
+/// as the UNRESOLVED `CtNamed("B", [CtDouble])`, which is why it accepts
+/// `fn f() -> A { 1 }` at all. A table that resolves `A` to `CtDouble` anyway
+/// records `f` as float-returning and renders the tagged Int 1 as f64 bits --
+/// `__to_string(f())` printed 0 (#2177 review, measured; the pre-#2177 scan and
+/// the committed seed both print 1). Out-resolving the checker is not a
+/// harmless over-approximation: it silently retypes a program the checker
+/// accepted on the strength of NOT knowing.
+///
+/// A bare name keeps the order-independent view, because there the two agree
+/// on what matters: `type X = Y` above `type Y = Double` renders 2.5 on every
+/// compiler measured, and the checker's own tolerance is what lets it.
+///
 /// So alias bodies are re-resolved until the table stops changing, capped at
 /// `n + 1` passes: a chain that never revisits an alias is at most `n` long,
 /// so that is the acyclic maximum, and a cycle stops changing on its own. The
@@ -4085,7 +4099,16 @@ fn collect_alias_type_defs(stmts: Array[Stmt]) -> Array[TypeDef] {
     let mut j = 0
     while j < n {
       let ps = Array::get(alias_params, j)
-      let resolved = resolve_type_expr_core_shadowed(Array::get(alias_targets, j), defs, ps)
+      let target = Array::get(alias_targets, j)
+      // An APPLICATION in an alias body sees only earlier declarations, which
+      // is what `next` holds right now (the nominals plus aliases 0..j-1).
+      // Resolving it against the whole table out-resolves the checker and
+      // silently retypes a checker-accepted program -- see the doc comment.
+      let scope = match target {
+        TyApp(_, _) => next,
+        _ => defs
+      }
+      let resolved = resolve_type_expr_core_shadowed(target, scope, ps)
       Array::push(next, TDAlias(Array::get(alias_names, j), ps, resolved))
       sig = String::concat(sig, String::concat(type_to_string(resolved), " |#| "))
       j = j + 1
