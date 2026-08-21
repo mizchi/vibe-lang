@@ -152,6 +152,13 @@ run_case "block-commented cache false does not bypass inputs" 1 'local t = new T
   inputs { ...vibeSources }
 }'
 
+run_case "cache false text in string does not bypass inputs" 1 'local t = new Task {
+  name = "probe"
+  description = "Unlike cache = false, this task is cached"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...vibeSources }
+}'
+
 run_case "URL in command does not hide compiler invocation" 1 'local t = new Task {
   name = "probe"
   cmd = "printf https://example.invalid && bash scripts/check_freeze_surface.sh"
@@ -163,6 +170,34 @@ run_case "scriptTask with only vibeSources is rejected" 1 'local function script
   name = taskName
   cmd = "bash \(script)"
   inputs { ...vibeSources; ...scriptSources }
+}'
+
+run_case "commented safe scriptTask does not hide unsafe live factory" 1 '/*
+local function scriptTask(taskName: String, script: String): Task = new Task {
+  name = taskName
+  cmd = "bash \(script)"
+  inputs { ...compilerProbeInputs }
+}
+*/
+local function scriptTask(taskName: String, script: String): Task = new Task {
+  name = taskName
+  cmd = "bash \(script)"
+  inputs { ...vibeSources }
+}'
+
+run_case "commented safe helper does not hide unsafe live helper" 1 '/*
+local compilerProbeInputs = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+}
+*/
+local compilerProbeInputs = new {
+  ...vibeSources
+}
+local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...compilerProbeInputs }
 }'
 
 run_case "scriptTask with compilerProbeInputs string is rejected" 1 'local compilerProbeInputs = new {
@@ -283,4 +318,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (29 cases)"
+echo "check-task-inputs-test: ok (32 cases)"

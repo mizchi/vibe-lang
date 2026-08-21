@@ -118,14 +118,16 @@ def has_spread(body, name):
     syntax = pkl_syntax_only(body)
     return bool(re.search(r"\.\.\.\s*" + re.escape(name) + r"\b", syntax))
 
+active_src = active_pkl(src)
+
 # The shared compiler-probe input set is safe only while it contains both
 # halves of the compiler identity: selfhost sources and the bootstrap seed.
 probe_inputs_m = re.search(
     r"local\s+compilerProbeInputs(?:\s*:[^=]+)?\s*=\s*new\s*\{(.*?)\}",
-    src,
+    active_src,
     re.S,
 )
-probe_inputs_body = active_pkl(probe_inputs_m.group(1)) if probe_inputs_m else ""
+probe_inputs_body = probe_inputs_m.group(1) if probe_inputs_m else ""
 probe_inputs_safe = bool(
     probe_inputs_m
     and has_spread(probe_inputs_body, "vibeSources")
@@ -135,22 +137,22 @@ probe_inputs_safe = bool(
 # scriptTask wrappers are deliberately classified as a group: some execute the
 # compiler through several shell layers, which text inspection cannot prove
 # individually. The shared factory must therefore carry the complete identity.
-script_task_decl = re.search(r"local\s+function\s+scriptTask\b", src)
+script_task_decl = re.search(r"local\s+function\s+scriptTask\b", active_src)
 script_task_inputs = None
 if script_task_decl:
-    brace = src.find("{", script_task_decl.end())
+    brace = active_src.find("{", script_task_decl.end())
     depth, end = 0, brace
-    while brace >= 0 and end < len(src):
-        if src[end] == "{":
+    while brace >= 0 and end < len(active_src):
+        if active_src[end] == "{":
             depth += 1
-        elif src[end] == "}":
+        elif active_src[end] == "}":
             depth -= 1
             if depth == 0:
                 break
         end += 1
-    factory_block = src[brace : end + 1] if brace >= 0 and depth == 0 else ""
+    factory_block = active_src[brace : end + 1] if brace >= 0 and depth == 0 else ""
     script_task_inputs = re.search(r"inputs\s*\{(.*?)\}", factory_block, re.S)
-script_task_inputs_body = active_pkl(script_task_inputs.group(1)) if script_task_inputs else ""
+script_task_inputs_body = script_task_inputs.group(1) if script_task_inputs else ""
 script_task_safe = bool(
     script_task_inputs
     and has_spread(script_task_inputs_body, "compilerProbeInputs")
@@ -225,16 +227,16 @@ def reaches_compiler(script, seen=None):
 # the complete compiler identity checked above.
 fails = []
 checked = 0
-for m in re.finditer(r"new Task \{", src):
+for m in re.finditer(r"new Task \{", active_src):
     start = m.start()
     depth, k = 0, start + len("new Task ") - 1
     while True:
-        if src[k] == "{": depth += 1
-        elif src[k] == "}":
+        if active_src[k] == "{": depth += 1
+        elif active_src[k] == "}":
             depth -= 1
             if depth == 0: break
         k += 1
-    block = src[start:k + 1]
+    block = active_src[start:k + 1]
     active_block = active_pkl(block)
     name_m = re.search(r'name\s*=\s*"([^"]+)"', active_block)
     if not name_m:
@@ -244,7 +246,7 @@ for m in re.finditer(r"new Task \{", src):
     # worst case, not the safe one: an empty cache key replays the first result
     # after any change (#2138 review). `scriptTask` one-liners are excluded
     # above precisely because they DO inherit the defaults.
-    if re.search(r"cache\s*=\s*false", active_block):
+    if re.search(r"cache\s*=\s*false", pkl_syntax_only(active_block)):
         continue
     # From the COMMAND only. Reading the whole block also picked up scripts
     # named in `inputs`, which a task declares but does not run -- that flagged
