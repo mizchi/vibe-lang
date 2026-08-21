@@ -43,7 +43,7 @@
 #   VIBE_SUITE_MIN_FN_HIT            — minimum ABSOLUTE covered functions
 #   VIBE_SUITE_MIN_BRANCH_HIT        — minimum ABSOLUTE covered branches
 #   VIBE_SUITE_MIN_FUNCTION_UNION_HIT — minimum UNION covered functions
-#   VIBE_SUITE_MIN_FUNCTION_UNION_RATE — minimum UNION function rate
+#   VIBE_SUITE_MIN_FUNCTION_UNION_RATE — opt-in UNION function rate
 #   VIBE_SUITE_MIN_BRANCH_UNION_HIT  — minimum UNION covered branches
 #   VIBE_SUITE_MIN_BRANCH_UNION_RATE — minimum UNION branch rate
 #
@@ -51,8 +51,9 @@
 # adding a test entry can only raise them, while rate floors punish it (a new
 # entry grows the denominator by its whole import closure). The rates remain
 # in the report and can be gated explicitly through the env overrides, but
-# their defaults are zero. The UNION rate has no such problem and is ratcheted
-# directly.
+# their defaults are zero. Union ABSOLUTE hits are monotonic across test-entry
+# expansion; rates are only default gates where a separate source-coverage KPI
+# explicitly requires one (the #1556 branch target).
 #
 # Baseline (2026-07-03, 93 allowlist entries, full-visibility #716 stage2):
 #   functions 2263/6491 (34.86%), branches 3814/41967 (9.09%), cases 92/93
@@ -126,9 +127,9 @@ MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-0}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-42000}"
 MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # Union floors count each source function/branch once no matter how many
-# entries link it. Unlike entry-weighted rates, these are source metrics and
-# can be ratcheted directly. Raise as coverage improves; lowering needs a
-# rationale in the PR.
+# entries link it. Their absolute hits are safe ratchets. Their source universe
+# can still expand when a test first imports a module, so only the #1556 branch
+# coverage KPI has a default rate floor; function-union rate remains opt-in.
 #
 # Baseline (2026-08-13, 575 entries, all green, at 85f2ace): branch union
 # 25,131/45,638 (55.07%), function union 12,820/14,907 (86.00%). Note how far
@@ -153,10 +154,11 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # #2175 review: retiring the diluted function-rate floor without a function
 # union ratchet would leave only MIN_FN_HIT=42,000 against 111,304 weighted
 # hits. Current source-function union is 16,040/18,147 (88.39%) locally and
-# 16,046/18,147 (88.42%) in CI. Keep a small reproducibility margin while
-# preventing a large loss of actually executed source functions.
+# 16,046/18,147 (88.42%) in CI. Protect the executed source-function count;
+# do not gate its rate because a newly imported module expands the denominator
+# without making any previously covered function uncovered (#2176 review).
 MIN_FUNCTION_UNION_HIT="${VIBE_SUITE_MIN_FUNCTION_UNION_HIT:-15800}"
-MIN_FUNCTION_UNION="${VIBE_SUITE_MIN_FUNCTION_UNION_RATE:-88}"
+MIN_FUNCTION_UNION="${VIBE_SUITE_MIN_FUNCTION_UNION_RATE:-0}"
 MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-26000}"
 MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-57}"
 
