@@ -247,7 +247,7 @@ for m in re.finditer(r"new Task \{", active_src):
     # after any change (#2138 review). `scriptTask` one-liners are excluded
     # above precisely because they DO inherit the defaults.
     cache_syntax = pkl_syntax_only(active_block)
-    if re.search(r"(?m)^[ \t]*cache[ \t]*=[ \t]*false[ \t]*(?:;[ \t]*)?(?:$|})", cache_syntax):
+    if re.search(r"(?m)^[ \t]*cache[ \t]*=[ \t]*false[ \t]*(?:;|$|})", cache_syntax):
         continue
     # From the COMMAND only. Reading the whole block also picked up scripts
     # named in `inputs`, which a task declares but does not run -- that flagged

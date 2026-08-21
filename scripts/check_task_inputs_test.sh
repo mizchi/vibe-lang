@@ -255,6 +255,12 @@ run_case "cache = false is accepted instead" 0 'local t = new Task {
   inputs { "docs/cheatsheet.md" }
 }'
 
+run_case "cache = false before same-line member is accepted" 0 'local t = new Task {
+  name = "probe"
+  cache = false; cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { "docs/cheatsheet.md" }
+}'
+
 # A task that does not reach the compiler is none of this gate's business.
 run_case "pure-text task is not flagged" 0 'local t = new Task {
   name = "probe"
@@ -325,4 +331,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (33 cases)"
+echo "check-task-inputs-test: ok (34 cases)"
