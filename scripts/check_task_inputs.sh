@@ -147,7 +147,8 @@ for m in re.finditer(r"new Task \{", src):
             if depth == 0: break
         k += 1
     block = src[start:k + 1]
-    name_m = re.search(r'name\s*=\s*"([^"]+)"', block)
+    active_block = active_pkl(block)
+    name_m = re.search(r'name\s*=\s*"([^"]+)"', active_block)
     if not name_m:
         continue
     name = name_m.group(1)
@@ -155,21 +156,24 @@ for m in re.finditer(r"new Task \{", src):
     # worst case, not the safe one: an empty cache key replays the first result
     # after any change (#2138 review). `scriptTask` one-liners are excluded
     # above precisely because they DO inherit the defaults.
-    if re.search(r"cache\s*=\s*false", block):
+    if re.search(r"cache\s*=\s*false", active_block):
         continue
     # From the COMMAND only. Reading the whole block also picked up scripts
     # named in `inputs`, which a task declares but does not run -- that flagged
     # a self-test whose command touches nothing.
-    cmd_m = re.search(r'cmd\s*=\s*(#?)"(.*?)"\1', block, re.S)
+    cmd_m = re.search(r'cmd\s*=\s*(#?)"(.*?)"\1', active_block, re.S)
     cmd = cmd_m.group(2) if cmd_m else ""
     scripts = SCRIPT_PATH_RE.findall(cmd)
     hot = [s for s in scripts if AGGREGATOR_RE.search(s) or reaches_compiler(s)]
     if not hot:
         continue
     checked += 1
-    has_compiler_inputs = "compilerProbeInputs" in active_pkl(block) and probe_inputs_safe
+    inputs_m = re.search(r"inputs\s*\{(.*?)\}", active_block, re.S)
+    has_compiler_inputs = bool(
+        inputs_m and "compilerProbeInputs" in inputs_m.group(1) and probe_inputs_safe
+    )
     if not has_compiler_inputs:
-        why = "declares no `inputs` at all" if "inputs" not in block else "does not include a complete compiler input set"
+        why = "declares no `inputs` at all" if not inputs_m else "does not include a complete compiler input set"
         fails.append((name, hot[0], why))
 
 for name, script, why in fails:
