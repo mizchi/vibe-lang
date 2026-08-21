@@ -114,14 +114,15 @@ fn main() -> Int with () allows Console + Fs::read_file? {
 
 ```
 line 2:11: `perform?` is not lowered yet (#2145): the checker types it as
-`Attempt[T, String]`, but code generation cannot emit it. Use a REQUIRED
-capability and plain `perform` -- drop the `?` from `allows Fs::read_file?`
-and from the `perform` -- and handle the failure with `try`/`handle` instead
-of matching `Attempt`.
+`Attempt[T, String]`, but code generation cannot emit it. Make the authority
+REQUIRED -- drop the `?` from `allows Fs::read_file?` -- and call
+`Fs::read_file(..)` directly; a capability builtin is an ordinary call, not a
+`perform`. Handle the failure with `try`/`handle` instead of matching
+`Attempt`.
 ```
 
 `vibe check` says the same thing, so you find out before you build. Until
-it lands, use a required capability and plain `perform`.
+it lands, make the capability required and call it the ordinary way.
 
 ## Telling the two kinds apart
 

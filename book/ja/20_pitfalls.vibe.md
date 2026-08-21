@@ -49,7 +49,9 @@ fn main with Exception {
 `perform? Fs::read_file(p)` は `allows Fs::read_file?` の下で
 `Attempt[T, String]` と型付けされるが、codegen が lowering できないため
 checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し方
-(`allows` の項目と `perform` の両方から `?` を落とす) を名指しする。
+(`allows` の項目から `?` を落とし、`Fs::read_file(..)` を普通に呼ぶ) を
+名指しする。代数 effect の operation なら同じメッセージが `perform` を残す —
+capability builtin は perform しないため。
 
 `vibe check` も同じことを言うので、ビルド前に分かる。#2145 が着地する前は
 型検査を通ったあとで ICE になっていた。

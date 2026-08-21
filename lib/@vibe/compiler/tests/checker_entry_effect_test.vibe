@@ -263,7 +263,7 @@ test "#2145: perform? on an optional allows is rejected -- codegen cannot lower 
   //   internal compiler error: `perform?` (local, @call) reached code
   //   generation unresolved ... this is a bug in the compiler and not in your
   //   program -- please report the source that triggers it
-  // on a program `book/en/10_capabilities.vibe.md` shows the reader. Two
+  // on a program `book/en/14_capabilities.vibe.md` shows the reader. Two
   // separate defects: the message asked for a bug report about a documented
   // feature, and `vibe check` said "compiles" about a file that does not, which
   // AGENTS.md names as a hole in the diagnostic rather than a caller error.
@@ -276,9 +276,28 @@ test "#2145: perform? on an optional allows is rejected -- codegen cannot lower 
   assert(String::contains(msg, "`perform?` is not lowered yet"))
   assert(String::contains(msg, "#2145"))
   // Actionable: it names the edit, not the pass that failed.
-  assert(String::contains(msg, "plain `perform`"))
+  assert(String::contains(msg, "drop the `?` from `allows Fs::read_file?`"))
+  // #2156 review: `Fs::read_file` is a CAPABILITY builtin, so the edit it
+  // names must be an ordinary call. The message used to say "use plain
+  // `perform`", which lands the reader on `perform Fs::read_file(..)` -- the
+  // spelling the capabilities chapter rules out a few lines further down.
+  assert(String::contains(msg, "call `Fs::read_file(..)` directly"))
+  assert(!String::contains(msg, "plain `perform`"))
   assert(!String::contains(msg, "internal compiler error"))
   assert(!String::contains(msg, "please report"))
+}
+
+test "#2156 review: an ALGEBRAIC operation is still told to use `perform`" {
+  // The counterpart to the capability case above: `Ask::Get` is a user
+  // effect operation, which really is performed, so the edit it names keeps
+  // the `perform` -- the message branches on the operation, not on a fixed
+  // wording. `standard_provider_owns_operation` is the discriminator, so a
+  // user operation that merely LOOKS like a builtin is still algebraic.
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with () allows Ask::Get? {\n  let a = perform? Ask::Get()\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "`perform?` is not lowered yet"))
+  assert(String::contains(msg, "from the `perform`"))
+  assert(!String::contains(msg, "ordinary call"))
 }
 
 test "#2145: the rejection is reported once, not once per occurrence" {

@@ -48,7 +48,9 @@ every backend. Text that still says `2^61-1` / 62-bit is stale.
 `perform? Fs::read_file(p)` is typed as `Attempt[T, String]` on
 `allows Fs::read_file?`, but codegen cannot lower it, so the checker
 rejects it (#2145): *"`perform?` is not lowered yet"*, naming the edit —
-drop the `?` from both the `allows` item and the `perform`.
+drop the `?` from the `allows` item and call `Fs::read_file(..)` the ordinary
+way. (For an algebraic operation the same message keeps the `perform`; a
+capability builtin is never performed.)
 
 `vibe check` reports it too, so you see it before you build. Until #2145
 lands it ICE'd instead, after a clean check.
