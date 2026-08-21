@@ -210,7 +210,7 @@ test "#2147 review round 4: a user struct's last argument is not a region slot" 
   // non-Array/Option application as a region slot, so a declared row variable
   // was excused inside an ordinary generic struct's arguments. Measured before
   // this fix: this compiled clean and `r` stayed a wildcard. The region slot
-  // belongs to the `ty_head_takes_region_slot` heads only.
+  // belongs to the `ty_region_slot_index` heads only.
   let src = "struct Pair[A, B] {\n  a: A;\n  b: B\n}\n\nfn f(x: Pair[Int, r]) -> Int with r {\n  1\n}\n"
   inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
 }
@@ -240,6 +240,25 @@ test "#2159 review: the alias's own parameter order decides the slot" {
   inspect(first_check_error(ok), content = "")
   let bad = "type W[R, T] = MutList[T, R]\n\nfn fill(xs: W[Int, r]) -> Unit with r {\n  MutList::push(xs, 1)\n}\n"
   inspect(first_check_error(bad), content = "unknown type `r` in parameter `xs` [@fn=fill]")
+}
+
+test "#2159 review round 2: a parameter used at BOTH slot and type positions is not exempt" {
+  // With an existential occurrence check, `R`'s region-slot occurrence excused
+  // the whole argument while the tuple's second component expanded to the
+  // unresolved `r` and stayed a wildcard. Every occurrence must land in a
+  // region slot.
+  let src = "type W2[R, T] = (MutList[T, R], R)\n\nfn f(x: W2[r, Int]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2159 review round 2: the task types' region slot is their FIRST argument" {
+  // `lib/@vibe/concurrent` declares `TaskHandle[rg, e, T]` -- region first,
+  // payload last. A uniform last-argument rule exempted a row variable in the
+  // PAYLOAD position and reported the real region spelling.
+  let ok = "fn f(h: TaskHandle[r, Unit, Int]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(ok), content = "")
+  let bad = "fn f(h: TaskHandle[Unit, Int, r]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(bad), content = "unknown type `r` in parameter `h` [@fn=f]")
 }
 
 test "#2159 review: an alias of an ordinary struct still has no region slot" {

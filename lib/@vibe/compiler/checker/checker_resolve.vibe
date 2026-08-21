@@ -220,76 +220,96 @@ fn ty_head_is_structural(name: String) -> Bool {
   name == "Array" || name == "Option"
 }
 
-/// The heads whose LAST type argument is a region slot (ADR-0090): the
-/// region-bound containers, plus the task/channel types `is_region_tagged_ty`
-/// (checker.vibe) recognises by the same last-argument convention. A
-/// user-declared type's parameters are never region slots, so this is an
-/// explicit allowlist rather than "every non-structural head" -- that
-/// generalisation let `struct Pair[A, B]` + `fn f(x: Pair[Int, r]) -> Int
-/// with r` accept `r` in an ordinary type-argument position (Codex round 4 on
-/// #2147). A region-bearing head missing from this list fails LOUD -- its
-/// region token gets reported as an unknown type -- not silently.
-fn ty_head_takes_region_slot(name: String) -> Bool {
-  name == "MutList"
-  || name == "MutMap"
-  || name == "MutBytes"
-  || name == "TaskGroup"
-  || name == "TaskHandle"
-  || name == "Sender"
-  || name == "Receiver"
-}
-
-/// Does `param` (an alias's own type parameter, resolved in the alias body to
-/// the rigid `CtNamed(param, [])`) occur at a REGION SLOT of `t` -- the last
-/// argument of a `ty_head_takes_region_slot` head -- following further alias
-/// hops in `defs`? (Codex on #2159: a transparent alias of a region-bearing
-/// head keeps its region slots; the surface-name rule alone regressed
-/// `type ML[T, R] = MutList[T, R]` + `fn fill(xs: ML[Int, r]) -> Unit with r`
-/// to reporting `r`.)
-fn type_param_in_region_slot(t: Type, defs: Array[TypeDef], param: String, depth: Int) -> Bool {
-  if depth > 8 {
-    false
+/// The argument index that is the REGION SLOT of an application of `head`
+/// with `argc` arguments, or -1 when `head` has none. Positions come from the
+/// constructors' own declarations, not a uniform convention (Codex round 2 on
+/// #2159): the region-bound containers carry the region LAST (`MutList[T, r]`,
+/// `MutMap[K, V, r]`, `MutBytes[r]` -- #1863, ADR-0090), while the
+/// task/channel types declare it FIRST (`type TaskGroup[rg, e]` /
+/// `TaskHandle[rg, e, T]` / `Sender[rg, e, T]` / `Receiver[rg, e, T]`,
+/// lib/@vibe/concurrent/index.vpkg -- a uniform "last argument" rule marked
+/// their ordinary payload type as the slot). A user-declared type's
+/// parameters are never region slots, and a region-bearing head missing here
+/// fails LOUD -- its token is reported as an unknown type -- not silently.
+fn ty_region_slot_index(head: String, argc: Int) -> Int {
+  if argc <= 0 {
+    0 - 1
+  } else if head == "MutList" || head == "MutMap" || head == "MutBytes" {
+    argc - 1
+  } else if head == "TaskGroup" || head == "TaskHandle" || head == "Sender" || head == "Receiver" {
+    0
   } else {
-    match t {
-      CtNamed(head, targs) => {
-        let n = Array::length(targs)
-        let in_own_slot = if ty_head_takes_region_slot(head) && n > 0 {
-          match Array::get(targs, n - 1) {
-            CtNamed(a, aargs) => a == param && Array::length(aargs) == 0,
-            _ => false
-          }
-        } else {
-          false
-        }
-        if in_own_slot {
-          true
-        } else {
-          match find_typedef(defs, head) {
-            Some(td) => match td {
-              TDAlias(_, hparams, hbody) => type_param_in_region_slot(subst_type_params(hbody, hparams, targs), defs, param, depth + 1),
-              _ => type_param_in_region_slot_any(targs, defs, param, depth)
-            },
-            None => type_param_in_region_slot_any(targs, defs, param, depth)
-          }
-        }
-      },
-      CtArray(e) => type_param_in_region_slot(e, defs, param, depth),
-      CtOption(e) => type_param_in_region_slot(e, defs, param, depth),
-      CtTuple(elems) => type_param_in_region_slot_any(elems, defs, param, depth),
-      CtFn(ps, ret, _) => type_param_in_region_slot_any(ps, defs, param, depth) || type_param_in_region_slot(ret, defs, param, depth),
-      _ => false
-    }
+    0 - 1
   }
 }
 
-fn type_param_in_region_slot_any(ts: Array[Type], defs: Array[TypeDef], param: String, depth: Int) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(ts) && !found {
-    found = type_param_in_region_slot(Array::get(ts, i), defs, param, depth)
-    i = i + 1
+/// Count the occurrences of alias parameter `param` (resolved in an alias
+/// body to the rigid `CtNamed(param, [])`) inside `t`: `counts` is mutated as
+/// `[total, at_region_slot]`. Alias hops in `defs` are followed by
+/// substitution (depth-capped), so an occurrence is judged at the position it
+/// finally lands in.
+fn count_param_region_occurrences(t: Type, defs: Array[TypeDef], param: String, depth: Int, counts: Array[Int]) -> Unit {
+  match t {
+    CtNamed(head, targs) => if head == param && Array::length(targs) == 0 {
+      Array::set(counts, 0, Array::get(counts, 0) + 1)
+    } else {
+      let followed = if depth <= 8 {
+        match find_typedef(defs, head) {
+          Some(td) => match td {
+            TDAlias(_, hparams, hbody) => {
+              count_param_region_occurrences(subst_type_params(hbody, hparams, targs), defs, param, depth + 1, counts)
+              true
+            },
+            _ => false
+          },
+          None => false
+        }
+      } else {
+        false
+      }
+      if followed {
+        ()
+      } else {
+        let slot = ty_region_slot_index(head, Array::length(targs))
+        let mut j = 0
+        while j < Array::length(targs) {
+          let child = Array::get(targs, j)
+          if j == slot {
+            match child {
+              CtNamed(a, aargs) => if a == param && Array::length(aargs) == 0 {
+                Array::set(counts, 1, Array::get(counts, 1) + 1)
+              } else {
+                ()
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          count_param_region_occurrences(child, defs, param, depth, counts)
+          j = j + 1
+        }
+      }
+    },
+    CtArray(e) => count_param_region_occurrences(e, defs, param, depth, counts),
+    CtOption(e) => count_param_region_occurrences(e, defs, param, depth, counts),
+    CtTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        count_param_region_occurrences(Array::get(elems, i), defs, param, depth, counts)
+        i = i + 1
+      }
+    },
+    CtFn(ps, ret, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        count_param_region_occurrences(Array::get(ps, i), defs, param, depth, counts)
+        i = i + 1
+      }
+      count_param_region_occurrences(ret, defs, param, depth, counts)
+    },
+    _ => ()
   }
-  found
 }
 
 /// Per-argument-position region-slot flags for an application of alias
@@ -297,6 +317,11 @@ fn type_param_in_region_slot_any(ts: Array[Type], defs: Array[TypeDef], param: S
 /// position mapping is the alias's own parameter order, so a body that
 /// reorders (`type W[R, T] = MutList[T, R]`) exempts the argument that
 /// actually lands in the slot.
+///
+/// A position is exempt only when its parameter occurs at a region slot AND
+/// at NO ordinary type position (Codex round 2 on #2159: with an existential
+/// rule, `type W[R, T] = (MutList[T, R], R)` + `fn f(x: W[r, Int]) -> Int
+/// with r` left the tuple's second component a wildcard).
 fn alias_region_slot_flags(name: String, defs: Array[TypeDef]) -> Array[Bool] {
   match find_typedef(defs, name) {
     Some(td) => match td {
@@ -304,7 +329,9 @@ fn alias_region_slot_flags(name: String, defs: Array[TypeDef]) -> Array[Bool] {
         let flags = array_empty()
         let mut i = 0
         while i < Array::length(params) {
-          Array::push(flags, type_param_in_region_slot(body, defs, Array::get(params, i), 0))
+          let counts = [0, 0]
+          count_param_region_occurrences(body, defs, Array::get(params, i), 0, counts)
+          Array::push(flags, Array::get(counts, 1) > 0 && Array::get(counts, 1) == Array::get(counts, 0))
           i = i + 1
         }
         flags
@@ -338,11 +365,11 @@ fn type_name_list_contains(names: Array[String], name: String) -> Bool {
 /// accepted both `f(1)` and `f("s")`, and `region r { let x: r = 1 }` accepted
 /// `let y: r = "s"` beside it.
 ///
-/// The region slot is the LAST type argument of a REGION-BEARING application
-/// (`MutList[Int, r]`, `MutMap[K, V, r]`, `TaskGroup[T, r]` -- the
-/// `ty_head_takes_region_slot` allowlist, mirroring the last-argument
-/// convention `is_region_tagged_ty` reads in checker.vibe). A name in any
-/// other position is a type reference and is looked up like one.
+/// The region slot is the constructor-specific argument position of a
+/// REGION-BEARING application -- `ty_region_slot_index` (last for
+/// `MutList[Int, r]` / `MutMap[K, V, r]`, first for the task/channel types,
+/// which declare `[rg, e, T]`). A name in any other position is a type
+/// reference and is looked up like one.
 export fn collect_unknown_type_names_regionwise(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], region_binders: Array[String], out: Array[String]) -> Unit {
   collect_unknown_type_names_walk(te, defs, shadow, region_binders, false, out)
 }
@@ -366,15 +393,15 @@ fn collect_unknown_type_names_walk(te: TypeExpr, defs: Array[TypeDef], shadow: A
       }
     },
     TyApp(name, args) => {
-      // Only this application's own LAST argument is a region slot; the flag
-      // never propagates further down, and each nested application recomputes
-      // it for its own arguments.
-      let last_index = Array::length(args) - 1
-      let head_takes_region_slot = ty_head_takes_region_slot(name)
+      // Only this application's own region-slot argument (constructor-specific
+      // -- see `ty_region_slot_index`) is exempt; the flag never propagates
+      // further down, and each nested application recomputes it for its own
+      // arguments.
+      let slot_index = ty_region_slot_index(name, Array::length(args))
       let alias_flags = alias_region_slot_flags(name, defs)
       let mut i = 0
       while i < Array::length(args) {
-        let at_slot = (head_takes_region_slot && i == last_index) || (i < Array::length(alias_flags) && Array::get(alias_flags, i))
+        let at_slot = i == slot_index || (i < Array::length(alias_flags) && Array::get(alias_flags, i))
         collect_unknown_type_names_walk(Array::get(args, i), defs, shadow, region_binders, at_slot, out)
         i = i + 1
       }
