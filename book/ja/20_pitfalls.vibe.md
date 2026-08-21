@@ -19,23 +19,35 @@ perform を隠してしまう。
 ```vibe skip
 // skip: eligibility rejection — the point is the diagnostic, not a run
 effect Ask {
-  Get -> Int
+  Get() -> Int
 }
 
 fn main with Exception {
-  let bump = (x: Int) -> Int with Ask {
+  let bump = (x: Int) -> Int {
     x + 1
   }
-  handle {
-    bump(perform Ask::Get)
+  let n = handle {
+    bump(perform Ask::Get())
   } with Ask {
-    Get => resume(0)
+    Get() => resume(0)
   }
+  ()
 }
 ```
 
-診断は呼び先 (`bump`) とその `line:col` を名指しする。直し方は `bump` を
-トップレベルの `fn` に持ち上げること。
+```
+handle of effect 'Ask' cannot be compiled here: this handle cannot see what
+one call in its body performs (here: the call to 'bump'). Make that call
+visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
+it arrives through an effect row (`with Ask`), or move its `let` inside the
+handled body. Moving the `handle` into the function that performs works too.
+(ADR-0076 evidence-passing migration.)
+```
+
+`bump` に effect row が**無い**ことに注意。リテラルに `with Ask` を付けると、
+それはメッセージが挙げる4つの直し方のひとつなのでコンパイルが通る — そこが
+要点で、束縛に付いた row が perform を見えるようにしている。`bump` を
+トップレベルの `fn` に持ち上げるのも同じく有効。
 
 ## `Int` の幅はタグビットに従う
 

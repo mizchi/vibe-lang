@@ -19,23 +19,35 @@ row. A call through a local binding hides the perform.
 ```vibe skip
 // skip: eligibility rejection — the point is the diagnostic, not a run
 effect Ask {
-  Get -> Int
+  Get() -> Int
 }
 
 fn main with Exception {
-  let bump = (x: Int) -> Int with Ask {
+  let bump = (x: Int) -> Int {
     x + 1
   }
-  handle {
-    bump(perform Ask::Get)
+  let n = handle {
+    bump(perform Ask::Get())
   } with Ask {
-    Get => resume(0)
+    Get() => resume(0)
   }
+  ()
 }
 ```
 
-The diagnostic names the callee (`bump`) and its `line:col`. Fix: lift
-`bump` to a top-level `fn`.
+```
+handle of effect 'Ask' cannot be compiled here: this handle cannot see what
+one call in its body performs (here: the call to 'bump'). Make that call
+visible -- declare 'bump' as a top-level `fn`, give the binding or parameter
+it arrives through an effect row (`with Ask`), or move its `let` inside the
+handled body. Moving the `handle` into the function that performs works too.
+(ADR-0076 evidence-passing migration.)
+```
+
+Note that `bump` carries **no** effect row. Giving its literal
+`with Ask` is one of the four repairs the message lists, so that version
+compiles — which is the point: the row on the binding is what makes the
+perform visible. Lifting `bump` to a top-level `fn` works too.
 
 ## `Int` width follows the tag bit
 
