@@ -3514,12 +3514,25 @@ fn tps_names_contains(names: Array[String], name: String) -> Bool {
   found
 }
 
-fn tps_report(tparams: Array[String], local_types: Array[String], where_label: String, errors: Array[String]) -> Unit {
+fn tps_report(tparams: Array[String], local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(tparams) {
     let tp = Array::get(tparams, i)
     if tps_names_contains(local_types, tp) {
-      Array::push(errors, String::concat("type parameter `", String::concat(tp, String::concat("` of ", String::concat(where_label, String::concat(" shadows the declared type `", String::concat(tp, "`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141)")))))))
+      // The ` [@fn=name]` suffix is the #1941 side-channel marker: binder
+      // lists carry no offset of their own, so the diagnostic anchors on the
+      // declaration name and locate_type_error turns it into a real line:col
+      // at the CLI boundary (find_fn_anchor_off prefers `fn name`/`let name`
+      // and falls back to the name's first occurrence, which for a struct or
+      // enum label is its declaration). Attached only when the label names a
+      // real identifier -- a test's string title is not a word the locator
+      // can find, and an unresolved marker is stripped, never printed.
+      let located = if String::length(anchor) > 0 {
+        String::concat(" [@fn=", String::concat(anchor, "]"))
+      } else {
+        ""
+      }
+      Array::push(errors, String::concat("type parameter `", String::concat(tp, String::concat("` of ", String::concat(where_label, String::concat(" shadows the declared type `", String::concat(tp, String::concat("`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141)", located))))))))
     } else {
       ()
     }
@@ -3527,15 +3540,15 @@ fn tps_report(tparams: Array[String], local_types: Array[String], where_label: S
   }
 }
 
-fn tps_scan_expr(e: Expr, local_types: Array[String], where_label: String, errors: Array[String]) -> Unit {
+fn tps_scan_expr(e: Expr, local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
   match e {
-    EFn(tparams, _, _, _, _, _) => tps_report(tparams, local_types, where_label, errors),
+    EFn(tparams, _, _, _, _, _) => tps_report(tparams, local_types, where_label, anchor, errors),
     _ => ()
   }
   let kids = expr_children(e)
   let mut i = 0
   while i < Array::length(kids) {
-    tps_scan_expr(Array::get(kids, i), local_types, where_label, errors)
+    tps_scan_expr(Array::get(kids, i), local_types, where_label, anchor, errors)
     i = i + 1
   }
 }
@@ -3552,14 +3565,14 @@ fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]
     let mut i = 0
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
-        SStruct(_, name, _, _, _, tparams) => tps_report(tparams, local_types, tps_decl_label("struct", name), errors),
-        SEnum(_, name, tparams, _, _) => tps_report(tparams, local_types, tps_decl_label("enum", name), errors),
-        SLet(_, _, name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), errors),
-        SLetMut(name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), errors),
-        SLetPat(_, e) => tps_scan_expr(e, local_types, "a `let` pattern binding", errors),
-        SExpr(e) => tps_scan_expr(e, local_types, "a top-level expression", errors),
-        STest(name, e) => tps_scan_expr(e, local_types, tps_decl_label("test", name), errors),
-        SBench(name, e) => tps_scan_expr(e, local_types, tps_decl_label("bench", name), errors),
+        SStruct(_, name, _, _, _, tparams) => tps_report(tparams, local_types, tps_decl_label("struct", name), name, errors),
+        SEnum(_, name, tparams, _, _) => tps_report(tparams, local_types, tps_decl_label("enum", name), name, errors),
+        SLet(_, _, name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+        SLetMut(name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+        SLetPat(_, e) => tps_scan_expr(e, local_types, "a `let` pattern binding", "", errors),
+        SExpr(e) => tps_scan_expr(e, local_types, "a top-level expression", "", errors),
+        STest(name, e) => tps_scan_expr(e, local_types, tps_decl_label("test", name), "", errors),
+        SBench(name, e) => tps_scan_expr(e, local_types, tps_decl_label("bench", name), "", errors),
         _ => ()
       }
       i = i + 1

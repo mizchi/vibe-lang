@@ -4334,7 +4334,7 @@ fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, rite
         // so every protocol function the program has is in `fn_returns` --
         // a miss here is a real miss, and it throws instead of iterating
         // garbage.
-        throw(for_no_protocol_msg(tn))
+        throw(String::concat(for_no_protocol_msg(tn), for_iterand_off_marker(iter)))
       }
     } else {
       EForIn(name, idx, riter, rbody)
@@ -4347,6 +4347,30 @@ fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, rite
 /// iteration protocol. Leads with the edits that make the loop work.
 fn for_no_protocol_msg(tn: String) -> String {
   String::concat("cannot iterate a `", String::concat(tn, String::concat("` value in `for`: define `", String::concat(tn, String::concat("::iter_length` + `", String::concat(tn, String::concat("::iter_get`, or `impl Iterator for ", String::concat(tn, String::concat("` with a `next` method, or loop over an Array of its elements -- `", String::concat(tn, "` declares no iteration protocol, so the loop has nothing to draw elements from (#2152)"))))))))))
+}
+
+/// #2152 (Codex P2 on the PR): transport the iterand's source offset as the
+/// standard ` [@off=N]` side-channel marker when the AST carries one.
+/// Measured 2026-08-21: the compile entries parse with the PLAIN
+/// `parse_program(lex(..))` (no starts array => every node's offset is -1,
+/// the pitfall cli_support.vibe documents for read_program), so in those
+/// lanes this is a no-op today -- the marker resolves as soon as a lane
+/// parses located (the check walk already does; wiring compile is #1514 /
+/// #1567's job). Safe by construction either way: emit_compile_diag strips
+/// an unresolved marker, so it can never leak (#1445's failure mode) or name
+/// a wrong position against merged module text (#1596's fail-closed rule).
+fn for_iterand_off_marker(iter: Expr) -> String {
+  let off = match iter {
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    EDot(_, _, o, _) => o,
+    _ => 0 - 1
+  }
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  }
 }
 
 /// `for x in iter { body }` -- the ONE for-loop classification (#1350 folded
