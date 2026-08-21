@@ -148,6 +148,37 @@ test "type alias imports reject structs and enums" {
   assert(String::contains(projected_import_kind_error("import ./provider.vibe { type Choice }"), "import kind mismatch: `Choice` is an enum, not a type alias"))
 }
 
+test "projected import kinds use each source module instead of merged name order" {
+  let alias_path = "workspace/alias.vibe"
+  let struct_path = "workspace/record.vibe"
+  let alias_env = checked_test_env("export type X = Int")
+  let struct_env = checked_test_env("export struct X { value: Int }")
+  let alias_first = "import ./alias.vibe { type X as AliasX }\nimport ./record.vibe { struct X as RecordX }"
+  let struct_first = "import ./record.vibe { struct X as RecordX }\nimport ./alias.vibe { type X as AliasX }"
+  let first_checked = projected_checked_env(alias_first, "workspace/main.vibe", [
+    alias_path,
+    struct_path
+  ], [(alias_path, alias_env), (struct_path, struct_env)])
+  let second_checked = projected_checked_env(struct_first, "workspace/main.vibe", [
+    struct_path,
+    alias_path
+  ], [(struct_path, struct_env), (alias_path, alias_env)])
+  match (env_lookup(first_checked, "AliasX"), env_lookup(first_checked, "RecordX"), env_lookup(second_checked, "AliasX"), env_lookup(second_checked, "RecordX")) {
+    (Some(_), Some(_), Some(_), Some(_)) => (),
+    _ => assert(false)
+  }
+  let mismatch = handle {
+    let _ = projected_import_env_for_test("import ./alias.vibe { struct X as Wrong }\nimport ./record.vibe { struct X as RecordX }", "workspace/main.vibe", [
+      alias_path,
+      struct_path
+    ], [(alias_path, alias_env), (struct_path, struct_env)])
+    ""
+  } with Exception {
+    Throw(message) => message
+  }
+  assert(String::contains(mismatch, "import kind mismatch: `X` is a type alias, not a struct"))
+}
+
 test "struct imports reject enums" {
   assert(String::contains(projected_import_kind_error("import ./provider.vibe { struct Choice }"), "import kind mismatch: `Choice` is an enum, not a struct"))
 }

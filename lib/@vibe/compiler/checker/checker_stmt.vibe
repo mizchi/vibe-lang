@@ -1185,20 +1185,63 @@ fn import_item_local_name(item: ImportItem) -> String {
 }
 
 fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] {
-  match find_typedef(env_type_defs(initial_env), item.name) {
-    Some(def) => match def {
-      TDAlias(_, _, _) => Some("type alias"),
-      TDStruct(_, _, _, _) => Some("struct"),
-      TDEnum(_, _, _) => Some("enum"),
-      TDEffect(_, _, _) => Some("effect"),
-      TDEffectSet(_, _) => None
-    },
-    None => {
-      let local = import_item_local_name(item)
-      if trait_defined(initial_env, local) || trait_defined(initial_env, item.name) {
-        Some("trait")
+  let defs = env_type_defs(initial_env)
+  let mut found: Option[String] = None
+  let mut ambiguous = false
+  let mut i = 0
+  while i < Array::length(defs) {
+    let candidate = match Array::get(defs, i) {
+      TDAlias(name, _, _) => if name == item.name {
+        Some("type alias")
       } else {
         None
+      },
+      TDStruct(name, _, _, _) => if name == item.name {
+        Some("struct")
+      } else {
+        None
+      },
+      TDEnum(name, _, _) => if name == item.name {
+        Some("enum")
+      } else {
+        None
+      },
+      TDEffect(name, _, _) => if name == item.name {
+        Some("effect")
+      } else {
+        None
+      },
+      TDEffectSet(_, _) => None
+    }
+    match candidate {
+      Some(kind) => match found {
+        Some(previous) => if previous != kind {
+          ambiguous = true
+        } else (),
+        None => {
+          found = Some(kind)
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  if ambiguous {
+    // A merged checker environment no longer carries the source-module
+    // identity of TypeDef rows. The dependency projection boundary validates
+    // each import against its still-separated module environment; guessing
+    // here would make the result depend on merge order.
+    None
+  } else {
+    match found {
+      Some(kind) => Some(kind),
+      None => {
+        let local = import_item_local_name(item)
+        if trait_defined(initial_env, local) || trait_defined(initial_env, item.name) {
+          Some("trait")
+        } else {
+          None
+        }
       }
     }
   }
@@ -1244,6 +1287,12 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, error
     }
     i = i + 1
   }
+}
+
+export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv) -> Array[String] {
+  let errors = array_empty()
+  check_import_item_kinds(items, initial_env, errors)
+  errors
 }
 
 fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[String]) -> Unit {
