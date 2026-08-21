@@ -22,7 +22,10 @@ have no predecessor here.
 | `07_modules_packages.vibe.md` | [Modules and packages](../../book/en/09_modules_packages.vibe.md) |
 
 Each chapter's `-ja` sibling (`01_values_functions-ja.vibe.md` and so on) maps
-to the same-numbered file under [book/ja/](../../book/ja/).
+to the file under [book/ja/](../../book/ja/) named after its **English
+destination** in the table above — so `01_values_functions-ja.vibe.md` is
+`book/ja/03_values_functions.vibe.md`, not `book/ja/01_*`. The two languages
+share one numbering; only the `-ja` suffix is gone.
 
 日本語: [book/ja/](../../book/ja/) and [README-ja.md](README-ja.md).
 

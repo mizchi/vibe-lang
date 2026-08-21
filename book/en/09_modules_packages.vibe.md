@@ -42,9 +42,15 @@ Two variations on the import line:
 - `import ./subdir { helper }` imports a *directory*, which resolves to
   its `index.vibe`.
 
-An import may not climb out of the entry file's directory tree. That is
-a sandbox rule, not a style rule: a program cannot reach code you did
-not put inside it.
+A relative import *may* climb above the entry file's own directory —
+`import ../../../helper.vibe` from a nested entry resolves. What bounds
+it is not the entry's directory but what the host made visible to the
+compiler: the preopened directory it was given. A path outside that is
+not found, whatever the `../` count.
+
+Crossing into a package is a different boundary again: a directory with
+an `index.vpkg` publishes that contract, so a name it does not export is
+rejected at check time rather than silently imported.
 
 ## Packages by name
 
