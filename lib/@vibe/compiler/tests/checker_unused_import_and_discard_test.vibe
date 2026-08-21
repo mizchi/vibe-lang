@@ -9,11 +9,11 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/checker {
-  detect_unbound_nonunit_returns, detect_unused_imports
+  detect_redundant_namespace_imports, detect_unbound_nonunit_returns, detect_unused_imports
 }
 
 import @vibe/compiler/runtime {
-  locate_type_error
+  collect_all_diagnostics, locate_type_error
 }
 
 //# Functions
@@ -132,6 +132,57 @@ test "detect_unused_imports counts an ERecord's own name as a reference" {
   ]
   let warnings = detect_unused_imports(stmts)
   assert(eq(Array::length(warnings), 0))
+}
+
+test "detect_redundant_namespace_imports flags an owner plus an unaliased member" {
+  let stmts = [
+    SImport("@vibe/core", [
+      ImportItem::{ kind: None, name: "MutMap", alias: None },
+      ImportItem::{ kind: None, name: "MutMap::get", alias: None }
+    ])
+  ]
+  let warnings = detect_redundant_namespace_imports(stmts)
+  assert(eq(Array::length(warnings), 1))
+  let (kind, name, msg) = Array::get(warnings, 0)
+  assert(kind == "redundant_import")
+  assert(name == "MutMap::get")
+  assert(String::index_of(msg, "remove 'MutMap::get'") >= 0)
+}
+
+test "detect_redundant_namespace_imports keeps a member alias" {
+  let stmts = [
+    SImport("@vibe/core", [
+      ImportItem::{ kind: None, name: "MutMap", alias: None },
+      ImportItem::{ kind: None, name: "MutMap::get", alias: Some("map_get") }
+    ])
+  ]
+  assert(eq(Array::length(detect_redundant_namespace_imports(stmts)), 0))
+}
+
+test "detect_redundant_namespace_imports keeps a member without its owner" {
+  let stmts = [
+    SImport("@vibe/core", [
+      ImportItem::{ kind: None, name: "MutMap::get", alias: None }
+    ])
+  ]
+  assert(eq(Array::length(detect_redundant_namespace_imports(stmts)), 0))
+}
+
+test "collect_all_diagnostics reports a redundant namespace member import" {
+  let source = "import ./m.vibe { MutMap, MutMap::get }\nlet f = MutMap::get\n"
+  let diagnostics = collect_all_diagnostics(source)
+  assert(Array::length(diagnostics) == 1)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(diagnostics) {
+    if String::index_of(Array::get(diagnostics, i), "remove 'MutMap::get' from the import list") >= 0 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(found)
 }
 
 test "detect_unbound_nonunit_returns flags a discarded non-Unit call" {

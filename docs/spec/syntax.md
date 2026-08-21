@@ -379,17 +379,13 @@ Rules:
 - Values are always imported as bare symbols. This includes declarations
   written with either `let` or `fn` because `fn` is declaration sugar for a
   value binding; `fn` and `let` are not import-item qualifiers.
-- In the current Phase A syntax, declaration-kind qualifiers are optional.
-  When present, `struct`, `enum`, `effect`, and `trait` request that exact
+- Declaration-kind qualifiers are currently optional. When present, `type`,
+  `struct`, `enum`, `effect`, and `trait` request that exact
   exported declaration kind. A mismatch is rejected with an actionable
   diagnostic such as ``import requests `struct Color`, but `Color` is exported
   as an enum``.
-- `type` is temporarily migration-compatible: it accepts a type alias, struct,
-  or enum. This preserves existing imports that used `type` as a broad
-  type-namespace selector before exact kinds were retained in the AST.
-- Phase B is not implemented yet. After the bootstrap compiler understands the
-  new syntax, `type` will narrow to type aliases and non-value imports will
-  eventually require a qualifier. Bare value imports will remain unchanged.
+- A later migration will require qualifiers for non-value imports. Bare value
+  imports will remain unchanged.
 - `Name::member` imports a single type/module member.
 - `import <module-ref> { Name }` may activate a namespace for `Name::*`.
 - `export <module-ref> { ... }` re-exports selected items from another module

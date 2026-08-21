@@ -1185,20 +1185,63 @@ fn import_item_local_name(item: ImportItem) -> String {
 }
 
 fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] {
-  match find_typedef(env_type_defs(initial_env), item.name) {
-    Some(def) => match def {
-      TDAlias(_, _, _) => Some("type alias"),
-      TDStruct(_, _, _, _) => Some("struct"),
-      TDEnum(_, _, _) => Some("enum"),
-      TDEffect(_, _, _) => Some("effect"),
-      TDEffectSet(_, _) => None
-    },
-    None => {
-      let local = import_item_local_name(item)
-      if trait_defined(initial_env, local) || trait_defined(initial_env, item.name) {
-        Some("trait")
+  let defs = env_type_defs(initial_env)
+  let mut found: Option[String] = None
+  let mut ambiguous = false
+  let mut i = 0
+  while i < Array::length(defs) {
+    let candidate = match Array::get(defs, i) {
+      TDAlias(name, _, _) => if name == item.name {
+        Some("type alias")
       } else {
         None
+      },
+      TDStruct(name, _, _, _) => if name == item.name {
+        Some("struct")
+      } else {
+        None
+      },
+      TDEnum(name, _, _) => if name == item.name {
+        Some("enum")
+      } else {
+        None
+      },
+      TDEffect(name, _, _) => if name == item.name {
+        Some("effect")
+      } else {
+        None
+      },
+      TDEffectSet(_, _) => None
+    }
+    match candidate {
+      Some(kind) => match found {
+        Some(previous) => if previous != kind {
+          ambiguous = true
+        } else (),
+        None => {
+          found = Some(kind)
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  if ambiguous {
+    // A merged checker environment no longer carries the source-module
+    // identity of TypeDef rows. The dependency projection boundary validates
+    // each import against its still-separated module environment; guessing
+    // here would make the result depend on merge order.
+    None
+  } else {
+    match found {
+      Some(kind) => Some(kind),
+      None => {
+        let local = import_item_local_name(item)
+        if trait_defined(initial_env, local) || trait_defined(initial_env, item.name) {
+          Some("trait")
+        } else {
+          None
+        }
       }
     }
   }
@@ -1215,12 +1258,7 @@ fn import_kind_label(kind: ImportKind) -> String {
 }
 
 fn import_kind_matches(expected: ImportKind, actual: String) -> Bool {
-  match expected {
-    // Phase A bootstrap compatibility: the committed seed spells every
-    // data type import as `type`, including structs and enums.
-    ImportType => actual == "type alias" || actual == "struct" || actual == "enum",
-    _ => actual == import_kind_label(expected)
-  }
+  actual == import_kind_label(expected)
 }
 
 fn import_kind_article(label: String) -> String {
@@ -1249,6 +1287,12 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, error
     }
     i = i + 1
   }
+}
+
+export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv) -> Array[String] {
+  let errors = array_empty()
+  check_import_item_kinds(items, initial_env, errors)
+  errors
 }
 
 fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[String]) -> Unit {
@@ -4395,7 +4439,7 @@ export fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, St
             Some(a) => a,
             None => orig
           }
-          if warning_names_contains(used, local) {
+          if unused_alias_referenced(used, local, String::concat(local, "::")) {
             ()
           } else {
             let msg = String::concat("imported name '", String::concat(local, String::concat("' from '", String::concat(path, "' is never used in this file"))))
@@ -4412,6 +4456,63 @@ export fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, St
         } else {
           let msg = String::concat("import alias '", String::concat(bare, String::concat("' for '", String::concat(path, "' is never used in this file (referenced elsewhere in a whole-program merge? consider a named import instead)"))))
           Array::push(out, ("unused_import", alias, msg))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn import_items_have_unaliased_owner(items: Array[ImportItem], owner: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if item.name == owner && item.alias == None {
+      found = true
+      i = Array::length(items)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// An unaliased owner import activates its exported namespace, so spelling
+/// an unaliased `Owner::member` beside it adds no binding. Keep aliased
+/// members: they intentionally introduce a distinct local name.
+export fn detect_redundant_namespace_imports(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let sep = String::index_of(item.name, "::")
+          if sep > 0 && item.alias == None {
+            let owner = String::substring(item.name, 0, sep)
+            if import_items_have_unaliased_owner(items, owner) {
+              let msg = String::concat("imported name '", String::concat(item.name, String::concat("' from '", String::concat(path, String::concat("' is redundant because '", String::concat(owner, String::concat("' activates its namespace; remove '", String::concat(item.name, "' from the import list"))))))))
+              Array::push(out, ("redundant_import", item.name, msg))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SModule(_, _, body) => {
+        let nested = detect_redundant_namespace_imports(body)
+        let mut j = 0
+        while j < Array::length(nested) {
+          Array::push(out, Array::get(nested, j))
+          j = j + 1
         }
       },
       _ => ()

@@ -79,9 +79,7 @@ hello vibe
 渡す必要はない。
 
 ```vibe run
-import @vibe/core {
-  type MutMap, MutMap::get, MutMap::new_string, MutMap::set, MutMap::size
-}
+import @vibe/core { struct MutMap }
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
   match o {
