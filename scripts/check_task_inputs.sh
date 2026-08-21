@@ -77,8 +77,46 @@ def active_pkl(text):
         i += 1
     return "".join(out)
 
+def pkl_syntax_only(text):
+    """Mask Pkl strings so path values cannot satisfy syntax-token checks."""
+    out = []
+    i = 0
+    string_hashes = None
+    while i < len(text):
+        if string_hashes is not None:
+            close = '"' + ('#' * string_hashes)
+            if text.startswith(close, i):
+                out.append(" " * len(close))
+                i += len(close)
+                string_hashes = None
+            elif string_hashes == 0 and text[i] == "\\" and i + 1 < len(text):
+                out.append("  ")
+                i += 2
+            else:
+                out.append("\n" if text[i] == "\n" else " ")
+                i += 1
+            continue
+        if text[i] == '"':
+            out.append(" ")
+            string_hashes = 0
+            i += 1
+            continue
+        if text[i] == "#":
+            j = i
+            while j < len(text) and text[j] == "#":
+                j += 1
+            if j < len(text) and text[j] == '"':
+                out.append(" " * (j + 1 - i))
+                string_hashes = j - i
+                i = j + 1
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
 def has_spread(body, name):
-    return bool(re.search(r"\.\.\.\s*" + re.escape(name) + r"\b", body))
+    syntax = pkl_syntax_only(body)
+    return bool(re.search(r"\.\.\.\s*" + re.escape(name) + r"\b", syntax))
 
 # The shared compiler-probe input set is safe only while it contains both
 # halves of the compiler identity: selfhost sources and the bootstrap seed.
