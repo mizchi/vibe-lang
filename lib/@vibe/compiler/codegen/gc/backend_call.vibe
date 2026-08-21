@@ -3147,9 +3147,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       else {
         let fn_len2 = Array::length(ctx.func_table.names)
         let eff_fname = gc_direct_abi_twin_callee(ctx, fname)
+        let local_callee_idx = find_local_slot(local_names, fname)
         let mut fn_idx_in_list = -1
         let mut __fi = 0
-        while __fi < fn_len2 {
+        // A lexical binding shadows a same-named top-level function. Identifier
+        // expressions already use this ordering; calls must do the same (#2160).
+        while local_callee_idx < 0 && __fi < fn_len2 {
           if Array::get(ctx.func_table.names, __fi) == eff_fname {
             fn_idx_in_list = __fi
             __fi = fn_len2
@@ -3186,10 +3189,14 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           // unknown constructor, not a local closure -- fail with a clear
           // message instead of resolve_local's "undefined variable".
           let c0 = String::char_code_at(fname, 0)
-          if c0 >= 65 && c0 <= 90 {
+          if local_callee_idx < 0 && c0 >= 65 && c0 <= 90 {
             throw("GC codegen: unknown constructor or function: \{fname}")
           }
-          let local_idx2 = resolve_local(local_names, fname, "gc_call")
+          let local_idx2 = if local_callee_idx >= 0 {
+            local_callee_idx
+          } else {
+            resolve_local(local_names, fname, "gc_call")
+          }
           let num_args = Array::length(args)
           let fn_val_local = next_local
           let slot_local = next_local + 1
