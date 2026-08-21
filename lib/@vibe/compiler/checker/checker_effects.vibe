@@ -225,21 +225,29 @@ export fn effect_error_to_string(err: EffectError) -> String {
       // operation call (`perform? 1`). Those reach codegen too, so they get
       // the same rejection minus the part that names an `allows` item
       // (#2156 review).
+      //
+      // #2156 review: the named operation is always a CAPABILITY, and a
+      // capability is spelled as an ORDINARY CALL -- never as a `perform`
+      // (AGENTS.md "Effect classes and how operations are spelled";
+      // ADR-0084). This message used to say "use plain `perform`", which
+      // handed the reader `perform Fs::read_file(..)`: the exact spelling
+      // book/*/14_capabilities rules out a few lines below where it quotes
+      // this very diagnostic.
+      //
+      // There is deliberately no algebraic-operation branch. Reaching here
+      // means `decl_authorizes_optional_op` found the operation in `allows`,
+      // and `allows` admits capability effects ONLY -- an algebraic operation
+      // written there is rejected earlier with "`Ask::Get?` is not a
+      // capability effect, so it cannot appear in `allows`". A branch for it
+      // would be unreachable code that quietly gives non-registry
+      // capabilities the wrong advice, which is how the `perform` wording got
+      // here in the first place.
       let head = "`perform?` is not lowered yet (#2145): the checker types it as `Attempt[T, String]`, but code generation cannot emit it. "
       let tail = " Handle the failure with `try`/`handle` instead of matching `Attempt`."
       let body = if String::length(operation) == 0 {
         String::concat(head, String::concat("Make the authority REQUIRED and reach the operation without the `?`.", tail))
-      } else if standard_provider_owns_operation(operation) {
-        // A capability builtin is spelled as an ORDINARY CALL, never as a
-        // `perform` (AGENTS.md "Effect classes and how operations are
-        // spelled"; ADR-0084). Telling the reader to "use plain `perform`"
-        // here handed them `perform Fs::read_file(..)` -- the exact spelling
-        // the capabilities chapter rules out a few lines further down, from
-        // the one source they have most reason to trust (#2156 review).
-        String::concat(head, String::concat("Make the authority REQUIRED -- drop the `?` from `allows ", String::concat(operation, String::concat("?` -- and call `", String::concat(operation, String::concat("(..)` directly; a capability builtin is an ordinary call, not a `perform`.", tail))))))
       } else {
-        // An algebraic operation IS performed, so here `perform` is right.
-        String::concat(head, String::concat("Drop the `?` from `allows ", String::concat(operation, String::concat("?` and from the `perform`.", tail))))
+        String::concat(head, String::concat("Make the authority REQUIRED -- drop the `?` from `allows ", String::concat(operation, String::concat("?` -- and call `", String::concat(operation, String::concat("(..)` directly; a capability is an ordinary call, not a `perform`.", tail))))))
       }
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))

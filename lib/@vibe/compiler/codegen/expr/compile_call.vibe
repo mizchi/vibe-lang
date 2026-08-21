@@ -496,19 +496,33 @@ fn cc_slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
 /// The table is built once, in the pre-pass in wasi/linked_compile.vibe, so
 /// this is a linear scan over a small list rather than a type lookup --
 /// codegen has no types to look up (see CompileCtx.float_ret_fns).
-export fn cc_fn_returns_float(ctx: CompileCtx, fname: String) -> Bool {
-  let arr = ctx.float_ret_fns
-  let mut i = Array::length(arr) - 1
-  let mut found = false
-  while i >= 0 {
-    if Array::get(arr, i) == fname {
-      found = true
-      i = -1
-    } else {
-      i = i - 1
+///
+/// `local_names` is not optional: the table is keyed by NAME, and a local
+/// binding of the same name shadows the top-level declaration. Without this
+/// check, `fn value() -> Double` at the top level made `let value = () -> Int
+/// { 1 }; __to_string(value())` render the Int through the float path and
+/// print 0 -- a silently wrong answer this predicate itself introduced
+/// (#2156 review). Taking `local_names` as a parameter rather than leaving
+/// the check to each caller is what keeps the next call site from repeating
+/// it; codegen already has two hand-written copies of the floatish
+/// classifier, which is how #2158 needed fixing twice.
+export fn cc_fn_returns_float(local_names: Array[String], ctx: CompileCtx, fname: String) -> Bool {
+  if find_local_slot(local_names, fname) >= 0 {
+    false
+  } else {
+    let arr = ctx.float_ret_fns
+    let mut i = Array::length(arr) - 1
+    let mut found = false
+    while i >= 0 {
+      if Array::get(arr, i) == fname {
+        found = true
+        i = -1
+      } else {
+        i = i - 1
+      }
     }
+    found
   }
-  found
 }
 
 fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
@@ -595,7 +609,7 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
       let fname = get_eident_name(callee)
       if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
         true
-      } else if cc_fn_returns_float(ctx, fname) {
+      } else if cc_fn_returns_float(local_names, ctx, fname) {
         // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.
         // Without this the call fell through to the runtime bit-pattern
         // heuristic, so `"\{half(5.0)}"` rendered the f64 as an integer --

@@ -33,6 +33,10 @@ fn count(n: Int) -> Int {
   n + 1
 }
 
+fn value() -> Double {
+  2.5
+}
+
 //# Tests
 
 test "#2158: a call to a `-> Double` function stringifies as a Double" {
@@ -72,6 +76,25 @@ test "#2158: two call results compare by value, not by box identity" {
   let b = half(5.0)
   assert_true(a == b)
   assert_true(!(a == half(4.0)))
+}
+
+test "#2156 review: a local binding SHADOWS the float-return table" {
+  // float_ret_fns is keyed by NAME, and `value` is declared `-> Double` at
+  // the top of this file. A local binding of the same name is a different
+  // callable, so the table must not answer for it -- it did, and this printed
+  // 0 instead of 1: the Int went through the float rendering path. Measured
+  // both ways before the guard landed (1 before #2158, 0 after), so this is a
+  // regression the #2158 fix introduced, not a pre-existing gap.
+  let value = () -> Int {
+    1
+  }
+  assert_true(__to_string(value()) == "1")
+}
+
+test "#2156 review: the shadow is scoped -- the top-level name still works" {
+  // The counterpart: masking must key on the binding actually in scope, not
+  // disable the table for the name everywhere it appears.
+  assert_true(__to_string(value()) == "2.5")
 }
 
 test "#2158: a `-> Int` function is NOT reclassified as a float" {

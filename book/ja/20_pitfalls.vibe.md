@@ -50,8 +50,8 @@ fn main with Exception {
 `Attempt[T, String]` と型付けされるが、codegen が lowering できないため
 checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し方
 (`allows` の項目から `?` を落とし、`Fs::read_file(..)` を普通に呼ぶ) を
-名指しする。代数 effect の operation なら同じメッセージが `perform` を残す —
-capability builtin は perform しないため。
+名指しする。`allows` に載るのは capability だけで、capability は perform
+しない。
 
 `vibe check` も同じことを言うので、ビルド前に分かる。#2145 が着地する前は
 型検査を通ったあとで ICE になっていた。
@@ -109,47 +109,5 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 
 `let xs = for x in arr { x * 2 }` は `Array` なら通る。同じ位置に pull
 イテレータを置くと位置付きのエラーになる。`ArrayBuilder` で溜めること。
-
-## 関数から返った `Double` はゴミを表示する (#2158)
-
-**呼び出し**を経由して届いた `Double` を補間すると、生のビットが整数として
-表示されます。コンパイルは通り、それらしい誤った数値が出ます。この章で
-一番たちの悪い項目です。
-
-```vibe skip
-// skip: 失敗せず誤った数値を表示する -- #2158
-fn half(a: Double) -> Double { a / 2.0 }
-
-fn main with Console {
-  let bound = half(5.0)
-  println("\{bound}")        // 232   -- 誤り
-  println("\{half(5.0)}")    // 404   -- 誤り
-}
-```
-
-`half` には注釈が完全に付いていて、それでも変わりません。レンダラは宣言
-された戻り値型ではなく、補間の位置にある**構文**から判断しています。効く
-書き方は3つ:
-
-```vibe run
-fn half(a: Double) -> Double {
-  a / 2.0
-}
-
-fn main with Console {
-  let annotated: Double = half(5.0)
-  println("annotate the binding = \{annotated}")
-  println("add arithmetic       = \{half(5.0) + 0.0}")
-  println("to_string            = \{Double::to_string(half(5.0))}")
-}
-```
-
-```output
-annotate the binding = 2.5
-add arithmetic       = 2.5
-to_string            = 2.5
-```
-
-**引数**への注釈は効きません。効くのは使う場所の束縛の方です。
 
 次: [付録](../en/99_appendix.md)。

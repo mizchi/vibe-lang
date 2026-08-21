@@ -115,7 +115,7 @@ fn main() -> Int with () allows Console + Fs::read_file? {
 line 2:11: `perform?` is not lowered yet (#2145): the checker types it as
 `Attempt[T, String]`, but code generation cannot emit it. Make the authority
 REQUIRED -- drop the `?` from `allows Fs::read_file?` -- and call
-`Fs::read_file(..)` directly; a capability builtin is an ordinary call, not a
+`Fs::read_file(..)` directly; a capability is an ordinary call, not a
 `perform`. Handle the failure with `try`/`handle` instead of matching
 `Attempt`.
 ```

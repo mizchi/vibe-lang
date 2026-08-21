@@ -49,8 +49,8 @@ every backend. Text that still says `2^61-1` / 62-bit is stale.
 `allows Fs::read_file?`, but codegen cannot lower it, so the checker
 rejects it (#2145): *"`perform?` is not lowered yet"*, naming the edit —
 drop the `?` from the `allows` item and call `Fs::read_file(..)` the ordinary
-way. (For an algebraic operation the same message keeps the `perform`; a
-capability builtin is never performed.)
+way. `allows` only ever holds capabilities, and a capability is never
+performed.
 
 `vibe check` reports it too, so you see it before you build. Until #2145
 lands it ICE'd instead, after a clean check.
@@ -109,48 +109,5 @@ the binding.
 
 `let xs = for x in arr { x * 2 }` works for `Array`. A pull iterator in
 the same position is a located error. Accumulate with `ArrayBuilder`.
-
-## A `Double` from a function prints as garbage (#2158)
-
-Interpolating a `Double` that arrives through a **call** renders the raw
-bits as an integer. It compiles clean and prints a plausible wrong
-number — this is the worst-behaved thing in this chapter.
-
-```vibe skip
-// skip: prints wrong numbers rather than failing -- see #2158
-fn half(a: Double) -> Double { a / 2.0 }
-
-fn main with Console {
-  let bound = half(5.0)
-  println("\{bound}")        // 232   -- wrong
-  println("\{half(5.0)}")    // 404   -- wrong
-}
-```
-
-`half` is annotated in full and it makes no difference: the renderer
-decides from the syntax at the interpolation site, not from the declared
-return type. Three spellings that do work:
-
-```vibe run
-fn half(a: Double) -> Double {
-  a / 2.0
-}
-
-fn main with Console {
-  let annotated: Double = half(5.0)
-  println("annotate the binding = \{annotated}")
-  println("add arithmetic       = \{half(5.0) + 0.0}")
-  println("to_string            = \{Double::to_string(half(5.0))}")
-}
-```
-
-```output
-annotate the binding = 2.5
-add arithmetic       = 2.5
-to_string            = 2.5
-```
-
-Annotating the *parameter* does nothing; it is the binding at the use
-site that matters.
 
 Next: [Appendix](99_appendix.md).
