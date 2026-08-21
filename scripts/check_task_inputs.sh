@@ -12,9 +12,9 @@
 # over-approximate (a needless re-run costs time); they may never
 # under-approximate (that costs a wrong answer).
 #
-# The rule: if a task's command reaches the compiler, its inputs must include
-# `vibeSources` directly or through `compilerProbeInputs`, or it must set
-# `cache = false`.
+# The rule: if a cached task's command reaches the compiler, its inputs must
+# include `compilerProbeInputs` (selfhost sources + bootstrap seed), or it must
+# set `cache = false`.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -113,9 +113,7 @@ for m in re.finditer(r"new Task \{", src):
     if not hot:
         continue
     checked += 1
-    has_compiler_inputs = "vibeSources" in block or (
-        "compilerProbeInputs" in block and probe_inputs_safe
-    )
+    has_compiler_inputs = "compilerProbeInputs" in block and probe_inputs_safe
     if not has_compiler_inputs:
         why = "declares no `inputs` at all" if "inputs" not in block else "does not include a complete compiler input set"
         fails.append((name, hot[0], why))
@@ -123,9 +121,9 @@ for m in re.finditer(r"new Task \{", src):
 for name, script, why in fails:
     print(f"check-task-inputs: FAIL: task `{name}` runs {script}, which reaches the compiler,",
           file=sys.stderr)
-    print(f"  but it {why} and does not set `cache = false`. A change under", file=sys.stderr)
-    print("  lib/**/*.vibe would replay a cached pass.", file=sys.stderr)
-    print("  Add `...vibeSources` or `...compilerProbeInputs` to the list -- spelling inputs out should ADD to the",
+    print(f"  but it {why} and does not set `cache = false`. A compiler identity", file=sys.stderr)
+    print("  change would replay a cached pass.", file=sys.stderr)
+    print("  Add `...compilerProbeInputs` to the list -- spelling inputs out should ADD to the",
           file=sys.stderr)
     print("  defaults, not replace them.", file=sys.stderr)
 

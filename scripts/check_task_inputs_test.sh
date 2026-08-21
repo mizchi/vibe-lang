@@ -28,8 +28,8 @@ run_case "compiler task without vibeSources is rejected" 1 'local t = new Task {
   inputs { "docs/cheatsheet.md" }
 }'
 
-# The same, with vibeSources -> fine.
-run_case "compiler task with vibeSources passes" 0 'local t = new Task {
+# Selfhost sources alone omit the bootstrap compiler identity.
+run_case "compiler task with only vibeSources is rejected" 1 'local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
   inputs { ...vibeSources; "docs/cheatsheet.md" }
@@ -87,7 +87,7 @@ run_case "aggregator wrapper is treated as compiler-running" 1 'local t = new Ta
   inputs { "docs/cheatsheet.md" }
 }'
 
-run_case "aggregator wrapper with vibeSources passes" 0 'local t = new Task {
+run_case "aggregator wrapper with only vibeSources is rejected" 1 'local t = new Task {
   name = "probe"
   cmd = "bash scripts/compiler_gate.sh"
   inputs { ...vibeSources }
