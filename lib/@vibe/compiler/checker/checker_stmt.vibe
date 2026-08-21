@@ -4529,7 +4529,7 @@ export fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, St
             Some(a) => a,
             None => orig
           }
-          if warning_names_contains(used, local) {
+          if unused_alias_referenced(used, local, String::concat(local, "::")) {
             ()
           } else {
             let msg = String::concat("imported name '", String::concat(local, String::concat("' from '", String::concat(path, "' is never used in this file"))))
@@ -4546,6 +4546,63 @@ export fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, St
         } else {
           let msg = String::concat("import alias '", String::concat(bare, String::concat("' for '", String::concat(path, "' is never used in this file (referenced elsewhere in a whole-program merge? consider a named import instead)"))))
           Array::push(out, ("unused_import", alias, msg))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn import_items_have_unaliased_owner(items: Array[ImportItem], owner: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if item.name == owner && item.alias == None {
+      found = true
+      i = Array::length(items)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// An unaliased owner import activates its exported namespace, so spelling
+/// an unaliased `Owner::member` beside it adds no binding. Keep aliased
+/// members: they intentionally introduce a distinct local name.
+export fn detect_redundant_namespace_imports(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let sep = String::index_of(item.name, "::")
+          if sep > 0 && item.alias == None {
+            let owner = String::substring(item.name, 0, sep)
+            if import_items_have_unaliased_owner(items, owner) {
+              let msg = String::concat("imported name '", String::concat(item.name, String::concat("' from '", String::concat(path, String::concat("' is redundant because '", String::concat(owner, String::concat("' activates its namespace; remove '", String::concat(item.name, "' from the import list"))))))))
+              Array::push(out, ("redundant_import", item.name, msg))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SModule(_, _, body) => {
+        let nested = detect_redundant_namespace_imports(body)
+        let mut j = 0
+        while j < Array::length(nested) {
+          Array::push(out, Array::get(nested, j))
+          j = j + 1
         }
       },
       _ => ()

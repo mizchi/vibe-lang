@@ -16,6 +16,10 @@ import @vibe/compiler/core {
   Stmt
 }
 
+import @vibe/compiler/checker {
+  detect_redundant_namespace_imports
+}
+
 import @vibe/compiler/entry/compiler/file_compile {
   check_file_fs_mode_from_source_groups,
   compile_file_fs_mode,
@@ -473,6 +477,28 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
 /// check itself already failed loudly.
 export fn check_deprecated_warnings(input_path: String) -> Array[String] with Exception + Fs {
   check_deprecated_warnings_from_source_groups(input_path, collect_source_groups_fs(input_path))
+}
+
+/// Redundant owner/member selections in the entry file. The linked checker has
+/// already accepted the file before this runs; this is a non-fatal `vibe check`
+/// hygiene report with an actionable removal.
+export fn check_redundant_import_warnings(input_path: String) -> Array[String] with Exception + Fs {
+  let source = Fs::read_file(input_path)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+  if Array::length(parse_diags) > 0 {
+    array_empty()
+  } else {
+    let rows = detect_redundant_namespace_imports(stmts)
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(rows) {
+      let (_, _, msg) = Array::get(rows, i)
+      Array::push(out, locate_type_error(source, String::concat("warning: ", msg)))
+      i = i + 1
+    }
+    out
+  }
 }
 
 /// The same warnings, from source groups the caller already has. `vibe check`
