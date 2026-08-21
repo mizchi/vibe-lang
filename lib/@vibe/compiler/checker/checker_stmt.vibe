@@ -1174,37 +1174,44 @@ fn preclaim_local_type_defs(stmts: Array[Stmt], from: Int, defs: Array[TypeDef],
 /// the struct name must be the trait's dict spelling AND the field must be a
 /// method that trait declares. One row per trait:
 /// (dict struct name, method names, erased names).
-fn collect_trait_dict_erasures(stmts: Array[Stmt]) -> Array[(String, Array[String], Array[String])] {
+fn collect_trait_dict_erasures(stmts: Array[Stmt]) -> Array[(String, String, Array[String])] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       STrait(_, tname, _, methods, method_gens, tparams) => {
-        let mnames = array_empty()
+        let dict_name = String::concat(tname, "Dict")
+        // One row PER METHOD (Codex on #2162): `Self` and the trait's own
+        // params are trait-wide, but a method's generic binders are in scope
+        // only for that method's field -- a trait-wide union let field `a`
+        // spell method `b`'s binder and stay a wildcard.
         let mut mi = 0
         while mi < Array::length(methods) {
           let (mname, _, _) = Array::get(methods, mi)
-          Array::push(mnames, mname)
+          let erased = array_empty()
+          Array::push(erased, "Self")
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(erased, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gmname, gnames, _) = Array::get(method_gens, gi)
+            if gmname == mname {
+              let mut gni = 0
+              while gni < Array::length(gnames) {
+                Array::push(erased, Array::get(gnames, gni))
+                gni = gni + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          Array::push(out, (dict_name, mname, erased))
           mi = mi + 1
         }
-        let erased = array_empty()
-        Array::push(erased, "Self")
-        let mut ti = 0
-        while ti < Array::length(tparams) {
-          Array::push(erased, Array::get(tparams, ti))
-          ti = ti + 1
-        }
-        let mut gi = 0
-        while gi < Array::length(method_gens) {
-          let (_, gnames, _) = Array::get(method_gens, gi)
-          let mut gni = 0
-          while gni < Array::length(gnames) {
-            Array::push(erased, Array::get(gnames, gni))
-            gni = gni + 1
-          }
-          gi = gi + 1
-        }
-        Array::push(out, (String::concat(tname, "Dict"), mnames, erased))
       },
       _ => ()
     }
@@ -1285,12 +1292,12 @@ fn decl_report_shadow(tparams: Array[String], dict_erased: Array[String], deferr
 
 /// The erased-name row for `struct_name`/`field_name`, or empty when no
 /// trait in this statement list declares that dict/method pair.
-fn trait_dict_erasure_for(erasures: Array[(String, Array[String], Array[String])], struct_name: String, field_name: String) -> Array[String] {
+fn trait_dict_erasure_for(erasures: Array[(String, String, Array[String])], struct_name: String, field_name: String) -> Array[String] {
   let mut i = 0
   let mut found = array_empty()
   while i < Array::length(erasures) {
-    let (dname, mnames, erased) = Array::get(erasures, i)
-    if dname == struct_name && string_array_contains(mnames, field_name) {
+    let (dname, mname, erased) = Array::get(erasures, i)
+    if dname == struct_name && mname == field_name {
       found = erased
       i = Array::length(erasures)
     } else {
