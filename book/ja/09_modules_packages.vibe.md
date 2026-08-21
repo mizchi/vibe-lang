@@ -101,10 +101,20 @@ fn add(x: Int, y: Int) -> Int
 なくパッケージのメタデータで、
 [docs/adding-modules.md](../../docs/adding-modules.md) が参照先です。
 
-実務上の帰結、そして人が驚くところ: **同じパッケージの**2ファイル間で
-ヘルパーを共有したいとき、export だけでは足りません。契約にも宣言し、
-使う側のファイルが明示的に import する必要があります。既定は
-パッケージ内非公開です。
+契約は**利用者に向けた**境界です。他のパッケージから何に手が届くかを
+決めるものであって、パッケージの内側では邪魔をしません。最も近い
+`index.vpkg` が同じ2ファイルは、export して直接 import すれば
+ヘルパーを共有できます。契約に書く必要はありません:
+
+```text
+pkg/index.vpkg     fn package_value() -> Int          <- 公開するのはこれだけ
+pkg/impl.vibe      import ./_helper.vibe { private_value }
+pkg/_helper.vibe   export fn private_value() -> Int { 41 }
+```
+
+これはコンパイルが通ります。内部ヘルパーは内部のままでいられます —
+契約に書くことは、兄弟ファイルから使えるようにする操作ではなく、
+公開 API にする操作です。
 
 ## 再現可能なビルド
 

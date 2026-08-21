@@ -103,11 +103,20 @@ declarations is not vibe syntax — it is package metadata, and
 [docs/adding-modules.md](../../docs/adding-modules.md) is the reference
 for it.
 
-The practical consequence, and the thing that surprises people: to share
-a helper between two files of the *same* package, exporting it is not
-enough. It also has to be declared in the contract and imported
-explicitly by the file that wants it. Package-private-by-default is the
-rule.
+The contract is the **consumer-facing** boundary: it says what other
+packages may reach. Inside the package it does not get in your way — two
+files with the same nearest `index.vpkg` can share a helper by exporting
+it and importing it directly, with no entry in the contract:
+
+```text
+pkg/index.vpkg     fn package_value() -> Int          <- only this is published
+pkg/impl.vibe      import ./_helper.vibe { private_value }
+pkg/_helper.vibe   export fn private_value() -> Int { 41 }
+```
+
+That compiles. So an internal helper stays internal — putting it in the
+contract would be the thing that makes it public API, not the thing that
+lets a sibling use it.
 
 ## Reproducible builds
 
