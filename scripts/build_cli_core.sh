@@ -59,11 +59,6 @@ if [ ! -f "$ENTRY_PATH" ]; then
   exit 1
 fi
 
-# Compiler package implementations include generated bundles that are absent
-# from a pristine checkout. Direct callers (including scripts/vibe_cli.sh)
-# must not depend on another gate having populated them first.
-bash "$SCRIPT_DIR/ensure_generated.sh" >&2
-
 rel_path() {
   local path="$1"
   case "$path" in
@@ -132,6 +127,12 @@ if [ "$needs_rebuild" -eq 0 ]; then
   printf '%s\n' "$STAGE1_CORE_WASM"
   exit 0
 fi
+
+# Compiler package implementations include generated bundles that are absent
+# from a pristine checkout. Direct rebuild callers (including vibe_cli.sh)
+# must not depend on another gate having populated them first. Keep this after
+# the no-rebuild return: `never` with an existing artifact must remain offline.
+bash "$SCRIPT_DIR/ensure_generated.sh" >&2
 
 mkdir -p "$(dirname "$STAGE1_CORE_WASM")"
 
