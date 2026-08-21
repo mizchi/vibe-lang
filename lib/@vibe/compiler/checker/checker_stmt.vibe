@@ -1353,14 +1353,7 @@ fn string_array_contains(items: Array[String], wanted: String) -> Bool {
   found
 }
 
-fn import_item_local_name(item: ImportItem) -> String {
-  match item.alias {
-    Some(name) => name,
-    None => item.name
-  }
-}
-
-fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] {
+fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv, builtin_authority: Bool) -> Option[String] {
   let defs = env_type_defs(initial_env)
   let mut found: Option[String] = None
   let mut ambiguous = false
@@ -1406,8 +1399,7 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] 
     }
     i = i + 1
   }
-  let local = import_item_local_name(item)
-  let has_trait = trait_defined(initial_env, local) || trait_defined(initial_env, item.name)
+  let has_trait = trait_defined(initial_env, item.name)
   if ambiguous || (found != None && has_trait) {
     // A merged checker environment no longer carries the source-module
     // identity of TypeDef rows. The dependency projection boundary validates
@@ -1420,7 +1412,7 @@ fn imported_decl_kind(item: ImportItem, initial_env: TypeEnv) -> Option[String] 
       None => {
         if has_trait {
           Some("trait")
-        } else if resolve_builtin(item.name) != None {
+        } else if builtin_authority && resolve_builtin(item.name) != None {
           // Opaque primitive declarations from @vibe/builtin are represented
           // by their canonical value-type binding rather than a TypeDef row.
           // Their contract spelling is still `type Int`, `type String`, etc.
@@ -1457,13 +1449,13 @@ fn import_kind_article(label: String) -> String {
   }
 }
 
-fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, errors: Array[String]) -> Unit {
+fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool, errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
     let item = Array::get(items, i)
     match item.kind {
       None => (),
-      Some(expected) => match imported_decl_kind(item, initial_env) {
+      Some(expected) => match imported_decl_kind(item, initial_env, builtin_authority) {
         None => (),
         Some(actual) => {
           let wanted = import_kind_label(expected)
@@ -1477,9 +1469,9 @@ fn check_import_item_kinds(items: Array[ImportItem], initial_env: TypeEnv, error
   }
 }
 
-export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv) -> Array[String] {
+export fn import_item_kind_errors(items: Array[ImportItem], initial_env: TypeEnv, builtin_authority: Bool) -> Array[String] {
   let errors = array_empty()
-  check_import_item_kinds(items, initial_env, errors)
+  check_import_item_kinds(items, initial_env, builtin_authority, errors)
   errors
 }
 
@@ -1487,8 +1479,8 @@ fn check_import_kinds(stmts: Array[Stmt], initial_env: TypeEnv, errors: Array[St
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(_, items) => check_import_item_kinds(items, initial_env, errors),
-      SReExport(_, items) => check_import_item_kinds(items, initial_env, errors),
+      SImport(path, items) => check_import_item_kinds(items, initial_env, path == "@vibe/builtin", errors),
+      SReExport(path, items) => check_import_item_kinds(items, initial_env, path == "@vibe/builtin", errors),
       SModule(_, _, body) => check_import_kinds(body, initial_env, errors),
       _ => ()
     }

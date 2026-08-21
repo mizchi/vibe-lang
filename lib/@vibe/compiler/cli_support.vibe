@@ -20,6 +20,10 @@ import @vibe/compiler/checker {
   detect_redundant_namespace_imports
 }
 
+import @vibe/compiler/contract {
+  vpkg_shared_import_marker
+}
+
 import @vibe/compiler/entry/compiler/file_compile {
   check_file_fs_mode_from_source_groups,
   compile_file_fs_mode,
@@ -489,7 +493,7 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
   ])
 }
 
-fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] {
+fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] with Fs {
   let mut found: Option[String] = None
   let mut count = 0
   let mut gi = 0
@@ -509,7 +513,28 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
     gi = gi + 1
   }
   if count == 1 {
-    found
+    match found {
+      Some(source) => if String::starts_with(source, vpkg_shared_import_marker) {
+        // The loader prepends inherited `.vpkg` imports to the checked entry.
+        // Warning locations must refer to the physical file. Re-reading is
+        // safe only when that exact text is still the suffix of the checked
+        // snapshot; otherwise suppress warnings rather than report stale or
+        // synthetic lines.
+        if Fs::exists(input_path) {
+          let physical = Fs::read_file(input_path)
+          if String::ends_with(source, physical) {
+            Some(physical)
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      } else {
+        Some(source)
+      },
+      None => None
+    }
   } else {
     None
   }
@@ -518,7 +543,7 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
 /// Redundant import warnings derived from the exact source snapshot consumed
 /// by the successful linked check. Missing or duplicate entry identity is
 /// fail-closed: no warning is safer than describing unchecked contents.
-export fn check_redundant_import_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception {
+export fn check_redundant_import_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
   let source = match checked_entry_source(input_path, source_groups) {
     Some(snapshot) => snapshot,
     None => return array_empty()
