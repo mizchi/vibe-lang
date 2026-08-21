@@ -28,8 +28,54 @@ INPUT_ROOT = os.environ.get("TASK_INPUTS_ROOT", ".")
 src = open(TASKFILE, encoding="utf-8").read()
 
 def active_pkl(text):
-    """Drop Pkl line comments before checking whether an input is active."""
-    return re.sub(r"//.*$", "", text, flags=re.M)
+    """Drop Pkl comments without treating comment markers in strings as syntax."""
+    out = []
+    i = 0
+    string_hashes = None
+    while i < len(text):
+        if string_hashes is not None:
+            close = '"' + ('#' * string_hashes)
+            if text.startswith(close, i):
+                out.append(close)
+                i += len(close)
+                string_hashes = None
+            elif string_hashes == 0 and text[i] == "\\" and i + 1 < len(text):
+                out.append(text[i:i + 2])
+                i += 2
+            else:
+                out.append(text[i])
+                i += 1
+            continue
+        if text.startswith("//", i):
+            newline = text.find("\n", i + 2)
+            if newline < 0:
+                break
+            out.append("\n")
+            i = newline + 1
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            comment = text[i + 2:] if end < 0 else text[i + 2:end]
+            out.append("\n" * comment.count("\n"))
+            i = len(text) if end < 0 else end + 2
+            continue
+        if text[i] == '"':
+            out.append('"')
+            string_hashes = 0
+            i += 1
+            continue
+        if text[i] == "#":
+            j = i
+            while j < len(text) and text[j] == "#":
+                j += 1
+            if j < len(text) and text[j] == '"':
+                out.append(text[i:j + 1])
+                string_hashes = j - i
+                i = j + 1
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
 
 def has_spread(body, name):
     return bool(re.search(r"\.\.\.\s*" + re.escape(name) + r"\b", body))

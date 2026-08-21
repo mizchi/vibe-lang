@@ -125,6 +125,19 @@ run_case "commented cache false does not bypass inputs" 1 'local t = new Task {
   inputs { ...vibeSources }
 }'
 
+run_case "block-commented cache false does not bypass inputs" 1 'local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  /* cache = false */
+  inputs { ...vibeSources }
+}'
+
+run_case "URL in command does not hide compiler invocation" 1 'local t = new Task {
+  name = "probe"
+  cmd = "printf https://example.invalid && bash scripts/check_freeze_surface.sh"
+  inputs { ...vibeSources }
+}'
+
 # The shared wrapper factory must not bypass the seed-aware input set.
 run_case "scriptTask with only vibeSources is rejected" 1 'local function scriptTask(taskName: String, script: String): Task = new Task {
   name = taskName
@@ -240,4 +253,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (24 cases)"
+echo "check-task-inputs-test: ok (26 cases)"
