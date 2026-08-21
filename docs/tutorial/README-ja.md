@@ -5,9 +5,12 @@
 `*.vibe.md` で、`scripts/vibe_md.sh` が `` ```vibe run `` を実行し
 `` ```output `` と照合します。
 
-旧 `docs/tutorial/` のパスからの対応表は [README.md](README.md) にあります
-(`-ja` 版は同じ番号の `book/ja/` の章に対応します)。本は7章から20章に
-増えているので、対応の無い章もあります。
+旧 `docs/tutorial/` のパスからの対応表は [README.md](README.md) にあります。
+`-ja` 版 (`01_values_functions-ja.vibe.md` など) は、その表の**英語側の行き先と
+同じ名前**の [book/ja/](../../book/ja/) のファイルに対応します — つまり
+`01_values_functions-ja.vibe.md` は `book/ja/03_values_functions.vibe.md` で
+あって `book/ja/01_*` ではありません。番号は2言語で共通で、`-ja` 接尾辞だけが
+無くなりました。本は7章から20章に増えているので、対応の無い章もあります。
 
 English: [README.md](README.md)
 
