@@ -65,6 +65,16 @@ local t = new Task {
   inputs { ...compilerProbeInputs; "docs/cheatsheet.md" }
 }'
 
+run_case "compilerProbeInputs with vibeSources string is rejected" 1 'local compilerProbeInputs = new {
+  "vibeSources"
+  "bootstrap/seed.json"
+}
+local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...compilerProbeInputs }
+}'
+
 run_case "commented compilerProbeInputs source is rejected" 1 'local compilerProbeInputs = new {
   // ...vibeSources
   "bootstrap/seed.json"
@@ -85,6 +95,16 @@ local t = new Task {
   inputs { // ...compilerProbeInputs
     "docs/cheatsheet.md"
   }
+}'
+
+run_case "compilerProbeInputs path string in inputs is rejected" 1 'local compilerProbeInputs = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+}
+local t = new Task {
+  name = "probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { "compilerProbeInputs"; ...vibeSources }
 }'
 
 run_case "compilerProbeInputs mentioned outside inputs is rejected" 1 'local compilerProbeInputs = new {
@@ -110,6 +130,16 @@ run_case "scriptTask with only vibeSources is rejected" 1 'local function script
   name = taskName
   cmd = "bash \(script)"
   inputs { ...vibeSources; ...scriptSources }
+}'
+
+run_case "scriptTask with compilerProbeInputs string is rejected" 1 'local compilerProbeInputs = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+}
+local function scriptTask(taskName: String, script: String): Task = new Task {
+  name = taskName
+  cmd = "bash \(script)"
+  inputs { "compilerProbeInputs"; ...vibeSources }
 }'
 
 run_case "scriptTask without inputs is rejected" 1 'local function scriptTask(taskName: String, script: String): Task = new Task {
@@ -196,4 +226,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (19 cases)"
+echo "check-task-inputs-test: ok (22 cases)"

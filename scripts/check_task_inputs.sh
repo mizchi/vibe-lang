@@ -31,6 +31,9 @@ def active_pkl(text):
     """Drop Pkl line comments before checking whether an input is active."""
     return re.sub(r"//.*$", "", text, flags=re.M)
 
+def has_spread(body, name):
+    return bool(re.search(r"\.\.\.\s*" + re.escape(name) + r"\b", body))
+
 # The shared compiler-probe input set is safe only while it contains both
 # halves of the compiler identity: selfhost sources and the bootstrap seed.
 probe_inputs_m = re.search(
@@ -41,7 +44,7 @@ probe_inputs_m = re.search(
 probe_inputs_body = active_pkl(probe_inputs_m.group(1)) if probe_inputs_m else ""
 probe_inputs_safe = bool(
     probe_inputs_m
-    and "vibeSources" in probe_inputs_body
+    and has_spread(probe_inputs_body, "vibeSources")
     and '"bootstrap/seed.json"' in probe_inputs_body
 )
 
@@ -66,7 +69,7 @@ if script_task_decl:
 script_task_inputs_body = active_pkl(script_task_inputs.group(1)) if script_task_inputs else ""
 script_task_safe = bool(
     script_task_inputs
-    and "compilerProbeInputs" in script_task_inputs_body
+    and has_spread(script_task_inputs_body, "compilerProbeInputs")
     and probe_inputs_safe
 )
 script_task_bad = bool(script_task_decl and not script_task_safe)
@@ -170,7 +173,7 @@ for m in re.finditer(r"new Task \{", src):
     checked += 1
     inputs_m = re.search(r"inputs\s*\{(.*?)\}", active_block, re.S)
     has_compiler_inputs = bool(
-        inputs_m and "compilerProbeInputs" in inputs_m.group(1) and probe_inputs_safe
+        inputs_m and has_spread(inputs_m.group(1), "compilerProbeInputs") and probe_inputs_safe
     )
     if not has_compiler_inputs:
         why = "declares no `inputs` at all" if not inputs_m else "does not include a complete compiler input set"
