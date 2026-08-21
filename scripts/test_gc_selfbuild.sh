@@ -311,7 +311,8 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     bash "$ROOT_DIR/scripts/vibe_test.sh" \
     fixtures/eq_structural_aggregates_test.vibe \
     fixtures/map_builder_growth_test.vibe \
-    fixtures/struct_field_collision_test.vibe > "$gcfx_log" 2>&1; then
+    fixtures/struct_field_collision_test.vibe \
+    fixtures/float_return_to_string_gc_test.vibe > "$gcfx_log" 2>&1; then
   sed 's/^/[gc-selfbuild]   /' "$gcfx_log"
   echo "[gc-selfbuild] gc runtime fixtures ok"
 else

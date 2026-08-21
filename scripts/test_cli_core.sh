@@ -93,6 +93,16 @@ run_stage() {
   fi
 }
 
+run_wasm_validate() {
+  local name="$1"
+  local wasm="$2"
+  if command -v wasm-tools >/dev/null 2>&1; then
+    run_stage "$name" wasm-tools validate "$wasm"
+  else
+    echo "[selfhost-cli-core] skip: $name (wasm-tools not installed)"
+  fi
+}
+
 run_stage_capture_stdout() {
   local name="$1"
   local out_path="$2"
@@ -213,7 +223,7 @@ if [ ! -f "$COMMAND_CALLSTACK_TSV" ] || ! grep -Eq $'^compile\t[0-9]+\t[1-9][0-9
   exit 1
 fi
 
-run_stage "validate command-style compile-lite wasm" wasm-tools validate "$COMMAND_OUTPUT_WASM" || exit $?
+run_wasm_validate "validate command-style compile-lite wasm" "$COMMAND_OUTPUT_WASM" || exit $?
 
 run_stage_capture_stdout "run command-style compile-lite wasm produced by selfhost core cli" \
   "$COMMAND_OUTPUT_RUN_LOG" \
@@ -252,7 +262,7 @@ if [ ! -f "$COMPILE_COMMAND_OUTPUT_WASM" ]; then
   exit 1
 fi
 
-run_stage "validate command-style compile wasm" wasm-tools validate "$COMPILE_COMMAND_OUTPUT_WASM" || exit $?
+run_wasm_validate "validate command-style compile wasm" "$COMPILE_COMMAND_OUTPUT_WASM" || exit $?
 
 run_stage_capture_stdout "run command-style compile wasm produced by selfhost core cli" \
   "$COMPILE_COMMAND_OUTPUT_RUN_LOG" \
@@ -291,7 +301,7 @@ if [ ! -f "$BUILD_COMMAND_OUTPUT_WASM" ]; then
   exit 1
 fi
 
-run_stage "validate command-style build wasm" wasm-tools validate "$BUILD_COMMAND_OUTPUT_WASM" || exit $?
+run_wasm_validate "validate command-style build wasm" "$BUILD_COMMAND_OUTPUT_WASM" || exit $?
 
 run_stage_capture_stdout "run command-style build wasm produced by selfhost core cli" \
   "$BUILD_COMMAND_OUTPUT_RUN_LOG" \
@@ -362,8 +372,8 @@ if [ ! -f "$DEBUG_LIB_WASM" ]; then
   exit 1
 fi
 
-run_stage "validate linked debug main wasm" wasm-tools validate "$DEBUG_OUTPUT_WASM" || exit $?
-run_stage "validate linked debug library wasm" wasm-tools validate "$DEBUG_LIB_WASM" || exit $?
+run_wasm_validate "validate linked debug main wasm" "$DEBUG_OUTPUT_WASM" || exit $?
+run_wasm_validate "validate linked debug library wasm" "$DEBUG_LIB_WASM" || exit $?
 
 run_stage_capture_stdout "run linked debug wasm produced by selfhost core cli" \
   "$DEBUG_OUTPUT_RUN_LOG" \
@@ -409,8 +419,8 @@ if [ ! -f "$DEBUG_STRING_LIB_WASM" ]; then
   exit 1
 fi
 
-run_stage "validate linked debug string main wasm" wasm-tools validate "$DEBUG_STRING_OUTPUT_WASM" || exit $?
-run_stage "validate linked debug string library wasm" wasm-tools validate "$DEBUG_STRING_LIB_WASM" || exit $?
+run_wasm_validate "validate linked debug string main wasm" "$DEBUG_STRING_OUTPUT_WASM" || exit $?
+run_wasm_validate "validate linked debug string library wasm" "$DEBUG_STRING_LIB_WASM" || exit $?
 
 run_stage_capture_stdout "run linked debug string wasm produced by selfhost core cli" \
   "$DEBUG_STRING_OUTPUT_RUN_LOG" \

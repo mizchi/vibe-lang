@@ -57,15 +57,14 @@ for en in "${english[@]}"; do
 
   ja="$ja_dir/$(basename "$en")"
   if [ ! -f "$ja" ]; then
-    # New English-only book chapters are allowed. The original tour pair
-    # (01..07) must keep a translation under book/ja/.
-    case "$(basename "$en")" in
-      01_values_functions.vibe.md|02_control_flow.vibe.md|03_data.vibe.md|04_option.vibe.md|05_effects.vibe.md|06_tests.vibe.md|07_modules_packages.vibe.md)
-        echo "check-tutorial-translation-parity: FAIL: $(basename "$en") has no translation" >&2
-        echo "  expected book/ja/$(basename "$en")" >&2
-        fail=1
-        ;;
-    esac
+    # EVERY chapter, with no allowlist. There used to be one naming seven
+    # files, from when most of the book was English-only: deleting the
+    # translation of any other chapter passed this gate in silence (#2156
+    # review). The book now has all 20 pairs, and AGENTS.md says a chapter
+    # with no translation is a failure, so the exception list is gone.
+    echo "check-tutorial-translation-parity: FAIL: $(basename "$en") has no translation" >&2
+    echo "  expected book/ja/$(basename "$en")" >&2
+    fail=1
     continue
   fi
 

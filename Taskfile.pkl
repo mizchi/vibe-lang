@@ -42,6 +42,39 @@ local function scriptTask(taskName: String, script: String): Task = new Task {
   inputs { ...vibeSources; ...scriptSources }
 }
 
+// CI-only slices use fixed artifact paths so pkfire can hash the exact stage2
+// they consume and safely replay successful verdicts from its CAS.
+local ciCompilerGatePreflight = new Task {
+  name = "ci-compiler-gate-preflight"
+  description = "stage-independent compiler-gate preflight"
+  cmd =
+    "bash tests/gates/bootstrap/preflight.sh && mkdir -p _build/pkfire && printf 'ok\\n' > _build/pkfire/ci-compiler-gate-preflight.ok"
+  inputs {
+    ...vibeSources
+    ...scriptSources
+    "tests/gates/**/*.sh"
+    "tests/gates/registry.tsv"
+    "fixtures/**/*.vibe"
+    "bootstrap/seed.json"
+  }
+  outputs { "_build/pkfire/ci-compiler-gate-preflight.ok" }
+}
+
+local ciCheckExamplesTypecheck = new Task {
+  name = "ci-check-examples-typecheck"
+  description = "type-check examples against CI's content-addressed stage2"
+  cmd =
+    "EXAMPLES_STAGE2=_build/_ci_shard_gen/stage2.wasm bash scripts/check_examples_typecheck.sh && mkdir -p _build/pkfire && printf 'ok\\n' > _build/pkfire/ci-check-examples-typecheck.ok"
+  inputs {
+    ...vibeSources
+    ...scriptSources
+    "examples/**/*.vibe"
+    "install/**/*"
+    "_build/_ci_shard_gen/stage2.wasm"
+  }
+  outputs { "_build/pkfire/ci-check-examples-typecheck.ok" }
+}
+
 // === Quick Commands ===
 
 local fmt = new Task {
@@ -371,6 +404,54 @@ local checkBookLinks = new Task {
   }
 }
 local testCheckBookLinks = scriptTask("test-check-book-links", "scripts/check_book_links_test.sh")
+// A resolving link and a correct one are different questions. check-book-links
+// answers the first; this answers the second, against book/SUMMARY.md as the
+// single reading order -- headings numbered by position, and Previous/Next
+// naming the SUMMARY neighbours, in BOTH languages.
+// NOT `scriptTask`, for the same reason as check-book-links: the book is the
+// subject, so a cached pass replayed after a chapter edit checks nothing.
+local checkBookOrder = new Task {
+  name = "check-book-order"
+  description = "chapter headings and Previous/Next follow book/SUMMARY.md, en and ja"
+  cmd = "bash scripts/check_book_order.sh"
+  inputs {
+    ...scriptSources
+    "book/**/*.md"
+  }
+}
+// The book's ```vibe skip blocks each claim a rejection and quote a
+// diagnostic, and the doctest harness cannot look at them -- it runs `vibe
+// run` blocks and skips these by definition. One had rotted into
+// demonstrating the fix instead of the failure (#2156 review). Needs a
+// compiler, so callers that build a stage2 should hand it over via
+// VIBE_SKIP_BLOCK_CLI_WASM. Not `scriptTask`, same reason as its siblings.
+local checkBookSkipBlocks = new Task {
+  name = "check-book-skip-blocks"
+  description = "every ```vibe skip block is still rejected, with its quoted diagnostic"
+  cmd = "bash scripts/check_book_skip_blocks.sh"
+  // vibeSources too: the ANSWER comes from the compiler, so a compiler change
+  // can start accepting a skip block or reword its diagnostic without touching
+  // a script or a chapter. Without this the cache key is unchanged and
+  // release-check replays a pass that recompiled nothing (#2156 review) --
+  // the same "a cached pass has checked nothing" reasoning that keeps this
+  // out of scriptTask, one level up.
+  inputs {
+    ...scriptSources
+    ...vibeSources
+    "book/**/*.md"
+    // vibeSources is lib/** only, so a SEED-ONLY bootstrap bump changes the
+    // stage2 selfhostGeneration builds while leaving this key untouched, and
+    // the previous verdict replays against a compiler that no longer exists
+    // (#2156 review). The sibling compiler-probing gates share this gap --
+    // filed as #2165 rather than changing their caching from this PR.
+    "bootstrap/seed.json"
+  }
+  // Same reason as check-rc-default and check-package-sibling-scope: the
+  // verdict is the current compiler's, so the current compiler has to exist
+  // before this runs. As siblings in release-check's deps this could go first
+  // and answer from the seed (#2156 review).
+  deps { selfhostGeneration }
+}
 // Two doctest harnesses answer differently on the same document; the guard in
 // scripts/vibe_md.sh keeps a prose doc from reaching the *.vibe.md one.
 local testVibeMdGuard = scriptTask("test-vibe-md-guard", "scripts/vibe_md_guard_test.sh")
@@ -649,7 +730,7 @@ local testPerfReport = new Task {
 local testCoverageScripts = new Task {
   name = "test-coverage-scripts"
   cmd =
-    "node --test scripts/coverage_suite_next_branches.test.mjs scripts/coverage_wasm_source.test.mjs scripts/select_test_shard.test.mjs && python3 scripts/coverage_suite_report_test.py && python3 scripts/coverage_tracks_test.py && bash tests/gates/tooling-accounting/coverage/coverage_drivers_test.sh && bash tests/gates/tooling-accounting/coverage/coverage_pipeline_contract_test.sh"
+    "node --test scripts/coverage_suite_next_branches.test.mjs scripts/select_test_shard.test.mjs && python3 scripts/coverage_suite_report_test.py && python3 scripts/coverage_tracks_test.py && bash scripts/coverage_wasm_std_test.sh && bash tests/gates/tooling-accounting/coverage/coverage_drivers_test.sh && bash tests/gates/tooling-accounting/coverage/coverage_pipeline_contract_test.sh"
   // Runs a wrapper under tests/gates/** that invokes the compiler, so lib/**
   // is part of the answer (#2138 review).
   inputs {
@@ -920,14 +1001,12 @@ local coverageSelfhostSuiteBranchGate = new Task {
   deps { selfhostGeneration }
 }
 
-local coverageScratchSidecar = new Task {
-  name = "coverage-scratch-sidecar"
-  cmd = "scripts/coverage_scratch_sidecar.sh $@"
-  acceptsArgs = true
+local coverageWasmStd = new Task {
+  name = "coverage-wasm-std"
+  cmd = "bash scripts/coverage_wasm_std.sh"
+  cache = false
   inputs { ...vibeSources; ...scriptSources }
 }
-
-local coverageWasmStd = scriptTask("coverage-wasm-std", "scripts/coverage_wasm_std.sh")
 
 // `coverage-moon` / `coverage-deno` were retired with the MoonBit host (#594,
 // see docs/coverage.md); the selfhost-suite coverage lane is now the only
@@ -1488,6 +1567,8 @@ local releaseCheck = new Task {
     checkVersionLadder
     testCheckBookLinks
     checkBookLinks
+    checkBookOrder
+    checkBookSkipBlocks
     testVibeMdGuard
     checkSourceRangeContract
     testCheckSourceRangeContract
@@ -1522,6 +1603,8 @@ local checkRelease = new Task {
 // === Task registration ===
 
 tasks {
+  ciCompilerGatePreflight
+  ciCheckExamplesTypecheck
   fmt
   preCommit
   formalCheck
@@ -1562,6 +1645,8 @@ tasks {
   checkVersionLadder
   testCheckVersionLadder
   checkBookLinks
+  checkBookOrder
+  checkBookSkipBlocks
   testCheckBookLinks
   testVibeMdGuard
   checkSourceRangeContract
@@ -1636,7 +1721,6 @@ tasks {
   coverageSelfhostSuiteNextBranches
   coverageSelfhostSuiteBranch
   coverageSelfhostSuiteBranchGate
-  coverageScratchSidecar
   coverageWasmStd
   coverage
   run

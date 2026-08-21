@@ -1,0 +1,77 @@
+//# Imports
+
+// #2141 (interim guard): a generic `==` over `Array[T]` silently miscompared
+// when the formal `T` shared its spelling with a locally declared `struct T`
+// -- the synthesized array-equals helper subtracts declared type names from
+// the binder set program-wide, so the helper was emitted UNBOUND, its
+// annotations resolved to the struct, and `same([1,2], [1,3])` answered true
+// with `vibe check` clean. Until the classification is scope-precise, the
+// collision itself is rejected at the binder
+// (collect_type_param_shadowing_errors, checker_stmt.vibe).
+//
+// The boundary is LOCAL declarations only: a formal shadowing an IMPORTED
+// type is measured behaviorally harmless (the helper over-binds; element
+// comparison stays structural) and is pinned as accepted by
+// derive_array_helper_interference_test.vibe. These tests pin both sides.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The first checker diagnostic for `source`, or "" when it type-checks.
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with Exception {
+    Throw(msg) => msg
+  }
+}
+
+//# Rejected
+
+test "#2141: the issue's repro is rejected at the binder" {
+  let src = "struct T {\n  v: Int\n}\n\nfn same[T](a: Array[T], b: Array[T]) -> Bool {\n  a == b\n}\n"
+  inspect(first_check_error(src), content = "type parameter `T` of declaration `same` shadows the declared type `T`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141) [@fn=same]")
+}
+
+test "#2141: an enum collides the same way" {
+  let src = "enum E {\n  A;\n  B\n}\n\nfn f[E](x: E) -> E {\n  x\n}\n"
+  inspect(first_check_error(src), content = "type parameter `E` of declaration `f` shadows the declared type `E`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141) [@fn=f]")
+}
+
+test "#2141: a struct's own type parameter list is guarded too" {
+  // `struct Box[T]` next to `struct T` feeds the same spelling-keyed helper
+  // classification (its derive helpers read the element type by name).
+  let src = "struct T {\n  v: Int\n}\n\nstruct Box[T] {\n  xs: Array[T]\n}\n"
+  inspect(first_check_error(src), content = "type parameter `T` of struct `Box` shadows the declared type `T`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141) [@fn=Box]")
+}
+
+test "#2141: a nested lambda binder is guarded" {
+  let src = "struct T {\n  v: Int\n}\n\nfn outer() -> Int {\n  let g = [T](x: T) -> T {\n    x\n  }\n  g(1)\n}\n"
+  inspect(first_check_error(src), content = "type parameter `T` of declaration `outer` shadows the declared type `T`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141) [@fn=outer]")
+}
+
+//# Accepted
+
+test "#2141: a generic formal with no colliding declaration stays legal" {
+  inspect(first_check_error("fn id[T](x: T) -> T {\n  x\n}\n"), content = "")
+}
+
+test "#2141: a declared struct next to a DIFFERENTLY spelled formal stays legal" {
+  let src = "struct T {\n  v: Int\n}\n\nfn same[U](a: Array[U], b: Array[U]) -> Bool {\n  a == b\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2141: renaming the formal makes the issue's program answer correctly" {
+  // The guard's actionable edit, applied: the program from the issue with the
+  // formal renamed compiles clean.
+  let src = "struct T {\n  v: Int\n}\n\nfn same[U](a: Array[U], b: Array[U]) -> Bool {\n  a == b\n}\n\nfn probe() -> Bool {\n  !same([1, 2], [1, 3])\n}\n"
+  inspect(first_check_error(src), content = "")
+}

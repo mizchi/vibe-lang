@@ -275,6 +275,53 @@ test "#2159 review: an alias of an ordinary struct still has no region slot" {
   inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
 }
 
+test "#2125 fields: a typo in a struct field type is reported" {
+  inspect(first_check_error("struct B {\n  x: Intt\n}\n"), content = "unknown type `Intt` in field `x` of struct `B`")
+}
+
+test "#2125 payloads: a typo in an enum payload is reported" {
+  inspect(first_check_error("enum E {\n  V(Wrong)\n}\n"), content = "unknown type `Wrong` in the payload of `E::V`")
+}
+
+test "#2125 fields: a struct's own type parameter is not a typo" {
+  inspect(first_check_error("struct Box2[T] {\n  v: T\n}\n\nfn use_it(b: Box2[Int]) -> Int {\n  1\n}\n"), content = "")
+}
+
+test "#2125 fields: a trait-dict witness struct's erased names are not typos" {
+  // Whole-program lanes re-check desugar_trait_dict's output, where the
+  // `<Trait>Dict` struct spells `Self` (and the trait's params) verbatim.
+  // Exempt under provenance: the struct name is the trait's dict spelling AND
+  // the field is a method that trait declares.
+  let dict_ok = "trait Default3 {\n  default3() -> Self\n}\n\nstruct Default3Dict {\n  default3: () -> Self\n}\n"
+  inspect(first_check_error(dict_ok), content = "")
+  // No such trait: the same struct is ordinary and `Self` is a wildcard.
+  let no_trait = "struct Default3Dict {\n  default3: () -> Self\n}\n"
+  inspect(first_check_error(no_trait), content = "unknown type `Self` in field `default3` of struct `Default3Dict`")
+  // Trait exists but the field is not one of its methods: still reported.
+  let wrong_field = "trait Default3 {\n  default3() -> Self\n}\n\nstruct Default3Dict {\n  other: () -> Self\n}\n"
+  inspect(first_check_error(wrong_field), content = "unknown type `Self` in field `other` of struct `Default3Dict`")
+}
+
+test "#2162 review: a method's generic binder is scoped to its own field" {
+  // Codex on #2162: a trait-wide union of method binders let field `a` spell
+  // method `b`'s binder and stay a wildcard. Each dict field carries only its
+  // own method's binders (plus `Self` and the trait's params).
+  let own = "trait Tr2 {\n  a[X](Self) -> X\n  b[Y](Self) -> Y\n}\n\nstruct Tr2Dict {\n  a: (Self) -> X\n}\n"
+  inspect(first_check_error(own), content = "")
+  let crossed = "trait Tr2 {\n  a[X](Self) -> X\n  b[Y](Self) -> Y\n}\n\nstruct Tr2Dict {\n  a: (Self) -> Y\n}\n"
+  inspect(first_check_error(crossed), content = "unknown type `Y` in field `a` of struct `Tr2Dict`")
+}
+
+test "#2162 review round 3: a sentinel exempts only the declarations it names" {
+  // The `<protected> : <deferred>` sentinel format scopes the exemption: in
+  // a whole-program merge an unscoped sentinel would excuse an UNRELATED
+  // declaration misspelling one of the deferred names.
+  let scoped = "let __vpkg_deferred_type_names_t__: String = \"Prot : Missing\"\n\nstruct Prot {\n  x: Missing\n}\n"
+  inspect(first_check_error(scoped), content = "")
+  let unrelated = "let __vpkg_deferred_type_names_t__: String = \"Prot : Missing\"\n\nstruct Prot {\n  x: Missing\n}\n\nstruct Local {\n  y: Missing\n}\n"
+  inspect(first_check_error(unrelated), content = "unknown type `Missing` in field `y` of struct `Local`")
+}
+
 test "#2147 review round 4: Self inside a trait declaration stays legal" {
   // The one place `Self` is a type. Trait-method signatures are resolved by
   // the trait machinery, not by `report_unknown_type_names`' annotation

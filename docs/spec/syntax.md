@@ -451,7 +451,7 @@ Rules:
   `break` followed by a parenthesized expression -- NOT the same shape as
   `continue(a, b)`'s call-like next-state argument list. `break(a, b)` builds
   the tuple `(a, b)`, it does not break with two separate loop-result values
-  (see `book/en/02_control_flow.vibe.md`'s loop section for a runnable
+  (see `book/en/04_control_flow.vibe.md`'s loop section for a runnable
   example of this asymmetry).
 - Parameterized `loop (...)` is tail-recursive state threading.
 - `continue` and `break` count different things, and #1284 settled that the

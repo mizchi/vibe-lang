@@ -1,15 +1,10 @@
 # Coverage strategy
 
-> **Status (measured 2026-08-20).** Working: the selfhost `#cov` lane
+> **Status (measured 2026-08-21).** Working: the selfhost `#cov` lane
 > (`pkf run coverage*`) and the per-file `--coverage` flags on
-> `scripts/vibe_test.sh` / `scripts/vibe_run.sh`.
->
-> **`pkf run coverage-wasm-std` does NOT work, and exits 0 anyway.** It calls
-> `scripts/coverage_wasm_source.sh` — a file that no longer exists in the tree.
-> Measured: 21 of 21
-> cases fail with `No such file or directory`, the report says
-> `kpi 0.00% / lines 0/0 / branches 0/0`, and the task **exits 0** because
-> `VIBE_WASM_STD_COVERAGE_STRICT` defaults to `0`. Tracked in #2153.
+> `scripts/vibe_test.sh` / `scripts/vibe_run.sh`. `coverage-wasm-std` is a
+> selector over that same maintained test coverage path; it is no longer a
+> separate compiler/report pipeline.
 
 ## コンパイラの関数 / 分岐カバレッジ（#cov）
 
@@ -122,6 +117,14 @@ entry ごとの program 固有**なので entry 間で比較してはいけな�
 `branch.per_fn[fn].mask` (branch 1つにつき `'1'`/`'0'` 1文字、ordinal 昇順)
 がこの ordinal を公開しており、report 側はこれを OR して union を出す。
 
+Entry-weighted rates are reported for historical continuity, but they are not
+gated by default. Adding one test entry adds its whole import closure to their
+denominator, so a larger test suite can lower those rates while both the
+covered-function and covered-branch counts increase. The default gate instead
+uses absolute hit ratchets plus the explicit branch source-coverage KPI. Set
+`VIBE_SUITE_MIN_POINT_RATE` or `VIBE_SUITE_MIN_BRANCH_RATE` only for an explicit
+diagnostic experiment that needs an entry-weighted floor.
+
 > **重要 — この指標が測っているのは「テストプログラム自身の実行」であって
 > 「テストで検証された機能」ではない。**
 >
@@ -162,10 +165,13 @@ entry ごとの program 固有**なので entry 間で比較してはいけな�
   `branch_union.exact` が `false` になり、値は**下限**として表示される。
   この場合 ratchet は測れなかった数値で落とさないようスキップされる
 
-ratchet: `VIBE_SUITE_MIN_BRANCH_UNION_HIT` (絶対数) と
-`VIBE_SUITE_MIN_BRANCH_UNION_RATE` (率)。entry を足すと分母がその import
-closure ぶん増える entry-weighted rate と違い、union の rate は
-「テストを足せば上がる」ので率のラチェットとして意味を持つ。
+ratchet: `VIBE_SUITE_MIN_BRANCH_UNION_HIT` (absolute count) and
+`VIBE_SUITE_MIN_BRANCH_UNION_RATE` (the explicit #1556 branch-coverage KPI).
+The union removes repeated imports across entries, but its source universe can
+still expand when a test first imports a module. Function union therefore uses
+`VIBE_SUITE_MIN_FUNCTION_UNION_HIT` as its default monotonic ratchet; its rate
+is reported and can be enabled explicitly with
+`VIBE_SUITE_MIN_FUNCTION_UNION_RATE`, but defaults to zero.
 
 ### コンパイラ自身を計測
 
@@ -534,80 +540,28 @@ ok   lib/@vibe/builtin/bool_test.vibe  [cov fn 20/32, branch 6/6]
 [vibe-test] coverage: functions 20/32 (62.50%), branches 6/6 (100.00%)
 ```
 
-**壊れている経路**: `pkf run coverage-wasm-std` /
-`scripts/coverage_scratch_sidecar.sh` はどちらも
-`scripts/coverage_wasm_source.sh` を呼ぶ — no longer exists (現存しない)。
-`scripts/coverage_wasm_source.mjs` (`<wasm-file> <map-json>` を取る driver) は
-その wrapper 経由でしか呼ばれないので、到達不能。#2153。
+The old `coverage_wasm_source.sh` pipeline was retired with the MoonBit host.
+Its source-map report format and scratch-sidecar task were removed rather than
+leaving unreachable controls that appeared to work. `VIBE_TEST_COVERAGE=1` is
+also not a supported control. Use `bash scripts/vibe_test.sh --coverage`.
 
-`VIBE_WASM_SOURCE_COVERAGE_*` (`MODE` / `NO_DCE` / `RUN_TESTS` /
-`ALLOW_TRAP` / `DIR`) は `coverage_wasm_std.sh` と
-`coverage_scratch_sidecar.sh` が読むが、上記のとおり両方とも今は機能しない。
+### Measure all @vibe/builtin tests
 
-かつてここに載っていた `VIBE_TEST_COVERAGE=1` は**どこからも読まれていない**。
-`vibe test --coverage` も存在しない (インストール済み CLI は
-`not found: --coverage` と答える) — `bash scripts/vibe_test.sh --coverage` が
-その役割を担う。
-
-### @vibe/builtin 一括計測
-
-`@vibe/builtin/**/*_test.vibe` をまとめて回すときは:
+`coverage-wasm-std` selects every `*_test.vibe` file under `@vibe/builtin` and
+runs the maintained test coverage path:
 
 ```bash
 pkf run coverage-wasm-std
 ```
 
-生成物:
-- `_build/coverage/wasm-std/summary.txt`
-- `_build/coverage/wasm-std/report.json`
-- `_build/coverage/wasm-std/report.md`
-- `_build/coverage/wasm-std/reports.txt`
-- `_build/coverage/wasm-std/attempts.tsv`
-- `_build/coverage/wasm-std/failures.txt`
+The command prints per-file and aggregate function/branch coverage and writes
+per-file JSON to `_build/vibe_test/coverage/`. Any compile or test failure makes
+the task fail; measuring zero selected files also fails.
 
-環境変数:
-- `VIBE_WASM_STD_COVERAGE_MODES` (カンマ or 空白区切り; 例: `wasm,wasm-js-string`)
-- `VIBE_WASM_STD_COVERAGE_MODE` (単一モード指定; `MODES` 未指定時のみ利用)
-- `VIBE_WASM_STD_COVERAGE_NO_DCE` (`0` / `1`)
-- `VIBE_WASM_STD_COVERAGE_STRICT` (`0` / `1`)
-- `VIBE_WASM_STD_COVERAGE_ALLOW_TRAP` (`0` / `1`)
-- `VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE` (`0..100`, 任意)
-- `VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE` (`0..100`, 任意)
-- `VIBE_WASM_STD_COVERAGE_FILTER` (`rg` パターン)
-- `VIBE_WASM_STD_COVERAGE_EXCLUDE` (`rg` パターン)
-- `VIBE_WASM_STD_COVERAGE_MATRIX` (backend capability matrix JSON)
-- `VIBE_WASM_STD_COVERAGE_DIR` (出力先ディレクトリ)
-
-デフォルトでは `wasm -> wasm-js-string` の順でフォールバック実行する。
-各試行の結果は `attempts.tsv` と `cases/*.log` に残り、`report.json` には以下が入る。
-
-- `failed_case_details[]`: ケースごとの失敗理由 (`compile_unsupported` / `runtime_trap` など) と mode 別試行履歴
-- `failure_reason_counts`: 失敗理由の集計
-- `execution.trap_case_count`: 実行時 trap したケース数（計測自体は保持）
-- `spec.expected_failure_count` / `spec.unexpected_failure_count`:
-  backend capability matrix に対する仕様内/仕様外の失敗件数
-- `spec.mismatch_case_count`:
-  計測成功ケースの実行 backend が `expected_backend` と不一致だった件数
-
-`@vibe/builtin/backend_capabilities.json` をデフォルト matrix として読み込み、
-失敗ケースごとに `expected_backend` (`wasm` / `wasm-js-string` / `either`)
-を参照して `spec_status` を付与する。
-`VIBE_WASM_STD_COVERAGE_STRICT=1` では `unexpected_failure` または
-`mismatch_case_count > 0` の場合に失敗する。
-
-coverage の有効性判断は、全体率だけでなく `cases(total/measured/failed)` と `failure_reason_counts` を併せて行う。
-必要なら KPI gate を有効化し、閾値未達でコマンドを失敗させる。
-
-line 率は `line point` の重複ではなく `raw.lines` の unique line 数を使って集計する。
-`point` は細粒度カウンタ、`line` は運用 KPI として使い分ける。
-さらに `raw.lines` では source-map ノイズ（import 列挙行、構文ブロック終端の `}` 行）を
-`excluded=true` として line KPI から除外する。
-
-```bash
-VIBE_WASM_STD_COVERAGE_MIN_MEASURED_RATE=50 \
-VIBE_WASM_STD_COVERAGE_MIN_LINE_RATE=55 \
-pkf run coverage-wasm-std
-```
+`VIBE_WASM_STD_COVERAGE_FILTER` and `VIBE_WASM_STD_COVERAGE_EXCLUDE` accept `rg`
+patterns for a focused run. `VIBE_TEST_CLI_WASM` selects the compiler, following
+the same contract as `scripts/vibe_test.sh`. Variables from the retired
+wasm-source report pipeline are rejected instead of being silently ignored.
 
 ## 一括実行
 

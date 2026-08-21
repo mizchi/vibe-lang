@@ -263,7 +263,7 @@ test "#2145: perform? on an optional allows is rejected -- codegen cannot lower 
   //   internal compiler error: `perform?` (local, @call) reached code
   //   generation unresolved ... this is a bug in the compiler and not in your
   //   program -- please report the source that triggers it
-  // on a program `book/en/10_capabilities.vibe.md` shows the reader. Two
+  // on a program `book/en/14_capabilities.vibe.md` shows the reader. Two
   // separate defects: the message asked for a bug report about a documented
   // feature, and `vibe check` said "compiles" about a file that does not, which
   // AGENTS.md names as a hole in the diagnostic rather than a caller error.
@@ -276,9 +276,33 @@ test "#2145: perform? on an optional allows is rejected -- codegen cannot lower 
   assert(String::contains(msg, "`perform?` is not lowered yet"))
   assert(String::contains(msg, "#2145"))
   // Actionable: it names the edit, not the pass that failed.
-  assert(String::contains(msg, "plain `perform`"))
+  assert(String::contains(msg, "drop the `?` from `allows Fs::read_file?`"))
+  // #2156 review: `Fs::read_file` is a CAPABILITY builtin, so the edit it
+  // names must be an ordinary call. The message used to say "use plain
+  // `perform`", which lands the reader on `perform Fs::read_file(..)` -- the
+  // spelling the capabilities chapter rules out a few lines further down.
+  assert(String::contains(msg, "call `Fs::read_file(..)` directly"))
+  assert(!String::contains(msg, "plain `perform`"))
+  // #2156 review: the EDIT leads. AGENTS.md requires the actionable edit at
+  // the front, not the tracker number or the pass boundary -- this message
+  // used to open with "(#2145): the checker types it as ... but code
+  // generation cannot emit it" and only then say what to type. Pin the
+  // ORDER, not just the presence of both parts.
+  assert(String::index_of(msg, "drop the `?` from `allows") < String::index_of(msg, "#2145"))
+  assert(String::index_of(msg, "drop the `?` from `allows") < String::index_of(msg, "code generation cannot emit it"))
   assert(!String::contains(msg, "internal compiler error"))
   assert(!String::contains(msg, "please report"))
+}
+
+test "#2156 review: an algebraic operation never reaches that message" {
+  // Why the message has no `perform` branch: the operation it names comes
+  // from `allows`, and `allows` admits capability effects only. Writing an
+  // algebraic operation there is rejected earlier, with a different message.
+  // Measured -- this is the diagnostic, not a guess.
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with () allows Ask::Get? {\n  let a = perform? Ask::Get()\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "is not a capability effect"))
+  assert(!String::contains(msg, "`perform?` is not lowered yet"))
 }
 
 test "#2145: the rejection is reported once, not once per occurrence" {
@@ -300,6 +324,26 @@ test "#2145: perform? nested inside another expression is still found" {
   let source = "fn use_it(a: Int) -> Int { a }\nfn main() -> Int with () allows Fs::read_file? {\n  let a = if true { perform? Fs::read_file(\"x\") } else { perform? Fs::read_file(\"y\") }\n  0\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "`perform?` is not lowered yet"))
+}
+
+test "#2145: perform? on a non-operation operand is rejected, not passed through" {
+  // `perform? 1` -- the operand is not a recognizable operation call, so
+  // perform_question_op_name answers None. The first version of the
+  // effect-pass rejection only fired on the Some branch, which let this
+  // shape reach codegen and die on "this is a bug in the compiler and not
+  // in your program" -- the exact message #2145 removed (#2156 review).
+  // The message carries no `allows` item here because there is no operation
+  // to name.
+  let source = "fn main() -> Int {\n  let x = perform? 1\n  0\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "`perform?` is not lowered yet"))
+  assert(String::contains(msg, "#2145"))
+  assert(!String::contains(msg, "drop the `?` from `allows"))
+  // #2156 review: and the edit it DOES name must be one this program can
+  // act on. "make the authority required" was not -- there is no capability
+  // and no `allows` item in `perform? 1` to make required.
+  assert(String::contains(msg, "takes a capability-operation call"))
+  assert(!String::contains(msg, "make the authority required"))
 }
 
 test "#1961: perform? cannot be used as the operation result type" {

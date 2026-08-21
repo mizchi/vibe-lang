@@ -192,7 +192,7 @@ import ./backend_builtins_string_extra.vibe {
 }
 
 import ./backend_call.vibe {
-  compile_call_gc, gc_compile_native_array_ref, gc_expr_can_compile_native_array_ref, gc_join_is_native_ref
+  compile_call_gc, gc_compile_native_array_ref, gc_expr_can_compile_native_array_ref, gc_fn_returns_float, gc_join_is_native_ref
 }
 
 import ./backend_lambda_body.vibe {
@@ -200,7 +200,7 @@ import ./backend_lambda_body.vibe {
 }
 
 import ./backend_typed_local_scan.vibe {
-  gc_direct_abi_name_slot, gc_direct_abi_result_is_native, gc_sibling_scope_start
+  gc_direct_abi_name_slot, gc_sibling_scope_start
 }
 
 import ./backend_match.vibe {
@@ -258,7 +258,7 @@ fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -
     EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(l, local_names, ctx) || gc_expr_is_floatish(r, local_names, ctx)),
     EUnaryOp(op, x) => op == "-" && gc_expr_is_floatish(x, local_names, ctx),
     ECall(fcallee, _, _) => match fcallee {
-      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float",
+      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
       _ => false
     },
     _ => false
@@ -306,9 +306,9 @@ fn gc_is_ctor_expr(e: Expr, ctx: CompileCtxGc) -> Bool {
 /// raw i64 0/1. `cefn` is compile_expr_gc, threaded to avoid a forward ref.
 fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
-  Array::push(local_names, "__gceqa")
+  Array::push(local_names, "[gc-temp]__gceqa")
   let bptr = next_local + 1
-  Array::push(local_names, "__gceqb")
+  Array::push(local_names, "[gc-temp]__gceqb")
   let nl1 = cefn(buf, lhs, local_names, next_local + 2, ctx, ld)
   emit_local_set(buf, aptr)
   let nl2 = cefn(buf, rhs, local_names, nl1, ctx, ld)
@@ -337,9 +337,9 @@ fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_nam
 /// `Some(av) == rb` effect-row comparison (unify_effects) always false.
 fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
-  Array::push(local_names, "__gcceqa")
+  Array::push(local_names, "[gc-temp]__gcceqa")
   let bptr = next_local + 1
-  Array::push(local_names, "__gcceqb")
+  Array::push(local_names, "[gc-temp]__gcceqb")
   let nl1 = cefn(buf, lhs, local_names, next_local + 2, ctx, ld)
   emit_i64_const(buf, -2)
   emit_i64_and(buf)
@@ -363,9 +363,9 @@ fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names
     let res_l = nl2
     let cnt_l = nl2 + 1
     let ii_l = nl2 + 2
-    Array::push(local_names, "__gcceq_res")
-    Array::push(local_names, "__gcceq_cnt")
-    Array::push(local_names, "__gcceq_i")
+    Array::push(local_names, "[gc-temp]__gcceq_res")
+    Array::push(local_names, "[gc-temp]__gcceq_cnt")
+    Array::push(local_names, "[gc-temp]__gcceq_i")
     emit_i64_const(buf, 1)
     emit_local_set(buf, res_l)
     emit_local_get(buf, aptr)
@@ -893,7 +893,7 @@ fn gc_native_array_join_arg_is_safe(arg: Expr, name: String, abi_names: Array[St
 /// i64 fallback for an ELet after its name has already been pushed into
 /// `local_names`. Keeping it separate makes the native-literal branch above
 /// unable to accidentally feed a reference to the legacy local.set path.
-fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   let local_idx = next_local
   if gc_expr_is_floatish(value, local_names, ctx) {
     Array::push(ctx.gc_float_locals, local_idx)
@@ -955,6 +955,7 @@ fn gc_compile_let_i64(buf: Bytes, value: Expr, body: Expr, local_names: Array[St
   Array::push(ctx.gc_agg_local_slots, local_idx * 256 + agg_entry)
   let nl = ce(buf, value, local_names, next_local + 1, ld)
   emit_local_set(buf, local_idx)
+  Array::set(local_names, name_slot, name)
   ce(buf, body, local_names, nl, ld)
 }
 
@@ -1092,7 +1093,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         if ctor_idx >= 0 {
           let tag_c = Array::get(ctx.gc_ctor_table.tags, ctor_idx)
           let ptr_l = next_local
-          Array::push(local_names, "__ctor_ptr")
+          Array::push(local_names, "[gc-temp]__ctor_ptr")
           emit_global_get(buf, 0)
           emit_i64_extend_i32_u(buf)
           emit_local_set(buf, ptr_l)
@@ -1401,7 +1402,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     ECall(callee, args, _) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body, _) => {
       let local_idx = next_local
+      let name_slot = Array::length(local_names)
       Array::push(local_names, name)
+      // A non-recursive binder is not visible in its own initializer. Reserve
+      // its wasm slot but hide the source name until the body (#2160; mirrors
+      // the linear lane's #1120 masking).
+      Array::set(local_names, name_slot, "")
       match value {
         // #1702: a record literal bound to a local that never leaves field-read
         // position lives in a real wasm-gc struct instead of linear memory.
@@ -1446,9 +1452,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             }
             emit_struct_new(buf, ctx.gc_native_struct_type_base + ns_struct_idx)
             emit_local_set(buf, local_idx)
+            Array::set(local_names, name_slot, name)
             ce(buf, body, local_names, ns_nl, ld)
           } else {
-            gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+            gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
           }
         },
         EArray(native_elems) => if ctx.gc_native_array_frame_ok && ctx.gc_native_array_type_idx >= 0 && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
@@ -1467,9 +1474,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             emit_array_set(buf, ctx.gc_native_array_type_idx)
             ni = ni + 1
           }
+          Array::set(local_names, name_slot, name)
           ce(buf, body, local_names, native_nl, ld)
         } else {
-          gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+          gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
         },
         EIdent(source, _) => {
           let source_slot = find_local_slot(local_names, source)
@@ -1478,21 +1486,23 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             Array::push(ctx.gc_native_array_local_types, local_idx)
             emit_local_get(buf, source_slot)
             emit_local_set(buf, local_idx)
+            Array::set(local_names, name_slot, name)
             ce(buf, body, local_names, next_local + 1, ld)
           } else {
-            gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+            gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
           }
         },
-        ECall(_, _, _) => if gc_direct_abi_result_is_native(value, ctx) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
+        ECall(_, _, _) => if gc_expr_can_compile_native_array_ref(value, local_names, ctx) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
           Array::push(ctx.gc_native_array_locals, local_idx)
           Array::push(ctx.gc_native_array_local_types, local_idx)
           let native_nl = ce(buf, value, local_names, next_local + 1, ld)
           emit_local_set(buf, local_idx)
+          Array::set(local_names, name_slot, name)
           ce(buf, body, local_names, native_nl, ld)
         } else {
-          gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+          gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
         },
-        _ => gc_compile_let_i64(buf, value, body, local_names, next_local, ctx, ld, ce)
+        _ => gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
       }
     },
     ELetRec(name, value, body) => {
@@ -1616,7 +1626,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let num_elems = Array::length(elems)
       let alloc_size = num_elems * 8
       let ptr_local = next_local
-      Array::push(local_names, "__tuple_ptr")
+      Array::push(local_names, "[gc-temp]__tuple_ptr")
       let mut nl = next_local + 1
       emit_global_get(buf, 0)
       emit_i64_extend_i32_u(buf)
@@ -1652,7 +1662,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       emit_call(buf, arr_new_idx)
       emit_local_set(buf, arr_local)
-      Array::push(local_names, "__arr_lit")
+      Array::push(local_names, "[gc-temp]__arr_lit")
       let mut nl = next_local + 1
       let mut ei = 0
       while ei < Array::length(elems) {
@@ -1686,9 +1696,9 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let result_local = next_local
       let arr_local = next_local + 1
       let i_local = next_local + 2
-      Array::push(local_names, "__forin_res")
-      Array::push(local_names, "__forin_arr")
-      Array::push(local_names, "__forin_i")
+      Array::push(local_names, "[gc-temp]__forin_res")
+      Array::push(local_names, "[gc-temp]__forin_arr")
+      Array::push(local_names, "[gc-temp]__forin_i")
       if ctx.func_offset > 0 && arr_new_idx >= ctx.func_offset {
         emit_i64_const(buf, 0)
       } else {
@@ -1706,8 +1716,8 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let (str_ccat_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
       let conv_local = nl1pre
       let j_local = nl1pre + 1
-      Array::push(local_names, "__forin_string_chars")
-      Array::push(local_names, "__forin_string_i")
+      Array::push(local_names, "[gc-temp]__forin_string_chars")
+      Array::push(local_names, "[gc-temp]__forin_string_i")
       let nl1 = nl1pre + 2
       emit_local_get(buf, arr_local)
       emit_i64_const(buf, 32)
@@ -1805,7 +1815,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       // Same innermost-loop ld reset as EWhile.
       let nl4 = ce(buf, body, local_names, nl3, 0)
       let body_val = nl4
-      Array::push(local_names, "__forin_val")
+      Array::push(local_names, "[gc-temp]__forin_val")
       emit_local_set(buf, body_val)
       emit_local_get(buf, result_local)
       emit_local_get(buf, body_val)
@@ -1999,7 +2009,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         nl1
       } else {
         let obj_l = nl1
-        Array::push(local_names, "__dot_obj")
+        Array::push(local_names, "[gc-temp]__dot_obj")
         emit_local_set(buf, obj_l)
         let mut di = 0
         while di < Array::length(dispatch) {
@@ -2077,7 +2087,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       let obj_size = 8 + flen * 8
       let ptr_local = next_local
-      Array::push(local_names, "__rec_ptr")
+      Array::push(local_names, "[gc-temp]__rec_ptr")
       emit_global_get(buf, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, ptr_local)
@@ -2103,7 +2113,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         let (_, fexpr) = Array::get(rec_fields, ri)
         nl_r = ce(buf, fexpr, local_names, nl_r, ld)
         let val_local = nl_r
-        Array::push(local_names, "__rec_val")
+        Array::push(local_names, "[gc-temp]__rec_val")
         emit_local_set(buf, val_local)
         nl_r = nl_r + 1
         emit_local_get(buf, ptr_local)
@@ -2231,7 +2241,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       let malloc_size = 8 + mcap * 16
       let mptr = next_local
-      Array::push(local_names, "__maplit_ptr")
+      Array::push(local_names, "[gc-temp]__maplit_ptr")
       emit_global_get(buf, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, mptr)

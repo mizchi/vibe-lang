@@ -1454,6 +1454,105 @@ export fn resolve_builtin(name: String) -> Option[Type] {
   else None
 }
 
+/// Substitute the formal parameters of a resolved type alias.
+///
+/// This lives in core because both the checker and later compiler passes need
+/// the same canonical TypeExpr resolution without importing the whole checker.
+export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array[Type]) -> Type {
+  match ty {
+    CtNamed(name, targs) => {
+      let mut idx = 0 - 1
+      let mut i = 0
+      while i < Array::length(params) {
+        if Array::get(params, i) == name {
+          idx = i
+        }
+        i = i + 1
+      }
+      if idx >= 0 && idx < Array::length(args) {
+        Array::get(args, idx)
+      } else {
+        CtNamed(name, for a in targs {
+          resolve_type_alias_params(a, params, args)
+        })
+      }
+    },
+    CtArray(e) => CtArray(resolve_type_alias_params(e, params, args)),
+    CtOption(e) => CtOption(resolve_type_alias_params(e, params, args)),
+    CtTuple(es) => CtTuple(for e in es {
+      resolve_type_alias_params(e, params, args)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      resolve_type_alias_params(p, params, args)
+    }, resolve_type_alias_params(ret, params, args), eff),
+    _ => ty
+  }
+}
+
+fn type_expr_name_is_shadowed(shadow: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(shadow) {
+    if Array::get(shadow, i) == name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Resolve a source type expression while preserving the enclosing type
+/// binders. This is the shared semantic authority used by the checker and by
+/// typed classification in later compiler passes.
+export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type {
+  match te {
+    TyUnit => CtUnit,
+    TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
+      CtNamed(name, array_empty())
+    } else {
+      match resolve_builtin(name) {
+        Some(t) => t,
+        None => match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDEnum(n, _, _) => CtEnum(n),
+            TDStruct(n, _, _, _) => CtStruct(n),
+            TDAlias(_, _, t) => t,
+            TDEffect(_, _, _) => CtNamed(name, array_empty()),
+            TDEffectSet(_, _) => CtNamed(name, array_empty())
+          },
+          None => CtNamed(name, array_empty())
+        }
+      }
+    },
+    TyApp(name, args) => {
+      let ra = for a in args {
+        resolve_type_expr_core_shadowed(a, defs, shadow)
+      }
+      if name == "Array" && Array::length(ra) == 1 {
+        CtArray(Array::get(ra, 0))
+      } else if name == "Option" && Array::length(ra) == 1 {
+        CtOption(Array::get(ra, 0))
+      } else if type_expr_name_is_shadowed(shadow, name) {
+        CtNamed(name, ra)
+      } else {
+        match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDAlias(_, params, body) => resolve_type_alias_params(body, params, ra),
+            _ => CtNamed(name, ra)
+          },
+          None => CtNamed(name, ra)
+        }
+      }
+    },
+    TyTuple(elems) => CtTuple(for e in elems {
+      resolve_type_expr_core_shadowed(e, defs, shadow)
+    }),
+    TyFn(params, ret, effect_name) => CtFn(for p in params {
+      resolve_type_expr_core_shadowed(p, defs, shadow)
+    }, resolve_type_expr_core_shadowed(ret, defs, shadow), effect_name)
+  }
+}
+
 export fn subst_add_bound(s: Subst, id: Int, bounds: Array[String]) -> Subst {
   SubstBound(id, bounds, s)
 }

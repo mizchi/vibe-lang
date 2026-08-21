@@ -22,6 +22,48 @@ fi
 
 echo "[vibe-test-smoke] ok (pass-file=0, fail-file!=0)"
 
+# #2153: coverage success means this invocation wrote a report. Simulate a
+# compiler and runner that both return success without writing their outputs;
+# a stale report from an earlier run must be removed and cannot satisfy the
+# coverage gate. "cache" keeps this fixture in vibe_test.sh's sequential tail,
+# so its worker runs in this shell while PATH supplies the fake nested bash.
+missing_cov_src="$WORK/cache_missing_coverage_test.vibe"
+printf 'test { assert(true) }\n' > "$missing_cov_src"
+fake_bin="$WORK/fake-bin"
+mkdir -p "$fake_bin" "$ROOT_DIR/_build/vibe_test/coverage"
+cat > "$fake_bin/bash" <<'EOF'
+#!/usr/bin/env sh
+# Make the compile invocation look successful while leaving runtime coverage
+# absent. Arguments: runner --invoke cli_main CLI SRC OUT ENTRY.
+if [ "${2:-}" = "--invoke" ] && [ "${3:-}" = "cli_main" ]; then
+  printf 'not-a-real-wasm' > "$6"
+fi
+exit 0
+EOF
+chmod +x "$fake_bin/bash"
+fake_cli="$WORK/fake-compiler.wasm"
+: > "$fake_cli"
+missing_cov_flat="$(printf '%s' "${missing_cov_src#"$ROOT_DIR/"}" | tr '/' '_' | sed 's/\.vibe$//')"
+stale_cov="$ROOT_DIR/_build/vibe_test/coverage/$missing_cov_flat.json"
+printf '{"hit":99,"total":99}\n' > "$stale_cov"
+missing_cov_out="$WORK/missing-coverage.out"
+set +e
+PATH="$fake_bin:$PATH" VIBE_TEST_CLI_WASM="$fake_cli" \
+  /bin/bash "$ROOT_DIR/scripts/vibe_test.sh" --coverage "$missing_cov_src" \
+  >"$missing_cov_out" 2>&1
+missing_cov_code=$?
+set -e
+if [ "$missing_cov_code" -eq 0 ] || ! rg -q 'FAIL \(coverage\)' "$missing_cov_out"; then
+  echo "[vibe-test-smoke] FAIL: missing fresh coverage did not fail" >&2
+  cat "$missing_cov_out" >&2
+  exit 1
+fi
+if [ -e "$stale_cov" ]; then
+  echo "[vibe-test-smoke] FAIL: stale coverage report survived the run" >&2
+  exit 1
+fi
+echo "[vibe-test-smoke] ok (fresh coverage required)"
+
 # #1946: a quoted test name must appear in full on FAIL. The runner used to
 # match `__test_[A-Za-z0-9_]+` and cut the name at the first space (and drop
 # Unicode). Exit status stays non-zero; the line is still `failing test: ...`.

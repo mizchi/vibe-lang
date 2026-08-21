@@ -12,8 +12,10 @@ on:
 # validation. No MoonBit toolchain is installed or used.
 #
 # Wall-time layout (#1849 / #2001: compiler_gate.sh is a thin aggregator):
-#   - compiler-gate           bootstrap lane (selfbuild + fixpoint) + KPI /
-#                             docs tooling that needs this job's generation
+#   - compiler-gate           selfbuild + fixpoint + short stage2 consumers
+#   - compiler-gate-preflight stage-independent bootstrap checks
+#   - compiler-examples       examples ratchet against a cached stage2
+#   - review-regressions      full-history PR lint against a cached stage2
 #   - compiler-gate-lanes     early/mid/late fixture lanes; each shard
 #                             self-builds stage2 from the committed flat
 #                             module source (cached, same as unit-tests)
@@ -24,16 +26,47 @@ on:
 # All jobs start at t=0; nothing on the required path serializes behind
 # another job.
 jobs:
+  compiler-gate-preflight:
+    name: compiler-gate (preflight)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-vibe
+        with:
+          node-version: 24
+          pkfire: 'true'
+          pkfire-cache: 'true'
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Generated compiler artifacts (fingerprint)
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - name: Bootstrap preflight
+        run: pkf run ci-compiler-gate-preflight
+
   compiler-gate:
     name: compiler-gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          # #1870: the review-regressions lint step below diffs a RANGE
-          # (base...HEAD), which needs both sides and their merge base. The
-          # default shallow clone has neither.
-          fetch-depth: 0
       - name: Cache seed artifact
         uses: actions/cache@v4
         with:
@@ -90,6 +123,21 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Install wasm-tools
+        # test_cli_core.sh validates every generated core module independently.
+        # Keep this pinned to the same version used by the gc and wasi-p3 jobs.
+        env:
+          WASM_TOOLS_VERSION: "1.253.0"
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/compiler-tools"
+          if curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz; then
+            cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/compiler-tools/"
+          else
+            cargo install wasm-tools --locked --version "$WASM_TOOLS_VERSION" --root "$PWD/compiler-tools-cargo"
+            cp "$PWD/compiler-tools-cargo/bin/wasm-tools" "$PWD/compiler-tools/"
+          fi
+          echo "$PWD/compiler-tools" >> "$GITHUB_PATH"
       - name: Compiler gate (bootstrap + fixpoint)
         # Fixture lanes run as compiler-gate-lanes (matrix) so they do not
         # sit on this job's critical path. This job keeps the seed->stage3
@@ -97,36 +145,78 @@ jobs:
         # generation, and the docs/KPI steps below.
         env:
           COMPILER_GATE_LANE: bootstrap
+          COMPILER_GATE_SKIP_PREFLIGHT: "1"
+          COMPILER_GATE_SKIP_STAGE2_ORACLES: "1"
         run: bash scripts/compiler_gate.sh
-      - name: Install ripgrep
-        # The lint step below probes and filters with `rg`. Only structural-lint
-        # installed it before, so the first run of this step failed with
-        # `rg: command not found` -> probe fails -> AST tier skipped ->
-        # REQUIRE_AST=1 -> red. That was the fail-closed path doing its job;
-        # the missing tool is the actual fix.
-        run: command -v rg >/dev/null || sudo apt-get install -y ripgrep
-      - name: Review-regressions lint (PR range)
-        # #1870. This lint used to run in exactly one place -- the pre-commit
-        # hook -- and structural-lint deliberately ran only its SELF-TEST,
-        # because the lint reads `git diff --cached` and CI stages nothing.
-        # That left its rules with no enforcement point that a `--no-verify`
-        # could not skip, and the hook itself silently dropped its AST tier on
-        # any checkout without a built runner, still printing "ok". A real
-        # drift reached main that way (#1809's rule, re-broken in #1861).
-        #
-        # Vacuity was a property of `--cached`, not of CI: given a range, the
-        # same lint has a real diff to read. It runs HERE rather than in
-        # structural-lint because the AST tier needs a stage2, which the gate
-        # above has just built -- so this costs seconds, not another build.
-        #
-        # REQUIRE_AST=1 makes a tier that cannot run a failure instead of a
-        # quiet pass. That is the whole point: a gate that reports success
-        # having checked nothing is worse than no gate.
-        if: github.event_name == 'pull_request'
+      - name: Stage stage2 for downstream gates (#821)
+        run: |
+          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
+          mkdir -p _build/ci-artifacts
+          cp "${gen}stage2.wasm" _build/ci-artifacts/stage2.wasm
+      - name: Upload stage2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-stage2
+          path: _build/ci-artifacts/stage2.wasm
+          if-no-files-found: error
+
+  compiler-stage2-oracles:
+    name: compiler-gate (stage2 oracles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/ensure_seed.sh
+          bash scripts/ensure_generated.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Install wasm-tools
         env:
-          VIBE_REVIEW_LINT_RANGE: ${{ github.event.pull_request.base.sha }}...HEAD
-          VIBE_REVIEW_LINT_REQUIRE_AST: "1"
-        run: bash scripts/lint_review_regressions.sh
+          WASM_TOOLS_VERSION: "1.253.0"
+        run: |
+          mkdir -p "$PWD/compiler-tools"
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/compiler-tools/"
+          echo "$PWD/compiler-tools" >> "$GITHUB_PATH"
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Stage cached compiler
+        run: |
+          mkdir -p _build/selfhost/generations/ci-oracles
+          cp _build/_ci_shard_gen/stage2.wasm _build/selfhost/generations/ci-oracles/stage2.wasm
+      - name: Stage2 consumer oracles
+        run: bash tests/gates/bootstrap/stage2_oracles.sh "$PWD/_build/_ci_shard_gen/stage2.wasm"
       - name: Upload incremental shadow decision diff (#1548)
         # compiler_gate.sh step 3aa writes the shadow planner vs current
         # compiler decision diff (only after a successful oracle run).
@@ -174,6 +264,34 @@ jobs:
         # test in here too so that path is gated (it was previously defined
         # but never invoked by any workflow).
         run: bash scripts/vibe_normalize_smoke.sh
+
+  compiler-docs:
+    name: compiler-gate (docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/ensure_seed.sh
+          bash scripts/ensure_generated.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Stage cached compiler
+        run: |
+          mkdir -p _build/selfhost/generations/ci-docs
+          cp _build/_ci_shard_gen/stage2.wasm _build/selfhost/generations/ci-docs/stage2.wasm
       - name: Tutorial executable-docs check (#1142)
         # book/**/*.vibe.md's ```vibe run blocks are compiled and run
         # against the freshly-built stage2 and their embedded ```output must
@@ -227,20 +345,34 @@ jobs:
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface_test.sh
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface.sh
-      - name: examples/ type-check ratchet
-        # examples/ is the user-facing sample surface and had NOTHING checking
-        # it, so it accumulated two independent classes of rot in silence: the
-        # #1429/#1461 syntax removals (six files) and ordinary type errors that
-        # predate them (two files). scripts/pkfire/examples_smoke.sh does not
-        # cover this -- it compiles four hand-picked files through
-        # _build/dist/selfhost_compiler.wasm, a path the current build layout no
-        # longer produces, and no workflow invokes it.
-        #
-        # Known failures are a printed ratchet, not a silent skip
-        # (scripts/examples_typecheck_known_failures.txt).
+
+  compiler-playground:
+    name: compiler-gate (playground)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
-          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
-          EXAMPLES_STAGE2="${gen}stage2.wasm" bash scripts/check_examples_typecheck.sh
+          bash scripts/ensure_seed.sh
+          bash scripts/ensure_generated.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Stage cached compiler
+        run: |
+          mkdir -p _build/selfhost/generations/ci-playground
+          cp _build/_ci_shard_gen/stage2.wasm _build/selfhost/generations/ci-playground/stage2.wasm
       - name: playground preset type-check
         # playground/src/main.ts embeds its starter programs as TypeScript
         # template literals, so they are vibe source no vibe tool ever saw. Two
@@ -251,17 +383,117 @@ jobs:
         run: |
           gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
           PLAYGROUND_STAGE2="${gen}stage2.wasm" bash scripts/check_playground_presets.sh
-      - name: Stage stage2 for downstream gates (#821)
-        run: |
-          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
-          mkdir -p _build/ci-artifacts
-          cp "${gen}stage2.wasm" _build/ci-artifacts/stage2.wasm
-      - name: Upload stage2 artifact
-        uses: actions/upload-artifact@v4
+
+  # The examples ratchet takes roughly four minutes and needs only a stage2,
+  # not the bootstrap fixpoint. Start it at t=0 from the same content-addressed
+  # stage2 cache as fixture and unit-test shards.
+  compiler-examples:
+    name: compiler-gate (examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
         with:
-          name: compiler-stage2
-          path: _build/ci-artifacts/stage2.wasm
-          if-no-files-found: error
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Generated compiler artifacts (fingerprint)
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - uses: ./.github/actions/setup-vibe
+        with:
+          node-version: 24
+          pkfire: 'true'
+          pkfire-cache: 'true'
+      - name: Cache stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: examples/ type-check ratchet
+        run: pkf run ci-check-examples-typecheck
+
+  # Range mode needs the PR merge base, while compiler-gate itself does not.
+  # Keeping the full-history checkout here removes about 50 seconds from the
+  # compiler-gate critical path without weakening the fail-closed AST tier.
+  review-regressions:
+    name: review-regressions
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Generated compiler artifacts (fingerprint)
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Cache stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Stage compiler for the AST lint
+        run: |
+          mkdir -p _build/selfhost/generations/ci-review
+          cp _build/_ci_shard_gen/stage2.wasm _build/selfhost/generations/ci-review/stage2.wasm
+      - name: Install ripgrep
+        run: command -v rg >/dev/null || sudo apt-get install -y ripgrep
+      - name: Review-regressions lint (PR range)
+        if: github.event_name == 'pull_request'
+        env:
+          VIBE_REVIEW_LINT_RANGE: ${{ github.event.pull_request.base.sha }}...HEAD
+          VIBE_REVIEW_LINT_REQUIRE_AST: "1"
+        run: bash scripts/lint_review_regressions.sh
 
   # Fixture lanes extracted from compiler_gate.sh (#1849 / #2001). Each
   # shard builds its own stage2 from the committed flat module source —
@@ -404,6 +636,8 @@ jobs:
         run: bash scripts/lint_review_regressions_test.sh
       - name: compiler-gate registry self-test
         run: bash scripts/check_gate_registry_test.sh
+      - name: compiler-gate CI layout self-test
+        run: bash scripts/test_ci_compiler_gate_layout.sh
       - name: doc path-citation lint self-test
         run: bash scripts/check_doc_path_citations_test.sh
       - name: doc path-citation lint
@@ -546,6 +780,26 @@ jobs:
       # without this step would leave both measurements running nowhere.
       - name: wasm validator parity + feature-declaration scan
         run: bash scripts/test_wasm_validate_parity.sh "$PWD/_build/_ci_gc_gen/stage2.wasm"
+      # #2156 review: until now NOTHING ran a test fixture on the wasm-gc
+      # lane in CI. gc-gate built a stage2 and checked heap accounting and
+      # validator parity; the gc fixture list lived in
+      # scripts/test_gc_selfbuild.sh, which is a manually-run task whose own
+      # tail says "Informational tool: report, don't gate". So a gc-lane
+      # miscompile could only be caught by someone running that task by hand
+      # -- which is how #2158 was fixed on linear, asserted fixed by a linear
+      # test, and left live on gc.
+      #
+      # The list is the same one test_gc_selfbuild.sh runs. Keep them in step;
+      # there is no filename-pattern selection, a fixture is gc-covered only by
+      # being named here.
+      - name: wasm-gc runtime test fixtures
+        run: |
+          VIBE_TEST_CLI_WASM="$PWD/_build/_ci_gc_gen/stage2.wasm" VIBE_TEST_BACKEND=gc \
+            bash scripts/vibe_test.sh \
+            fixtures/eq_structural_aggregates_test.vibe \
+            fixtures/map_builder_growth_test.vibe \
+            fixtures/struct_field_collision_test.vibe \
+            fixtures/float_return_to_string_gc_test.vibe
 
   # The 467-file selfhost unit-test battery (#531/#535), weight-balanced into
   # parallel shards (scripts/unit_test_weights.tsv drives the LPT partition
@@ -917,7 +1171,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
+    needs: [compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -925,6 +1179,30 @@ jobs:
         run: |
           if [ "${{ needs.compiler-gate.result }}" != "success" ]; then
             echo "::error::compiler-gate did not succeed (${{ needs.compiler-gate.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-gate-preflight.result }}" != "success" ]; then
+            echo "::error::compiler-gate-preflight did not succeed (${{ needs.compiler-gate-preflight.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-stage2-oracles.result }}" != "success" ]; then
+            echo "::error::compiler-stage2-oracles did not succeed (${{ needs.compiler-stage2-oracles.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-docs.result }}" != "success" ]; then
+            echo "::error::compiler-docs did not succeed (${{ needs.compiler-docs.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-playground.result }}" != "success" ]; then
+            echo "::error::compiler-playground did not succeed (${{ needs.compiler-playground.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-examples.result }}" != "success" ]; then
+            echo "::error::compiler-examples did not succeed (${{ needs.compiler-examples.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.review-regressions.result }}" != "success" ] && [ "${{ needs.review-regressions.result }}" != "skipped" ]; then
+            echo "::error::review-regressions did not succeed (${{ needs.review-regressions.result }})"
             exit 1
           fi
           if [ "${{ needs.compiler-gate-lanes.result }}" != "success" ]; then

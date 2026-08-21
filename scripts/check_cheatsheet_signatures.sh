@@ -26,16 +26,8 @@ cd "$ROOT_DIR"
 DOC="docs/cheatsheet.md"
 PROBE="scripts/cheatsheet_signature_probe.vibe"
 
-STAGE2="${CHEATSHEET_SIG_STAGE2:-}"
-if [ -n "$STAGE2" ]; then
-  [ -f "$STAGE2" ] || { echo "cheatsheet-signatures: CHEATSHEET_SIG_STAGE2=$STAGE2 does not exist" >&2; exit 1; }
-else
-  for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
-    [ -s "${gen}stage2.wasm" ] && { STAGE2="${gen}stage2.wasm"; break; }
-  done
-  [ -n "${STAGE2:-}" ] || STAGE2="bootstrap/seed/compiler.wasm"
-  [ -s "$STAGE2" ] || { echo "cheatsheet-signatures: no compiler available" >&2; exit 1; }
-fi
+. "$(dirname "$0")/resolve_stage2.sh"
+STAGE2="$(resolve_stage2 cheatsheet-signatures "${CHEATSHEET_SIG_STAGE2:-}")" || exit 1
 
 # Under the preopen dir, because the probe reads this path from inside wasm.
 WORK="$ROOT_DIR/_build/_cheatsheet_sig"

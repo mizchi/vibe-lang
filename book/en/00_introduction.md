@@ -1,75 +1,77 @@
 # Introduction
 
-This book is a tour of **vibe**: a modern, statically typed functional language
-where side effects are explicit, the compiler is self-hosted on wasm, and
-every example you see is supposed to be true.
+**vibe** is a statically typed functional language that compiles to
+WebAssembly, in which a function's signature tells you what it can do —
+not just what it takes and returns.
 
-It is modeled on *The Rust Programming Language* — read a section, run the
-code, keep going — but the source of each chapter is a `.vibe.md`. A
-`` ```vibe run `` fence is compiled and executed by `scripts/vibe_md.sh`,
-and the following `` ```output `` fence is that run's stdout. If the compiler
-changes, the book fails CI instead of quietly rotting.
+That is the whole idea, and it looks like this:
 
-```bash
-bash scripts/vibe_md.sh check book/en/*.vibe.md
-bash scripts/vibe_book.sh          # render _build/book/index.html
-```
+- `fn parse(s: String) -> Int` cannot fail, cannot print, cannot touch
+  the disk. If it could, the signature would say so.
+- `fn parse(s: String) -> Int with Exception` can fail. Callers either
+  handle it or declare it too, and the compiler decides which.
+- `fn main with Console` may write to the terminal. It may not read a
+  file, because it never asked to.
 
-## What vibe is
+Most languages leave these facts in the body, where you find them by
+reading carefully or by being surprised in production. Here they are in
+the type, they are checked, and they compose.
 
-Three commitments, in this order when they collide:
+## Why you might want this
 
-1. **Never be silently wrong.** Types and diagnostics exist for an evaluation
-   loop — human or LLM. A crash is better than a wrong answer. Diagnostics
-   lead with the edit that fixes the program, not a pass name.
-2. **Honest representation.** Values are tagged i64. Strings are byte strings.
-   Effects are a row on the function (`with Exception + Fs`), not a wrapper
-   return type. If wasm cannot express it cleanly, the language should not
-   pretend it can.
-3. **Surface convenience last.** One concept, one spelling.
+**You can tell what a function does without reading it.** The row is
+part of the signature, so "does this write to disk" is answered by the
+declaration rather than by an audit of everything it calls.
 
-The lineage is Rust / MoonBit / Koka / Verse. The compiler is written in
-vibe and built from a committed seed. You do not need a second language
-toolchain to work on vibe.
+**Permissions are decided when you build, not hoped for at runtime.** A
+program that never asked for the network cannot reach it, and the
+generated wasm module does not carry the code for capabilities you
+denied.
+
+**The compiler prefers to stop rather than to guess.** When a diagnostic
+and a silent wrong answer are both possible, vibe takes the diagnostic,
+and the message leads with the edit that fixes your program.
+
+**It is small enough to hold in your head.** One concept, one spelling.
+The [cheatsheet](../../docs/cheatsheet.md) is a single page, and this
+book is that page with the reasoning filled in.
+
+vibe compiles to wasm and is written in itself — the compiler is a vibe
+program built from a committed seed, so working on vibe needs no second
+toolchain. Its lineage is Rust, MoonBit, Koka and Verse.
 
 ## How to read this book
 
-Two kinds of chapters, as in *The Rust Programming Language*: concept
-chapters, and a small project chapter.
+Start at the beginning and keep going; each chapter assumes the ones
+before it.
 
-**Getting Started** installs the toolchain, writes hello, then builds a
-small program (the guessing-game slot). You can stop after that and still
-have written vibe.
+[Installation and Hello, vibe](01_getting_started.vibe.md) gets the
+toolchain working. [A small program](02_a_small_program.vibe.md) is a
+forty-line calculator that uses features you have not been taught yet —
+it is there so you can decide early whether this language is for you.
+Everything after that is the tour: values and control flow, then
+mutation, data, modules and tests, collections, and then the two
+chapters the language exists for — [Effects](13_effects.vibe.md) and
+[Capabilities](14_capabilities.vibe.md). Generics, concurrency and the
+wasm-facing tooling close it out.
 
-**Common Programming Concepts** is values, functions, control flow, and
-the actual contracts of `Int` / `String`.
+If you already program in a typed functional language, chapters 3 to 12
+will feel familiar and you can skim to Effects.
 
-**Mutation and Regions** is vibe's ownership analog: `let mut` is local,
-escape is capture, regions tag scratch buffers.
+## About the examples
 
-**Structuring Data** is structs, enums, `match`, `Option`, and the railway.
+Every ` ```vibe run ` block in this book is compiled and executed by the
+current compiler, and the ` ```output ` block beneath it is that run's
+real output. When the language changes, the book fails its build rather
+than quietly going stale. An example that is deliberately not runnable
+is marked ` ```vibe skip ` with the reason in the block.
 
-**Growing Projects** is modules, `.vpkg` contracts, and `test` / `inspect`.
+If a sentence in this book and the compiler disagree, the compiler is
+right and the sentence is a bug — please report it.
 
-**Common Collections** is `Array` / builders / `MutMap`, then iteration.
+Japanese translations live in [book/ja/](../ja/). They run the same
+programs, so a code block is identical in both and only the prose is
+translated.
 
-**Effects and Authority** is the heart of the language: algebraic `handle`,
-then `allows` vs `with` for host capabilities.
-
-**Generic Programming** is traits, `derive`, and `==`.
-
-**Concurrent Programs** and **Tooling and Targets** are TaskGroup / Send
-and the CLI-as-IDE / wasm representation.
-
-Japanese translations of the original tour live in `book/ja/`. The English
-files are canonical; a pair must run the same programs (same `` ```output ``
-blocks). Later chapters are English-only for now.
-
-When an example is deliberately not runnable — rejected syntax, a checker
-feature that codegen does not implement yet — it is marked
-`` ```vibe skip `` with a reason. Never use `skip` to hide a broken
-example.
-
-The [cheatsheet](../../docs/cheatsheet.md) is the one-page reference this
-book expands. If a sentence here and a sentence there disagree, a measured
-`.vibe.md` block wins — then we fix the book.
+*Building and rendering the book is described in
+[book/README.md](../README.md).*

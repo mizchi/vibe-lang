@@ -360,6 +360,14 @@ vt_worker() {
   esac
   local flat; flat="$(echo "$src_rel" | tr '/' '_' | sed 's/\.vibe$//')"
   local out_rel="_build/vibe_test/$flat.wasm"
+  local cov_out=""
+  if [ "$coverage" = "1" ]; then
+    cov_out="$covdir/$flat.json"
+    # A successful run must produce coverage for this invocation. Without
+    # clearing first, a compiler/runner regression can make an old report look
+    # fresh and let a coverage gate pass without measuring anything (#2153).
+    rm -f "$cov_out"
+  fi
 
   # Compile with a sentinel entry name that does not exist in the file, so the
   # compiler takes the no-entry path and emits a test-running `_start`.
@@ -402,10 +410,6 @@ vt_worker() {
     n_tests="$(vt_count_tests "$ROOT_DIR/$out_rel")"
   fi
 
-  local cov_out=""
-  if [ "$coverage" = "1" ]; then
-    cov_out="$covdir/$flat.json"
-  fi
   # #948: keep the runner's stderr — it names the failing `__test_` function
   # (previously discarded, leaving a bare `FAIL <file>` with no test name).
   local run_ok=0
@@ -447,6 +451,10 @@ for g in (r.get("branch") or {}).get("top_gaps", []):
 PY
       fi
       printf 'ok %s %s %s %s 1 %s\n' "$f_hit" "$f_total" "$b_hit" "$b_total" "$n_tests" > "$vt_results/$flat.res"
+    elif [ "$coverage" = "1" ]; then
+      echo "FAIL (coverage) $src_rel"
+      echo "       test passed but produced no fresh coverage report: $cov_out"
+      printf 'fail 0 0 0 0 0 %s\n' "$n_tests" > "$vt_results/$flat.res"
     else
       # #948: annotate (don't fail) a file with zero recognized `test {}`
       # blocks — a typo'd block otherwise passes silently via an empty _start.

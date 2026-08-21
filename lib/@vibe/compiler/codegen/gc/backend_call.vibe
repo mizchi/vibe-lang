@@ -263,6 +263,25 @@ fn gc_resolve_builtin_last(ft: FuncTable, name: String) -> Int {
 /// checking ctx.gc_float_locals -- mirrors bc_expr_is_boolish below, so a
 /// name reused with a non-float binding in a sibling scope is not
 /// misclassified via its old, now-stale slot entry.
+/// #2158: does `fname` name a user function DECLARED `-> Double` / `-> Float`?
+///
+/// Exported because the gc lane keeps TWO copies of the floatish classifier
+/// (bc_expr_is_floatish here, gc_expr_is_floatish in backend_expr.vibe, which
+/// imports this file) and the linear lane keeps two more. The classifier
+/// bodies have to stay duplicated -- backend_call cannot import backend_expr
+/// without a cycle -- but the table lookup does not, and #2158 already had to
+/// be fixed twice on the linear lane for exactly that reason.
+///
+/// `local_names` first: the table is keyed by NAME, and a local binding of
+/// the same name is a different callable (#2156 review).
+export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fname: String) -> Bool {
+  if find_local_slot(local_names, fname) >= 0 {
+    false
+  } else {
+    array_contains_str(ctx.gc_float_ret_fns, fname)
+  }
+}
+
 fn bc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
@@ -273,7 +292,7 @@ fn bc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -
     EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/") && (bc_expr_is_floatish(l, local_names, ctx) || bc_expr_is_floatish(r, local_names, ctx)),
     EUnaryOp(op, x) => op == "-" && bc_expr_is_floatish(x, local_names, ctx),
     ECall(fcallee, _, _) => match fcallee {
-      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float",
+      EIdent(cn, _) => cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
       _ => false
     },
     _ => false
@@ -365,7 +384,7 @@ fn gc_expr_is_native_array_ref(expr: Expr, local_names: Array[String], ctx: Comp
     EDot(EIdent(ns_obj, _), ns_field, _, _) => gc_ctor_field_is_ref(ctx.gc_ctor_table, gc_slot_map_get(ctx.gc_native_struct_scope, find_local_slot(local_names, ns_obj)), ns_field),
     ECall(EIdent(name, _), _, _) => {
       let idx = gc_direct_abi_call_index(ctx, name)
-      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
+      find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
     EIf(_, then_e, else_e) => gc_join_is_native_ref(then_e, else_e, local_names, ctx),
     _ => false
@@ -385,7 +404,7 @@ export fn gc_expr_can_compile_native_array_ref(expr: Expr, local_names: Array[St
     EDot(EIdent(ns_obj, _), ns_field, _, _) => gc_ctor_field_is_ref(ctx.gc_ctor_table, gc_slot_map_get(ctx.gc_native_struct_scope, find_local_slot(local_names, ns_obj)), ns_field),
     ECall(EIdent(name, _), _, _) => {
       let idx = gc_direct_abi_call_index(ctx, name)
-      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
+      find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
     EIf(_, then_e, else_e) => gc_expr_can_compile_native_array_ref(then_e, local_names, ctx) && gc_expr_can_compile_native_array_ref(else_e, local_names, ctx),
     _ => false
@@ -406,7 +425,7 @@ fn gc_expr_is_lane_proven_ref(expr: Expr, local_names: Array[String], ctx: Compi
     },
     ECall(EIdent(name, _), _, _) => {
       let idx = gc_direct_abi_call_index(ctx, name)
-      idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
+      find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
     EIf(_, then_e, else_e) => gc_expr_is_lane_proven_ref(then_e, local_names, ctx) && gc_expr_is_lane_proven_ref(else_e, local_names, ctx),
     _ => false
@@ -452,7 +471,7 @@ export fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array
     },
     EArray(elems) => {
       let slot = next_local
-      Array::push(local_names, "__gc_direct_array_arg")
+      Array::push(local_names, "[gc-temp]__gc_direct_array_arg")
       Array::push(ctx.gc_native_array_locals, slot)
       Array::push(ctx.gc_native_array_local_types, slot)
       emit_i32_const(buf, Array::length(elems))
@@ -473,7 +492,7 @@ export fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array
     ECall(callee, args, _) => match callee {
       EIdent(name, _) => {
         let idx = gc_direct_abi_call_index(ctx, name)
-        if idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx) {
+        if find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx) {
           compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce)
         } else {
           throw("gc direct ABI proof mismatch: call does not return a native array")
@@ -760,7 +779,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let fc = Array::get(ctx.gc_ctor_table.field_counts, ctor_lookup_idx)
         let obj_size = 8 + fc * 8
         let ptr_local = next_local
-        Array::push(local_names, "__ctor_ptr")
+        Array::push(local_names, "[gc-temp]__ctor_ptr")
         emit_global_get(buf, 0)
         emit_i64_extend_i32_u(buf)
         emit_local_set(buf, ptr_local)
@@ -829,7 +848,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         while fi_c < Array::length(actual_args) {
           nl_c = ce(buf, Array::get(actual_args, fi_c), local_names, nl_c, ld)
           let val_local = nl_c
-          Array::push(local_names, "__ctor_val")
+          Array::push(local_names, "[gc-temp]__ctor_val")
           emit_local_set(buf, val_local)
           nl_c = nl_c + 1
           emit_local_get(buf, ptr_local)
@@ -852,11 +871,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let end_local = next_local + 2
         let ptr_local = next_local + 3
         let cap_local = next_local + 4
-        Array::push(local_names, "__slice_obj")
-        Array::push(local_names, "__slice_start")
-        Array::push(local_names, "__slice_end")
-        Array::push(local_names, "__slice_ptr")
-        Array::push(local_names, "__slice_cap")
+        Array::push(local_names, "[gc-temp]__slice_obj")
+        Array::push(local_names, "[gc-temp]__slice_start")
+        Array::push(local_names, "[gc-temp]__slice_end")
+        Array::push(local_names, "[gc-temp]__slice_ptr")
+        Array::push(local_names, "[gc-temp]__slice_cap")
         let mut nl = next_local + 5
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, obj_local)
@@ -907,10 +926,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let idx_local = next_local + 1
         let ptr_local = next_local + 2
         let cap_local = next_local + 3
-        Array::push(local_names, "__index_obj")
-        Array::push(local_names, "__index_idx")
-        Array::push(local_names, "__index_ptr")
-        Array::push(local_names, "__index_cap")
+        Array::push(local_names, "[gc-temp]__index_obj")
+        Array::push(local_names, "[gc-temp]__index_idx")
+        Array::push(local_names, "[gc-temp]__index_ptr")
+        Array::push(local_names, "[gc-temp]__index_cap")
         let mut nl = next_local + 4
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, obj_local)
@@ -1033,11 +1052,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
             emit_i64_const(buf, -2)
             emit_i64_and(buf)
             let obj_l = nl
-            Array::push(local_names, "__setf_obj")
+            Array::push(local_names, "[gc-temp]__setf_obj")
             emit_local_set(buf, obj_l)
             nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ld)
             let val_l = nl
-            Array::push(local_names, "__setf_val")
+            Array::push(local_names, "[gc-temp]__setf_val")
             emit_local_set(buf, val_l)
             let mut di = 0
             while di < Array::length(dispatch) {
@@ -1094,9 +1113,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let obj_local = next_local
         let ptr_local = next_local + 1
         let cap_local = next_local + 2
-        Array::push(local_names, "__len_obj")
-        Array::push(local_names, "__len_ptr")
-        Array::push(local_names, "__len_cap")
+        Array::push(local_names, "[gc-temp]__len_obj")
+        Array::push(local_names, "[gc-temp]__len_ptr")
+        Array::push(local_names, "[gc-temp]__len_cap")
         let mut nl = next_local + 3
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, obj_local)
@@ -1166,10 +1185,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let res_l = nl + 1
         let cnt_l = nl + 2
         let i_l = nl + 3
-        Array::push(local_names, "__values_map")
-        Array::push(local_names, "__values_res")
-        Array::push(local_names, "__values_cnt")
-        Array::push(local_names, "__values_i")
+        Array::push(local_names, "[gc-temp]__values_map")
+        Array::push(local_names, "[gc-temp]__values_res")
+        Array::push(local_names, "[gc-temp]__values_cnt")
+        Array::push(local_names, "[gc-temp]__values_i")
         emit_local_set(buf, map_l)
         emit_call_resolved(buf, ctx, arr_new_fi)
         emit_local_set(buf, res_l)
@@ -1252,10 +1271,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let res_local = next_local + 1
         let len_local = next_local + 2
         let i_local = next_local + 3
-        Array::push(local_names, "__tb_str")
-        Array::push(local_names, "__tb_res")
-        Array::push(local_names, "__tb_len")
-        Array::push(local_names, "__tb_idx")
+        Array::push(local_names, "[gc-temp]__tb_str")
+        Array::push(local_names, "[gc-temp]__tb_res")
+        Array::push(local_names, "[gc-temp]__tb_len")
+        Array::push(local_names, "[gc-temp]__tb_idx")
         let mut nl = next_local + 4
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, str_local)
@@ -1345,7 +1364,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       else if fname == "Map::size" {
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         let map_local = nl
-        Array::push(local_names, "__size_map")
+        Array::push(local_names, "[gc-temp]__size_map")
         emit_local_set(buf, map_local)
         emit_local_get(buf, map_local)
         emit_i64_const(buf, -2)
@@ -1392,14 +1411,14 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let slot_local = next_local + 5
         let env_local = next_local + 6
         let elem_local = next_local + 7
-        Array::push(local_names, "__map_arr")
-        Array::push(local_names, "__map_fn")
-        Array::push(local_names, "__map_res")
-        Array::push(local_names, "__map_len")
-        Array::push(local_names, "__map_i")
-        Array::push(local_names, "__map_slot")
-        Array::push(local_names, "__map_env")
-        Array::push(local_names, "__map_elem")
+        Array::push(local_names, "[gc-temp]__map_arr")
+        Array::push(local_names, "[gc-temp]__map_fn")
+        Array::push(local_names, "[gc-temp]__map_res")
+        Array::push(local_names, "[gc-temp]__map_len")
+        Array::push(local_names, "[gc-temp]__map_i")
+        Array::push(local_names, "[gc-temp]__map_slot")
+        Array::push(local_names, "[gc-temp]__map_env")
+        Array::push(local_names, "[gc-temp]__map_elem")
         let mut nl = next_local + 8
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1452,14 +1471,14 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let slot_local = next_local + 5
         let env_local = next_local + 6
         let elem_local = next_local + 7
-        Array::push(local_names, "__filter_arr")
-        Array::push(local_names, "__filter_fn")
-        Array::push(local_names, "__filter_res")
-        Array::push(local_names, "__filter_len")
-        Array::push(local_names, "__filter_i")
-        Array::push(local_names, "__filter_slot")
-        Array::push(local_names, "__filter_env")
-        Array::push(local_names, "__filter_elem")
+        Array::push(local_names, "[gc-temp]__filter_arr")
+        Array::push(local_names, "[gc-temp]__filter_fn")
+        Array::push(local_names, "[gc-temp]__filter_res")
+        Array::push(local_names, "[gc-temp]__filter_len")
+        Array::push(local_names, "[gc-temp]__filter_i")
+        Array::push(local_names, "[gc-temp]__filter_slot")
+        Array::push(local_names, "[gc-temp]__filter_env")
+        Array::push(local_names, "[gc-temp]__filter_elem")
         let mut nl = next_local + 8
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1511,13 +1530,13 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let i_local = next_local + 4
         let slot_local = next_local + 5
         let env_local = next_local + 6
-        Array::push(local_names, "__fold_arr")
-        Array::push(local_names, "__fold_acc")
-        Array::push(local_names, "__fold_fn")
-        Array::push(local_names, "__fold_len")
-        Array::push(local_names, "__fold_i")
-        Array::push(local_names, "__fold_slot")
-        Array::push(local_names, "__fold_env")
+        Array::push(local_names, "[gc-temp]__fold_arr")
+        Array::push(local_names, "[gc-temp]__fold_acc")
+        Array::push(local_names, "[gc-temp]__fold_fn")
+        Array::push(local_names, "[gc-temp]__fold_len")
+        Array::push(local_names, "[gc-temp]__fold_i")
+        Array::push(local_names, "[gc-temp]__fold_slot")
+        Array::push(local_names, "[gc-temp]__fold_env")
         let mut nl = next_local + 7
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1562,10 +1581,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let res_local = next_local + 1
         let len_local = next_local + 2
         let i_local = next_local + 3
-        Array::push(local_names, "__rev_arr")
-        Array::push(local_names, "__rev_res")
-        Array::push(local_names, "__rev_len")
-        Array::push(local_names, "__rev_i")
+        Array::push(local_names, "[gc-temp]__rev_arr")
+        Array::push(local_names, "[gc-temp]__rev_res")
+        Array::push(local_names, "[gc-temp]__rev_len")
+        Array::push(local_names, "[gc-temp]__rev_i")
         let mut nl = next_local + 4
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1613,13 +1632,13 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let slot_local = next_local + 4
         let env_local = next_local + 5
         let res_local = next_local + 6
-        Array::push(local_names, "__any_arr")
-        Array::push(local_names, "__any_fn")
-        Array::push(local_names, "__any_len")
-        Array::push(local_names, "__any_i")
-        Array::push(local_names, "__any_slot")
-        Array::push(local_names, "__any_env")
-        Array::push(local_names, "__any_res")
+        Array::push(local_names, "[gc-temp]__any_arr")
+        Array::push(local_names, "[gc-temp]__any_fn")
+        Array::push(local_names, "[gc-temp]__any_len")
+        Array::push(local_names, "[gc-temp]__any_i")
+        Array::push(local_names, "[gc-temp]__any_slot")
+        Array::push(local_names, "[gc-temp]__any_env")
+        Array::push(local_names, "[gc-temp]__any_res")
         let mut nl = next_local + 7
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1669,13 +1688,13 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let slot_local = next_local + 4
         let env_local = next_local + 5
         let res_local = next_local + 6
-        Array::push(local_names, "__all_arr")
-        Array::push(local_names, "__all_fn")
-        Array::push(local_names, "__all_len")
-        Array::push(local_names, "__all_i")
-        Array::push(local_names, "__all_slot")
-        Array::push(local_names, "__all_env")
-        Array::push(local_names, "__all_res")
+        Array::push(local_names, "[gc-temp]__all_arr")
+        Array::push(local_names, "[gc-temp]__all_fn")
+        Array::push(local_names, "[gc-temp]__all_len")
+        Array::push(local_names, "[gc-temp]__all_i")
+        Array::push(local_names, "[gc-temp]__all_slot")
+        Array::push(local_names, "[gc-temp]__all_env")
+        Array::push(local_names, "[gc-temp]__all_res")
         let mut nl = next_local + 7
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1735,14 +1754,14 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let env_local = next_local + 5
         let elem_local = next_local + 6
         let res_local = next_local + 7
-        Array::push(local_names, "__find_arr")
-        Array::push(local_names, "__find_fn")
-        Array::push(local_names, "__find_len")
-        Array::push(local_names, "__find_i")
-        Array::push(local_names, "__find_slot")
-        Array::push(local_names, "__find_env")
-        Array::push(local_names, "__find_elem")
-        Array::push(local_names, "__find_res")
+        Array::push(local_names, "[gc-temp]__find_arr")
+        Array::push(local_names, "[gc-temp]__find_fn")
+        Array::push(local_names, "[gc-temp]__find_len")
+        Array::push(local_names, "[gc-temp]__find_i")
+        Array::push(local_names, "[gc-temp]__find_slot")
+        Array::push(local_names, "[gc-temp]__find_env")
+        Array::push(local_names, "[gc-temp]__find_elem")
+        Array::push(local_names, "[gc-temp]__find_res")
         let mut nl = next_local + 8
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1770,7 +1789,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
         emit_i32_wrap_i64(buf)
         emit_if_void(buf)
-        nl = ce(buf, ECall(EIdent("Some", -1), [EIdent("__find_elem", -1)], -1), local_names, nl, ld)
+        nl = ce(buf, ECall(EIdent("Some", -1), [
+          EIdent("[gc-temp]__find_elem", -1)
+        ], -1), local_names, nl, ld)
         emit_local_set(buf, res_local)
         emit_br(buf, 2)
         emit_end(buf)
@@ -1793,11 +1814,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let end_local = next_local + 2
         let new_arr_local = next_local + 3
         let i_local = next_local + 4
-        Array::push(local_names, "__slice_arr")
-        Array::push(local_names, "__slice_start")
-        Array::push(local_names, "__slice_end")
-        Array::push(local_names, "__slice_new")
-        Array::push(local_names, "__slice_i")
+        Array::push(local_names, "[gc-temp]__slice_arr")
+        Array::push(local_names, "[gc-temp]__slice_start")
+        Array::push(local_names, "[gc-temp]__slice_end")
+        Array::push(local_names, "[gc-temp]__slice_new")
+        Array::push(local_names, "[gc-temp]__slice_i")
         let mut nl = next_local + 5
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, arr_local)
@@ -1840,11 +1861,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let new_arr_local = next_local + 2
         let i_local = next_local + 3
         let len_local = next_local + 4
-        Array::push(local_names, "__concat_a")
-        Array::push(local_names, "__concat_b")
-        Array::push(local_names, "__concat_new")
-        Array::push(local_names, "__concat_i")
-        Array::push(local_names, "__concat_len")
+        Array::push(local_names, "[gc-temp]__concat_a")
+        Array::push(local_names, "[gc-temp]__concat_b")
+        Array::push(local_names, "[gc-temp]__concat_new")
+        Array::push(local_names, "[gc-temp]__concat_i")
+        Array::push(local_names, "[gc-temp]__concat_len")
         let mut nl = next_local + 5
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, a_local)
@@ -1921,10 +1942,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let src_local = next_local + 1
         let i_local = next_local + 2
         let len_local = next_local + 3
-        Array::push(local_names, "__pushall_dst")
-        Array::push(local_names, "__pushall_src")
-        Array::push(local_names, "__pushall_i")
-        Array::push(local_names, "__pushall_len")
+        Array::push(local_names, "[gc-temp]__pushall_dst")
+        Array::push(local_names, "[gc-temp]__pushall_src")
+        Array::push(local_names, "[gc-temp]__pushall_i")
+        Array::push(local_names, "[gc-temp]__pushall_len")
         let mut nl = next_local + 4
         nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
         emit_local_set(buf, dst_local)
@@ -2032,8 +2053,8 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
         let eq_a = nl
         let eq_b = nl + 1
-        Array::push(local_names, "__eq_a")
-        Array::push(local_names, "__eq_b")
+        Array::push(local_names, "[gc-temp]__eq_a")
+        Array::push(local_names, "[gc-temp]__eq_b")
         emit_local_set(buf, eq_b)
         emit_local_set(buf, eq_a)
         emit_local_get(buf, eq_a)
@@ -2133,7 +2154,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // (key@+0/value@+8 per 16-byte slot); `set` grows storage through
         // the handle, `freeze` copies into a plain Map block.
         let ptr_l = next_local
-        Array::push(local_names, "__mb_ptr")
+        Array::push(local_names, "[gc-temp]__mb_ptr")
         emit_global_get(buf, 0)
         emit_i64_extend_i32_u(buf)
         emit_local_set(buf, ptr_l)
@@ -2180,15 +2201,15 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let cap_l = nl + 6
         let st_l = nl + 7
         let ns_l = nl + 8
-        Array::push(local_names, "__mbs_map")
-        Array::push(local_names, "__mbs_key")
-        Array::push(local_names, "__mbs_val")
-        Array::push(local_names, "__mbs_cnt")
-        Array::push(local_names, "__mbs_i")
-        Array::push(local_names, "__mbs_found")
-        Array::push(local_names, "__mbs_cap")
-        Array::push(local_names, "__mbs_st")
-        Array::push(local_names, "__mbs_ns")
+        Array::push(local_names, "[gc-temp]__mbs_map")
+        Array::push(local_names, "[gc-temp]__mbs_key")
+        Array::push(local_names, "[gc-temp]__mbs_val")
+        Array::push(local_names, "[gc-temp]__mbs_cnt")
+        Array::push(local_names, "[gc-temp]__mbs_i")
+        Array::push(local_names, "[gc-temp]__mbs_found")
+        Array::push(local_names, "[gc-temp]__mbs_cap")
+        Array::push(local_names, "[gc-temp]__mbs_st")
+        Array::push(local_names, "[gc-temp]__mbs_ns")
         emit_local_set(buf, mv_l)
         emit_local_set(buf, mk_l)
         emit_local_set(buf, mb_l)
@@ -2332,9 +2353,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let fb_l = nl
         let fc_l = nl + 1
         let fm_l = nl + 2
-        Array::push(local_names, "__mbf_b")
-        Array::push(local_names, "__mbf_cnt")
-        Array::push(local_names, "__mbf_map")
+        Array::push(local_names, "[gc-temp]__mbf_b")
+        Array::push(local_names, "[gc-temp]__mbf_cnt")
+        Array::push(local_names, "[gc-temp]__mbf_map")
         emit_i64_const(buf, -2)
         emit_i64_and(buf)
         emit_local_set(buf, fb_l)
@@ -2389,11 +2410,11 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let mc_l = nl + 2
         let st_l = nl + 3
         let mi_l = nl + 4
-        Array::push(local_names, "__mhk_map")
-        Array::push(local_names, "__mhk_key")
-        Array::push(local_names, "__mhk_cnt")
-        Array::push(local_names, "__mhk_st")
-        Array::push(local_names, "__mhk_i")
+        Array::push(local_names, "[gc-temp]__mhk_map")
+        Array::push(local_names, "[gc-temp]__mhk_key")
+        Array::push(local_names, "[gc-temp]__mhk_cnt")
+        Array::push(local_names, "[gc-temp]__mhk_st")
+        Array::push(local_names, "[gc-temp]__mhk_i")
         emit_local_set(buf, mk_l)
         emit_local_set(buf, mb_l)
         emit_local_get(buf, mb_l)
@@ -2454,13 +2475,13 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let mi_l = nl + 4
         let mv_l = nl + 5
         let res_l = nl + 6
-        Array::push(local_names, "__mbg_map")
-        Array::push(local_names, "__mbg_key")
-        Array::push(local_names, "__mbg_cnt")
-        Array::push(local_names, "__mbg_st")
-        Array::push(local_names, "__mbg_i")
-        Array::push(local_names, "__mbg_val")
-        Array::push(local_names, "__mbg_res")
+        Array::push(local_names, "[gc-temp]__mbg_map")
+        Array::push(local_names, "[gc-temp]__mbg_key")
+        Array::push(local_names, "[gc-temp]__mbg_cnt")
+        Array::push(local_names, "[gc-temp]__mbg_st")
+        Array::push(local_names, "[gc-temp]__mbg_i")
+        Array::push(local_names, "[gc-temp]__mbg_val")
+        Array::push(local_names, "[gc-temp]__mbg_res")
         let mut nl2 = nl + 7
         emit_local_set(buf, mk_l)
         emit_local_set(buf, mb_l)
@@ -2504,7 +2525,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i32_add(buf)
         emit_i64_load(buf, 3, 8)
         emit_local_set(buf, mv_l)
-        nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__mbg_val", -1)], -1), local_names, nl2, ld)
+        nl2 = ce(buf, ECall(EIdent("Some", -1), [
+          EIdent("[gc-temp]__mbg_val", -1)
+        ], -1), local_names, nl2, ld)
         emit_local_set(buf, res_l)
         emit_br(buf, 2)
         emit_end(buf)
@@ -2537,13 +2560,13 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let ms_cnt = nl + 4
         let ms_i = nl + 5
         let ms_found = nl + 6
-        Array::push(local_names, "__ms_map")
-        Array::push(local_names, "__ms_key")
-        Array::push(local_names, "__ms_val")
-        Array::push(local_names, "__ms_new")
-        Array::push(local_names, "__ms_cnt")
-        Array::push(local_names, "__ms_i")
-        Array::push(local_names, "__ms_found")
+        Array::push(local_names, "[gc-temp]__ms_map")
+        Array::push(local_names, "[gc-temp]__ms_key")
+        Array::push(local_names, "[gc-temp]__ms_val")
+        Array::push(local_names, "[gc-temp]__ms_new")
+        Array::push(local_names, "[gc-temp]__ms_cnt")
+        Array::push(local_names, "[gc-temp]__ms_i")
+        Array::push(local_names, "[gc-temp]__ms_found")
         emit_local_set(buf, ms_v)
         emit_local_set(buf, ms_k)
         emit_local_set(buf, ms_m)
@@ -2684,12 +2707,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let md_new = nl + 3
         let md_i = nl + 4
         let md_out = nl + 5
-        Array::push(local_names, "__md_map")
-        Array::push(local_names, "__md_key")
-        Array::push(local_names, "__md_cnt")
-        Array::push(local_names, "__md_new")
-        Array::push(local_names, "__md_idx")
-        Array::push(local_names, "__md_out")
+        Array::push(local_names, "[gc-temp]__md_map")
+        Array::push(local_names, "[gc-temp]__md_key")
+        Array::push(local_names, "[gc-temp]__md_cnt")
+        Array::push(local_names, "[gc-temp]__md_new")
+        Array::push(local_names, "[gc-temp]__md_idx")
+        Array::push(local_names, "[gc-temp]__md_out")
         emit_local_set(buf, md_k)
         emit_local_set(buf, md_m)
         emit_local_get(buf, md_m)
@@ -2793,10 +2816,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let key_l = nl + 1
         let cnt_l = nl + 2
         let idx_l = nl + 3
-        Array::push(local_names, "__mg_map")
-        Array::push(local_names, "__mg_key")
-        Array::push(local_names, "__mg_cnt")
-        Array::push(local_names, "__mg_i")
+        Array::push(local_names, "[gc-temp]__mg_map")
+        Array::push(local_names, "[gc-temp]__mg_key")
+        Array::push(local_names, "[gc-temp]__mg_cnt")
+        Array::push(local_names, "[gc-temp]__mg_i")
         emit_local_set(buf, key_l)
         emit_local_set(buf, map_l)
         // Load count
@@ -2865,10 +2888,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let key_l = nl + 1
         let cnt_l = nl + 2
         let idx_l = nl + 3
-        Array::push(local_names, "__hk_map")
-        Array::push(local_names, "__hk_key")
-        Array::push(local_names, "__hk_cnt")
-        Array::push(local_names, "__hk_i")
+        Array::push(local_names, "[gc-temp]__hk_map")
+        Array::push(local_names, "[gc-temp]__hk_key")
+        Array::push(local_names, "[gc-temp]__hk_cnt")
+        Array::push(local_names, "[gc-temp]__hk_i")
         emit_local_set(buf, key_l)
         emit_local_set(buf, map_l)
         emit_local_get(buf, map_l)
@@ -2919,10 +2942,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let res_l = nl + 1
         let cnt_l = nl + 2
         let i_l = nl + 3
-        Array::push(local_names, "__keys_map")
-        Array::push(local_names, "__keys_res")
-        Array::push(local_names, "__keys_cnt")
-        Array::push(local_names, "__keys_i")
+        Array::push(local_names, "[gc-temp]__keys_map")
+        Array::push(local_names, "[gc-temp]__keys_res")
+        Array::push(local_names, "[gc-temp]__keys_cnt")
+        Array::push(local_names, "[gc-temp]__keys_i")
         emit_local_set(buf, map_l)
         emit_call_resolved(buf, ctx, arr_new_fi)
         emit_local_set(buf, res_l)
@@ -3034,10 +3057,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let fam_init = nl + 1
         let fam_arr = nl + 2
         let fam_i = nl + 3
-        Array::push(local_names, "__fam_n")
-        Array::push(local_names, "__fam_init")
-        Array::push(local_names, "__fam_arr")
-        Array::push(local_names, "__fam_i")
+        Array::push(local_names, "[gc-temp]__fam_n")
+        Array::push(local_names, "[gc-temp]__fam_init")
+        Array::push(local_names, "[gc-temp]__fam_arr")
+        Array::push(local_names, "[gc-temp]__fam_i")
         emit_local_set(buf, fam_init)
         emit_local_set(buf, fam_n)
         emit_call_resolved(buf, ctx, fa_new_idx)
@@ -3100,12 +3123,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         let fb_soff = nl + 3
         let fb_len = nl + 4
         let fb_i = nl + 5
-        Array::push(local_names, "__fb_dst")
-        Array::push(local_names, "__fb_doff")
-        Array::push(local_names, "__fb_src")
-        Array::push(local_names, "__fb_soff")
-        Array::push(local_names, "__fb_len")
-        Array::push(local_names, "__fb_i")
+        Array::push(local_names, "[gc-temp]__fb_dst")
+        Array::push(local_names, "[gc-temp]__fb_doff")
+        Array::push(local_names, "[gc-temp]__fb_src")
+        Array::push(local_names, "[gc-temp]__fb_soff")
+        Array::push(local_names, "[gc-temp]__fb_len")
+        Array::push(local_names, "[gc-temp]__fb_i")
         emit_local_set(buf, fb_len)
         emit_local_set(buf, fb_soff)
         emit_local_set(buf, fb_src)
@@ -3147,9 +3170,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       else {
         let fn_len2 = Array::length(ctx.func_table.names)
         let eff_fname = gc_direct_abi_twin_callee(ctx, fname)
+        let local_callee_idx = find_local_slot(local_names, fname)
         let mut fn_idx_in_list = -1
         let mut __fi = 0
-        while __fi < fn_len2 {
+        // A lexical binding shadows a same-named top-level function. Identifier
+        // expressions already use this ordering; calls must do the same (#2160).
+        while local_callee_idx < 0 && __fi < fn_len2 {
           if Array::get(ctx.func_table.names, __fi) == eff_fname {
             fn_idx_in_list = __fi
             __fi = fn_len2
@@ -3186,18 +3212,22 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           // unknown constructor, not a local closure -- fail with a clear
           // message instead of resolve_local's "undefined variable".
           let c0 = String::char_code_at(fname, 0)
-          if c0 >= 65 && c0 <= 90 {
+          if local_callee_idx < 0 && c0 >= 65 && c0 <= 90 {
             throw("GC codegen: unknown constructor or function: \{fname}")
           }
-          let local_idx2 = resolve_local(local_names, fname, "gc_call")
+          let local_idx2 = if local_callee_idx >= 0 {
+            local_callee_idx
+          } else {
+            resolve_local(local_names, fname, "gc_call")
+          }
           let num_args = Array::length(args)
           let fn_val_local = next_local
           let slot_local = next_local + 1
           let env_local = next_local + 2
           let mut nl = next_local + 3
-          Array::push(local_names, "__fn_val")
-          Array::push(local_names, "__slot")
-          Array::push(local_names, "__env")
+          Array::push(local_names, "[gc-temp]__fn_val")
+          Array::push(local_names, "[gc-temp]__slot")
+          Array::push(local_names, "[gc-temp]__env")
           emit_local_get(buf, local_idx2)
           // #2012: see the linear compile_call path — boxed `let mut`
           // locals store a cell address.
@@ -3225,9 +3255,9 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       let slot_local = next_local + 1
       let env_local = next_local + 2
       let mut nl = next_local + 3
-      Array::push(local_names, "__fn_val")
-      Array::push(local_names, "__slot")
-      Array::push(local_names, "__env")
+      Array::push(local_names, "[gc-temp]__fn_val")
+      Array::push(local_names, "[gc-temp]__slot")
+      Array::push(local_names, "[gc-temp]__env")
       nl = ce(buf, callee, local_names, nl, ld)
       emit_local_set(buf, fn_val_local)
       emit_closure_resolve(buf, fn_val_local, slot_local, env_local)

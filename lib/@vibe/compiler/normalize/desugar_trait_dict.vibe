@@ -4292,7 +4292,7 @@ fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) ->
 /// Array-backed `Stream`, ADR-0012), not the pull loop that used to
 /// call_indirect an array pointer. The pull loop fires only on a POSITIVE
 /// function-shaped classification.
-fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
+fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if tn == "HostStream" {
       build_host_stream_for(name, riter, rbody)
@@ -4318,14 +4318,58 @@ fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, r
 /// protocol is plain named `C::iter_length`/`C::iter_get` functions, e.g.
 /// @vibe/core's List), so it also runs for trait-free programs where the
 /// next/iter classification stays gated off.
-fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
+fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
-    Some(tn) => if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, String::concat(tn, "::iter_length")) && fn_exists(fn_returns, String::concat(tn, "::iter_get")) {
-      build_indexed_iter_for(name, idx, tn, riter, rbody)
+    Some(tn) => if struct_set_has(struct_sets, tn) {
+      if fn_exists(fn_returns, String::concat(tn, "::iter_length")) && fn_exists(fn_returns, String::concat(tn, "::iter_get")) {
+        build_indexed_iter_for(name, idx, tn, riter, rbody)
+      } else {
+        // #2152: a declared struct/enum with NO iteration protocol used to
+        // fall through to the residual EForIn array loop, which read the
+        // value as an array pointer -- one iteration binding garbage, no
+        // diagnostic. The checker cannot own this rejection: its env may
+        // not see an `impl Iterator` living in a dependency (the classifier
+        // comment at its `for` arm says why it answers `CtStruct => 0`
+        // without a protocol check). THIS pass runs on the merged sources,
+        // so every protocol function the program has is in `fn_returns` --
+        // a miss here is a real miss, and it throws instead of iterating
+        // garbage.
+        throw(String::concat(for_no_protocol_msg(tn), for_iterand_off_marker(iter)))
+      }
     } else {
       EForIn(name, idx, riter, rbody)
     },
     None => EForIn(name, idx, riter, rbody)
+  }
+}
+
+/// #2152: the rejection message for a `for` over a declared type with no
+/// iteration protocol. Leads with the edits that make the loop work.
+fn for_no_protocol_msg(tn: String) -> String {
+  String::concat("cannot iterate a `", String::concat(tn, String::concat("` value in `for`: define `", String::concat(tn, String::concat("::iter_length` + `", String::concat(tn, String::concat("::iter_get`, or `impl Iterator for ", String::concat(tn, String::concat("` with a `next` method, or loop over an Array of its elements -- `", String::concat(tn, "` declares no iteration protocol, so the loop has nothing to draw elements from (#2152)"))))))))))
+}
+
+/// #2152 (Codex P2 on the PR): transport the iterand's source offset as the
+/// standard ` [@off=N]` side-channel marker when the AST carries one.
+/// Measured 2026-08-21: the compile entries parse with the PLAIN
+/// `parse_program(lex(..))` (no starts array => every node's offset is -1,
+/// the pitfall cli_support.vibe documents for read_program), so in those
+/// lanes this is a no-op today -- the marker resolves as soon as a lane
+/// parses located (the check walk already does; wiring compile is #1514 /
+/// #1567's job). Safe by construction either way: emit_compile_diag strips
+/// an unresolved marker, so it can never leak (#1445's failure mode) or name
+/// a wrong position against merged module text (#1596's fail-closed rule).
+fn for_iterand_off_marker(iter: Expr) -> String {
+  let off = match iter {
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    EDot(_, _, o, _) => o,
+    _ => 0 - 1
+  }
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
   }
 }
 
@@ -4346,7 +4390,7 @@ fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, rite
 /// function value -- a call_indirect on a non-array pointer, i.e. a runtime
 /// trap. So this strictly turns a trap into a working loop (#827's own
 /// reasoning, now applied to the single surface).
-fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr {
+fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
     Some(tn) => if tn == "HostStream" {
       build_host_stream_for(name, riter, rbody)

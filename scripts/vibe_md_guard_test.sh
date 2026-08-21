@@ -49,7 +49,7 @@ done
 echo "vibe-md-guard self-test: ok: write/fmt/fmt-check are guarded too"
 
 # 5. A mixed argument list is refused on the bad entry, before any work.
-set +e; rc=0; bash "$SH" check book/en/01_values_functions.vibe.md "$TMP/prose.md" >/dev/null 2>&1 || rc=$?; set -e
+set +e; rc=0; bash "$SH" check book/en/03_values_functions.vibe.md "$TMP/prose.md" >/dev/null 2>&1 || rc=$?; set -e
 [ "$rc" = "2" ] || fail "a mixed list was not refused (exit $rc)"
 echo "vibe-md-guard self-test: ok: a mixed argument list is refused"
 

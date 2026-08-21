@@ -232,7 +232,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_builtin_call_ret_kind, cc_expr_is_stringish, compile_call
+  cc_builtin_call_ret_kind, cc_expr_is_stringish, cc_fn_returns_float, compile_call
 }
 
 import ./compile_expr_tail2.vibe {
@@ -661,6 +661,12 @@ export fn expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx)
     if is_eident(callee) {
       let fname = get_eident_name(callee)
       if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+        true
+      } else if cc_fn_returns_float(local_names, ctx, fname) {
+        // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.
+        // Without this, `let a = half(5.0)` left the slot unclassified, so a
+        // later `${a}` fell through to __to_string's runtime bit-pattern
+        // heuristic and printed the f64 bits as an Int.
         true
       } else if fname == "__rec_field" {
         // fbox (#797): `t.0` on a TRACKED tuple-literal binding (`let t =

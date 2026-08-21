@@ -478,11 +478,21 @@ export fn gen_string_join_body(enable_rc: Bool, arr_len_idx: Int, arr_get_idx: I
   }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 2)
-  // empty array -> empty string (0)
+  // empty array -> the canonical empty-string shape `(ptr << 32) | 0` with a
+  // REAL pointer (the current bump pointer; length 0, so nothing is read
+  // through it and no allocation happens). The previous `i64.const 0` was
+  // indistinguishable from the tagged Int 0, so the value compared and
+  // concatenated as an empty string but RENDERED as `0` --
+  // `"\{String::join([], ",")}"` printed `0` (#2143). Every other
+  // empty-string producer (literal, substring, trim, split) already carries
+  // a real pointer; join was the only 0-shaped empty.
   emit_local_get(b, 2)
   emit_i32_eqz(b)
   emit_if_i64(b)
-  emit_i64_const(b, 0)
+  emit_global_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
   emit_else(b)
   // sep_len = lo32(sep); sep_ptr = hi32(sep)
   emit_local_get(b, 1)

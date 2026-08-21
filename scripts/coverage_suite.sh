@@ -36,21 +36,24 @@
 # treating top_branch_union_gaps as a to-do list.
 #
 # Thresholds (percent, env-overridable; this file is the ONE place they are
-# defined — raise them as coverage improves, lowering needs a rationale in
-# the PR):
-#   VIBE_SUITE_MIN_POINT_RATE        — minimum entry-weighted FUNCTION rate
+# defined):
+#   VIBE_SUITE_MIN_POINT_RATE        — opt-in entry-weighted FUNCTION floor
 #   VIBE_SUITE_MIN_LINE_RATE         — minimum CASE PASS rate (entries green)
-#   VIBE_SUITE_MIN_BRANCH_RATE       — minimum entry-weighted BRANCH rate
+#   VIBE_SUITE_MIN_BRANCH_RATE       — opt-in entry-weighted BRANCH floor
 #   VIBE_SUITE_MIN_FN_HIT            — minimum ABSOLUTE covered functions
 #   VIBE_SUITE_MIN_BRANCH_HIT        — minimum ABSOLUTE covered branches
+#   VIBE_SUITE_MIN_FUNCTION_UNION_HIT — minimum UNION covered functions
+#   VIBE_SUITE_MIN_FUNCTION_UNION_RATE — opt-in UNION function rate
 #   VIBE_SUITE_MIN_BRANCH_UNION_HIT  — minimum UNION covered branches
 #   VIBE_SUITE_MIN_BRANCH_UNION_RATE — minimum UNION branch rate
 #
-# Among the ENTRY-WEIGHTED metrics the ABSOLUTE minimums are the primary
-# ratchet: adding a test entry can only raise them, while their RATE floors
-# would punish it (a new entry grows the denominator by its whole import
-# closure). Those rates are kept as loose floors. The UNION rate has no such
-# problem and is ratcheted directly.
+# Among the ENTRY-WEIGHTED metrics only the ABSOLUTE minimums are ratchets:
+# adding a test entry can only raise them, while rate floors punish it (a new
+# entry grows the denominator by its whole import closure). The rates remain
+# in the report and can be gated explicitly through the env overrides, but
+# their defaults are zero. Union ABSOLUTE hits are monotonic across test-entry
+# expansion; rates are only default gates where a separate source-coverage KPI
+# explicitly requires one (the #1556 branch target).
 #
 # Baseline (2026-07-03, 93 allowlist entries, full-visibility #716 stage2):
 #   functions 2263/6491 (34.86%), branches 3814/41967 (9.09%), cases 92/93
@@ -111,15 +114,22 @@ cd "$ROOT"
 # just under current; the ABSOLUTE mins (the real ratchet) are RAISED to
 # just under current instead (12,000 -> 42,000 fn, 29,000 -> 113,000
 # branch), which protects strictly more coverage than the old floors did.
-MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-13}"
+#
+# Rebased 2026-08-21: with 1,008 entries, the entry-weighted rates diluted to
+# 12.35% / 5.50% while absolute hits reached 111,304 / 282,489 and source
+# union stayed at 88.42% / 58.73%. Main had been red before and after #2156
+# despite every one of the 1,008 entries passing. Repeatedly lowering a rate
+# whose denominator grows with each entry is not a ratchet, so the default
+# rate floors are retired. Absolute-hit and union ratchets below remain active.
+MIN_POINT="${VIBE_SUITE_MIN_POINT_RATE:-0}"
 MIN_LINE="${VIBE_SUITE_MIN_LINE_RATE:-97}"
-MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-6}"
+MIN_BRANCH="${VIBE_SUITE_MIN_BRANCH_RATE:-0}"
 MIN_FN_HIT="${VIBE_SUITE_MIN_FN_HIT:-42000}"
 MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
-# #1556: branch UNION floors. Unlike the entry-weighted numbers above, these
-# count each source branch once no matter how many entries link it, so the
-# rate is the one the issue's "branch coverage >= 60%" target is stated
-# against. Raise as coverage improves; lowering needs a rationale in the PR.
+# Union floors count each source function/branch once no matter how many
+# entries link it. Their absolute hits are safe ratchets. Their source universe
+# can still expand when a test first imports a module, so only the #1556 branch
+# coverage KPI has a default rate floor; function-union rate remains opt-in.
 #
 # Baseline (2026-08-13, 575 entries, all green, at 85f2ace): branch union
 # 25,131/45,638 (55.07%), function union 12,820/14,907 (86.00%). Note how far
@@ -141,9 +151,14 @@ MIN_BRANCH_HIT="${VIBE_SUITE_MIN_BRANCH_HIT:-113000}"
 # unchanged (55.07%) -- numerator and denominator grew together, which is what
 # de-merging distinct functions should do.
 #
-# Unlike the entry-weighted RATE floors, this rate is safe to ratchet: adding a
-# test entry cannot dilute it (a branch is counted once no matter how many
-# entries link it), so a new entry can only hold it level or push it up.
+# #2175 review: retiring the diluted function-rate floor without a function
+# union ratchet would leave only MIN_FN_HIT=42,000 against 111,304 weighted
+# hits. Current source-function union is 16,040/18,147 (88.39%) locally and
+# 16,046/18,147 (88.42%) in CI. Protect the executed source-function count;
+# do not gate its rate because a newly imported module expands the denominator
+# without making any previously covered function uncovered (#2176 review).
+MIN_FUNCTION_UNION_HIT="${VIBE_SUITE_MIN_FUNCTION_UNION_HIT:-15800}"
+MIN_FUNCTION_UNION="${VIBE_SUITE_MIN_FUNCTION_UNION_RATE:-0}"
 MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-26000}"
 MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-57}"
 
@@ -257,4 +272,4 @@ esac
 VIBE_TEST_CLI_WASM="$cli_abs" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
   | tee "$run_log" || true
 
-python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" "$MIN_BRANCH_UNION_HIT" "$MIN_BRANCH_UNION"
+python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" "$MIN_BRANCH_UNION_HIT" "$MIN_BRANCH_UNION" "$MIN_FUNCTION_UNION_HIT" "$MIN_FUNCTION_UNION"

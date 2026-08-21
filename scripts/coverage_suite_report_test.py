@@ -1,12 +1,78 @@
+import io
 import json
+import re
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
-from coverage_suite_report import build_report
+from coverage_suite_report import build_report, main
 
 
 class CoverageSuiteReportTest(unittest.TestCase):
+    def test_default_gate_uses_union_and_absolute_ratchets_not_weighted_rates(self):
+        script = (Path(__file__).parent / "coverage_suite.sh").read_text()
+
+        def default_for(name):
+            match = re.search(
+                rf'^{name}="\$\{{VIBE_SUITE_[A-Z_]+:-([^}}]+)\}}"$',
+                script,
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(match, f"missing default for {name}")
+            return match.group(1)
+
+        # Entry-weighted rates are denominator-diluted whenever a test imports
+        # more code. Keep them observable and opt-in, but do not fail main by
+        # default on values that are not source coverage.
+        self.assertEqual(default_for("MIN_POINT"), "0")
+        self.assertEqual(default_for("MIN_BRANCH"), "0")
+
+        # The monotonic absolute-hit and source-union ratchets remain active.
+        self.assertGreater(int(default_for("MIN_FN_HIT")), 0)
+        self.assertGreater(int(default_for("MIN_BRANCH_HIT")), 0)
+        self.assertGreater(int(default_for("MIN_FUNCTION_UNION_HIT")), 0)
+        self.assertEqual(default_for("MIN_FUNCTION_UNION"), "0")
+        self.assertGreater(int(default_for("MIN_BRANCH_UNION_HIT")), 0)
+        self.assertGreater(float(default_for("MIN_BRANCH_UNION")), 0)
+
+        invocation = re.search(
+            r'^python3 scripts/coverage_suite_report\.py .+$',
+            script,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(invocation)
+        self.assertIn('"$MIN_FUNCTION_UNION_HIT"', invocation.group(0))
+        self.assertIn('"$MIN_FUNCTION_UNION"', invocation.group(0))
+
+    def test_function_union_hit_ratchet_fails_independently_of_weighted_rates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cov = root / "coverage"
+            cov.mkdir()
+            log = root / "run.log"
+            report = root / "report.json"
+            log.write_text("ok   test_a.vibe\n")
+            self.write_cov(
+                cov,
+                "test_a.vibe",
+                hit=100,
+                total=100,
+                hit_fns=["covered"],
+                missed_fns=["missed"],
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = main([
+                    str(log), str(cov), str(report),
+                    "0", "0", "0", "0", "0", "0", "0",
+                    "2", "0",
+                ])
+
+        self.assertEqual(result, 1)
+        self.assertIn("FUNCTION_UNION_HIT ratchet", output.getvalue())
+        self.assertNotIn("FUNCTION_UNION)", output.getvalue())
+
     def write_cov(self, directory, entry, *, hit, total, hit_fns, missed_fns, branch_hit=0, branch_total=0,
                   branch_per_fn=None):
         path = directory / (entry.replace("/", "_").removesuffix(".vibe") + ".json")

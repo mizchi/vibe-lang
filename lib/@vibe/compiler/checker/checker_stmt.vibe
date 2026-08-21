@@ -1164,6 +1164,182 @@ fn preclaim_local_type_defs(stmts: Array[Stmt], from: Int, defs: Array[TypeDef],
   }
 }
 
+/// #2125 (field enforcement): erased names each trait's synthesized
+/// `<Trait>Dict` witness struct may spell in its fields -- `Self`, the
+/// trait's type parameters, and each method's own generic binders.
+/// `desugar_trait_dict`'s `make_dict_struct_stmt` copies the trait method
+/// signatures verbatim; the pass runs after checking in the ordinary lane,
+/// but whole-program lanes re-check its output, so the checker does see
+/// those fields. Provenance, not name shape alone (the #1869/#2147 lesson):
+/// the struct name must be the trait's dict spelling AND the field must be a
+/// method that trait declares. One row per trait:
+/// (dict struct name, method names, erased names).
+fn collect_trait_dict_erasures(stmts: Array[Stmt]) -> Array[(String, String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, methods, method_gens, tparams) => {
+        let dict_name = String::concat(tname, "Dict")
+        // One row PER METHOD (Codex on #2162): `Self` and the trait's own
+        // params are trait-wide, but a method's generic binders are in scope
+        // only for that method's field -- a trait-wide union let field `a`
+        // spell method `b`'s binder and stay a wildcard.
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, _, _) = Array::get(methods, mi)
+          let erased = array_empty()
+          Array::push(erased, "Self")
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(erased, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gmname, gnames, _) = Array::get(method_gens, gi)
+            if gmname == mname {
+              let mut gni = 0
+              while gni < Array::length(gnames) {
+                Array::push(erased, Array::get(gnames, gni))
+                gni = gni + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          Array::push(out, (dict_name, mname, erased))
+          mi = mi + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2125 (field/payload enforcement): the deferred-name sentinels in this
+/// statement list. A materialized vpkg types module references names it can
+/// neither declare nor import (a contract-`opaque` name defined in a sibling
+/// impl -- types -> impl would be an import cycle -- or a name from another
+/// package); those resolve to the intentional bare-`CtNamed` contract
+/// artifact, and `contract_types_module_text` carries them IN-BAND as a
+/// `let __vpkg_deferred_type_names_<uniq>__: String = "N1 N2"` binding, so
+/// the exemption travels with the text through every lane -- per-module,
+/// cached, or injected into a whole-program merge (where the names resolve
+/// anyway and the exemption is inert).
+fn collect_deferred_type_name_sentinels(stmts: Array[Stmt]) -> Array[(Array[String], Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, lname, _, value) => if String::starts_with(lname, "__vpkg_deferred_type_names_") {
+        match value {
+          EString(names) => {
+            // `<protected decls> : <deferred names>` -- names before the `:`
+            // are the declarations the exemption applies to (Codex round 3 on
+            // #2162: unscoped, a merge-lane sentinel excused an unrelated
+            // declaration misspelling one of these names). A sentinel with no
+            // `:` protects nothing.
+            let protected = array_empty()
+            let deferred = array_empty()
+            let parts = String::split(names, " ")
+            let mut seen_sep = false
+            let mut pi = 0
+            while pi < Array::length(parts) {
+              let p = Array::get(parts, pi)
+              if p == ":" {
+                seen_sep = true
+              } else if p == "" {
+                ()
+              } else if seen_sep {
+                Array::push(deferred, p)
+              } else {
+                Array::push(protected, p)
+              }
+              pi = pi + 1
+            }
+            if seen_sep && Array::length(deferred) > 0 {
+              Array::push(out, (protected, deferred))
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The deferred names whose sentinel protects `decl_name`, or empty.
+fn deferred_names_for_decl(rows: Array[(Array[String], Array[String])], decl_name: String) -> Array[String] {
+  let mut i = 0
+  let mut found = array_empty()
+  while i < Array::length(rows) {
+    let (protected, deferred) = Array::get(rows, i)
+    if string_array_contains(protected, decl_name) {
+      found = deferred
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2125 (field/payload enforcement): the shadow list for a DECLARATION's
+/// unknown-type report -- the declaration's own type parameters, any
+/// trait-dict erased names, plus this statement list's deferred-name
+/// sentinels (see `collect_deferred_type_name_sentinels`).
+fn decl_report_shadow(tparams: Array[String], dict_erased: Array[String], deferred: Array[String]) -> Array[String] {
+  if Array::length(dict_erased) == 0 && Array::length(deferred) == 0 {
+    tparams
+  } else {
+    let s2 = array_empty()
+    let mut si = 0
+    while si < Array::length(tparams) {
+      Array::push(s2, Array::get(tparams, si))
+      si = si + 1
+    }
+    let mut di = 0
+    while di < Array::length(dict_erased) {
+      Array::push(s2, Array::get(dict_erased, di))
+      di = di + 1
+    }
+    let mut fi = 0
+    while fi < Array::length(deferred) {
+      Array::push(s2, Array::get(deferred, fi))
+      fi = fi + 1
+    }
+    s2
+  }
+}
+
+/// The erased-name row for `struct_name`/`field_name`, or empty when no
+/// trait in this statement list declares that dict/method pair.
+fn trait_dict_erasure_for(erasures: Array[(String, String, Array[String])], struct_name: String, field_name: String) -> Array[String] {
+  let mut i = 0
+  let mut found = array_empty()
+  while i < Array::length(erasures) {
+    let (dname, mname, erased) = Array::get(erasures, i)
+    if dname == struct_name && mname == field_name {
+      found = erased
+      i = Array::length(erasures)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 fn string_array_contains(items: Array[String], wanted: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -1534,6 +1710,12 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   // #2125: see preclaim_local_type_defs.
   let preclaim_from = Array::length(defs)
   preclaim_local_type_defs(stmts, idx, defs, type_def_binders)
+  // #2125 (field enforcement): see collect_trait_dict_erasures. Computed from
+  // the statement LIST because reorder_type_decls_first hoists a synthesized
+  // `<Trait>Dict` struct above its trait declaration, so the env cannot
+  // answer at the struct's own check point.
+  let trait_dict_erasures = collect_trait_dict_erasures(stmts)
+  let deferred_type_names = collect_deferred_type_name_sentinels(stmts)
   // Slots this list's declarations have already taken (see own_typedef_slot).
   let taken_type_def_slots = array_empty()
   let mut cur_env = env
@@ -1920,6 +2102,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let named_vtypes = array_empty()
           let mut ti = 0
           while ti < Array::length(vtypes) {
+            // #2125: an unknown name in a payload otherwise becomes a wildcard
+            // `CtNamed` -- same hole as the annotation sites.
+            report_unknown_type_names(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
             // #1512: `params` shadow `defs`, so the substitution below still
             // finds `CtNamed(<param>, [])` when an import bound that name.
             let named_vt = resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params)
@@ -2108,6 +2293,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         let mut fi = 0
         while fi < Array::length(field_defs) {
           let (fname, ftype_expr) = Array::get(field_defs, fi)
+          // #2125: an unknown name in a field type otherwise becomes a
+          // wildcard `CtNamed` -- same hole as the annotation sites. A
+          // synthesized `<Trait>Dict` witness struct spells `Self` and the
+          // trait's erased params verbatim (whole-program lanes re-check the
+          // desugar's output); those are shadowed under the provenance
+          // `collect_trait_dict_erasures` establishes.
+          let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
+          let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
+          report_unknown_type_names(ftype_expr, defs, report_shadow, env, array_empty(), String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
@@ -2400,74 +2594,6 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
 /// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
 /// Import projection supplies the selected trait authority and implementations,
 /// so this is enforced identically for standalone and FS/import checking.
-/// #2145: `perform?` typechecks but codegen does not lower it.
-///
-/// `book/en/10_capabilities.vibe.md` documents the optional-capability perform,
-/// #1961 landed the checker half (PRs #2089/#2090) and was closed as completed,
-/// and the codegen half never followed. Measured on the seed and on stage2:
-/// `vibe check` on a `perform?` program is CLEAN and exit 0, and compiling the
-/// same file dies with
-///
-///   internal compiler error: `perform?` (local, @call) reached code generation
-///   unresolved. ... this is a bug in the compiler and not in your program
-///
-/// Two things are wrong with that. The message is not actionable -- it asks the
-/// reader to report a bug in a feature the book told them to use -- and
-/// `vibe check` answering "clean" is itself the defect: AGENTS.md requires the
-/// CLI to answer "does this file compile" on its own, so a clean check followed
-/// by a failed build is a hole in the diagnostic, not a caller's mistake.
-///
-/// Rejecting here fixes both surfaces at once, and follows the precedent
-/// directly below in `check_program`: an undispatchable `T::m` is rejected in
-/// the checker precisely to avoid `reached code generation unresolved`.
-///
-/// Delete this when codegen lowers `perform?`; the fixture that pins the
-/// message will fail and say so.
-fn scan_perform_optional(expr: Expr, out: Array[String]) -> Unit {
-  match expr {
-    ECall(callee, _, _) => match callee {
-      EIdent(name, _) => if name == "perform?" {
-        let msg = "`perform?` is not lowered yet (#2145): the checker types it as `Attempt[T, String]`, but code generation cannot emit it. Use a REQUIRED capability and plain `perform` -- drop the `?` from both the `allows` item and the `perform` -- and handle the failure with `try`/`handle` instead of matching `Attempt`."
-        // One message per program: the fix is the same wherever the second
-        // occurrence is, and repeating it per call site buries it.
-        if Array::length(out) == 0 {
-          Array::push(out, msg)
-        } else {
-          ()
-        }
-      } else {
-        ()
-      },
-      _ => ()
-    },
-    _ => ()
-  }
-  let children = expr_children(expr)
-  let mut i = 0
-  while i < Array::length(children) {
-    scan_perform_optional(Array::get(children, i), out)
-    i = i + 1
-  }
-}
-
-fn collect_unlowered_perform_optional_errors(stmts: Array[Stmt]) -> Array[String] {
-  let out = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, body) => scan_perform_optional(body, out),
-      SLetMut(_, _, body) => scan_perform_optional(body, out),
-      SExpr(e) => scan_perform_optional(e, out),
-      STest(_, e) => scan_perform_optional(e, out),
-      SBench(_, e) => scan_perform_optional(e, out),
-      SExample(_, e) => scan_perform_optional(e, out),
-      _ => ()
-    }
-    i = i + 1
-  }
-  out
-}
-
 fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(msgs) {
@@ -3289,6 +3415,115 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
 /// Run the production whole-program check and retain every successful output
 /// the checker actually produces. This deliberately does not use the
 /// hover-only `check_program_type_table` path.
+/// #2141 (interim guard): reject a type-parameter binder that shares its
+/// spelling with a struct/enum declared in the SAME module. The desugar's
+/// generated generic helpers resolve type names by SPELLING
+/// (`dtd_type_param_names` subtracts declared type names program-wide), so a
+/// formal `T` next to a declared `struct T` makes
+/// `fn same[T](a: Array[T], b: Array[T]) { a == b }` compare with the
+/// STRUCT's semantics over non-struct elements -- `same([1,2], [1,3])`
+/// answered true with no diagnostic anywhere. Until that classification is
+/// scope-precise, the collision itself is rejected at the binder.
+///
+/// LOCAL declarations only, on purpose: a formal shadowing an IMPORTED type
+/// is measured behaviorally harmless (the helper over-binds and element
+/// comparison stays structural; pinned by
+/// derive_array_helper_interference_test.vibe), and rejecting it would break
+/// working programs whose dependency happens to export a colliding name.
+fn tps_local_type_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      SEnum(_, name, _, _, _) => Array::push(out, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn tps_names_contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn tps_report(tparams: Array[String], local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(tparams) {
+    let tp = Array::get(tparams, i)
+    if tps_names_contains(local_types, tp) {
+      // The ` [@fn=name]` suffix is the #1941 side-channel marker: binder
+      // lists carry no offset of their own, so the diagnostic anchors on the
+      // declaration name and locate_type_error turns it into a real line:col
+      // at the CLI boundary (find_fn_anchor_off prefers `fn name`/`let name`
+      // and falls back to the name's first occurrence, which for a struct or
+      // enum label is its declaration). Attached only when the label names a
+      // real identifier -- a test's string title is not a word the locator
+      // can find, and an unresolved marker is stripped, never printed.
+      let located = if String::length(anchor) > 0 {
+        String::concat(" [@fn=", String::concat(anchor, "]"))
+      } else {
+        ""
+      }
+      Array::push(errors, String::concat("type parameter `", String::concat(tp, String::concat("` of ", String::concat(where_label, String::concat(" shadows the declared type `", String::concat(tp, String::concat("`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141)", located))))))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn tps_scan_expr(e: Expr, local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, _, _, _, _) => tps_report(tparams, local_types, where_label, anchor, errors),
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut i = 0
+  while i < Array::length(kids) {
+    tps_scan_expr(Array::get(kids, i), local_types, where_label, anchor, errors)
+    i = i + 1
+  }
+}
+
+fn tps_decl_label(kind: String, name: String) -> String {
+  String::concat(kind, String::concat(" `", String::concat(name, "`")))
+}
+
+fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let local_types = tps_local_type_names(stmts)
+  if Array::length(local_types) == 0 {
+    ()
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SStruct(_, name, _, _, _, tparams) => tps_report(tparams, local_types, tps_decl_label("struct", name), name, errors),
+        SEnum(_, name, tparams, _, _) => tps_report(tparams, local_types, tps_decl_label("enum", name), name, errors),
+        SLet(_, _, name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+        SLetMut(name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+        SLetPat(_, e) => tps_scan_expr(e, local_types, "a `let` pattern binding", "", errors),
+        SExpr(e) => tps_scan_expr(e, local_types, "a top-level expression", "", errors),
+        STest(name, e) => tps_scan_expr(e, local_types, tps_decl_label("test", name), "", errors),
+        SBench(name, e) => tps_scan_expr(e, local_types, tps_decl_label("bench", name), "", errors),
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+}
+
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
   // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
   // to impl free functions before checking, so `X::method` in an impl body
@@ -3325,6 +3560,8 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // pre-codegen scan, so the snapshot assertion is import-free (see
   // desugar_inspect_calls).
   desugar_inspect_calls(stmts)
+  // #2141: loud guard at the binder, before checking -- see the pass doc.
+  collect_type_param_shadowing_errors(stmts, frozen_errors)
   let empty_defs = array_empty()
   let type_def_binders = array_empty()
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
@@ -3365,17 +3602,6 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // build_gens in desugar_trait_dict.vibe.
   push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
   collect_async_effect_errors(expanded_stmts, env, frozen_errors)
-  // AFTER the effect pass, and only when nothing else fired. `perform?` on a
-  // REQUIRED allows has its own, sharper message ("`perform?` requires optional
-  // `allows ...?`; write that grade, or use plain `perform`") which
-  // collect_async_effect_errors produces -- and `check_program` throws
-  // frozen_errors[0], so pushing this generic one earlier DISPLACED it. The
-  // #1961 required-allows test caught exactly that.
-  if Array::length(frozen_errors) == 0 {
-    push_error_strings(collect_unlowered_perform_optional_errors(stmts), frozen_errors)
-  } else {
-    ()
-  }
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
   check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
@@ -3668,6 +3894,8 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       desugar_labeled_args(stmts)
       // #1571: see check_program.
       desugar_inspect_calls(stmts)
+      // #2141: loud guard at the binder, before checking -- see the pass doc.
+      collect_type_param_shadowing_errors(stmts, frozen_errors)
       let empty_defs = array_empty()
       let type_def_binders = array_empty()
       // #1455: register the imported enums BEFORE checking, so
@@ -3708,17 +3936,6 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // is covered too.
       push_error_strings(collect_undispatchable_trait_method_errors(stmts, env), frozen_errors)
       collect_async_effect_errors(expanded_stmts, env, frozen_errors)
-      // AFTER the effect pass, and only when nothing else fired. `perform?` on a
-      // REQUIRED allows has its own, sharper message ("`perform?` requires optional
-      // `allows ...?`; write that grade, or use plain `perform`") which
-      // collect_async_effect_errors produces -- and `check_program` throws
-      // frozen_errors[0], so pushing this generic one earlier DISPLACED it. The
-      // #1961 required-allows test caught exactly that.
-      if Array::length(frozen_errors) == 0 {
-        push_error_strings(collect_unlowered_perform_optional_errors(stmts), frozen_errors)
-      } else {
-        ()
-      }
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.
       check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
