@@ -20,6 +20,22 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "vibe-md-guard self-test: FAIL: $1" >&2; exit 1; }
 
+# An INHERITED VIBE_MD_COMPILER / VIBE_MD_STAGE2 would redefine what cases 6-7
+# call "the default", so they would report on whatever the caller happened to
+# export rather than on the tool's own resolution -- and case 8 would ask that
+# compiler instead of this checkout's (#2190 review). Clear them; the cases
+# that need a compiler name one explicitly, below.
+unset VIBE_MD_COMPILER VIBE_MD_STAGE2
+
+# Case 8's answer comes from a compiler, so it has to be THIS checkout's:
+# a compiler change that made the two lanes disagree is exactly what it exists
+# to catch, and `ls -td` newest-by-mtime can be an unrelated generation on a
+# reused workspace. resolve_stage2 prefers the generation carrying HEAD's short
+# sha and says on stderr whenever it settles for less.
+# shellcheck source=scripts/resolve_stage2.sh
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+GUARD_STAGE2="$(resolve_stage2 vibe-md-guard "${VIBE_MD_GUARD_STAGE2:-}" || true)"
+
 # 1. A prose document is refused, and the message names the other harness.
 : > "$TMP/prose.md"
 set +e; out="$(bash "$SH" check "$TMP/prose.md" 2>&1)"; rc=$?; set -e
@@ -152,9 +168,19 @@ VIBE
   echo '```'
 } > "$PROBE/kind.vibe.md"
 
-set +e; md_out="$(bash "$SH" check "$PROBE/kind.vibe.md" 2>/dev/null)"; md_rc=$?; set -e
+#    Both variables are named, so the tool and the blocks are the same compiler
+#    and neither can fall back -- the deliberate two-compiler form case 7 tests
+#    is not what this case is asking about.
+[ -n "$GUARD_STAGE2" ] || fail "case 8 needs a compiler and resolve_stage2 found none"
+set +e
+md_out="$(VIBE_MD_COMPILER="$GUARD_STAGE2" VIBE_MD_STAGE2="$GUARD_STAGE2" \
+  bash "$SH" check "$PROBE/kind.vibe.md" 2>/dev/null)"
+md_rc=$?
+set -e
 probe_compiler="$(header_compiler "$md_out")"
 [ -n "$probe_compiler" ] || fail "the lane-parity run did not report its compiler"
+[ "$probe_compiler" = "$GUARD_STAGE2" ] ||
+  fail "case 8 asked the wrong compiler: pinned '$GUARD_STAGE2', tool used '$probe_compiler'"
 rm -f "$PROBE/kind.wasm" "$PROBE/kind.wasm.diag"
 set +e
 env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
