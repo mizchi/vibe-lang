@@ -1,28 +1,40 @@
-// #1511 / #2121: the `handle` eligibility boundary, pinned per callee shape.
-//
-// docs/cheatsheet.md described this boundary in prose and drifted: it recorded
-// a local-closure callee as REJECTED when it compiles, and the diagnostic text
-// still claims a closure-parameter call is rejected when it is accepted. Prose
-// cannot be checked; these can.
+// #1511 / #2121 / #2144: the `handle` eligibility boundary, and the one row of
+// this corpus whose verdict depends on which entry the compile names.
 effect Ask { Get() -> Int }
 
 fn ask_once() -> Int with Ask { perform Ask::Get() }
 
-// The callee is a LOCAL CLOSURE with no effect row.
+// The callee is a rowless LOCAL CLOSURE bound outside the handled body, which
+// is the shape the eligibility judgement rejects (ADR-0076's effect-lowering
+// prelude): nothing in scope tells it whether calling `bump` performs `Ask`.
 //
-// The `ok` verdict recorded for this fixture is TRUE OF THIS LANE ONLY, and the
-// distinction matters: expected.tsv compiles every fixture with `__no_entry__`,
-// which skips the entry-boundary lowering where handle eligibility is decided.
-// `vibe check` REJECTS this program:
+// It is recorded here as `ok` for the `__no_entry__` lane and `reject` for the
+// entry lane (fixtures/typecheck/expected.tsv columns 4-5), because that is
+// exactly what it does. `__no_entry__` builds a test runner, `main` is never
+// lowered, and the judgement never runs; with entry `main` -- what `vibe check`
+// and `vibe build` do -- the program is rejected with:
 //
-//   error: handle of effect 'Ask' cannot be compiled here: the handled body
-//   calls 'bump', a local binding whose type carries no effect row
+//   handle of effect 'Ask' cannot be compiled here: this handle cannot see what
+//   one call in its body performs (here: the call to 'bump'). Make that call
+//   visible -- declare 'bump' as a top-level `fn`, give the binding or
+//   parameter it arrives through an effect row (`with Ask`), or move its `let`
+//   inside the handled body.
 //
-// An earlier version of this comment said "measured, it compiles" without that
-// caveat, because it had been measured through this lane. The real boundary --
-// including the three rejected shapes and the two edits that fix them -- is
-// pinned by scripts/check_handle_eligibility.sh, which compiles with a real
-// entry name. See #2137.
+// An earlier version of this comment said "measured, it compiles", full stop,
+// and was used to argue that the rejected example in book/en/13_effects.vibe.md
+// was wrong. It had been measured through the no-entry lane only. The book is
+// right about programs; this file is right about the lane -- which is why the
+// row now records both verdicts instead of one (#2142, #2144).
+//
+// The blind spot is code that only `main` reaches: measured, this same shape
+// written inside a `test` block is rejected in the no-entry lane too, because
+// the synthesized runner reaches it. That is why
+// handle_eligibility_diagnostic_test.vibe can measure the boundary with
+// `__no_entry__` and still be right.
+//
+// The rest of the boundary -- every accepted shape, and the message each
+// rejected one produces -- is pinned by
+// lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe (#2137).
 fn main() -> Unit {
   let bump = (n: Int) -> Int { n + 1 }
   let _ = handle { bump(ask_once()) } with Ask { Get() => resume(1) }
