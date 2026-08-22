@@ -1122,6 +1122,31 @@ fn parse_guest_profile_interval(value: Option<&str>) -> Result<Duration> {
     }
 }
 
+fn advance_epoch_deadline(mut deadline: Instant, interval: Duration, now: Instant) -> Instant {
+    while deadline <= now {
+        deadline += interval;
+    }
+    deadline
+}
+
+fn run_epoch_ticker(
+    engine: Engine,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    interval: Duration,
+) {
+    let max_sleep = Duration::from_millis(10);
+    let mut deadline = Instant::now() + interval;
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        let now = Instant::now();
+        if now >= deadline {
+            engine.increment_epoch();
+            deadline = advance_epoch_deadline(deadline, interval, now);
+        } else {
+            std::thread::sleep((deadline - now).min(max_sleep));
+        }
+    }
+}
+
 fn run(args: Vec<String>) -> Result<i32> {
     if args.is_empty() {
         print_help();
@@ -1357,20 +1382,8 @@ fn run(args: Vec<String>) -> Result<i32> {
         let eng = engine.clone();
         let stop = stop_flag.clone();
         let interval = tick_interval;
-        // Sleep in small chunks (<=10ms) so the stop flag is observed promptly:
-        // a coarse `--mem-sample=1000` must not stall shutdown for a full
-        // second at join. Increment the epoch once per full `interval`.
-        let chunk = interval.min(std::time::Duration::from_millis(10));
         sampler_thread = Some(std::thread::spawn(move || {
-            let mut since_tick = std::time::Duration::ZERO;
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(chunk);
-                since_tick += chunk;
-                if since_tick >= interval {
-                    eng.increment_epoch();
-                    since_tick = std::time::Duration::ZERO;
-                }
-            }
+            run_epoch_ticker(eng, stop, interval)
         }));
     }
 
@@ -1433,9 +1446,13 @@ fn run(args: Vec<String>) -> Result<i32> {
         let profiler = store.data_mut().guest_profiler.take().unwrap();
         let output = fs::File::create(&path)
             .map_err(|e| format_err!("create guest profile {path}: {e}"))?;
+        let mut output = io::BufWriter::new(output);
         profiler
-            .finish(io::BufWriter::new(output))
+            .finish(&mut output)
             .map_err(|e| format_err!("write guest profile {path}: {e}"))?;
+        output
+            .flush()
+            .map_err(|e| format_err!("flush guest profile {path}: {e}"))?;
         eprintln!("vibe::guest-profile path={path}");
     }
 
@@ -1614,18 +1631,7 @@ struct GuestProfileSampler {
 fn spawn_epoch_ticker(engine: Engine, interval: Duration) -> GuestProfileSampler {
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let thread_stop = stop.clone();
-    let thread = std::thread::spawn(move || {
-        let chunk = interval.min(Duration::from_millis(10));
-        let mut since_tick = Duration::ZERO;
-        while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) {
-            std::thread::sleep(chunk);
-            since_tick += chunk;
-            if since_tick >= interval {
-                engine.increment_epoch();
-                since_tick = Duration::ZERO;
-            }
-        }
-    });
+    let thread = std::thread::spawn(move || run_epoch_ticker(engine, thread_stop, interval));
     GuestProfileSampler { stop, thread }
 }
 
@@ -1676,7 +1682,11 @@ fn finish_guest_profile(
     let profiler = store.data_mut().guest_profiler.take().unwrap();
     let output = fs::File::create(path)
         .map_err(|e| format_err!("create guest profile {}: {e}", path.display()))?;
-    profiler.finish(io::BufWriter::new(output))?;
+    let mut output = io::BufWriter::new(output);
+    profiler.finish(&mut output)?;
+    output
+        .flush()
+        .map_err(|e| format_err!("flush guest profile {}: {e}", path.display()))?;
     eprintln!("vibe::guest-profile path={}", path.display());
     Ok(())
 }
@@ -4673,6 +4683,18 @@ mod tests {
         for invalid in ["0", "-1", "100O", ""] {
             assert!(parse_guest_profile_interval(Some(invalid)).is_err(), "accepted {invalid:?}");
         }
+    }
+
+    #[test]
+    fn epoch_deadline_preserves_sub_chunk_remainder() {
+        let start = Instant::now();
+        let interval = Duration::from_micros(10_001);
+        let next = advance_epoch_deadline(
+            start + interval,
+            interval,
+            start + Duration::from_millis(20),
+        );
+        assert_eq!(next.duration_since(start), Duration::from_micros(20_002));
     }
 
     #[test]
