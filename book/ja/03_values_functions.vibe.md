@@ -168,7 +168,7 @@ hi x3
 本体が見るのは `Option` なので、省略可能な `Bool` はそのままでは条件に
 なりません。`flag?: Bool` に対する `if flag` は型エラーで、他の `Option` と
 同様に match します。型そのものは
-[Option とレールウェイ](08_option.vibe.md)で扱います。
+[Option とレールウェイ](10_option.vibe.md)で扱います。
 
 ## 小さいラムダの略記
 

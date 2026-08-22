@@ -1,8 +1,8 @@
-# 10 — Writing tests
+# 12 — Writing tests
 
-Previous: [Modules and packages](09_modules_packages.vibe.md)
+Previous: [Modules and packages](11_modules_packages.vibe.md)
 
-日本語版: [10_tests.vibe.md](../ja/10_tests.vibe.md)
+日本語版: [12_tests.vibe.md](../ja/12_tests.vibe.md)
 
 A test is a `test "name" { ... }` block written in an ordinary source
 file. There is no framework to install and nothing to import.
@@ -94,4 +94,4 @@ file may use modules that consumers cannot, which is what lets you test
 a helper without exporting it just for the test. This is the reason
 tests belong beside the code rather than in a separate tree.
 
-Next: [Collections](11_collections.vibe.md).
+Next: [Collections](13_collections.vibe.md).

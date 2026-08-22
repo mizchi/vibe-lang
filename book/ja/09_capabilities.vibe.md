@@ -1,8 +1,8 @@
-# 14 — ケーパビリティ
+# 09 — ケーパビリティ
 
-前: [エフェクト (vibe の核)](13_effects.vibe.md)
+前: [エフェクト (vibe の核)](08_effects.vibe.md)
 
-English version: [14_capabilities.vibe.md](../en/14_capabilities.vibe.md)
+English version: [09_capabilities.vibe.md](../en/09_capabilities.vibe.md)
 
 前章のエフェクトは、ハンドラで自分が実装するものでした。ファイルを読むのは
 そうではありません。やり方はホストが既に知っていて、問題は「あなたの
@@ -146,4 +146,4 @@ line 2:11: drop the `?` from `allows Fs::read_file?` and call
 起動時、ホストが許可しなかった必須ケーパビリティがあれば `main` の前に
 中断し、許可するはずだったフラグの名前を告げます。
 
-次: [ジェネリクス・trait・derive](15_generics.vibe.md)。
+次: [Option とレールウェイ](10_option.vibe.md)。

@@ -1,8 +1,8 @@
-# 08 — Option and the railway
+# 10 — Option and the railway
 
-Previous: [Structs, enums, and match](07_data.vibe.md)
+Previous: [Capabilities](09_capabilities.vibe.md)
 
-日本語版: [08_option.vibe.md](../ja/08_option.vibe.md)
+日本語版: [10_option.vibe.md](../ja/10_option.vibe.md)
 
 A value that might not be there has type `Option[T]`: either `Some(v)`
 or `None`. It is an ordinary enum — nothing about it is built into the
@@ -173,8 +173,9 @@ half(3) is None = true
 
 `Option` says a value is missing. It does not say *why*, and sometimes
 why is the point — a parse failed, a file was malformed. For that, a
-function declares `with Exception` and throws a message, which the next
-chapters cover. Reach for `Option` when "not there" is the whole story,
-and for `Exception` when the caller deserves a reason.
+function declares `with Exception` and throws a message, the effect
+[Effects](08_effects.vibe.md) opened with. Reach for `Option` when "not
+there" is the whole story, and for `Exception` when the caller deserves a
+reason.
 
-Next: [Modules and packages](09_modules_packages.vibe.md).
+Next: [Modules and packages](11_modules_packages.vibe.md).

@@ -43,7 +43,7 @@ vibe run hello.vibex
 
 同じ形は失敗 (`with Exception`) にも、ファイル読み込み
 (`allows Fs::read_file`) にも出てきます。決着は
-[ケーパビリティ](14_capabilities.vibe.md)で付けます。
+[ケーパビリティ](09_capabilities.vibe.md)で付けます。
 
 ## コンパイラに質問する
 
@@ -74,7 +74,7 @@ vibe run main.vibex
 `vibe new` が書くのは2ファイルだけです — エントリポイントの `main.vibex`
 と、依存を書く `vibe.deps`。雛形はこれで全部で、パッケージの契約
 (`index.vpkg`) は公開するものができてから足すもの。そちらは
-[モジュールとパッケージ](09_modules_packages.vibe.md)で扱います。1ファイル
+[モジュールとパッケージ](11_modules_packages.vibe.md)で扱います。1ファイル
 なら何も要らないので、この章はそこから始めませんでした。
 
 次: [小さなプログラム](02_a_small_program.vibe.md)。

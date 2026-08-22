@@ -1,8 +1,8 @@
-# 11 — コレクション
+# 13 — コレクション
 
-前: [テストを書く](10_tests.vibe.md)
+前: [テストを書く](12_tests.vibe.md)
 
-English version: [11_collections.vibe.md](../en/11_collections.vibe.md)
+English version: [13_collections.vibe.md](../en/13_collections.vibe.md)
 
 配列とビルダーとマップ。vibe には「どれが変更されるか」を名前から読める
 命名規則もあり、この章の終わりには名前を見ただけで判断できるようになる。
@@ -139,4 +139,4 @@ z = -1
 古いコードで `HashMap` に出会ったら、それは `MutMap` の透過的な別名。
 古い関数名には `vibe check` が警告する。
 
-次: [反復](12_iteration.vibe.md)。
+次: [反復](14_iteration.vibe.md)。

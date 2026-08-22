@@ -16,10 +16,10 @@ have no predecessor here.
 | `01_values_functions.vibe.md` | [Values and functions](../../book/en/03_values_functions.vibe.md) |
 | `02_control_flow.vibe.md` | [Control flow](../../book/en/04_control_flow.vibe.md) |
 | `03_data.vibe.md` | [Structs, enums, and match](../../book/en/07_data.vibe.md) |
-| `04_option.vibe.md` | [Option and the railway](../../book/en/08_option.vibe.md) |
-| `05_effects.vibe.md` | [Effects](../../book/en/13_effects.vibe.md) |
-| `06_tests.vibe.md` | [Writing tests](../../book/en/10_tests.vibe.md) |
-| `07_modules_packages.vibe.md` | [Modules and packages](../../book/en/09_modules_packages.vibe.md) |
+| `04_option.vibe.md` | [Option and the railway](../../book/en/10_option.vibe.md) |
+| `05_effects.vibe.md` | [Effects](../../book/en/08_effects.vibe.md) |
+| `06_tests.vibe.md` | [Writing tests](../../book/en/12_tests.vibe.md) |
+| `07_modules_packages.vibe.md` | [Modules and packages](../../book/en/11_modules_packages.vibe.md) |
 
 Each chapter's `-ja` sibling (`01_values_functions-ja.vibe.md` and so on) maps
 to the file under [book/ja/](../../book/ja/) named after its **English

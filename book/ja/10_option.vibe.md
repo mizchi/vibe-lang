@@ -1,8 +1,8 @@
-# 08 — Option とレールウェイ
+# 10 — Option とレールウェイ
 
-前: [構造体・列挙・match](07_data.vibe.md)
+前: [ケーパビリティ](09_capabilities.vibe.md)
 
-English version: [08_option.vibe.md](../en/08_option.vibe.md)
+English version: [10_option.vibe.md](../en/10_option.vibe.md)
 
 そこに無いかもしれない値の型が `Option[T]` です — `Some(v)` か `None` の
 どちらか。ただの enum で、コンパイラに組み込まれた特別なところは何もあり
@@ -171,8 +171,9 @@ half(3) is None = true
 
 `Option` は値が無いことを述べますが、**なぜ**無いのかは述べません。そして
 理由こそが本題のこともあります — パースに失敗した、ファイルが壊れていた。
-その場合、関数は `with Exception` を宣言してメッセージを投げます。次の章
-以降で扱います。「そこに無い」が話の全部なら `Option` を、呼び出し側が理由を
+その場合、関数は `with Exception` を宣言してメッセージを投げます —
+[エフェクト](08_effects.vibe.md) の章が最初に扱ったエフェクトです。
+「そこに無い」が話の全部なら `Option` を、呼び出し側が理由を
 知るべきなら `Exception` を選んでください。
 
-次: [モジュールとパッケージ](09_modules_packages.vibe.md)。
+次: [モジュールとパッケージ](11_modules_packages.vibe.md)。

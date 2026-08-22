@@ -1,6 +1,6 @@
 # 15 — ジェネリクス・trait・derive
 
-前: [ケーパビリティ](14_capabilities.vibe.md)
+前: [反復](14_iteration.vibe.md)
 
 English version: [15_generics.vibe.md](../en/15_generics.vibe.md)
 

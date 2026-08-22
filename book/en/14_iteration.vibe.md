@@ -1,8 +1,8 @@
-# 12 — Iteration
+# 14 — Iteration
 
-Previous: [Collections](11_collections.vibe.md)
+Previous: [Collections](13_collections.vibe.md)
 
-日本語版: [12_iteration.vibe.md](../ja/12_iteration.vibe.md)
+日本語版: [14_iteration.vibe.md](../ja/14_iteration.vibe.md)
 
 Almost all iteration in vibe is one eager pass over an array. This
 chapter is that pass, the `|>` operator that chains it, and where to
@@ -87,4 +87,4 @@ the effect row rather than on a special loop keyword, which is why there
 is no separate `for await` form. See
 [Concurrency](17_concurrency.vibe.md).
 
-Next: [Effects](13_effects.vibe.md).
+Next: [Generics, traits, and derive](15_generics.vibe.md).

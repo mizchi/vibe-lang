@@ -1,8 +1,8 @@
-# 13 — エフェクト (vibe の核)
+# 08 — エフェクト (vibe の核)
 
-前: [反復](12_iteration.vibe.md)
+前: [構造体・列挙・match](07_data.vibe.md)
 
-English version: [13_effects.vibe.md](../en/13_effects.vibe.md)
+English version: [08_effects.vibe.md](../en/08_effects.vibe.md)
 
 vibe の関数は、型がそう言わない限り純粋です。計算以外にできること —
 失敗する、表示する、ファイルを読む — はシグネチャの `with` 節に名前が
@@ -172,4 +172,4 @@ handled body. Moving the `handle` into the function that performs works too.
 書くことはありません。実装はホストが持っていて、宣言するのは「使ってよい」
 という権限です。それが次の章です。
 
-次: [ケーパビリティ](14_capabilities.vibe.md)。
+次: [ケーパビリティ](09_capabilities.vibe.md)。
