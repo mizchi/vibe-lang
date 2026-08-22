@@ -74,7 +74,20 @@ for src in "${probes[@]}"; do
   case "$name" in
     *assert*)
       # test-block probes go through vibe test, not the compile lane
-      VIBE_TEST_CLI_WASM="$S2" bash scripts/vibe_test.sh "$src" 2>&1 | sed 's/^/    /'
+      test_log="$OUT_DIR/$name.test.log"
+      VIBE_TEST_CLI_WASM="$S2" bash scripts/vibe_test.sh "$src" >"$test_log" 2>&1
+      sed 's/^/    /' "$test_log"
+      # A test-lane answer contains a per-test report (an `ok:` line or
+      # a `failing test:` line) -- an assertion FAILURE is probe data.
+      # A run that produced neither (seed setup failure, invalid
+      # compiler artifact, compile failure before any test ran) is
+      # infrastructure, not a compiler answer. Probes that are MEANT
+      # to fail compilation belong on the compile lane, not here.
+      if ! grep -qE 'failing test:|^ok:' "$test_log"; then
+        echo "--- HARNESS ERROR: test lane produced no test report;"
+        echo "    this is not a compiler answer."
+        harness_fail=1
+      fi
       continue
       ;;
   esac

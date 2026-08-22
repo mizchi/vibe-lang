@@ -17,7 +17,7 @@ perform するか、**名前付きのトップレベル `fn`** を呼ぶか、ef
 perform を隠してしまう。
 
 ```vibe skip
-// skip: eligibility rejection — the point is the diagnostic, not a run
+// skip: 適格性による拒否 — 見せたいのは診断であって実行ではない
 effect Ask {
   Get() -> Int
 }
@@ -78,8 +78,9 @@ checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し�
 ## `s[i]` は String ではなくバイト
 
 `String` は byte string。`s[i]` はそのオフセットのバイトで、`Int`。
-`'A' == 65`。1 文字の String が欲しければ `String::from_char_code(s[i])`
+`'A' == 65`。1 バイトの String が欲しければ `String::from_char_code(s[i])`
 — これはバイト書き込みで、別名 `String::from_byte` (#2203) — かスライス。
+そのバイトが文字そのものなのは ASCII のときだけ。
 
 ## トップレベルは宣言だけ
 
@@ -87,7 +88,7 @@ checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し�
 入れること。
 
 ```vibe skip
-// skip: ADR-0069 — a file is a list of declarations
+// skip: ADR-0069 — ファイルは宣言の並びである
 1 + 2
 ```
 
@@ -123,7 +124,7 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 つもりで書いた負のリテラルが、上の行に貼り付く:
 
 ```vibe skip
-// skip: shown for the diagnostic — the `-1` parses as `println(...) - 1`
+// skip: 出る診断を見せるための例 — `-1` は `println(...) - 1` とパースされる
 fn main with Console {
   let v = {
     println("failing")

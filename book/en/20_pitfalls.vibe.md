@@ -77,8 +77,9 @@ error (#1445).
 ## `s[i]` is a byte, not a String
 
 `String` is a byte string. `s[i]` is the byte at that offset, an `Int`.
-`'A' == 65`. A one-character String is `String::from_char_code(s[i])` —
-a byte write, alias `String::from_byte` (#2203) — or a slice.
+`'A' == 65`. A one-byte String is `String::from_char_code(s[i])` — a
+byte write, alias `String::from_byte` (#2203) — or a slice. That byte
+is a whole character only in ASCII.
 
 ## Top-level is declarations only
 
