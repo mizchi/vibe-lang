@@ -29,7 +29,8 @@ y = 2
 ```
 
 `y` is an ordinary immutable `Int`. The mutable binding existed only
-inside the braces, and the compiler keeps it in a machine register.
+inside the braces, and the compiler keeps it in a plain wasm local —
+no allocation happens for it.
 
 ## Growing an array
 

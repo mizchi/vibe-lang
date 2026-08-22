@@ -57,7 +57,7 @@ expression goes in there. And `'A'` printed `65`: a character literal
 ASCII the code point and the byte are the same number; beyond ASCII they
 are not, and [Types and strings](05_types_strings.vibe.md) covers that.
 When you want that byte back as its own one-byte `String`, use
-`String::from_char_code(s[0])` — for ASCII that byte is the whole
+`String::from_byte(s[0])` — for ASCII that byte is the whole
 character, and only there.
 
 The exact ranges and representations — `Int` is 63 bits wide, `String`

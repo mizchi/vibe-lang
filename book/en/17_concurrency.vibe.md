@@ -38,6 +38,13 @@ and gives back a handle; `join` waits for the value. When `run` returns,
 the group is finished — there is nothing left running that you would
 have to remember to clean up.
 
+The `+ Exception` on `main` is not decoration: a spawned task can fail,
+and `join` rethrows that failure as a `TaskError`, so `join`'s own row
+carries `Exception[TaskError]`. Leave it off `main` and the compiler
+tells you the exact edit — `` hint: add 'with Console +
+Exception[TaskError]' to 'main' `` (the plain `Exception` written above
+covers it).
+
 ## What may cross a spawn
 
 Spawned work runs somewhere you do not control, so what it captures has

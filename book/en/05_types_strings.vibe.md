@@ -22,7 +22,7 @@ byte counts.
 fn main with Console {
   let s = "hello"
   println("s[0] = \{s[0]}")
-  println("from_char_code = \{String::from_char_code(s[0])}")
+  println("from_byte = \{String::from_byte(s[0])}")
   println("s[:] = \{s[:]}")
   println("s[:2] = \{s[:2]}")
   println("s[2:] = \{s[2:]}")
@@ -33,7 +33,7 @@ fn main with Console {
 
 ```output
 s[0] = 104
-from_char_code = h
+from_byte = h
 s[:] = hello
 s[:2] = he
 s[2:] = llo
@@ -41,8 +41,8 @@ s[1:4] = ell
 length = 5
 ```
 
-`String::from_char_code` writes a byte back out as a one-byte `String`
-— its honest alias is `String::from_byte`. It does **not** encode a
+`String::from_byte` writes a byte back out as a one-byte `String` —
+`String::from_char_code` is its older name. It does **not** encode a
 code point: hand it `233` (`'é'`) and you get a lone `0xE9` byte, which
 is not valid UTF-8 (#2203). The four
 slice forms — `s[:]`, `s[:n]`, `s[n:]`, `s[a:b]` — work the same on

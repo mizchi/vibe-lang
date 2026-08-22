@@ -37,6 +37,13 @@ answer = 42
 始めてハンドルを返し、`join` が値を待ちます。`run` が返った時点でグループは
 終わっていて、後片付けを覚えておくべき動作中のものは残りません。
 
+`main` の `+ Exception` は飾りではありません: spawn されたタスクは失敗し
+得て、`join` はその失敗を `TaskError` として投げ直すので、`join` 自身の
+row が `Exception[TaskError]` を運びます。`main` から外すとコンパイラが
+直すべき編集をそのまま教えます — `` hint: add 'with Console +
+Exception[TaskError]' to 'main' `` (上で書いた素の `Exception` はこれを
+カバーします)。
+
 ## spawn を越えられるもの
 
 spawn された仕事は自分の制御下にない場所で走るので、何を捕獲するかは移動して
