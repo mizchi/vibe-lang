@@ -12,9 +12,17 @@ ones that bite first.
 ## `handle` eligibility is not the type system
 
 A program can type-check and still fail to compile if a `handle` cannot
-see every `perform` it covers. The body may only: perform directly, call
-a **named top-level `fn`**, or call a closure *literal* with an effect
-row. A call through a local binding hides the perform.
+see every `perform` it covers. Two things make a call visible: the
+callee's type **carries the effect row**, or the callee is one the handle
+can already see through — a top-level `fn`, a binding that aliases one,
+or a closure declared **inside** the handled body.
+
+So a call through a local binding or a parameter is fine when its type
+carries the row; being a local binding is not itself the problem. What
+fails is a **rowless closure declared outside** the handled body: nothing
+tells the handle what that call performs. Give it the row, or move its
+`let` inside the body — the diagnostic names both repairs. The full
+measured table is in [docs/cheatsheet.md](../../docs/cheatsheet.md).
 
 ```vibe skip
 // skip: eligibility rejection — the point is the diagnostic, not a run

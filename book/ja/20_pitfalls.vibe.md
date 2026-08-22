@@ -11,10 +11,17 @@ English version: [20_pitfalls.vibe.md](../en/20_pitfalls.vibe.md) (canonical)
 ## `handle` の適格性は型システムではない
 
 `handle` が、それが覆う `perform` をすべて見られない場合、プログラムは
-型検査を通ってもコンパイルに失敗しうる。body に許されるのは、直接
-perform するか、**名前付きのトップレベル `fn`** を呼ぶか、effect row を
-持つクロージャ**リテラル**を呼ぶか。local 束縛を経由した呼び出しは
-perform を隠してしまう。
+型検査を通ってもコンパイルに失敗しうる。呼び出しが「見える」条件は 2 つ。
+callee の型が **effect row を持っている**か、handle がもともと見通せる
+callee であるか — トップレベル `fn`、それを別名で束縛したもの、あるいは
+handled body の**内側**で宣言されたクロージャ。
+
+したがって local 束縛や引数を経由した呼び出しも、その型が row を持って
+いれば通る。local 束縛であること自体が問題なのではない。失敗するのは
+**handled body の外で宣言された row を持たないクロージャ**で、その
+呼び出しが何を perform するかを handle に伝えるものが無い。row を付けるか、
+`let` を body の内側へ移す — 診断はその両方を挙げる。実測した全一覧は
+[docs/cheatsheet.md](../../docs/cheatsheet.md) にある。
 
 ```vibe skip
 // skip: 適格性による拒否 — 見せたいのは診断であって実行ではない

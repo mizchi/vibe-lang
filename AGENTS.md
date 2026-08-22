@@ -65,8 +65,9 @@ type aliases: `struct Outer { box: Box[Array[Int]] }` takes no type parameters,
 so its shape looks ordinary, but `Outer::equals` calls `Box::equals`. The field
 test is an **allow-list** — measured, a declared field of `Int` / `String` /
 `Double` / `Bytes` / `Array[T]` / `Option[T]` / a tuple / a declared struct is
-content-compared and keeps answering, while `Map` is not (#2218) and any head
-nobody measured costs its owner a trap.
+content-compared and keeps answering. `Map` joined them once #2218 gave
+`eq_for_typed` a `Map` arm; a head nobody measured still costs its owner a
+trap.
 **What does not resolve traps** once both sides are
 non-empty, rather than answering by length or by identity, and an annotation
 fixes it. While either side is still empty the lengths decide, annotation or
