@@ -34,16 +34,44 @@ else
     echo "[book-review] Refusing to measure the committed seed silently." >&2
     exit 2
   fi
-  # Generation dirs are named <gen>_<shortsha>; a generation built from
-  # another commit is not this checkout's compiler.
-  gen_sha=$(basename "$gen_dir")
-  gen_sha="${gen_sha##*_}"
-  head_sha=$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
-  if [ "$gen_sha" != "${head_sha:0:${#gen_sha}}" ]; then
-    echo "[book-review] newest stage2 is from commit $gen_sha, HEAD is $head_sha." >&2
+  # The generation manifest is the artifact's birth certificate:
+  # generations.sh deletes it before rebuilding and writes it only at
+  # the very end, so its presence proves a COMPLETED build, and it
+  # records the source commit, whether the tree was dirty, and the
+  # stage2's sha256. Read it instead of trusting directory names.
+  manifest="$gen_dir/generation.json"
+  if [ ! -f "$manifest" ]; then
+    echo "[book-review] newest generation has no generation.json -- its build" >&2
+    echo "[book-review] never completed, so the stage2 there proves nothing." >&2
+    echo "[book-review] Rebuild (bash scripts/generations.sh build), or pass a" >&2
+    echo "[book-review] compiler explicitly via BOOK_REVIEW_STAGE2." >&2
+    exit 2
+  fi
+  read -r man_commit man_dirty man_sha < <(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+print(m["source"]["commit"],
+      str(m["source"].get("dirty", True)).lower(),
+      m["stages"]["stage2"]["sha256"])' "$manifest")
+  head_full=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+  if [ "$man_commit" != "$head_full" ]; then
+    echo "[book-review] newest stage2 was built from ${man_commit:0:9}, HEAD is ${head_full:0:9}." >&2
     echo "[book-review] Its answers would describe THAT compiler, not this checkout." >&2
     echo "[book-review] Rebuild (bash scripts/generations.sh build), or pass the" >&2
     echo "[book-review] compiler you mean explicitly: BOOK_REVIEW_STAGE2=$S2" >&2
+    exit 2
+  fi
+  if [ "$man_dirty" != "false" ]; then
+    echo "[book-review] newest stage2 was built from a DIRTY tree (manifest" >&2
+    echo "[book-review] source.dirty) -- it cannot be tied to any commit. Rebuild" >&2
+    echo "[book-review] from a clean tree, or pass BOOK_REVIEW_STAGE2 explicitly." >&2
+    exit 2
+  fi
+  actual_sha=$(sha256sum "$S2" | cut -d' ' -f1)
+  if [ "$actual_sha" != "$man_sha" ]; then
+    echo "[book-review] stage2.wasm does not match the sha256 its manifest" >&2
+    echo "[book-review] recorded -- the artifact was altered after the build." >&2
+    echo "[book-review] Rebuild (bash scripts/generations.sh build)." >&2
     exit 2
   fi
   # A matching commit is not enough when the compiler sources carry
