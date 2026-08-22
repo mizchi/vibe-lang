@@ -49,6 +49,90 @@ export fn collect_cli_args() -> Array[String] with Env {
   out
 }
 
+fn cli_string_to_bytes(value: String) -> Bytes {
+  let out = Array::slice([0], 0, 0)
+  let mut i = 0
+  while i < String::length(value) {
+    Array::push(out, String::char_code_at(value, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+/// Plan a host-owned guest-profile action. The selfhost CLI owns the command
+/// grammar, while the launcher executes the resulting action because Wasmtime's
+/// Engine/Store hooks must be installed before the target guest starts.
+export fn selfhost_cli_profile_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs {
+  let mut source = ""
+  let mut output = "profile.json"
+  let mut interval = "1000"
+  let guest_args = Array::slice([""], 0, 0)
+  let mut after_separator = false
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if after_separator {
+      Array::push(guest_args, arg)
+      i = i + 1
+    } else if arg == "--" {
+      after_separator = true
+      i = i + 1
+    } else if arg == "--out" || arg == "--interval-us" {
+      if i + 1 >= Array::length(args) {
+        throw(String::concat("profile: missing value after ", arg))
+      } else {
+        let value = Array::get(args, i + 1)
+        if arg == "--out" {
+          output = value
+        } else {
+          interval = value
+        }
+        i = i + 2
+      }
+    } else if String::starts_with(arg, "--out=") {
+      output = arg[6: String::length(arg)]
+      i = i + 1
+    } else if String::starts_with(arg, "--interval-us=") {
+      interval = arg[14: String::length(arg)]
+      i = i + 1
+    } else if String::starts_with(arg, "-") {
+      throw(String::concat("profile: unknown option ", arg))
+    } else if source == "" {
+      source = arg
+      i = i + 1
+    } else {
+      throw(String::concat("profile: unexpected argument ", arg))
+    }
+  }
+  if source == "" {
+    throw("usage: vibe profile <file.vibex> [--out FILE] [--interval-us N]")
+  } else if String::contains(source, "\n") || String::contains(output, "\n") || String::contains(interval, "\n") {
+    throw("profile: newlines are not supported in host-action fields")
+  } else {
+    let mut plan = String::concat("vibe-host-action-v1\nrun-guest-profile\n", String::concat(source, "\n"))
+    plan = String::concat(plan, String::concat(output, "\n"))
+    plan = String::concat(plan, String::concat(interval, "\n"))
+    for guest_arg in guest_args {
+      if String::contains(guest_arg, "\n") {
+        throw("profile: newlines are not supported in guest arguments")
+      } else {
+        plan = String::concat(plan, String::concat(guest_arg, "\n"))
+      }
+    }
+    Fs::write_bytes(action_path, cli_string_to_bytes(plan))
+    0
+  }
+}
+
+fn selfhost_cli_profile_args(args: Array[String]) -> Int with Exception + Fs + Env {
+  let action_path = Env::get("VIBE_HOST_ACTION_OUT")
+  if action_path == "" {
+    throw("profile requires a host launcher to execute the planned Wasmtime action")
+  } else {
+    selfhost_cli_profile_plan_args(args, action_path)
+  }
+}
+
 //# Path helpers
 
 fn is_opt_level_arg(arg: String) -> Bool {
@@ -888,6 +972,7 @@ export fn selfhost_cli_dispatch_args(args: Array[String]) -> Int with Exception 
     "build" => selfhost_cli_build_args(args),
     "check" => selfhost_cli_check_args(args),
     "serve" => selfhost_cli_serve_args(args),
+    "profile" => selfhost_cli_profile_args(args),
     _ => low_level_cli_main()
   }
 }

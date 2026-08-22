@@ -712,19 +712,20 @@ condense_test_trap() {
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   profile)
-    profile_src=""; profile_out="profile.json"; profile_interval="1000"; profile_args=()
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        --out) profile_out="$2"; shift 2 ;;
-        --out=*) profile_out="${1#--out=}"; shift ;;
-        --interval-us) profile_interval="$2"; shift 2 ;;
-        --interval-us=*) profile_interval="${1#--interval-us=}"; shift ;;
-        --) shift; profile_args=("$@"); break ;;
-        -*) die "vibe profile: unknown option $1" ;;
-        *) [ -z "$profile_src" ] || die "vibe profile: unexpected argument $1"; profile_src="$1"; shift ;;
-      esac
-    done
-    [ -n "$profile_src" ] || die "usage: vibe profile <file.vibex> [--out FILE] [--interval-us N]"
+    profile_plan="$(mktemp -t vibe-profile-plan-XXXXXX)"
+    trap 'rm -f "$profile_plan"' EXIT
+    profile_cli="$CLI_WASM"; [ -f "$profile_cli" ] || profile_cli="$(pick_cli)"
+    VIBE_HOST_ACTION_OUT="$profile_plan" "$RUNNER" "$profile_cli" profile "$@" \
+      || die "profile command planning failed"
+    [ "$(sed -n '1p' "$profile_plan")" = "vibe-host-action-v1" ] \
+      || die "profile command returned an invalid host action"
+    [ "$(sed -n '2p' "$profile_plan")" = "run-guest-profile" ] \
+      || die "profile command returned an unsupported host action"
+    profile_src="$(sed -n '3p' "$profile_plan")"
+    profile_out="$(sed -n '4p' "$profile_plan")"
+    profile_interval="$(sed -n '5p' "$profile_plan")"
+    profile_args=()
+    while IFS= read -r profile_arg; do profile_args+=("$profile_arg"); done < <(sed -n '6,$p' "$profile_plan")
     exec "$0" run --guest-profile="$profile_out" --guest-profile-interval-us="$profile_interval" \
       "$profile_src" -- ${profile_args[@]+"${profile_args[@]}"}
     ;;
@@ -813,8 +814,11 @@ case "$cmd" in
     alloc_env=""
     [ "$allocsite" = "1" ] && alloc_env="VIBE_ALLOC_SITE=1"
     [ -n "$allocsite_top" ] && alloc_env="$alloc_env VIBE_ALLOC_SITE_TOP=$allocsite_top"
-    profile_env=""
-    [ -n "$guest_profile" ] && profile_env="VIBE_GUEST_PROFILE=$guest_profile VIBE_GUEST_PROFILE_INTERVAL_US=$guest_profile_interval"
+    profile_env=()
+    if [ -n "$guest_profile" ]; then
+      profile_env+=("VIBE_GUEST_PROFILE=$guest_profile")
+      profile_env+=("VIBE_GUEST_PROFILE_INTERVAL_US=$guest_profile_interval")
+    fi
     # span-arc step5: line-granularity breakpoints. A `--break <file>:<line>` (or
     # bare `<line>`) spec passes through VIBE_BREAK unchanged; the runner resolves
     # the entering function's source line via the `.funcmap` sidecar (name<TAB>
@@ -849,7 +853,7 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $mem_env $alloc_env $profile_env $funcmap_env $breakfile_env "$RUNNER" "$out" \
+    env $trace_env $break_env $mem_env $alloc_env "${profile_env[@]}" $funcmap_env $breakfile_env "$RUNNER" "$out" \
       ${extra_args[@]+"${extra_args[@]}"} 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
@@ -2180,14 +2184,15 @@ case "$cmd" in
     if [ "${VIBE_BENCH_BACKEND:-linear}" = "gc" ] && ! grep -qa "__bench_" "$out"; then
       die "VIBE_BENCH_BACKEND=gc: the wasm-gc backend emitted no bench entry points for $bsrc. Bench blocks normally DO work on this lane (#1701 landed the gc __bench_ exports), so this is a real gap in what that file compiles to -- report it. To measure it meanwhile, re-run without VIBE_BENCH_BACKEND."
     fi
-    bench_env="VIBE_BENCH_LABEL=$(basename "$bsrc")"
-    [ -n "$iters" ] && bench_env="$bench_env VIBE_BENCH_ITERS=$iters"
-    [ -n "$warmup" ] && bench_env="$bench_env VIBE_BENCH_WARMUP=$warmup"
+    bench_env=("VIBE_BENCH_LABEL=$(basename "$bsrc")")
+    [ -n "$iters" ] && bench_env+=("VIBE_BENCH_ITERS=$iters")
+    [ -n "$warmup" ] && bench_env+=("VIBE_BENCH_WARMUP=$warmup")
     if [ -n "$guest_profile_dir" ]; then
       mkdir -p "$guest_profile_dir" || die "cannot create guest profile directory: $guest_profile_dir"
-      bench_env="$bench_env VIBE_BENCH_GUEST_PROFILE_DIR=$guest_profile_dir VIBE_GUEST_PROFILE_INTERVAL_US=$guest_profile_interval"
+      bench_env+=("VIBE_BENCH_GUEST_PROFILE_DIR=$guest_profile_dir")
+      bench_env+=("VIBE_GUEST_PROFILE_INTERVAL_US=$guest_profile_interval")
     fi
-    env $bench_env "$RUNNER" --bench "$out"
+    env "${bench_env[@]}" "$RUNNER" --bench "$out"
     ;;
   shell)
     # #805: `vibe shell [file.vibe]` — minimal compiled REPL.

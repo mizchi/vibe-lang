@@ -1590,6 +1590,24 @@ struct GuestProfileSampler {
     thread: std::thread::JoinHandle<()>,
 }
 
+fn spawn_epoch_ticker(engine: Engine, interval: Duration) -> GuestProfileSampler {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let thread = std::thread::spawn(move || {
+        let chunk = interval.min(Duration::from_millis(10));
+        let mut since_tick = Duration::ZERO;
+        while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(chunk);
+            since_tick += chunk;
+            if since_tick >= interval {
+                engine.increment_epoch();
+                since_tick = Duration::ZERO;
+            }
+        }
+    });
+    GuestProfileSampler { stop, thread }
+}
+
 fn arm_guest_profile(
     store: &mut Store<HostState>,
     module: &Module,
@@ -1619,16 +1637,7 @@ fn arm_guest_profile(
         last = now;
         Ok(wasmtime::UpdateDeadline::Continue(1))
     });
-    let engine = store.engine().clone();
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let thread_stop = stop.clone();
-    let thread = std::thread::spawn(move || {
-        while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) {
-            std::thread::sleep(interval);
-            engine.increment_epoch();
-        }
-    });
-    Ok(GuestProfileSampler { stop, thread })
+    Ok(spawn_epoch_ticker(store.engine().clone(), interval))
 }
 
 fn finish_guest_profile(
@@ -1659,7 +1668,13 @@ fn profile_filename(label: &str) -> String {
             }
         })
         .collect();
-    format!("{sanitized}.json")
+    // Sanitizing is not injective (`a/b` and `a?b` both become `a_b`). Add a
+    // deterministic FNV-1a suffix so distinct legal labels cannot overwrite
+    // each other's profile within one benchmark invocation.
+    let hash = label.as_bytes().iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("{sanitized}-{hash:016x}.json")
 }
 
 // Benchmark mode. Instantiate one Store+Instance PER BENCH BLOCK (#747: the
@@ -1770,15 +1785,24 @@ fn bench(args: Vec<String>) -> Result<i32> {
             .transpose()?;
         let heap_before = read_heap_ptr(instance, store);
         let mut samples: Vec<u128> = Vec::with_capacity(iters as usize);
-        for _ in 0..iters {
-            let t0 = Instant::now();
-            invoke(store, "measurement")?;
-            samples.push(t0.elapsed().as_nanos());
-        }
+        let measurement_result: Result<()> = (|| {
+            for _ in 0..iters {
+                let t0 = Instant::now();
+                invoke(store, "measurement")?;
+                samples.push(t0.elapsed().as_nanos());
+            }
+            Ok(())
+        })();
         let heap_after = read_heap_ptr(instance, store);
-        if let (Some(sampler), Some(path)) = (profiler, profile_path) {
-            finish_guest_profile(store, sampler, path)?;
-        }
+        let finish_result = if let (Some(sampler), Some(path)) = (profiler, profile_path) {
+            finish_guest_profile(store, sampler, path)
+        } else {
+            Ok(())
+        };
+        // Always stop/join/flush the profiler before propagating an invocation
+        // failure. A trapping measurement is often the most useful profile.
+        measurement_result?;
+        finish_result?;
 
         samples.sort_unstable();
         let n = samples.len();
@@ -4608,6 +4632,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_filenames_disambiguate_sanitized_label_collisions() {
+        let slash = profile_filename("bench::a/b");
+        let question = profile_filename("bench::a?b");
+        assert_ne!(slash, question);
+        assert_eq!(slash, profile_filename("bench::a/b"));
+        assert!(slash.ends_with(".json"));
+    }
+
+    #[test]
+    fn epoch_ticker_stops_promptly_for_a_large_profile_interval() {
+        let engine = Engine::default();
+        let sampler = spawn_epoch_ticker(engine, Duration::from_secs(60));
+        let started = Instant::now();
+        sampler
+            .stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        sampler.thread.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn publish_immutable_text_is_no_replace_and_byte_exact() {

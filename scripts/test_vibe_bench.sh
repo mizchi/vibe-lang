@@ -122,6 +122,41 @@ else
   bad "guest profile: no processed-profile JSON found"
 fi
 
+# Sanitized labels are not unique (`a/b` and `a?b` both become `a_b`), so the
+# runner must append a stable discriminator instead of overwriting one profile.
+cat > "$proj/colliding_profile_names.vibe" <<'EOF'
+bench "a/b" { let _ = 1 + 1 }
+bench "a?b" { let _ = 2 + 2 }
+EOF
+collision_dir="$WORK/colliding-profiles"
+collision_out="$($VIBE bench "$proj/colliding_profile_names.vibe" --iters 2 --warmup 0 \
+  --guest-profile "$collision_dir" --interval-us 100 2>&1)"
+collision_count="$(find "$collision_dir" -name '*.json' -type f | wc -l | tr -d ' ')"
+[ "$collision_count" -eq 2 ] && ok "guest profile: sanitized labels cannot overwrite each other" \
+  || bad "guest profile: colliding labels produced $collision_count files ($collision_out)"
+
+# A failure after warmup must still stop the sampler and flush its diagnostic
+# profile. The shared Array is incremented once by warmup, then the first
+# measured iteration traps.
+cat > "$proj/trapping_profile_bench.vibe" <<'EOF'
+let calls = [0]
+bench "trap_measurement" with Exception {
+  let next = calls[0] + 1
+  Array::set(calls, 0, next)
+  if next > 1 { throw("measurement boom") }
+}
+EOF
+trap_bench_dir="$WORK/trapping-bench-profiles"
+set +e
+trap_bench_out="$($VIBE bench "$proj/trapping_profile_bench.vibe" --iters 1 --warmup 1 \
+  --guest-profile "$trap_bench_dir" --interval-us 100 2>&1)"
+trap_bench_status=$?
+set -e
+trap_bench_profile="$(find "$trap_bench_dir" -name '*.json' -type f | head -1)"
+[ "$trap_bench_status" -ne 0 ] && [ -s "$trap_bench_profile" ] && grep -q '"threads"' "$trap_bench_profile" \
+  && ok "guest profile: measured bench trap still flushes profile JSON" \
+  || bad "guest profile: measured trap lost profile (status=$trap_bench_status, out=$trap_bench_out)"
+
 # 7. The normal `vibe profile` surface produces a named guest profile.
 cat > "$proj/profile.vibex" <<'EOF'
 fn spin(n: Int) -> Int {
@@ -140,6 +175,13 @@ profile_run_out="$($VIBE profile "$proj/profile.vibex" --out "$run_profile" --in
 grep -q 'spin' "$run_profile" \
   && ok "vibe profile: Wasm name section resolves guest function" \
   || bad "vibe profile: named spin frame missing"
+
+spaced_profile="$WORK/cpu profiles/run profile.json"
+mkdir -p "$(dirname "$spaced_profile")"
+spaced_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$spaced_profile" --interval-us 100 2>&1)"
+[ -s "$spaced_profile" ] && grep -q '"threads"' "$spaced_profile" \
+  && ok "vibe profile: output paths containing whitespace stay one argument" \
+  || bad "vibe profile: whitespace output path failed ($spaced_profile_out)"
 
 # A guest failure must not discard the samples collected before the trap.
 cat > "$proj/trap.vibex" <<'EOF'

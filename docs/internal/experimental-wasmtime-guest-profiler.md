@@ -1,8 +1,8 @@
 # Experimental Wasmtime guest-profiler integration
 
-Status: core-module integration implemented experimentally on
-`feat/wasmtime-stack-switching-effects`; component and continuation visibility
-probes remain pending. Tracking issue: <https://github.com/mizchi/vibe-lang/issues/2207>.
+Core-module guest profiling is available for ordinary runs and per-block
+benchmarks. Component profiling and continuation-visibility probes are not yet
+implemented. Tracking issue: <https://github.com/mizchi/vibe-lang/issues/2207>.
 
 ## Why revisit this
 
