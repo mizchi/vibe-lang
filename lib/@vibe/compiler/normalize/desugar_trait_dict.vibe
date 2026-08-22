@@ -2860,7 +2860,7 @@ fn shape_key(pname: String) -> String {
 }
 
 fn shape_is_composite(sh: String) -> Bool {
-  String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:")
+  String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:") || String::starts_with(sh, "{m:")
 }
 
 /// Equality's shape grammar is a strict superset of interpolation's. Reuse the
@@ -3300,25 +3300,47 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
 /// comparison has a runtime fail-closed guard below. Empty entries are answers
 /// too: they mask an outer binding's equality/call-result shape on shadowing.
 fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let sh = match val {
-    EFn(tparams, _, _, ret, _, fbody) => match ret {
-      Some(rt) => if ty_mentions_name_in(rt, tparams) {
-        ""
-      } else {
-        ty_to_eq_shape(rt)
+  // #2218: read a LOCAL annotation directly. `let m: Map[String, Int] = mk()`
+  // is parsed as `((__asc: Map[String, Int]) -> __asc)(mk())`, so the type is
+  // in the AST -- but the arms below see the ascription WRAPPER, not the call,
+  // and `infer_shape`'s own ascription arm narrows through `interp_shape`,
+  // which admits only the tuple and array forms the interpolation renderer
+  // knows. Equality's shape grammar is a strict superset, so the eq path has
+  // to read the annotation itself.
+  //
+  // Measured before this: `let m: Map[String, Int] = mk()` compared by
+  // reference while the UNANNOTATED `let m = mk()` compared by content -- the
+  // annotation, which can only add information, made the answer worse.
+  //
+  // Falls through to the arms below when the annotation yields no shape, so
+  // this is strictly additive.
+  let ann_sh = match dtd_ascribed_type(val) {
+    Some(ann) => ty_to_eq_shape(ann),
+    None => ""
+  }
+  let sh = if String::length(ann_sh) > 0 {
+    ann_sh
+  } else {
+    match val {
+      EFn(tparams, _, _, ret, _, fbody) => match ret {
+        Some(rt) => if ty_mentions_name_in(rt, tparams) {
+          ""
+        } else {
+          ty_to_eq_shape(rt)
+        },
+        None => if Array::length(tparams) > 0 {
+          ""
+        } else {
+          infer_shape(fn_body_tail_expr(fbody), struct_sets, var_types, fn_returns)
+        }
       },
-      None => if Array::length(tparams) > 0 {
-        ""
+      EArray(items) => if Array::length(items) == 0 {
+        "[__EqEmpty]"
       } else {
-        infer_shape(fn_body_tail_expr(fbody), struct_sets, var_types, fn_returns)
-      }
-    },
-    EArray(items) => if Array::length(items) == 0 {
-      "[__EqEmpty]"
-    } else {
-      infer_eq_shape(val, struct_sets, var_types, fn_returns)
-    },
-    _ => infer_eq_shape(val, struct_sets, var_types, fn_returns)
+        infer_eq_shape(val, struct_sets, var_types, fn_returns)
+      },
+      _ => infer_eq_shape(val, struct_sets, var_types, fn_returns)
+    }
   }
   let out = array_empty()
   push_all_var_types(out, var_types)
@@ -7941,6 +7963,138 @@ fn eq_tuple_uid_next() -> Int {
   v
 }
 
+fn map_equals_name(k_ty: TypeExpr, v_ty: TypeExpr) -> String {
+  String::concat(String::concat(String::concat("__map_equals__", type_key(k_ty)), "__"), type_key(v_ty))
+}
+
+// ---- #2218: structural `Map` equality ----
+//
+// `eq_for_typed` had no `Map` arm, so a `Map` reached the raw `==` and compared
+// by reference. Measured before this: a `struct W { f: Map[String, Int] }` was
+// the SINGLE outlier in a row of eleven declared field types -- `Int`,
+// `String`, `Double`, `Bytes`, `Array[Int]`, `Array[Double]`, `Option[Int]`, a
+// tuple and a declared struct all compared by content, and only `Map` answered
+// `false` for two separately built equal maps. Nothing at the call site
+// distinguished it.
+//
+// Same record-then-emit contract as `__arr_equals__<key>`: the site that BUILDS
+// a call records the need, and `emit_recorded_map_equals` generates exactly the
+// set the output references. Keyed by both type arguments because a program can
+// hold `Map[String, Int]` and `Map[String, Array[Int]]` at once and they need
+// different value comparisons.
+let dtd_map_eq_needed: Array[TypeExpr] = empty_type_exprs()
+
+let dtd_map_eq_needed_keys: Array[String] = empty_str_array()
+
+fn map_eq_needed_reset() -> Unit {
+  Array::truncate(dtd_map_eq_needed, 0)
+  Array::truncate(dtd_map_eq_needed_keys, 0)
+}
+
+fn map_eq_needed_record(k_ty: TypeExpr, v_ty: TypeExpr) -> Unit {
+  let nm = map_equals_name(k_ty, v_ty)
+  if str_array_contains(dtd_map_eq_needed_keys, nm) {
+    ()
+  } else {
+    Array::push(dtd_map_eq_needed_keys, nm)
+    Array::push(dtd_map_eq_needed, TyTuple(Array::slice([k_ty, v_ty], 0, 2)))
+  }
+}
+
+/// Generate every recorded `__map_equals__<k>__<v>` helper that does not
+/// already exist. Runs after the rewrite loop, like `emit_recorded_arr_equals`,
+/// and re-reads `Array::length` each turn for the same reason: a value type
+/// that is itself a Map or an Array records ITS helper while this body is
+/// built, so appending while walking is the worklist closure. It terminates
+/// because the record dedups by name and each nested type is strictly
+/// shallower.
+fn emit_recorded_map_equals(stmts: Array[Stmt]) -> Unit {
+  let known_types = collect_decl_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(dtd_map_eq_needed) {
+    let pair = Array::get(dtd_map_eq_needed, i)
+    match pair {
+      TyTuple(kv) => if Array::length(kv) == 2 {
+        let k_ty = Array::get(kv, 0)
+        let v_ty = Array::get(kv, 1)
+        if top_level_fn_exists(stmts, map_equals_name(k_ty, v_ty)) {
+          ()
+        } else {
+          Array::push(stmts, gen_map_equals_fn(k_ty, v_ty, known_types))
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// `let __map_equals__<k>__<v> = (a: Map[k, v], b: Map[k, v]) -> Bool { ... }`
+///
+/// Equal size plus "every key of `a` is in `b` with an equal value" is set
+/// equality: with the sizes equal, a key of `b` missing from `a` would force a
+/// key of `a` missing from `b`, which the loop catches.  The value comparison
+/// goes through `eq_for_typed`, so `Map[String, Array[Int]]` and
+/// `Map[String, SomeStruct]` recurse instead of identity-comparing.
+///
+/// The value compare is nested INSIDE the `has_key` test on purpose: `Map::get`
+/// returns the raw stored value and `0` on a miss (see its checker comment), so
+/// handing that `0` to a generated `V::equals` would read a non-value.
+fn gen_map_equals_fn(k_ty: TypeExpr, v_ty: TypeExpr, known_types: Array[String]) -> Stmt {
+  // Per-expansion binder names, from the counter the tuple arm already uses.
+  // Fixed synthetic binders are what `scripts/review_lint.vibex` rejects, and
+  // it is right to: the tuple arm carried fixed ones until a NESTED expansion
+  // rebound them and the linear backend's match binding reused the shadowed
+  // local, so the outer elements compared against clobbered slots (#1526). A
+  // map body cannot nest inside another one today -- a Map-valued Map emits a
+  // CALL to the inner helper, not an inline body -- but "cannot nest today" is
+  // exactly the reasoning that was wrong before, and a unique name costs
+  // nothing.
+  let uid = idx_str(eq_tuple_uid_next())
+  let n_k = String::concat("__me_k", uid)
+  let n_ks = String::concat("__me_ks", uid)
+  let n_i = String::concat("__me_i", uid)
+  let n_ok = String::concat("__me_ok", uid)
+  let size_a = ECall(EIdent("Map::size", -1), Array::slice([EIdent("a", -1)], 0, 1), -1)
+  let size_b = ECall(EIdent("Map::size", -1), Array::slice([EIdent("b", -1)], 0, 1), -1)
+  let val_a = ECall(EIdent("Map::get", -1), Array::slice([
+    EIdent("a", -1),
+    EIdent(n_k, -1)
+  ], 0, 2), -1)
+  let val_b = ECall(EIdent("Map::get", -1), Array::slice([
+    EIdent("b", -1),
+    EIdent(n_k, -1)
+  ], 0, 2), -1)
+  let val_eq = eq_for_typed(v_ty, val_a, val_b, known_types)
+  let val_bad = EIf(ECall(EIdent("not", -1), Array::slice([val_eq], 0, 1), -1), EAssign(n_ok, EBool(false), EUnit), EUnit)
+  let has_b = ECall(EIdent("Map::has_key", -1), Array::slice([
+    EIdent("b", -1),
+    EIdent(n_k, -1)
+  ], 0, 2), -1)
+  let check_one = EIf(ECall(EIdent("not", -1), Array::slice([has_b], 0, 1), -1), EAssign(n_ok, EBool(false), EUnit), val_bad)
+  let incr = EAssign(n_i, EBinOp("+", EIdent(n_i, -1), EInt(1)), EUnit)
+  let loop_body = ELet(n_k, ECall(EIdent("Array::get", -1), Array::slice([
+    EIdent(n_ks, -1),
+    EIdent(n_i, -1)
+  ], 0, 2), -1), ESeq(check_one, incr), -1)
+  let while_loop = EWhile(EBinOp("<", EIdent(n_i, -1), ECall(EIdent("Array::length", -1), Array::slice([
+    EIdent(n_ks, -1)
+  ], 0, 1), -1)), loop_body)
+  let body_eq = ELet(n_ks, ECall(EIdent("Map::keys", -1), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1), ELetMut(n_i, EInt(0), ELetMut(n_ok, EBool(true), ESeq(while_loop, EIdent(n_ok, -1)), -1), -1), -1)
+  let body = EIf(EBinOp("!=", size_a, size_b), EBool(false), body_eq)
+  let map_ty = TyApp("Map", Array::slice([k_ty, v_ty], 0, 2))
+  let params = Array::slice([("a", Some(map_ty)), ("b", Some(map_ty))], 0, 2)
+  let tparams = empty_str_array()
+  collect_ty_var_names(k_ty, tparams)
+  collect_ty_var_names(v_ty, tparams)
+  let no_tb = array_empty()
+  SLet(false, false, map_equals_name(k_ty, v_ty), None, EFn(tparams, no_tb, params, Some(TyName("Bool")), None, body))
+}
+
 fn bytes_equals_name() -> String {
   "__bytes_equals"
 }
@@ -8036,8 +8190,9 @@ let dtd_eq_generic_types: Array[String] = empty_str_array()
 ///
 ///   - an unsafe generic instantiation (`Box[Array[Int]]`, `Box[Double]`),
 ///     where the erased field is raw-compared -- #2195;
-///   - a field whose head has no structural comparator at all, `Map` being the
-///     measured one -- #2218.
+///   - a field whose head has no structural comparator at all -- `Map` was the
+///     measured one until #2218 gave it an arm; a nominal opaque type such as
+///     `StringBuilder` still is.
 ///
 /// Both are pre-existing and reachable without any array; what this table
 /// prevents is an unannotated binding ADOPTING such a name and arriving there
@@ -8183,16 +8338,19 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
 ///   | `Option[Int]` | true |
 ///   | `(Int, String)` | true |
 ///   | a declared struct | true |
-///   | `Map[String, Int]` | **false** |
+///   | `Map[String, Int]` | true, since #2218 |
 ///
 /// So a DECLARED `Double` or `Bytes` field is fine -- `derive` generates a
 /// type-directed comparison for it. That is the opposite of the erased field
 /// of a generic struct, where the same two types fail, and the difference is
 /// exactly whether the type is still known where the comparison is emitted.
-/// The `Map` row is tracked separately (#2218); this pass only keeps an
-/// unannotated binding from reaching it. A nominal opaque type reaches the
-/// same fallback and is rejected by the same clause -- a `StringBuilder` field
-/// is neither scalar nor a declared struct here, so its owner is unsafe.
+/// A nominal opaque type still reaches the raw-`==` fallback and is rejected
+/// by the same clause -- a `StringBuilder` field is neither scalar nor a
+/// declared struct here, so its owner is unsafe.
+///
+/// `Map` was the single outlier in that table until #2218 gave `eq_for_typed`
+/// a `Map` arm. It is admitted here for the same reason `Array` is: there is
+/// now a generated comparator that descends into it.
 fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Bool {
   match t {
     TyName(n) => if str_array_contains(tparams, n) {
@@ -8212,7 +8370,7 @@ fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Boo
       false
     } else {
       let args_ok = eq_tys_all_content_comparable(args, tparams)
-      if head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 {
+      if head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 || head == "Map" && Array::length(args) == 2 {
         // The heads `eq_for_typed` has a structural arm for. The arity is part
         // of the condition: a head applied to the wrong number of arguments is
         // not the builtin this admits.
@@ -8406,6 +8564,16 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       }
       let inner = EMatch(rhs, Array::slice([(PTuple(rpats), conj)], 0, 1))
       EMatch(lhs, Array::slice([(PTuple(lpats), inner)], 0, 1))
+    },
+    TyApp("Map", args) => if Array::length(args) == 2 {
+      // #2218: the only site that builds a `__map_equals__` call.
+      map_eq_needed_record(Array::get(args, 0), Array::get(args, 1))
+      ECall(EIdent(map_equals_name(Array::get(args, 0), Array::get(args, 1)), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
       // #1526: the second (and last) site that references a helper.
@@ -9027,6 +9195,12 @@ fn ty_to_eq_shape(t: TypeExpr) -> String {
       String::concat("{o:", String::concat(ty_to_eq_shape(Array::get(args, 0)), "}"))
     } else if n == "Result" && Array::length(args) == 2 {
       String::concat("{r:", String::concat(ty_to_eq_shape(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape(Array::get(args, 1)), "}"))))
+    } else if n == "Map" && Array::length(args) == 2 {
+      // #2218: a Map shape, so an ANNOTATED binding (`let m: Map[String, Int]`)
+      // or a typed parameter reaches `eq_for_typed`'s Map arm the same way an
+      // `Array[T]` one reaches its Array arm. Without this the type is known
+      // and the answer still came from the raw `==`.
+      String::concat("{m:", String::concat(ty_to_eq_shape(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape(Array::get(args, 1)), "}"))))
     } else {
       n
     },
@@ -9058,6 +9232,16 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
     TyApp("Option", Array::slice([
       shape_to_eq_ty(String::substring(sh, 3, String::length(sh) - 1))
     ], 0, 1))
+  } else if String::starts_with(sh, "{m:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    if Array::length(parts) == 2 {
+      TyApp("Map", Array::slice([
+        shape_to_eq_ty(Array::get(parts, 0)),
+        shape_to_eq_ty(Array::get(parts, 1))
+      ], 0, 2))
+    } else {
+      TyName("__EqUnknown")
+    }
   } else if String::starts_with(sh, "{r:") {
     let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
     if Array::length(parts) == 2 {
@@ -9079,20 +9263,26 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
   }
 }
 
-/// Does the dispatch type mention an Array or Bytes anywhere? This is the
-/// trigger condition: a composite shape WITHOUT one is already compared
-/// correctly by the codegen walk, and re-routing it here could only lose
+/// Does the dispatch type mention a head the codegen walk gets WRONG anywhere?
+/// This is the trigger condition: a composite shape without one is already
+/// compared correctly by that walk, and re-routing it here could only lose
 /// precision.
-fn ty_mentions_arr_or_bytes(t: TypeExpr) -> Bool {
+///
+/// `Array` and `Bytes` were the original two. `Map` joined them in #2218 -- it
+/// has the same property (the raw `==` compares the reference) and it now has
+/// the same remedy (a generated `__map_equals__` helper). The name kept its
+/// two original heads for one release too long and said something false about
+/// the third; it is spelled by intent now.
+fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
   match t {
     TyName(n) => n == "Bytes",
-    TyApp(n, args) => if n == "Array" {
+    TyApp(n, args) => if n == "Array" || n == "Map" {
       true
     } else {
       let mut i = 0
       let mut found = false
       while i < Array::length(args) {
-        if ty_mentions_arr_or_bytes(Array::get(args, i)) {
+        if ty_needs_typed_eq(Array::get(args, i)) {
           found = true
         } else {
           ()
@@ -9105,7 +9295,7 @@ fn ty_mentions_arr_or_bytes(t: TypeExpr) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(ts) {
-        if ty_mentions_arr_or_bytes(Array::get(ts, i)) {
+        if ty_needs_typed_eq(Array::get(ts, i)) {
           found = true
         } else {
           ()
@@ -9177,7 +9367,7 @@ fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var
   let sh = infer_eq_shape(e, struct_sets, var_types, fn_returns)
   if shape_is_composite(sh) {
     let t = shape_to_eq_ty(sh)
-    if ty_mentions_arr_or_bytes(t) {
+    if ty_needs_typed_eq(t) {
       Some(t)
     } else {
       None
@@ -14049,6 +14239,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   derived_renderers_reset()
   // #1526: same reason -- the recorded set must describe THIS run's output.
   arr_eq_needed_reset()
+  map_eq_needed_reset()
   bytes_eq_needed_reset()
   // #2141: a throw mid-rewrite leaves frames on the lexical binder stack;
   // reset so a later run on another program cannot see them.
@@ -14110,7 +14301,21 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // predict (an operand reached through a name) is generated here. Bytes
   // second: generating an `__arr_equals__` body can record the Bytes need
   // (`Array[Bytes]` elements), and `__bytes_equals` records nothing back.
-  emit_recorded_arr_equals(stmts)
+  //
+  // #2218: array and map emission record into EACH OTHER -- an
+  // `Array[Map[String, Int]]` element records a map need while its body is
+  // built, and a `Map[String, Array[Int]]` value records an array need. Each
+  // emitter self-closes over its OWN list, so what is left is the crossing.
+  // Alternate until neither list grows; it terminates because every recorded
+  // type is strictly shallower than the one that recorded it.
+  let mut prev_arr = 0 - 1
+  let mut prev_map = 0 - 1
+  while Array::length(dtd_arr_eq_needed) != prev_arr || Array::length(dtd_map_eq_needed) != prev_map {
+    prev_arr = Array::length(dtd_arr_eq_needed)
+    prev_map = Array::length(dtd_map_eq_needed)
+    emit_recorded_arr_equals(stmts)
+    emit_recorded_map_equals(stmts)
+  }
   emit_recorded_bytes_equals(stmts)
   // #1374: append the cell only for a program that actually reads or writes it,
   // so a throw-free program's output is unchanged.
