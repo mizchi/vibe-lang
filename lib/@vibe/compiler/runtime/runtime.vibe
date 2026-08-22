@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   import_value_rename_locals,
   namespace_private_value_stmts,
   namespace_rename_originals_reset,
+  record_namespace_rename_originals_for_file,
   resolve_import_path,
   resolve_import_path_candidates,
   rewrite_imported_value_stmt_to_local,
@@ -645,8 +646,10 @@ fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Arra
 /// `collision_sources` spans the whole program so a collision-def import that
 /// crosses a group boundary still resolves.
 fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, String)], file_paths: Array[String], file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, collision_sources: Array[(String, String)]) -> String with Exception {
-  // #2205: the rename table describes ONE merged program.
-  namespace_rename_originals_reset()
+  // #2205: no reset here -- db_grouped_merged_source calls this once per
+  // cache-missing GROUP, and a per-call reset would discard the mappings of
+  // every earlier group (Codex round 4 on #2213). The whole-merge entry
+  // points (build_merged_source, db_grouped_merged_source) reset instead.
   let merged = empty_stmt_array()
   let source_count = Array::length(sources)
   let mut si = 0
@@ -682,6 +685,8 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
 }
 
 fn build_merged_source(entry_path: String, sources: Array[(String, String)]) -> String with Exception {
+  // #2205: the rename table describes ONE merged program.
+  namespace_rename_originals_reset()
   let (file_paths, file_stmts) = parse_merge_sources(sources)
   let plan_entry = if entry_path == "" {
     if Array::length(file_paths) > 0 {
@@ -736,6 +741,11 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
       // Keep per-group results in side buffers, then append cache misses
       // once. Rebuilding the full cache on every group miss is O(N^2) for
       // the ~150-group compiler manifest.
+      // #2205: one reset for the WHOLE grouped merge (a per-group reset
+      // would discard every earlier group's mappings); cache-hit groups
+      // replay their metadata below, since the merge that records it does
+      // not run for them.
+      namespace_rename_originals_reset()
       let group_sources = empty_strings()
       let mut grouped_fingerprint = "merged-groups"
       let new_group_cache_entries = empty_string_triples()
@@ -776,6 +786,22 @@ export fn db_grouped_merged_source(db: TypeDb, groups: Array[(String, Array[(Str
         let cache_key = String::concat("merged-group|", group_name)
         match lookup_source_cache(merged_cache, cache_key, fingerprint) {
           Some(source) => {
+            // #2205: the cached TEXT already contains the mangled names, but
+            // the merge that records (mangled -> original) for derive(Show)
+            // never runs on a hit -- replay just the metadata from the
+            // already-parsed stmts so rendering matches a cold cache. The
+            // entry file keeps its private names in the merge, so it is
+            // skipped here too.
+            let mut ri = 0
+            while ri < Array::length(sources) {
+              let rpath = Array::get(flat_paths, group_start + ri)
+              if rpath == plan_entry {
+                ()
+              } else {
+                record_namespace_rename_originals_for_file(rpath, Array::get(flat_stmts, group_start + ri))
+              }
+              ri = ri + 1
+            }
             Array::push(group_sources, source)
           },
           None =>

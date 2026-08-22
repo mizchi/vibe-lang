@@ -1,0 +1,33 @@
+//# #2205 (Codex round 4 on #2213): cache-hit groups keep rename metadata
+//
+// db_grouped_merged_source serves an unchanged group's merged TEXT from its
+// cache, so the merge that records (mangled -> original) for derive(Show)
+// never runs for that group. The metadata is replayed from the
+// already-parsed stmts instead; without the replay (or with a per-group
+// reset inside build_merged_source_with_plan) a warm cache rendered a
+// private struct's internal `_dep_...` name while a cold cache rendered the
+// source name -- the same program, two different outputs.
+
+import @vibe/compiler/runtime {
+  db_grouped_merged_source, db_new
+}
+
+import @vibe/compiler/core {
+  namespace_rename_original
+}
+
+test "cold and warm grouped merges both record rename metadata" {
+  let groups = [
+    ("g1", [("dep_a.vibe", "struct Point {\n  x: Int\n} derive (Show)\n")]),
+    ("g2", [("main.vibe", "fn main() -> Int {\n  1\n}\n")])
+  ]
+  let (src1, _, db1) = db_grouped_merged_source(db_new(), groups)
+  // Cold: g1 was merged for real, which records Point's mangled spelling.
+  assert_eq(namespace_rename_original("Point_dep_dep_a_vibe"), "Point")
+  let (src2, _, db2) = db_grouped_merged_source(db1, groups)
+  let _ = db2
+  assert_eq(src1, src2)
+  // Warm: g1 came from the cache; the replay must have recorded the same
+  // mapping after the whole-merge reset.
+  assert_eq(namespace_rename_original("Point_dep_dep_a_vibe"), "Point")
+}
