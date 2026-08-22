@@ -81,7 +81,8 @@ vibe run main.vibex
 ```
 
 `vibe new` writes two files: `main.vibex`, the entry point, and
-`vibe.deps`, where dependencies go. That is the whole scaffold — a
+`vibe.deps`, where `vibe add` records URL dependencies to vendor
+(one `<name> <url>` per line). That is the whole scaffold — a
 package contract (`index.vpkg`) is something you add when you have
 something to publish, and [Modules and packages](11_modules_packages.vibe.md)
 picks that up. You do not need any of it for a single file, which is why

@@ -35,11 +35,12 @@ pkf run book
 pkf run vibe-md-tutorial
 ```
 
-## Japanese tour
+## Japanese translation
 
-The original seven-chapter tour is translated in [book/ja/](../ja/).
-English is canonical. `pkf run check-tutorial-translation-parity`
-checks that each pair still runs the same programs.
+Every chapter of this book has a Japanese translation in
+[book/ja/](../ja/). English is canonical.
+`pkf run check-tutorial-translation-parity` checks that each pair still
+runs the same programs.
 
 ## What this book is not
 

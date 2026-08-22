@@ -79,7 +79,8 @@ vibe run main.vibex
 ```
 
 `vibe new` が書くのは2ファイルだけです — エントリポイントの `main.vibex`
-と、依存を書く `vibe.deps`。雛形はこれで全部で、パッケージの契約
+と、`vibe add` が vendor する URL 依存を記録する `vibe.deps`
+(1行に `<name> <url>` を1つ)。雛形はこれで全部で、パッケージの契約
 (`index.vpkg`) は公開するものができてから足すもの。そちらは
 [モジュールとパッケージ](11_modules_packages.vibe.md)で扱います。1ファイル
 なら何も要らないので、この章はそこから始めませんでした。

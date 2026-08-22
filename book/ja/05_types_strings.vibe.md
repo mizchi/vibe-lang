@@ -21,7 +21,7 @@ English version: [05_types_strings.vibe.md](../en/05_types_strings.vibe.md)
 fn main with Console {
   let s = "hello"
   println("s[0] = \{s[0]}")
-  println("from_char_code = \{String::from_char_code(s[0])}")
+  println("from_byte = \{String::from_byte(s[0])}")
   println("s[:] = \{s[:]}")
   println("s[:2] = \{s[:2]}")
   println("s[2:] = \{s[2:]}")
@@ -32,7 +32,7 @@ fn main with Console {
 
 ```output
 s[0] = 104
-from_char_code = h
+from_byte = h
 s[:] = hello
 s[:2] = he
 s[2:] = llo
@@ -40,8 +40,8 @@ s[1:4] = ell
 length = 5
 ```
 
-`String::from_char_code` はバイトを 1 バイトの `String` として書き戻します
-— 正直な別名は `String::from_byte` です。コードポイントを**エンコード
+`String::from_byte` はバイトを 1 バイトの `String` として書き戻します
+— `String::from_char_code` は同じ関数の古い名前です。コードポイントを**エンコード
 しません**: `233` (`'é'`) を渡すと孤立した `0xE9` バイトが返り、これは
 妥当な UTF-8 ではありません (#2203)。4つのスライス形式
 — `s[:]` / `s[:n]` / `s[n:]` / `s[a:b]` — は `Bytes` と `Array[T]` でも

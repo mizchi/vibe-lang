@@ -126,7 +126,9 @@ lets a sibling use it.
 ## Reproducible builds
 
 When you depend on someone else's package, the version number is not
-what gets verified — the **content hash** is:
+what gets verified — the **content hash** is. The pin is a `require`
+line in the metadata header at the top of your package's `index.vpkg`,
+above the declarations:
 
 ```text
 require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
@@ -136,6 +138,11 @@ The build re-checks that hash offline on every build, so neither the
 registry nor the network has to be trusted between builds. `vibe hash`
 computes the value. Set `VIBE_REQUIRE_PINS=1` and an unpinned dependency
 becomes an error, which is what a release build should do.
+
+(`vibe.deps` from chapter 1 is a different, coarser mechanism: it lists
+`<name> <url>` lines for `vibe add` / `vibe fetch` to vendor whole
+repositories into `deps/`. The `require` pin is the registry lane —
+per-package, content-addressed, checked by the compiler itself.)
 
 ## Publishing
 

@@ -82,3 +82,4 @@
 - [CLI を IDE として使う](ja/18_cli.vibe.md)
 - [wasm をターゲットにする](ja/19_wasm.vibe.md)
 - [落とし穴](ja/20_pitfalls.vibe.md)
+- [次に読むもの](ja/99_appendix.md)
