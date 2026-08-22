@@ -1992,13 +1992,15 @@ case "$cmd" in
     tresults="$(mktemp -d -t vibe-test-results-XXXXXX)"
     total_files="$#"
     _test_record() {
-      # $1 = ok|fail, $2 = n_tests for this file. The record is keyed by
-      # the file's ORDINAL in the expanded input list (rec_ordinal, set by
-      # _test_run_one), not by a sanitized path -- sanitizing collides
-      # (a/b_test.vibe vs a_b_test.vibe), and under --jobs the last worker
-      # to finish would overwrite the other verdict, letting the summary
-      # claim zero failures on a failing run.
-      printf '%s %s\n' "$1" "$2" > "$tresults/$rec_ordinal.res"
+      # $1 = ok|fail, $2 = n_tests for this file, $3 = 1 when that count is
+      # exact (name-section parse) / 0 when it is the raw-occurrence
+      # heuristic. The record is keyed by the file's ORDINAL in the
+      # expanded input list (rec_ordinal, set by _test_run_one), not by a
+      # sanitized path -- sanitizing collides (a/b_test.vibe vs
+      # a_b_test.vibe), and under --jobs the last worker to finish would
+      # overwrite the other verdict, letting the summary claim zero
+      # failures on a failing run.
+      printf '%s %s %s\n' "$1" "$2" "${3:-0}" > "$tresults/$rec_ordinal.res"
     }
     # Count the file's `__test_` functions from the wasm NAME SECTION, with
     # a raw-occurrence grep fallback when there is no name section (gc
@@ -2007,7 +2009,15 @@ case "$cmd" in
     # in both the name section and the export section), which is fine for
     # the zero/nonzero "(no tests found)" note but wrong in the summary.
     _test_count_tests() {
+      # Assigns its results to n_tests / n_tests_exact directly (NOT via
+      # command substitution -- a $() subshell would drop both).
+      # n_tests_exact=1 when the count came from the name-section parser;
+      # 0 when it is the raw-occurrence fallback, which over-counts (a
+      # test name appears in more than one wasm section) and is good
+      # enough only for the zero/nonzero "(no tests found)" note -- the
+      # summary must not present it as an exact total.
       local wasm="$1" n=""
+      n_tests_exact=0
       if command -v python3 >/dev/null 2>&1; then
         n="$(python3 - "$wasm" 2>/dev/null <<'PY' || true
 import sys
@@ -2048,13 +2058,17 @@ PY
 )"
       fi
       case "$n" in ''|*[!0-9]*) n="" ;; esac
+      if [ -n "$n" ]; then n_tests_exact=1; fi
       if [ -z "$n" ] || [ "$n" = "0" ]; then
         local g
         g="$({ grep -ao '__test_' "$wasm" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
         case "$g" in ''|*[!0-9]*) g=0 ;; esac
-        if [ "$g" -gt 0 ] || [ -z "$n" ]; then n="$g"; fi
+        if [ "$g" -gt 0 ] || [ -z "$n" ]; then
+          if [ "$g" -gt 0 ]; then n_tests_exact=0; fi
+          n="$g"
+        fi
       fi
-      printf '%s' "$n"
+      n_tests="$n"
     }
 
     # Runs one test file's compile+run+cache-check, printing its own ok/FAIL
@@ -2140,13 +2154,13 @@ PY
         fi
         if ! compile_to "$src" "$out" "__no_entry__" "" "" "" "$test_backend"; then
           unset VIBE_TESTMETA_OUT
-          echo "FAIL (compile) $src"; _test_record fail 0 "$src"; rm -f "$out" "$meta"; return 1
+          echo "FAIL (compile) $src"; _test_record fail 0 1; rm -f "$out" "$meta"; return 1
         fi
         unset VIBE_TESTMETA_OUT
         # #948: flag files with zero lowered `__test_` functions (a typo'd
         # block otherwise passes silently via an empty `_start`). Zero tests
         # stays ok (annotated, exit 0) so helper-only-file suites keep working.
-        n_tests="$(_test_count_tests "$out")"
+        _test_count_tests "$out"
         case "$n_tests" in ''|*[!0-9]*) n_tests=0 ;; esac
         note=""
         [ "$n_tests" = "0" ] && note=" (no tests found)"
@@ -2157,7 +2171,7 @@ PY
           key="$(_sha256_file "$out")"
           if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
             echo "ok   $src$note (cached)"
-            _test_record ok "$n_tests" "$src"
+            _test_record ok "$n_tests" "$n_tests_exact"
             rm -f "$out" "$meta"; return 0
           fi
         fi
@@ -2187,7 +2201,7 @@ PY
           else
             echo "ok   $src$note"
           fi
-          _test_record ok "$n_tests" "$src"
+          _test_record ok "$n_tests" "$n_tests_exact"
           if [ -n "$key" ]; then
             mkdir -p "$tcache" && : > "$tcache/$key.pass"
           fi
@@ -2224,7 +2238,7 @@ PY
         echo "FAIL $src"
         condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" "$pre_abort"
         [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; } | sed 's/^/       /'
-        _test_record fail "$n_tests" "$src"
+        _test_record fail "$n_tests" "$n_tests_exact"
         rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
         return 1
       done
@@ -2302,10 +2316,10 @@ PY
     # _test_run_one in background subshells. The gc backend strips test
     # names from the wasm, so its per-file counts are unreliable -- keep
     # the legacy files-only summary there, as the script lane does.
-    t_pass=0; t_fail=0; t_tests=0; t_notest=0
+    t_pass=0; t_fail=0; t_tests=0; t_notest=0; t_exact=1
     for r in "$tresults"/*.res; do
       [ -f "$r" ] || continue
-      read -r r_verdict r_ntests < "$r" || continue
+      read -r r_verdict r_ntests r_exact < "$r" || continue
       case "$r_verdict" in
         ok) t_pass=$((t_pass + 1)) ;;
         *) t_fail=$((t_fail + 1)) ;;
@@ -2313,9 +2327,13 @@ PY
       case "$r_ntests" in ''|*[!0-9]*) r_ntests=0 ;; esac
       t_tests=$((t_tests + r_ntests))
       [ "$r_ntests" = "0" ] && [ "$r_verdict" = "ok" ] && t_notest=$((t_notest + 1))
+      [ "${r_exact:-0}" = "1" ] || t_exact=0
     done
     rm -rf "$tresults"
-    if [ "$test_backend" = "gc" ]; then
+    # When any count is the raw-occurrence heuristic (no python3, or a
+    # stripped name section), keep the files-only summary rather than
+    # presenting an over-count as an exact total.
+    if [ "$test_backend" = "gc" ] || [ "$t_exact" = "0" ]; then
       echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files)"
     else
       echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files, $t_tests tests)"
