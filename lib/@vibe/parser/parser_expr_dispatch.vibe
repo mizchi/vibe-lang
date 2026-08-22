@@ -386,6 +386,65 @@ fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_n
   ((qualified_pat, expr), next)
 }
 
+fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
+  let (effect_name, operation_name) = match peek(tokens, pos) {
+    TIdent(effect_name) => match peek(tokens, pos + 1) {
+      TDoubleColon => match peek(tokens, pos + 2) {
+        TIdent(operation_name) => (effect_name, operation_name),
+        _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
+      },
+      _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
+    },
+    _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
+  }
+  let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
+  let qualified_pat = match pat {
+    PCtor(name, args) => if name == operation_name {
+      PCtor(String::concat(effect_name, String::concat("::", operation_name)), args)
+    } else {
+      throw("handler-set arm operation did not match its qualified pattern")
+    },
+    _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
+  }
+  let arrow_pos = expect_tk(tokens, pat_next, "=>")
+  let (expr, next) = parse_recur(tokens, arrow_pos, 0, context)
+  ((qualified_pat, expr), next)
+}
+
+fn parse_qualified_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  match peek(tokens, pos) {
+    TSemicolon => match peek(tokens, pos + 1) {
+      TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
+      _ => {
+        let (arm, next) = parse_qualified_handle_arm(tokens, starts, pos + 1, parse_recur, context)
+        ArrayBuilder::push(b, arm)
+        parse_qualified_handle_rest(tokens, starts, next, body, b, parse_recur, context)
+      }
+    },
+    TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
+    _ => throw("expected ';' or '}' in handler set")
+  }
+}
+
+fn parse_suffix_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  let next = skip_semi(tokens, pos)
+  match peek(tokens, next) {
+    TWith => {
+      let (arm, arm_next) = parse_qualified_handle_arm(tokens, starts, next + 1, parse_recur, context)
+      ArrayBuilder::push(b, arm)
+      parse_suffix_handle_rest(tokens, starts, arm_next, b, parse_recur, context)
+    },
+    TRBrace => throw("a suffix handler must be followed by the block tail it handles"),
+    TEof => throw("a suffix handler must be followed by the block tail it handles"),
+    _ => {
+      let (body, end) = parse_recur(tokens, next, 20, context)
+      // mode_block consumes the enclosing `}`. This expression itself lives
+      // inside that block, so hand the brace back to the outer block parser.
+      (EHandle(body, ArrayBuilder::freeze(b)), end - 1)
+    }
+  }
+}
+
 fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, effect_name: String, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
@@ -1338,42 +1397,42 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
     let br = expect_tk(tokens, pos, "{")
     let (body, bn) = parse_recur(tokens, br, 20, context)
     let wp = expect_tk(tokens, bn, "with")
-    // ADR-0085 (#1344): the handled effect may be a generic INSTANTIATION
-    // (`handle { .. } with Exception[IoError] { Throw(e) => .. }`), so the
-    // name is read with the same one-type-argument grammar `with <row>` row
-    // items use (collect_row_item_targs, parser_base.vibe) rather than a bare
-    // identifier. The bracketed spelling rides straight into the arm patterns
-    // via qualify_handle_arm_pattern -- `Exception[IoError]::Throw` -- which
-    // is what lets collect_handle_effects publish the KIND the handle
-    // discharges. Runtime lowering is unaffected: every exception spelling
-    // shares one Wasm tag (is_exception_throw_operation, core/
-    // exception_effect.vibe).
-    let (effect_name, effect_next) = match peek(tokens, wp) {
+    match peek(tokens, wp) {
+      TLBrace => match peek(tokens, wp + 1) {
+        TRBrace => throw("handler set must contain at least one arm"),
+        _ => {
+          let b = ArrayBuilder::new()
+          let (arm, next) = parse_qualified_handle_arm(tokens, starts, wp + 1, parse_recur, context)
+          ArrayBuilder::push(b, arm)
+          parse_qualified_handle_rest(tokens, starts, next, body, b, parse_recur, context)
+        }
+      },
       TIdent(name) => {
-        // #1501: the handled-effect name is a source effect NAME, so the #1461
-        // retirement applies here exactly as it does to a row item. It did not
-        // until now only because this path never called the check.
+        // Transitional ADR-0102 parser. Keep this legacy single-effect header
+        // until the warning/corpus migration and bootstrap bump are complete.
         reject_retired_effect_label(name, wp)
-        match peek(tokens, wp + 1) {
+        let (effect_name, effect_next) = match peek(tokens, wp + 1) {
           TLBracket => collect_row_item_targs(tokens, wp + 2, 1, String::concat(name, "[")),
           _ => (name, wp + 1)
         }
+        let hb = expect_tk(tokens, effect_next, "{")
+        match peek(tokens, hb) {
+          TRBrace => throw(String::concat("handler for `", String::concat(effect_name, "` must contain at least one arm"))),
+          _ => {
+            let b = ArrayBuilder::new()
+            let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, parse_recur, context)
+            ArrayBuilder::push(b, arm)
+            parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur, context)
+          }
+        }
       },
-      _ => throw("expected effect name after 'with'")
+      _ => throw("expected '{' after 'with'")
     }
-    let hb = expect_tk(tokens, effect_next, "{")
-    match peek(tokens, hb) {
-      // ADR-0102 / #1678: an empty arm set used to erase the source effect
-      // row while codegen emitted the body unchanged. Reject it before the
-      // handled-effect spelling is discarded from EHandle.
-      TRBrace => throw(String::concat("handler for `", String::concat(effect_name, "` must contain at least one arm"))),
-      _ => {
-        let b = ArrayBuilder::new()
-        let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, parse_recur, context)
-        ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur, context)
-      }
-    }
+  } else if mode == 28 {
+    let b = ArrayBuilder::new()
+    let (arm, next) = parse_qualified_handle_arm(tokens, starts, pos, parse_recur, context)
+    ArrayBuilder::push(b, arm)
+    parse_suffix_handle_rest(tokens, starts, next, b, parse_recur, context)
   } else if mode == 25 {
     // `for x in e { ... }` / `for k, v in e { ... }`. #1350 retired the
     // `for await` spelling (see this file's header comment): the loop kind is

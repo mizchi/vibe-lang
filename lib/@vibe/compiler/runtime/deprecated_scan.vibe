@@ -189,6 +189,69 @@ fn dep_warning_line(source: String, offset: Int, name: String, msg: String) -> S
   }
 }
 
+fn matching_brace(tokens: Array[Token], open_pos: Int) -> Int {
+  let mut depth = 0
+  let mut i = open_pos
+  let mut found = 0 - 1
+  while found < 0 && i < Array::length(tokens) {
+    match Array::get(tokens, i) {
+      TLBrace => {
+        depth = depth + 1
+      },
+      TRBrace => {
+        depth = depth - 1
+        if depth == 0 {
+          found = i
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn legacy_handler_warning_line(source: String, offset: Int, effect_name: String) -> String {
+  let (line, col) = offset_to_line_col(source, offset)
+  String::concat("warning: line ", String::concat(Int::to_string(line), String::concat(":col ", String::concat(Int::to_string(col), String::concat(": legacy handler header is deprecated; move the effect name onto each arm: write `with { ", String::concat(effect_name, "::Op(...) => ... }`"),),),),),)
+}
+
+/// Report the ADR-0102 migration spelling without confusing function effect
+/// rows (`fn f() with Exception { ... }`) with handler headers. The matching
+/// `}` of the `handle` body is found structurally from lexer tokens; only
+/// `handle { ... } with Effect { ... }` warns.
+export fn legacy_handler_warning_lines(source: String) -> Array[String] with Exception {
+  let out = dep_empty_strs()
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let mut i = 0
+  while i < Array::length(tokens) {
+    match Array::get(tokens, i) {
+      THandle => match peek(tokens, i + 1) {
+        TLBrace => {
+          let close = matching_brace(tokens, i + 1)
+          if close >= 0 {
+            match peek(tokens, close + 1) {
+              TWith => match peek(tokens, close + 2) {
+                TIdent(effect_name) => Array::push(out, legacy_handler_warning_line(source, Array::get(starts, close + 1), effect_name),),
+                _ => ()
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Scan `tokens` (with `starts` offsets into `source`) for uses of any
 /// deprecated name; one formatted warning line per use, in source order.
 fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: Array[Int], deprecated: Array[(String, String)]) -> Array[String] {
@@ -322,7 +385,14 @@ export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Ar
     }
     d = d + 1
   }
-  deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated)
+  let out = deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated)
+  let syntax_warnings = legacy_handler_warning_lines(entry_source)
+  let mut wi = 0
+  while wi < Array::length(syntax_warnings) {
+    Array::push(out, Array::get(syntax_warnings, wi))
+    wi = wi + 1
+  }
+  out
 }
 
 /// ADR-0100 (3) type aliases that live only in index.vpkg.
