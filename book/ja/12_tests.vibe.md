@@ -46,12 +46,11 @@ FAIL demo_test.vibe
        assert_eq failed
          expected: 43
          actual:   42
-       trap: RuntimeError: unreachable
 [vibe-test] 0 passed, 1 failed (1 files, 1 tests)
 ```
 
-末尾の `trap:` 行は assert の実装が透けて見えているだけで、2つ目の失敗
-ではありません (この行の除去と、レポートへの行番号付与は #2202)。
+レポートにはまだ行番号が付かないので、同じ期待値の assert が1つの
+テストに2つあると区別できません (#2202)。
 
 `assert_eq(actual, expected)` は比較可能な任意の型で使え、文字列は内容で
 比較します — なので連結の結果や関数の戻り値に対して、何も変換せずそのまま

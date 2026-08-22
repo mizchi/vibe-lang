@@ -339,7 +339,11 @@ vt_fail_detail() {
     END {
       if (failing != "") print "       failing test: " pct_decode(failing)
       for (i = 1; i <= ndiag; i++) print diags[i]
-      if (reason != "")  print "       trap: " reason
+      # An assert failure aborts via a deliberate `unreachable` trap; once the
+      # assert block above already told the story, echoing that trap reads as
+      # a second, unexplained failure (#2202). Any OTHER trap reason after an
+      # assert diag is still real and still printed.
+      if (reason != "" && !(ndiag > 0 && reason ~ /unreachable/)) print "       trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }
   ' "$errf"

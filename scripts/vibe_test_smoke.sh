@@ -220,9 +220,35 @@ EOF
     printf '%s\n' "$out" >&2
     exit 1
   fi
+  # #2202: the assert's own abort trap must NOT be echoed after the assert
+  # block -- it read as a second, unexplained failure.
+  if printf '%s\n' "$out" | rg -q --fixed-strings "trap:"; then
+    echo "[vibe-test-smoke] FAIL: assert_eq failure still echoes its own abort trap (#2202)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
 }
 assert_canned_assert_eq_diag
 echo "[vibe-test-smoke] ok (assert_eq expected/actual surfaced on FAIL)"
+
+# #2202 boundary: a trap with NO assert diagnostic (a real crash) must still
+# print its reason -- the suppression is only for the assert's own abort.
+assert_bare_trap_still_reported() {
+  local errf="$WORK/canned_bare_trap.err" out
+  cat > "$errf" <<'EOF'
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: bare trap (no assert diag) lost its trap: line" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_bare_trap_still_reported
+echo "[vibe-test-smoke] ok (assert abort trap suppressed; bare trap still reported)"
 
 # Directory input: scripts/vibe_test.sh already expands *_test.vibe; lock it.
 mkdir -p "$WORK/dir_in"
