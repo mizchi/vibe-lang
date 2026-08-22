@@ -1092,11 +1092,9 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
               ([stmt], n)
             }
           }
-        } with Exception {
-          Throw(msg) => {
-            throw(locate_parse_error(msg, start_pos, starts, source))
-          }
-        }
+        } with { Exception::Throw(msg) => {
+          throw(locate_parse_error(msg, start_pos, starts, source))
+        } }
         let mut ii = 0
         while ii < Array::length(stmts) {
           ArrayBuilder::push(b, Array::get(stmts, ii))
@@ -1169,9 +1167,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
   remember_parse_source(source)
   let cfg_active = handle {
     cfg_scan_enabled(tokens)
-  } with Exception {
-    Throw(_) => ArrayBuilder::freeze(ArrayBuilder::new())
-  }
+  } with { Exception::Throw(_) => ArrayBuilder::freeze(ArrayBuilder::new()) }
   let b = ArrayBuilder::new()
   let diags = ArrayBuilder::new()
   let n = Array::length(tokens)
@@ -1214,9 +1210,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
               }
             }
           }
-        } with Exception {
-          Throw(_) => 0 - 1
-        }
+        } with { Exception::Throw(_) => 0 - 1 }
         if cfg_res >= 0 {
           pos = cfg_res
         } else {
@@ -1242,54 +1236,52 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
             }
           }
           Some((stmts, next))
-        } with Exception {
-          Throw(msg) => {
-            let err_pos = extract_err_token_pos(msg, start_pos).0
-            let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
-              err_pos
-            } else {
-              start_pos
-            }
-            ArrayBuilder::push(diags, locate_parse_error(msg, start_pos, starts, source))
-            // #946: resynchronize from the ERROR ANCHOR, not the statement
-            // start. Every token before the anchor was already consumed as
-            // part of this failed statement, so restarting the parse at each
-            // intervening recovery-point-looking token (e.g. the TLet inside
-            // a failed `export let ...`) re-reported the SAME error 4-5x with
-            // stray positions. Skip at least one token (progress guarantee),
-            // then advance to the next recovery point (top-level statement
-            // start, TSemicolon, or TEof — see is_recovery_point) and hand
-            // the position back through the normal Some path (zero stmts).
-            // #963: if the anchor token IS itself a recovery point (the
-            // failed statement ran into the start of the NEXT top-level
-            // statement, e.g. `export let a =` followed by `test ...`),
-            // resume AT the anchor so that statement is parsed, not skipped.
-            // Progress stays guaranteed: this branch is only taken when
-            // anchor_pos > start_pos (the clamp above enforces
-            // anchor_pos >= start_pos), and the anchor+1 path always
-            // consumes at least one token.
-            let resync_pos = if anchor_pos > start_pos && is_recovery_point(peek(tokens, anchor_pos)) {
-              anchor_pos
-            } else {
-              let mut rp = anchor_pos + 1
-              let mut sync = false
-              while !sync {
-                if rp >= n {
+        } with { Exception::Throw(msg) => {
+          let err_pos = extract_err_token_pos(msg, start_pos).0
+          let anchor_pos = if err_pos >= start_pos && err_pos < Array::length(starts) {
+            err_pos
+          } else {
+            start_pos
+          }
+          ArrayBuilder::push(diags, locate_parse_error(msg, start_pos, starts, source))
+          // #946: resynchronize from the ERROR ANCHOR, not the statement
+          // start. Every token before the anchor was already consumed as
+          // part of this failed statement, so restarting the parse at each
+          // intervening recovery-point-looking token (e.g. the TLet inside
+          // a failed `export let ...`) re-reported the SAME error 4-5x with
+          // stray positions. Skip at least one token (progress guarantee),
+          // then advance to the next recovery point (top-level statement
+          // start, TSemicolon, or TEof — see is_recovery_point) and hand
+          // the position back through the normal Some path (zero stmts).
+          // #963: if the anchor token IS itself a recovery point (the
+          // failed statement ran into the start of the NEXT top-level
+          // statement, e.g. `export let a =` followed by `test ...`),
+          // resume AT the anchor so that statement is parsed, not skipped.
+          // Progress stays guaranteed: this branch is only taken when
+          // anchor_pos > start_pos (the clamp above enforces
+          // anchor_pos >= start_pos), and the anchor+1 path always
+          // consumes at least one token.
+          let resync_pos = if anchor_pos > start_pos && is_recovery_point(peek(tokens, anchor_pos)) {
+            anchor_pos
+          } else {
+            let mut rp = anchor_pos + 1
+            let mut sync = false
+            while !sync {
+              if rp >= n {
+                sync = true
+              } else {
+                let t = peek(tokens, rp)
+                if is_recovery_point(t) {
                   sync = true
                 } else {
-                  let t = peek(tokens, rp)
-                  if is_recovery_point(t) {
-                    sync = true
-                  } else {
-                    rp = rp + 1
-                  }
+                  rp = rp + 1
                 }
               }
-              rp
             }
-            Some((ArrayBuilder::freeze(ArrayBuilder::new()), resync_pos))
+            rp
           }
-        }
+          Some((ArrayBuilder::freeze(ArrayBuilder::new()), resync_pos))
+        } }
         match res {
           Some((stmts, next)) => {
             let mut ii = 0
