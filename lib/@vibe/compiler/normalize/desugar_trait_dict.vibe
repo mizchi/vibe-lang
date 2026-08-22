@@ -3297,6 +3297,69 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
 /// shape for both `let` and `let mut`; their contents may still mutate, so
 /// comparison has a runtime fail-closed guard below. Empty entries are answers
 /// too: they mask an outer binding's equality/call-result shape on shadowing.
+/// #2192 review: a binder introduced by a closure parameter, a loop variable, a
+/// match arm, or a `let` whose value is not syntax-inferable must SHADOW the
+/// outer binding of the same spelling before the push scan reads it.
+///
+/// Without this, `let v = 1; ...; let v = if f { mk(1,2) } else { mk(3,4) };
+/// Array::push(xs, v)` recorded the OUTER `Int` for an `Array[Array[Int]]`:
+/// `eq_shape_bind` stores `""` for a non-composite shape, so `infer_eq_shape`
+/// falls through to `infer_shape`, which reads the ordinary `var_types` -- and
+/// `extend_var_types` returns the environment UNCHANGED when inference fails,
+/// leaving the outer entry as the last match. `==` then answered `false` for
+/// two equal arrays. Measured 2026-08-22: a fail-closed trap turned into a
+/// silently wrong answer, which is the one direction the triage rules rank
+/// worst.
+///
+/// `""` is the established "not composite, stop" marker (see `infer_shape`), so
+/// masking can only make the scan LESS confident: an unadoptable shape sends
+/// the comparison back to the trap it had before #2157. It can never invent an
+/// answer.
+fn mask_var_types(var_types: Array[(String, String)], names: Array[String]) -> Array[(String, String)] {
+  if Array::length(names) == 0 {
+    var_types
+  } else {
+    let out = array_empty()
+    push_all_var_types(out, var_types)
+    let mut i = 0
+    while i < Array::length(names) {
+      let n = Array::get(names, i)
+      Array::push(out, (n, ""))
+      Array::push(out, (eq_shape_key(n), ""))
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    Array::push(out, pn)
+    i = i + 1
+  }
+  out
+}
+
+fn loop_bind_names(binds: Array[(String, Expr)]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(binds) {
+    let (bn, _) = Array::get(binds, i)
+    Array::push(out, bn)
+    i = i + 1
+  }
+  out
+}
+
+fn single_name_array(n: String) -> Array[String] {
+  let out = empty_str_array()
+  Array::push(out, n)
+  out
+}
+
 fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let sh = match val {
     EFn(tparams, _, _, ret, _, fbody) => match ret {
@@ -3474,7 +3537,7 @@ fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, A
     EFn(_, _, params, _, _, fbody) => if fn_params_bind_name(params, name) {
       ()
     } else {
-      collect_push_elem_shapes(name, fbody, struct_sets, var_types, fn_returns, out)
+      collect_push_elem_shapes(name, fbody, struct_sets, mask_var_types(var_types, fn_param_names(params)), fn_returns, out)
     },
     EForIn(v, k, iter, body) => {
       collect_push_elem_shapes(name, iter, struct_sets, var_types, fn_returns, out)
@@ -3485,7 +3548,13 @@ fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, A
       if shadowed {
         ()
       } else {
-        collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
+        let bound = empty_str_array()
+        Array::push(bound, v)
+        match k {
+          Some(kn) => Array::push(bound, kn),
+          None => ()
+        }
+        collect_push_elem_shapes(name, body, struct_sets, mask_var_types(var_types, bound), fn_returns, out)
       }
     },
     ELoop(binds, body) => {
@@ -3498,7 +3567,7 @@ fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, A
       if loop_binds_bind_name(binds, name) {
         ()
       } else {
-        collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
+        collect_push_elem_shapes(name, body, struct_sets, mask_var_types(var_types, loop_bind_names(binds)), fn_returns, out)
       }
     },
     EMatch(scrut, arms) => {
@@ -3527,7 +3596,12 @@ fn collect_push_elem_shapes_in_arms(name: String, arms: Array[(Pat, Expr)], stru
     if pat_binds_name(p, name) {
       ()
     } else {
-      collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
+      // Reuse collect_pat_binders rather than a fresh `match` over Pat: a
+      // hand-written enumeration that misses a constructor fails in the
+      // dangerous direction here, leaving a binder unmasked (#2192 review).
+      let binders = empty_str_array()
+      collect_pat_binders(p, binders)
+      collect_push_elem_shapes(name, body, struct_sets, mask_var_types(var_types, binders), fn_returns, out)
     }
     i = i + 1
   }
@@ -3548,7 +3622,13 @@ fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], var_
 /// The same binding-site records `rewrite_expr` makes at an `ELet`/`ELetMut`,
 /// so the walk above reads names the way the comparison site will.
 fn bound_var_types(var_types: Array[(String, String)], n: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let base = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
+  // Mask FIRST, then extend: `extend_var_types` appends nothing when
+  // `anon_or_infer` fails, and `lookup_var_type` takes the LAST match, so
+  // without the mask the outer binding of `n` stayed visible inside this
+  // binding's body (#2192 review). The value's own shape is still inferred in
+  // the OUTER environment, where it is evaluated.
+  let masked = mask_var_types(var_types, single_name_array(n))
+  let base = extend_var_types(masked, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
   eq_shape_bind(bind_shapes(base, n, val, struct_sets, fn_returns), n, val, struct_sets, fn_returns)
 }
 
