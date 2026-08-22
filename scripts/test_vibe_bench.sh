@@ -191,6 +191,19 @@ separator_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$separator_p
   && ok "vibe profile: launcher preserves flags after the guest argument separator" \
   || bad "vibe profile: launcher consumed a guest flag ($separator_profile_out)"
 
+alias_source="$proj/profile-output-alias.vibex"
+alias_backup="$WORK/profile-output-alias.backup"
+cp "$proj/profile.vibex" "$alias_source"
+cp "$alias_source" "$alias_backup"
+set +e
+alias_profile_out="$($VIBE profile "$alias_source" --out "$alias_source" 2>&1)"
+alias_profile_status=$?
+set -e
+[ "$alias_profile_status" -ne 0 ] && cmp -s "$alias_source" "$alias_backup" \
+  && printf '%s\n' "$alias_profile_out" | grep -q 'must not resolve to the source' \
+  && ok "vibe profile: rejects an output path that aliases the source" \
+  || bad "vibe profile: source alias was not rejected safely ($alias_profile_out)"
+
 set +e
 empty_profile_out="$($VIBE profile "$proj/profile.vibex" --out '' 2>&1)"
 empty_profile_status=$?
