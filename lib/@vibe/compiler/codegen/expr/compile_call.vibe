@@ -108,6 +108,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
   array_contains_str,
   emit_assignop_op,
   emit_memory_copy,
@@ -125,6 +126,7 @@ import @vibe/compiler/codegen/common_extractors {
   get_ebool_value,
   get_ecall_args,
   get_ecall_callee,
+  get_ecall_off,
   get_efloat_value,
   get_efn_params,
   get_eforin_body,
@@ -607,7 +609,24 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
     let callee = get_ecall_callee(e)
     if is_eident(callee) {
       let fname = get_eident_name(callee)
-      if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+      if array_contains_int(ctx.float_call_offsets, get_ecall_off(e)) {
+        // #2158: the CHECKER said this exact call node's result is a Double.
+        //
+        // Strictly ADDITIVE -- an extra term in front of the syntactic tests
+        // below, never a replacement for them, so this can only add a Double
+        // classification and never remove one. It reaches the shapes the
+        // name-keyed `float_ret_fns` structurally cannot: a generic
+        // instantiated at Double, a call through a local alias or a lambda
+        // binding, `Array::get` on an `Array[Double]`. Retiring the name table
+        // is #2166 and is deliberately NOT this change.
+        //
+        // No `local_names` guard is needed here (unlike cc_fn_returns_float
+        // just below): this table is keyed by the call node's own source
+        // OFFSET, not by the callee's name, so a local binding that shadows a
+        // top-level `-> Double` function is a different call node at a
+        // different offset and cannot collide with it.
+        true
+      } else if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
         true
       } else if cc_fn_returns_float(local_names, ctx, fname) {
         // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.

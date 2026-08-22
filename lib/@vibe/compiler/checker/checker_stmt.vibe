@@ -49,6 +49,7 @@ import @vibe/compiler/core {
   rewrite_import_alias_stmt,
   sort_perm_by_names,
   subst_apply,
+  subst_resolves_to_double,
   trait_defined,
   trait_impl_declared_for_ctor,
   trait_is_marker,
@@ -3892,9 +3893,19 @@ export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with Except
 }
 
 /// Check once and retain only source-located primary call results whose
-/// checker-confirmed instantiated type is Double. Offset alone is not enough:
-/// a dot-call receiver and its non-Double result can share the same offset.
-export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int])] with Exception {
+/// checker-confirmed instantiated type is Double, plus the two counts that say
+/// whether the AST was located at all: how many primary call results the
+/// program has, and how many of those carry a source offset.
+///
+/// The counts exist because an EMPTY offset array is ambiguous. `check_program`
+/// records an occurrence for every primary call result either way, but
+/// `tab_call_ty` (checker.vibe) only files one under an offset when that offset
+/// is `>= 0` -- so an AST built by `parse_program(lex(source))` produces an
+/// empty table BY CONSTRUCTION, indistinguishable from a program that simply
+/// has no Double call results. A caller that cannot tell those apart wires the
+/// channel up green and inert; `check_program_double_call_result_located_observation`
+/// below is the caller-facing form that refuses the first case.
+fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int)] with Exception {
   let capture = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     provenance_entries: array_empty(),
@@ -3913,13 +3924,26 @@ export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Op
     None
   } else {
     let out: Array[Int] = []
+    let mut primary_calls = 0
+    let mut located_primary_calls = 0
     let mut i = 0
     while i < Array::length(checked.typed_occurrences) {
       let (off, raw_ty) = Array::get(checked.typed_occurrences, i)
       let (role, lane) = Array::get(capture.entries, i)
-      match subst_apply(checked.final_subst, raw_ty) {
-        CtDouble => {
-          if off >= 0 && role == "CallResult" && lane == "Primary" {
+      // The role/lane test comes FIRST, and the type query is the cheap head
+      // form. Both are about cost, and the cost is not incidental: this loop
+      // used to resolve EVERY typed occurrence through `subst_apply`, which
+      // rebuilds the whole substituted type, and then throw all but the head
+      // away. On a single file that is invisible; on a merged program it is
+      // quadratic, because `subst_lookup` walks a substitution that grows with
+      // the program. Measured on `lib/@vibe/compiler/tests/compiler_fs_test.vibe`
+      // (import closure: the whole compiler), compiling it went 6.1s -> 77.5s
+      // with the old shape and back to a small delta with this one.
+      if role == "CallResult" && lane == "Primary" {
+        primary_calls = primary_calls + 1
+        if off >= 0 {
+          located_primary_calls = located_primary_calls + 1
+          if subst_resolves_to_double(checked.final_subst, raw_ty) {
             let mut seen = false
             let mut j = 0
             while j < Array::length(out) {
@@ -3936,12 +3960,46 @@ export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Op
           } else {
             ()
           }
-        },
-        _ => ()
+        } else {
+          ()
+        }
+      } else {
+        ()
       }
       i = i + 1
     }
-    Some((checked, out))
+    Some((checked, out, primary_calls, located_primary_calls))
+  }
+}
+
+/// Check once and retain only source-located primary call results whose
+/// checker-confirmed instantiated type is Double. Offset alone is not enough:
+/// a dot-call receiver and its non-Double result can share the same offset.
+export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int])] with Exception {
+  match check_program_double_call_result_observation_impl(stmts) {
+    None => None,
+    Some((checked, out, _, _)) => Some((checked, out))
+  }
+}
+
+/// #2158: the same observation with an explicit "this AST carried source
+/// offsets" signal, for callers that would otherwise silently accept an inert
+/// channel.
+///
+/// `None` means the offset space is UNUSABLE -- the program has primary call
+/// results and not one of them is located, which is exactly what an unlocated
+/// `parse_program(lex(source))` produces. `Some((checked, []))` still means the
+/// honest "located, and no call result is a Double". A program with no calls at
+/// all is located-vacuously and answers `Some((checked, []))` too; an empty set
+/// classifies nothing either way, so that direction cannot be wrong.
+export fn check_program_double_call_result_located_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int])] with Exception {
+  match check_program_double_call_result_observation_impl(stmts) {
+    None => None,
+    Some((checked, out, primary_calls, located_primary_calls)) => if primary_calls > 0 && located_primary_calls == 0 {
+      None
+    } else {
+      Some((checked, out))
+    }
   }
 }
 

@@ -5880,3 +5880,34 @@ if [ -s "$aliasdir/opaque.wasm" ] \
 fi
 rm -rf "$aliasdir"
 echo "[compiler-gate] generic transparent alias + opaque control ok (#1700)"
+
+# 105. #2158: the checker's per-call-site Double type reaching the LINEAR
+#      backend's floatish classifiers (CompileCtx.float_call_offsets).
+#
+#      Compiled through the SINGLE-SOURCE lane on purpose -- no
+#      VIBE_FS_COMPILE, so `compile_source_wasi_only` runs, which is the linear
+#      entry that supplies the offsets. `scripts/vibe_test.sh` and
+#      `scripts/unit_test_runner.sh` both set VIBE_FS_COMPILE=1 and would take
+#      the FS merge lane, where the channel is not wired; running the fixture
+#      there would assert the wrong thing (and fail). The fixture is named
+#      without a `_test` suffix so the unit runner's glob does not pick it up.
+echo "[compiler-gate] 105/105 checker Double call-result offsets on the linear source lane (#2158)"
+fcodir="_build/_gate_float_call_offsets"
+rm -rf "$fcodir"; mkdir -p "$fcodir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/float_call_offset_source_lane.vibe "$fcodir/fco.wasm" __no_entry__ \
+  >/dev/null 2>&1 || true
+if [ ! -s "$fcodir/fco.wasm" ]; then
+  echo "[compiler-gate] FAIL: float call-offset fixture did not compile (#2158)" >&2
+  cat "$fcodir/fco.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$fcodir/fco.wasm" >"$fcodir/run.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a Double reaching __to_string through a call still renders as raw bits (#2158)" >&2
+  cat "$fcodir/run.log" >&2 || true
+  exit 1
+fi
+rm -rf "$fcodir"
+echo "[compiler-gate] linear source-lane Double call-result offsets ok (#2158)"

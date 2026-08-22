@@ -1,0 +1,89 @@
+//# Functions
+
+// #2158 (checker-offset channel), gc side -- the twin of
+// fixtures/float_call_offset_source_lane.vibe.
+//
+// The gc lane got the checker's per-call-site Double answer first, in #2182:
+// `gc_only.vibe` is the one entry that has always parsed with
+// `lex_with_offsets` + `parse_program_located`, so it could consult the
+// offsets while the linear entries could not. Asserting the SAME shapes on
+// both lanes is what keeps them from drifting apart again -- the #2158 split
+// already proved once that fixing one lane says nothing about the other.
+//
+// THIS FILE RUNS ON THE GC LANE ONLY (scripts/test_gc_selfbuild.sh's fixture
+// list and the `gc-gate` CI job). It is named without a `_test` suffix on
+// purpose: `scripts/unit_test_runner.sh` globs `fixtures/*_test.vibe` and
+// compiles them with VIBE_FS_COMPILE=1, which is the FS merge lane -- and that
+// lane does not supply the offsets (see `compile_file_fs_mode` in
+// entry/compiler/file_compile/file_compile.vibe for the measurement that says
+// why). A `_test` name here would put these assertions on a lane that cannot
+// satisfy them. That is exactly how this file's first draft failed.
+//
+// No imports: the gc backend compiles one file as self-contained.
+
+fn co_dbl_gc(x: Double) -> Double {
+  x * 2.0
+}
+
+fn co_id_gc[T](v: T) -> T {
+  v
+}
+
+fn co_arr_gc() -> Array[Double] {
+  [2.5, 3.5]
+}
+
+fn co_int_pair_gc() -> (Int, Int) {
+  (3, 4)
+}
+
+fn co_declared_gc(b: Bool) -> Double {
+  if b {
+    6.5
+  } else {
+    7.5
+  }
+}
+
+//# Tests
+
+test "#2158 offsets gc: an inferred lambda's result" {
+  let f = () -> {
+    2.5
+  }
+  assert_true(__to_string(f()) == "2.5")
+}
+
+test "#2158 offsets gc: a generic instantiated at Double" {
+  // Declared `-> T`, so a per-DECLARATION answer has to be wrong for one of
+  // these two call sites whichever way it goes. Only the per-call-site type
+  // gets both right.
+  assert_true(__to_string(co_id_gc(2.5)) == "2.5")
+  assert_true(__to_string(co_id_gc(1)) == "1")
+}
+
+test "#2158 offsets gc: a call through a local alias" {
+  let g = co_dbl_gc
+  assert_true(__to_string(g(1.25)) == "2.5")
+}
+
+test "#2158 offsets gc: a call through an annotated lambda binding" {
+  let lam = (v: Double) -> Double {
+    v * 2.5
+  }
+  assert_true(__to_string(lam(1.0)) == "2.5")
+}
+
+test "#2158 offsets gc: Array::get on an Array[Double]" {
+  assert_true(__to_string(Array::get(co_arr_gc(), 0)) == "2.5")
+}
+
+test "#2158 offsets gc: the shape the name table already covered still works" {
+  // A control: the offset term is additive, so this must keep passing.
+  assert_true(__to_string(co_declared_gc(true)) == "6.5")
+}
+
+test "#2158 offsets gc: an Int-returning call is NOT reclassified" {
+  assert_true(__to_string(co_int_pair_gc().0 + co_int_pair_gc().1) == "7")
+  assert_true(__to_string(co_int_pair_gc().0) == "3")
+}

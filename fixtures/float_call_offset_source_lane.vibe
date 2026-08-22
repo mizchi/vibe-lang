@@ -1,0 +1,106 @@
+//# Functions
+
+// #2158: the checker's per-call-site Double answer reaching the LINEAR
+// backend's floatish classifiers, via CompileCtx.float_call_offsets.
+//
+// Everything `compute_float_returning_names` can answer is keyed by the
+// CALLEE'S NAME, so it only ever speaks about a direct call to a top-level
+// `fn` carrying a literal `-> Double` return annotation. The shapes below have
+// no such name to key on, or a name whose declared return type is not Double,
+// and every one of them rendered the f64 bits as a plausible-looking integer.
+// Measured on stage2 at `56f7a942`, before the offset channel:
+//
+//   let f = () -> { 2.5 }; f()                      -> 300
+//   id(2.5)          where `fn id[T](v: T) -> T`    -> 328
+//   let g = dbl; g(1.25)                            -> 500
+//   Array::get(arr(), 0)  where arr() -> Array[..]  -> 658
+//   let lam = (v: Double) -> Double { .. }; lam(..) -> 864
+//
+// THIS FILE MUST BE COMPILED THROUGH THE SINGLE-SOURCE LANE
+// (`compile_source_wasi_only`), which is the linear entry that supplies the
+// offsets -- it is the one that already runs a whole-program `check_program`,
+// so the observation costs no extra pass. `scripts/vibe_test.sh` and
+// `scripts/unit_test_runner.sh` both set VIBE_FS_COMPILE=1 and would take the
+// FS merge lane instead, where this channel is NOT wired (see
+// `compile_file_fs_mode`'s comment for the measurement that says why). That is
+// why the file is named without a `_test` suffix -- the `*_test.vibe` glob
+// would route it to the wrong lane -- and why it is run by an explicit block
+// in tests/gates/late/run.sh instead.
+//
+// The gc lane's copy of the same shapes lives in
+// fixtures/float_return_to_string_gc_test.vibe.
+
+fn dbl(x: Double) -> Double {
+  x * 2.0
+}
+
+fn id[T](v: T) -> T {
+  v
+}
+
+fn arr() -> Array[Double] {
+  [2.5, 3.5]
+}
+
+fn int_pair() -> (Int, Int) {
+  (3, 4)
+}
+
+fn declared(b: Bool) -> Double {
+  if b {
+    6.5
+  } else {
+    7.5
+  }
+}
+
+//# Tests
+
+test "#2158 offsets: an inferred lambda's result" {
+  // No declared return type anywhere -- nothing for a signature scan to read.
+  let f = () -> {
+    2.5
+  }
+  assert_true(__to_string(f()) == "2.5")
+}
+
+test "#2158 offsets: a generic instantiated at Double" {
+  // `id` is declared `-> T`. A per-DECLARATION answer has to be wrong for one
+  // of these two call sites whichever way it goes; only a per-CALL-SITE type
+  // is right for both.
+  assert_true(__to_string(id(2.5)) == "2.5")
+  assert_true(__to_string(id(1)) == "1")
+}
+
+test "#2158 offsets: a call through a local alias" {
+  // `dbl`'s `-> Double` is real, but the name at the call site is `g`.
+  let g = dbl
+  assert_true(__to_string(g(1.25)) == "2.5")
+}
+
+test "#2158 offsets: a call through an annotated lambda binding" {
+  let lam = (v: Double) -> Double {
+    v * 2.5
+  }
+  assert_true(__to_string(lam(1.0)) == "2.5")
+}
+
+test "#2158 offsets: Array::get on an Array[Double]" {
+  // A builtin: no user declaration to scan, and the element type is only
+  // known after inference.
+  assert_true(__to_string(Array::get(arr(), 0)) == "2.5")
+}
+
+test "#2158 offsets: the shape the name table already covered still works" {
+  // A control. The offset term is ADDITIVE -- it can add a Double
+  // classification and never remove one -- so this must keep passing.
+  assert_true(__to_string(declared(true)) == "6.5")
+}
+
+test "#2158 offsets: an Int-returning call is NOT reclassified" {
+  // The other direction. The checker records these results as Int, so their
+  // offsets never enter the table. A table that over-approximated here would
+  // read a tagged integer as an f64 and print garbage for 7.
+  assert_true(__to_string(int_pair().0 + int_pair().1) == "7")
+  assert_true(__to_string(int_pair().0) == "3")
+}
