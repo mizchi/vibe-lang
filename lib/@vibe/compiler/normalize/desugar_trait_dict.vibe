@@ -3426,7 +3426,12 @@ fn adoptable_eq_name(n: String) -> Bool {
   if formal_in_scope(n) {
     false
   } else {
-    is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
+    if str_array_contains(dtd_eq_generic_types, n) {
+      // The shape lost the type arguments; see dtd_eq_generic_types.
+      false
+    } else {
+      is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
+    }
   }
 }
 
@@ -3595,6 +3600,14 @@ fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], _var
 fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]) -> String {
   match v {
     EUnit => "Unit",
+    EUnaryOp("-", inner) => match inner {
+      // The parser gives `-1` as EUnaryOp over the literal, and neither
+      // inference call reads that, so a negative literal took the trap while
+      // the contract said a literal resolves (#2192 review).
+      EInt(_) => "Int",
+      EFloat(_) => "Double",
+      _ => ""
+    },
     EIf(_, t, f) => {
       let no_env = array_empty()
       let no_fns = array_empty()
@@ -7775,13 +7788,45 @@ fn emit_recorded_bytes_equals(stmts: Array[Stmt]) -> Unit {
 // "a direct `T::equals` call resolves".
 let dtd_eq_known_types: Array[String] = empty_str_array()
 
+/// Declared types that take type PARAMETERS. The shape encoding reduces
+/// `Box[Array[Int]]::{ ... }` to the bare name `Box`, so a shape adopted from
+/// one cannot say what `T` was, and the `Array[Box]` helper it selects compares
+/// the erased field with a raw `==` -- two equal boxes then answer `false`
+/// (#2192 review, measured).
+///
+/// That wrong answer is NOT new: on a stage2 from main the annotated
+/// `Array[Box[Array[Int]]]` and even a bare `a == b` already answer `false`,
+/// so the defect is in `derive(Eq)` for a generic struct with an aggregate
+/// field, tracked separately. What this table prevents is #2157 handing that
+/// pre-existing wrong answer one more spelling to arrive through: an
+/// unannotated binding adopts nothing here and takes the trap instead.
+let dtd_eq_generic_types: Array[String] = empty_str_array()
+
 fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_known_types, 0)
+  Array::truncate(dtd_eq_generic_types, 0)
   let names = collect_decl_type_names(stmts)
   let mut i = 0
   while i < Array::length(names) {
     Array::push(dtd_eq_known_types, Array::get(names, i))
     i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(stmts) {
+    match Array::get(stmts, j) {
+      SStruct(_, sname, _, _, _, decl_tparams) => if Array::length(decl_tparams) > 0 {
+        Array::push(dtd_eq_generic_types, sname)
+      } else {
+        ()
+      },
+      SEnum(_, ename, decl_tparams, _, _) => if Array::length(decl_tparams) > 0 {
+        Array::push(dtd_eq_generic_types, ename)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    j = j + 1
   }
 }
 
