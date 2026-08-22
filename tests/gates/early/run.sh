@@ -139,6 +139,59 @@ if ! echo "$mi_diag" | grep -qE '^line [0-9]+:[0-9]+: cannot resolve import .*do
 fi
 echo "[compiler-gate] missing-import diagnostic ok: $mi_diag"
 
+# 4d. derive(Show) source-name rendering across the merge rename (#2205): a
+#     PRIVATE struct/enum in an imported module is renamed by the merge
+#     (`Point` -> `Point_dep_<path>`), and derive(Show) expands after that
+#     rename -- so the rendered string leaked the compiler-internal name into
+#     user output (`Point_dep_... { x: 3, y: 4 }`), silently diverging from
+#     the single-file lane. The rename side table (namespace_rename_original)
+#     must recover the source spelling for struct names and enum constructors
+#     (both payload and nullary), while the generated fn's own name stays
+#     mangled.
+echo "[compiler-gate] 4d derive(Show) source-name rendering across merge rename (#2205)"
+dsdir="_build/_gate_derive_show_rename"
+rm -rf "$dsdir"; mkdir -p "$dsdir"
+cat > "$dsdir/dep.vibe" <<'VEOF'
+struct Point {
+  x: Int;
+  y: Int
+} derive (Show)
+
+enum Color {
+  Lone;
+  Mix(Int, Int)
+} derive (Show)
+
+export fn render() -> String {
+  let p = Point::{ x: 3, y: 4 }
+  let c = Mix(1, 2)
+  let l = Lone
+  "\{p}|\{c}|\{l}"
+}
+VEOF
+cat > "$dsdir/main.vibe" <<'VEOF'
+import ./dep.vibe { render }
+
+fn main with Console {
+  println(render())
+}
+VEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dsdir/main.vibe" "$dsdir/main.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$dsdir/main.wasm" ]; then
+  echo "[compiler-gate] FAIL: derive(Show) rename sample did not compile" >&2
+  cat "$dsdir/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dsout="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$dsdir/main.wasm" 2>/dev/null)"
+rm -rf "$dsdir"
+if [ "$dsout" != "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" ]; then
+  echo "[compiler-gate] FAIL: derive(Show) rendered '$dsout' (expected 'Point { x: 3, y: 4 }|Mix(1, 2)|Lone') — #2205 merge-renamed name leaking" >&2
+  exit 1
+fi
+echo "[compiler-gate] derive(Show) source-name rendering ok"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that

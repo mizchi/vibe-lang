@@ -55,12 +55,31 @@ test "an if condition that is not Bool points at the condition" {
   assert(anchored_at(src, 3, 6))
 }
 
+test "an if condition that is not Bool names the actual type" {
+  // #2200: "must be Bool" alone reads as agreeing with the reader who
+  // believes the condition IS a Bool (`flag?: Bool` arrives as Option[Bool]).
+  let src = "fn f() -> Int {\n  let n = 1\n  if n { 2 } else { 3 }\n}\n"
+  assert(String::contains(first_diag(src), "if condition must be Bool, got Int"))
+  let opt_src = "fn f(flag?: Bool) -> Int {\n  if flag { 1 } else { 0 }\n}\n"
+  assert(String::contains(first_diag(opt_src), "if condition must be Bool, got Option[Bool]"))
+}
+
 test "mismatched if branches point at the else branch" {
   // The `then` type is the expectation and `else` is checked against it, so
   // the else arm is the operand that disagrees.
   let src = "fn f() -> Bool {\n  let n = 1\n  let s = \"x\"\n  if true { n } else { s }\n}\n"
   assert(String::contains(first_diag(src), "if branches have incompatible types"))
   assert(anchored_at(src, 4, 24))
+}
+
+test "mismatched if branches with a literal else still anchor on the if" {
+  // #2198: a literal else carries no offset of its own, which used to leave
+  // this diagnostic file-only. The fallback anchors on the then-branch tail
+  // (`s`, column 13) -- coarser than the disagreeing operand, but on the
+  // right expression.
+  let src = "fn f() -> Bool {\n  let s = \"x\"\n  if true { s } else { 1 }\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 3, 13))
 }
 
 test "an incompatible array element points at that element" {
@@ -118,6 +137,43 @@ test "an assignment of the wrong type points at the value, not the variable" {
   let src = "fn f() -> Int {\n  let mut n = 1\n  let s = \"a\"\n  n = s\n  n\n}\n"
   assert(String::contains(first_diag(src), "assignment type mismatch for n"))
   assert(anchored_at(src, 4, 7))
+}
+
+//# Non-exhaustive matches anchor on the scrutinee (#2198)
+
+test "a non-exhaustive enum match points at the scrutinee" {
+  // ch02/ch07 of the book sell exhaustiveness with "the errors point at
+  // every match that now has a hole" -- without a line the error names the
+  // hole but does not point at it. `s` is column 9 of the match line.
+  let src = "enum Shape {\n  Circle(Int);\n  Rect(Int, Int);\n  Triangle(Int, Int)\n}\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle(r) => 3 * r * r,\n    Rect(w, h) => w * h\n  }\n}\n"
+  assert(String::contains(first_diag(src), "variant `Triangle` of enum Shape is not handled"))
+  assert(anchored_at(src, 8, 9))
+}
+
+test "a non-exhaustive Option match points at the scrutinee" {
+  let src = "fn f(o: Option[Int]) -> Int {\n  match o {\n    Some(v) => v,\n    Some(_) => 0\n  }\n}\n"
+  assert(String::contains(first_diag(src), "variant `None` of Option is not handled"))
+  assert(anchored_at(src, 2, 9))
+}
+
+test "a non-exhaustive Bool match points at the scrutinee" {
+  let src = "fn f(b: Bool) -> Int {\n  match b {\n    true => 1,\n    true => 2\n  }\n}\n"
+  assert(String::contains(first_diag(src), "`false` is not handled for a Bool scrutinee"))
+  assert(anchored_at(src, 2, 9))
+}
+
+//# A bare `_` outside a pipe names its two roles (#2201)
+
+test "a bare underscore argument explains pipe slot and lambda section" {
+  // `_` is syntax used in the wrong position, not a name the reader thought
+  // existed -- "unknown name: _" answered the wrong question.
+  let src = "fn f() -> Int {\n  let xs = [1, 2, 3]\n  let ys = Array::map(_, 9)\n  0\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "`_` is not a value here"))
+  assert(String::contains(d, "pipe slot"))
+  assert(String::contains(d, "lambda section"))
+  assert(!String::contains(d, "unknown name: _"))
+  assert(anchored_at(src, 3, 23))
 }
 
 //# Effect-shaped sites (#1941, third slice)

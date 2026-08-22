@@ -669,16 +669,48 @@ condense_test_trap() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
-    $0 == "assert_eq failed" || $0 ~ /^  expected:/ || $0 ~ /^  actual:/ {
+    # Assert-abort recognizer (#2202): suppression requires a COMPLETE
+    # consecutive failed/expected/actual block followed by the trap reason
+    # with only crash-debug / blank lines between (keep in lockstep with
+    # scripts/vibe_test.sh vt_fail_detail).
+    { __blk = 0 }
+    $0 == "assert_eq failed" {
+      __blk = 1
+      ablk = 1
       ndiag++
       diags[ndiag] = "  " $0
     }
+    $0 ~ /^  expected:/ {
+      __blk = 1
+      if (ablk == 1) ablk = 2
+      ndiag++
+      diags[ndiag] = "  " $0
+    }
+    $0 ~ /^  actual:/ {
+      __blk = 1
+      if (ablk == 2) ablk = 3
+      ndiag++
+      diags[ndiag] = "  " $0
+    }
+    # The closing line of the generated assert_eq abort -- definitive,
+    # multiline-proof (keep in lockstep with scripts/vibe_test.sh). Hidden
+    # from the report.
+    $0 == "assert failed: aborting" {
+      __blk = 1
+      pending_abort = 1
+    }
     !seen_reason && /RuntimeError:|wasm trap:/ {
+      __blk = 1
       seen_reason = 1
+      assert_abort = (ablk == 3 || pending_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
       sub(/^viberun: /, "", reason)
+    }
+    !seen_reason && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ {
+      ablk = 0
+      pending_abort = 0
     }
     nframes < 6 {
       fn = ""
@@ -696,7 +728,12 @@ condense_test_trap() {
     END {
       if (failing != "") print "  failing test: " pct_decode(failing)
       for (i = 1; i <= ndiag; i++) print diags[i]
-      if (reason != "")  print "  trap: " reason
+      # An assert failure aborts via a deliberate `unreachable` trap; once the
+      # assert block above already told the story, echoing that trap reads as
+      # a second, unexplained failure (#2202). Any OTHER trap -- a different
+      # reason, or an unreachable that does not directly follow a complete
+      # assert block -- is still real and still printed.
+      if (reason != "" && !(assert_abort && reason ~ /unreachable/)) print "  trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }
   ' "$errf")"

@@ -6015,6 +6015,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             None => {
               if name == "__try_v" {
                 Array::push(errors, String::concat("`?` could not unwrap this value (the lowered binder is not in scope)", off_marker(ident_off)))
+              } else if name == "_" {
+                // #2201: `_` is syntax the reader used in the wrong position,
+                // not a name they thought existed -- "unknown name: _" answers
+                // the wrong question. Name its two expression roles instead.
+                Array::push(errors, String::concat("`_` is not a value here: it is only a pipe slot (in the call directly after `|>`) or a lambda section (as part of a larger expression, e.g. `_ * 2`)", off_marker_len(ident_off, 1)))
               } else {
                 Array::push(errors, String::concat(String::concat("unknown name: ", name), off_marker_len(ident_off, String::length(name))))
               }
@@ -6037,7 +6042,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         CtVar(_) => (),
         // Anchor on the CONDITION, not the `if`: that is the expression whose
         // type is wrong, and it is what the reader has to change (#1941).
-        _ => Array::push(errors, String::concat("if condition must be Bool", off_marker(railway_expr_off(cond))))
+        // Naming the actual type is the other half of the repair (#2200): for
+        // `flag?: Bool` the condition is Option[Bool], and without "got ..."
+        // the message reads as agreeing with the reader who believes flag IS
+        // a Bool.
+        _ => Array::push(errors, String::concat("if condition must be Bool, got ", String::concat(type_to_string(resolved_ct), off_marker(railway_expr_off(cond)))))
       }
       let (tt, s2, c2) = check_expr_capture(then_e, env, defs, s1, c1, errors, tytab, capture, lane)
       let (et, s3, c3) = check_expr_capture(else_e, env, defs, s2, c2, errors, tytab, capture, lane)
@@ -6057,7 +6066,24 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         CtUnit => (s3, CtUnit),
         _ => match ret {
           CtUnit => (s3, CtUnit),
-          _ => (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", railway_expr_off(else_e)), tt)
+          _ => {
+            // #2198: a literal else-branch carries no offset, which left this
+            // diagnostic file-only. Keep the else anchor when it exists (pinned
+            // by diagnostic_anchor_test), else fall back to the then-branch
+            // tail, else to the condition -- coarser, but still on the `if`.
+            let else_off = railway_expr_off(else_e)
+            let branch_off = if else_off >= 0 {
+              else_off
+            } else {
+              let then_off = tail_expr_off(then_e)
+              if then_off >= 0 {
+                then_off
+              } else {
+                railway_expr_off(cond)
+              }
+            }
+            (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off), tt)
+          }
         }
       }
       (if_ty, s3b, c3)
@@ -7904,7 +7930,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // unguarded arm exists — or by a literal empty `match x { }`. Both
         // reach codegen as an unconditional `unreachable`: every guard failing
         // at runtime trapped with no source location. Reject at compile time.
-        Array::push(errors, "non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail — add an unguarded arm or `_`)")
+        Array::push(errors, String::concat("non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail — add an unguarded arm or `_`)", off_marker(railway_expr_off(scrutinee))))
         (CtUnknown, s1, c1)
       }
       else {
@@ -8056,7 +8082,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   if found {
                     ()
                   } else {
-                    Array::push(errors, String::concat("non-exhaustive match: variant `", String::concat(vname, String::concat("` of enum ", String::concat(en, " is not handled (add it or a `_` arm)")))))
+                    Array::push(errors, String::concat("non-exhaustive match: variant `", String::concat(vname, String::concat("` of enum ", String::concat(en, String::concat(" is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))))))
                   }
                   vi = vi + 1
                 }
@@ -8107,12 +8133,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 ()
               } else {
                 if !flat_names_contain(opt_covered, "Some") {
-                  Array::push(errors, "non-exhaustive match: variant `Some` of Option is not handled (add it or a `_` arm)")
+                  Array::push(errors, String::concat("non-exhaustive match: variant `Some` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }
                 if !flat_names_contain(opt_covered, "None") {
-                  Array::push(errors, "non-exhaustive match: variant `None` of Option is not handled (add it or a `_` arm)")
+                  Array::push(errors, String::concat("non-exhaustive match: variant `None` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }
@@ -8136,12 +8162,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 ()
               } else {
                 if !flat_names_contain(bool_covered, "true") {
-                  Array::push(errors, "non-exhaustive match: `true` is not handled for a Bool scrutinee (add it or a `_` arm)")
+                  Array::push(errors, String::concat("non-exhaustive match: `true` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }
                 if !flat_names_contain(bool_covered, "false") {
-                  Array::push(errors, "non-exhaustive match: `false` is not handled for a Bool scrutinee (add it or a `_` arm)")
+                  Array::push(errors, String::concat("non-exhaustive match: `false` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
                 } else {
                   ()
                 }

@@ -978,6 +978,73 @@ fn namespace_private_name(path: String, name: String) -> String {
   String::concat(name, String::concat("_dep_", sanitize_namespace_path(path)))
 }
 
+/// #2205: (mangled -> original) for private TYPE and CONSTRUCTOR renames.
+/// `derive(Show)` expands after the merge rename has already run, so the
+/// renamed declaration is the only spelling it can see -- and it bakes that
+/// spelling into the rendered string (`Point_dep_... { x: 3 }` in user
+/// output). This table lets the derive generators recover the source name.
+///
+/// The table is scoped to ONE merged program (Codex rounds 2-3 on #2213):
+/// each merge driver resets it before populating, and desugar_trait_dicts
+/// clears it after the derive generators have read it. Left to accumulate
+/// across compilations in a long-lived process, it would both grow without
+/// bound and mis-render a LATER program's genuine type whose name equals a
+/// former mangled name (`Point_dep_a_vibe` rendering as `Point`).
+///
+/// Accepted residual: a merge that never reaches desugar (a query helper
+/// like closure_merged_stmt_count, or a check-only text merge) leaves its
+/// entries behind until the next merge or desugar clears them. Mis-rendering
+/// through that window needs a SUBSEQUENT single-file program that both
+/// declares a type spelled exactly like one of those mangled names
+/// (`X_dep_<sanitized-path>`) and derives Show on it, in the same process --
+/// the growth is bounded (every driver resets on entry), and carrying the
+/// mapping inside the AST instead is the invasive fix (#2205 option (c)) not
+/// taken here.
+let namespace_rename_originals: Array[(String, String)] = array_empty()
+
+/// Reset the #2205 rename table. Called by each merge driver before it
+/// populates, and by desugar_trait_dicts once the derive generators are done.
+export fn namespace_rename_originals_reset() -> Unit {
+  Array::truncate(namespace_rename_originals, 0)
+}
+
+/// #2205 (Codex round 4 on #2213): metadata-only replay of the private
+/// type/constructor renames for a file whose merged TEXT came from a cache.
+/// The merge that would have recorded the (mangled -> original) pairs never
+/// runs on a cache hit, so the grouped merge replays just the recording
+/// (the same collects the rename pass runs, minus any rewriting) to keep
+/// derive(Show) rendering identical between cold and warm caches. Running
+/// the collects on the RAW stmts is equivalent for this purpose: the value
+/// rename that normally precedes them never changes a type or constructor
+/// declaration name.
+export fn record_namespace_rename_originals_for_file(path: String, stmts: Array[Stmt]) -> Unit {
+  let namespace_suffix_box = [""]
+  let exported = collect_exported_value_names(stmts)
+  let type_renames = collect_private_type_renames(path, stmts, namespace_suffix_box, exported)
+  let _ = collect_private_ctor_renames(path, stmts, type_renames, namespace_suffix_box, exported)
+}
+
+fn record_namespace_rename_original(original: String, mangled: String) -> Unit {
+  Array::push(namespace_rename_originals, (mangled, original))
+}
+
+/// The source spelling of a possibly merge-renamed type/constructor name.
+/// Returns the name unchanged when it was never renamed by this process.
+export fn namespace_rename_original(name: String) -> String {
+  let mut i = 0
+  let mut found = name
+  while i < Array::length(namespace_rename_originals) {
+    let (mangled, original) = Array::get(namespace_rename_originals, i)
+    if mangled == name {
+      found = original
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn namespace_private_name_with_suffix(namespace_suffix: String, name: String) -> String {
   String::concat(name, String::concat("_dep_", namespace_suffix))
 }
@@ -1276,16 +1343,22 @@ fn collect_private_type_renames(path: String, stmts: Array[Stmt], namespace_suff
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SEnum(false, name, _, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
+        record_namespace_rename_original(name, mangled)
+        Array::push(renames, (name, mangled))
       },
       SStruct(false, name, _, _, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
+        record_namespace_rename_original(name, mangled)
+        Array::push(renames, (name, mangled))
       },
       STypeAlias(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SSuberror(false, name, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
+        record_namespace_rename_original(name, mangled)
+        Array::push(renames, (name, mangled))
       },
       _ => ()
     }
@@ -1303,7 +1376,9 @@ fn collect_private_ctor_renames(path: String, stmts: Array[Stmt], type_renames: 
         let mut j = 0
         while j < Array::length(ctors) {
           let (ctor_name, _) = Array::get(ctors, j)
-          Array::push(renames, (ctor_name, namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)))
+          let mangled = namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)
+          record_namespace_rename_original(ctor_name, mangled)
+          Array::push(renames, (ctor_name, mangled))
           j = j + 1
         }
       },
@@ -1311,7 +1386,9 @@ fn collect_private_ctor_renames(path: String, stmts: Array[Stmt], type_renames: 
         let mut j = 0
         while j < Array::length(ctors) {
           let (ctor_name, _) = Array::get(ctors, j)
-          Array::push(renames, (ctor_name, namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)))
+          let mangled = namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)
+          record_namespace_rename_original(ctor_name, mangled)
+          Array::push(renames, (ctor_name, mangled))
           j = j + 1
         }
       },

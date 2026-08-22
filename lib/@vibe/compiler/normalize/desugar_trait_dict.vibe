@@ -10,6 +10,8 @@ import @vibe/compiler/core {
   expr_children,
   is_exception_effect_name,
   is_exception_throw_operation,
+  namespace_rename_original,
+  namespace_rename_originals_reset,
   sort_perm_by_names,
   str_lt,
   trait_method_sig_binders_deep
@@ -5795,7 +5797,16 @@ fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String
   let expected = EIdent(en, -1)
   let actual_s = assert_eq_render(actual, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let expected_s = assert_eq_render(expected, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
-  let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\n")))))
+  // The trailing `assert failed: aborting` line closes the diagnostic and
+  // says what happens next -- the trap that follows is this assert's own
+  // deliberate abort, not a second failure. It doubles as the marker the
+  // test condensers (scripts/vibe_test.sh / runtime/vibe) key on to
+  // suppress the trap echo (#2202, Codex rounds 2-3 on #2213): rendered
+  // values may contain newlines and a test's own output may imitate the
+  // block, so the block text alone cannot identify the abort. The
+  // condensers hide the line; in a plain `vibe run` it reads as ordinary
+  // diagnostic prose rather than harness protocol.
+  let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\nassert failed: aborting")))))
   // stdout, not Stderr::write_stream: the gc lane only reserves host
   // imports when the source already used one, and flipping that on a
   // SIMD-only file shifts every generated-body index (gc-gate
@@ -7131,7 +7142,11 @@ fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
 /// `let P::to_string = (self: P) -> String { "P { x: " ++ show(x) ++ ", ... }" }`
 fn gen_show_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
   let segs = empty_expr_array()
-  Array::push(segs, EString(String::concat(tname, " { ")))
+  // #2205: this pass runs after the module-merge rename, so `tname` may be
+  // the mangled `Point_dep_<path>` spelling -- render the SOURCE name (the
+  // generated fn's own name stays mangled; only the string the user sees
+  // recovers the original).
+  Array::push(segs, EString(String::concat(namespace_rename_original(tname), " { ")))
   let mut i = 0
   while i < Array::length(fields) {
     let (fname, fty) = Array::get(fields, i)
@@ -7735,10 +7750,12 @@ fn gen_enum_show_fn(ename: String, variants: Array[(String, Array[TypeExpr])], k
       fi = fi + 1
     }
     let body = if nf == 0 {
-      EString(vname)
+      // #2205: render the source constructor name, not the merge-renamed one
+      // (same as gen_show_fn above; the PCtor pattern below keeps `vname`).
+      EString(namespace_rename_original(vname))
     } else {
       let segs = empty_expr_array()
-      Array::push(segs, EString(String::concat(vname, "(")))
+      Array::push(segs, EString(String::concat(namespace_rename_original(vname), "(")))
       let mut si = 0
       while si < nf {
         let sep = if si == 0 {
@@ -13174,6 +13191,12 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)
+  // #2205: the derive generators above are the only readers of the merge
+  // rename table; clear it so a LATER compilation in this process (e.g. a
+  // single-file lane, which runs no merge and therefore no reset) cannot see
+  // stale entries. A second run of this pass over the same program
+  // regenerates nothing and never reads the table.
+  namespace_rename_originals_reset()
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
   // program declares no method-bearing trait `traits` is empty, the dict-passing
