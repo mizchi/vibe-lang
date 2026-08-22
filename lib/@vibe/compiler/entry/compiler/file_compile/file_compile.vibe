@@ -728,7 +728,13 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
 fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, entry_name: String, mode: String, persistent_artifact_kind: String) -> (Bytes, TypeDb, Int, Int, Int, Int, Int) with Exception + Fs + Profiler {
   let load_start = profiler_now_us()
   let source_groups = collect_source_groups_fs(entry_path)
-  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_for_entry_path(source_groups, entry_path, entry_name, mode)
+  // The ingested source-group fingerprint is the authoritative identity for
+  // both cache layers. Keep it beside the collected sources instead of
+  // re-hashing every source once for the persistent lookup and again for the
+  // TypeDb lookup below. The `_from_group_fingerprint` constructor is
+  // byte-for-byte equivalent to the legacy source-taking constructor.
+  let source_groups_fingerprint = build_source_groups_fingerprint(source_groups)
+  let persistent_artifact_fingerprint = build_file_compile_wasi_artifact_fingerprint_from_group_fingerprint_for_entry_path(source_groups_fingerprint, entry_path, entry_name, mode)
   match load_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint) {
     Some(bytes) => (bytes, db, elapsed_us_since(load_start), 0, 0, 0, 0),
     None => {
@@ -737,7 +743,7 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
       let type_us = elapsed_us_since(type_start)
       let bundle_start = profiler_now_us()
-      let merge_fingerprint = build_source_groups_fingerprint(source_groups)
+      let merge_fingerprint = source_groups_fingerprint
       let bundle_us = elapsed_us_since(bundle_start)
       let artifact_fingerprint = merge_fingerprint
       let artifact_kind = if mode == "mvp" {
