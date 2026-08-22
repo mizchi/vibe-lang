@@ -1138,20 +1138,22 @@ struct GuestCpuClock {
 }
 
 impl GuestCpuClock {
-    fn new(now: Instant) -> Self {
+    fn new() -> Self {
         Self {
             accumulated_guest: Duration::ZERO,
-            guest_started_at: Some(now),
+            // Profiling is armed while the harness still owns control. The
+            // first CallingWasm hook starts guest accounting.
+            guest_started_at: None,
         }
     }
 
-    fn calling_host(&mut self, now: Instant) {
+    fn entering_host(&mut self, now: Instant) {
         if let Some(started_at) = self.guest_started_at.take() {
             self.accumulated_guest += now.duration_since(started_at);
         }
     }
 
-    fn returning_from_host(&mut self, now: Instant) {
+    fn exiting_host(&mut self, now: Instant) {
         self.guest_started_at = Some(now);
     }
 
@@ -1291,15 +1293,20 @@ fn run(args: Vec<String>) -> Result<i32> {
         store.set_epoch_deadline(1_000_000_000);
     }
     if guest_profile_path.is_some() {
-        store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new(Instant::now()));
+        store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new());
         store.call_hook(|mut ctx, kind| {
             let now = Instant::now();
             let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
             profiler.call_hook(ctx.as_context(), kind);
             ctx.data_mut().guest_profiler = Some(profiler);
             match kind {
-                CallHook::CallingHost => ctx.data_mut().guest_cpu_clock.as_mut().unwrap().calling_host(now),
-                CallHook::ReturningFromHost => {
+                CallHook::CallingHost | CallHook::ReturningFromWasm => ctx
+                    .data_mut()
+                    .guest_cpu_clock
+                    .as_mut()
+                    .unwrap()
+                    .entering_host(now),
+                CallHook::ReturningFromHost | CallHook::CallingWasm => {
                     // Epochs can advance many times while a blocking host import
                     // runs. Rebase the deadline while preserving accumulated
                     // guest CPU time in the shared clock.
@@ -1308,9 +1315,8 @@ fn run(args: Vec<String>) -> Result<i32> {
                         .guest_cpu_clock
                         .as_mut()
                         .unwrap()
-                        .returning_from_host(now);
+                        .exiting_host(now);
                 }
-                _ => {}
             }
             Ok(())
         });
@@ -1701,23 +1707,27 @@ fn arm_guest_profile(
         interval,
         [(name.to_string(), module.clone())],
     )?);
-    store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new(Instant::now()));
+    store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new());
     store.call_hook(|mut ctx, kind| {
         let now = Instant::now();
         let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
         profiler.call_hook(ctx.as_context(), kind);
         ctx.data_mut().guest_profiler = Some(profiler);
         match kind {
-            CallHook::CallingHost => ctx.data_mut().guest_cpu_clock.as_mut().unwrap().calling_host(now),
-            CallHook::ReturningFromHost => {
+            CallHook::CallingHost | CallHook::ReturningFromWasm => ctx
+                .data_mut()
+                .guest_cpu_clock
+                .as_mut()
+                .unwrap()
+                .entering_host(now),
+            CallHook::ReturningFromHost | CallHook::CallingWasm => {
                 ctx.set_epoch_deadline(1);
                 ctx.data_mut()
                     .guest_cpu_clock
                     .as_mut()
                     .unwrap()
-                    .returning_from_host(now);
+                    .exiting_host(now);
             }
-            _ => {}
         }
         Ok(())
     });
@@ -4781,9 +4791,10 @@ mod tests {
     fn guest_sample_clock_excludes_time_spent_in_host_calls() {
         let start = Instant::now();
         let interval = Duration::from_millis(1);
-        let mut clock = GuestCpuClock::new(start);
-        clock.calling_host(start + Duration::from_micros(500));
-        clock.returning_from_host(start + Duration::from_secs(10));
+        let mut clock = GuestCpuClock::new();
+        clock.exiting_host(start);
+        clock.entering_host(start + Duration::from_micros(500));
+        clock.exiting_host(start + Duration::from_secs(10));
         assert_eq!(
             clock.sample_due(
                 start + Duration::from_secs(10) + Duration::from_micros(500),
@@ -4797,17 +4808,39 @@ mod tests {
     fn guest_sample_clock_accumulates_short_bursts_across_host_calls() {
         let start = Instant::now();
         let interval = Duration::from_millis(1);
-        let mut clock = GuestCpuClock::new(start);
-        clock.calling_host(start + Duration::from_micros(400));
-        clock.returning_from_host(start + Duration::from_secs(1));
-        clock.calling_host(start + Duration::from_secs(1) + Duration::from_micros(400));
-        clock.returning_from_host(start + Duration::from_secs(2));
+        let mut clock = GuestCpuClock::new();
+        clock.exiting_host(start);
+        clock.entering_host(start + Duration::from_micros(400));
+        clock.exiting_host(start + Duration::from_secs(1));
+        clock.entering_host(start + Duration::from_secs(1) + Duration::from_micros(400));
+        clock.exiting_host(start + Duration::from_secs(2));
         assert_eq!(
             clock.sample_due(
                 start + Duration::from_secs(2) + Duration::from_micros(300),
                 interval,
             ),
             Some(Duration::from_micros(1_100))
+        );
+    }
+
+    #[test]
+    fn guest_sample_clock_excludes_setup_and_between_invocation_harness_time() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        let mut clock = GuestCpuClock::new();
+        assert_eq!(
+            clock.sample_due(start + Duration::from_secs(10), interval),
+            None
+        );
+        clock.exiting_host(start + Duration::from_secs(10));
+        clock.entering_host(start + Duration::from_secs(10) + Duration::from_micros(400));
+        clock.exiting_host(start + Duration::from_secs(20));
+        assert_eq!(
+            clock.sample_due(
+                start + Duration::from_secs(20) + Duration::from_micros(600),
+                interval,
+            ),
+            Some(interval)
         );
     }
 

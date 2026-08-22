@@ -40,6 +40,8 @@ require 'struct GuestCpuClock' "$runner" "missing shared GuestCpuClock state mac
 require 'accumulated_guest' "$runner" "guest CPU accumulation across host calls is missing"
 require 'CallHook::CallingHost' "$runner" "host entry is not tracked"
 require 'CallHook::ReturningFromHost' "$runner" "host return is not tracked"
+require 'CallHook::CallingWasm' "$runner" "outer harness-to-guest entry is not tracked"
+require 'CallHook::ReturningFromWasm' "$runner" "outer guest-to-harness return is not tracked"
 forbid 'last_guest|guest_profiler_last_sample' "$runner" "wall-clock/reset sampling state reintroduced"
 
 # CLI values must distinguish omission from an explicitly empty value, preserve
