@@ -114,7 +114,7 @@ for src in "${probes[@]}"; do
   # block runs on the test lane, everything else on the compile lane.
   # (A filename marker would silently misroute a probe that does not
   # follow it.)
-  if grep -qE '^test([[:space:]]*\{|[[:space:]]+")' "$src"; then
+  if grep -qE '^[[:space:]]*test([[:space:]]*\{|[[:space:]]+")' "$src"; then
       # test-block probes go through vibe test, not the compile lane
       test_log="$OUT_DIR/$name.test.log"
       VIBE_TEST_CLI_WASM="$S2" bash scripts/vibe_test.sh "$src" >"$test_log" 2>&1
