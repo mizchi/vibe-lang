@@ -437,6 +437,15 @@ silently wrong answer (an outer `let v = 1` read for an inner `v` of another
 type, so `==` said `false` for two equal `[1, 2]` arrays). With no environment
 the element type can be absent but never wrong.
 
+A **generic** struct literal resolves only when every type argument written at
+it is a scalar. One generated `Box::equals` serves every instantiation and
+compares the erased field with a raw `==`, so `Box[Int]` is content equality —
+and answers exactly what the annotated `Array[Box[Int]]` answers — while
+`Box[Array[Int]]` is identity. The annotated form is wrong there too (#2195
+compares two equal `Box[Array[Int]]` as `false` with no array in sight), so the
+unannotated one fails at run time instead of reaching the same wrong answer
+through a new spelling.
+
 **What does not resolve fails at run time** once BOTH sides are non-empty —
 it does not fall back to reference equality or to a length-only answer. Annotate
 those bindings (`let xs: Array[Int] = []`). While either side is still empty the
@@ -1892,6 +1901,30 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### A match arm body cannot be a bare assignment
+
+`_ => ok = false` is rejected; `_ => { ok = false }` is accepted. Both the
+committed seed and the current stage2 answer the same way (measured
+2026-08-22), so this is the language, not a bootstrap lag. Rust accepts the
+unbraced form, which is why it gets reached for.
+
+```vibe skip
+// skip: this is a parse error, shown for the message it produces
+match n {
+  2 => ok = false,
+  _ => ok = true
+}
+```
+
+```
+line 1:1: unexpected in pattern: =
+```
+
+The diagnostic is worth knowing precisely because it is bad on both counts the
+CLI policy names: the position is the **enclosing declaration**, not the arm,
+and the message names an internal parser state rather than the edit that fixes
+it (add the braces). Tracked as #2197.
 
 ### A `handle` that type-checks can still fail to compile
 

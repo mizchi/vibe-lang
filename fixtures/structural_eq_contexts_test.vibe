@@ -4,6 +4,10 @@ struct Point {
   x: Int
 } derive (Eq)
 
+struct Box[T] {
+  value: T
+} derive (Eq)
+
 enum Boxed {
   BoxedPoint(Point)
 } derive (Eq)
@@ -387,5 +391,31 @@ test "a tuple of values only the fallback classifies resolves too" {
   Array::push(ys, (-1, ()))
   assert(xs == ys)
   Array::push(ys, (-2, ()))
+  assert(xs != ys)
+}
+
+test "a generic struct literal with a scalar type argument resolves" {
+  // The shape encoding drops type arguments, so `Box[Int]` and
+  // `Box[Array[Int]]` both reduce to `Box` and an INFERRED shape carrying that
+  // name cannot say which one it came from. The classifier reads the arguments
+  // off the literal instead. A scalar one makes the raw `==` inside
+  // `Box::equals` content equality, which is what the annotated
+  // `Array[Box[Int]]` already answers -- so the unannotated binding answers the
+  // same thing rather than trapping (#2192 review).
+  //
+  // The aggregate instantiation is the other side of the rule and still traps:
+  // fixtures/structural_eq_untyped_empty_generic_aggregate_trap.vibe.
+  let xs = []
+  let ys = []
+  Array::push(xs, Box[Int]::{
+    value: 1
+  })
+  Array::push(ys, Box[Int]::{
+    value: 1
+  })
+  assert(xs == ys)
+  Array::push(ys, Box[Int]::{
+    value: 9
+  })
   assert(xs != ys)
 }

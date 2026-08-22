@@ -45,7 +45,16 @@ scope, shadowing, annotations and type formals for itself — six review finding
 came from that one decision, the first of them silently wrong (an outer
 `let v = 1` was read for an inner `v` of another type, so `==` answered `false`
 for two equal `[1, 2]` arrays). With no environment the classification can be
-absent but never wrong. **What does not resolve traps** once both sides are
+absent but never wrong.
+The one non-syntactic exclusion is a **generic struct literal whose type
+arguments are not all scalar**: one generated `Box::equals` serves every
+instantiation and compares the erased field with a raw `==`, so `Box[Int]` is
+content equality (and resolves, matching what the annotated `Array[Box[Int]]`
+already answers) while `Box[Array[Int]]` is identity. The annotated form is
+wrong there too — #2195, which reproduces on a bare `a == b` with no array in
+sight — so adopting it would only add a spelling that reaches the same wrong
+answer.
+**What does not resolve traps** once both sides are
 non-empty, rather than answering by length or by identity, and an annotation
 fixes it. While either side is still empty the lengths decide, annotation or
 not.

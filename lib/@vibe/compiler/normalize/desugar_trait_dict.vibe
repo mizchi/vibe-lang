@@ -3426,12 +3426,10 @@ fn adoptable_eq_name(n: String) -> Bool {
   if formal_in_scope(n) {
     false
   } else {
-    if str_array_contains(dtd_eq_generic_types, n) {
-      // The shape lost the type arguments; see dtd_eq_generic_types.
-      false
-    } else {
-      is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
-    }
+    // A generic name reaching here has already been through
+    // `eq_type_args_all_scalar` -- `shape_has_generic_leaf` is what keeps the
+    // unchecked ones out, and it runs before this.
+    is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
   }
 }
 
@@ -3572,11 +3570,11 @@ fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], _var
   let no_env = array_empty()
   let no_fns = array_empty()
   let sh = infer_eq_shape(v, struct_sets, no_env, no_fns)
-  if String::length(sh) > 0 && !shape_has_unknown_slot(sh) {
+  if String::length(sh) > 0 && !shape_has_unknown_slot(sh) && !shape_has_generic_leaf(sh) {
     sh
   } else {
     let ordinary = infer_shape(v, struct_sets, no_env, no_fns)
-    if String::length(ordinary) > 0 && !shape_has_unknown_slot(ordinary) {
+    if String::length(ordinary) > 0 && !shape_has_unknown_slot(ordinary) && !shape_has_generic_leaf(ordinary) {
       ordinary
     } else {
       self_describing_fallback(v, struct_sets)
@@ -3598,6 +3596,84 @@ fn shape_has_unknown_slot(sh: String) -> Bool {
   String::contains(sh, "[]") || String::contains(sh, "(,") || String::contains(sh, ",)") || String::contains(sh, ",,")
 }
 
+/// A shape whose leaves include a declared type that takes type PARAMETERS is
+/// not usable AS INFERRED: the encoding is a bare name, so `Box[Int]` and
+/// `Box[Array[Int]]` reduce to the same `Box` and the shape cannot say which
+/// one it came from. It matters because `Box::equals` is one generated
+/// function for the struct and compares the erased field with a raw `==`,
+/// which is content equality for a scalar `T` and identity for an aggregate
+/// one.
+///
+/// So a generic name is admitted only where the classifier read the type
+/// arguments itself -- the `ERecord` case of `self_describing_fallback`, which
+/// requires every one of them to be scalar. Sending the inferred shape there
+/// instead of accepting it means any provenance this pass does not model
+/// answers "" and traps, rather than adopting a name whose arguments nobody
+/// checked.
+fn shape_has_generic_leaf(sh: String) -> Bool {
+  if shape_is_composite(sh) {
+    eq_ty_has_generic_leaf(shape_to_eq_ty(sh))
+  } else {
+    str_array_contains(dtd_eq_generic_types, sh)
+  }
+}
+
+fn eq_ty_has_generic_leaf(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => str_array_contains(dtd_eq_generic_types, n),
+    TyApp(_, args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if eq_ty_has_generic_leaf(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ts) {
+        if eq_ty_has_generic_leaf(Array::get(ts, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Every type argument written at a generic struct literal is a scalar, so the
+/// raw `==` its generated `::equals` uses on the erased field is content
+/// equality. A declared struct/enum argument is NOT enough: raw `==` on one of
+/// those is identity. An absent argument list says nothing and is rejected.
+fn eq_type_args_all_scalar(args: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut ok = Array::length(args) > 0
+  while i < Array::length(args) {
+    match Array::get(args, i) {
+      TyName(n) => if !is_scalar_type_name(n) || formal_in_scope(n) {
+        ok = false
+      } else {
+        ()
+      },
+      _ => {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  ok
+}
+
 /// The two self-describing shapes neither inference call reads, kept HERE
 /// rather than in `infer_shape`, which the rest of the file consults for other
 /// purposes.
@@ -3614,6 +3690,24 @@ fn shape_has_unknown_slot(sh: String) -> Bool {
 fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]) -> String {
   match v {
     EUnit => "Unit",
+    // The one place a generic struct name is allowed into a shape: here the
+    // type arguments are still in hand, so `Box[Int]::{ value: 1 }` can be
+    // told apart from `Box[Array[Int]]::{ value: [1, 2] }`. Measured on the
+    // same build: with a scalar argument the annotated `Array[Box[Int]]`
+    // answers true/false correctly, with an aggregate one it answers `false`
+    // for two equal boxes (#2195, which predates #2157 and reproduces on a
+    // bare `a == b`). Adopting the first matches what the annotation already
+    // does; adopting the second would hand that wrong answer one more
+    // spelling.
+    ERecord(rname, _, targs) => if str_array_contains(dtd_eq_generic_types, rname) {
+      if eq_type_args_all_scalar(targs) {
+        rname
+      } else {
+        ""
+      }
+    } else {
+      ""
+    },
     EUnaryOp("-", inner) => match inner {
       // The parser gives `-1` as EUnaryOp over the literal, and neither
       // inference call reads that, so a negative literal took the trap while
@@ -7862,18 +7956,26 @@ fn emit_recorded_bytes_equals(stmts: Array[Stmt]) -> Unit {
 // "a direct `T::equals` call resolves".
 let dtd_eq_known_types: Array[String] = empty_str_array()
 
-/// Declared types that take type PARAMETERS. The shape encoding reduces
-/// `Box[Array[Int]]::{ ... }` to the bare name `Box`, so a shape adopted from
-/// one cannot say what `T` was, and the `Array[Box]` helper it selects compares
-/// the erased field with a raw `==` -- two equal boxes then answer `false`
-/// (#2192 review, measured).
+/// Declared types that take type PARAMETERS. Membership makes a name suspect,
+/// not forbidden: the shape encoding reduces every instantiation to the bare
+/// name, so an INFERRED shape carrying one cannot say what `T` was, and
+/// `shape_has_generic_leaf` sends it to `self_describing_fallback` instead --
+/// the one place the literal's own type arguments are still readable.
 ///
-/// That wrong answer is NOT new: on a stage2 from main the annotated
-/// `Array[Box[Array[Int]]]` and even a bare `a == b` already answer `false`,
-/// so the defect is in `derive(Eq)` for a generic struct with an aggregate
-/// field, tracked separately. What this table prevents is #2157 handing that
-/// pre-existing wrong answer one more spelling to arrive through: an
-/// unannotated binding adopts nothing here and takes the trap instead.
+/// The distinction that costs is what the single generated `Box::equals` does
+/// with the erased field: a raw `==`, which is content equality for a scalar
+/// `T` and identity for an aggregate one. Measured, all on one build:
+///
+///   | instantiation      | bare `a == b` | annotated `Array[Box[T]]` |
+///   |--------------------|---------------|---------------------------|
+///   | `Box[Int]`         | true          | true / false, correct     |
+///   | `Box[Array[Int]]`  | false (wrong) | false (wrong)             |
+///
+/// So `eq_type_args_all_scalar` admits the first -- an unannotated binding
+/// then answers exactly what the annotation answers -- and rejects the second,
+/// which keeps #2157 from handing #2195's pre-existing wrong answer one more
+/// spelling to arrive through. #2195 is not this pass's to fix: it reproduces
+/// on `a == b` with no array in sight.
 let dtd_eq_generic_types: Array[String] = empty_str_array()
 
 fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {

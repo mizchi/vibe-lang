@@ -110,6 +110,14 @@ at run time** rather than answering by address or by length. The
 annotation is the fix, and it is the reason `xs` and `ys` above carry
 one.
 
+A struct that takes type parameters says what it is only when the type
+arguments at the literal are scalars: `Box[Int]::{ value: 1 }` resolves,
+`Box[Array[Int]]::{ value: [1, 2] }` does not. One `Box::equals` is
+generated for the whole struct, and it compares the field that came from
+`T` without knowing what `T` was — which is content equality for an `Int`
+and address equality for an array. Annotating does not help with that
+second one; it is a known defect being fixed separately.
+
 ## The compile-time edge: a generic `T` with no witness
 
 Inside `fn f[T: Eq](a: T, b: T)`, the element type is gone by the time
