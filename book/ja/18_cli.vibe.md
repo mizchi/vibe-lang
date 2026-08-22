@@ -67,6 +67,6 @@ vibe check hello.vibe            # empty
 `vibe test --update` がリテラルを書き換える。`inspect` に import は要らない
 — コンパイラが型検査の前に脱糖する。
 
-言語レベルの説明は [テスト](10_tests.vibe.md) を参照。
+言語レベルの説明は [テスト](12_tests.vibe.md) を参照。
 
 次: [wasm をターゲットにする](19_wasm.vibe.md)。

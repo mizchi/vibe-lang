@@ -1,8 +1,8 @@
-# 13 — Effects (the heart of vibe)
+# 08 — Effects (the heart of vibe)
 
-Previous: [Iteration](12_iteration.vibe.md)
+Previous: [Structs, enums, and match](07_data.vibe.md)
 
-日本語版: [13_effects.vibe.md](../ja/13_effects.vibe.md)
+日本語版: [08_effects.vibe.md](../ja/08_effects.vibe.md)
 
 A function in vibe is pure unless its type says otherwise. Anything it
 can do besides compute — fail, print, read a file — is named in a `with`
@@ -177,4 +177,4 @@ is a maintainer's note — the four repairs are the part addressed to you.
 handlers for them — the host provides them, and what you declare is
 permission to use them. That is the next chapter.
 
-Next: [Capabilities](14_capabilities.vibe.md).
+Next: [Capabilities](09_capabilities.vibe.md).

@@ -1,6 +1,6 @@
 # 15 — Generics, traits, and derive
 
-Previous: [Capabilities](14_capabilities.vibe.md)
+Previous: [Iteration](14_iteration.vibe.md)
 
 日本語版: [15_generics.vibe.md](../ja/15_generics.vibe.md)
 

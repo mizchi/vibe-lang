@@ -1,8 +1,8 @@
-# 12 — 反復
+# 14 — 反復
 
-前: [コレクション](11_collections.vibe.md)
+前: [コレクション](13_collections.vibe.md)
 
-English version: [12_iteration.vibe.md](../en/12_iteration.vibe.md)
+English version: [14_iteration.vibe.md](../en/14_iteration.vibe.md)
 
 vibe の反復はほとんどが「配列を一度なめる eager な一巡」で済む。この章は
 その一巡と、それをつなぐ `|>` 演算子、そして相手が「すでに手元にある
@@ -83,4 +83,4 @@ ys[1] = 20
 運ぶので、`for await` のような別形は存在しない。
 [並行性](17_concurrency.vibe.md) を参照。
 
-次: [エフェクト (vibe の核)](13_effects.vibe.md)。
+次: [ジェネリクス・trait・derive](15_generics.vibe.md)。

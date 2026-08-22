@@ -136,7 +136,7 @@ Now that you have seen them:
 | a value whose field changes over time | `struct S { mut f: T }` |
 | state shared across calls, mediated | an effect and a `handle` |
 
-The first row covers most code. [Collections](11_collections.vibe.md)
+The first row covers most code. [Collections](13_collections.vibe.md)
 covers the builders.
 
 Next: [Structs, enums, and match](07_data.vibe.md).

@@ -1,8 +1,8 @@
-# 14 — Capabilities
+# 09 — Capabilities
 
-Previous: [Effects (the heart of vibe)](13_effects.vibe.md)
+Previous: [Effects (the heart of vibe)](08_effects.vibe.md)
 
-日本語版: [14_capabilities.vibe.md](../ja/14_capabilities.vibe.md)
+日本語版: [09_capabilities.vibe.md](../ja/09_capabilities.vibe.md)
 
 The last chapter's effects were ones you implement, with a handler.
 Reading a file is not like that: the host already knows how, and the
@@ -148,4 +148,4 @@ can do networking
 At startup, a required capability the host did not grant aborts before
 `main` runs and names the flag that would have granted it.
 
-Next: [Generics, traits, and derive](15_generics.vibe.md).
+Next: [Option and the railway](10_option.vibe.md).

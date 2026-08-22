@@ -214,4 +214,4 @@ opt is Some(_) = true
 `opt is Some(_)` on its own is just a `Bool`, which is often all you
 need.
 
-Next: [Option and the railway](08_option.vibe.md).
+Next: [Effects (the heart of vibe)](08_effects.vibe.md).

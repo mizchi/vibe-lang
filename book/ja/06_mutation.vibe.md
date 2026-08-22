@@ -133,6 +133,6 @@ vibe escapes --strict file.vibe
 | 呼び出しをまたぐ、仲介された状態 | effect と `handle` |
 
 大半のコードは1行目で足ります。ビルダーは
-[コレクション](11_collections.vibe.md)で扱います。
+[コレクション](13_collections.vibe.md)で扱います。
 
 次: [構造体・列挙・match](07_data.vibe.md)。

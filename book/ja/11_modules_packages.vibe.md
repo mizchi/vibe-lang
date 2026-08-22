@@ -1,8 +1,8 @@
-# 09 — モジュールとパッケージ
+# 11 — モジュールとパッケージ
 
-前: [Option とレールウェイ](08_option.vibe.md)
+前: [Option とレールウェイ](10_option.vibe.md)
 
-English version: [09_modules_packages.vibe.md](../en/09_modules_packages.vibe.md)
+English version: [11_modules_packages.vibe.md](../en/11_modules_packages.vibe.md)
 
 1ファイルが1モジュールです。`export` と書かない限り他のファイルからは何も
 見えず、`import` と書かない限り自分のファイルには何も入ってきません。
@@ -146,4 +146,4 @@ publish と yank は透明性ログに追記され、install はその証明を�
 なので、後からバージョンを差し替えられることはありません。設計は
 [docs/registry-design.md](../../docs/registry-design.md) にあります。
 
-次: [テストを書く](10_tests.vibe.md)。
+次: [テストを書く](12_tests.vibe.md)。
