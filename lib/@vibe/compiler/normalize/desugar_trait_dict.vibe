@@ -8063,8 +8063,8 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   eq_unsafe_types_fill(stmts)
 }
 
-/// Least fixpoint of "this declared name reaches an unsafe generic
-/// instantiation through its own fields". One pass can only see the names
+/// Least fixpoint of "this declared name reaches a type whose generated
+/// comparator can fall back to identity through its own fields". One pass can only see the names
 /// already marked, so `struct Deep { o: Outer }` needs a second one; the loop
 /// runs until a pass adds nothing, bounded by the number of declarations
 /// because each pass that changes anything adds at least one name.
@@ -8140,11 +8140,12 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
 }
 
 /// A declared field type that would make its owner's generated `::equals`
-/// answer by identity somewhere inside. A generic head is unsafe unless its
-/// arguments are the ones a raw `==` compares by content; a BARE generic name
-/// says nothing about its arguments and is unsafe for that reason. `Array` and
-/// the other builtin heads are transparent -- a declared `Array[Int]` field is
-/// compared by content -- so only their arguments matter.
+/// answer by identity somewhere inside. Besides unsafe generic instantiations,
+/// this rejects every application head for which `eq_for_typed` has neither a
+/// structural builtin arm nor a generated comparator. For example, `Map[K,V]`
+/// otherwise reaches the raw `==` fallback. Unknown names are rejected for the
+/// same reason; known non-generic declarations are admitted unless the
+/// fixpoint has already marked their own fields unsafe.
 fn eq_ty_reaches_unsafe_generic(t: TypeExpr) -> Bool {
   match t {
     TyName(n) => str_array_contains(dtd_eq_generic_types, n) || str_array_contains(dtd_eq_unsafe_types, n),
@@ -8165,6 +8166,14 @@ fn eq_ty_reaches_unsafe_generic(t: TypeExpr) -> Bool {
         ()
       }
       if str_array_contains(dtd_eq_generic_types, head) && !eq_type_args_all_scalar(args) {
+        bad = true
+      } else {
+        ()
+      }
+      let structural_builtin = head == "Array" && Array::length(args) == 1 ||
+      head == "Option" && Array::length(args) == 1 ||
+      head == "Result" && Array::length(args) == 2
+      if !structural_builtin && !str_array_contains(dtd_eq_known_types, head) {
         bad = true
       } else {
         ()
