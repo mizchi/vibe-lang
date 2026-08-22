@@ -136,6 +136,23 @@ if find "$profile_dir" -name '*.json' -type f -exec grep -l '"threads"' {} \; | 
 else
   bad "guest profile: no processed-profile JSON found"
 fi
+cat > "$proj/named_profile_bench.vibe" <<'EOF'
+bench "named_profile" {
+  let mut i = 0
+  let mut acc = 0
+  while i < 20000000 { acc = acc + (i & 7); i = i + 1 }
+  let _ = acc
+}
+EOF
+named_profile_dir="$WORK/named-bench-profile"
+named_profile_out="$($VIBE bench "$proj/named_profile_bench.vibe" --iters 1 --warmup 0 \
+  --guest-profile "$named_profile_dir" --interval-us 100 2>&1)"
+if find "$named_profile_dir" -name '*.json' -type f \
+  -exec grep -l '__bench_named_profile' {} \; | grep -q .; then
+  ok "guest profile: profiled bench preserves Wasm function names"
+else
+  bad "guest profile: profiled bench lost Wasm function names ($named_profile_out)"
+fi
 
 # Sanitized labels are not unique (`a/b` and `a?b` both become `a_b`), so the
 # runner must append a stable discriminator instead of overwriting one profile.

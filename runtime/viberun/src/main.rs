@@ -180,7 +180,7 @@ struct HostState {
     // Opt-in Wasmtime guest CPU profiler. Kept in Store data so epoch and call
     // hooks can temporarily take it out while also borrowing the Store context.
     guest_profiler: Option<GuestProfiler>,
-    guest_profiler_last_sample: Option<Instant>,
+    guest_cpu_clock: Option<GuestCpuClock>,
     // debugger breakpoints (DAP P1): set of function names to pause at (from
     // VIBE_BREAK), and whether to auto-continue without reading stdin (not a
     // TTY, or VIBE_BREAK_AUTO=1). Empty set => the `vibe::dbg_break` hook is a
@@ -365,7 +365,7 @@ impl HostState {
             sample_start: Instant::now(),
             samples: Vec::new(),
             guest_profiler: None,
-            guest_profiler_last_sample: None,
+            guest_cpu_clock: None,
             break_set: Arc::new(break_set),
             break_auto,
             line_break_set: Arc::new(line_break_set),
@@ -1131,17 +1131,44 @@ fn advance_epoch_deadline(mut deadline: Instant, interval: Duration, now: Instan
     deadline
 }
 
-fn guest_profile_sample_due(
-    last: &mut Instant,
-    now: Instant,
-    interval: Duration,
-) -> Option<Duration> {
-    let delta = now.duration_since(*last);
-    if delta < interval {
-        None
-    } else {
-        *last = now;
-        Some(delta)
+#[derive(Debug, Clone)]
+struct GuestCpuClock {
+    accumulated_guest: Duration,
+    guest_started_at: Option<Instant>,
+}
+
+impl GuestCpuClock {
+    fn new(now: Instant) -> Self {
+        Self {
+            accumulated_guest: Duration::ZERO,
+            guest_started_at: Some(now),
+        }
+    }
+
+    fn calling_host(&mut self, now: Instant) {
+        if let Some(started_at) = self.guest_started_at.take() {
+            self.accumulated_guest += now.duration_since(started_at);
+        }
+    }
+
+    fn returning_from_host(&mut self, now: Instant) {
+        self.guest_started_at = Some(now);
+    }
+
+    fn sample_due(&mut self, now: Instant, interval: Duration) -> Option<Duration> {
+        let running_guest = self
+            .guest_started_at
+            .map(|started_at| now.duration_since(started_at))
+            .unwrap_or(Duration::ZERO);
+        let elapsed_guest = self.accumulated_guest + running_guest;
+        if elapsed_guest < interval {
+            return None;
+        }
+        self.accumulated_guest = Duration::ZERO;
+        if self.guest_started_at.is_some() {
+            self.guest_started_at = Some(now);
+        }
+        Some(elapsed_guest)
     }
 }
 
@@ -1264,17 +1291,26 @@ fn run(args: Vec<String>) -> Result<i32> {
         store.set_epoch_deadline(1_000_000_000);
     }
     if guest_profile_path.is_some() {
-        store.data_mut().guest_profiler_last_sample = Some(Instant::now());
+        store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new(Instant::now()));
         store.call_hook(|mut ctx, kind| {
+            let now = Instant::now();
             let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
             profiler.call_hook(ctx.as_context(), kind);
             ctx.data_mut().guest_profiler = Some(profiler);
-            if matches!(kind, CallHook::ReturningFromHost) {
-                // Epochs can advance many times while a blocking host import is
-                // running. Rebase the relative deadline on guest re-entry so
-                // that debt is coalesced instead of producing a callback burst.
-                ctx.set_epoch_deadline(1);
-                ctx.data_mut().guest_profiler_last_sample = Some(Instant::now());
+            match kind {
+                CallHook::CallingHost => ctx.data_mut().guest_cpu_clock.as_mut().unwrap().calling_host(now),
+                CallHook::ReturningFromHost => {
+                    // Epochs can advance many times while a blocking host import
+                    // runs. Rebase the deadline while preserving accumulated
+                    // guest CPU time in the shared clock.
+                    ctx.set_epoch_deadline(1);
+                    ctx.data_mut()
+                        .guest_cpu_clock
+                        .as_mut()
+                        .unwrap()
+                        .returning_from_host(now);
+                }
+                _ => {}
             }
             Ok(())
         });
@@ -1387,9 +1423,9 @@ fn run(args: Vec<String>) -> Result<i32> {
             }
             let guest_delta = ctx
                 .data_mut()
-                .guest_profiler_last_sample
+                .guest_cpu_clock
                 .as_mut()
-                .and_then(|last| guest_profile_sample_due(last, now, guest_profile_interval));
+                .and_then(|clock| clock.sample_due(now, guest_profile_interval));
             if let Some(delta) = guest_delta {
                 let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
                 profiler.sample(ctx.as_context(), delta);
@@ -1665,14 +1701,23 @@ fn arm_guest_profile(
         interval,
         [(name.to_string(), module.clone())],
     )?);
-    store.data_mut().guest_profiler_last_sample = Some(Instant::now());
+    store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new(Instant::now()));
     store.call_hook(|mut ctx, kind| {
+        let now = Instant::now();
         let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
         profiler.call_hook(ctx.as_context(), kind);
         ctx.data_mut().guest_profiler = Some(profiler);
-        if matches!(kind, CallHook::ReturningFromHost) {
-            ctx.set_epoch_deadline(1);
-            ctx.data_mut().guest_profiler_last_sample = Some(Instant::now());
+        match kind {
+            CallHook::CallingHost => ctx.data_mut().guest_cpu_clock.as_mut().unwrap().calling_host(now),
+            CallHook::ReturningFromHost => {
+                ctx.set_epoch_deadline(1);
+                ctx.data_mut()
+                    .guest_cpu_clock
+                    .as_mut()
+                    .unwrap()
+                    .returning_from_host(now);
+            }
+            _ => {}
         }
         Ok(())
     });
@@ -1681,9 +1726,9 @@ fn arm_guest_profile(
         let now = Instant::now();
         let delta = ctx
             .data_mut()
-            .guest_profiler_last_sample
+            .guest_cpu_clock
             .as_mut()
-            .and_then(|last| guest_profile_sample_due(last, now, interval));
+            .and_then(|clock| clock.sample_due(now, interval));
         if let Some(delta) = delta {
             let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
             profiler.sample(ctx.as_context(), delta);
@@ -4736,22 +4781,33 @@ mod tests {
     fn guest_sample_clock_excludes_time_spent_in_host_calls() {
         let start = Instant::now();
         let interval = Duration::from_millis(1);
-        let mut last = start + Duration::from_secs(10);
+        let mut clock = GuestCpuClock::new(start);
+        clock.calling_host(start + Duration::from_micros(500));
+        clock.returning_from_host(start + Duration::from_secs(10));
         assert_eq!(
-            guest_profile_sample_due(
-                &mut last,
+            clock.sample_due(
                 start + Duration::from_secs(10) + Duration::from_micros(500),
                 interval,
             ),
-            None
+            Some(interval)
         );
+    }
+
+    #[test]
+    fn guest_sample_clock_accumulates_short_bursts_across_host_calls() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        let mut clock = GuestCpuClock::new(start);
+        clock.calling_host(start + Duration::from_micros(400));
+        clock.returning_from_host(start + Duration::from_secs(1));
+        clock.calling_host(start + Duration::from_secs(1) + Duration::from_micros(400));
+        clock.returning_from_host(start + Duration::from_secs(2));
         assert_eq!(
-            guest_profile_sample_due(
-                &mut last,
-                start + Duration::from_secs(10) + interval,
+            clock.sample_due(
+                start + Duration::from_secs(2) + Duration::from_micros(300),
                 interval,
             ),
-            Some(interval)
+            Some(Duration::from_micros(1_100))
         );
     }
 
