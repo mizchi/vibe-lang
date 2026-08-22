@@ -151,6 +151,46 @@ run_cli_directives() {
   done < <(grep -E '^//! cli:' "$src" || true)
 }
 
+# `//! cli-scaffold: <verb>` -- for verbs that CREATE a project
+# directory rather than read the probe (`vibe new`). The verb runs
+# against a fresh directory under OUT_DIR and the report prints the
+# generated file list and contents, so the scaffold's shape is harness
+# data rather than a manual exception. The probe file itself is only a
+# descriptor; its compile-lane result is incidental.
+run_scaffold_directives() {
+  local src="$1" name="$2" directive verb rc sdir f
+  while IFS= read -r directive; do
+    # shellcheck disable=SC2086
+    set -- ${directive#*cli-scaffold:}
+    verb="${1:-}"
+    if [ -z "$verb" ]; then
+      echo "--- HARNESS ERROR: empty cli-scaffold directive in $src"
+      harness_fail=1
+      continue
+    fi
+    sdir="$OUT_DIR/scaffold-$name"
+    rm -rf "$sdir"; mkdir -p "$sdir"
+    echo "--- cli-scaffold: vibe $verb $sdir/proj"
+    if [ ! -f "$LAUNCHER" ]; then
+      echo "--- HARNESS ERROR: launcher not found: $LAUNCHER"
+      harness_fail=1
+      return
+    fi
+    VIBE_RUNNER="$PWD/$SHIM" VIBE_CLI_WASM="$S2" \
+      bash "$LAUNCHER" "$verb" "$sdir/proj" >"$OUT_DIR/$name.scaffold.log" 2>&1
+    rc=$?
+    sed 's/^/    /' "$OUT_DIR/$name.scaffold.log"
+    echo "    (exit $rc)"
+    if [ -d "$sdir/proj" ]; then
+      echo "--- scaffold files and contents:"
+      while IFS= read -r f; do
+        echo "    $f"
+        sed 's/^/    |   /' "$sdir/proj/$f"
+      done < <(cd "$sdir/proj" && find . -type f | LC_ALL=C sort)
+    fi
+  done < <(grep -E '^//! cli-scaffold:' "$src" || true)
+}
+
 probes=("$@")
 if [ ${#probes[@]} -eq 0 ]; then
   # .vibex probes are first-class: the executable-root contract (entry
@@ -199,6 +239,7 @@ for src in "${probes[@]}"; do
         harness_fail=1
       fi
       run_cli_directives "$src" "$name"
+      run_scaffold_directives "$src" "$name"
       continue
   fi
   if VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -226,6 +267,7 @@ for src in "${probes[@]}"; do
     fi
   fi
   run_cli_directives "$src" "$name"
+  run_scaffold_directives "$src" "$name"
 done
 
 if [ "$harness_fail" -ne 0 ]; then
