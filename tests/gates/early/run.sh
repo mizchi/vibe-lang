@@ -1613,6 +1613,30 @@ done
 rm -rf "$eqtrapdir"
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
 
+# A non-regular recursive generic can transform its own argument on every
+# recursive edge (`Loop[T]` -> `Loop[Array[T]]`). Comparator generation must
+# terminate and retain the fail-closed boundary instead of exhausting compiler
+# memory while growing an infinite specialization worklist.
+echo "[compiler-gate] non-regular generic equality specialization is bounded"
+nonregular_dir="_build/_gate_eq_nonregular_generic"
+rm -rf "$nonregular_dir"; mkdir -p "$nonregular_dir"
+nonregular_wasm="$nonregular_dir/out.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/structural_eq_nonregular_generic_trap.vibe "$nonregular_wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$nonregular_wasm" ]; then
+  echo "[compiler-gate] FAIL: non-regular generic equality did not compile" >&2
+  cat "$nonregular_wasm.diag" 2>/dev/null >&2
+  exit 1
+fi
+if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$nonregular_wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: non-regular generic equality returned normally; expected fail-closed trap" >&2
+  exit 1
+fi
+rm -rf "$nonregular_dir"
+echo "[compiler-gate] non-regular generic equality specialization is bounded ok"
+
 # #2157: the other half of the same contract. The four fixtures that used to
 # live above pinned `let` / `let mut` x `==` / `!=` as traps; those spellings
 # answer now, and a lane that only checks the residual would pass just as well
