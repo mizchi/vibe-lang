@@ -12,6 +12,7 @@ import @vibe/compiler/core {
   collect_tvars,
   env_bind,
   env_bind_mut,
+  env_cache_binding,
   env_lookup,
   exception_effect_kind,
   exception_effect_labels_equal,
@@ -1834,16 +1835,9 @@ export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: 
 }
 
 fn env_has_active_region(env: TypeEnv) -> Bool {
-  match env {
-    EnvEmpty => false,
-    EnvBind(name, _, rest) => name == "__active_region__" || env_has_active_region(rest),
-    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_active_region(rest),
-    EnvTraitImpl(_, _, rest) => env_has_active_region(rest),
-    EnvMutCell(_, _, rest) => env_has_active_region(rest),
-    EnvTraitImplGen(_, _, _, _, rest) => env_has_active_region(rest),
-    EnvTypeDefs(_, _, rest) => env_has_active_region(rest),
-    EnvCached(_, _, rest) => env_has_active_region(rest),
-    EnvFlat(_) => false
+  match env_lookup(env, "__active_region__") {
+    Some(_) => true,
+    None => false
   }
 }
 
@@ -7131,7 +7125,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             EFn(_, _, fn_params, _, _, fn_body) => if Array::length(fn_params) == 1 {
               let (binder_name, _) = Array::get(fn_params, 0)
               let region_ty = CtNamed(skolem_name, [])
-              let env_body = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "__active_region__", region_ty)
+              // Region-sensitive checks run many times in a deep body. Cache
+              // the marker once at the boundary so those checks use the
+              // existing indexed TypeEnv lookup instead of rescanning every
+              // lexical binding. env_bind keeps this cache at the head for
+              // ordinary region-local names, and a nested region rebuilds it.
+              let env_body_uncached = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "__active_region__", region_ty)
+              let env_body = env_cache_binding(env_body_uncached, "__active_region__", region_ty)
               // The specialized region path checks the literal lambda body
               // directly. Preserve both structural edges from the outer call:
               // argument child 1, then EFn body child 0.
