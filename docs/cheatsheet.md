@@ -408,15 +408,78 @@ test "Bytes equality is content equality" {
 }
 ```
 
-ADR-0097 の契約は綴りや値の経路によらない。`Array[T]` の注釈付き引数、関数の
-戻り値、tuple の戻り値、`Option[Array[T]]` の payload、名前経由の入れ子配列、
-`Array[Float]` も同じ構造比較になる。`[T: Eq]` の消去された型変数は渡された
-`Eq` witness を使う。
+ADR-0097's contract does not depend on the spelling or on the route a value
+took. An annotated `Array[T]` parameter, a function's return value, a tuple
+return, an `Option[Array[T]]` payload, a nested array reached through a name
+and `Array[Float]` all get the same structural comparison. An erased type
+variable (`[T: Eq]`) uses the `Eq` witness it was handed.
 
-要素型を一度も決めない `let xs = []` 同士も、空のままなら等しい。配列は `let`
-束縛でも内容を変更できるため、この未注釈の値を後から非空にして比較した場合は、
-参照等価へ黙って落とさず実行時に失敗する。変更する空配列には
-`let xs: Array[Int] = []` のように要素型を明示すること。
+An unannotated `let xs = []` is structural too **when the pushed value
+describes itself** (#2157, narrowed by #2192). The element type comes from the
+`Array::push(xs, v)` calls in the binding's own scope, and `v` is read from its
+own syntax only — a literal, an array / tuple / struct of such values, or a
+conditional whose branches agree:
+
+```vibe
+test "an unannotated empty binding answers by content after a push" {
+  let xs = []
+  let ys = []
+  Array::push(xs, 1)
+  Array::push(ys, 2)
+  assert(xs != ys)
+}
+```
+
+A pushed **name** or **call result** does not resolve, and that is deliberate:
+reading the value's type out of an environment means deciding scope, shadowing,
+annotations and type formals in a pass that has no types, which produced a
+silently wrong answer (an outer `let v = 1` read for an inner `v` of another
+type, so `==` said `false` for two equal `[1, 2]` arrays). With no environment
+the element type can be absent but never wrong.
+
+A **generic** struct literal resolves only when every type argument written at
+it is one whose raw `==` compares content. One generated `Box::equals` serves
+every instantiation and compares the erased field with a raw `==`, so the
+argument decides. Measured, two distinct allocations of equal content:
+
+| `T` in `Box[T]` | `==` | |
+|---|---|---|
+| `Int`, `Bool`, `Unit`, `String` | `true` | resolves |
+| `Double`, `Bytes` | `false` | rejected → traps |
+| `Array[Int]`, a struct | `false` | rejected → traps |
+
+The rejected rows answer `false` under an **annotation** too — that is #2195,
+not something the unannotated form introduces — so rejecting them keeps #2157
+from giving that wrong answer a new spelling to arrive through. `Float` goes
+with `Double`; `Char` is excluded because two distinct equal-content `Char`s
+cannot be constructed to measure it.
+
+The exclusion follows declared **fields** as well, transitively and through
+type aliases. `struct Outer { box: Box[Array[Int]] }` takes no type parameters,
+so nothing about its shape looks wrong — but `Outer::equals` calls
+`Box::equals`, and the wrong answer arrives one level down.
+
+Which field types keep a struct usable is an allow-list, measured on a
+`struct W { f: T } derive (Eq)`:
+
+| declared field type | `==` |
+|---|---|
+| `Int`, `String`, `Double`, `Bytes` | `true` |
+| `Array[Int]`, `Array[Double]`, `Option[Int]`, `(Int, String)` | `true` |
+| a declared struct | `true` |
+| `Map[String, Int]` | `false` — see #2218 |
+
+A declared `Double` or `Bytes` field is fine even though `Box[Double]` is not:
+`derive` generates a type-directed comparison when the type is still known
+where the comparison is emitted, and the erased field of a generic struct is
+exactly where it is not. `Map` is the one measured outlier, and any head
+nobody has measured costs its owner a trap rather than the benefit of the
+doubt.
+
+**What does not resolve fails at run time** once BOTH sides are non-empty —
+it does not fall back to reference equality or to a length-only answer. Annotate
+those bindings (`let xs: Array[Int] = []`). While either side is still empty the
+lengths decide the answer, annotation or not.
 
 ## Pipe Operator
 
@@ -1868,6 +1931,30 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### A match arm body cannot be a bare assignment
+
+`_ => ok = false` is rejected; `_ => { ok = false }` is accepted. Both the
+committed seed and the current stage2 answer the same way (measured
+2026-08-22), so this is the language, not a bootstrap lag. Rust accepts the
+unbraced form, which is why it gets reached for.
+
+```vibe skip
+// skip: this is a parse error, shown for the message it produces
+match n {
+  2 => ok = false,
+  _ => ok = true
+}
+```
+
+```
+line 1:1: unexpected in pattern: =
+```
+
+The diagnostic is worth knowing precisely because it is bad on both counts the
+CLI policy names: the position is the **enclosing declaration**, not the arm,
+and the message names an internal parser state rather than the edit that fixes
+it (add the braces). Tracked as #2197.
 
 ### A `handle` that type-checks can still fail to compile
 

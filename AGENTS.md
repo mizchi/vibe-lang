@@ -33,12 +33,50 @@ no silent reference equality is left**. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, and empty-literal bindings
 are all structural, and a difference in length or in elements is `false`.
-**The one exception is an unannotated `let xs = []`, which traps at runtime
-when compared after a push** (#2157, measured 2026-08-21). It crashes rather
-than answering wrongly, so it is P1. The annotated form
-(`let xs: Array[Int] = []`) stays structural after a push, and that is pinned
-by "annotated empty bindings stay structural after a push" in
-`fixtures/structural_eq_contexts_test.vibe`.
+**An unannotated `let xs = []` is structural when the pushed value describes
+itself** (#2157, narrowed by #2192): the element type comes from the
+`Array::push(xs, v)` calls in the binding's own scope, and `v` is read from its
+own syntax only — a literal, an array / tuple / struct of such values, or a
+conditional whose branches agree. Those answer exactly like the annotated
+`let xs: Array[Int] = []`.
+A pushed **name** or **call result** does NOT resolve. That is deliberate: the
+scan used to read the value's type out of an environment, which meant deciding
+scope, shadowing, annotations and type formals for itself — six review findings
+came from that one decision, the first of them silently wrong (an outer
+`let v = 1` was read for an inner `v` of another type, so `==` answered `false`
+for two equal `[1, 2]` arrays). With no environment the classification can be
+absent but never wrong.
+The one non-syntactic exclusion is a **generic struct literal**, admitted only
+when every type argument written at it is one whose **raw `==` compares
+content**: one generated `Box::equals` serves every instantiation and compares
+the erased field with a raw `==`. Measured: `Int` / `Bool` / `Unit` / `String`
+resolve and answer what the annotated `Array[Box[T]]` answers; `Double`,
+`Bytes` and any aggregate or struct argument do not — a raw `==` on those is
+pointer equality, and the annotated form is wrong there too (#2195, which
+reproduces on a bare `a == b` with no array in sight), so adopting them would
+only add a spelling that reaches the same wrong answer. `Float` is excluded
+with `Double`, and `Char` because two distinct equal-content `Char`s cannot be
+constructed to measure it — an unmeasured name gets the trap.
+**`is_scalar_type_name` is the wrong predicate here** and using it was the
+defect: it answers "needs no generated comparator", not "raw `==` compares
+content". A declared name is excluded the same way when any of its own FIELDS
+is one this pass cannot show is compared by content, transitively and through
+type aliases: `struct Outer { box: Box[Array[Int]] }` takes no type parameters,
+so its shape looks ordinary, but `Outer::equals` calls `Box::equals`. The field
+test is an **allow-list** — measured, a declared field of `Int` / `String` /
+`Double` / `Bytes` / `Array[T]` / `Option[T]` / a tuple / a declared struct is
+content-compared and keeps answering, while `Map` is not (#2218) and any head
+nobody measured costs its owner a trap.
+**What does not resolve traps** once both sides are
+non-empty, rather than answering by length or by identity, and an annotation
+fixes it. While either side is still empty the lengths decide, annotation or
+not.
+The typed replacement is not available here yet: #2158 built it and measured
+the FS lane — the one `vibe test` and `vibe run` use — at 6.12s → 77.55s on a
+compiler-sized closure, so it ships only where a whole-program check already
+runs. Pinned by `fixtures/structural_eq_contexts_test.vibe` (the answers) and
+the `structural_eq_untyped_empty_*_trap.vibe` fixtures (the fail-closed side),
+both lanes of the same contract enforced in `tests/gates/early/run.sh`.
 This paragraph used to list four cases as "remaining reference equality";
 measurement showed three of them are structural. The fourth — an erased type
 variable (the `T` of `[T: Eq]`) — goes through a witness, so it is correct for

@@ -8,10 +8,8 @@ Previous: [Generics, traits, and derive](15_generics.vibe.md)
 structs with equal fields are equal, and nothing here quietly compares
 addresses instead.
 
-Two edges are worth knowing, and neither one answers wrongly: an
-unannotated empty array **traps** instead of comparing once you push
-into it (a bug, #2157), and a generic `T` with no `Eq` witness is a
-**compile error**. Both are below.
+One edge is worth knowing, and it does not answer wrongly either: a
+generic `T` with no `Eq` witness is a **compile error**. It is below.
 
 ## The ordinary cases
 
@@ -83,6 +81,11 @@ fn main with Console {
   println("after one push      = \{xs == ys}")
   Array::push(ys, 1)
   println("after both          = \{xs == ys}")
+  let us = []
+  let vs = []
+  Array::push(us, 1)
+  Array::push(vs, 2)
+  println("no annotation       = \{us == vs}")
 }
 ```
 
@@ -92,14 +95,31 @@ function returns    = true
 empty and empty     = true
 after one push      = false
 after both          = true
+no annotation       = false
 ```
 
-Annotate an empty literal, as `xs` and `ys` are above. `let xs = []` with
-no annotation has no element type to compare by: two such bindings
-compare equal while both stay empty, but pushing into one and then
-comparing **traps at run time** rather than answering (#2157). The
-annotation is the fix, and it is the only reason this chapter asks you
-to write one.
+`us` and `vs` carry no annotation, and they compare by content all the
+same: an unannotated `let xs = []` takes its element type from the
+`Array::push` calls that fill it (#2157) — as long as the pushed value
+says what it is. A literal does, and so does an array, tuple or struct
+of literals, or an `if` whose branches agree.
+
+Push a **name** or a **call result** instead and the binding gets no
+element type. Comparing two such arrays once both are non-empty **fails
+at run time** rather than answering by address or by length. The
+annotation is the fix, and it is the reason `xs` and `ys` above carry
+one.
+
+A struct that takes type parameters says what it is only for some type
+arguments. One `Box::equals` is generated for the whole struct, and it
+compares the field that came from `T` without knowing what `T` was — so
+whether that is content equality depends entirely on `T`. It is, for
+`Int`, `Bool`, `Unit` and `String`; it is address equality for `Double`,
+`Bytes`, and for any array or struct. So `Box[Int]::{ value: 1 }`
+resolves and `Box[Double]::{ value: x }` does not. Annotating does not
+help with the second group — that is a known defect being fixed
+separately, and the run-time failure is there to keep you from meeting it
+by accident.
 
 ## The compile-time edge: a generic `T` with no witness
 

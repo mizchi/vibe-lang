@@ -4,29 +4,24 @@ struct Point {
   x: Int
 } derive (Eq)
 
+struct Box[T] {
+  value: T
+} derive (Eq)
+
 enum Boxed {
   BoxedPoint(Point)
 } derive (Eq)
 
 fn make_array() -> Array[Int] {
-  [
-    1,
-    2
-  ]
+  [1, 2]
 }
 
 fn make_other_array() -> Array[Int] {
-  [
-    1,
-    3
-  ]
+  [1, 3]
 }
 
 fn make_tuple_array() -> (Array[Int], Int) {
-  ([
-    1,
-    2
-  ], 3)
+  ([1, 2], 3)
 }
 
 fn same_nested(left: Array[Array[Int]], right: Array[Array[Int]],) -> Bool {
@@ -51,14 +46,10 @@ test "tuple-returned arrays compare structurally" {
 }
 
 test "empty array bindings compare structurally" {
-  let left = [
-  ]
-  let right = [
-  ]
+  let left = []
+  let right = []
   assert(left == right)
-  assert(left != [
-    1
-  ])
+  assert(left != [1])
 }
 
 test "annotated empty bindings stay structural after a push" {
@@ -66,15 +57,8 @@ test "annotated empty bindings stay structural after a push" {
   // shape the book tells readers to write: annotate the empty literal, then
   // grow it. Pushing to one must make them differ and pushing to both must
   // make them agree again -- content, not identity.
-  //
-  // The UNANNOTATED form of this (`let xs = []` with no type) traps at run
-  // time instead of answering (#2157), so it cannot be pinned here; a trap
-  // is not a value a test can assert. That is exactly why the annotation is
-  // the documented advice.
-  let left: Array[Int] = [
-  ]
-  let right: Array[Int] = [
-  ]
+  let left: Array[Int] = []
+  let right: Array[Int] = []
   assert(left == right)
   Array::push(left, 1)
   assert(left != right)
@@ -82,65 +66,169 @@ test "annotated empty bindings stay structural after a push" {
   assert(left == right)
 }
 
-test "Option variables with array payload compare structurally" {
-  let left = Some([
-    1,
-    2
-  ])
-  let right = Some([
-    1,
-    2
-  ])
+test "unannotated empty bindings stay structural after a push" {
+  // #2157: the same program without the annotation. It used to answer the
+  // first comparison and then TRAP on the second, because the binding carried
+  // no element type once it had grown. The element type comes from the push.
+  let left = []
+  let right = []
   assert(left == right)
-  assert(left != Some([
-    1,
-    3
-  ]))
+  Array::push(left, 1)
+  assert(left != right)
+  Array::push(right, 1)
+  assert(left == right)
+}
+
+test "unannotated empty let mut bindings stay structural after a push" {
+  // `let mut` records the same empty shape as `let`, so it needs the same
+  // element type from the same place.
+  let mut left = []
+  let mut right = []
+  assert(left == right)
+  Array::push(left, 1)
+  assert(left != right)
+  Array::push(right, 1)
+  assert(left == right)
+}
+
+test "unannotated empty bindings compare content, not length" {
+  // Equal lengths, different contents: a length-only answer would say `true`
+  // here, so this is what separates the fix from the old fail-closed guard.
+  let left = []
+  let right = []
+  Array::push(left, 1)
+  Array::push(right, 2)
+  assert(left != right)
+  Array::push(left, 3)
+  Array::push(right, 3)
+  assert(left != right)
+}
+
+test "unannotated empty String bindings compare structurally" {
+  let left = []
+  let right = []
+  Array::push(left, "a")
+  Array::push(right, "a")
+  assert(left == right)
+  Array::push(left, "b")
+  Array::push(right, "c")
+  assert(left != right)
+}
+
+test "only one unannotated empty binding grows" {
+  // The half of #2157 the old guard was written for: one side never left zero
+  // length, so the lengths alone decide. It has to keep answering.
+  let grown = []
+  let stayed = []
+  Array::push(grown, 1)
+  assert(grown != stayed)
+  assert(stayed != grown)
+}
+
+test "an inner shadow does not retype an outer empty binding" {
+  // The push scan stops at a construct that re-binds the spelling, so the
+  // Strings pushed onto the INNER `items` never reach the outer one. Were they
+  // to, the two shapes would disagree, the outer binding would keep its empty
+  // shape, and the first comparison would fall over instead of answering.
+  let items = []
+  let other = []
+  Array::push(items, 1)
+  Array::push(other, 1)
+  assert(items == other)
+  let items = []
+  let texts = []
+  Array::push(items, "a")
+  Array::push(texts, "a")
+  assert(items == texts)
+  Array::push(texts, "b")
+  assert(items != texts)
+}
+
+test "unannotated empty bindings of structs compare structurally" {
+  let left = []
+  let right = []
+  Array::push(left, Point::{
+    x: 1
+  })
+  Array::push(right, Point::{
+    x: 1
+  })
+  assert(left == right)
+  Array::push(left, Point::{
+    x: 2
+  })
+  Array::push(right, Point::{
+    x: 3
+  })
+  assert(left != right)
+}
+
+test "unannotated empty bindings of tuples compare structurally" {
+  let left = []
+  let right = []
+  Array::push(left, (1, "a"))
+  Array::push(right, (1, "a"))
+  assert(left == right)
+  Array::push(left, (2, "b"))
+  Array::push(right, (2, "c"))
+  assert(left != right)
+}
+
+test "unannotated empty bindings grown in a loop compare structurally" {
+  // A literal pushed in a loop still describes itself, so the element type is
+  // recovered without reading any environment.
+  let left = []
+  let right = []
+  let mut i = 0
+  while i < 3 {
+    Array::push(left, 1)
+    Array::push(right, 1)
+    i = i + 1
+  }
+  assert(left == right)
+  Array::push(right, 9)
+  assert(left != right)
+}
+
+test "a loop that pushes a NAME needs the annotation" {
+  // This test used to assert the unannotated form here, and its comment said
+  // the element type "is only reachable if the scan carries the environment
+  // down". Carrying the environment down is exactly what read an outer
+  // binding's type through a shadowing binder and answered `false` for two
+  // equal arrays (#2192 review), so the scan no longer does it. Without the
+  // annotation these bindings keep the `[__EqEmpty]` sentinel and `==` traps;
+  // `fixtures/structural_eq_untyped_empty_named_value_trap.vibe` pins that.
+  let left: Array[Int] = []
+  let right: Array[Int] = []
+  let mut i = 0
+  while i < 3 {
+    Array::push(left, i)
+    Array::push(right, i)
+    i = i + 1
+  }
+  assert(left == right)
+  Array::push(right, 9)
+  assert(left != right)
+}
+
+test "Option variables with array payload compare structurally" {
+  let left = Some([1, 2])
+  let right = Some([1, 2])
+  assert(left == right)
+  assert(left != Some([1, 3]))
   let from_call_left = Some(make_array())
   let from_call_right = Some(make_array())
   assert(from_call_left == from_call_right)
 }
 
 test "annotated nested-array parameters compare structurally" {
-  assert(same_nested([
-    [
-      1,
-      2
-    ]
-  ], [
-    [
-      1,
-      2
-    ]
-  ]))
-  assert(not(same_nested([
-    [
-      1,
-      2
-    ]
-  ], [
-    [
-      1,
-      3
-    ]
-  ])))
+  assert(same_nested([[1, 2]], [[1, 2]]))
+  assert(not(same_nested([[1, 2]], [[1, 3]])))
 }
 
 test "Array Float parameters compare structurally" {
-  assert(same_float([
-    1.5,
-    2.5
-  ], [
-    1.5,
-    2.5
-  ]))
-  assert(not(same_float([
-    1.5,
-    2.5
-  ], [
-    1.5,
-    3.5
-  ])))
+  assert(same_float([1.5, 2.5], [1.5, 2.5]))
+  assert(not(same_float([1.5, 2.5], [1.5, 3.5])))
 }
 
 test "existing structural controls stay structural" {
@@ -155,30 +243,12 @@ test "existing structural controls stay structural" {
     x: 1
   }))
   assert(generic_same(1, 1))
-  assert([
-    [
-      1,
-      2
-    ]
-  ] == [
-    [
-      1,
-      2
-    ]
-  ])
+  assert([[1, 2]] == [[1, 2]])
 }
 
 test "inner scalar shadow masks an outer aggregate equality shape" {
-  let value = [
-    [
-      1
-    ]
-  ]
-  assert(value == [
-    [
-      1
-    ]
-  ])
+  let value = [[1]]
+  assert(value == [[1]])
   let value = 1
   assert(value == 1)
   assert(value != 2)
@@ -186,10 +256,208 @@ test "inner scalar shadow masks an outer aggregate equality shape" {
 
 test "local closure return annotation directs array equality" {
   let make = () -> Array[Int] {
-    [
-      1,
-      2
-    ]
+    [1, 2]
   }
   assert(make() == make())
+}
+
+// #2192 review: `pushed_value_shape` now reads ONLY the value's own syntax --
+// both inference calls get EMPTY environments. Reading `var_types` /
+// `fn_returns` meant re-deciding what the checker already decided (which binder
+// is in scope, which annotation applies, which name a closure parameter or a
+// match arm shadows, which spellings are a nested function's type formals), and
+// six review findings came out of that one decision. The first was silently
+// wrong: an outer `let v = 1` was read for an inner `v` of another type, so
+// `==` answered `false` for two equal `[1, 2]` arrays.
+//
+// With no environment the classification can be ABSENT but never wrong: an
+// identifier or a call resolves to nothing and the binding keeps its
+// `[__EqEmpty]` sentinel, which is the pre-#2157 trap. What still resolves is a
+// value that describes itself.
+//
+// The elements below are array literals, not equal-content Strings. An earlier
+// version of these tests used strings built from different pieces and passed on
+// a compiler that answered by pointer -- equal strings compare equal either
+// way, so the probe had no discriminating power at all. Two separately written
+// `[1, 2]` literals are distinct objects, so a mis-selected comparator answers
+// `false` and the test fails.
+
+test "an array literal pushed directly resolves the element type" {
+  let xs = []
+  let ys = []
+  Array::push(xs, [1, 2])
+  Array::push(ys, [1, 2])
+  assert(xs == ys)
+  Array::push(ys, [9, 9])
+  assert(xs != ys)
+}
+
+test "a conditional of literals pushed directly resolves when the branches agree" {
+  let flag = true
+  let xs = []
+  let ys = []
+  Array::push(xs, if flag {
+    1
+  } else {
+    2
+  })
+  Array::push(ys, if flag {
+    1
+  } else {
+    2
+  })
+  assert(xs == ys)
+  Array::push(ys, 7)
+  assert(xs != ys)
+}
+
+test "a tuple literal pushed directly resolves" {
+  let xs = []
+  let ys = []
+  Array::push(xs, (1, "a"))
+  Array::push(ys, (1, "a"))
+  assert(xs == ys)
+  Array::push(ys, (2, "b"))
+  assert(xs != ys)
+}
+
+test "an annotation is the workaround where the value does not describe itself" {
+  let v = 1
+  let xs: Array[Array[Int]] = []
+  let ys: Array[Array[Int]] = []
+  let f = (v: Array[Int]) -> Unit {
+    Array::push(xs, v)
+  }
+  let g = (v: Array[Int]) -> Unit {
+    Array::push(ys, v)
+  }
+  f([1, 2])
+  g([1, 2])
+  assert(xs == ys)
+  assert(v == 1)
+}
+
+test "a unit literal pushed directly resolves" {
+  // `()` is a literal, and `Unit` is already a scalar element type -- only the
+  // shape was missing, so this used to take the fail-closed trap while the
+  // contract said a literal resolves (#2192 review).
+  let xs = []
+  let ys = []
+  Array::push(xs, ())
+  Array::push(ys, ())
+  assert(xs == ys)
+}
+
+test "a negative literal pushed directly resolves" {
+  // The parser gives `-1` as EUnaryOp over the literal, so neither inference
+  // call read it and a negative literal took the trap while the contract said
+  // a literal resolves (#2192 review).
+  let xs = []
+  let ys = []
+  Array::push(xs, -1)
+  Array::push(ys, -1)
+  assert(xs == ys)
+  Array::push(ys, -2)
+  assert(xs != ys)
+}
+
+test "an aggregate of values only the fallback classifies resolves too" {
+  // `[1]` resolved while `[-1]` produced an INCOMPLETE shape that was accepted
+  // before the fallback could classify the child, so the comparison trapped on
+  // a value the contract says resolves (#2192 review). The aggregate case now
+  // recurses with the same classifier.
+  let flag = true
+  let xs = []
+  let ys = []
+  Array::push(xs, [-1])
+  Array::push(ys, [-1])
+  assert(xs == ys)
+  let us = []
+  let vs = []
+  Array::push(us, [if flag { 1 } else { 2 }])
+  Array::push(vs, [if flag { 1 } else { 2 }])
+  assert(us == vs)
+  Array::push(vs, [9])
+  assert(us != vs)
+}
+
+test "a tuple of values only the fallback classifies resolves too" {
+  // `(1, "a")` resolved while `(-1, ())` did not: the contract names arrays
+  // AND tuples of self-describing values, so leaving tuples out of the
+  // recursion was an arbitrary seam (#2192 review).
+  let xs = []
+  let ys = []
+  Array::push(xs, (-1, ()))
+  Array::push(ys, (-1, ()))
+  assert(xs == ys)
+  Array::push(ys, (-2, ()))
+  assert(xs != ys)
+}
+
+fn eq_ctx_concat(a: String, b: String) -> String {
+  String::concat(a, b)
+}
+
+test "a generic struct literal resolves for the type arguments raw == compares by content" {
+  // `String` is the row that matters: the two values below are separate
+  // allocations, so a comparator selected by address would answer `false`.
+  // `Double` and `Bytes` are the other side of the same rule and trap --
+  // fixtures/structural_eq_untyped_empty_generic_{double,bytes}_trap.vibe.
+  let xs = []
+  let ys = []
+  Array::push(xs, Box[String]::{
+    value: eq_ctx_concat("ab", "c")
+  })
+  Array::push(ys, Box[String]::{
+    value: eq_ctx_concat("a", "bc")
+  })
+  assert(xs == ys)
+  Array::push(ys, Box[String]::{
+    value: "zz"
+  })
+  assert(xs != ys)
+  let ps = []
+  let qs = []
+  Array::push(ps, Box[Bool]::{
+    value: true
+  })
+  Array::push(qs, Box[Bool]::{
+    value: true
+  })
+  assert(ps == qs)
+  let us = []
+  let vs = []
+  Array::push(us, Box[Unit]::{
+    value: ()
+  })
+  Array::push(vs, Box[Unit]::{
+    value: ()
+  })
+  assert(us == vs)
+}
+
+test "a generic struct literal with a scalar type argument resolves" {
+  // The shape encoding drops type arguments, so `Box[Int]` and
+  // `Box[Array[Int]]` both reduce to `Box` and an INFERRED shape carrying that
+  // name cannot say which one it came from. The classifier reads the arguments
+  // off the literal instead. A scalar one makes the raw `==` inside
+  // `Box::equals` content equality, which is what the annotated
+  // `Array[Box[Int]]` already answers -- so the unannotated binding answers the
+  // same thing rather than trapping (#2192 review).
+  //
+  // The aggregate instantiation is the other side of the rule and still traps:
+  // fixtures/structural_eq_untyped_empty_generic_aggregate_trap.vibe.
+  let xs = []
+  let ys = []
+  Array::push(xs, Box[Int]::{
+    value: 1
+  })
+  Array::push(ys, Box[Int]::{
+    value: 1
+  })
+  assert(xs == ys)
+  Array::push(ys, Box[Int]::{
+    value: 9
+  })
+  assert(xs != ys)
 }

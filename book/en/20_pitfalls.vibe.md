@@ -106,15 +106,24 @@ does not.
 (ADR-0085). You will still see `Error` as an *operation qualifier* in
 older rows; do not add new ones.
 
-## Annotate an empty array literal
+## `==` on arrays
 
 `==` compares by value, including arrays with non-scalar elements,
-arrays returned from a function, and annotated empties. The one shape
-that bites: `let xs = []` with no annotation has no element type, so
-comparing it after a push **traps at run time** instead of answering
-(#2157). Write `let xs: Array[Int] = []`.
+arrays returned from a function, and empty literals — annotated or not.
+An unannotated `let xs = []` takes its element type from the
+`Array::push` calls that fill it (#2157), **as long as the pushed value
+says what it is**: a literal, an array / tuple / struct of literals, or
+an `if` whose branches agree.
 
-A generic `T` with no `Eq` witness is the other boundary, and that one
+Push a name or a call result and the binding gets no element type, and
+comparing two such arrays once both are non-empty fails at run time
+rather than answering. `let xs: Array[Int] = []` is the fix. A struct
+that takes type parameters counts as saying what it is only for the type
+arguments whose `==` compares content — `Box[Int]` / `Box[Bool]` /
+`Box[Unit]` / `Box[String]` resolve; `Box[Double]`, `Box[Bytes]` and any
+array or struct argument do not.
+
+A generic `T` with no `Eq` witness is the boundary worth knowing, and it
 is a compile error rather than a surprise — `no impl `Eq` for
 `Array[Int]``. See [Equality](16_equality.vibe.md).
 

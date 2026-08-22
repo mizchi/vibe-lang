@@ -7,10 +7,8 @@ English version: [16_equality.vibe.md](../en/16_equality.vibe.md) (canonical)
 `==` は値で比較する。内容の等しい配列どうしは等しく、フィールドの等しい
 struct どうしは等しい。黙ってアドレスを比べる経路は無い。
 
-知っておく価値のある縁が2つある。どちらも誤った答えは返さない。注釈の無い
-空配列は、push した後に比較すると答えずに**トラップする** (バグ、#2157)。
-`Eq` の witness を持たない generic な `T` は**コンパイルエラー**になる。
-どちらも以下で扱う。
+知っておく価値のある縁が1つある。こちらも誤った答えは返さない。`Eq` の
+witness を持たない generic な `T` は**コンパイルエラー**になる。以下で扱う。
 
 ## ふつうの場合
 
@@ -81,6 +79,11 @@ fn main with Console {
   println("after one push      = \{xs == ys}")
   Array::push(ys, 1)
   println("after both          = \{xs == ys}")
+  let us = []
+  let vs = []
+  Array::push(us, 1)
+  Array::push(vs, 2)
+  println("no annotation       = \{us == vs}")
 }
 ```
 
@@ -90,13 +93,27 @@ function returns    = true
 empty and empty     = true
 after one push      = false
 after both          = true
+no annotation       = false
 ```
 
-空リテラルには上の `xs` / `ys` のように注釈を付けること。注釈の無い
-`let xs = []` には比較の基準になる要素型が無い。この形の束縛どうしは、
-両方が空のままなら等しく比較されるが、片方に push してから比較すると
-答えを返さず**実行時に trap する** (#2157)。注釈がその対処であり、この章が
-注釈を求める理由はそれだけ。
+`us` と `vs` には注釈が無いが、それでも内容で比較される。注釈の無い
+`let xs = []` は、それを埋める `Array::push` から要素型を受け取る
+(#2157) — ただし push する値が自分で型を語る場合に限る。リテラルはそうで、
+リテラルだけからなる配列・tuple・struct や、両分岐が一致する `if` も同じ。
+
+代わりに**名前**や**呼び出しの結果**を push すると、その束縛には要素型が
+付かない。両側とも非空になった状態で比較すると、アドレスや長さで答えるのでは
+なく**実行時に失敗する**。注釈がその解決策で、上の `xs` / `ys` が注釈を
+持っているのはそのためである。
+
+型引数を取る struct が「自分で型を語る」かどうかは、型引数によって決まる。
+`Box::equals` は struct 全体に対して 1 つだけ生成され、`T` 由来のフィールドを
+`T` が何だったか知らないまま比較する。それが内容比較になるのは `Int` / `Bool`
+/ `Unit` / `String` のとき。`Double` / `Bytes` と、配列や struct のときは
+アドレス比較になる。したがって `Box[Int]::{ value: 1 }` は解決し、
+`Box[Double]::{ value: x }` は解決しない。後者は注釈を付けても直らない —
+別途修正中の既知の不具合で、実行時の失敗はそれに偶然出会わないための
+ガードである。
 
 ## コンパイル時の縁: witness を持たない generic な `T`
 
