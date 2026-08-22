@@ -8209,11 +8209,57 @@ fn result_eq_match(lhs: Expr, rhs: Expr) -> Expr {
   ], 0, 2))
 }
 
+fn generic_eq_key_part(value: String) -> String {
+  String::concat(idx_str(String::length(value)), String::concat("_", value))
+}
+
+/// An injective, fn-name-safe structural encoding for generic equality
+/// specializations. Length prefixes keep names such as `Array_Int` distinct
+/// from applications such as `Array[Int]`.
+fn generic_eq_type_key(ty: TypeExpr) -> String {
+  match ty {
+    TyName(name) => String::concat("N", generic_eq_key_part(name)),
+    TyApp(head, args) => {
+      let mut key = String::concat("A", generic_eq_key_part(head))
+      key = String::concat(key, String::concat("C", idx_str(Array::length(args))))
+      let mut i = 0
+      while i < Array::length(args) {
+        key = String::concat(key, generic_eq_type_key(Array::get(args, i)))
+        i = i + 1
+      }
+      key
+    },
+    TyFn(params, result, effect) => {
+      let mut key = String::concat("F", idx_str(Array::length(params)))
+      let mut i = 0
+      while i < Array::length(params) {
+        key = String::concat(key, generic_eq_type_key(Array::get(params, i)))
+        i = i + 1
+      }
+      key = String::concat(key, String::concat("R", generic_eq_type_key(result)))
+      match effect {
+        Some(name) => String::concat(key, String::concat("E", generic_eq_key_part(name))),
+        None => String::concat(key, "Z")
+      }
+    },
+    TyTuple(items) => {
+      let mut key = String::concat("T", idx_str(Array::length(items)))
+      let mut i = 0
+      while i < Array::length(items) {
+        key = String::concat(key, generic_eq_type_key(Array::get(items, i)))
+        i = i + 1
+      }
+      key
+    },
+    TyUnit => "U"
+  }
+}
+
 fn generic_eq_name(head: String, args: Array[TypeExpr]) -> String {
   let mut name = String::concat(head, "::equals")
   let mut i = 0
   while i < Array::length(args) {
-    name = String::concat(name, String::concat("__", type_key(Array::get(args, i))))
+    name = String::concat(name, String::concat("__", generic_eq_type_key(Array::get(args, i))))
     i = i + 1
   }
   name
