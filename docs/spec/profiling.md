@@ -1,57 +1,66 @@
-# vibe profiling — memory & benchmarking design
+# Vibe profiling: memory and benchmarking design
 
-vibe の計測基盤の設計と現状。メモリプロファイラはアロケーションモデルに直結している。
+This document describes Vibe's measurement infrastructure and its current
+implementation. The memory profiler is directly tied to the allocation model.
 
-## メモリモデル（前提）
+## Memory model
 
-- **linear backend（既定 / `vibe build --release` / `viberun`）**: **bump allocator**。
-  `__heap_ptr`（export 済みの i32 mut global）が単調増加のヒープ先端。**free がない（arena）**。
-  → 1 回の実行内では **peak == total allocated**。プロファイル＝*アロケーション*プロファイル
-  （総量・レート・サイト別）であって live-set ではない。
-- **wasm-gc backend（opt-in）**: host GC を使うので live-set を測れるが、codegen ギャップあり
-  （HOF / Iterator 等、CLAUDE.md 参照）。
+- **Linear backend** (default for `vibe build --release` and `viberun`): uses a
+  bump allocator. The exported mutable `i32` global `__heap_ptr` is the
+  monotonically increasing heap frontier. There is no `free`; allocation uses
+  an arena. Therefore, within one execution, peak memory equals total allocated
+  memory. This is an allocation profile by total, rate, and site, not a live-set
+  profile.
+- **Wasm GC backend** (opt-in): host GC makes live-set measurement possible,
+  but code-generation gaps remain, including higher-order functions and
+  iterators. See `AGENTS.md`.
 
-ホスト側（`vibe_alloc_packed_str`）も同じ `__heap_ptr` に bump するので、`__heap_ptr` は
-guest＋host を合わせた総ヒープ使用量を表す。
+Host allocations such as `vibe_alloc_packed_str` bump the same `__heap_ptr`, so
+the value represents combined guest and host heap use.
 
-## 実装ティア（コスト順）
+## Implementation tiers by cost
 
-| tier | 内容 | 計装 | 状態 |
+| Tier | Measurement | Instrumentation | Status |
 |---|---|---|---|
-| **1** | 総ヒープ / ピーク（`__heap_ptr` 差分）| ゼロ | ✅ **実装済み**: `vibe run --mem` |
-| **2** | `memory.grow` イベント（成長タイムライン）| ホストのみ | ✅ **実装済み**: `--mem` の一部 |
-| **3** | アロケーション時系列サンプリング | ホストのみ（epoch）| ✅ **実装済み**: `--mem-sample` |
-| **4** | 関数別 alloc 属性（massif/heaptrack 相当）| break ビルド再利用（`dbg_break`）| ✅ **実装済み**: `--alloc-site` |
+| **1** | Total heap and peak from the `__heap_ptr` delta | None | Implemented: `vibe run --mem` |
+| **2** | `memory.grow` event timeline | Host only | Implemented as part of `--mem` |
+| **3** | Allocation timeline sampling | Host only, using epochs | Implemented: `--mem-sample` |
+| **4** | Per-function allocation attribution, similar to massif or heaptrack | Reuses break-build `dbg_break` instrumentation | Implemented: `--alloc-site` |
 
-## Tier 1: `vibe run --mem`（実装済み）
+## Tier 1: `vibe run --mem`
 
-`__heap_ptr` を `_start` 実行の前後で読み、差分を「allocated」として出力する。無計装・ほぼゼロ
-オーバーヘッド。プログラム出力（stdout）は汚さず、レポートは stderr に出す。
+The runner reads `__heap_ptr` before and after `_start` and reports the delta as
+`allocated`. This requires no instrumentation and has nearly zero overhead.
+Reports go to stderr without contaminating program stdout.
 
-```
+```text
 $ vibe run --mem prog.vibex
 <program stdout>
 vibe::mem heap_base=131144 heap_peak=258152 allocated=127008 committed=4194304
 vibe: memory — allocated 124.0 KiB (127008 B), peak heap 252.1 KiB, committed 4.0 MiB
 ```
 
-- `vibe::mem …` — 機械可読（ベンチ harness / CI が parse する用）
-- `vibe: memory — …` — 人間可読
+- `vibe::mem ...` is machine-readable for benchmark harnesses and CI.
+- `vibe: memory — ...` is human-readable.
 
-`allocated = heap_peak − heap_base`。linear では free がないので、これは実行全体で確保した総量。
-pure / 純計算プログラムは `allocated=0`。`committed` は wasm memory のページ総量。
+`allocated = heap_peak - heap_base`. The linear backend has no `free`, so this
+is the total allocated during the execution. Pure computational programs have
+`allocated=0`. `committed` is the total number of bytes in Wasm memory.
 
-実装: runner は `VIBE_MEM=1`（`--mem` が設定）のとき `__heap_ptr`（`read_heap_ptr`）と
-`memory` サイズを読んで `report_memory` で出力（trap しても出る）。test: `scripts/test_vibe_mem.sh`。
+When `VIBE_MEM=1` is set by `--mem`, the runner reads `__heap_ptr` through
+`read_heap_ptr`, reads the memory size, and emits the result with
+`report_memory`, including after a trap. Tests live in
+`scripts/test_vibe_mem.sh`.
 
-## Tier 2: 成長タイムライン（実装済み）
+## Tier 2: growth timeline
 
-`--mem` 実行時、runner は wasmtime の `ResourceLimiter`（`MemLimiter`）で `memory.grow` を
-すべて記録する。guest の `memory.grow` も host の `Memory::grow`（bump 文字列確保）も
-wasmtime はこの limiter を通すので、タイムラインは完全。計装ゼロ・ホスト側のみ。
+During `--mem`, the runner records every `memory.grow` through Wasmtime's
+`ResourceLimiter` implementation, `MemLimiter`. Both guest `memory.grow` and
+host `Memory::grow` calls for bump-allocated strings pass through this limiter,
+so the timeline covers both sides without guest instrumentation.
 
-```
-$ vibe run --mem grow.vibex         # >4 MiB を確保するプログラム
+```text
+$ vibe run --mem grow.vibex
 vibe::mem heap_base=131144 heap_peak=6270152 allocated=6139008 committed=6291456 grow_events=32
 vibe: memory — allocated 5.9 MiB …, committed 6.0 MiB, 32 growth event(s)
 vibe::memgrow t_us=2066 from=4194304 to=4259840 pages=+1
@@ -60,24 +69,28 @@ vibe::memgrow t_us=2107 from=4259840 to=4325376 pages=+1
 vibe:   growth 4.0 MiB -> 6.0 MiB across 32 event(s), 2.07 ms … 2.50 ms
 ```
 
-各 `vibe::memgrow` 行は機械可読（`t_us` = run 開始からの経過、`from`/`to` = bytes、`pages` = 追加ページ）。
+Each `vibe::memgrow` line is machine-readable. `t_us` is elapsed time from the
+start of the run, `from` and `to` are byte counts, and `pages` is the number of
+added pages.
 
-**限界**: 生成 wasm の初期メモリは **64 ページ（4 MiB, `default_wasi_memory_min_pages`）** なので、
-4 MiB 未満で収まるプログラムは grow が発生せず `grow_events=0`。つまりこれは**ページコミットの
-粗いタイムライン**（4 MiB 超のときに有効）。細粒度のアロケーション曲線が要るなら tier 3
-（`__heap_ptr` を `dbg_line`/epoch でサンプリング）。
-上の例は bump allocator が **1 ページ（64 KiB）ずつ** grow していることも示している
-（syscall を減らすなら成長チャンクを大きくする余地）。
+The generated Wasm starts with 64 pages, or 4 MiB, as selected by
+`default_wasi_memory_min_pages`. A program that stays below 4 MiB produces no
+growth and reports `grow_events=0`. This tier is therefore a coarse committed-
+page timeline. Use tier 3 to observe fine-grained allocation inside the initial
+memory. The example also shows the bump allocator growing one 64 KiB page at a
+time; larger growth chunks could reduce host calls.
 
-## Tier 3: 時系列サンプリング（実装済み）
+## Tier 3: timeline sampling
 
-`vibe run --mem-sample[=MS]`（既定 1ms 間隔）。runner は wasmtime の **epoch interruption** を
-使い、バックグラウンドスレッドが MS ごとに engine epoch を increment、ゲストのチェックポイント
-（関数入口・ループ back-edge）で epoch-deadline コールバックが発火して `__heap_ptr` を読む。
-これで **初期メモリ（4 MiB）内**でも heap の推移が見える（tier 2 の grow イベントが拾えない領域）。
-ホスト側のみ・計装なし。epoch checks のコストは `--mem-sample` 時のみ（通常 / `vibe bench` は無影響）。
+`vibe run --mem-sample[=MS]` defaults to a 1 ms interval. A background thread
+increments the Wasmtime engine epoch. At guest checkpoints such as function
+entries and loop back edges, the epoch-deadline callback reads `__heap_ptr`.
+This exposes heap movement inside the initial 4 MiB where tier 2 sees no growth.
+The mechanism is host-only and needs no guest instrumentation. Epoch checks are
+enabled only for `--mem-sample`, so ordinary runs and `vibe bench` are
+unaffected.
 
-```
+```text
 $ vibe run --mem-sample long.vibex
 vibe::memsample t_us=1235 heap=2459624
 vibe::memsample t_us=2314 heap=4571336
@@ -85,69 +98,84 @@ vibe::memsample t_us=2314 heap=4571336
 vibe: heap samples — 12 over 1.21 ms … 13.36 ms, 2.4 MiB -> 19.2 MiB (peak 19.2 MiB)
 ```
 
-各 `vibe::memsample` 行は機械可読（`t_us`=経過、`heap`=`__heap_ptr` bytes）。サンプル数は
-実行時間と間隔に依存（プログラムが 1 間隔より速いと 0 サンプル）。
+Each `vibe::memsample` line is machine-readable. `t_us` is elapsed time and
+`heap` is `__heap_ptr` in bytes. The number of samples depends on execution time
+and interval; a program faster than one interval may produce no samples.
 
-## Tier 4: 関数別 alloc 属性（実装済み）
+## Tier 4: per-function allocation attribution
 
-`vibe run --alloc-site[=N]`。**massif/heaptrack 相当の by-frame アロケーションプロファイル**を、
-**新しい計装なしで** break ビルドを再利用して得る。break codegen は全ユーザー関数の入口に
-`vibe::dbg_break`、各文境界に `vibe::dbg_line` を出すので（DAP の breakpoint/step 用）、runner は
-その両 hook を**サンプル点**として使い、各点で `__heap_ptr` を読んで **前回サンプルからの bump 差分を
-「その時点で実行中だった最内関数（backtrace の frame[0]）」へ加算**する。文境界でも毎回 backtrace を
-読み直すので、ヘルパーが return した後にその呼び出し元が次の文で確保した分は**呼び出し元**に付く
-（入口のみのサンプルだと return した callee に誤って付く問題を緩和）。`dbg_break` は let/mut に
-関係なく必ず発火するので関数単位のカバレッジは完全（pure な mut ループの関数も捕捉する）。
-break ビルド再利用なので、デフォルトの自己コンパイル経路は byte-identical（fixpoint 維持）。
+`vibe run --alloc-site[=N]` provides by-frame allocation profiling similar to
+massif or heaptrack by reusing the break build without new instrumentation.
+Break code generation emits `vibe::dbg_break` at every user-function entry and
+`vibe::dbg_line` at statement boundaries for debugger breakpoints and stepping.
+The runner treats both hooks as sample points. It reads `__heap_ptr` and credits
+the bump since the previous sample to the innermost function active at that
+time, `frame[0]` of the backtrace.
 
-```
-$ vibe run --alloc-site sites.vibex       # heavy()/light() を呼ぶプログラム
+Refreshing the backtrace at statement boundaries means allocations in a caller
+after a helper returns are normally credited to the caller. This avoids a
+common error from entry-only sampling. `dbg_break` fires independently of
+`let` or `mut`, so every function is covered, including functions containing
+pure mutable loops. Reusing the break build leaves the default self-compile path
+byte-identical.
+
+```text
+$ vibe run --alloc-site sites.vibex
 1250
 vibe::allocsite fn=heavy line=1 bytes=181200
 vibe::allocsite fn=light line=7 bytes=1456
 vibe: alloc sites — 2 function(s), 178.4 KiB attributed total, top 2 shown
 ```
 
-各 `vibe::allocsite` 行は機械可読（`fn`=関数名、`line`=宣言行 [funcmap 解決、無いと `?`]、
-`bytes`=加算されたヒープ増分）。stderr に出し、stdout はプログラム出力のまま。`=N` または
-`VIBE_ALLOC_SITE_TOP` で報告する上位件数を制限（既定 20）。`VIBE_ALLOC_SITE=1` で runner が
-有効化、launcher が `--break` と同じ計装でコンパイルしつつ `VIBE_BREAK` は設定しない（pause なし）。
+Each `vibe::allocsite` line is machine-readable. `fn` is the function name,
+`line` is its declaration line resolved through the funcmap or `?`, and `bytes`
+is the attributed heap growth. Reports go to stderr. `=N` or
+`VIBE_ALLOC_SITE_TOP` limits the number of reported functions and defaults to
+20. `VIBE_ALLOC_SITE=1` enables the runner logic. The launcher compiles with
+the same instrumentation as `--break` but does not set `VIBE_BREAK`, so it does
+not pause.
 
-**粒度と限界**: 属性は**関数単位**（行単位ではない）のリーフ属性で、サンプル点（関数入口＋文境界）
-**間**の差分を1関数に丸めるため近似である。`__heap_ptr` 差分ベースなので arena（解放なし）の*確保*量で
-あり live-set ではない（メモリモデル参照）。毎サンプルで backtrace を取るので `--alloc-site` 実行は
-通常より遅い（プロファイル実行のみのコスト）。
+Attribution is an approximation at function granularity, not line granularity.
+It assigns the entire delta between sample points to one function. Because it
+uses `__heap_ptr`, it measures arena allocation rather than live memory. Taking
+a backtrace at every sample also makes `--alloc-site` slower than a normal run.
 
-**残る誤属性**: 呼び出し元が helper を呼んだ後、**文境界の無い区間**（`mut` 代入のみの while ループ等。
-`mut` let / 代入は `dbg_line` を出さない）で確保すると、その間サンプルが取れず、tail 加算が直近の
-sample 点の関数（= 戻ってきた callee）にまとめて付く。例:
-`let x = helper(); let mut t=""; while … { t = concat(t, …) }` では大きな確保が helper に誤計上される。
-正確な per-allocation 属性には**確保サイト計装（codegen で各確保点に hook）か return hook** が要る
-— これは設計当初から tier 4 の opt-in 計装ビルド（`vibe::alloc_site`）として想定した重い変更で、
-本実装（runner のみ・codegen 非変更）の範囲外。現状はリーフが文境界で確保する一般形
-（builder が concat して返す等）で正しく、上記パターンで粗くなる近似プロファイラとして使う。
-test: `scripts/test_vibe_alloc_site.sh`。
+A remaining misattribution occurs when a caller allocates after a helper call
+inside a region with no statement boundary, such as a `while` loop containing
+only mutable assignments. Mutable declarations and assignments do not emit
+`dbg_line`, so the tail delta can be credited to the most recently sampled
+callee. For example, a large allocation in
+`let x = helper(); let mut t=""; while … { t = concat(t, …) }` may be credited
+to `helper`. Exact per-allocation attribution requires either a hook at every
+allocation site or a return hook. That heavier opt-in instrumentation is beyond
+the runner-only implementation. Tests live in
+`scripts/test_vibe_alloc_site.sh`.
 
-## `vibe bench`（実装済み）
+## `vibe bench`
 
-`bench "name" { }` 構文と `vibe::profile-now-us` はあったが計測ハーネスが無かった。`vibe bench`
-を追加した。実装は runner 側（`viberun --bench`）で、**codegen 変更なし**:
+Vibe already had `bench "name" { }` syntax and `vibe::profile-now-us`, but did
+not have a measurement harness. `viberun --bench` adds the harness without
+changing code generation:
 
-- 再実行可能な test entry（`__no_entry__` が `bench{}`/`test{}` body を走らせる `_start`）を、
-  **同一の warm インスタンス上で N 回呼ぶ**。warmup → 計測。
-- 各呼び出しを `Instant` で計時し、`__heap_ptr` をバッチ前後で読んで **bytes/op**（tier 1 を再利用）。
-- 統計: **min / p50 / p95 / mean / ops·sec** ＋ **bytes/op**。
+- It repeatedly invokes a restartable test entry on one warm instance, using
+  warmup calls before measurement.
+- It times each call with `Instant` and reads `__heap_ptr` around the batch to
+  report bytes per operation using tier 1.
+- It reports minimum, p50, p95, mean, operations per second, and bytes per
+  operation.
 
-```
+```text
 $ vibe bench examples/simple_bench.vibe
 vibe::bench label=simple_bench.vibe iters=1000 ns_min=47 ns_p50=49 ns_p95=51 ns_mean=49 ops_per_sec=20408163 bytes_per_op=0
 bench simple_bench.vibe: 1000 iters — 49 ns/op (min 47 ns, p50 49 ns, p95 51 ns), 20.4M ops/s, 0 B/op
 ```
 
-`vibe bench <file> [--iters N] [--warmup N]`。`vibe::bench …` は機械可読（CI/比較が parse）。
-env: `VIBE_BENCH_ITERS` / `VIBE_BENCH_WARMUP` / `VIBE_BENCH_LABEL`。test: `scripts/test_vibe_bench.sh`。
+Usage is `vibe bench <file> [--iters N] [--warmup N]`. The `vibe::bench` line is
+machine-readable for CI and comparisons. Environment variables are
+`VIBE_BENCH_ITERS`, `VIBE_BENCH_WARMUP`, and `VIBE_BENCH_LABEL`. Tests live in
+`scripts/test_vibe_bench.sh`.
 
-### Wasmtime guest CPU profile
+### Wasmtime guest CPU profiles
 
 `vibe profile <file.vibex> --out profile.json --interval-us 1000` captures a
 function-level Wasm guest CPU profile through Wasmtime `GuestProfiler`. The
@@ -158,21 +186,25 @@ execution and a guest trap.
 `vibe bench <file.vibe> --guest-profile <directory> --interval-us 1000`
 produces one JSON file per `__bench_<name>` block. Profiling starts after that
 block's warmup. The profiler changes execution cost, so latency values from a
-profiled invocation are diagnostic only; use an unprofiled invocation for KPI
+profiled invocation are diagnostic only. Use an unprofiled invocation for KPI
 or regression comparisons.
 
 Both modes require fresh `.wasm`. An ordinary `.cwasm` was compiled without
 epoch-interruption checkpoints and is rejected rather than silently producing
-an empty profile. Function names come from the Wasm name section; Vibe
+an empty profile. Function names come from the Wasm name section. Vibe
 `vibe.linemap` source-line attribution is not yet included.
 
-**粒度: bench ブロック個別（実装済み）**: codegen が各 `bench "name" { }` を `__bench_<name>` 関数として
-export する（`__no_entry__` ビルド時のみ。通常ビルド・コンパイラ自己コンパイルは byte-identical）。
-runner（`--bench`）は export を列挙して **ブロックごとに warm 計測**し、`label=<file>::<name>` で
-1 行ずつ報告する。`__bench_*` が無い wasm（旧コンパイラ生成 / `test {}` のみのファイル）は
-`_start` 全体（ファイル単位）にフォールバックする。
+### Per-benchmark-block granularity
 
-```
+For a no-entry build, code generation exports every `bench "name" { }` block as
+`__bench_<name>`. Normal builds and compiler self-compilation remain
+byte-identical. The runner enumerates these exports, measures each block on its
+own warm instance, and emits one line labeled `<file>::<name>`. A Wasm module
+without `__bench_*` exports, such as output from an older compiler or a file
+containing only `test` blocks, falls back to measuring the entire `_start` at
+file granularity.
+
+```text
 $ vibe bench multi_bench.vibe
 vibe::bench label=multi_bench.vibe::light iters=1000 ns_min=… … bytes_per_op=0
 bench multi_bench.vibe::light: 1000 iters — … ns/op …
@@ -180,18 +212,22 @@ vibe::bench label=multi_bench.vibe::heavy iters=1000 ns_min=… … bytes_per_op
 bench multi_bench.vibe::heavy: 1000 iters — … ns/op …
 ```
 
-実装: codegen は `lib/@vibe/compiler/codegen/wasi/linked_compile.vibe`（export セクションで `test_fn_names` の
-`__bench_*` を `all_export_names` に追加）、計時は runner（`bench()` が module export を走査して
-ブロック単位 / フォールバックを選ぶ）。test: `scripts/test_vibe_bench.sh`（per-block 3 assertions）。
+The export logic is in
+`lib/@vibe/compiler/codegen/wasi/linked_compile.vibe`, where the export section
+adds `__bench_*` names from `test_fn_names` to `all_export_names`. The runner's
+`bench` function enumerates module exports and selects per-block measurement or
+the fallback. `scripts/test_vibe_bench.sh` covers the behavior.
 
-さらに精度を上げるなら:
+Potential accuracy improvements include:
 
-- µs 級でなく ns 級を狙うなら内側 batch（K 回回して割る）で per-call overhead を相殺
-- 2 backend（linear / gc）の別レポート
-- 回帰検出: `(label, backend, source-hash)` で baseline 比較、% 退行を flag → CI ゲート
+- inner batching to amortize per-call overhead for nanosecond-scale work;
+- separate reports for the linear and GC backends;
+- regression detection against a baseline keyed by label, backend, and source
+  hash, with percentage regressions suitable for a CI gate.
 
-## 注意点
+## Measurement cautions
 
-- `profile-now-us` は host 越しの wall-clock。micro は必ず batch。
-- bump allocator は断片化/解放の概念がなく peak=total（これが linear の意味論）。
-- 計測は本質的にブレる → 反復＋ロバスト統計で吸収。
+- `profile-now-us` reads a host wall clock. Microbenchmarks must batch work.
+- A bump allocator has no fragmentation or reclamation, so peak equals total
+  allocation by definition.
+- Measurements are inherently noisy; use repetition and robust statistics.
