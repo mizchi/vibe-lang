@@ -65,10 +65,14 @@ Never move code to `skip` because its test broke.
 
 ## Chapter map
 
-See [SUMMARY.md](SUMMARY.md). The parts follow *The Rust Programming
-Language*: a short getting-started plus a small program, then concepts,
-mutation (the ownership analog), data, packages, collections, effects,
-generics, concurrency, and tooling.
+See [SUMMARY.md](SUMMARY.md). The shape follows *The Rust Programming
+Language* — a short getting-started plus a small program, then the
+concepts — but the spine turns on effects: getting-started, concepts,
+mutation, data, then **effects and capabilities** at 8 and 9, then the
+railway, packages and tests, collections, generics, concurrency and
+tooling. Chapters 3 to 7 are exactly what a handler needs (functions,
+control flow, types, enums and `match`) and no more, and everything from
+10 on is written on top of the row rather than around it.
 
 Start at [Installation and Hello, vibe](en/01_getting_started.vibe.md)
 or jump to [A small program](en/02_a_small_program.vibe.md).

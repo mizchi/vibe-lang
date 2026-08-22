@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Self-test for scripts/vibe_md.sh's document-kind guard.
+# Self-test for scripts/vibe_md.sh's document-kind guard and for WHICH compiler
+# answers a ```vibe run block (#2167).
 #
 # There are two doctest harnesses and they answer differently on the same
 # document: handed `docs/cheatsheet.md`, vibe_md.sh reported "30 pass, 3 fail"
@@ -18,6 +19,22 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/vibe_md_guard.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "vibe-md-guard self-test: FAIL: $1" >&2; exit 1; }
+
+# An INHERITED VIBE_MD_COMPILER / VIBE_MD_STAGE2 would redefine what cases 6-7
+# call "the default", so they would report on whatever the caller happened to
+# export rather than on the tool's own resolution -- and case 8 would ask that
+# compiler instead of this checkout's (#2190 review). Clear them; the cases
+# that need a compiler name one explicitly, below.
+unset VIBE_MD_COMPILER VIBE_MD_STAGE2
+
+# Case 8's answer comes from a compiler, so it has to be THIS checkout's:
+# a compiler change that made the two lanes disagree is exactly what it exists
+# to catch, and `ls -td` newest-by-mtime can be an unrelated generation on a
+# reused workspace. resolve_stage2 prefers the generation carrying HEAD's short
+# sha and says on stderr whenever it settles for less.
+# shellcheck source=scripts/resolve_stage2.sh
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+GUARD_STAGE2="$(resolve_stage2 vibe-md-guard "${VIBE_MD_GUARD_STAGE2:-}" || true)"
 
 # 1. A prose document is refused, and the message names the other harness.
 : > "$TMP/prose.md"
@@ -52,5 +69,133 @@ echo "vibe-md-guard self-test: ok: write/fmt/fmt-check are guarded too"
 set +e; rc=0; bash "$SH" check book/en/03_values_functions.vibe.md "$TMP/prose.md" >/dev/null 2>&1 || rc=$?; set -e
 [ "$rc" = "2" ] || fail "a mixed list was not refused (exit $rc)"
 echo "vibe-md-guard self-test: ok: a mixed argument list is refused"
+
+# ---------------------------------------------------------------------------
+# #2167: which compiler answers.
+#
+# The wrapper resolves a compiler; the tool (vibe_md.vibex resolve_stage2) used
+# to resolve one of its OWN for the blocks. Nothing reconciled the two, so a
+# caller could point VIBE_MD_COMPILER at a stage2 that rejects a block and be
+# handed PASS by whatever generation happened to be newest on disk -- which is
+# how a book chapter carrying an import the compiler rejects reported PASS.
+# ---------------------------------------------------------------------------
+
+header_compiler() { # header_compiler <vibe_md.sh stdout>
+  sed -n 's/^vibe_md: mode=[^ ]* compiler=//p' <<<"$1" | head -1
+}
+
+# 6. The compiler named on the way in is the compiler the tool reports. The
+#    copy is byte-identical to whatever the wrapper resolves by default, so the
+#    content-addressed tool build is reused and this costs no compile -- only
+#    the PATH differs, which is exactly the thing that used to be ignored.
+: > "$TMP/empty.vibe.md"
+set +e; out="$(bash "$SH" check "$TMP/empty.vibe.md" 2>"$TMP/resolve.err")"; set -e
+default_compiler="$(header_compiler "$out")"
+if [ -z "$default_compiler" ]; then
+  # No compiler exists here at all -- no generation and no fetched seed. Say so
+  # and stop, rather than reporting a compiler-selection defect. The same
+  # checkout cannot run `pkf run vibe-md-tutorial` either, so this is not a
+  # state a book gate can be green in; it is a state where nothing ran.
+  if grep -qF "compiler wasm not found" "$TMP/resolve.err"; then
+    # A bare checkout with no generation and no fetched seed cannot answer
+    # cases 6-8 at all, and it cannot run `pkf run vibe-md-tutorial` either --
+    # nothing ran, rather than something passed. Skipping is honest for a
+    # hand-run in that state and DISHONEST for the gate, which depends on
+    # selfhostGeneration precisely so a compiler exists: there, a missing
+    # compiler means the dependency did not deliver, and exiting 0 would
+    # report green for the three cases this file exists to run (#2190 review).
+    if [ "${VIBE_MD_GUARD_REQUIRE_COMPILER:-0}" = "1" ]; then
+      fail "cases 6-8 need a compiler and none was found, but the caller promised one
+  (VIBE_MD_GUARD_REQUIRE_COMPILER=1 -- set by the pkfire task, which deps on selfhostGeneration)
+$(sed 's/^/  /' "$TMP/resolve.err")"
+    fi
+    echo "vibe-md-guard self-test: SKIPPED cases 6-8: no compiler wasm in this checkout" >&2
+    sed 's/^/  /' "$TMP/resolve.err" >&2
+    echo "  Run \`bash scripts/ensure_seed.sh\` or build a selfhost generation, then re-run." >&2
+    echo "  In the gate this is a failure, not a skip (VIBE_MD_GUARD_REQUIRE_COMPILER=1)." >&2
+    echo "vibe-md-guard self-test: all runnable cases passed"
+    exit 0
+  fi
+  fail "the tool did not report which compiler it used
+$(sed 's/^/  /' "$TMP/resolve.err")"
+fi
+[ -s "$default_compiler" ] || fail "the reported compiler does not exist: $default_compiler"
+cp "$default_compiler" "$TMP/pinned.wasm"
+set +e; out="$(VIBE_MD_COMPILER="$TMP/pinned.wasm" bash "$SH" check "$TMP/empty.vibe.md" 2>/dev/null)"; set -e
+[ "$(header_compiler "$out")" = "$TMP/pinned.wasm" ] ||
+  fail "VIBE_MD_COMPILER did not reach the block lane (tool reported '$(header_compiler "$out")')"
+echo "vibe-md-guard self-test: ok: VIBE_MD_COMPILER selects the compiler for the blocks too"
+
+# 7. An explicit VIBE_MD_STAGE2 still overrides it -- the deliberate
+#    two-compiler form, and now the only way to get one.
+set +e
+out="$(VIBE_MD_COMPILER="$default_compiler" VIBE_MD_STAGE2="$TMP/pinned.wasm" bash "$SH" check "$TMP/empty.vibe.md" 2>/dev/null)"
+set -e
+[ "$(header_compiler "$out")" = "$TMP/pinned.wasm" ] ||
+  fail "VIBE_MD_STAGE2 no longer overrides the block compiler"
+echo "vibe-md-guard self-test: ok: VIBE_MD_STAGE2 still overrides it"
+
+# 8. Lane parity: the same source reaches the same verdict whether it is
+#    compiled directly through `cli_main` or extracted from a ```vibe run
+#    block. The probe uses a wrong import KIND (`type` for a struct, #2161)
+#    because that is the class the two lanes were measured to disagree on.
+#
+#    This asserts AGREEMENT, not rejection, so it is independent of whether the
+#    resolved compiler carries the check: a compiler without it must accept in
+#    both lanes, one with it must reject in both. It fails exactly when the
+#    lanes diverge.
+PROBE="$ROOT_DIR/_build/vibe_md_guard"
+rm -rf "$PROBE"
+mkdir -p "$PROBE"
+cat > "$PROBE/kind.vibe" <<'VIBE'
+import @vibe/core { type MutMap }
+
+fn main with Console {
+  let m: MutMap[String, Int] = MutMap::new_string()
+  MutMap::set(m, "a", 1)
+  println("size = \{MutMap::size(m)}")
+}
+VIBE
+{
+  echo '# lane parity probe'
+  echo
+  echo '```vibe run'
+  cat "$PROBE/kind.vibe"
+  echo '```'
+  echo
+  echo '```output'
+  echo 'size = 1'
+  echo '```'
+} > "$PROBE/kind.vibe.md"
+
+#    Both variables are named, so the tool and the blocks are the same compiler
+#    and neither can fall back -- the deliberate two-compiler form case 7 tests
+#    is not what this case is asking about.
+[ -n "$GUARD_STAGE2" ] || fail "case 8 needs a compiler and resolve_stage2 found none"
+set +e
+md_out="$(VIBE_MD_COMPILER="$GUARD_STAGE2" VIBE_MD_STAGE2="$GUARD_STAGE2" \
+  bash "$SH" check "$PROBE/kind.vibe.md" 2>/dev/null)"
+md_rc=$?
+set -e
+probe_compiler="$(header_compiler "$md_out")"
+[ -n "$probe_compiler" ] || fail "the lane-parity run did not report its compiler"
+[ "$probe_compiler" = "$GUARD_STAGE2" ] ||
+  fail "case 8 asked the wrong compiler: pinned '$GUARD_STAGE2', tool used '$probe_compiler'"
+rm -f "$PROBE/kind.wasm" "$PROBE/kind.wasm.diag"
+set +e
+env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$probe_compiler" \
+  "$PROBE/kind.vibe" "$PROBE/kind.wasm" main >/dev/null 2>&1
+cli_rc=$?
+set -e
+md_verdict=accepted; [ "$md_rc" = "0" ] || md_verdict=rejected
+cli_verdict=accepted; [ "$cli_rc" = "0" ] && [ -s "$PROBE/kind.wasm" ] || cli_verdict=rejected
+[ "$md_verdict" = "$cli_verdict" ] || fail "the two lanes disagree on the same source:
+  cli_main   -> $cli_verdict (exit $cli_rc)
+  vibe run   -> $md_verdict (exit $md_rc)
+  compiler   -> $probe_compiler
+  $(cat "$PROBE/kind.wasm.diag" 2>/dev/null)"
+rm -rf "$PROBE"
+echo "vibe-md-guard self-test: ok: cli_main and a \`\`\`vibe run block agree ($md_verdict) on an import kind"
 
 echo "vibe-md-guard self-test: all cases passed"

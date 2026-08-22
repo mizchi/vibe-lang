@@ -44,7 +44,7 @@ and the compiler holds it to that.
 
 You will meet the same shape again for failure (`with Exception`) and
 for reading files (`allows Fs::read_file`).
-[Capabilities](14_capabilities.vibe.md) is where it is finished.
+[Capabilities](09_capabilities.vibe.md) is where it is finished.
 
 ## Ask the compiler questions
 
@@ -76,7 +76,7 @@ vibe run main.vibex
 `vibe new` writes two files: `main.vibex`, the entry point, and
 `vibe.deps`, where dependencies go. That is the whole scaffold — a
 package contract (`index.vpkg`) is something you add when you have
-something to publish, and [Modules and packages](09_modules_packages.vibe.md)
+something to publish, and [Modules and packages](11_modules_packages.vibe.md)
 picks that up. You do not need any of it for a single file, which is why
 this chapter did not start there.
 

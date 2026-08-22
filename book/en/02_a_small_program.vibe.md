@@ -80,13 +80,13 @@ incomplete instead of picking a branch at runtime.
 caller either passes the possibility along or deals with it, and the
 compiler decides which. `report` deals with it, so `report` returns a
 plain `String` — the failure stops there.
-→ [Effects](13_effects.vibe.md)
+→ [Effects](08_effects.vibe.md)
 
 **`main` says what it is allowed to do.** `fn main with Console` is
 permission to write to the terminal, and it is the *only* thing this
 program may do. It cannot read a file or open a socket, because it never
 asked to.
-→ [Capabilities](14_capabilities.vibe.md)
+→ [Capabilities](09_capabilities.vibe.md)
 
 That last point is the one worth pausing on. In most languages, "this
 function prints" and "this function can fail" are facts you discover by

@@ -1,8 +1,8 @@
-# 10 — テストを書く
+# 12 — テストを書く
 
-前: [モジュールとパッケージ](09_modules_packages.vibe.md)
+前: [モジュールとパッケージ](11_modules_packages.vibe.md)
 
-English version: [10_tests.vibe.md](../en/10_tests.vibe.md)
+English version: [12_tests.vibe.md](../en/12_tests.vibe.md)
 
 テストは、普通のソースファイルに書く `test "name" { ... }` ブロックです。
 入れるフレームワークも、import するものもありません。
@@ -91,4 +91,4 @@ vibe test --update demo_test.vibe
 ヘルパーをテストできるのはこのためです。テストをコードの隣に置く理由が
 これです。
 
-次: [コレクション](11_collections.vibe.md)。
+次: [コレクション](13_collections.vibe.md)。

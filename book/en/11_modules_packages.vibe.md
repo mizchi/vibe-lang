@@ -1,8 +1,8 @@
-# 09 — Modules and packages
+# 11 — Modules and packages
 
-Previous: [Option and the railway](08_option.vibe.md)
+Previous: [Option and the railway](10_option.vibe.md)
 
-日本語版: [09_modules_packages.vibe.md](../ja/09_modules_packages.vibe.md)
+日本語版: [11_modules_packages.vibe.md](../ja/11_modules_packages.vibe.md)
 
 One file is one module. Nothing in it is visible to another file unless
 you write `export`, and nothing arrives in your file unless you write
@@ -148,4 +148,4 @@ Publish and yank append to a transparency log, and install verifies its
 proof — so a version cannot be swapped underneath you after the fact.
 [docs/registry-design.md](../../docs/registry-design.md) has the design.
 
-Next: [Writing tests](10_tests.vibe.md).
+Next: [Writing tests](12_tests.vibe.md).

@@ -6,22 +6,43 @@
 # them, and every one of them was stale -- so they could not be regenerated and
 # were not checked.
 #
-# Each fixture is compiled with `__no_entry__` (so a missing `main` never masks
-# the check under test) and classified.
+# Every fixture is compiled TWICE, and both verdicts are checked
+# (scripts/check_typecheck_fixtures.sh):
 #
-# WHAT THAT LANE CANNOT SEE (#2142): `__no_entry__` skips the entry-boundary
-# lowering, so a diagnostic raised there is invisible here and the row records
-# `ok`. Measured over all rows, both ways, on the same stage2: exactly ONE row
-# diverges (`handle_callee_local_closure_arg`, pinned instead by
-# scripts/check_handle_eligibility.sh). 29 more differ only because the fixture
-# has no exported `main`, which is the lane working as intended -- and is why
-# switching this corpus to a real entry name wholesale is not possible.
+#   * with `__no_entry__`, so a fixture with no `main` is not counted as
+#     rejected without the check under test ever having run -- measured, that
+#     masked 4 of the 13 lost checks below; and
+#   * with `main`, the entry name a user passes, because `__no_entry__` skips
+#     the entry-boundary lowering and a diagnostic raised THERE (handle
+#     eligibility, ADR-0076) is invisible to the first lane.
 #
-# So read `ok` as "accepted in the no-entry lane", not as "accepted". They are
-# the same answer for 228 of 229 rows, and the exception is documented in the
-# fixture itself.
+# The corpus used to be compiled the first way only, and a row therefore
+# claimed `ok` for a program `vibe check` rejects (#2142, #2144). Measured over
+# all 233 rows both ways, on a stage2 built from this checkout:
 #
-# The classifications:
+#   204 rows      same verdict in both lanes
+#    28 rows      no `main` to name, so there is no entry lane to compare --
+#                 the entry compile stops at "entry `main` not found". This is
+#                 why the corpus cannot simply switch entry names wholesale.
+#     1 row       genuinely diverges: handle_callee_local_closure_arg, `ok`
+#                 with `__no_entry__` and rejected with entry `main`.
+#
+# A divergence must be RECORDED in the row (columns 4-5 below) or the gate
+# fails, so the next one cannot be silent. Recording it is also what pins the
+# entry-lane message: the eligibility boundary had no fixture coverage at all
+# before, because the place fixture coverage is kept could not see it.
+#
+# The columns, tab separated:
+#
+#   1 NAME          fixture stem, in fixtures/typecheck/ or fixtures/
+#   2 STATUS        the `__no_entry__` verdict (see below)
+#   3 NEEDLE        substring of the diagnostic, required for a rejecting row
+#   4 ENTRY-STATUS  `ok` or `reject` -- present ONLY when the entry lane
+#                   disagrees with column 2. An annotation that no longer
+#                   diverges is an error: it would hide the next real one.
+#   5 ENTRY-NEEDLE  substring of the entry lane's diagnostic
+#
+# The classifications for column 2:
 #
 #   ok            compiles, and should
 #   reject        rejected, and should -- NEEDLE must appear in the diagnostic
@@ -84,7 +105,7 @@
 #     a CAPABILITY could claim a pure row. Fixed in #1485 by call-site
 #     effect-row unification; both rows are now `reject`.
 #
-# name	status	needle
+# name	status	needle	[entry-status	entry-needle]
 duplicate_enum_ctor	reject	duplicate ctor: A
 duplicate_discard_decl_ok	ok	
 duplicate_fn_decl	reject	duplicate declaration: helper
@@ -365,7 +386,7 @@ err_type_trait_unknown_impl_trait	debt-accepts
 # come from DIFFERENT passes than handle eligibility, which is why the needles
 # differ.
 handle_callee_toplevel_fn	ok
-handle_callee_local_closure_arg	ok
+handle_callee_local_closure_arg	ok		reject	handle of effect 'Ask' cannot be compiled here
 handle_perform_inside_annotated_closure	ok
 handle_callee_closure_parameter	ok
 handle_perform_inside_unannotated_closure	reject	cannot discharge { Ask }
@@ -381,3 +402,12 @@ for_over_plain_struct_rejected	reject	declares no iteration protocol
 for_over_plain_enum_rejected	reject	declares no iteration protocol
 for_over_indexed_iterable_struct	ok
 for_over_iterator_impl_struct	ok
+
+# --- #2145: `perform?` typechecks and then reaches codegen unresolved. The
+# checker half landed (#1961) and the codegen half did not, so `check_program`
+# rejects it -- the alternative is the "this is a bug in the compiler" ICE on a
+# program the book prints. The needle is the WHY sentence including the tracker
+# number; the actionable half of the message is pinned by
+# lib/@vibe/compiler/tests/checker_entry_effect_test.vibe. Flip this row to `ok`
+# when the lowering lands.
+perform_question_not_lowered	reject	`perform?` is not lowered yet: the checker types it as `Attempt[T, String]`, but code generation cannot emit it (#2145).

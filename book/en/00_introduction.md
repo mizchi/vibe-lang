@@ -49,14 +49,20 @@ before it.
 toolchain working. [A small program](02_a_small_program.vibe.md) is a
 forty-line calculator that uses features you have not been taught yet —
 it is there so you can decide early whether this language is for you.
-Everything after that is the tour: values and control flow, then
-mutation, data, modules and tests, collections, and then the two
-chapters the language exists for — [Effects](13_effects.vibe.md) and
-[Capabilities](14_capabilities.vibe.md). Generics, concurrency and the
-wasm-facing tooling close it out.
 
-If you already program in a typed functional language, chapters 3 to 12
-will feel familiar and you can skim to Effects.
+Then five short chapters build the vocabulary the rest of the book is
+written in: values and functions, control flow, types and strings,
+mutation, and structs, enums and `match`. That is everything
+[Effects](08_effects.vibe.md) needs, so Effects is chapter 8, and
+[Capabilities](09_capabilities.vibe.md) follows it. Those two are what
+the language exists for, and every chapter after them is written on top
+of them: `Exception` is an effect, so the railway reads differently once
+you have seen the row; a test declares the capabilities it runs with; a
+concurrent program is an effect that suspends.
+
+The rest — the railway, modules and tests, collections and iteration,
+generics and equality, concurrency, and the wasm-facing tooling — fills
+that out.
 
 ## About the examples
 

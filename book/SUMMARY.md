@@ -20,22 +20,25 @@
 ## Structuring Data
 
 - [Structs, enums, and match](en/07_data.vibe.md)
-- [Option and the railway](en/08_option.vibe.md)
-
-## Growing Projects
-
-- [Modules and packages](en/09_modules_packages.vibe.md)
-- [Writing tests](en/10_tests.vibe.md)
-
-## Common Collections
-
-- [Collections](en/11_collections.vibe.md)
-- [Iteration](en/12_iteration.vibe.md)
 
 ## Effects and Authority
 
-- [Effects](en/13_effects.vibe.md)
-- [Capabilities](en/14_capabilities.vibe.md)
+- [Effects](en/08_effects.vibe.md)
+- [Capabilities](en/09_capabilities.vibe.md)
+
+## Handling Failure
+
+- [Option and the railway](en/10_option.vibe.md)
+
+## Growing Projects
+
+- [Modules and packages](en/11_modules_packages.vibe.md)
+- [Writing tests](en/12_tests.vibe.md)
+
+## Common Collections
+
+- [Collections](en/13_collections.vibe.md)
+- [Iteration](en/14_iteration.vibe.md)
 
 ## Generic Programming
 
@@ -66,13 +69,13 @@
 - [型と文字列](ja/05_types_strings.vibe.md)
 - [ミューテーション・region・エスケープ](ja/06_mutation.vibe.md)
 - [構造体・列挙・match](ja/07_data.vibe.md)
-- [Option とレールウェイ](ja/08_option.vibe.md)
-- [モジュールとパッケージ](ja/09_modules_packages.vibe.md)
-- [テストを書く](ja/10_tests.vibe.md)
-- [コレクション](ja/11_collections.vibe.md)
-- [反復](ja/12_iteration.vibe.md)
-- [エフェクト](ja/13_effects.vibe.md)
-- [ケーパビリティ](ja/14_capabilities.vibe.md)
+- [エフェクト](ja/08_effects.vibe.md)
+- [ケーパビリティ](ja/09_capabilities.vibe.md)
+- [Option とレールウェイ](ja/10_option.vibe.md)
+- [モジュールとパッケージ](ja/11_modules_packages.vibe.md)
+- [テストを書く](ja/12_tests.vibe.md)
+- [コレクション](ja/13_collections.vibe.md)
+- [反復](ja/14_iteration.vibe.md)
 - [ジェネリクス・trait・derive](ja/15_generics.vibe.md)
 - [等価性](ja/16_equality.vibe.md)
 - [並行処理](ja/17_concurrency.vibe.md)

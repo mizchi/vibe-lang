@@ -169,7 +169,7 @@ hi x3
 
 Because the body sees an `Option`, an optional `Bool` is not directly a
 condition: `if flag` where `flag?: Bool` is a type error, and you match
-it like any other `Option`. [Option and the railway](08_option.vibe.md)
+it like any other `Option`. [Option and the railway](10_option.vibe.md)
 covers the type properly.
 
 ## Shorthand for small lambdas

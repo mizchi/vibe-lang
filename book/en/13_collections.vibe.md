@@ -1,8 +1,8 @@
-# 11 — Collections
+# 13 — Collections
 
-Previous: [Writing tests](10_tests.vibe.md)
+Previous: [Writing tests](12_tests.vibe.md)
 
-日本語版: [11_collections.vibe.md](../ja/11_collections.vibe.md)
+日本語版: [13_collections.vibe.md](../ja/13_collections.vibe.md)
 
 Arrays, builders, and maps. vibe also has a naming rule that tells you
 which of them mutate, and you will be able to read it off the names by
@@ -142,4 +142,4 @@ persistent map you intend to grow, use `MapHamt` from `@vibex/immut`.
 If you meet `HashMap` in older code it is a transparent alias of
 `MutMap`; `vibe check` warns on the old function names.
 
-Next: [Iteration](12_iteration.vibe.md).
+Next: [Iteration](14_iteration.vibe.md).

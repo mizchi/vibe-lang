@@ -65,6 +65,6 @@ vibe check hello.vibe            # empty
 rewrites the literal. `inspect` does not need an import — the compiler
 desugars it before checking.
 
-See [Tests](10_tests.vibe.md) for the language-level tour.
+See [Tests](12_tests.vibe.md) for the language-level tour.
 
 Next: [Targeting wasm](19_wasm.vibe.md).
