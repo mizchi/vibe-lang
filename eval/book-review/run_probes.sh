@@ -88,6 +88,66 @@ print(m["source"]["commit"],
 fi
 echo "[book-review] compiler: $S2"
 
+# --- CLI-verb lane -----------------------------------------------------
+# A probe may carry `//! cli: <verb> [args...]` directives. Each runs the
+# REAL launcher verb (runtime/vibe) against the probe with the same
+# stage2, so CLI-side answers -- `vibe check` diagnostics and warnings,
+# `type-at`/`symbols`, the launcher's own test reporter -- are reproduced
+# by this harness rather than by a comment asking the reader to re-run
+# them. `vibe check` resolves imports; it is NOT interchangeable with the
+# compile lane above, which is exactly why probes that measure it say so
+# explicitly. The verb's output and exit code are probe data (a check
+# that answers a diagnostic is a measurement); only a missing launcher
+# or runner-shim failure is a harness error.
+#
+# The launcher needs a `viberun` host; provide the same node-runner shim
+# the gates use, routing the CLI wasm to cli_main and program wasm to
+# _start. Mode env vars are the launcher's to set -- the shim adds none.
+LAUNCHER=runtime/vibe
+SHIM="$OUT_DIR/viberun-shim"
+cat > "$SHIM" <<SHIM_EOF
+#!/usr/bin/env bash
+first="\$1"; shift
+case "\$(basename "\$first")" in
+  stage2.wasm|compiler.wasm|vibe-cli.wasm)
+    : "\${VIBE_PREOPEN_DIR:=\$PWD}"; export VIBE_PREOPEN_DIR
+    : "\${VIBE_IMPORT_ABI:=raw}"; export VIBE_IMPORT_ABI
+    exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "\$first" "\$@" ;;
+  *)
+    exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "\$first" "\$@" ;;
+esac
+SHIM_EOF
+chmod +x "$SHIM"
+
+run_cli_directives() {
+  local src="$1" name="$2" directive verb rest rc n=0
+  while IFS= read -r directive; do
+    n=$((n + 1))
+    # shellcheck disable=SC2086
+    set -- ${directive#*cli:}
+    verb="${1:-}"
+    shift 2>/dev/null || true
+    rest="$*"
+    if [ -z "$verb" ]; then
+      echo "--- HARNESS ERROR: empty cli directive in $src"
+      harness_fail=1
+      continue
+    fi
+    echo "--- cli: vibe $verb $src${rest:+ $rest}"
+    if [ ! -f "$LAUNCHER" ]; then
+      echo "--- HARNESS ERROR: launcher not found: $LAUNCHER"
+      harness_fail=1
+      return
+    fi
+    # shellcheck disable=SC2086
+    VIBE_RUNNER="$PWD/$SHIM" VIBE_CLI_WASM="$S2" VIBE_TEST_CLI_WASM="$S2" \
+      bash "$LAUNCHER" "$verb" "$src" $rest >"$OUT_DIR/$name.cli$n.log" 2>&1
+    rc=$?
+    sed 's/^/    /' "$OUT_DIR/$name.cli$n.log"
+    echo "    (exit $rc)"
+  done < <(grep -E '^//! cli:' "$src" || true)
+}
+
 probes=("$@")
 if [ ${#probes[@]} -eq 0 ]; then
   probes=(eval/book-review/probes/p*.vibe)
@@ -130,6 +190,7 @@ for src in "${probes[@]}"; do
         echo "    this is not a compiler answer."
         harness_fail=1
       fi
+      run_cli_directives "$src" "$name"
       continue
   fi
   if VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -156,6 +217,7 @@ for src in "${probes[@]}"; do
       harness_fail=1
     fi
   fi
+  run_cli_directives "$src" "$name"
 done
 
 if [ "$harness_fail" -ne 0 ]; then
