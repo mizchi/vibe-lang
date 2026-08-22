@@ -22,12 +22,12 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wasmtime::{
-    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Instance, Linker, Module,
-    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, Trap,
-    TypedFunc, Val, ValType,
+    bail, format_err, Caller, CallHook, Config, Engine, ExternRef, ExternType, Instance, Linker,
+    Module, ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy,
+    Trap, AsContext, GuestProfiler, TypedFunc, Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -177,6 +177,10 @@ struct HostState {
     sample_global: Option<wasmtime::Global>,
     sample_start: Instant,
     samples: Vec<(u128, u64)>,
+    // Opt-in Wasmtime guest CPU profiler. Kept in Store data so epoch and call
+    // hooks can temporarily take it out while also borrowing the Store context.
+    guest_profiler: Option<GuestProfiler>,
+    guest_cpu_clock: Option<GuestCpuClock>,
     // debugger breakpoints (DAP P1): set of function names to pause at (from
     // VIBE_BREAK), and whether to auto-continue without reading stdin (not a
     // TTY, or VIBE_BREAK_AUTO=1). Empty set => the `vibe::dbg_break` hook is a
@@ -360,6 +364,8 @@ impl HostState {
             sample_global: None,
             sample_start: Instant::now(),
             samples: Vec::new(),
+            guest_profiler: None,
+            guest_cpu_clock: None,
             break_set: Arc::new(break_set),
             break_auto,
             line_break_set: Arc::new(line_break_set),
@@ -1103,14 +1109,114 @@ fn is_component_file(path: &str) -> bool {
     buf == [0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00]
 }
 
+fn parse_guest_profile_interval(value: Option<&str>) -> Result<Duration> {
+    match value {
+        None => Ok(Duration::from_millis(1)),
+        Some(value) => {
+            let micros = value.parse::<u64>().map_err(|_| {
+                format_err!("VIBE_GUEST_PROFILE_INTERVAL_US must be a positive integer, got `{value}`")
+            })?;
+            if micros == 0 {
+                bail!("VIBE_GUEST_PROFILE_INTERVAL_US must be greater than zero");
+            }
+            Ok(Duration::from_micros(micros))
+        }
+    }
+}
+
+fn advance_epoch_deadline(mut deadline: Instant, interval: Duration, now: Instant) -> Instant {
+    while deadline <= now {
+        deadline += interval;
+    }
+    deadline
+}
+
+#[derive(Debug, Clone)]
+struct GuestCpuClock {
+    accumulated_guest: Duration,
+    guest_started_at: Option<Instant>,
+}
+
+impl GuestCpuClock {
+    fn new() -> Self {
+        Self {
+            accumulated_guest: Duration::ZERO,
+            // Profiling is armed while the harness still owns control. The
+            // first CallingWasm hook starts guest accounting.
+            guest_started_at: None,
+        }
+    }
+
+    fn entering_host(&mut self, now: Instant) {
+        if let Some(started_at) = self.guest_started_at.take() {
+            self.accumulated_guest += now.duration_since(started_at);
+        }
+    }
+
+    fn exiting_host(&mut self, now: Instant) {
+        self.guest_started_at = Some(now);
+    }
+
+    fn sample_due(&mut self, now: Instant, interval: Duration) -> Option<Duration> {
+        let running_guest = self
+            .guest_started_at
+            .map(|started_at| now.duration_since(started_at))
+            .unwrap_or(Duration::ZERO);
+        let elapsed_guest = self.accumulated_guest + running_guest;
+        if elapsed_guest < interval {
+            return None;
+        }
+        self.accumulated_guest = Duration::ZERO;
+        if self.guest_started_at.is_some() {
+            self.guest_started_at = Some(now);
+        }
+        Some(elapsed_guest)
+    }
+}
+
+fn run_epoch_ticker(
+    engine: Engine,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    interval: Duration,
+) {
+    let max_sleep = Duration::from_millis(10);
+    let mut deadline = Instant::now() + interval;
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        let now = Instant::now();
+        if now >= deadline {
+            engine.increment_epoch();
+            deadline = advance_epoch_deadline(deadline, interval, now);
+        } else {
+            std::thread::sleep((deadline - now).min(max_sleep));
+        }
+    }
+}
+
 fn run(args: Vec<String>) -> Result<i32> {
     if args.is_empty() {
         print_help();
         bail!("missing wasm/cwasm argument");
     }
     let wasm_path = &args[0];
+    let guest_profile_path = std::env::var("VIBE_GUEST_PROFILE")
+        .ok()
+        .filter(|path| !path.is_empty());
+    let guest_profile_interval_value = std::env::var("VIBE_GUEST_PROFILE_INTERVAL_US").ok();
+    let guest_profile_interval = if guest_profile_path.is_some() {
+        parse_guest_profile_interval(guest_profile_interval_value.as_deref())?
+    } else {
+        Duration::from_millis(1)
+    };
+    if guest_profile_path.is_some() && wasm_path.ends_with(".cwasm") {
+        bail!(
+            "guest profiling needs a fresh .wasm; ordinary .cwasm files have no epoch checkpoints"
+        );
+    }
     let host_fs_scope = prepare_host_fs_scope()?;
     if is_component_file(wasm_path) {
+        if guest_profile_path.is_some() {
+            bail!("guest profiling for Component Model inputs is not implemented yet");
+        }
         if host_fs_scope.is_some() {
             bail!(
                 "host_fs_scope: unsupported for component guests (no core vibe filesystem imports)"
@@ -1158,7 +1264,7 @@ fn run(args: Vec<String>) -> Result<i32> {
         fuel_profile
     };
     let mut cfg = engine_config();
-    if sample_ms.is_some() {
+    if sample_ms.is_some() || guest_profile_path.is_some() {
         cfg.epoch_interruption(true);
     }
     if fuel_profile {
@@ -1170,9 +1276,51 @@ fn run(args: Vec<String>) -> Result<i32> {
     let limits = store_mem_limits();
 
     let mut state = HostState::new(prog_args, MemLimiter::new(limits));
+    if guest_profile_path.is_some() {
+        state.guest_profiler = Some(GuestProfiler::new(
+            &engine,
+            wasm_path,
+            guest_profile_interval,
+            [(wasm_path.to_string(), module.clone())],
+        )?);
+    }
     state.host_fs_scope = host_fs_scope;
     let mut store = Store::new(&engine, state);
     store.limiter(|s| &mut s.mem);
+    // Instantiation may execute guest start functions. Keep the default epoch
+    // action from interrupting them before the shared sampler callback is armed.
+    if sample_ms.is_some() || guest_profile_path.is_some() {
+        store.set_epoch_deadline(1_000_000_000);
+    }
+    if guest_profile_path.is_some() {
+        store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new());
+        store.call_hook(|mut ctx, kind| {
+            let now = Instant::now();
+            let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
+            profiler.call_hook(ctx.as_context(), kind);
+            ctx.data_mut().guest_profiler = Some(profiler);
+            match kind {
+                CallHook::CallingHost | CallHook::ReturningFromWasm => ctx
+                    .data_mut()
+                    .guest_cpu_clock
+                    .as_mut()
+                    .unwrap()
+                    .entering_host(now),
+                CallHook::ReturningFromHost | CallHook::CallingWasm => {
+                    // Epochs can advance many times while a blocking host import
+                    // runs. Rebase the deadline while preserving accumulated
+                    // guest CPU time in the shared clock.
+                    ctx.set_epoch_deadline(1);
+                    ctx.data_mut()
+                        .guest_cpu_clock
+                        .as_mut()
+                        .unwrap()
+                        .exiting_host(now);
+                }
+            }
+            Ok(())
+        });
+    }
     if fuel_profile {
         // Start from the full u64 budget; consumed = u64::MAX - remaining at
         // report time. No program gets anywhere near exhausting this, so
@@ -1246,18 +1394,29 @@ fn run(args: Vec<String>) -> Result<i32> {
     // on each tick, and spawn a thread that bumps the engine epoch every `ms`.
     let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut sampler_thread = None;
-    if let Some(ms) = sample_ms {
-        if let Some(g) = instance.get_global(&mut store, "__heap_ptr") {
-            {
-                let d = store.data_mut();
-                d.sample_global = Some(g);
-                d.sample_start = Instant::now();
-                d.samples.clear();
+    if sample_ms.is_some() || guest_profile_path.is_some() {
+        let heap_interval = sample_ms.map(Duration::from_millis);
+        let tick_interval = heap_interval
+            .into_iter()
+            .chain(guest_profile_path.as_ref().map(|_| guest_profile_interval))
+            .min()
+            .unwrap();
+        if sample_ms.is_some() {
+            if let Some(g) = instance.get_global(&mut store, "__heap_ptr") {
+                {
+                    let d = store.data_mut();
+                    d.sample_global = Some(g);
+                    d.sample_start = Instant::now();
+                    d.samples.clear();
+                }
             }
-            store.set_epoch_deadline(1);
-            store.epoch_deadline_callback(|mut ctx| {
-                let gopt = ctx.data().sample_global;
-                if let Some(g) = gopt {
+        }
+        store.set_epoch_deadline(1);
+        let mut last_heap = Instant::now();
+        store.epoch_deadline_callback(move |mut ctx| {
+            let now = Instant::now();
+            if heap_interval.is_some_and(|interval| now.duration_since(last_heap) >= interval) {
+                if let Some(g) = ctx.data().sample_global {
                     let v = match g.get(&mut ctx) {
                         Val::I32(x) => x as u32 as u64,
                         Val::I64(x) => x as u64,
@@ -1266,27 +1425,26 @@ fn run(args: Vec<String>) -> Result<i32> {
                     let t = ctx.data().sample_start.elapsed().as_nanos();
                     ctx.data_mut().samples.push((t, v));
                 }
-                Ok(wasmtime::UpdateDeadline::Continue(1))
-            });
-            let eng = engine.clone();
-            let stop = stop_flag.clone();
-            let interval = std::time::Duration::from_millis(ms);
-            // Sleep in small chunks (<=10ms) so the stop flag is observed promptly:
-            // a coarse `--mem-sample=1000` must not stall shutdown for a full
-            // second at join. Increment the epoch once per full `interval`.
-            let chunk = interval.min(std::time::Duration::from_millis(10));
-            sampler_thread = Some(std::thread::spawn(move || {
-                let mut since_tick = std::time::Duration::ZERO;
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    std::thread::sleep(chunk);
-                    since_tick += chunk;
-                    if since_tick >= interval {
-                        eng.increment_epoch();
-                        since_tick = std::time::Duration::ZERO;
-                    }
-                }
-            }));
-        }
+                last_heap = now;
+            }
+            let guest_delta = ctx
+                .data_mut()
+                .guest_cpu_clock
+                .as_mut()
+                .and_then(|clock| clock.sample_due(now, guest_profile_interval));
+            if let Some(delta) = guest_delta {
+                let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
+                profiler.sample(ctx.as_context(), delta);
+                ctx.data_mut().guest_profiler = Some(profiler);
+            }
+            Ok(wasmtime::UpdateDeadline::Continue(1))
+        });
+        let eng = engine.clone();
+        let stop = stop_flag.clone();
+        let interval = tick_interval;
+        sampler_thread = Some(std::thread::spawn(move || {
+            run_epoch_ticker(eng, stop, interval)
+        }));
     }
 
     let result = start.call(&mut store, ());
@@ -1340,6 +1498,22 @@ fn run(args: Vec<String>) -> Result<i32> {
     if sample_ms.is_some() {
         let samples = std::mem::take(&mut store.data_mut().samples);
         report_samples(&samples);
+    }
+
+    // Finish after success or trap so failed guests still leave an actionable
+    // profile. The execution result is interpreted only after the file closes.
+    if let Some(path) = guest_profile_path {
+        let profiler = store.data_mut().guest_profiler.take().unwrap();
+        let output = fs::File::create(&path)
+            .map_err(|e| format_err!("create guest profile {path}: {e}"))?;
+        let mut output = io::BufWriter::new(output);
+        profiler
+            .finish(&mut output)
+            .map_err(|e| format_err!("write guest profile {path}: {e}"))?;
+        output
+            .flush()
+            .map_err(|e| format_err!("flush guest profile {path}: {e}"))?;
+        eprintln!("vibe::guest-profile path={path}");
     }
 
     // tier 4 per-function allocation attribution. Credit the last-running
@@ -1509,6 +1683,117 @@ fn fmt_ops(ops: f64) -> String {
     }
 }
 
+struct GuestProfileSampler {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+fn spawn_epoch_ticker(engine: Engine, interval: Duration) -> GuestProfileSampler {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let thread = std::thread::spawn(move || run_epoch_ticker(engine, thread_stop, interval));
+    GuestProfileSampler { stop, thread }
+}
+
+fn arm_guest_profile(
+    store: &mut Store<HostState>,
+    module: &Module,
+    name: &str,
+    interval: Duration,
+) -> Result<GuestProfileSampler> {
+    store.data_mut().guest_profiler = Some(GuestProfiler::new(
+        store.engine(),
+        name,
+        interval,
+        [(name.to_string(), module.clone())],
+    )?);
+    store.data_mut().guest_cpu_clock = Some(GuestCpuClock::new());
+    store.call_hook(|mut ctx, kind| {
+        let now = Instant::now();
+        let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
+        profiler.call_hook(ctx.as_context(), kind);
+        ctx.data_mut().guest_profiler = Some(profiler);
+        match kind {
+            CallHook::CallingHost | CallHook::ReturningFromWasm => ctx
+                .data_mut()
+                .guest_cpu_clock
+                .as_mut()
+                .unwrap()
+                .entering_host(now),
+            CallHook::ReturningFromHost | CallHook::CallingWasm => {
+                ctx.set_epoch_deadline(1);
+                ctx.data_mut()
+                    .guest_cpu_clock
+                    .as_mut()
+                    .unwrap()
+                    .exiting_host(now);
+            }
+        }
+        Ok(())
+    });
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_callback(move |mut ctx| {
+        let now = Instant::now();
+        let delta = ctx
+            .data_mut()
+            .guest_cpu_clock
+            .as_mut()
+            .and_then(|clock| clock.sample_due(now, interval));
+        if let Some(delta) = delta {
+            let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
+            profiler.sample(ctx.as_context(), delta);
+            ctx.data_mut().guest_profiler = Some(profiler);
+        }
+        Ok(wasmtime::UpdateDeadline::Continue(1))
+    });
+    Ok(spawn_epoch_ticker(store.engine().clone(), interval))
+}
+
+fn finish_guest_profile(
+    store: &mut Store<HostState>,
+    sampler: GuestProfileSampler,
+    path: &std::path::Path,
+) -> Result<()> {
+    sampler
+        .stop
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = sampler.thread.join();
+    let profiler = store.data_mut().guest_profiler.take().unwrap();
+    let output = fs::File::create(path)
+        .map_err(|e| format_err!("create guest profile {}: {e}", path.display()))?;
+    let mut output = io::BufWriter::new(output);
+    profiler.finish(&mut output)?;
+    output
+        .flush()
+        .map_err(|e| format_err!("flush guest profile {}: {e}", path.display()))?;
+    eprintln!("vibe::guest-profile path={}", path.display());
+    Ok(())
+}
+
+fn profile_filename(label: &str) -> String {
+    let sanitized: String = label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        // Leave ample room below common 255-byte component limits for the
+        // separator, stable hash, and extension. Sanitization emits ASCII, so
+        // this character bound is also a byte bound.
+        .take(200)
+        .collect();
+    // Sanitizing is not injective (`a/b` and `a?b` both become `a_b`). Add a
+    // deterministic FNV-1a suffix so distinct legal labels cannot overwrite
+    // each other's profile within one benchmark invocation.
+    let hash = label.as_bytes().iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("{sanitized}-{hash:016x}.json")
+}
+
 // Benchmark mode. Instantiate one Store+Instance PER BENCH BLOCK (#747: the
 // linear backend never frees, so sharing an instance let an earlier block's
 // bump-heap high-water mark inflate later blocks 8-10×), warm the block on its
@@ -1536,8 +1821,24 @@ fn bench(args: Vec<String>) -> Result<i32> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(50);
     let label = std::env::var("VIBE_BENCH_LABEL").unwrap_or_else(|_| wasm_path.clone());
+    let profile_dir = std::env::var("VIBE_BENCH_GUEST_PROFILE_DIR")
+        .ok()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let profile_interval_value = std::env::var("VIBE_GUEST_PROFILE_INTERVAL_US").ok();
+    let profile_interval = if profile_dir.is_some() {
+        parse_guest_profile_interval(profile_interval_value.as_deref())?
+    } else {
+        Duration::from_millis(1)
+    };
 
-    let cfg = engine_config();
+    if profile_dir.is_some() && wasm_path.ends_with(".cwasm") {
+        bail!("bench guest profiling needs a fresh .wasm; ordinary .cwasm files have no epoch checkpoints");
+    }
+    let mut cfg = engine_config();
+    if profile_dir.is_some() {
+        cfg.epoch_interruption(true);
+    }
     let engine = Engine::new(&cfg)?;
     let module = load_module(&engine, wasm_path)?;
     let mut linker = Linker::new(&engine);
@@ -1553,6 +1854,12 @@ fn bench(args: Vec<String>) -> Result<i32> {
         state.capture_stdout = true; // suppress per-iteration program output
         let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.mem);
+        // Epoch instrumentation is compiled in for profiled benches, but the
+        // profiler is intentionally armed only after warmup. Keep warmup's
+        // deadline out of reach so the default epoch action cannot trap it.
+        if profile_dir.is_some() {
+            store.set_epoch_deadline(1_000_000_000);
+        }
         let instance = linker.instantiate(&mut store, &module)?;
         Ok((store, instance))
     };
@@ -1579,22 +1886,40 @@ fn bench(args: Vec<String>) -> Result<i32> {
     fn bench_one(
         store: &mut Store<HostState>,
         instance: &Instance,
+        module: &Module,
         block_label: &str,
         warmup: u64,
         iters: u64,
+        profile_path: Option<&std::path::Path>,
+        profile_interval: Duration,
         mut invoke: impl FnMut(&mut Store<HostState>, &str) -> Result<()>,
     ) -> Result<()> {
         for _ in 0..warmup {
             invoke(store, "warmup")?;
         }
+        let profiler = profile_path
+            .map(|_| arm_guest_profile(store, module, block_label, profile_interval))
+            .transpose()?;
         let heap_before = read_heap_ptr(instance, store);
         let mut samples: Vec<u128> = Vec::with_capacity(iters as usize);
-        for _ in 0..iters {
-            let t0 = Instant::now();
-            invoke(store, "measurement")?;
-            samples.push(t0.elapsed().as_nanos());
-        }
+        let measurement_result: Result<()> = (|| {
+            for _ in 0..iters {
+                let t0 = Instant::now();
+                invoke(store, "measurement")?;
+                samples.push(t0.elapsed().as_nanos());
+            }
+            Ok(())
+        })();
         let heap_after = read_heap_ptr(instance, store);
+        let finish_result = if let (Some(sampler), Some(path)) = (profiler, profile_path) {
+            finish_guest_profile(store, sampler, path)
+        } else {
+            Ok(())
+        };
+        // Always stop/join/flush the profiler before propagating an invocation
+        // failure. A trapping measurement is often the most useful profile.
+        measurement_result?;
+        finish_result?;
 
         samples.sort_unstable();
         let n = samples.len();
@@ -1643,9 +1968,15 @@ fn bench(args: Vec<String>) -> Result<i32> {
             bench_one(
                 &mut store,
                 &instance,
+                &module,
                 &block_label,
                 warmup,
                 iters,
+                profile_dir
+                    .as_ref()
+                    .map(|dir| dir.join(profile_filename(&block_label)))
+                    .as_deref(),
+                profile_interval,
                 |store, phase| {
                     store.data_mut().captured_stdout.clear();
                     match func.call(&mut *store, 0) {
@@ -1670,9 +2001,15 @@ fn bench(args: Vec<String>) -> Result<i32> {
     bench_one(
         &mut store,
         &instance,
+        &module,
         &label,
         warmup,
         iters,
+        profile_dir
+            .as_ref()
+            .map(|dir| dir.join(profile_filename(&label)))
+            .as_deref(),
+        profile_interval,
         |store, phase| {
             store.data_mut().captured_stdout.clear();
             match start.call(&mut *store, ()) {
@@ -4412,6 +4749,112 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_filenames_disambiguate_sanitized_label_collisions() {
+        let slash = profile_filename("bench::a/b");
+        let question = profile_filename("bench::a?b");
+        assert_ne!(slash, question);
+        assert_eq!(slash, profile_filename("bench::a/b"));
+        assert!(slash.ends_with(".json"));
+    }
+
+    #[test]
+    fn profile_filenames_fit_common_component_limits() {
+        let filename = profile_filename(&"a".repeat(1_000));
+        assert!(filename.len() <= 255, "filename is {} bytes", filename.len());
+        assert!(filename.ends_with(".json"));
+    }
+
+    #[test]
+    fn guest_profile_interval_rejects_invalid_explicit_values() {
+        assert_eq!(parse_guest_profile_interval(None).unwrap(), Duration::from_millis(1));
+        assert_eq!(parse_guest_profile_interval(Some("250")).unwrap(), Duration::from_micros(250));
+        for invalid in ["0", "-1", "100O", ""] {
+            assert!(parse_guest_profile_interval(Some(invalid)).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn epoch_deadline_preserves_sub_chunk_remainder() {
+        let start = Instant::now();
+        let interval = Duration::from_micros(10_001);
+        let next = advance_epoch_deadline(
+            start + interval,
+            interval,
+            start + Duration::from_millis(20),
+        );
+        assert_eq!(next.duration_since(start), Duration::from_micros(20_002));
+    }
+
+    #[test]
+    fn guest_sample_clock_excludes_time_spent_in_host_calls() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        let mut clock = GuestCpuClock::new();
+        clock.exiting_host(start);
+        clock.entering_host(start + Duration::from_micros(500));
+        clock.exiting_host(start + Duration::from_secs(10));
+        assert_eq!(
+            clock.sample_due(
+                start + Duration::from_secs(10) + Duration::from_micros(500),
+                interval,
+            ),
+            Some(interval)
+        );
+    }
+
+    #[test]
+    fn guest_sample_clock_accumulates_short_bursts_across_host_calls() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        let mut clock = GuestCpuClock::new();
+        clock.exiting_host(start);
+        clock.entering_host(start + Duration::from_micros(400));
+        clock.exiting_host(start + Duration::from_secs(1));
+        clock.entering_host(start + Duration::from_secs(1) + Duration::from_micros(400));
+        clock.exiting_host(start + Duration::from_secs(2));
+        assert_eq!(
+            clock.sample_due(
+                start + Duration::from_secs(2) + Duration::from_micros(300),
+                interval,
+            ),
+            Some(Duration::from_micros(1_100))
+        );
+    }
+
+    #[test]
+    fn guest_sample_clock_excludes_setup_and_between_invocation_harness_time() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        let mut clock = GuestCpuClock::new();
+        assert_eq!(
+            clock.sample_due(start + Duration::from_secs(10), interval),
+            None
+        );
+        clock.exiting_host(start + Duration::from_secs(10));
+        clock.entering_host(start + Duration::from_secs(10) + Duration::from_micros(400));
+        clock.exiting_host(start + Duration::from_secs(20));
+        assert_eq!(
+            clock.sample_due(
+                start + Duration::from_secs(20) + Duration::from_micros(600),
+                interval,
+            ),
+            Some(interval)
+        );
+    }
+
+    #[test]
+    fn epoch_ticker_stops_promptly_for_a_large_profile_interval() {
+        let engine = Engine::default();
+        let sampler = spawn_epoch_ticker(engine, Duration::from_secs(60));
+        let started = Instant::now();
+        sampler
+            .stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        sampler.thread.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn publish_immutable_text_is_no_replace_and_byte_exact() {

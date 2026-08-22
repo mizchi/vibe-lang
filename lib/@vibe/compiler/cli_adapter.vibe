@@ -442,6 +442,78 @@ fn adapter_string_to_bytes(s: String) -> Bytes {
   Bytes::from_array(out)
 }
 
+/// Host-action planner for `vibe profile`. Wasmtime profiling must be armed by
+/// the host before the target guest is instantiated, so the portable selfhost
+/// CLI owns argument semantics and writes a versioned request for the launcher.
+export fn profile_plan_main() -> Int with Exception + Fs + Env {
+  let action_path = Env::get("VIBE_HOST_ACTION_OUT")
+  if action_path == "" {
+    throw("profile requires VIBE_HOST_ACTION_OUT")
+  } else {
+    let mut source = ""
+    let mut output = "profile.json"
+    let mut interval = "1000"
+    let guest_args = Array::slice([""], 0, 0)
+    let mut after_separator = false
+    let mut i = 1
+    while i < Env::args_len() {
+      let arg = Env::args_get(i)
+      if after_separator {
+        Array::push(guest_args, arg)
+        i = i + 1
+      } else if arg == "--" {
+        after_separator = true
+        i = i + 1
+      } else if arg == "--out" || arg == "--interval-us" {
+        if i + 1 >= Env::args_len() {
+          throw(String::concat("profile: missing value after ", arg))
+        } else {
+          let value = Env::args_get(i + 1)
+          if arg == "--out" {
+            output = value
+          } else {
+            interval = value
+          }
+          i = i + 2
+        }
+      } else if String::starts_with(arg, "--out=") {
+        output = arg[6: String::length(arg)]
+        i = i + 1
+      } else if String::starts_with(arg, "--interval-us=") {
+        interval = arg[14: String::length(arg)]
+        i = i + 1
+      } else if String::starts_with(arg, "-") {
+        throw(String::concat("profile: unknown option ", arg))
+      } else if source == "" {
+        source = arg
+        i = i + 1
+      } else {
+        throw(String::concat("profile: unexpected argument ", arg))
+      }
+    }
+    if source == "" {
+      throw("usage: vibe profile <file.vibex> [--out FILE] [--interval-us N]")
+    } else if output == "" {
+      throw("profile: --out must not be empty")
+    } else if String::contains(source, "\n") || String::contains(output, "\n") || String::contains(interval, "\n") {
+      throw("profile: newlines are not supported in host-action fields")
+    } else {
+      let mut plan = String::concat("vibe-host-action-v1\nrun-guest-profile\n", String::concat(source, "\n"))
+      plan = String::concat(plan, String::concat(output, "\n"))
+      plan = String::concat(plan, String::concat(interval, "\n"))
+      for guest_arg in guest_args {
+        if String::contains(guest_arg, "\n") {
+          throw("profile: newlines are not supported in guest arguments")
+        } else {
+          plan = String::concat(plan, String::concat(guest_arg, "\n"))
+        }
+      }
+      Fs::write_bytes(action_path, adapter_string_to_bytes(plan))
+      0
+    }
+  }
+}
+
 fn read_arg_or_env(index: Int, env_name: String) -> String with Env {
   let value = Env::args_get(index)
   if value != "" {
@@ -1743,7 +1815,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
 /// agnostic -- so this gets the same no-print / real-exit-code `_start`
 /// without needing the sugar or a seed bump.
 export fn main() -> Unit with Exception + Fs + Env + Stdin + Stdout + Process {
-  let code = cli_main()
+  let code = if Env::get("VIBE_HOST_ACTION_OUT") == "" {
+    cli_main()
+  } else {
+    profile_plan_main()
+  }
   if code != 0 {
     vibe_process_exit_raw(code)
   } else {

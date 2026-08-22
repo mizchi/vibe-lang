@@ -108,7 +108,188 @@ mlines="$(printf '%s\n' "$multi_out" | grep -cE '^vibe::bench ' || true)"
 [ "${mlines:-0}" -eq 2 ] && ok "per-block: exactly 2 machine-readable rows for 2 blocks" \
   || bad "per-block: expected 2 vibe::bench rows, got $mlines (out: $multi_out)"
 
-# 6. #1508: direct client `Http::*` calls in bench blocks use the compiled
+# 6. Guest CPU profiles are isolated per block and written in Firefox's
+# processed-profile JSON format. Warmup happens before the profiler is armed.
+for empty_profile_arg in '--guest-profile' '--guest-profile='; do
+  set +e
+  if [ "$empty_profile_arg" = '--guest-profile' ]; then
+    empty_bench_profile_out="$($VIBE bench "$proj/multi_bench.vibe" --guest-profile '' 2>&1)"
+  else
+    empty_bench_profile_out="$($VIBE bench "$proj/multi_bench.vibe" --guest-profile= 2>&1)"
+  fi
+  empty_bench_profile_status=$?
+  set -e
+  [ "$empty_bench_profile_status" -ne 0 ] \
+    && printf '%s\n' "$empty_bench_profile_out" | grep -q -- '--guest-profile must not be empty' \
+    && ok "guest profile: rejects empty $empty_profile_arg" \
+    || bad "guest profile: accepted empty $empty_profile_arg ($empty_bench_profile_out)"
+done
+
+profile_dir="$WORK/bench-profiles"
+profile_out="$($VIBE bench "$proj/multi_bench.vibe" --iters 200 --warmup 20 \
+  --guest-profile "$profile_dir" --interval-us 100 2>&1)"
+profile_count="$(find "$profile_dir" -name '*.json' -type f | wc -l | tr -d ' ')"
+[ "$profile_count" -eq 2 ] && ok "guest profile: one JSON file per bench block" \
+  || bad "guest profile: expected 2 JSON files, got $profile_count ($profile_out)"
+if find "$profile_dir" -name '*.json' -type f -exec grep -l '"threads"' {} \; | grep -q .; then
+  ok "guest profile: Firefox processed-profile JSON written"
+else
+  bad "guest profile: no processed-profile JSON found"
+fi
+cat > "$proj/named_profile_bench.vibe" <<'EOF'
+bench "named_profile" {
+  let mut i = 0
+  let mut acc = 0
+  while i < 20000000 { acc = acc + (i & 7); i = i + 1 }
+  let _ = acc
+}
+EOF
+named_profile_dir="$WORK/named-bench-profile"
+named_profile_out="$($VIBE bench "$proj/named_profile_bench.vibe" --iters 1 --warmup 0 \
+  --guest-profile "$named_profile_dir" --interval-us 100 2>&1)"
+if find "$named_profile_dir" -name '*.json' -type f \
+  -exec grep -l '__bench_named_profile' {} \; | grep -q .; then
+  ok "guest profile: profiled bench preserves Wasm function names"
+else
+  bad "guest profile: profiled bench lost Wasm function names ($named_profile_out)"
+fi
+
+# Sanitized labels are not unique (`a/b` and `a?b` both become `a_b`), so the
+# runner must append a stable discriminator instead of overwriting one profile.
+cat > "$proj/colliding_profile_names.vibe" <<'EOF'
+bench "a/b" { let _ = 1 + 1 }
+bench "a?b" { let _ = 2 + 2 }
+EOF
+collision_dir="$WORK/colliding-profiles"
+collision_out="$($VIBE bench "$proj/colliding_profile_names.vibe" --iters 2 --warmup 0 \
+  --guest-profile "$collision_dir" --interval-us 100 2>&1)"
+collision_count="$(find "$collision_dir" -name '*.json' -type f | wc -l | tr -d ' ')"
+[ "$collision_count" -eq 2 ] && ok "guest profile: sanitized labels cannot overwrite each other" \
+  || bad "guest profile: colliding labels produced $collision_count files ($collision_out)"
+
+# A failure after warmup must still stop the sampler and flush its diagnostic
+# profile. The shared Array is incremented once by warmup, then the first
+# measured iteration traps.
+cat > "$proj/trapping_profile_bench.vibe" <<'EOF'
+let calls = [0]
+bench "trap_measurement" with Exception {
+  let next = calls[0] + 1
+  Array::set(calls, 0, next)
+  if next > 1 { throw("measurement boom") }
+}
+EOF
+trap_bench_dir="$WORK/trapping-bench-profiles"
+set +e
+trap_bench_out="$($VIBE bench "$proj/trapping_profile_bench.vibe" --iters 1 --warmup 1 \
+  --guest-profile "$trap_bench_dir" --interval-us 100 2>&1)"
+trap_bench_status=$?
+set -e
+trap_bench_profile="$(find "$trap_bench_dir" -name '*.json' -type f | head -1)"
+[ "$trap_bench_status" -ne 0 ] && [ -s "$trap_bench_profile" ] && grep -q '"threads"' "$trap_bench_profile" \
+  && ok "guest profile: measured bench trap still flushes profile JSON" \
+  || bad "guest profile: measured trap lost profile (status=$trap_bench_status, out=$trap_bench_out)"
+
+# 7. The normal `vibe profile` surface produces a named guest profile.
+cat > "$proj/profile.vibex" <<'EOF'
+fn spin(n: Int) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  while i < n { acc = acc + (i & 7); i = i + 1 }
+  acc
+}
+fn main with () { let _ = spin(20000000) }
+EOF
+run_profile="$WORK/run-profile.json"
+profile_run_out="$($VIBE profile "$proj/profile.vibex" --out "$run_profile" --interval-us 100 2>&1)"
+[ -s "$run_profile" ] && grep -q '"threads"' "$run_profile" \
+  && ok "vibe profile: normal run writes processed-profile JSON" \
+  || bad "vibe profile: missing JSON ($profile_run_out)"
+grep -q 'spin' "$run_profile" \
+  && ok "vibe profile: Wasm name section resolves guest function" \
+  || bad "vibe profile: named spin frame missing"
+
+spaced_profile="$WORK/cpu profiles/run profile.json"
+mkdir -p "$(dirname "$spaced_profile")"
+spaced_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$spaced_profile" --interval-us 100 2>&1)"
+[ -s "$spaced_profile" ] && grep -q '"threads"' "$spaced_profile" \
+  && ok "vibe profile: output paths containing whitespace stay one argument" \
+  || bad "vibe profile: whitespace output path failed ($spaced_profile_out)"
+
+separator_profile="$WORK/separator-profile.json"
+separator_child_profile="$WORK/guest-owned-profile.json"
+separator_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$separator_profile" \
+  --interval-us 100 -- --guest-profile="$separator_child_profile" 2>&1)"
+[ -s "$separator_profile" ] && [ ! -e "$separator_child_profile" ] \
+  && ok "vibe profile: launcher preserves flags after the guest argument separator" \
+  || bad "vibe profile: launcher consumed a guest flag ($separator_profile_out)"
+
+alias_source="$proj/profile-output-alias.vibex"
+alias_backup="$WORK/profile-output-alias.backup"
+cp "$proj/profile.vibex" "$alias_source"
+cp "$alias_source" "$alias_backup"
+set +e
+alias_profile_out="$($VIBE profile "$alias_source" --out "$alias_source" 2>&1)"
+alias_profile_status=$?
+set -e
+[ "$alias_profile_status" -ne 0 ] && cmp -s "$alias_source" "$alias_backup" \
+  && printf '%s\n' "$alias_profile_out" | grep -q 'must not resolve to the source' \
+  && ok "vibe profile: rejects an output path that aliases the source" \
+  || bad "vibe profile: source alias was not rejected safely ($alias_profile_out)"
+
+set +e
+empty_profile_out="$($VIBE profile "$proj/profile.vibex" --out '' 2>&1)"
+empty_profile_status=$?
+set -e
+[ "$empty_profile_status" -ne 0 ] \
+  && printf '%s\n' "$empty_profile_out" | grep -q -- '--out must not be empty' \
+  && ok "vibe profile: rejects an empty output path" \
+  || bad "vibe profile: accepted an empty output path ($empty_profile_out)"
+
+for invalid_interval in 0 -1 100O; do
+  set +e
+  invalid_interval_out="$($VIBE profile "$proj/profile.vibex" \
+    --out "$WORK/invalid-$invalid_interval.json" --interval-us "$invalid_interval" 2>&1)"
+  invalid_interval_status=$?
+  set -e
+  [ "$invalid_interval_status" -ne 0 ] \
+    && printf '%s\n' "$invalid_interval_out" | grep -q 'positive integer\|greater than zero' \
+    && ok "vibe profile: rejects invalid interval $invalid_interval" \
+    || bad "vibe profile: accepted invalid interval $invalid_interval ($invalid_interval_out)"
+done
+
+# A guest failure must not discard the samples collected before the trap.
+cat > "$proj/trap.vibex" <<'EOF'
+fn work(n: Int) -> Int {
+  let mut i = 0
+  while i < n { i = i + 1 }
+  i
+}
+fn main() -> Unit with Exception {
+  let _ = work(20000000)
+  throw("profiled boom")
+}
+EOF
+trap_profile="$WORK/trap-profile.json"
+set +e
+trap_profile_out="$($VIBE profile "$proj/trap.vibex" --out "$trap_profile" --interval-us 100 2>&1)"
+trap_profile_status=$?
+set -e
+[ "$trap_profile_status" -ne 0 ] && [ -s "$trap_profile" ] && grep -q '"threads"' "$trap_profile" \
+  && ok "vibe profile: guest trap still flushes profile JSON" \
+  || bad "vibe profile: trap did not flush JSON (status=$trap_profile_status, out=$trap_profile_out)"
+
+# A normal precompiled image has no epoch checkpoints and must fail closed.
+cwasm="$WORK/plain.cwasm"
+"$RT" --precompile lib/@vibe/optimizer/__fixtures/empty.wasm -o "$cwasm"
+set +e
+cwasm_out="$(VIBE_GUEST_PROFILE="$WORK/invalid.json" "$RT" "$cwasm" 2>&1)"
+cwasm_status=$?
+set -e
+[ "$cwasm_status" -ne 0 ] && printf '%s\n' "$cwasm_out" | grep -q 'fresh .wasm' \
+  && ok "guest profile: ordinary .cwasm is rejected with guidance" \
+  || bad "guest profile: .cwasm rejection missing (status=$cwasm_status, out=$cwasm_out)"
+
+# 8. #1508: direct client `Http::*` calls in bench blocks use the compiled
 # host-import path. The local echo server gives this an actual request/response
 # round trip rather than merely proving that the source type-checks.
 requested_http_echo_port="${VIBE_HTTP_ECHO_PORT:-0}"
