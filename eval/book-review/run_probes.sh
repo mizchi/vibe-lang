@@ -46,6 +46,17 @@ else
     echo "[book-review] compiler you mean explicitly: BOOK_REVIEW_STAGE2=$S2" >&2
     exit 2
   fi
+  # A matching commit is not enough when the compiler sources carry
+  # uncommitted edits -- the artifact cannot be proven to contain them
+  # (same trap as vibe_test.sh's ahead-of-seed notice, from the
+  # refusing side).
+  if [ -n "$(git status --porcelain -- lib/@vibe lib/@vibex bootstrap/seed 2>/dev/null)" ]; then
+    echo "[book-review] compiler sources have uncommitted changes; the newest" >&2
+    echo "[book-review] generation cannot be proven to contain them. Rebuild" >&2
+    echo "[book-review] (bash scripts/generations.sh build), or pass the compiler" >&2
+    echo "[book-review] you mean explicitly: BOOK_REVIEW_STAGE2=$S2" >&2
+    exit 2
+  fi
 fi
 echo "[book-review] compiler: $S2"
 
@@ -71,8 +82,11 @@ for src in "${probes[@]}"; do
   rm -f "$wasm" "$wasm.diag"
   echo ""
   echo "=== $name"
-  case "$name" in
-    *assert*)
+  # Lane selection is by CONTENT: a probe declaring a top-level `test`
+  # block runs on the test lane, everything else on the compile lane.
+  # (A filename marker would silently misroute a probe that does not
+  # follow it.)
+  if grep -qE '^test([[:space:]]*\{|[[:space:]]+")' "$src"; then
       # test-block probes go through vibe test, not the compile lane
       test_log="$OUT_DIR/$name.test.log"
       VIBE_TEST_CLI_WASM="$S2" bash scripts/vibe_test.sh "$src" >"$test_log" 2>&1
@@ -89,8 +103,7 @@ for src in "${probes[@]}"; do
         harness_fail=1
       fi
       continue
-      ;;
-  esac
+  fi
   if VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
     "$S2" "$src" "$wasm" main >"$OUT_DIR/$name.compile.log" 2>&1; then

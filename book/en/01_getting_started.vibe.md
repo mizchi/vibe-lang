@@ -38,10 +38,10 @@ vibe run hello.vibex
 
 The `.vibex` extension marks an *executable root*: a file with exactly
 one `fn main`, which other files cannot import (ADR-0075). Reusable
-source modules end in `.vibe`. The other files you will meet —
-`vibe.deps` below, a package's `index.vpkg` in
-[Modules and packages](11_modules_packages.vibe.md) — are project
-metadata, not source.
+source modules end in `.vibe`. Two more files appear later:
+`vibe.deps` below is project metadata, and a package's `index.vpkg` —
+[Modules and packages](11_modules_packages.vibe.md) — is its public
+contract, declarations the compiler checks the implementation against.
 
 The interesting part is `with Console`. It is the program's permission
 to write to the terminal, and it is required: delete it and the program
