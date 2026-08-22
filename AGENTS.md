@@ -46,23 +46,15 @@ came from that one decision, the first of them silently wrong (an outer
 `let v = 1` was read for an inner `v` of another type, so `==` answered `false`
 for two equal `[1, 2]` arrays). With no environment the classification can be
 absent but never wrong.
-The one non-syntactic exclusion is a **generic struct literal**, admitted only
-when every type argument written at it is one whose **raw `==` compares
-content**: one generated `Box::equals` serves every instantiation and compares
-the erased field with a raw `==`. Measured: `Int` / `Bool` / `Unit` / `String`
-resolve and answer what the annotated `Array[Box[T]]` answers; `Double`,
-`Bytes` and any aggregate or struct argument do not — a raw `==` on those is
-pointer equality, and the annotated form is wrong there too (#2195, which
-reproduces on a bare `a == b` with no array in sight), so adopting them would
-only add a spelling that reaches the same wrong answer. `Float` is excluded
-with `Double`, and `Char` because two distinct equal-content `Char`s cannot be
-constructed to measure it — an unmeasured name gets the trap.
-**`is_scalar_type_name` is the wrong predicate here** and using it was the
-defect: it answers "needs no generated comparator", not "raw `==` compares
-content". A declared name is excluded the same way when any of its own FIELDS
-is one this pass cannot show is compared by content, transitively and through
-type aliases: `struct Outer { box: Box[Array[Int]] }` takes no type parameters,
-so its shape looks ordinary, but `Outer::equals` calls `Box::equals`. The field
+Generic struct literals preserve concrete type arguments in the equality
+shape. The compiler emits a comparator for each concrete instantiation and
+substitutes those arguments into its field types, so `Box[Double]`,
+`Box[Bytes]`, `Box[Array[Int]]`, and declared fields containing them compare
+structurally (#2195). A self-describing literal with an omitted argument, such
+as `Box::{ value: [1, 2] }`, recovers a single directly-used type parameter from
+the field value; anything more ambiguous remains unresolved and traps.
+A declared name is excluded when any field has no structural comparator,
+transitively and through type aliases. The field
 test is an **allow-list** — measured, a declared field of `Int` / `String` /
 `Double` / `Bytes` / `Array[T]` / `Option[T]` / a tuple / a declared struct is
 content-compared and keeps answering, while `Map` is not (#2218) and any head
@@ -74,8 +66,9 @@ not.
 The typed replacement is not available here yet: #2158 built it and measured
 the FS lane — the one `vibe test` and `vibe run` use — at 6.12s → 77.55s on a
 compiler-sized closure, so it ships only where a whole-program check already
-runs. Pinned by `fixtures/structural_eq_contexts_test.vibe` (the answers) and
-the `structural_eq_untyped_empty_*_trap.vibe` fixtures (the fail-closed side),
+runs. Pinned by `fixtures/structural_eq_contexts_test.vibe` and
+`fixtures/generic_derive_eq_test.vibe` (the answers), plus the remaining
+`structural_eq_untyped_empty_*_trap.vibe` fixtures (the fail-closed side),
 both lanes of the same contract enforced in `tests/gates/early/run.sh`.
 This paragraph used to list four cases as "remaining reference equality";
 measurement showed three of them are structural. The fourth — an erased type

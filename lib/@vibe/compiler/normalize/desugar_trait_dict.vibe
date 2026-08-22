@@ -3406,7 +3406,7 @@ fn adoptable_eq_ty(t: TypeExpr) -> Bool {
     TyName(n) => adoptable_eq_name(n),
     TyApp(head, args) => if head == "Array" && Array::length(args) == 1 {
       adoptable_eq_ty(Array::get(args, 0))
-    } else if generic_eq_struct_declared(head) && Array::length(args) > 0 {
+    } else if generic_eq_struct_declared(head) && !str_array_contains(dtd_eq_unsafe_types, head) && Array::length(args) > 0 {
       let mut i = 0
       let mut ok = true
       while i < Array::length(args) {
@@ -8534,6 +8534,17 @@ fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
       _ => ()
     }
     i = i + 1
+  }
+}
+
+fn emit_recorded_structural_eq(stmts: Array[Stmt]) -> Unit {
+  let mut prev_arrays = 0 - 1
+  let mut prev_generics = 0 - 1
+  while prev_arrays != Array::length(dtd_arr_eq_needed) || prev_generics != Array::length(dtd_eq_specializations) {
+    prev_arrays = Array::length(dtd_arr_eq_needed)
+    prev_generics = Array::length(dtd_eq_specializations)
+    emit_recorded_arr_equals(stmts)
+    emit_recorded_generic_eq(stmts)
   }
 }
 
@@ -14231,11 +14242,9 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // predict (an operand reached through a name) is generated here. Bytes
   // second: generating an `__arr_equals__` body can record the Bytes need
   // (`Array[Bytes]` elements), and `__bytes_equals` records nothing back.
-  emit_recorded_arr_equals(stmts)
   // Array comparator bodies can surface concrete generic elements, while
   // specialized generic comparators can surface further Array fields.
-  emit_recorded_generic_eq(stmts)
-  emit_recorded_arr_equals(stmts)
+  emit_recorded_structural_eq(stmts)
   emit_recorded_bytes_equals(stmts)
   // #1374: append the cell only for a program that actually reads or writes it,
   // so a throw-free program's output is unchanged.
