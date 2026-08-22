@@ -3574,18 +3574,27 @@ fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], _var
     if String::length(ordinary) > 0 {
       ordinary
     } else {
-      branch_agreed_shape(v, struct_sets)
+      self_describing_fallback(v, struct_sets)
     }
   }
 }
 
+/// The two self-describing shapes neither inference call reads, kept HERE
+/// rather than in `infer_shape`, which the rest of the file consults for other
+/// purposes.
+///
+/// `()` is a literal like any other and `Unit` is already a scalar element type
+/// (`is_scalar_type_name`), so the comparator side needed nothing -- only the
+/// shape was never produced, and `Array::push(xs, ())` fell to the trap while
+/// the contract said a literal resolves (#2192 review).
+///
 /// A conditional describes itself when both arms do and they agree: the value
-/// has that shape on every path, so adopting it invents nothing. Neither
-/// inference call reads a conditional, and `Array::push(xs, if f { 1 } else
-/// { 2 })` is an ordinary direct push, not the residual where the mutation
-/// hides behind a helper.
-fn branch_agreed_shape(v: Expr, struct_sets: Array[(String, Array[String])]) -> String {
+/// has that shape on every path, so adopting it invents nothing.
+/// `Array::push(xs, if f { 1 } else { 2 })` is an ordinary direct push, not the
+/// residual where the mutation hides behind a helper.
+fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]) -> String {
   match v {
+    EUnit => "Unit",
     EIf(_, t, f) => {
       let no_env = array_empty()
       let no_fns = array_empty()
