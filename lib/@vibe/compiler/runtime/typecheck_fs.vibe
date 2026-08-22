@@ -1098,7 +1098,21 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   }
   let dep_bindings = env_flat_bindings(dep_env)
   let dep_selectable_type_defs = env_selectable_type_defs(dep_env)
-  let kind_errors = import_item_kind_errors(names, dep_env)
+  // Kind advice is useful only for names the module actually publishes. A
+  // private declaration may remain in the TypeDef closure solely to describe
+  // a public type; suggesting a different qualifier cannot make it importable.
+  let kind_items: Array[ImportItem] = array_empty()
+  let mut kii = 0
+  while kii < Array::length(names) {
+    let item = Array::get(names, kii)
+    if contains_str(dep_selectable_type_defs, item.name) || trait_defined(dep_env, item.name) || env_lookup_flat(dep_bindings, item.name) != None {
+      Array::push(kind_items, item)
+    } else {
+      ()
+    }
+    kii = kii + 1
+  }
+  let kind_errors = import_item_kind_errors(kind_items, dep_env, raw_path == "@vibe/builtin")
   let mut kei = 0
   while kei < Array::length(kind_errors) {
     Array::push(unresolved, Array::get(kind_errors, kei))
