@@ -39,6 +39,12 @@ The one thing to remember: `Array::push` grows the receiver **in place**,
 so every alias of that array sees the new length. An `Array` is a mutable
 handle, not a value.
 
+`xs[i]` and `Array::get(xs, i)` are the same read. Out of range, both
+**trap** — the program stops rather than answering with a sentinel
+(#2199 tracks making the trap say so). When "maybe absent" is the
+normal case, that is what `Option`-returning lookups like `MutMap::get`
+below are for.
+
 ## Building one
 
 When you fill a collection once and then only read it, build it and

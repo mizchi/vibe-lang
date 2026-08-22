@@ -50,6 +50,10 @@ it structurally — you never write `impl Send`:
 | `Option` of `Send` parts | `Array`, `Bytes` |
 | structs and enums built from `Send` parts, with no `mut` fields | anything with a `mut` field |
 
+The body you hand to `spawn` is itself a closure, and that one is fine —
+the table is about what that body *captures* and what you send between
+tasks, not about the body.
+
 `FrozenArray[T]` exists for exactly this: an array you can send. A
 persistent `Map` is not automatically `Send`.
 

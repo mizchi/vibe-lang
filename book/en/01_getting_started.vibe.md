@@ -36,6 +36,11 @@ vibe run hello.vibex
 
 `println` is built in, so there is nothing to import.
 
+The `.vibex` extension marks an *executable root*: a file with exactly
+one `fn main`, which other files cannot import (ADR-0075). Reusable
+modules end in `.vibe` — every other extension you will see in this
+book.
+
 The interesting part is `with Console`. It is the program's permission
 to write to the terminal, and it is required: delete it and the program
 does not compile. That is the language's one big idea, showing up in the

@@ -37,6 +37,9 @@ explicitly with `Box[Int]::{ ... }` when inference has nothing to go on.
 
 A top-level `fn` annotates its parameters and return type in full,
 generic or not; inference fills in the call site, not the declaration.
+`main` is the one exception — it alone may leave the return type off,
+which is why `fn main with Console` parses and `fn shout(msg: String)
+with Console` does not.
 
 ## `derive` gives you the usual operations
 
@@ -123,6 +126,6 @@ X` is an error rather than a way to promise something. See
 
 `Default` is a builtin; `derive(Default)` registers the implementation.
 Generic code that calls `T::default()` needs
-`import @vibe/core { Default }`.
+`import @vibe/core { trait Default }`.
 
 Next: [Equality](16_equality.vibe.md).

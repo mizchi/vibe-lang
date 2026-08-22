@@ -52,9 +52,12 @@ c = 65
 
 Two things to notice. `\{...}` inside a string is interpolation — any
 expression goes in there. And `'A'` printed `65`: a character literal
-*is* its code point, an `Int`. Indexing a string behaves the same way,
-so `s[0]` gives you a number, not a one-character string. When you want
-the character back, use `String::from_char_code(s[0])`.
+*is* its code point, an `Int`. Indexing a string also gives a number —
+`s[0]` is the **byte** at that offset, not a one-character string. For
+ASCII the code point and the byte are the same number; beyond ASCII they
+are not, and [Types and strings](05_types_strings.vibe.md) covers that.
+When you want a one-character `String` back, use
+`String::from_char_code(s[0])`, which writes that byte back out.
 
 The exact ranges and representations — `Int` is 63 bits wide, `String`
 is bytes — are in [Types and strings](05_types_strings.vibe.md). You can
@@ -153,7 +156,7 @@ fn greet(name: String, times?: Int) -> String {
     Some(v) => v,
     None => 1
   }
-  String::concat(name, String::concat(" x", __to_string(n)))
+  "\{name} x\{n}"
 }
 
 fn main with Console {

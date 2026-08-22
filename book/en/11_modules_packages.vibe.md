@@ -35,12 +35,17 @@ fn main with Console {
 triple(14) = 42
 ```
 
-Two variations on the import line:
+Variations on the import line:
 
 - `import ./lib.vibe { f as renamed }` renames on the way in, for when
   two modules disagree about a good name.
 - `import ./subdir { helper }` imports a *directory*, which resolves to
   its `index.vibe`.
+- `import @vibe/core { struct MutMap, trait Default }` names the
+  declaration kind. Values stay bare; for a type, struct, enum, effect
+  or trait the qualifier is exact — asking for `struct Color` when
+  `Color` is an enum is rejected — and bare non-value imports are
+  accepted today only for compatibility.
 
 A relative import *may* climb above the entry file's own directory —
 `import ../../../helper.vibe` from a nested entry resolves. What bounds
