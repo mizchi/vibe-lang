@@ -7831,9 +7831,9 @@ fn is_scalar_type_name(n: String) -> Bool {
 /// `(Int,Bool)` -> "Tup_Int_Bool", unknown shapes -> "Any".
 fn type_key(ty: TypeExpr) -> String {
   match ty {
-    TyName(n) => n,
+    TyName(n) => type_key_escape(n),
     TyApp(n, args) => {
-      let mut s = n
+      let mut s = type_key_escape(n)
       let mut i = 0
       while i < Array::length(args) {
         s = String::concat(s, String::concat("_", type_key(Array::get(args, i))))
@@ -7853,6 +7853,33 @@ fn type_key(ty: TypeExpr) -> String {
     TyUnit => "Unit",
     _ => "Any"
   }
+}
+
+/// `_` is this key's ARGUMENT SEPARATOR, so a name that contains one collides
+/// with an application. Measured before this: `struct Array_Int { tag: Int }`
+/// keys as `Array_Int`, and so does `Array[Int]`, so `Array[Array[Int]]` and
+/// `Array[Array_Int]` shared one `__arr_equals__Array_Int` -- whichever was
+/// recorded first won, and two `Array[Array_Int]` values with DIFFERENT fields
+/// compared equal. Silently wrong, and it predates the Map helper that inherits
+/// this key (#2235 review).
+///
+/// Doubling the underscores inside a NAME makes the encoding injective: a
+/// single `_` is always a separator, a doubled one is always a literal, and
+/// nothing else in an identifier can produce either. `Array_Int` becomes
+/// `Array__Int`, which no application can spell.
+fn type_key_escape(n: String) -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(n) {
+    let c = String::substring(n, i, i + 1)
+    if c == "_" {
+      StringBuilder::push(out, "__")
+    } else {
+      StringBuilder::push(out, c)
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
 }
 
 /// The generated monomorphic array-equality helper name for element type `t`.

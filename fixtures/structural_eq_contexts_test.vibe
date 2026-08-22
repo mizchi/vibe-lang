@@ -12,6 +12,10 @@ struct WithMap {
   m: Map[String, Int]
 } derive (Eq)
 
+struct Array_Int {
+  tag: Int
+} derive (Eq)
+
 struct UnitParen {
   u: ()
 } derive (Eq)
@@ -586,4 +590,34 @@ test "a Map of aggregates compares by content" {
   assert(a == b)
   let c = eq_ctx_map_arr([1, 9])
   assert(a != c)
+}
+
+fn eq_ctx_nested(a: Int, b: Int) -> Array[Array[Int]] {
+  [[a, b]]
+}
+
+fn eq_ctx_named(t: Int) -> Array[Array_Int] {
+  [Array_Int::{ tag: t }]
+}
+
+test "a declared name containing an underscore does not collide with an application" {
+  // `_` is the argument separator in `type_key`, so a NAME carrying one used to
+  // key the same helper as an application: `type_key(Array[Int])` and
+  // `type_key(Array_Int)` were both `Array_Int`, and `Array[Array[Int]]` and
+  // `Array[Array_Int]` shared one `__arr_equals__Array_Int`. Whichever was
+  // recorded first decided the body, so the other one compared through the
+  // wrong element comparator.
+  //
+  // Measured before the fix, on main: two `Array[Array_Int]` values with
+  // DIFFERENT tags compared `true` -- silently wrong. The nested-array rows are
+  // the control that keeps the collision honest: both types must still answer
+  // correctly, not merely differ from each other (#2235 review).
+  let n1 = eq_ctx_nested(1, 2)
+  let n2 = eq_ctx_nested(1, 2)
+  assert(n1 == n2)
+  assert(n1 != eq_ctx_nested(1, 9))
+  let s1 = eq_ctx_named(5)
+  let s2 = eq_ctx_named(5)
+  assert(s1 == s2)
+  assert(s1 != eq_ctx_named(9))
 }
