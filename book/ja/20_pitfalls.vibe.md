@@ -116,8 +116,9 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 名前や呼び出しの結果を push した束縛には要素型が付かず、両側とも非空になった
 状態で比較すると、答えを返さず実行時に失敗する。`let xs: Array[Int] = []` が
 その解決策。型引数を取る struct が「自分で型を語る」と見なされるのは、
-リテラルに書かれた型引数がすべて scalar のときだけ —
-`Box[Int]::{ value: 1 }` は解決し、`Box[Array[Int]]::{ ... }` は解決しない。
+`==` が内容で比較する型引数のときだけ — `Box[Int]` / `Box[Bool]` /
+`Box[Unit]` / `Box[String]` は解決し、`Box[Double]` / `Box[Bytes]` と
+配列や struct の型引数は解決しない。
 
 知っておく価値のある境界は `Eq` の witness を持たない generic な `T` で、
 こちらは不意打ちではなくコンパイルエラーになる —

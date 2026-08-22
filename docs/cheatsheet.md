@@ -438,13 +438,21 @@ type, so `==` said `false` for two equal `[1, 2]` arrays). With no environment
 the element type can be absent but never wrong.
 
 A **generic** struct literal resolves only when every type argument written at
-it is a scalar. One generated `Box::equals` serves every instantiation and
-compares the erased field with a raw `==`, so `Box[Int]` is content equality —
-and answers exactly what the annotated `Array[Box[Int]]` answers — while
-`Box[Array[Int]]` is identity. The annotated form is wrong there too (#2195
-compares two equal `Box[Array[Int]]` as `false` with no array in sight), so the
-unannotated one fails at run time instead of reaching the same wrong answer
-through a new spelling.
+it is one whose raw `==` compares content. One generated `Box::equals` serves
+every instantiation and compares the erased field with a raw `==`, so the
+argument decides. Measured, two distinct allocations of equal content:
+
+| `T` in `Box[T]` | `==` | |
+|---|---|---|
+| `Int`, `Bool`, `Unit`, `String` | `true` | resolves |
+| `Double`, `Bytes` | `false` | rejected → traps |
+| `Array[Int]`, a struct | `false` | rejected → traps |
+
+The rejected rows answer `false` under an **annotation** too — that is #2195,
+not something the unannotated form introduces — so rejecting them keeps #2157
+from giving that wrong answer a new spelling to arrive through. `Float` goes
+with `Double`; `Char` is excluded because two distinct equal-content `Char`s
+cannot be constructed to measure it.
 
 **What does not resolve fails at run time** once BOTH sides are non-empty —
 it does not fall back to reference equality or to a length-only answer. Annotate

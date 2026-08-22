@@ -46,14 +46,20 @@ came from that one decision, the first of them silently wrong (an outer
 `let v = 1` was read for an inner `v` of another type, so `==` answered `false`
 for two equal `[1, 2]` arrays). With no environment the classification can be
 absent but never wrong.
-The one non-syntactic exclusion is a **generic struct literal whose type
-arguments are not all scalar**: one generated `Box::equals` serves every
-instantiation and compares the erased field with a raw `==`, so `Box[Int]` is
-content equality (and resolves, matching what the annotated `Array[Box[Int]]`
-already answers) while `Box[Array[Int]]` is identity. The annotated form is
-wrong there too — #2195, which reproduces on a bare `a == b` with no array in
-sight — so adopting it would only add a spelling that reaches the same wrong
-answer.
+The one non-syntactic exclusion is a **generic struct literal**, admitted only
+when every type argument written at it is one whose **raw `==` compares
+content**: one generated `Box::equals` serves every instantiation and compares
+the erased field with a raw `==`. Measured: `Int` / `Bool` / `Unit` / `String`
+resolve and answer what the annotated `Array[Box[T]]` answers; `Double`,
+`Bytes` and any aggregate or struct argument do not — a raw `==` on those is
+pointer equality, and the annotated form is wrong there too (#2195, which
+reproduces on a bare `a == b` with no array in sight), so adopting them would
+only add a spelling that reaches the same wrong answer. `Float` is excluded
+with `Double`, and `Char` because two distinct equal-content `Char`s cannot be
+constructed to measure it — an unmeasured name gets the trap.
+**`is_scalar_type_name` is the wrong predicate here** and using it was the
+defect: it answers "needs no generated comparator", not "raw `==` compares
+content".
 **What does not resolve traps** once both sides are
 non-empty, rather than answering by length or by identity, and an annotation
 fixes it. While either side is still empty the lengths decide, annotation or

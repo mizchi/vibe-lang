@@ -3651,16 +3651,17 @@ fn eq_ty_has_generic_leaf(t: TypeExpr) -> Bool {
   }
 }
 
-/// Every type argument written at a generic struct literal is a scalar, so the
-/// raw `==` its generated `::equals` uses on the erased field is content
-/// equality. A declared struct/enum argument is NOT enough: raw `==` on one of
-/// those is identity. An absent argument list says nothing and is rejected.
+/// Every type argument written at a generic struct literal is one whose raw
+/// `==` IS content equality, so the erased-field comparison inside the
+/// generated `::equals` answers correctly. A declared struct/enum argument is
+/// not, and neither are half the scalars. An absent argument list says nothing
+/// and is rejected.
 fn eq_type_args_all_scalar(args: Array[TypeExpr]) -> Bool {
   let mut i = 0
   let mut ok = Array::length(args) > 0
   while i < Array::length(args) {
     match Array::get(args, i) {
-      TyName(n) => if !is_scalar_type_name(n) || formal_in_scope(n) {
+      TyName(n) => if !raw_eq_is_content_equality(n) || formal_in_scope(n) {
         ok = false
       } else {
         ()
@@ -3672,6 +3673,34 @@ fn eq_type_args_all_scalar(args: Array[TypeExpr]) -> Bool {
     i = i + 1
   }
   ok
+}
+
+/// `is_scalar_type_name` is the WRONG predicate for the erased field of a
+/// generic struct: it answers "this name needs no generated comparator", which
+/// is not the same question as "does a raw `==` on a value of this type compare
+/// content". Measured on one build, two distinct allocations of equal content
+/// pushed onto two unannotated empty bindings, `Box[T]::{ value: ... }`:
+///
+///   | `T`      | `==` | |
+///   |----------|------|---|
+///   | `Int`    | true | immediate word |
+///   | `Bool`   | true | immediate word |
+///   | `Unit`   | true | immediate word |
+///   | `String` | true | the raw comparison dispatches on content |
+///   | `Double` | **false** | boxed on the RC lane -- pointer equality |
+///   | `Bytes`  | **false** | pointer equality |
+///
+/// `Float` is excluded with `Double`, and `Char` is excluded because two
+/// distinct `Char` values of equal content cannot be constructed to measure it
+/// -- an unmeasured name gets the trap, not the benefit of the doubt.
+///
+/// The two `false` rows answer `false` under an ANNOTATION too, so they are
+/// #2195 rather than something this pass introduces. That is exactly why they
+/// have to be rejected here: admitting them would give #2195 a spelling that
+/// reaches it from an unannotated binding, which is the one thing #2157 must
+/// not do.
+fn raw_eq_is_content_equality(n: String) -> Bool {
+  n == "Int" || n == "Bool" || n == "Unit" || n == "String"
 }
 
 /// The two self-describing shapes neither inference call reads, kept HERE

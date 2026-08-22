@@ -110,13 +110,16 @@ at run time** rather than answering by address or by length. The
 annotation is the fix, and it is the reason `xs` and `ys` above carry
 one.
 
-A struct that takes type parameters says what it is only when the type
-arguments at the literal are scalars: `Box[Int]::{ value: 1 }` resolves,
-`Box[Array[Int]]::{ value: [1, 2] }` does not. One `Box::equals` is
-generated for the whole struct, and it compares the field that came from
-`T` without knowing what `T` was — which is content equality for an `Int`
-and address equality for an array. Annotating does not help with that
-second one; it is a known defect being fixed separately.
+A struct that takes type parameters says what it is only for some type
+arguments. One `Box::equals` is generated for the whole struct, and it
+compares the field that came from `T` without knowing what `T` was — so
+whether that is content equality depends entirely on `T`. It is, for
+`Int`, `Bool`, `Unit` and `String`; it is address equality for `Double`,
+`Bytes`, and for any array or struct. So `Box[Int]::{ value: 1 }`
+resolves and `Box[Double]::{ value: x }` does not. Annotating does not
+help with the second group — that is a known defect being fixed
+separately, and the run-time failure is there to keep you from meeting it
+by accident.
 
 ## The compile-time edge: a generic `T` with no witness
 

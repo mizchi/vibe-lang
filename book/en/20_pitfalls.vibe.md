@@ -116,9 +116,10 @@ an `if` whose branches agree.
 Push a name or a call result and the binding gets no element type, and
 comparing two such arrays once both are non-empty fails at run time
 rather than answering. `let xs: Array[Int] = []` is the fix. A struct
-that takes type parameters counts as saying what it is only when the
-type arguments at the literal are scalars — `Box[Int]::{ value: 1 }`
-resolves, `Box[Array[Int]]::{ ... }` does not.
+that takes type parameters counts as saying what it is only for the type
+arguments whose `==` compares content — `Box[Int]` / `Box[Bool]` /
+`Box[Unit]` / `Box[String]` resolve; `Box[Double]`, `Box[Bytes]` and any
+array or struct argument do not.
 
 A generic `T` with no `Eq` witness is the boundary worth knowing, and it
 is a compile error rather than a surprise — `no impl `Eq` for
