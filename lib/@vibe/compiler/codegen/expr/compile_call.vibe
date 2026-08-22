@@ -607,26 +607,32 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
     }
   } else if tag == 8 {
     let callee = get_ecall_callee(e)
-    if is_eident(callee) {
+    if array_contains_int(ctx.float_call_offsets, get_ecall_off(e)) {
+      // #2158: the CHECKER said this exact call node's result is a Double.
+      //
+      // Asked BEFORE the callee shape is dispatched on, because the table is
+      // keyed by the call node's own source OFFSET and knows nothing about the
+      // callee. Nesting it under `is_eident` made it unreachable for a call
+      // whose callee is not a name -- an IIFE `(() -> { 2.5 })()` had its
+      // offset recorded by the checker and never read, and printed `204`, the
+      // f64 bits (#2226 review, measured).
+      //
+      // Strictly ADDITIVE -- an extra term in front of the syntactic tests
+      // below, never a replacement for them, so this can only add a Double
+      // classification and never remove one. It reaches the shapes the
+      // name-keyed `float_ret_fns` structurally cannot: a generic instantiated
+      // at Double, a call through a local alias or a lambda binding,
+      // `Array::get` on an `Array[Double]`. Retiring the name table is #2166
+      // and is deliberately NOT this change.
+      //
+      // No `local_names` guard is needed (unlike cc_fn_returns_float below):
+      // being offset-keyed, a local binding that shadows a top-level
+      // `-> Double` function is a different call node at a different offset
+      // and cannot collide with it.
+      true
+    } else if is_eident(callee) {
       let fname = get_eident_name(callee)
-      if array_contains_int(ctx.float_call_offsets, get_ecall_off(e)) {
-        // #2158: the CHECKER said this exact call node's result is a Double.
-        //
-        // Strictly ADDITIVE -- an extra term in front of the syntactic tests
-        // below, never a replacement for them, so this can only add a Double
-        // classification and never remove one. It reaches the shapes the
-        // name-keyed `float_ret_fns` structurally cannot: a generic
-        // instantiated at Double, a call through a local alias or a lambda
-        // binding, `Array::get` on an `Array[Double]`. Retiring the name table
-        // is #2166 and is deliberately NOT this change.
-        //
-        // No `local_names` guard is needed here (unlike cc_fn_returns_float
-        // just below): this table is keyed by the call node's own source
-        // OFFSET, not by the callee's name, so a local binding that shadows a
-        // top-level `-> Double` function is a different call node at a
-        // different offset and cannot collide with it.
-        true
-      } else if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+      if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
         true
       } else if cc_fn_returns_float(local_names, ctx, fname) {
         // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.
