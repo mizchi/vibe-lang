@@ -73,9 +73,23 @@ header_compiler() { # header_compiler <vibe_md.sh stdout>
 #    content-addressed tool build is reused and this costs no compile -- only
 #    the PATH differs, which is exactly the thing that used to be ignored.
 : > "$TMP/empty.vibe.md"
-set +e; out="$(bash "$SH" check "$TMP/empty.vibe.md" 2>/dev/null)"; set -e
+set +e; out="$(bash "$SH" check "$TMP/empty.vibe.md" 2>"$TMP/resolve.err")"; set -e
 default_compiler="$(header_compiler "$out")"
-[ -n "$default_compiler" ] || fail "the tool did not report which compiler it used"
+if [ -z "$default_compiler" ]; then
+  # No compiler exists here at all -- no generation and no fetched seed. Say so
+  # and stop, rather than reporting a compiler-selection defect. The same
+  # checkout cannot run `pkf run vibe-md-tutorial` either, so this is not a
+  # state a book gate can be green in; it is a state where nothing ran.
+  if grep -qF "compiler wasm not found" "$TMP/resolve.err"; then
+    echo "vibe-md-guard self-test: SKIPPED cases 6-8: no compiler wasm in this checkout" >&2
+    sed 's/^/  /' "$TMP/resolve.err" >&2
+    echo "  Run \`bash scripts/ensure_seed.sh\` or build a selfhost generation, then re-run." >&2
+    echo "vibe-md-guard self-test: all runnable cases passed"
+    exit 0
+  fi
+  fail "the tool did not report which compiler it used
+$(sed 's/^/  /' "$TMP/resolve.err")"
+fi
 [ -s "$default_compiler" ] || fail "the reported compiler does not exist: $default_compiler"
 cp "$default_compiler" "$TMP/pinned.wasm"
 set +e; out="$(VIBE_MD_COMPILER="$TMP/pinned.wasm" bash "$SH" check "$TMP/empty.vibe.md" 2>/dev/null)"; set -e
