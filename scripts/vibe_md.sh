@@ -26,11 +26,30 @@
 #   bash scripts/vibe_md.sh fmt-check <file.vibe.md> [more...]
 #
 # Environment:
-#   VIBE_MD_COMPILER   compiler wasm to build the tool with. Default: newest
+#   VIBE_MD_COMPILER   compiler wasm to build the tool with AND to compile the
+#                       ```vibe blocks with. Default: newest
 #                       _build/selfhost/generations/*/stage2.wasm, falling
 #                       back to bootstrap/seed/compiler.wasm.
+#   VIBE_MD_STAGE2      compiler wasm for the BLOCKS only, overriding
+#                       VIBE_MD_COMPILER for them. Read by vibe_md.vibex
+#                       itself (resolve_stage2). Set it only to deliberately
+#                       prove documents against a compiler other than the one
+#                       that built the tool.
 #   VIBE_MD_WORKDIR     where the compiled tool wasm is cached (default
 #                       _build/vibe_md_tool).
+#
+# #2167: ONE resolution decides which compiler answers. The tool resolves a
+# compiler of its own (vibe_md.vibex's resolve_stage2: VIBE_MD_STAGE2, else
+# newest generation, else the committed seed), and until this script exported
+# its own choice, that second resolution ran INDEPENDENTLY of VIBE_MD_COMPILER.
+# The two agreed only by coincidence, and where they disagreed the disagreement
+# was silent: a caller who pointed VIBE_MD_COMPILER at a stage2 built from
+# their checkout still had every block compiled by whatever generation happened
+# to be newest on disk. That is how a book chapter carrying an import the
+# compiler rejects (`type MutMap` for a struct, #2161) reported PASS -- the
+# block lane never saw the compiler that had the check. The blocks are compiled
+# through `cli_main` with VIBE_FS_COMPILE=1, exactly as `vibe check` is, so
+# there was never a missing validation, only a second unadvertised compiler.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,6 +114,26 @@ if [ ! -s "$compiler" ]; then
   echo "vibe_md.sh: compiler wasm not found: $compiler" >&2
   exit 2
 fi
+
+# #2167: hand the resolved compiler to the tool so the blocks are proved by the
+# same one that built it. An explicit VIBE_MD_STAGE2 still wins -- that is the
+# deliberate two-compiler form, and it is now the ONLY way to get one.
+export VIBE_MD_STAGE2="${VIBE_MD_STAGE2:-$compiler}"
+
+# Say so when the blocks are being proved by the committed seed rather than by
+# a compiler built from this checkout. The seed accepts source this checkout's
+# compiler may reject (the import-kind check of #2161 landed after the pinned
+# seed was cut), so a PASS from here is a statement about the seed, not about
+# the language as this tree defines it. `pkf run vibe-md-tutorial-gated` is the
+# lane that cannot fall back.
+case "${VIBE_MD_STAGE2:-}" in
+  */bootstrap/seed/compiler.wasm | bootstrap/seed/compiler.wasm)
+    echo "vibe_md.sh: note: blocks will be compiled by the committed seed ($VIBE_MD_STAGE2)," >&2
+    echo "  not by a stage2 built from this checkout, so a PASS can hide source this" >&2
+    echo "  checkout's compiler rejects. Build a generation and run" >&2
+    echo "  \`pkf run vibe-md-tutorial-gated\`, or set VIBE_MD_COMPILER explicitly." >&2
+    ;;
+esac
 
 workdir="${VIBE_MD_WORKDIR:-_build/vibe_md_tool}"
 mkdir -p "$workdir"
