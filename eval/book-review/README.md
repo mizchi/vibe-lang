@@ -37,8 +37,9 @@ eval/book-review/
    `bash scripts/generations.sh build`), then:
 
    ```bash
-   bash eval/book-review/run_probes.sh                # all probes
-   bash eval/book-review/run_probes.sh probes/p01_*   # one probe
+   # from the repo root
+   bash eval/book-review/run_probes.sh                                  # all probes
+   bash eval/book-review/run_probes.sh eval/book-review/probes/p01_*    # one probe
    ```
 
    The script refuses to fall back to the committed seed silently — the
