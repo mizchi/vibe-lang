@@ -2609,15 +2609,17 @@ fn handler_arm_starts_at(toks: Array[LTok], start: Int, close: Int) -> Bool {
   }
 }
 
-fn handler_has_top_level_or_pattern(toks: Array[LTok], open_idx: Int, close_idx: Int) -> Bool {
+fn handler_has_unsupported_pattern(toks: Array[LTok], open_idx: Int, close_idx: Int) -> Bool {
   let mut i = open_idx + 1
   let mut brace = 1
   let mut paren = 0
   let mut bracket = 0
+  let mut arm_start = true
   let mut before_arrow = true
   let mut result = false
   while !result && i < close_idx {
-    let k = Array::get(toks, i).kind
+    let tok = Array::get(toks, i)
+    let k = tok.kind
     if k == k_lbrace {
       brace = brace + 1
     } else if k == k_rbrace {
@@ -2630,12 +2632,19 @@ fn handler_has_top_level_or_pattern(toks: Array[LTok], open_idx: Int, close_idx:
       bracket = bracket + 1
     } else if brace == 1 && k == k_rbracket {
       bracket = bracket - 1
+    } else if brace == 1 && paren == 0 && bracket == 0 && arm_start &&
+    k != k_ws && k != k_newline && k != k_comment {
+      if k != k_name || tok.text == "_" {
+        result = true
+      }
+      arm_start = false
     } else if brace == 1 && paren == 0 && bracket == 0 && before_arrow && k == k_bit_or {
       result = true
     } else if brace == 1 && paren == 0 && bracket == 0 && k == k_arrow {
       before_arrow = false
     } else if brace == 1 && paren == 0 && bracket == 0 &&
     (k == k_semicolon || k == k_comma || k == k_newline) {
+      arm_start = true
       before_arrow = true
     }
     i = i + 1
@@ -2683,10 +2692,10 @@ fn normalize_legacy_handler_headers(toks: Array[LTok]) -> Array[LTok] {
       if arm_close < 0 {
         Array::push(out, t)
         i = i + 1
-      } else if handler_has_top_level_or_pattern(toks, arm_open, arm_close) {
-        // A qualified handler arm currently accepts one constructor pattern,
-        // not a top-level or-pattern. Keep the whole legacy handler intact
-        // instead of producing the invalid `E::A | B` half-migration.
+      } else if handler_has_unsupported_pattern(toks, arm_open, arm_close) {
+        // A qualified handler arm currently accepts one constructor pattern.
+        // Keep the whole legacy handler intact for wildcard, literal, or-pattern,
+        // and other unsupported arms instead of producing invalid source.
         let mut j = i
         while j <= arm_close {
           Array::push(out, Array::get(toks, j))
@@ -2697,6 +2706,17 @@ fn normalize_legacy_handler_headers(toks: Array[LTok]) -> Array[LTok] {
         Array::push(out, t)
         Array::push(out, LTok::{ kind: k_ws, text: " " })
         Array::push(out, Array::get(toks, arm_open))
+        // Relocate header trivia inside the canonical handler set. The effect
+        // name and optional type arguments become arm qualifiers, but comments
+        // around them must survive this lossless migration pass.
+        let mut h = i + 1
+        while h < arm_open {
+          let ht = Array::get(toks, h)
+          if ht.kind == k_ws || ht.kind == k_newline || ht.kind == k_comment {
+            Array::push(out, ht)
+          }
+          h = h + 1
+        }
         let mut j = arm_open + 1
         let mut brace_depth = 1
         let mut arm_start = true
