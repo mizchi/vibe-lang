@@ -408,18 +408,39 @@ test "Bytes equality is content equality" {
 }
 ```
 
-ADR-0097 の契約は綴りや値の経路によらない。`Array[T]` の注釈付き引数、関数の
-戻り値、tuple の戻り値、`Option[Array[T]]` の payload、名前経由の入れ子配列、
-`Array[Float]` も同じ構造比較になる。`[T: Eq]` の消去された型変数は渡された
-`Eq` witness を使う。
+ADR-0097's contract does not depend on the spelling or on the route a value
+took. An annotated `Array[T]` parameter, a function's return value, a tuple
+return, an `Option[Array[T]]` payload, a nested array reached through a name
+and `Array[Float]` all get the same structural comparison. An erased type
+variable (`[T: Eq]`) uses the `Eq` witness it was handed.
 
-注釈の無い `let xs = []` も構造的 (#2157)。要素型は、その束縛のスコープ内で
-`xs` を埋める `Array::push(xs, v)` から取る (同名を再束縛する構文の内側には
-入らないので、shadow した別の配列の要素型を借りることは無い)。要素型が
-どこからも取れないまま**両側とも非空**になった場合だけは、参照等価や長さ比較へ
-黙って落とさず実行時に失敗する — その形 (たとえば配列を渡した先の関数の中で
-push される) では `let xs: Array[Int] = []` と注釈すること。片側が空のままなら
-注釈が無くても長さが答えを決めるので失敗しない。
+An unannotated `let xs = []` is structural too **when the pushed value
+describes itself** (#2157, narrowed by #2192). The element type comes from the
+`Array::push(xs, v)` calls in the binding's own scope, and `v` is read from its
+own syntax only — a literal, an array / tuple / struct of such values, or a
+conditional whose branches agree:
+
+```vibe
+test "an unannotated empty binding answers by content after a push" {
+  let xs = []
+  let ys = []
+  Array::push(xs, 1)
+  Array::push(ys, 2)
+  assert(xs != ys)
+}
+```
+
+A pushed **name** or **call result** does not resolve, and that is deliberate:
+reading the value's type out of an environment means deciding scope, shadowing,
+annotations and type formals in a pass that has no types, which produced a
+silently wrong answer (an outer `let v = 1` read for an inner `v` of another
+type, so `==` said `false` for two equal `[1, 2]` arrays). With no environment
+the element type can be absent but never wrong.
+
+**What does not resolve fails at run time** once BOTH sides are non-empty —
+it does not fall back to reference equality or to a length-only answer. Annotate
+those bindings (`let xs: Array[Int] = []`). While either side is still empty the
+lengths decide the answer, annotation or not.
 
 ## Pipe Operator
 

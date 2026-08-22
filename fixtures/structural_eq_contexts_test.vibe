@@ -236,121 +236,38 @@ test "local closure return annotation directs array equality" {
   assert(make() == make())
 }
 
-// #2192 review: the push scan carries the binding site's `var_types` into a
-// closure body, a for-in body, a loop body, a match arm, and a `let` whose
-// value is not syntax-inferable. Each site checked only whether the ARRAY's
-// spelling was rebound, never whether a binder there shadowed the name of the
-// pushed VALUE -- so an outer `v: Int` was read for an inner `v` of another
-// type, and `==` answered `false` for two equal arrays. Measured: a fail-closed
-// trap (pre-#2157) turned into a silently wrong answer.
+// #2192 review: `pushed_value_shape` now reads ONLY the value's own syntax --
+// both inference calls get EMPTY environments. Reading `var_types` /
+// `fn_returns` meant re-deciding what the checker already decided (which binder
+// is in scope, which annotation applies, which name a closure parameter or a
+// match arm shadows, which spellings are a nested function's type formals), and
+// six review findings came out of that one decision. The first was silently
+// wrong: an outer `let v = 1` was read for an inner `v` of another type, so
+// `==` answered `false` for two equal `[1, 2]` arrays.
 //
-// The elements are `Array[Int]`, NOT `String`. An earlier version of these
-// tests used equal-content strings built from different pieces and passed on
-// the BROKEN compiler: equal strings compare equal even through a scalar
-// comparator, so the probe had no discriminating power. Two separately built
-// `[1, 2]` arrays are distinct objects, so a mis-selected comparator answers
+// With no environment the classification can be ABSENT but never wrong: an
+// identifier or a call resolves to nothing and the binding keeps its
+// `[__EqEmpty]` sentinel, which is the pre-#2157 trap. What still resolves is a
+// value that describes itself.
+//
+// The elements below are array literals, not equal-content Strings. An earlier
+// version of these tests used strings built from different pieces and passed on
+// a compiler that answered by pointer -- equal strings compare equal either
+// way, so the probe had no discriminating power at all. Two separately written
+// `[1, 2]` literals are distinct objects, so a mis-selected comparator answers
 // `false` and the test fails.
 
-fn eqctx_pair(a: Int, b: Int) -> Array[Int] {
-  [a, b]
-}
-
-test "a let shadow whose value is not syntax-inferable masks the outer binding" {
-  let v = 1
-  let flag = true
+test "an array literal pushed directly resolves the element type" {
   let xs = []
   let ys = []
-  let v = if flag {
-    eqctx_pair(1, 2)
-  } else {
-    eqctx_pair(3, 4)
-  }
-  Array::push(xs, v)
-  let v = if flag {
-    eqctx_pair(1, 2)
-  } else {
-    eqctx_pair(3, 4)
-  }
-  Array::push(ys, v)
+  Array::push(xs, [1, 2])
+  Array::push(ys, [1, 2])
   assert(xs == ys)
-}
-
-test "a closure parameter shadowing an outer Int does not mistype the element" {
-  let v = 1
-  let xs = []
-  let ys = []
-  let f = (v: Array[Int]) -> Unit {
-    Array::push(xs, v)
-  }
-  let g = (v: Array[Int]) -> Unit {
-    Array::push(ys, v)
-  }
-  f(eqctx_pair(1, 2))
-  g(eqctx_pair(1, 2))
-  assert(xs == ys)
-  assert(v == 1)
-}
-
-test "the same shadowed shape still answers false on different content" {
-  let v = 1
-  let xs = []
-  let ys = []
-  let f = (v: Array[Int]) -> Unit {
-    Array::push(xs, v)
-  }
-  let g = (v: Array[Int]) -> Unit {
-    Array::push(ys, v)
-  }
-  f(eqctx_pair(1, 2))
-  g(eqctx_pair(9, 9))
+  Array::push(ys, [9, 9])
   assert(xs != ys)
-  assert(v == 1)
 }
 
-test "a match arm binder shadowing an outer Int does not mistype the element" {
-  let v = 1
-  let xs = []
-  let ys = []
-  let o1: Option[Array[Int]] = Some(eqctx_pair(1, 2))
-  let o2: Option[Array[Int]] = Some(eqctx_pair(1, 2))
-  match o1 {
-    Some(v) => Array::push(xs, v),
-    None => ()
-  }
-  match o2 {
-    Some(v) => Array::push(ys, v),
-    None => ()
-  }
-  assert(xs == ys)
-  assert(v == 1)
-}
-
-test "no shadow at all still resolves the element type from the push" {
-  let xs = []
-  let ys = []
-  Array::push(xs, eqctx_pair(1, 2))
-  Array::push(ys, eqctx_pair(1, 2))
-  assert(xs == ys)
-}
-
-test "a conditional pushed directly resolves when both branches agree" {
-  let flag = true
-  let xs = []
-  let ys = []
-  Array::push(xs, if flag {
-    eqctx_pair(1, 2)
-  } else {
-    eqctx_pair(3, 4)
-  })
-  Array::push(ys, if flag {
-    eqctx_pair(1, 2)
-  } else {
-    eqctx_pair(3, 4)
-  })
-  assert(xs == ys)
-}
-
-test "a conditional of scalars pushed directly resolves too" {
+test "a conditional of literals pushed directly resolves when the branches agree" {
   let flag = true
   let xs = []
   let ys = []
@@ -367,4 +284,30 @@ test "a conditional of scalars pushed directly resolves too" {
   assert(xs == ys)
   Array::push(ys, 7)
   assert(xs != ys)
+}
+
+test "a tuple literal pushed directly resolves" {
+  let xs = []
+  let ys = []
+  Array::push(xs, (1, "a"))
+  Array::push(ys, (1, "a"))
+  assert(xs == ys)
+  Array::push(ys, (2, "b"))
+  assert(xs != ys)
+}
+
+test "an annotation is the workaround where the value does not describe itself" {
+  let v = 1
+  let xs: Array[Array[Int]] = []
+  let ys: Array[Array[Int]] = []
+  let f = (v: Array[Int]) -> Unit {
+    Array::push(xs, v)
+  }
+  let g = (v: Array[Int]) -> Unit {
+    Array::push(ys, v)
+  }
+  f([1, 2])
+  g([1, 2])
+  assert(xs == ys)
+  assert(v == 1)
 }

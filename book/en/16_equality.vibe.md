@@ -100,9 +100,15 @@ no annotation       = false
 
 `us` and `vs` carry no annotation, and they compare by content all the
 same: an unannotated `let xs = []` takes its element type from the
-`Array::push` calls that fill it (#2157). The annotation on `xs` and
-`ys` is worth writing anyway — it is what a reader sees first — but the
-comparison no longer depends on it.
+`Array::push` calls that fill it (#2157) — as long as the pushed value
+says what it is. A literal does, and so does an array, tuple or struct
+of literals, or an `if` whose branches agree.
+
+Push a **name** or a **call result** instead and the binding gets no
+element type. Comparing two such arrays once both are non-empty **fails
+at run time** rather than answering by address or by length. The
+annotation is the fix, and it is the reason `xs` and `ys` above carry
+one.
 
 ## The compile-time edge: a generic `T` with no witness
 

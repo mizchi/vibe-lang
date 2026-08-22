@@ -3297,94 +3297,6 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
 /// shape for both `let` and `let mut`; their contents may still mutate, so
 /// comparison has a runtime fail-closed guard below. Empty entries are answers
 /// too: they mask an outer binding's equality/call-result shape on shadowing.
-/// #2192 review: a binder introduced by a closure parameter, a loop variable, a
-/// match arm, or a `let` whose value is not syntax-inferable must SHADOW the
-/// outer binding of the same spelling before the push scan reads it.
-///
-/// Without this, `let v = 1; ...; let v = if f { mk(1,2) } else { mk(3,4) };
-/// Array::push(xs, v)` recorded the OUTER `Int` for an `Array[Array[Int]]`:
-/// `eq_shape_bind` stores `""` for a non-composite shape, so `infer_eq_shape`
-/// falls through to `infer_shape`, which reads the ordinary `var_types` -- and
-/// `extend_var_types` returns the environment UNCHANGED when inference fails,
-/// leaving the outer entry as the last match. `==` then answered `false` for
-/// two equal arrays. Measured 2026-08-22: a fail-closed trap turned into a
-/// silently wrong answer, which is the one direction the triage rules rank
-/// worst.
-///
-/// `""` is the established "not composite, stop" marker (see `infer_shape`), so
-/// masking can only make the scan LESS confident: an unadoptable shape sends
-/// the comparison back to the trap it had before #2157. It can never invent an
-/// answer.
-fn mask_var_types(var_types: Array[(String, String)], names: Array[String]) -> Array[(String, String)] {
-  if Array::length(names) == 0 {
-    var_types
-  } else {
-    let out = array_empty()
-    push_all_var_types(out, var_types)
-    let mut i = 0
-    while i < Array::length(names) {
-      let n = Array::get(names, i)
-      Array::push(out, (n, ""))
-      Array::push(out, (eq_shape_key(n), ""))
-      i = i + 1
-    }
-    out
-  }
-}
-
-/// A closure parameter that CARRIES an annotation is not unknown -- it is
-/// declared. Masking it outright (the first version of this fix) turned the
-/// silently wrong answer into a trap and took the annotated case down with it:
-/// `let f = (v: Array[Int]) -> Unit { Array::push(xs, v) }` left the element
-/// shape unknown, so the binding stayed `[__EqEmpty]` and `==` trapped
-/// (#2192 review, measured).
-///
-/// So seed the declared shape on the eq key -- where a composite shape lives --
-/// and mask the ordinary key, so no outer entry can be read for the same
-/// spelling. A parameter with no annotation, and every loop / match-arm binder,
-/// has no declared type to recover and is masked by `mask_var_types`.
-fn bind_scope_params(var_types: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
-  if Array::length(params) == 0 {
-    var_types
-  } else {
-    let out = array_empty()
-    push_all_var_types(out, var_types)
-    let mut i = 0
-    while i < Array::length(params) {
-      let (pn, pty) = Array::get(params, i)
-      Array::push(out, (pn, ""))
-      let sh = match pty {
-        Some(t) => ty_to_eq_shape(t),
-        None => ""
-      }
-      Array::push(out, (eq_shape_key(pn), if shape_is_composite(sh) {
-        sh
-      } else {
-        ""
-      }))
-      i = i + 1
-    }
-    out
-  }
-}
-
-fn loop_bind_names(binds: Array[(String, Expr)]) -> Array[String] {
-  let out = empty_str_array()
-  let mut i = 0
-  while i < Array::length(binds) {
-    let (bn, _) = Array::get(binds, i)
-    Array::push(out, bn)
-    i = i + 1
-  }
-  out
-}
-
-fn single_name_array(n: String) -> Array[String] {
-  let out = empty_str_array()
-  Array::push(out, n)
-  out
-}
-
 fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let sh = match val {
     EFn(tparams, _, _, ret, _, fbody) => match ret {
@@ -3562,7 +3474,7 @@ fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, A
     EFn(_, _, params, _, _, fbody) => if fn_params_bind_name(params, name) {
       ()
     } else {
-      collect_push_elem_shapes(name, fbody, struct_sets, bind_scope_params(var_types, params), fn_returns, out)
+      collect_push_elem_shapes(name, fbody, struct_sets, var_types, fn_returns, out)
     },
     EForIn(v, k, iter, body) => {
       collect_push_elem_shapes(name, iter, struct_sets, var_types, fn_returns, out)
@@ -3573,13 +3485,7 @@ fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, A
       if shadowed {
         ()
       } else {
-        let bound = empty_str_array()
-        Array::push(bound, v)
-        match k {
-          Some(kn) => Array::push(bound, kn),
-          None => ()
-        }
-        collect_push_elem_shapes(name, body, struct_sets, mask_var_types(var_types, bound), fn_returns, out)
+        collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
       }
     },
     ELoop(binds, body) => {
@@ -3592,7 +3498,7 @@ fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, A
       if loop_binds_bind_name(binds, name) {
         ()
       } else {
-        collect_push_elem_shapes(name, body, struct_sets, mask_var_types(var_types, loop_bind_names(binds)), fn_returns, out)
+        collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
       }
     },
     EMatch(scrut, arms) => {
@@ -3621,12 +3527,7 @@ fn collect_push_elem_shapes_in_arms(name: String, arms: Array[(Pat, Expr)], stru
     if pat_binds_name(p, name) {
       ()
     } else {
-      // Reuse collect_pat_binders rather than a fresh `match` over Pat: a
-      // hand-written enumeration that misses a constructor fails in the
-      // dangerous direction here, leaving a binder unmasked (#2192 review).
-      let binders = empty_str_array()
-      collect_pat_binders(p, binders)
-      collect_push_elem_shapes(name, body, struct_sets, mask_var_types(var_types, binders), fn_returns, out)
+      collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
     }
     i = i + 1
   }
@@ -3635,32 +3536,61 @@ fn collect_push_elem_shapes_in_arms(name: String, arms: Array[(Pat, Expr)], stru
 /// The shape of one pushed value. `infer_eq_shape` answers "" for a plain
 /// scalar binding (it records only composites), and "" is indistinguishable
 /// from "no idea" here, so the ordinary shape answers second.
-fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  let sh = infer_eq_shape(v, struct_sets, var_types, fn_returns)
+/// The shape of a pushed value, taken ONLY from the value's own syntax.
+///
+/// `var_types` and `fn_returns` are deliberately NOT threaded in: both
+/// inference calls get empty environments. That is the whole safety argument,
+/// and it is structural rather than a list of cases.
+///
+/// Reading an environment here means re-deciding what the type checker already
+/// decided -- which binder is in scope, which annotation applies, which name a
+/// closure parameter or a match arm shadows, which spellings are a nested
+/// function's type formals. Every one of those was got wrong (#2192 review, six
+/// findings), and the first was silently wrong: an outer `let v = 1` was read
+/// for an inner `v` of another type, so `==` answered `false` for two equal
+/// `[1, 2]` arrays -- a fail-closed trap turned into a wrong answer. Patching
+/// them one at a time is the treadmill #2166 describes for the float-returning
+/// names table: a syntactic stand-in for the checker's types, where each added
+/// spelling makes the stand-in harder to replace.
+///
+/// With no environment, an identifier and a call resolve to nothing and the
+/// binding keeps the `[__EqEmpty]` sentinel -- the pre-#2157 trap. So the
+/// classification can be absent, never wrong. What still resolves is a value
+/// that describes itself: a literal, an array / tuple / struct of such values,
+/// and a conditional whose branches agree.
+///
+/// The typed replacement is not available yet. #2158 built it and measured the
+/// FS lane -- the one `vibe test` and `vibe run` use -- at 6.12s -> 77.55s on a
+/// compiler-sized closure, so it ships only where a whole-program check already
+/// runs. Until that is affordable here, this stays syntactic and narrow.
+fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], _var_types: Array[(String, String)], _fn_returns: Array[(String, String)]) -> String {
+  let no_env = array_empty()
+  let no_fns = array_empty()
+  let sh = infer_eq_shape(v, struct_sets, no_env, no_fns)
   if String::length(sh) > 0 {
     sh
   } else {
-    let ordinary = infer_shape(v, struct_sets, var_types, fn_returns)
+    let ordinary = infer_shape(v, struct_sets, no_env, no_fns)
     if String::length(ordinary) > 0 {
       ordinary
     } else {
-      // `Array::push(xs, if flag { 1 } else { 2 })` is a direct push in the
-      // binding's own scope, not the documented residual where the mutation
-      // hides behind a helper -- but neither inference call reads a
-      // conditional, so the binding stayed unresolved and `==` took the trap
-      // (#2192 review). Both branches must agree: the value has that shape on
-      // every path, so adopting it invents nothing. Handled HERE rather than in
-      // `infer_shape`, which the whole file consults for other purposes.
-      branch_agreed_shape(v, struct_sets, var_types, fn_returns)
+      branch_agreed_shape(v, struct_sets)
     }
   }
 }
 
-fn branch_agreed_shape(v: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+/// A conditional describes itself when both arms do and they agree: the value
+/// has that shape on every path, so adopting it invents nothing. Neither
+/// inference call reads a conditional, and `Array::push(xs, if f { 1 } else
+/// { 2 })` is an ordinary direct push, not the residual where the mutation
+/// hides behind a helper.
+fn branch_agreed_shape(v: Expr, struct_sets: Array[(String, Array[String])]) -> String {
   match v {
     EIf(_, t, f) => {
-      let ts = pushed_value_shape(t, struct_sets, var_types, fn_returns)
-      let fs = pushed_value_shape(f, struct_sets, var_types, fn_returns)
+      let no_env = array_empty()
+      let no_fns = array_empty()
+      let ts = pushed_value_shape(t, struct_sets, no_env, no_fns)
+      let fs = pushed_value_shape(f, struct_sets, no_env, no_fns)
       if String::length(ts) > 0 && ts == fs {
         ts
       } else {
@@ -3674,13 +3604,7 @@ fn branch_agreed_shape(v: Expr, struct_sets: Array[(String, Array[String])], var
 /// The same binding-site records `rewrite_expr` makes at an `ELet`/`ELetMut`,
 /// so the walk above reads names the way the comparison site will.
 fn bound_var_types(var_types: Array[(String, String)], n: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  // Mask FIRST, then extend: `extend_var_types` appends nothing when
-  // `anon_or_infer` fails, and `lookup_var_type` takes the LAST match, so
-  // without the mask the outer binding of `n` stayed visible inside this
-  // binding's body (#2192 review). The value's own shape is still inferred in
-  // the OUTER environment, where it is evaluated.
-  let masked = mask_var_types(var_types, single_name_array(n))
-  let base = extend_var_types(masked, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
+  let base = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
   eq_shape_bind(bind_shapes(base, n, val, struct_sets, fn_returns), n, val, struct_sets, fn_returns)
 }
 

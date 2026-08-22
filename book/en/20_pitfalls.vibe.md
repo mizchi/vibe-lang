@@ -109,11 +109,13 @@ older rows; do not add new ones.
 `==` compares by value, including arrays with non-scalar elements,
 arrays returned from a function, and empty literals — annotated or not.
 An unannotated `let xs = []` takes its element type from the
-`Array::push` calls that fill it (#2157), so it answers like the
-annotated form. Annotating is still the clearer thing to write, and it
-is what a binding filled somewhere this rule cannot see — inside a
-function you merely pass the array to, say — needs in order to compare
-once both sides are non-empty.
+`Array::push` calls that fill it (#2157), **as long as the pushed value
+says what it is**: a literal, an array / tuple / struct of literals, or
+an `if` whose branches agree.
+
+Push a name or a call result and the binding gets no element type, and
+comparing two such arrays once both are non-empty fails at run time
+rather than answering. `let xs: Array[Int] = []` is the fix.
 
 A generic `T` with no `Eq` witness is the boundary worth knowing, and it
 is a compile error rather than a surprise — `no impl `Eq` for

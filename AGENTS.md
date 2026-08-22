@@ -33,17 +33,28 @@ no silent reference equality is left**. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, and empty-literal bindings
 are all structural, and a difference in length or in elements is `false`.
-**An unannotated `let xs = []` is structural too** (#2157, landed
-2026-08-22): the element type comes from the `Array::push(xs, v)` calls in the
-binding's own scope, so it answers exactly like the annotated
-`let xs: Array[Int] = []`. The scan stops at anything that re-binds the
-spelling, so a shadowed array never lends its element type to the outer one.
-What is left is one narrow shape — **both** sides non-empty with no element
-type recoverable from either (the pushes happen inside a function the array is
-merely passed to). That still traps rather than answering by length or by
-identity, and an annotation fixes it. While either side is still empty the
-lengths decide, annotation or not. Pinned by the "unannotated empty
-bindings ..." tests in `fixtures/structural_eq_contexts_test.vibe`.
+**An unannotated `let xs = []` is structural when the pushed value describes
+itself** (#2157, narrowed by #2192): the element type comes from the
+`Array::push(xs, v)` calls in the binding's own scope, and `v` is read from its
+own syntax only — a literal, an array / tuple / struct of such values, or a
+conditional whose branches agree. Those answer exactly like the annotated
+`let xs: Array[Int] = []`.
+A pushed **name** or **call result** does NOT resolve. That is deliberate: the
+scan used to read the value's type out of an environment, which meant deciding
+scope, shadowing, annotations and type formals for itself — six review findings
+came from that one decision, the first of them silently wrong (an outer
+`let v = 1` was read for an inner `v` of another type, so `==` answered `false`
+for two equal `[1, 2]` arrays). With no environment the classification can be
+absent but never wrong. **What does not resolve traps** once both sides are
+non-empty, rather than answering by length or by identity, and an annotation
+fixes it. While either side is still empty the lengths decide, annotation or
+not.
+The typed replacement is not available here yet: #2158 built it and measured
+the FS lane — the one `vibe test` and `vibe run` use — at 6.12s → 77.55s on a
+compiler-sized closure, so it ships only where a whole-program check already
+runs. Pinned by `fixtures/structural_eq_contexts_test.vibe` (the answers) and
+the `structural_eq_untyped_empty_*_trap.vibe` fixtures (the fail-closed side),
+both lanes of the same contract enforced in `tests/gates/early/run.sh`.
 This paragraph used to list four cases as "remaining reference equality";
 measurement showed three of them are structural. The fourth — an erased type
 variable (the `T` of `[T: Eq]`) — goes through a witness, so it is correct for
