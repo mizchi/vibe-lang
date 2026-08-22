@@ -133,6 +133,7 @@ import @vibe/compiler/codegen/common_analysis {
   is_mut_captured_in,
   scope_tail_proj_root,
   stmts_contain_exceptions,
+  unique_call_offsets_in_stmts,
   zero_alloc_check
 }
 
@@ -3675,7 +3676,15 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String) -> Array[String] {
   roots
 }
 
-export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
+/// #2158: every linked compile, with the CHECKER's Double call-result offsets
+/// as an extra input.
+///
+/// Only the entries that (a) run a whole-program check and (b) parsed that
+/// program over ONE coherent offset space pass a non-empty array here.
+/// `compile_wasi_module_linked_impl` below forwards an empty one, which is the
+/// fail-closed default: an empty table classifies nothing, so those lanes keep
+/// the pre-#2158 syntactic answer byte for byte.
+export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
   // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
   // error there is exactly the throw each pass used to raise inline here.
@@ -3814,6 +3823,13 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // #2158: one shared walk, in common_analysis -- see its doc comment for why
   // this is not inlined here any more (#2156 review).
   let float_ret_fn_names = compute_float_returning_names(stmts)
+  // #2158: the checker's offset-keyed answer, narrowed to the offsets that name
+  // exactly ONE call node in the statements below. Deliberately computed HERE,
+  // after `effect_lowering_prelude` above has finished rewriting `stmts`, so
+  // the uniqueness is proven against the program codegen actually compiles
+  // rather than against whatever the entry handed the checker. Empty in, empty
+  // out, without a walk.
+  let float_call_offsets = unique_call_offsets_in_stmts(stmts, checker_float_call_offsets)
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
   let fn_stmt_indices = lc_fresh_int_array()
@@ -6441,6 +6457,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
           },
           ctor_float_fields: ctor_float_fields_list,
           float_ret_fns: float_ret_fn_names,
+          float_call_offsets: float_call_offsets,
           // Sorted copy for compile_expr.vibe's per-identifier membership check
           // (bsearch_leftmost) -- keep `thunk_names_list` itself unsorted, its
           // POSITION is load-bearing for the per-thunk global-slot index lookup
@@ -8554,14 +8571,42 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   bytebuf_to_bytes(out)
 }
 
+/// #2158: the historical signature. Every caller that has no checker offsets to
+/// give -- which is every caller but the two `*_with_float_offsets` entries
+/// below -- goes through here and gets an empty table, so its output is
+/// unchanged.
+export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, array_empty())
+}
+
 export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
   compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
 }
 
+/// #2158: `compile_wasi_module_rc_impl` plus the checker's Double call-result
+/// offsets. This is the lane `vibe test` and `vibe run` take by default -- the
+/// adapter routes anything but an explicit `VIBE_RC=0` here, so a fix wired
+/// only into the bump sibling would never be reached by either command.
+///
+/// `elaborate_heap_params` rewrites the statements before codegen sees them;
+/// the offsets are filtered for uniqueness inside the linked impl, AFTER that
+/// rewrite, so its output is what the guarantee is proven against.
+export fn compile_wasi_module_rc_impl_with_float_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+}
+
 /// Preserve the post-lowering AST for the explicit `no-dce` compile mode.
 export fn compile_wasi_module_no_dce_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
   compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+}
+
+/// #2158: `compile_wasi_module_no_dce_impl` plus the checker's Double
+/// call-result offsets. This is the `vibe test` / `vibe run` FS lane
+/// (`compile_file_fs_mode`, entry/compiler/file_compile/file_compile.vibe).
+export fn compile_wasi_module_no_dce_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
 }
 
 /// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
@@ -8672,6 +8717,14 @@ export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: Stri
 
 export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
   compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+}
+
+/// #2158: `compile_wasi_module_with_sources_impl` plus the checker's Double
+/// call-result offsets. This is the single-source lane
+/// (`compile_source_wasi_only`, entry/source_compile/wasi_only/preprocess_compile.vibe),
+/// where one text means one offset space with nothing to collide.
+export fn compile_wasi_module_with_sources_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
 }
 
 /// Coverage build (#cov): compile with function-level hit instrumentation +

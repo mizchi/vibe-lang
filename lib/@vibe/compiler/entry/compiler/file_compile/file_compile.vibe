@@ -504,6 +504,42 @@ export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
   check_file_fs_mode_from_source_groups(entry_path, source_groups)
 }
 
+/// #2158 (NOT wired here, and the measurement that says why).
+///
+/// This lane's codegen is untyped, so a `Double` that arrives through a call
+/// renders as its raw f64 bits. `CompileCtx.float_call_offsets` is the channel
+/// that fixes it -- the checker's per-call-site type, keyed by source offset --
+/// and it is live on the single-source lane
+/// (`compile_source_wasi_only`, entry/source_compile/wasi_only/preprocess_compile.vibe)
+/// and on the gc lane. It is NOT live here, and the reason is cost, not design.
+///
+/// Those two lanes already run a whole-program `check_program`, so the offsets
+/// come out of a check that was happening anyway. This lane does not: it
+/// type-checks per MODULE via `prepare_file_fs_from_source_groups_persistent_cached`,
+/// against a persistent cache, and then merges statements. Getting the
+/// observation here means adding a whole-program re-check of the merged
+/// program. Measured, same file, one compiler, warm caches:
+///
+/// | entry file                            | closure         | before | with re-check |
+/// |---------------------------------------|-----------------|-------:|--------------:|
+/// | lib/@vibe/core/sha1_test.vibe          | a few files     | 0.31s  |         0.32s |
+/// | lib/@vibe/compiler/tests/parser_test   | the parser      | 1.01s  |         2.98s |
+/// | lib/@vibe/compiler/tests/compiler_fs   | the compiler    | 6.12s  |        77.55s |
+///
+/// 12.7x on a compiler-sized closure, and superlinear in program size. The cost
+/// is the INFERENCE, not the observation bookkeeping: rewriting the
+/// observation's per-occurrence `subst_apply` into the head query
+/// `subst_resolves_to_double` (types.vibe) changed 77.55s to 77.55s.
+///
+/// So the remaining work is not "wire it up" -- that was tried and measured --
+/// it is to make the answer available without a second whole-program pass. The
+/// shape that fits this lane: have the MODULAR check carry the observation per
+/// module (it already infers every module, and its result is cached), and give
+/// each file a base-shifted offset space so the per-module answers can be
+/// unioned without colliding. `unique_call_offsets_in_stmts`
+/// (codegen/common_analysis) already drops any offset that names more than one
+/// call node, so a partial or colliding answer degrades to today's behavior
+/// rather than to a wrong one.
 export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -528,6 +564,10 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let merged_stmts = build_grouped_merged_stmts(source_groups)
+  // #2158: this is the lane `vibe test` and `vibe run` actually take -- the
+  // adapter routes anything but an explicit `VIBE_RC=0` here, since `VIBE_RC`
+  // unset is `"" != "0"`. It is also the lane that cannot afford the
+  // checker's offsets today; see compile_file_fs_mode above for the numbers.
   compile_wasi_module_rc(merged_stmts, entry_name)
 }
 

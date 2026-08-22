@@ -1175,6 +1175,56 @@ fn collect_region_skolems_in_type(ty: Type, out: Array[String]) -> Unit {
   }
 }
 
+/// #2158: does `ty` resolve to `Double` under `s`, WITHOUT building the
+/// substituted type?
+///
+/// `subst_apply` below answers the same question, but it rebuilds the whole
+/// type structure to do it: for a call result that resolves to a function type
+/// or a parameterized nominal, that is a full recursive allocation discarded
+/// one comparison later. The Double call-result observation asks this question
+/// once per located call result, so on a merged program the size of the
+/// compiler the rebuild dominated everything -- measured on
+/// `lib/@vibe/compiler/tests/compiler_fs_test.vibe`, whose import closure is
+/// the whole compiler: 6.1s to compile before the observation was wired in,
+/// 77.5s with it going through `subst_apply`.
+///
+/// Following the VARIABLE chain is the whole job. `CtDouble` takes no
+/// arguments, so a type that is not already `CtDouble` at its head cannot
+/// become one by substituting inside it -- there is nothing below the head to
+/// look at. Cycle handling matches `subst_apply`'s: a variable already seen
+/// ends the walk instead of looping.
+export fn subst_resolves_to_double(s: Subst, ty: Type) -> Bool {
+  let mut cur = ty
+  let seen = array_empty()
+  let mut done = false
+  let mut result = false
+  while !done {
+    match cur {
+      CtDouble => {
+        result = true
+        done = true
+      },
+      CtVar(vid) => if int_array_has(seen, vid) {
+        done = true
+      } else {
+        Array::push(seen, vid)
+        match subst_lookup(s, vid) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
 export fn subst_apply(s: Subst, ty: Type) -> Type {
   match ty {
     CtInt => ty,
