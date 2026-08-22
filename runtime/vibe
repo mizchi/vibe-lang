@@ -1992,8 +1992,13 @@ case "$cmd" in
     tresults="$(mktemp -d -t vibe-test-results-XXXXXX)"
     total_files="$#"
     _test_record() {
-      # $1 = ok|fail, $2 = n_tests for this file, $3 = src path
-      printf '%s %s\n' "$1" "$2" > "$tresults/$(printf '%s' "$3" | tr '/ ' '__').res"
+      # $1 = ok|fail, $2 = n_tests for this file. The record is keyed by
+      # the file's ORDINAL in the expanded input list (rec_ordinal, set by
+      # _test_run_one), not by a sanitized path -- sanitizing collides
+      # (a/b_test.vibe vs a_b_test.vibe), and under --jobs the last worker
+      # to finish would overwrite the other verdict, letting the summary
+      # claim zero failures on a failing run.
+      printf '%s %s\n' "$1" "$2" > "$tresults/$rec_ordinal.res"
     }
     # Count the file's `__test_` functions from the wasm NAME SECTION, with
     # a raw-occurrence grep fallback when there is no name section (gc
@@ -2100,6 +2105,7 @@ PY
     _test_run_one() {
       src="$1"
       warm_jobs="$2"
+      rec_ordinal="${3:-0}"
       [ -f "$src" ] || { echo "vibe: not found: $src" >&2; return 1; }
       # #906 Phase 2 (real-test wiring): same best-effort pre-warm `build`/
       # `check` get -- each test file is its own compile entry with its own
@@ -2225,12 +2231,14 @@ PY
     }
 
     failed=0
+    rec_i=0
     if [ "$jobs" -le 1 ] || [ "$#" -le 1 ]; then
       # Serial path -- unchanged behavior (including the per-file frontend
       # pre-warm, itself a no-op for jobs<=1 per maybe_warm_frontend_cache's
       # own gate).
       for src in "$@"; do
-        _test_run_one "$src" "$jobs" || failed=1
+        rec_i=$((rec_i + 1))
+        _test_run_one "$src" "$jobs" "$rec_i" || failed=1
       done
     else
       # #906/#1168 follow-up: `--jobs N` previously only pre-warmed each
@@ -2272,7 +2280,8 @@ PY
           # condensed trap, replayed test stdout) lives on stdout like
           # scripts/vibe_test.sh's; stderr carries compiler diagnostics
           # and the successful runs' own stderr output.
-          ( _test_run_one "$src" 1 > "$out_log" 2> "$err_log" ) &
+          rec_i=$((rec_i + 1))
+          ( _test_run_one "$src" 1 "$rec_i" > "$out_log" 2> "$err_log" ) &
           batch_pids+=("$!")
           batch_out_logs+=("$out_log")
           batch_err_logs+=("$err_log")
