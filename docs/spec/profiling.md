@@ -147,6 +147,25 @@ bench simple_bench.vibe: 1000 iters — 49 ns/op (min 47 ns, p50 49 ns, p95 51 n
 `vibe bench <file> [--iters N] [--warmup N]`。`vibe::bench …` は機械可読（CI/比較が parse）。
 env: `VIBE_BENCH_ITERS` / `VIBE_BENCH_WARMUP` / `VIBE_BENCH_LABEL`。test: `scripts/test_vibe_bench.sh`。
 
+### Wasmtime guest CPU profile
+
+`vibe profile <file.vibex> --out profile.json --interval-us 1000` captures a
+function-level Wasm guest CPU profile through Wasmtime `GuestProfiler`. The
+output is Firefox processed-profile JSON and can be opened at
+<https://profiler.firefox.com/>. The profile is flushed after both successful
+execution and a guest trap.
+
+`vibe bench <file.vibe> --guest-profile <directory> --interval-us 1000`
+produces one JSON file per `__bench_<name>` block. Profiling starts after that
+block's warmup. The profiler changes execution cost, so latency values from a
+profiled invocation are diagnostic only; use an unprofiled invocation for KPI
+or regression comparisons.
+
+Both modes require fresh `.wasm`. An ordinary `.cwasm` was compiled without
+epoch-interruption checkpoints and is rejected rather than silently producing
+an empty profile. Function names come from the Wasm name section; Vibe
+`vibe.linemap` source-line attribution is not yet included.
+
 **粒度: bench ブロック個別（実装済み）**: codegen が各 `bench "name" { }` を `__bench_<name>` 関数として
 export する（`__no_entry__` ビルド時のみ。通常ビルド・コンパイラ自己コンパイルは byte-identical）。
 runner（`--bench`）は export を列挙して **ブロックごとに warm 計測**し、`label=<file>::<name>` で

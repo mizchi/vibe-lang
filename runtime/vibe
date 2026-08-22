@@ -27,6 +27,8 @@
 #                                         total allocated) to stderr after exit
 #   vibe run --alloc-site[=N] <file.vibex>  run + report per-line alloc
 #                                         attribution (top N sites) to stderr
+#   vibe profile <file.vibex> [--out FILE] [--interval-us N]
+#                                         capture a Wasmtime guest CPU profile
 #   vibe compile <file.vibe> -o <out>     compile to a .wasm
 #   vibe compile --wit <file.vibe>        emit the WIT world for the file's
 #                                         effect surface (docs/effect-wit-mapping.md)
@@ -709,6 +711,23 @@ condense_test_trap() {
 
 cmd="${1:-help}"; shift || true
 case "$cmd" in
+  profile)
+    profile_src=""; profile_out="profile.json"; profile_interval="1000"; profile_args=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --out) profile_out="$2"; shift 2 ;;
+        --out=*) profile_out="${1#--out=}"; shift ;;
+        --interval-us) profile_interval="$2"; shift 2 ;;
+        --interval-us=*) profile_interval="${1#--interval-us=}"; shift ;;
+        --) shift; profile_args=("$@"); break ;;
+        -*) die "vibe profile: unknown option $1" ;;
+        *) [ -z "$profile_src" ] || die "vibe profile: unexpected argument $1"; profile_src="$1"; shift ;;
+      esac
+    done
+    [ -n "$profile_src" ] || die "usage: vibe profile <file.vibex> [--out FILE] [--interval-us N]"
+    exec "$0" run --guest-profile="$profile_out" --guest-profile-interval-us="$profile_interval" \
+      "$profile_src" -- ${profile_args[@]+"${profile_args[@]}"}
+    ;;
   run)
     # `--trace` (debugger / DAP P1 groundwork): compile with function-call
     # execution-trace instrumentation and dump the entry sequence (each line
@@ -719,6 +738,8 @@ case "$cmd" in
     mem_sample=""
     allocsite=0
     allocsite_top=""
+    guest_profile=""
+    guest_profile_interval="1000"
     break_spec=""
     args=()
     while [ "$#" -gt 0 ]; do
@@ -731,6 +752,8 @@ case "$cmd" in
         --mem-sample=*) mem_sample="${1#--mem-sample=}"; shift ;;
         --alloc-site) allocsite=1; shift ;;
         --alloc-site=*) allocsite=1; allocsite_top="${1#--alloc-site=}"; shift ;;
+        --guest-profile=*) guest_profile="${1#--guest-profile=}"; shift ;;
+        --guest-profile-interval-us=*) guest_profile_interval="${1#--guest-profile-interval-us=}"; shift ;;
         *) args+=("$1"); shift ;;
       esac
     done
@@ -790,6 +813,8 @@ case "$cmd" in
     alloc_env=""
     [ "$allocsite" = "1" ] && alloc_env="VIBE_ALLOC_SITE=1"
     [ -n "$allocsite_top" ] && alloc_env="$alloc_env VIBE_ALLOC_SITE_TOP=$allocsite_top"
+    profile_env=""
+    [ -n "$guest_profile" ] && profile_env="VIBE_GUEST_PROFILE=$guest_profile VIBE_GUEST_PROFILE_INTERVAL_US=$guest_profile_interval"
     # span-arc step5: line-granularity breakpoints. A `--break <file>:<line>` (or
     # bare `<line>`) spec passes through VIBE_BREAK unchanged; the runner resolves
     # the entering function's source line via the `.funcmap` sidecar (name<TAB>
@@ -824,7 +849,7 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $mem_env $alloc_env $funcmap_env $breakfile_env "$RUNNER" "$out" \
+    env $trace_env $break_env $mem_env $alloc_env $profile_env $funcmap_env $breakfile_env "$RUNNER" "$out" \
       ${extra_args[@]+"${extra_args[@]}"} 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
@@ -2111,13 +2136,17 @@ case "$cmd" in
     # `bench {}` blocks (via the `__no_entry__` test entry) then run the warm
     # instance N times, reporting ns/op (min/p50/p95/mean), ops/sec, and bytes/op
     # (bump-heap delta / iters). The harness lives in the runner (`--bench`).
-    iters=""; warmup=""; bsrc=""
+    iters=""; warmup=""; bsrc=""; guest_profile_dir=""; guest_profile_interval="1000"
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --iters) iters="$2"; shift 2 ;;
         --iters=*) iters="${1#--iters=}"; shift ;;
         --warmup) warmup="$2"; shift 2 ;;
         --warmup=*) warmup="${1#--warmup=}"; shift ;;
+        --guest-profile) guest_profile_dir="$2"; shift 2 ;;
+        --guest-profile=*) guest_profile_dir="${1#--guest-profile=}"; shift ;;
+        --interval-us) guest_profile_interval="$2"; shift 2 ;;
+        --interval-us=*) guest_profile_interval="${1#--interval-us=}"; shift ;;
         *) bsrc="$1"; shift ;;
       esac
     done
@@ -2154,6 +2183,10 @@ case "$cmd" in
     bench_env="VIBE_BENCH_LABEL=$(basename "$bsrc")"
     [ -n "$iters" ] && bench_env="$bench_env VIBE_BENCH_ITERS=$iters"
     [ -n "$warmup" ] && bench_env="$bench_env VIBE_BENCH_WARMUP=$warmup"
+    if [ -n "$guest_profile_dir" ]; then
+      mkdir -p "$guest_profile_dir" || die "cannot create guest profile directory: $guest_profile_dir"
+      bench_env="$bench_env VIBE_BENCH_GUEST_PROFILE_DIR=$guest_profile_dir VIBE_GUEST_PROFILE_INTERVAL_US=$guest_profile_interval"
+    fi
     env $bench_env "$RUNNER" --bench "$out"
     ;;
   shell)
