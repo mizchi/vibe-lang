@@ -66,11 +66,6 @@ test "annotated empty bindings stay structural after a push" {
   // shape the book tells readers to write: annotate the empty literal, then
   // grow it. Pushing to one must make them differ and pushing to both must
   // make them agree again -- content, not identity.
-  //
-  // The UNANNOTATED form of this (`let xs = []` with no type) traps at run
-  // time instead of answering (#2157), so it cannot be pinned here; a trap
-  // is not a value a test can assert. That is exactly why the annotation is
-  // the documented advice.
   let left: Array[Int] = [
   ]
   let right: Array[Int] = [
@@ -80,6 +75,150 @@ test "annotated empty bindings stay structural after a push" {
   assert(left != right)
   Array::push(right, 1)
   assert(left == right)
+}
+
+test "unannotated empty bindings stay structural after a push" {
+  // #2157: the same program without the annotation. It used to answer the
+  // first comparison and then TRAP on the second, because the binding carried
+  // no element type once it had grown. The element type comes from the push.
+  let left = [
+  ]
+  let right = [
+  ]
+  assert(left == right)
+  Array::push(left, 1)
+  assert(left != right)
+  Array::push(right, 1)
+  assert(left == right)
+}
+
+test "unannotated empty let mut bindings stay structural after a push" {
+  // `let mut` records the same empty shape as `let`, so it needs the same
+  // element type from the same place.
+  let mut left = [
+  ]
+  let mut right = [
+  ]
+  assert(left == right)
+  Array::push(left, 1)
+  assert(left != right)
+  Array::push(right, 1)
+  assert(left == right)
+}
+
+test "unannotated empty bindings compare content, not length" {
+  // Equal lengths, different contents: a length-only answer would say `true`
+  // here, so this is what separates the fix from the old fail-closed guard.
+  let left = [
+  ]
+  let right = [
+  ]
+  Array::push(left, 1)
+  Array::push(right, 2)
+  assert(left != right)
+  Array::push(left, 3)
+  Array::push(right, 3)
+  assert(left != right)
+}
+
+test "unannotated empty String bindings compare structurally" {
+  let left = [
+  ]
+  let right = [
+  ]
+  Array::push(left, "a")
+  Array::push(right, "a")
+  assert(left == right)
+  Array::push(left, "b")
+  Array::push(right, "c")
+  assert(left != right)
+}
+
+test "only one unannotated empty binding grows" {
+  // The half of #2157 the old guard was written for: one side never left zero
+  // length, so the lengths alone decide. It has to keep answering.
+  let grown = [
+  ]
+  let stayed = [
+  ]
+  Array::push(grown, 1)
+  assert(grown != stayed)
+  assert(stayed != grown)
+}
+
+test "an inner shadow does not retype an outer empty binding" {
+  // The push scan stops at a construct that re-binds the spelling, so the
+  // Strings pushed onto the INNER `items` never reach the outer one. Were they
+  // to, the two shapes would disagree, the outer binding would keep its empty
+  // shape, and the first comparison would fall over instead of answering.
+  let items = [
+  ]
+  let other = [
+  ]
+  Array::push(items, 1)
+  Array::push(other, 1)
+  assert(items == other)
+  let items = [
+  ]
+  let texts = [
+  ]
+  Array::push(items, "a")
+  Array::push(texts, "a")
+  assert(items == texts)
+  Array::push(texts, "b")
+  assert(items != texts)
+}
+
+test "unannotated empty bindings of structs compare structurally" {
+  let left = [
+  ]
+  let right = [
+  ]
+  Array::push(left, Point::{
+    x: 1
+  })
+  Array::push(right, Point::{
+    x: 1
+  })
+  assert(left == right)
+  Array::push(left, Point::{
+    x: 2
+  })
+  Array::push(right, Point::{
+    x: 3
+  })
+  assert(left != right)
+}
+
+test "unannotated empty bindings of tuples compare structurally" {
+  let left = [
+  ]
+  let right = [
+  ]
+  Array::push(left, (1, "a"))
+  Array::push(right, (1, "a"))
+  assert(left == right)
+  Array::push(left, (2, "b"))
+  Array::push(right, (2, "c"))
+  assert(left != right)
+}
+
+test "unannotated empty bindings grown in a loop compare structurally" {
+  // The pushed value is a binding introduced AFTER the empty literal, so the
+  // element type is only reachable if the scan carries the environment down.
+  let left = [
+  ]
+  let right = [
+  ]
+  let mut i = 0
+  while i < 3 {
+    Array::push(left, i)
+    Array::push(right, i)
+    i = i + 1
+  }
+  assert(left == right)
+  Array::push(right, 9)
+  assert(left != right)
 }
 
 test "Option variables with array payload compare structurally" {

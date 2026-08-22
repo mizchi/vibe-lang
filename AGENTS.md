@@ -33,12 +33,17 @@ no silent reference equality is left**. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, and empty-literal bindings
 are all structural, and a difference in length or in elements is `false`.
-**The one exception is an unannotated `let xs = []`, which traps at runtime
-when compared after a push** (#2157, measured 2026-08-21). It crashes rather
-than answering wrongly, so it is P1. The annotated form
-(`let xs: Array[Int] = []`) stays structural after a push, and that is pinned
-by "annotated empty bindings stay structural after a push" in
-`fixtures/structural_eq_contexts_test.vibe`.
+**An unannotated `let xs = []` is structural too** (#2157, landed
+2026-08-22): the element type comes from the `Array::push(xs, v)` calls in the
+binding's own scope, so it answers exactly like the annotated
+`let xs: Array[Int] = []`. The scan stops at anything that re-binds the
+spelling, so a shadowed array never lends its element type to the outer one.
+What is left is one narrow shape — **both** sides non-empty with no element
+type recoverable from either (the pushes happen inside a function the array is
+merely passed to). That still traps rather than answering by length or by
+identity, and an annotation fixes it. While either side is still empty the
+lengths decide, annotation or not. Pinned by the "unannotated empty
+bindings ..." tests in `fixtures/structural_eq_contexts_test.vibe`.
 This paragraph used to list four cases as "remaining reference equality";
 measurement showed three of them are structural. The fourth — an erased type
 variable (the `T` of `[T: Eq]`) — goes through a witness, so it is correct for

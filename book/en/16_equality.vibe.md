@@ -8,10 +8,8 @@ Previous: [Generics, traits, and derive](15_generics.vibe.md)
 structs with equal fields are equal, and nothing here quietly compares
 addresses instead.
 
-Two edges are worth knowing, and neither one answers wrongly: an
-unannotated empty array **traps** instead of comparing once you push
-into it (a bug, #2157), and a generic `T` with no `Eq` witness is a
-**compile error**. Both are below.
+One edge is worth knowing, and it does not answer wrongly either: a
+generic `T` with no `Eq` witness is a **compile error**. It is below.
 
 ## The ordinary cases
 
@@ -83,6 +81,11 @@ fn main with Console {
   println("after one push      = \{xs == ys}")
   Array::push(ys, 1)
   println("after both          = \{xs == ys}")
+  let us = []
+  let vs = []
+  Array::push(us, 1)
+  Array::push(vs, 2)
+  println("no annotation       = \{us == vs}")
 }
 ```
 
@@ -92,14 +95,14 @@ function returns    = true
 empty and empty     = true
 after one push      = false
 after both          = true
+no annotation       = false
 ```
 
-Annotate an empty literal, as `xs` and `ys` are above. `let xs = []` with
-no annotation has no element type to compare by: two such bindings
-compare equal while both stay empty, but pushing into one and then
-comparing **traps at run time** rather than answering (#2157). The
-annotation is the fix, and it is the only reason this chapter asks you
-to write one.
+`us` and `vs` carry no annotation, and they compare by content all the
+same: an unannotated `let xs = []` takes its element type from the
+`Array::push` calls that fill it (#2157). The annotation on `xs` and
+`ys` is worth writing anyway — it is what a reader sees first — but the
+comparison no longer depends on it.
 
 ## The compile-time edge: a generic `T` with no witness
 
