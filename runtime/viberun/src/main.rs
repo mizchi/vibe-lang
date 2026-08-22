@@ -25,9 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use wasmtime::{
-    bail, format_err, Caller, Config, Engine, ExternRef, ExternType, Instance, Linker, Module,
-    ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy, Trap,
-    AsContext, GuestProfiler, TypedFunc, Val, ValType,
+    bail, format_err, Caller, CallHook, Config, Engine, ExternRef, ExternType, Instance, Linker,
+    Module, ResourceLimiter, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder, Strategy,
+    Trap, AsContext, GuestProfiler, TypedFunc, Val, ValType,
 };
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
@@ -1107,6 +1107,21 @@ fn is_component_file(path: &str) -> bool {
     buf == [0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00]
 }
 
+fn parse_guest_profile_interval(value: Option<&str>) -> Result<Duration> {
+    match value {
+        None => Ok(Duration::from_millis(1)),
+        Some(value) => {
+            let micros = value.parse::<u64>().map_err(|_| {
+                format_err!("VIBE_GUEST_PROFILE_INTERVAL_US must be a positive integer, got `{value}`")
+            })?;
+            if micros == 0 {
+                bail!("VIBE_GUEST_PROFILE_INTERVAL_US must be greater than zero");
+            }
+            Ok(Duration::from_micros(micros))
+        }
+    }
+}
+
 fn run(args: Vec<String>) -> Result<i32> {
     if args.is_empty() {
         print_help();
@@ -1116,12 +1131,12 @@ fn run(args: Vec<String>) -> Result<i32> {
     let guest_profile_path = std::env::var("VIBE_GUEST_PROFILE")
         .ok()
         .filter(|path| !path.is_empty());
-    let guest_profile_interval = std::env::var("VIBE_GUEST_PROFILE_INTERVAL_US")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .map(Duration::from_micros)
-        .unwrap_or(Duration::from_millis(1));
+    let guest_profile_interval_value = std::env::var("VIBE_GUEST_PROFILE_INTERVAL_US").ok();
+    let guest_profile_interval = if guest_profile_path.is_some() {
+        parse_guest_profile_interval(guest_profile_interval_value.as_deref())?
+    } else {
+        Duration::from_millis(1)
+    };
     if guest_profile_path.is_some() && wasm_path.ends_with(".cwasm") {
         bail!(
             "guest profiling needs a fresh .wasm; ordinary .cwasm files have no epoch checkpoints"
@@ -1212,6 +1227,12 @@ fn run(args: Vec<String>) -> Result<i32> {
             let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
             profiler.call_hook(ctx.as_context(), kind);
             ctx.data_mut().guest_profiler = Some(profiler);
+            if matches!(kind, CallHook::ReturningFromHost) {
+                // Epochs can advance many times while a blocking host import is
+                // running. Rebase the relative deadline on guest re-entry so
+                // that debt is coalesced instead of producing a callback burst.
+                ctx.set_epoch_deadline(1);
+            }
             Ok(())
         });
     }
@@ -1624,6 +1645,9 @@ fn arm_guest_profile(
         let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
         profiler.call_hook(ctx.as_context(), kind);
         ctx.data_mut().guest_profiler = Some(profiler);
+        if matches!(kind, CallHook::ReturningFromHost) {
+            ctx.set_epoch_deadline(1);
+        }
         Ok(())
     });
     store.set_epoch_deadline(1);
@@ -1708,12 +1732,12 @@ fn bench(args: Vec<String>) -> Result<i32> {
         .ok()
         .filter(|path| !path.is_empty())
         .map(PathBuf::from);
-    let profile_interval = std::env::var("VIBE_GUEST_PROFILE_INTERVAL_US")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .map(Duration::from_micros)
-        .unwrap_or(Duration::from_millis(1));
+    let profile_interval_value = std::env::var("VIBE_GUEST_PROFILE_INTERVAL_US").ok();
+    let profile_interval = if profile_dir.is_some() {
+        parse_guest_profile_interval(profile_interval_value.as_deref())?
+    } else {
+        Duration::from_millis(1)
+    };
 
     if profile_dir.is_some() && wasm_path.ends_with(".cwasm") {
         bail!("bench guest profiling needs a fresh .wasm; ordinary .cwasm files have no epoch checkpoints");
@@ -4640,6 +4664,15 @@ mod tests {
         assert_ne!(slash, question);
         assert_eq!(slash, profile_filename("bench::a/b"));
         assert!(slash.ends_with(".json"));
+    }
+
+    #[test]
+    fn guest_profile_interval_rejects_invalid_explicit_values() {
+        assert_eq!(parse_guest_profile_interval(None).unwrap(), Duration::from_millis(1));
+        assert_eq!(parse_guest_profile_interval(Some("250")).unwrap(), Duration::from_micros(250));
+        for invalid in ["0", "-1", "100O", ""] {
+            assert!(parse_guest_profile_interval(Some(invalid)).is_err(), "accepted {invalid:?}");
+        }
     }
 
     #[test]

@@ -183,6 +183,18 @@ spaced_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$spaced_profile
   && ok "vibe profile: output paths containing whitespace stay one argument" \
   || bad "vibe profile: whitespace output path failed ($spaced_profile_out)"
 
+for invalid_interval in 0 -1 100O; do
+  set +e
+  invalid_interval_out="$($VIBE profile "$proj/profile.vibex" \
+    --out "$WORK/invalid-$invalid_interval.json" --interval-us "$invalid_interval" 2>&1)"
+  invalid_interval_status=$?
+  set -e
+  [ "$invalid_interval_status" -ne 0 ] \
+    && printf '%s\n' "$invalid_interval_out" | grep -q 'positive integer\|greater than zero' \
+    && ok "vibe profile: rejects invalid interval $invalid_interval" \
+    || bad "vibe profile: accepted invalid interval $invalid_interval ($invalid_interval_out)"
+done
+
 # A guest failure must not discard the samples collected before the trap.
 cat > "$proj/trap.vibex" <<'EOF'
 fn work(n: Int) -> Int {
