@@ -24,11 +24,11 @@ fn half(n: Int) -> Option[Int] {
 fn main with Console {
   let a = match half(10) {
     Some(v) => v,
-    None => 0 - 1
+    None => -1
   }
   let b = match half(3) {
     Some(v) => v,
-    None => 0 - 1
+    None => -1
   }
   println("half(10) = \{a}")
   println("half(3)  = \{b}")

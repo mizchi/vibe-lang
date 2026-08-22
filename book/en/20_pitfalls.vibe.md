@@ -76,8 +76,10 @@ error (#1445).
 
 ## `s[i]` is a byte, not a String
 
-`String` is a byte string. `s[i]` is an `Int` character code. `'A' == 65`.
-A one-character String is `String::from_char_code(s[i])` or a slice.
+`String` is a byte string. `s[i]` is the byte at that offset, an `Int`.
+`'A' == 65`. A one-byte String is `String::from_char_code(s[i])` — a
+byte write, alias `String::from_byte` (#2203) — or a slice. That byte
+is a whole character only in ASCII.
 
 ## Top-level is declarations only
 
@@ -115,6 +117,31 @@ comparing it after a push **traps at run time** instead of answering
 A generic `T` with no `Eq` witness is the other boundary, and that one
 is a compile error rather than a surprise — `no impl `Eq` for
 `Array[Int]``. See [Equality](16_equality.vibe.md).
+
+## A line that starts with an operator continues the previous line
+
+A newline does not end an expression when the next line begins with an
+operator, so a negative literal meant as a block's final value glues
+onto the line above:
+
+```vibe skip
+// skip: shown for the diagnostic — the `-1` parses as `println(...) - 1`
+fn main with Console {
+  let v = {
+    println("failing")
+    -1
+  }
+  println("\{v}")
+}
+```
+
+```
+line 3:5: type mismatch in '-': operands must be Int or Double
+```
+
+Write `(-1)`, or bind it first. A negative literal as a match arm's
+direct body (`None => -1`) is fine. The diagnostic does not yet name
+the continuation as the cause (#2206).
 
 ## `fn` is a keyword
 

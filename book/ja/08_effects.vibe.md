@@ -29,13 +29,13 @@ fn main with Console {
   } with Exception {
     Throw(message) => {
       println("exception: \{message}")
-      0 - 1
+      (-1)
     }
   }
   let fine = handle {
     risky(4)
   } with Exception {
-    Throw(_) => 0 - 1
+    Throw(_) => -1
   }
   println("safe = \{safe}")
   println("fine = \{fine}")
@@ -52,9 +52,19 @@ fine = 25
 は throw してよく、外側の `main` の row に `Exception` は現れません。義務が
 そこで果たされたからです。
 
+[2章](02_a_small_program.vibe.md)が使った綴り `throw("...")` は
+`perform Exception::Throw("...")` の短縮形です — 同じ操作であり、1つの
+ハンドラが両方を捕まえます。
+
 `Exception` は**中断的** (abortive) — throw は戻ってきません。ハンドラ腕の
 値が `handle` 全体の値になり、だから `safe` は `-1`、`fine` は `25` に
 なります。`Exception` の腕に `resume` はありません。
+
+最初の腕の綴りについて一点: 末尾が `(-1)` なのは、演算子で**始まる**行が
+前の行の続きとしてパースされるからです — `println` の後の裸の `-1` は
+`println(...) - 1` と解釈されます (#2206)。腕の本体全体が値そのものの
+場合 (`Throw(_) => -1`) は括弧は不要です。規則は
+[落とし穴](20_pitfalls.vibe.md)にあります。
 
 型引数なしの `Exception` は消去された形で、どの `Exception[E]` も受け取り、
 payload は文字列として届きます。エラー型を保ちたいときは `Exception[E]` と

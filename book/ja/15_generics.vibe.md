@@ -36,6 +36,9 @@ id = 42
 
 トップレベルの `fn` は、ジェネリックかどうかに関わらず引数と戻り値を
 完全に注釈します。推論が埋めるのは呼び出し側であって、宣言側ではありません。
+唯一の例外が `main` で、これだけは戻り値を省けます — `fn main with
+Console` がパースされ、`fn shout(msg: String) with Console` がされない
+理由です。
 
 ## `derive` が定番の操作をくれる
 
@@ -118,6 +121,7 @@ no impl `Eq` for `Array[Int]`
 手段ではなくエラーです。[並行性](17_concurrency.vibe.md) を参照。
 
 `Default` は組み込みで、`derive(Default)` が実装を登録します。`T::default()`
-を呼ぶジェネリックなコードには `import @vibe/core { Default }` が要ります。
+を呼ぶジェネリックなコードには `import @vibe/core { trait Default }` が
+要ります。
 
 次: [等価性](16_equality.vibe.md)。

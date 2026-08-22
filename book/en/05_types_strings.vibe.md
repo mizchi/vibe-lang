@@ -41,7 +41,10 @@ s[1:4] = ell
 length = 5
 ```
 
-`String::from_char_code` turns a code back into a `String`. The four
+`String::from_char_code` writes a byte back out as a one-byte `String`
+— its honest alias is `String::from_byte`. It does **not** encode a
+code point: hand it `233` (`'é'`) and you get a lone `0xE9` byte, which
+is not valid UTF-8 (#2203). The four
 slice forms — `s[:]`, `s[:n]`, `s[n:]`, `s[a:b]` — work the same on
 `Bytes` and on `Array[T]`.
 

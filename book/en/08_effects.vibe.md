@@ -30,13 +30,13 @@ fn main with Console {
   } with Exception {
     Throw(message) => {
       println("exception: \{message}")
-      0 - 1
+      (-1)
     }
   }
   let fine = handle {
     risky(4)
   } with Exception {
-    Throw(_) => 0 - 1
+    Throw(_) => -1
   }
   println("safe = \{safe}")
   println("fine = \{fine}")
@@ -53,9 +53,19 @@ fine = 25
 `risky` may throw; outside it, `main` has no `Exception` in its row,
 because the obligation was discharged.
 
+`throw("...")` — the spelling [chapter 2](02_a_small_program.vibe.md)
+used — is the short form of `perform Exception::Throw("...")`: the same
+operation, and one handler catches both.
+
 `Exception` is **abortive**: a throw does not come back. The handler arm's
 value becomes the value of the whole `handle` — that is why `safe` is
 `-1` and `fine` is `25`. There is no `resume` in an `Exception` arm.
+
+One spelling note about that first arm: it ends in `(-1)` because a
+line that *starts* with an operator continues the previous line — a
+bare `-1` after the `println` would parse as `println(...) - 1`
+(#2206). An arm whose whole body is the value, like `Throw(_) => -1`,
+needs no parentheses. [Pitfalls](20_pitfalls.vibe.md) has the rule.
 
 Written without a type argument, `Exception` is erased: it accepts any
 `Exception[E]`, and its payload arrives as a string. When you want the

@@ -27,11 +27,12 @@ vibe test a_test.vibe b_test.vibe    # 複数
 vibe test tests/                     # 配下のすべての *_test.vibe
 ```
 
-通ったファイルは1行で報告されます:
+通ったファイルは、ファイルごとの報告と 1 行のサマリで報告されます:
 
 ```console
 $ vibe test demo_test.vibe
-ok:   demo_test.vibe
+ok   demo_test.vibe
+[vibe-test] 1 passed, 0 failed (1 files, 1 tests)
 ```
 
 ## 失敗したとき
@@ -40,13 +41,17 @@ ok:   demo_test.vibe
 
 ```console
 $ vibe test demo_test.vibe
-assert_eq failed
-  expected: 43
-  actual:   42
-
-FAIL: demo_test.vibe
-  failing test: double works
+FAIL demo_test.vibe
+       failing test: double works
+       assert_eq failed
+         expected: 43
+         actual:   42
+       trap: RuntimeError: unreachable
+[vibe-test] 0 passed, 1 failed (1 files, 1 tests)
 ```
+
+末尾の `trap:` 行は assert の実装が透けて見えているだけで、2つ目の失敗
+ではありません (この行の除去と、レポートへの行番号付与は #2202)。
 
 `assert_eq(actual, expected)` は比較可能な任意の型で使え、文字列は内容で
 比較します — なので連結の結果や関数の戻り値に対して、何も変換せずそのまま

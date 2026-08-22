@@ -17,7 +17,7 @@ perform するか、**名前付きのトップレベル `fn`** を呼ぶか、ef
 perform を隠してしまう。
 
 ```vibe skip
-// skip: eligibility rejection — the point is the diagnostic, not a run
+// skip: 適格性による拒否 — 見せたいのは診断であって実行ではない
 effect Ask {
   Get() -> Int
 }
@@ -77,8 +77,10 @@ checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し�
 
 ## `s[i]` は String ではなくバイト
 
-`String` は byte string。`s[i]` は `Int` の文字コード。`'A' == 65`。
-1 文字の String が欲しければ `String::from_char_code(s[i])` かスライス。
+`String` は byte string。`s[i]` はそのオフセットのバイトで、`Int`。
+`'A' == 65`。1 バイトの String が欲しければ `String::from_char_code(s[i])`
+— これはバイト書き込みで、別名 `String::from_byte` (#2203) — かスライス。
+そのバイトが文字そのものなのは ASCII のときだけ。
 
 ## トップレベルは宣言だけ
 
@@ -86,7 +88,7 @@ checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し�
 入れること。
 
 ```vibe skip
-// skip: ADR-0069 — a file is a list of declarations
+// skip: ADR-0069 — ファイルは宣言の並びである
 1 + 2
 ```
 
@@ -115,6 +117,30 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 もう一方の境界は `Eq` の witness を持たない generic な `T` で、こちらは
 不意打ちではなくコンパイルエラーになる — `no impl `Eq` for `Array[Int]`。
 [等価性](16_equality.vibe.md) を参照。
+
+## 演算子で始まる行は前の行の続き
+
+次の行が演算子で始まるとき、改行は式を終わらせない。ブロックの最終値の
+つもりで書いた負のリテラルが、上の行に貼り付く:
+
+```vibe skip
+// skip: 出る診断を見せるための例 — `-1` は `println(...) - 1` とパースされる
+fn main with Console {
+  let v = {
+    println("failing")
+    -1
+  }
+  println("\{v}")
+}
+```
+
+```
+line 3:5: type mismatch in '-': operands must be Int or Double
+```
+
+`(-1)` と書くか、先に束縛する。match 腕の直接の本体としての負リテラル
+(`None => -1`) は問題ない。診断はまだ行継続を原因として名指ししない
+(#2206)。
 
 ## `fn` はキーワード
 

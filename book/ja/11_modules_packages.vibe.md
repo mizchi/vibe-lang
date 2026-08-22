@@ -35,12 +35,17 @@ fn main with Console {
 triple(14) = 42
 ```
 
-import 行のバリエーションが2つ:
+import 行のバリエーション:
 
 - `import ./lib.vibe { f as renamed }` は取り込むときに改名します。
   2つのモジュールが良い名前について意見を異にするときのためのものです。
 - `import ./subdir { helper }` は**ディレクトリ**を import し、その
   `index.vibe` に解決されます。
+- `import @vibe/core { struct MutMap, trait Default }` は宣言の種類を
+  名指しします。値は裸のままです。type / struct / enum / effect / trait
+  では修飾子は厳密で — `Color` が enum のときに `struct Color` を頼むと
+  拒否されます — 非値 import の裸綴りは互換のためだけに今は受理されて
+  います。
 
 相対 import はエントリファイル自身のディレクトリより**上に出られます** —
 入れ子のエントリからの `import ../../../helper.vibe` は解決します。境界に
