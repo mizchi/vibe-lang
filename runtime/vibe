@@ -2049,16 +2049,20 @@ case "$cmd" in
         # annotated frames instead of 20+ lines of raw backtrace. --update
         # additionally captures stdout (discarded otherwise) since that's
         # where inspect()'s actual/expected mismatch diagnostic prints.
+        # #2199/#2202: stdout is captured ALWAYS, not just under --update.
+        # The guest writes its diagnostics to stdout (the assert_eq block
+        # and its abort marker, the Array OOB message), while the trap dump
+        # arrives on stderr -- condensing stderr alone never saw them, so
+        # the FAIL block could not explain the trap and the assert-abort
+        # suppression never fired on this path. On success stdout is
+        # replayed verbatim below; on failure both captures are condensed
+        # together in stream order (guest stdout first, trap dump second).
         terr="$(mktemp -t vibe-testerr-XXXXXX)"
-        tout=""
+        tout="$(mktemp -t vibe-testout-XXXXXX)"
         rc=0
-        if [ "$update" = "1" ]; then
-          tout="$(mktemp -t vibe-testout-XXXXXX)"
-          "$RUNNER" "$out" >"$tout" 2>"$terr" || rc=1
-        else
-          "$RUNNER" "$out" 2>"$terr" || rc=1
-        fi
+        "$RUNNER" "$out" >"$tout" 2>"$terr" || rc=1
         if [ "$rc" = "0" ]; then
+          [ -s "$tout" ] && cat "$tout"
           [ -s "$terr" ] && cat "$terr" >&2
           if [ "$update_patches" -gt 0 ]; then
             echo "ok:   $src$note (updated $update_patches snapshot(s))"
@@ -2082,8 +2086,10 @@ case "$cmd" in
           continue
         fi
         echo "FAIL: $src"
-        condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" >&2
-        rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
+        tboth="$(mktemp -t vibe-testboth-XXXXXX)"
+        cat "$tout" "$terr" > "$tboth"
+        condense_test_trap "$tboth" "$out.funcmap" "$(basename "$src")" >&2
+        rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout" "$tboth"
         return 1
       done
     }
