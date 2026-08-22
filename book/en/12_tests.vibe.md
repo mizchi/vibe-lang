@@ -27,11 +27,12 @@ vibe test a_test.vibe b_test.vibe    # several
 vibe test tests/                     # every *_test.vibe underneath
 ```
 
-A passing file says so in one line:
+A passing file reports each file and a one-line summary:
 
 ```console
 $ vibe test demo_test.vibe
-ok:   demo_test.vibe
+ok   demo_test.vibe
+[vibe-test] 1 passed, 0 failed (1 files, 1 tests)
 ```
 
 ## When one fails
@@ -41,13 +42,18 @@ both sides, and stops:
 
 ```console
 $ vibe test demo_test.vibe
-assert_eq failed
-  expected: 43
-  actual:   42
-
-FAIL: demo_test.vibe
-  failing test: double works
+FAIL demo_test.vibe
+       failing test: double works
+       assert_eq failed
+         expected: 43
+         actual:   42
+       trap: RuntimeError: unreachable
+[vibe-test] 0 passed, 1 failed (1 files, 1 tests)
 ```
+
+The trailing `trap:` line is the assert's implementation showing
+through, not a second failure (#2202 tracks removing it, along with
+giving the report a line number).
 
 `assert_eq(actual, expected)` works for any type that can be compared,
 and compares strings by content — so you can assert directly on a

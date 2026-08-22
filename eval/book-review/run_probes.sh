@@ -83,7 +83,7 @@ for src in "${probes[@]}"; do
       # compiler artifact, compile failure before any test ran) is
       # infrastructure, not a compiler answer. Probes that are MEANT
       # to fail compilation belong on the compile lane, not here.
-      if ! grep -qE 'failing test:|^ok:' "$test_log"; then
+      if ! grep -qE 'failing test:|^ok[[:space:]]' "$test_log"; then
         echo "--- HARNESS ERROR: test lane produced no test report;"
         echo "    this is not a compiler answer."
         harness_fail=1

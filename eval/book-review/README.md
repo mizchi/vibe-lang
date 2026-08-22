@@ -33,7 +33,7 @@ eval/book-review/
    `probes/`. A probe is a minimal `.vibe` file with a header comment
    naming the chapter, the question, and what the book led you to
    expect. One question per file.
-3. **Measure.** Build a stage2 for this checkout (`pkf run selfhost` /
+3. **Measure.** Build a stage2 for this checkout (`pkf run generation` /
    `bash scripts/generations.sh build`), then:
 
    ```bash
