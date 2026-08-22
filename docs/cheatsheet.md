@@ -454,11 +454,27 @@ from giving that wrong answer a new spelling to arrive through. `Float` goes
 with `Double`; `Char` is excluded because two distinct equal-content `Char`s
 cannot be constructed to measure it.
 
-The exclusion follows declared **fields** as well. `struct Outer { box:
-Box[Array[Int]] }` takes no type parameters, so nothing about its shape looks
-wrong — but `Outer::equals` calls `Box::equals`, and the wrong answer arrives
-one level down. `Outer`, anything holding an `Outer`, and any type alias for
-one are excluded with it.
+The exclusion follows declared **fields** as well, transitively and through
+type aliases. `struct Outer { box: Box[Array[Int]] }` takes no type parameters,
+so nothing about its shape looks wrong — but `Outer::equals` calls
+`Box::equals`, and the wrong answer arrives one level down.
+
+Which field types keep a struct usable is an allow-list, measured on a
+`struct W { f: T } derive (Eq)`:
+
+| declared field type | `==` |
+|---|---|
+| `Int`, `String`, `Double`, `Bytes` | `true` |
+| `Array[Int]`, `Array[Double]`, `Option[Int]`, `(Int, String)` | `true` |
+| a declared struct | `true` |
+| `Map[String, Int]` | `false` — see #2218 |
+
+A declared `Double` or `Bytes` field is fine even though `Box[Double]` is not:
+`derive` generates a type-directed comparison when the type is still known
+where the comparison is emitted, and the erased field of a generic struct is
+exactly where it is not. `Map` is the one measured outlier, and any head
+nobody has measured costs its owner a trap rather than the benefit of the
+doubt.
 
 **What does not resolve fails at run time** once BOTH sides are non-empty —
 it does not fall back to reference equality or to a length-only answer. Annotate

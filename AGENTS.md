@@ -59,10 +59,14 @@ with `Double`, and `Char` because two distinct equal-content `Char`s cannot be
 constructed to measure it — an unmeasured name gets the trap.
 **`is_scalar_type_name` is the wrong predicate here** and using it was the
 defect: it answers "needs no generated comparator", not "raw `==` compares
-content". The same exclusion follows declared FIELDS transitively: `struct
-Outer { box: Box[Array[Int]] }` takes no type parameters, so its shape looks
-ordinary, but `Outer::equals` calls `Box::equals` — so `Outer`, anything
-holding an `Outer`, and any alias for one are excluded too.
+content". A declared name is excluded the same way when any of its own FIELDS
+is one this pass cannot show is compared by content, transitively and through
+type aliases: `struct Outer { box: Box[Array[Int]] }` takes no type parameters,
+so its shape looks ordinary, but `Outer::equals` calls `Box::equals`. The field
+test is an **allow-list** — measured, a declared field of `Int` / `String` /
+`Double` / `Bytes` / `Array[T]` / `Option[T]` / a tuple / a declared struct is
+content-compared and keeps answering, while `Map` is not (#2218) and any head
+nobody measured costs its owner a trap.
 **What does not resolve traps** once both sides are
 non-empty, rather than answering by length or by identity, and an annotation
 fixes it. While either side is still empty the lengths decide, annotation or

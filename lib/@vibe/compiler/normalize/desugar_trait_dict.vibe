@@ -8016,8 +8016,17 @@ let dtd_eq_known_types: Array[String] = empty_str_array()
 /// on `a == b` with no array in sight.
 let dtd_eq_generic_types: Array[String] = empty_str_array()
 
-/// Declared types that reach an unsafe generic instantiation through their own
-/// DECLARED fields, transitively. `struct Outer { box: Box[Array[Int]] }` has
+/// Declared types with a field this pass cannot show is compared by content,
+/// transitively. Two things land here, and they are not the same defect:
+///
+///   - an unsafe generic instantiation (`Box[Array[Int]]`, `Box[Double]`),
+///     where the erased field is raw-compared -- #2195;
+///   - a field whose head has no structural comparator at all, `Map` being the
+///     measured one -- #2218.
+///
+/// Both are pre-existing and reachable without any array; what this table
+/// prevents is an unannotated binding ADOPTING such a name and arriving there
+/// through a spelling that used to trap. `struct Outer { box: Box[Array[Int]] }` has
 /// no type parameters of its own, so its shape is the bare `Outer` and carries
 /// no generic leaf -- but `Outer::equals` calls `Box::equals`, which raw-compares
 /// the erased field, so two equal `Outer`s answer `false`. Measured: the bare
@@ -8063,8 +8072,8 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   eq_unsafe_types_fill(stmts)
 }
 
-/// Least fixpoint of "this declared name reaches a type whose generated
-/// comparator can fall back to identity through its own fields". One pass can only see the names
+/// Least fixpoint of "this declared name has a field this pass cannot show is
+/// compared by content". One pass can only see the names
 /// already marked, so `struct Deep { o: Outer }` needs a second one; the loop
 /// runs until a pass adds nothing, bounded by the number of declarations
 /// because each pass that changes anything adds at least one name.
@@ -8080,7 +8089,7 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
           let mut fi = 0
           let mut bad = false
           while fi < Array::length(fields) {
-            if eq_ty_reaches_unsafe_generic(Array::get(fields, fi).1, decl_tparams) {
+            if !eq_ty_field_is_content_comparable(Array::get(fields, fi).1, decl_tparams) {
               bad = true
             } else {
               ()
@@ -8096,14 +8105,14 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         },
-        SEnum(_, ename, decl_tparams, variants, _) => if !str_array_contains(dtd_eq_unsafe_types, ename) {
+        SEnum(_, ename, enum_tparams, variants, _) => if !str_array_contains(dtd_eq_unsafe_types, ename) {
           let mut vi = 0
           let mut bad = false
           while vi < Array::length(variants) {
             let payload = Array::get(variants, vi).1
             let mut pi = 0
             while pi < Array::length(payload) {
-              if eq_ty_reaches_unsafe_generic(Array::get(payload, pi), decl_tparams) {
+              if !eq_ty_field_is_content_comparable(Array::get(payload, pi), enum_tparams) {
                 bad = true
               } else {
                 ()
@@ -8121,8 +8130,8 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         },
-        STypeAlias(_, aname, decl_tparams, target) => if !str_array_contains(dtd_eq_unsafe_types, aname) {
-          if eq_ty_reaches_unsafe_generic(target, decl_tparams) {
+        STypeAlias(_, aname, alias_tparams, target) => if !str_array_contains(dtd_eq_unsafe_types, aname) {
+          if !eq_ty_field_is_content_comparable(target, alias_tparams) {
             Array::push(dtd_eq_unsafe_types, aname)
             changed = true
           } else {
@@ -8139,68 +8148,90 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-/// A declared field type that would make its owner's generated `::equals`
-/// answer by identity somewhere inside. Besides unsafe generic instantiations,
-/// this rejects every application head for which `eq_for_typed` has neither a
-/// structural builtin arm nor a generated comparator. For example, `Map[K,V]`
-/// otherwise reaches the raw `==` fallback. Unknown names are rejected for the
-/// same reason; known non-generic declarations are admitted unless the
-/// fixpoint has already marked their own fields unsafe.
-fn eq_ty_reaches_unsafe_generic(t: TypeExpr, formals: Array[String]) -> Bool {
+/// Does the comparator generated for a field of this DECLARED type compare
+/// content? The walk that fills `dtd_eq_unsafe_types` asks this of every field,
+/// and it is an allow-list on purpose: a head this pass has not measured
+/// answers `false` and costs its owner a trap, which is the direction the
+/// triage order wants. It started as a deny-list naming the generic heads, and
+/// `Map` walked straight through it (#2192 review) -- `eq_for_typed` has no
+/// structural `Map` arm, so it falls back to a raw `==` and two equal maps
+/// answer `false`.
+///
+/// Measured on one build, a `struct W { f: T } derive (Eq)` pushed onto two
+/// unannotated empty bindings, values built separately so identity and content
+/// disagree:
+///
+///   | field type | `==` |
+///   |---|---|
+///   | `Int` / `String` / `Double` / `Bytes` | true |
+///   | `Array[Int]` / `Array[Double]` | true |
+///   | `Option[Int]` | true |
+///   | `(Int, String)` | true |
+///   | a declared struct | true |
+///   | `Map[String, Int]` | **false** |
+///
+/// So a DECLARED `Double` or `Bytes` field is fine -- `derive` generates a
+/// type-directed comparison for it. That is the opposite of the erased field
+/// of a generic struct, where the same two types fail, and the difference is
+/// exactly whether the type is still known where the comparison is emitted.
+/// The `Map` row is tracked separately (#2218); this pass only keeps an
+/// unannotated binding from reaching it. A nominal opaque type reaches the
+/// same fallback and is rejected by the same clause -- a `StringBuilder` field
+/// is neither scalar nor a declared struct here, so its owner is unsafe.
+fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Bool {
   match t {
-    TyName(n) => if str_array_contains(formals, n) || raw_eq_is_content_equality(n) {
+    TyName(n) => if str_array_contains(tparams, n) {
+      // The owner's OWN type parameter. Nothing can be decided about it here
+      // -- `struct Box[T] { value: T }` is correct for `Box[Int]` and wrong
+      // for `Box[Array[Int]]`, and the literal is where that is settled, by
+      // `eq_type_args_all_scalar`. Treating it as a field failure marked every
+      // generic struct unsafe and made `Box[Int]` trap.
+      true
+    } else if str_array_contains(dtd_eq_generic_types, n) || str_array_contains(dtd_eq_unsafe_types, n) {
+      // A bare generic name says nothing about its arguments.
       false
     } else {
-      str_array_contains(dtd_eq_generic_types, n) ||
-      str_array_contains(dtd_eq_unsafe_types, n) ||
-      !str_array_contains(dtd_eq_known_types, n)
+      is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
     },
-    TyApp(head, args) => {
-      let mut i = 0
-      let mut bad = false
-      while i < Array::length(args) {
-        if eq_ty_reaches_unsafe_generic(Array::get(args, i), formals) {
-          bad = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      if str_array_contains(dtd_eq_unsafe_types, head) {
-        bad = true
+    TyApp(head, args) => if str_array_contains(dtd_eq_unsafe_types, head) {
+      false
+    } else {
+      let args_ok = eq_tys_all_content_comparable(args, tparams)
+      if head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 {
+        // The heads `eq_for_typed` has a structural arm for. The arity is part
+        // of the condition: a head applied to the wrong number of arguments is
+        // not the builtin this admits.
+        args_ok
+      } else if str_array_contains(dtd_eq_known_types, head) && !str_array_contains(dtd_eq_generic_types, head) {
+        args_ok
       } else {
-        ()
+        // A declared generic head is admitted only for the arguments a raw
+        // `==` compares by content, because that is what its single generated
+        // `::equals` uses on the erased field. Every other head -- `Map` and
+        // anything not measured -- is rejected. A type parameter is not one of
+        // those arguments, so `struct Pair[T] { a: Box[T] }` is unsafe: `Pair`
+        // would have to carry `T` into `Box`'s instantiation check, and the
+        // shape cannot.
+        str_array_contains(dtd_eq_generic_types, head) && eq_type_args_all_scalar(args) && args_ok
       }
-      if str_array_contains(dtd_eq_generic_types, head) && !eq_type_args_all_scalar(args) {
-        bad = true
-      } else {
-        ()
-      }
-      let structural_builtin = head == "Array" && Array::length(args) == 1 ||
-      head == "Option" && Array::length(args) == 1 ||
-      head == "Result" && Array::length(args) == 2
-      if !structural_builtin && !str_array_contains(dtd_eq_known_types, head) {
-        bad = true
-      } else {
-        ()
-      }
-      bad
     },
-    TyTuple(ts) => {
-      let mut i = 0
-      let mut bad = false
-      while i < Array::length(ts) {
-        if eq_ty_reaches_unsafe_generic(Array::get(ts, i), formals) {
-          bad = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      bad
-    },
+    TyTuple(ts) => eq_tys_all_content_comparable(ts, tparams),
     _ => false
   }
+}
+
+fn eq_tys_all_content_comparable(ts: Array[TypeExpr], tparams: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(ts) {
+    if !eq_ty_field_is_content_comparable(Array::get(ts, i), tparams) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }
 
 /// Structural equality match for two Option operands whose element type is NOT
