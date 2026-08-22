@@ -192,14 +192,16 @@ if [ "$dsout" != "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" ]; then
 fi
 echo "[compiler-gate] derive(Show) source-name rendering ok"
 
-# 4e. Array::get OOB abort names the operation (#2199): an out-of-range
-#     index used to trap with a bare `unreachable` and a crash-debug dump --
-#     nothing said what went wrong, which is indistinguishable from a
-#     compiler bug. The generated bounds check now prints
-#     `Array::get: index out of bounds` before the trap. The program must
-#     still FAIL (trapping stays the design answer: crash > silently wrong);
-#     only the message is new.
-echo "[compiler-gate] 4e Array::get OOB abort names the operation (#2199)"
+# 4e. OOB abort names the operation, index, and length (#2199): an
+#     out-of-range index used to trap with a bare `unreachable` and a
+#     crash-debug dump -- nothing said what went wrong, which is
+#     indistinguishable from a compiler bug. The generated bounds check now
+#     prints `<op>: index <idx> out of bounds for length <len>` before the
+#     trap (__rt_oob_abort). The program must still FAIL (trapping stays the
+#     design answer: crash > silently wrong); only the message is new. Two
+#     runs: Array::get pins the exact line with both values, Bytes::get pins
+#     that the sibling trap sites route through the same abort.
+echo "[compiler-gate] 4e OOB abort names the operation, index, and length (#2199)"
 oobdir="_build/_gate_arr_oob"
 rm -rf "$oobdir"; mkdir -p "$oobdir"
 cat > "$oobdir/main.vibe" <<'VEOF'
@@ -209,30 +211,48 @@ fn main with Console {
   println("\{Array::get(xs, 10)}")
 }
 VEOF
+cat > "$oobdir/bytes.vibe" <<'VEOF'
+fn main with Console {
+  let b = Bytes::from_array([1, 2, 3])
+  println("\{Bytes::get(b, 9)}")
+}
+VEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$oobdir/main.vibe" "$oobdir/main.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$oobdir/main.wasm" ]; then
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$oobdir/bytes.vibe" "$oobdir/bytes.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$oobdir/main.wasm" ] || [ ! -s "$oobdir/bytes.wasm" ]; then
   echo "[compiler-gate] FAIL: OOB message sample did not compile" >&2
   cat "$oobdir/main.wasm.diag" >&2 2>/dev/null || true
+  cat "$oobdir/bytes.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 set +e
 oob_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$oobdir/main.wasm" 2>&1)"
 oob_rc=$?
+oob_bytes_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$oobdir/bytes.wasm" 2>&1)"
+oob_bytes_rc=$?
 set -e
 rm -rf "$oobdir"
-if [ "$oob_rc" -eq 0 ]; then
-  echo "[compiler-gate] FAIL: OOB Array::get did not trap (exit 0) — bounds check regressed" >&2
+if [ "$oob_rc" -eq 0 ] || [ "$oob_bytes_rc" -eq 0 ]; then
+  echo "[compiler-gate] FAIL: OOB access did not trap (exit 0) — bounds check regressed" >&2
+  printf '%s\n' "$oob_out" >&2
+  printf '%s\n' "$oob_bytes_out" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$oob_out" | grep -qF "Array::get: index 10 out of bounds for length 3"; then
+  echo "[compiler-gate] FAIL: Array::get OOB trap did not report operation + index + length (#2199)" >&2
   printf '%s\n' "$oob_out" >&2
   exit 1
 fi
-if ! printf '%s\n' "$oob_out" | grep -q "Array::get: index out of bounds"; then
-  echo "[compiler-gate] FAIL: OOB trap did not name the operation (#2199)" >&2
-  printf '%s\n' "$oob_out" >&2
+if ! printf '%s\n' "$oob_bytes_out" | grep -qF "Bytes::get: index 9 out of bounds for length 3"; then
+  echo "[compiler-gate] FAIL: Bytes::get OOB trap did not report operation + index + length (#2199)" >&2
+  printf '%s\n' "$oob_bytes_out" >&2
   exit 1
 fi
-echo "[compiler-gate] Array::get OOB abort message ok"
+echo "[compiler-gate] OOB abort messages ok (Array::get, Bytes::get)"
 
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
