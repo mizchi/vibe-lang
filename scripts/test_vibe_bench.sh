@@ -110,6 +110,21 @@ mlines="$(printf '%s\n' "$multi_out" | grep -cE '^vibe::bench ' || true)"
 
 # 6. Guest CPU profiles are isolated per block and written in Firefox's
 # processed-profile JSON format. Warmup happens before the profiler is armed.
+for empty_profile_arg in '--guest-profile' '--guest-profile='; do
+  set +e
+  if [ "$empty_profile_arg" = '--guest-profile' ]; then
+    empty_bench_profile_out="$($VIBE bench "$proj/multi_bench.vibe" --guest-profile '' 2>&1)"
+  else
+    empty_bench_profile_out="$($VIBE bench "$proj/multi_bench.vibe" --guest-profile= 2>&1)"
+  fi
+  empty_bench_profile_status=$?
+  set -e
+  [ "$empty_bench_profile_status" -ne 0 ] \
+    && printf '%s\n' "$empty_bench_profile_out" | grep -q -- '--guest-profile must not be empty' \
+    && ok "guest profile: rejects empty $empty_profile_arg" \
+    || bad "guest profile: accepted empty $empty_profile_arg ($empty_bench_profile_out)"
+done
+
 profile_dir="$WORK/bench-profiles"
 profile_out="$($VIBE bench "$proj/multi_bench.vibe" --iters 200 --warmup 20 \
   --guest-profile "$profile_dir" --interval-us 100 2>&1)"
