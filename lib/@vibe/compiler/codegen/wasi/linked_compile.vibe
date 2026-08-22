@@ -104,9 +104,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_string_split_body,
   gen_string_starts_with_body,
   gen_string_trim_body,
-  static_arr_get_body,
   static_arr_len_body,
-  static_arr_set_body,
   static_arr_truncate_body,
   static_double_to_int_body,
   static_fs_stub_body,
@@ -4136,6 +4134,16 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if !array_contains_str(str_strs, "") {
     Array::push(str_strs, "")
   }
+  // #2199: the Array::get / Array::set OOB abort prints a static message
+  // naming the operation before its `unreachable` (a bare trap reads as a
+  // compiler bug). Seed the messages so the generated builtin bodies can
+  // reference them even when the source never spells them.
+  if !array_contains_str(str_strs, "Array::get: index out of bounds\n") {
+    Array::push(str_strs, "Array::get: index out of bounds\n")
+  }
+  if !array_contains_str(str_strs, "Array::set: index out of bounds\n") {
+    Array::push(str_strs, "Array::set: index out of bounds\n")
+  }
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(srcs)
   let mut __src_i = 0
@@ -5770,16 +5778,24 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   // #748: SIMD chunk compare needs the extra chunk_limit local (meta_i32 6).
   push_builtin(gen_str_eq_body(), 6, 0, 4)
   push_builtin(gen_str_concat_body(), 6, 0, 4)
+  // #2199: raw (ptr<<32)|len string-table constants for the OOB abort
+  // messages, exactly the shape __rt_print_str's parameter takes (no RC tag
+  // on either lane). The strings were seeded above, so the lookups cannot
+  // miss.
+  let oob_get_i = str_table_lookup(str_strs, "Array::get: index out of bounds\n")
+  let oob_get_fat = (Array::get(str_offsets, oob_get_i)<<32)|Array::get(str_lengths, oob_get_i)
+  let oob_set_i = str_table_lookup(str_strs, "Array::set: index out of bounds\n")
+  let oob_set_fat = (Array::get(str_offsets, oob_set_i)<<32)|Array::get(str_lengths, oob_set_i)
   if enable_rc {
     push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
     push_builtin(gen_arr_len_body(true), 0, 0, 3)
-    push_builtin(gen_arr_get_body(true), 1, 0, 4)
+    push_builtin(gen_arr_get_body(true, oob_get_fat, print_str_idx), 1, 0, 4)
     push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow, -1, 0, 0), 6, 0, 6)
-    push_builtin(gen_arr_set_body(true), 1, 0, 7)
+    push_builtin(gen_arr_set_body(true, oob_set_fat, print_str_idx), 1, 0, 7)
   } else {
     push_builtin(gen_arr_new_body(false, rc_alloc_idx), 1, 0, 5)
     push_builtin(static_arr_len_body(), 0, 0, 3)
-    push_builtin(static_arr_get_body(), 1, 0, 4)
+    push_builtin(gen_arr_get_body(false, oob_get_fat, print_str_idx), 1, 0, 4)
     // ADR-0090 (#1262): ONE arr_push. Which lane a regrow allocates from is a
     // property of the ARRAY (is its block inside the arena segment?), not of
     // the call site, so it is a runtime range check inside the shared body
@@ -5791,7 +5807,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     } else {
       6
     }, 0, 6)
-    push_builtin(static_arr_set_body(), 1, 0, 7)
+    push_builtin(gen_arr_set_body(false, oob_set_fat, print_str_idx), 1, 0, 7)
   }
   push_builtin(static_double_to_int_body(), 0, 0, 3)
   push_builtin(static_int_to_double_body(), 0, 0, 3)

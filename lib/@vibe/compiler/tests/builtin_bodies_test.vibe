@@ -3,6 +3,7 @@
 import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_get_body,
   gen_arr_len_body,
+  gen_arr_set_body,
   gen_simd_scan_string_special_body,
   gen_str_eq_body,
   gen_str_len_body,
@@ -56,7 +57,16 @@ test "static arr_len body matches generated body" {
 }
 
 test "static arr_get body matches generated body" {
-  expect_same_bytes(static_arr_get_body(), gen_arr_get_body(false))
+  // #2199: print_str_idx < 0 selects the historical bare-trap form, which
+  // is what the static twin pins; the real lanes pass a message constant.
+  expect_same_bytes(static_arr_get_body(), gen_arr_get_body(false, 0 - 1, 0 - 1))
+}
+
+test "arr_get/arr_set OOB message form is strictly larger" {
+  // The print-then-trap form adds the i64.const + call prefix in the OOB
+  // branch and nothing else.
+  assert(Bytes::length(gen_arr_get_body(false, 4242, 7)) > Bytes::length(gen_arr_get_body(false, 0 - 1, 0 - 1)))
+  assert(Bytes::length(gen_arr_set_body(false, 4242, 7)) > Bytes::length(gen_arr_set_body(false, 0 - 1, 0 - 1)))
 }
 
 test "static str_len body matches generated body" {

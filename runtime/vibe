@@ -609,10 +609,13 @@ annotate_run_stream() {
 # raw stream is replayed verbatim so information is never lost.
 #   $1 = captured stderr file, $2 = funcmap path (""/missing ok), $3 = entry basename
 condense_test_trap() {
-  local errf="$1" fm="$2" base="$3" out
+  # pre_abort=1: the caller already saw the assert abort marker as the last
+  # guest-stdout line, so the trap that follows is the assert aborting --
+  # suppress its echo even though this condenser only reads the stderr side.
+  local errf="$1" fm="$2" base="$3" pre_abort="${4:-0}" out
   [ -s "$errf" ] || return 0
   [ -f "$fm" ] || fm=""
-  out="$(awk -v base="$base" -v fmfile="$fm" '
+  out="$(awk -v base="$base" -v fmfile="$fm" -v pre_abort="$pre_abort" '
     function hexval(c) {
       if (c >= "0" && c <= "9") return c + 0
       if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
@@ -692,6 +695,16 @@ condense_test_trap() {
       ndiag++
       diags[ndiag] = "  " $0
     }
+    # #2199: keep the message line of an Array OOB abort in the condensed
+    # report. Exact matches only, so ordinary program output cannot
+    # masquerade as a runtime diagnostic (not __blk: it is not part of an
+    # assert diagnostic).
+    # NOTE: this awk program lives inside a single-quoted shell string --
+    # comments here must never contain an apostrophe.
+    $0 == "Array::get: index out of bounds" || $0 == "Array::set: index out of bounds" {
+      ndiag++
+      diags[ndiag] = "  " $0
+    }
     # The closing line of the generated assert_eq abort -- definitive,
     # multiline-proof (keep in lockstep with scripts/vibe_test.sh). Hidden
     # from the report.
@@ -702,7 +715,7 @@ condense_test_trap() {
     !seen_reason && /RuntimeError:|wasm trap:/ {
       __blk = 1
       seen_reason = 1
-      assert_abort = (ablk == 3 || pending_abort == 1)
+      assert_abort = (ablk == 3 || pending_abort == 1 || pre_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
@@ -2039,16 +2052,20 @@ case "$cmd" in
         # annotated frames instead of 20+ lines of raw backtrace. --update
         # additionally captures stdout (discarded otherwise) since that's
         # where inspect()'s actual/expected mismatch diagnostic prints.
+        # #2199/#2202: stdout is captured ALWAYS, not just under --update.
+        # The guest writes its diagnostics to stdout (the assert_eq block
+        # and its abort marker, the Array OOB message), while the trap dump
+        # arrives on stderr -- condensing stderr alone never saw them, so
+        # the FAIL block could not explain the trap and the assert-abort
+        # suppression never fired on this path. On success stdout is
+        # replayed verbatim below; on failure both captures are condensed
+        # together in stream order (guest stdout first, trap dump second).
         terr="$(mktemp -t vibe-testerr-XXXXXX)"
-        tout=""
+        tout="$(mktemp -t vibe-testout-XXXXXX)"
         rc=0
-        if [ "$update" = "1" ]; then
-          tout="$(mktemp -t vibe-testout-XXXXXX)"
-          "$RUNNER" "$out" >"$tout" 2>"$terr" || rc=1
-        else
-          "$RUNNER" "$out" 2>"$terr" || rc=1
-        fi
+        "$RUNNER" "$out" >"$tout" 2>"$terr" || rc=1
         if [ "$rc" = "0" ]; then
+          [ -s "$tout" ] && cat "$tout"
           [ -s "$terr" ] && cat "$terr" >&2
           if [ "$update_patches" -gt 0 ]; then
             echo "ok:   $src$note (updated $update_patches snapshot(s))"
@@ -2071,8 +2088,21 @@ case "$cmd" in
           rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
           continue
         fi
+        # Replay the test's own stdout verbatim (its debug output, the
+        # assert_eq block, the Array OOB message) minus the machine marker
+        # line -- previously stdout streamed through live, and swallowing it
+        # on failure would delete exactly the information that explains the
+        # failure (Codex round 2 on #2220). The condenser then summarizes
+        # only the stderr trap side; whether the trap was the assert
+        # aborting is decided here from the marker being the LAST stdout
+        # line and passed in as pre_abort, so nothing is shown twice.
+        pre_abort=0
+        if [ -s "$tout" ] && [ "$(grep -v '^$' "$tout" | tail -n 1)" = "assert failed: aborting" ]; then
+          pre_abort=1
+        fi
+        [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; }
         echo "FAIL: $src"
-        condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" >&2
+        condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" "$pre_abort" >&2
         rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
         return 1
       done

@@ -192,6 +192,48 @@ if [ "$dsout" != "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" ]; then
 fi
 echo "[compiler-gate] derive(Show) source-name rendering ok"
 
+# 4e. Array::get OOB abort names the operation (#2199): an out-of-range
+#     index used to trap with a bare `unreachable` and a crash-debug dump --
+#     nothing said what went wrong, which is indistinguishable from a
+#     compiler bug. The generated bounds check now prints
+#     `Array::get: index out of bounds` before the trap. The program must
+#     still FAIL (trapping stays the design answer: crash > silently wrong);
+#     only the message is new.
+echo "[compiler-gate] 4e Array::get OOB abort names the operation (#2199)"
+oobdir="_build/_gate_arr_oob"
+rm -rf "$oobdir"; mkdir -p "$oobdir"
+cat > "$oobdir/main.vibe" <<'VEOF'
+fn main with Console {
+  let xs = [1, 2, 3]
+  println("before")
+  println("\{Array::get(xs, 10)}")
+}
+VEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$oobdir/main.vibe" "$oobdir/main.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$oobdir/main.wasm" ]; then
+  echo "[compiler-gate] FAIL: OOB message sample did not compile" >&2
+  cat "$oobdir/main.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+set +e
+oob_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$oobdir/main.wasm" 2>&1)"
+oob_rc=$?
+set -e
+rm -rf "$oobdir"
+if [ "$oob_rc" -eq 0 ]; then
+  echo "[compiler-gate] FAIL: OOB Array::get did not trap (exit 0) — bounds check regressed" >&2
+  printf '%s\n' "$oob_out" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$oob_out" | grep -q "Array::get: index out of bounds"; then
+  echo "[compiler-gate] FAIL: OOB trap did not name the operation (#2199)" >&2
+  printf '%s\n' "$oob_out" >&2
+  exit 1
+fi
+echo "[compiler-gate] Array::get OOB abort message ok"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that

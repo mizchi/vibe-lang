@@ -349,7 +349,39 @@ EOF
   fi
 }
 assert_stale_marker_keeps_real_trap
-echo "[vibe-test-smoke] ok (assert abort trap suppressed; bare/imitated traps still reported)"
+
+# #2199 (Codex on #2220): the OOB message capture is EXACT-match only --
+# the generated Array::get/set lines are kept in the condensed report, but
+# a user-printed line that merely ends the same way must not be promoted
+# into the diagnostic.
+assert_oob_message_capture_is_exact() {
+  local errf="$WORK/canned_oob.err" out
+  cat > "$errf" <<'EOF'
+my thing: index out of bounds
+Array::get: index out of bounds
+[crash debug] heap_ptr=500 (0x1f4), memory_size=4194304 (64 pages) / unreachable
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Array::get: index out of bounds"; then
+    echo "[vibe-test-smoke] FAIL: generated OOB message lost from the condensed report (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | rg -q --fixed-strings "my thing: index out of bounds"; then
+    echo "[vibe-test-smoke] FAIL: user output masquerading as an OOB diagnostic was promoted (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: OOB trap reason lost (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_oob_message_capture_is_exact
+echo "[vibe-test-smoke] ok (assert abort trap suppressed; bare/imitated traps still reported; OOB capture exact)"
 
 # Directory input: scripts/vibe_test.sh already expands *_test.vibe; lock it.
 mkdir -p "$WORK/dir_in"
