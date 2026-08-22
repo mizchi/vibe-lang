@@ -669,17 +669,39 @@ condense_test_trap() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
-    $0 == "assert_eq failed" || $0 ~ /^  expected:/ || $0 ~ /^  actual:/ {
+    # Assert-abort recognizer (#2202): suppression requires a COMPLETE
+    # consecutive failed/expected/actual block followed by the trap reason
+    # with only crash-debug / blank lines between (keep in lockstep with
+    # scripts/vibe_test.sh vt_fail_detail).
+    { __blk = 0 }
+    $0 == "assert_eq failed" {
+      __blk = 1
+      ablk = 1
+      ndiag++
+      diags[ndiag] = "  " $0
+    }
+    $0 ~ /^  expected:/ {
+      __blk = 1
+      if (ablk == 1) ablk = 2
+      ndiag++
+      diags[ndiag] = "  " $0
+    }
+    $0 ~ /^  actual:/ {
+      __blk = 1
+      if (ablk == 2) ablk = 3
       ndiag++
       diags[ndiag] = "  " $0
     }
     !seen_reason && /RuntimeError:|wasm trap:/ {
+      __blk = 1
       seen_reason = 1
+      assert_abort = (ablk == 3)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
       sub(/^viberun: /, "", reason)
     }
+    !seen_reason && ablk > 0 && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ { ablk = 0 }
     nframes < 6 {
       fn = ""
       if (match($0, /^[[:space:]]+at [A-Za-z0-9_$.]+ \(wasm:/)) {
@@ -698,9 +720,10 @@ condense_test_trap() {
       for (i = 1; i <= ndiag; i++) print diags[i]
       # An assert failure aborts via a deliberate `unreachable` trap; once the
       # assert block above already told the story, echoing that trap reads as
-      # a second, unexplained failure (#2202). Any OTHER trap reason after an
-      # assert diag is still real and still printed.
-      if (reason != "" && !(ndiag > 0 && reason ~ /unreachable/)) print "  trap: " reason
+      # a second, unexplained failure (#2202). Any OTHER trap -- a different
+      # reason, or an unreachable that does not directly follow a complete
+      # assert block -- is still real and still printed.
+      if (reason != "" && !(assert_abort && reason ~ /unreachable/)) print "  trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }
   ' "$errf")"

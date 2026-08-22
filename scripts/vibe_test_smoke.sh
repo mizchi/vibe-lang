@@ -248,7 +248,56 @@ EOF
   fi
 }
 assert_bare_trap_still_reported
-echo "[vibe-test-smoke] ok (assert abort trap suppressed; bare trap still reported)"
+
+# #2202 boundary (Codex P2 on #2213): user output that IMITATES the assert
+# block, followed by other output and then a REAL unrelated trap, must not
+# have that trap suppressed -- suppression requires the block to directly
+# precede the trap (only crash-debug / blank lines between).
+assert_imitated_block_keeps_real_trap() {
+  local errf="$WORK/canned_fake_assert.err" out
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 2
+  actual:   1
+some ordinary println output after the fake block
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: real trap after an imitated assert block was suppressed (#2202)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_imitated_block_keeps_real_trap
+
+# #2202: the real abort shape has the host's crash-debug dump (and a blank
+# line) between the assert block and the trap reason -- those must not break
+# the adjacency, or the suppression never fires on a real failure.
+assert_real_shape_with_crash_debug_suppressed() {
+  local errf="$WORK/canned_real_assert.err" out
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 5
+  actual:   4
+
+[crash debug] heap_ptr=480 (0x1e0), memory_size=4194304 (64 pages) / unreachable
+[crash debug] mem[0..32]: 00 00 00 00
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if printf '%s\n' "$out" | rg -q --fixed-strings "trap:"; then
+    echo "[vibe-test-smoke] FAIL: real assert abort (with crash-debug between) still echoed its trap (#2202)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_real_shape_with_crash_debug_suppressed
+echo "[vibe-test-smoke] ok (assert abort trap suppressed; bare/imitated traps still reported)"
 
 # Directory input: scripts/vibe_test.sh already expands *_test.vibe; lock it.
 mkdir -p "$WORK/dir_in"
