@@ -33,9 +33,7 @@ fn caught_join[rg, e, T](h: TaskHandle[rg, e, T]) -> Option[TaskError] with e {
   handle {
     let _v = TaskHandle::join(h)
     None
-  } with Exception[TaskError] {
-    Throw(err) => Some(err)
-  }
+  } with { Exception::Throw(err) => Some(err) }
 }
 
 //# Types
@@ -67,12 +65,10 @@ test "adopted tasks interleave mid-body via Async::Suspend" {
       let _w2 = perform Async::Suspend(0)
       Array::push(log, 5)
       SDone(100)
-    } with Async {
-      Suspend(r) => {
-        TaskHandle::park_poll(ha, resume, r == 1)
-        SParked
-      }
-    })
+    } with { Async::Suspend(r) => {
+      TaskHandle::park_poll(ha, resume, r == 1)
+      SParked
+    } })
     let hb = TaskGroup::adopt(g)
     TaskHandle::settle(hb, handle {
       Array::push(log, 2)
@@ -81,12 +77,10 @@ test "adopted tasks interleave mid-body via Async::Suspend" {
       let _w2 = perform Async::Suspend(0)
       Array::push(log, 6)
       SDone(200)
-    } with Async {
-      Suspend(r) => {
-        TaskHandle::park_poll(hb, resume, r == 1)
-        SParked
-      }
-    })
+    } with { Async::Suspend(r) => {
+      TaskHandle::park_poll(hb, resume, r == 1)
+      SParked
+    } })
     TaskGroup::pump_all(g)
     let ra = TaskHandle::join(ha)
     let rb = TaskHandle::join(hb)
@@ -108,12 +102,10 @@ test "wake delivers the resume value to the suspension point" {
     TaskHandle::settle(h, handle {
       let got = perform Async::Suspend(7)
       SDone(got * 2)
-    } with Async {
-      Suspend(r) => {
-        TaskHandle::park(h, resume)
-        SParked
-      }
-    })
+    } with { Async::Suspend(r) => {
+      TaskHandle::park(h, resume)
+      SParked
+    } })
     let woke = TaskHandle::wake(h, 21)
     let again = TaskHandle::wake(h, 99)
     let r = TaskHandle::join(h)
@@ -132,12 +124,10 @@ test "cancel on a parked task resolves Cancelled and drops the continuation" {
     TaskHandle::settle(h, handle {
       let got = perform Async::Suspend(0)
       SDone(got)
-    } with Async {
-      Suspend(r) => {
-        TaskHandle::park(h, resume)
-        SParked
-      }
-    })
+    } with { Async::Suspend(r) => {
+      TaskHandle::park(h, resume)
+      SParked
+    } })
     TaskHandle::cancel(h)
     let woke = TaskHandle::wake(h, 1)
     let cancelled = caught_join(h) is Some(TaskError::Cancelled)
@@ -261,12 +251,10 @@ test "adoption-lane recv_wait parks as a poller and resumes on delivery" {
             None => 0 - 1
           }
           SDone(a * 3)
-        } with Async {
-          Suspend(r) => {
-            TaskHandle::park_poll(h, resume, r == 1)
-            SParked
-          }
-        })
+        } with { Async::Suspend(r) => {
+          TaskHandle::park_poll(h, resume, r == 1)
+          SParked
+        } })
         let _s = Sender::send(tx, 14)
         Sender::release(tx)
         TaskGroup::pump_all(g)
@@ -324,9 +312,7 @@ test "spawn_suspend Error on the settle leg fails fast and cancels the parked si
       }
     })
     None
-  } with Exception[TaskError] {
-    Throw(err) => Some(err)
-  }
+  } with { Exception::Throw(err) => Some(err) }
   assert(match out {
     Some(TaskError::Failed(m)) => m == "boom",
     _ => false
@@ -359,9 +345,7 @@ test "a typed throw on the settle leg is reported by kind, not as a pointer" {
       1
     })
     None
-  } with Exception[TaskError] {
-    Throw(err) => Some(err)
-  }
+  } with { Exception::Throw(err) => Some(err) }
   match out {
     Some(TaskError::Failed(m)) => assert_eq(m, "<SettleBoom>"),
     _ => assert(false)
@@ -396,9 +380,7 @@ test "spawn_suspend Error after a resume fails fast from the pump stack" {
       }
     })
     None
-  } with Exception[TaskError] {
-    Throw(err) => Some(err)
-  }
+  } with { Exception::Throw(err) => Some(err) }
   assert(match out {
     Some(TaskError::Failed(m)) => m == "later",
     _ => false
@@ -423,9 +405,7 @@ test "a spawn-lane failure cancels a parked spawn_suspend sibling" {
       7
     })
     None
-  } with Exception[TaskError] {
-    Throw(err) => Some(err)
-  }
+  } with { Exception::Throw(err) => Some(err) }
   assert(match out {
     Some(TaskError::Failed(m)) => m == "spawn-lane",
     _ => false
@@ -568,12 +548,10 @@ test "a body that never suspends settles synchronously" {
     let h = TaskGroup::adopt(g)
     TaskHandle::settle(h, handle {
       SDone(11 * 3)
-    } with Async {
-      Suspend(r) => {
-        TaskHandle::park(h, resume)
-        SParked
-      }
-    })
+    } with { Async::Suspend(r) => {
+      TaskHandle::park(h, resume)
+      SParked
+    } })
     TaskHandle::join(h)
   })
   assert_eq(out, 33)
@@ -753,14 +731,13 @@ test "result_wait propagates a cancelled sibling to the awaiter" {
       TaskHandle::join(hb)
     })
     "no throw: \{v}"
-  } with Exception[TaskError] {
-    // Matched, not interpolated: `"\{err}"` on a PATTERN-BOUND binder is the
-    // one interpolation shape #1392 left rendering as a pointer decimal.
-    Throw(err) => match err {
-      TaskError::Failed(m) => "Failed(\{m})",
-      TaskError::Cancelled => "Cancelled"
-    }
-  }
+  } with {
+  // Matched, not interpolated: `"\{err}"` on a PATTERN-BOUND binder is the
+  // one interpolation shape #1392 left rendering as a pointer decimal.
+  Exception::Throw(err) => match err {
+    TaskError::Failed(m) => "Failed(\{m})",
+    TaskError::Cancelled => "Cancelled"
+  } }
   assert_eq(out, "Failed(Cancelled)")
 }
 
@@ -988,15 +965,13 @@ test "a throw past the first suspension in a needing callee fails the task" {
       TaskGroup::pump_all(g)
       TaskHandle::join(h)
     })
-  } with Exception[TaskError] {
-    Throw(err) => match err {
-      TaskError::Failed(m) => if m == "boom" {
-        1
-      } else {
-        0 - 1
-      },
-      _ => 0 - 2
-    }
-  }
+  } with { Exception::Throw(err) => match err {
+    TaskError::Failed(m) => if m == "boom" {
+      1
+    } else {
+      0 - 1
+    },
+    _ => 0 - 2
+  } }
   assert_eq(out, 1)
 }

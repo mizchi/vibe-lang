@@ -48,18 +48,14 @@ fn compiles_linear(src: String) -> Bool {
   handle {
     let bytes = compile_source_wasi(src, "__no_entry__")
     Bytes::length(bytes) > 8
-  } with Exception {
-    Throw(_) => false
-  }
+  } with { Exception::Throw(_) => false }
 }
 
 fn compiles_gc(src: String) -> Bool {
   handle {
     let bytes = compile_source_gc_only(src, "__no_entry__")
     Bytes::length(bytes) > 8
-  } with Exception {
-    Throw(_) => false
-  }
+  } with { Exception::Throw(_) => false }
 }
 
 fn compiles_both(src: String) -> Bool with Exception {
@@ -72,9 +68,7 @@ fn reject_message(src: String) -> String {
   handle {
     let _ = compile_source_wasi(src, "__no_entry__")
     ""
-  } with Exception {
-    Throw(msg) => msg
-  }
+  } with { Exception::Throw(msg) => msg }
 }
 
 //# Tests -- shapes the message CLAIMED were rejected, and are not
@@ -83,7 +77,7 @@ test "#2137: a call through a closure parameter carrying the row compiles" {
   // The old message said a closure parameter "hides the perform and is what
   // this rejects". It does not: the row on the parameter's type is what makes
   // the call visible.
-  let src = program("fn apply(f: () -> Int with Ask) -> Int with Ask {\n  f()\n}\n\ntest \"t\" {\n  let r = handle {\n    apply(ask_once)\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("fn apply(f: () -> Int with Ask) -> Int with Ask {\n  f()\n}\n\ntest \"t\" {\n  let r = handle {\n    apply(ask_once)\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
 }
 
@@ -91,7 +85,7 @@ test "#2137: a call through a local binding carrying the row compiles" {
   // The other half of the old culprit list. A local binding is fine when its
   // type carries the row -- which is exactly the edit the rewritten message
   // now suggests.
-  let src = program("test \"t\" {\n  let side: (Int) -> Int with Ask = (n: Int) -> Int with Ask {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("test \"t\" {\n  let side: (Int) -> Int with Ask = (n: Int) -> Int with Ask {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
 }
 
@@ -100,7 +94,7 @@ test "#2137: a local closure written inside the handled body compiles" {
   // because the traversal that decides eligibility is scope-tracked and sees
   // the literal's own body. Moving the `let` inward is the third repair the
   // rewritten message offers.
-  let src = program("test \"t\" {\n  let r = handle {\n    let side = (n: Int) -> Int {\n      n\n    }\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("test \"t\" {\n  let r = handle {\n    let side = (n: Int) -> Int {\n      n\n    }\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
 }
 
@@ -108,13 +102,13 @@ test "#2137: a local binding aliasing a performing top-level fn compiles" {
   // #2137 reported this shape as rejected by the #1347 `can never fire` check.
   // Measured on stage2 (2026-08-20) it compiles: the #1261 eta-wrap turns the
   // alias into a row-carrying closure before eligibility is asked.
-  let src = program("test \"t\" {\n  let alias = ask_once\n  let r = handle {\n    alias()\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("test \"t\" {\n  let alias = ask_once\n  let r = handle {\n    alias()\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
 }
 
 test "#2137: a call to a top-level fn compiles" {
   // The control: the one form the old message named as eligible, and still is.
-  let src = program("fn side(n: Int) -> Int {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("fn side(n: Int) -> Int {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
 }
 
@@ -125,7 +119,7 @@ test "#2137: a local closure outside the handled body is rejected, and named" {
   // the example. `side` is a rowless closure bound OUTSIDE the handled body,
   // so the scope-tracked traversal that checks the body never sees its
   // definition and cannot tell whether calling it performs `Ask`.
-  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(!compiles_linear(src))
   let msg = reject_message(src)
   assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
@@ -147,7 +141,7 @@ test "#2137: a call through an expression says so instead of naming nothing" {
   // An immediately-applied closure literal: the callee is not a name at all,
   // so there is nothing to quote. The old message fell back to its enumeration
   // with the culprit clause silently dropped.
-  let src = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(!compiles_linear(src))
   let msg = reject_message(src)
   assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
@@ -160,7 +154,7 @@ test "#2137: an opaque callee one level down is not blamed on the handled body" 
   // old message listed as eligible -- and is still rejected, because
   // `ask_once_via` reaches its `perform` through a rowless PARAMETER. The old
   // message told this reader to do what the program already does.
-  let src = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
+  let src = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
   assert(!compiles_linear(src))
   let msg = reject_message(src)
   assert(String::contains(msg, "handle of effect 'Ask' cannot be compiled here"))
@@ -168,7 +162,7 @@ test "#2137: an opaque callee one level down is not blamed on the handled body" 
   assert(String::contains(msg, "look one level down"))
   assert(!String::contains(msg, "the handled body may only"))
   // The repair it offers -- give the parameter the row -- compiles.
-  let repaired = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int with Ask) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int with Ask {\n      n\n    })\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
+  let repaired = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int with Ask) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int with Ask {\n      n\n    })\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
   assert(compiles_both(repaired))
 }
 
@@ -177,9 +171,9 @@ test "#2137: no branch of this diagnostic names a pass that no longer exists" {
   // shape was removed". #1511 already flagged compiler-internal vocabulary as
   // unactionable and moved it to the end; #2137 removed it. The ADR reference
   // stays -- that one resolves to a document a reader can open.
-  let opaque_name = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
-  let opaque_expr = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
-  let deeper = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with Ask {\n    Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
+  let opaque_name = program("test \"t\" {\n  let side = (n: Int) -> Int {\n    n\n  }\n  let r = handle {\n    side(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let opaque_expr = program("test \"t\" {\n  let r = handle {\n    ((n: Int) -> Int {\n      n\n    })(ask_once())\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let deeper = "effect Ask {\n  Get() -> Int\n}\n\nfn ask_once_via(g: (Int) -> Int) -> Int with Ask {\n  g(perform Ask::Get())\n}\n\ntest \"t\" {\n  let r = handle {\n    ask_once_via((n: Int) -> Int {\n      n\n    })\n  } with {\n    Ask::Get() => resume(42)\n  }\n  assert_eq(r, 42)\n}\n"
   let msgs = [
     reject_message(opaque_name),
     reject_message(opaque_expr),
