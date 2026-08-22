@@ -81,9 +81,22 @@ if [ -z "$default_compiler" ]; then
   # checkout cannot run `pkf run vibe-md-tutorial` either, so this is not a
   # state a book gate can be green in; it is a state where nothing ran.
   if grep -qF "compiler wasm not found" "$TMP/resolve.err"; then
+    # A bare checkout with no generation and no fetched seed cannot answer
+    # cases 6-8 at all, and it cannot run `pkf run vibe-md-tutorial` either --
+    # nothing ran, rather than something passed. Skipping is honest for a
+    # hand-run in that state and DISHONEST for the gate, which depends on
+    # selfhostGeneration precisely so a compiler exists: there, a missing
+    # compiler means the dependency did not deliver, and exiting 0 would
+    # report green for the three cases this file exists to run (#2190 review).
+    if [ "${VIBE_MD_GUARD_REQUIRE_COMPILER:-0}" = "1" ]; then
+      fail "cases 6-8 need a compiler and none was found, but the caller promised one
+  (VIBE_MD_GUARD_REQUIRE_COMPILER=1 -- set by the pkfire task, which deps on selfhostGeneration)
+$(sed 's/^/  /' "$TMP/resolve.err")"
+    fi
     echo "vibe-md-guard self-test: SKIPPED cases 6-8: no compiler wasm in this checkout" >&2
     sed 's/^/  /' "$TMP/resolve.err" >&2
     echo "  Run \`bash scripts/ensure_seed.sh\` or build a selfhost generation, then re-run." >&2
+    echo "  In the gate this is a failure, not a skip (VIBE_MD_GUARD_REQUIRE_COMPILER=1)." >&2
     echo "vibe-md-guard self-test: all runnable cases passed"
     exit 0
   fi
