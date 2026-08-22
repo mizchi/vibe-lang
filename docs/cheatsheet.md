@@ -1077,8 +1077,8 @@ fn fetch_user(raw: String) -> String with Exception[String] {
 }
 
 // 呼び出し側で捕まえる
-handle { fetch_user(input) } with Exception[String] {
-  Throw(msg) => "failed: \{msg}"
+handle { fetch_user(input) } with {
+  Exception[String]::Throw(msg) => "failed: \{msg}"
 }
 ```
 
@@ -1155,7 +1155,7 @@ let risky: (Int) -> Int with Exception = (x) -> {
 }
 
 // handle catches the effect
-let safe = handle { risky(0) } with Exception { Throw(msg) => -1 }
+let safe = handle { risky(0) } with { Exception::Throw(msg) => -1 }
 ```
 
 `throw(x)` は `perform Exception::Throw(x)` と等価 (#640)。`Exception` は再開不能
@@ -1209,7 +1209,7 @@ effectset ConfigExceptions = {
 }
 
 // handler は exact kind だけを放電する
-let n = handle { read_cfg() } with Exception[IoError] { Throw(_e) => 0 }
+let n = handle { read_cfg() } with { Exception[IoError]::Throw(_e) => 0 }
 ```
 
 規則:
@@ -1266,8 +1266,8 @@ let greet: (String) -> Unit with Logger = (name) -> {
 
 // the handler arm prints, so the executable entry carries Stdout
 fn main with Stdout {
-  handle { greet("world") } with Logger {
-    Log(msg) => {
+  handle { greet("world") } with {
+    Logger::Log(msg) => {
       println(msg)
       resume(())         // continue where perform left off
     }
@@ -1306,8 +1306,8 @@ let conts: Array[(Int) -> Int] = []
 let r = handle {
   let a = perform Async::Suspend(1)
   a * 10
-} with Async {
-  Suspend(t) => {
+} with {
+  Async::Suspend(t) => {
     Array::push(conts, resume)   // 保存して…
     0 - t                        // …arm の値で handle が「サスペンド」
   }
@@ -1819,7 +1819,7 @@ note: posix-mode command-head desugar: ls -> sh_lines("ls")
 let result = read_config() |> parse |> process
 
 // Boundary at the edge
-let value = handle { risky(0) } with Exception { Throw(_) => default_value }
+let value = handle { risky(0) } with { Exception::Throw(_) => default_value }
 
 // Builder pattern
 let arr = {
