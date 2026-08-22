@@ -295,6 +295,121 @@ export fn gen_print_i64_body() -> Bytes {
   b
 }
 
+/// #2199 ask 2: `__rt_print_i64_raw` -- gen_print_i64_body minus the trailing
+/// newline, so a decimal value can sit inside a larger line (the OOB abort
+/// message interleaves string fragments and numbers). Digits are built
+/// backwards from scratch address 46 exactly as in gen_print_i64_body; the
+/// only differences are that no byte 10 is stored at 47 and the iov length
+/// stops at 46 instead. Locals match print_i64 (3 x i32 + 1 x i64, type 1).
+export fn gen_print_i64_raw_body() -> Bytes {
+  let b = bytebuf_new()
+  emit_i32_const(b, 46)
+  emit_local_set(b, 2)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_local_set(b, 1)
+  emit_local_get(b, 1)
+  emit_if_i64(b)
+  emit_i64_const(b, 0)
+  emit_local_get(b, 0)
+  emit_i64_sub(b)
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_end(b)
+  emit_local_set(b, 4)
+  emit_local_get(b, 4)
+  emit_i64_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 48)
+  emit_i32_store8(b, 0, 0)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_local_set(b, 2)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_i64_eqz(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 10)
+  emit_i64_rem_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_const(b, 48)
+  emit_i32_add(b)
+  emit_i32_store8(b, 0, 0)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 10)
+  emit_i64_div_s(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_if_void(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 45)
+  emit_i32_store8(b, 0, 0)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_local_set(b, 2)
+  emit_end(b)
+  emit_i32_const(b, 0)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 0)
+  emit_i32_const(b, 4)
+  emit_i32_const(b, 46)
+  emit_local_get(b, 2)
+  emit_i32_sub(b)
+  emit_i32_store(b, 2, 0)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 0)
+  emit_i32_const(b, 1)
+  emit_i32_const(b, 8)
+  emit_call(b, 0)
+  emit_drop(b)
+  b
+}
+
+/// #2199 ask 2: `__rt_oob_abort(prefix_fat, idx, len)` -- the shared
+/// formatted abort for every bounds-checked builtin. Prints
+/// `<prefix><idx> out of bounds for length <len>\n` and traps, so each trap
+/// site only pushes its own prefix constant plus the two values (~20 bytes)
+/// instead of carrying the message assembly. `prefix_fat` / `oob_mid_fat` /
+/// `oob_nl_fat` are raw (ptr<<32)|len string-table constants (exactly what
+/// __rt_print_str takes on both lanes; no RC tag is involved). idx is the
+/// untagged SIGNED index -- a negative index prints as negative, not as the
+/// huge unsigned value the ge_u check saw. Ends in `unreachable`; the call
+/// never returns (type (i64,i64,i64) -> ()).
+export fn gen_oob_abort_body(print_str_idx: Int, print_i64_raw_idx: Int, oob_mid_fat: Int, oob_nl_fat: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_call(b, print_str_idx)
+  emit_local_get(b, 1)
+  emit_call(b, print_i64_raw_idx)
+  emit_i64_const(b, oob_mid_fat)
+  emit_call(b, print_str_idx)
+  emit_local_get(b, 2)
+  emit_call(b, print_i64_raw_idx)
+  emit_i64_const(b, oob_nl_fat)
+  emit_call(b, print_str_idx)
+  bytebuf_push(b, 0)
+  b
+}
+
 export fn gen_print_str_body() -> Bytes {
   let b = bytebuf_new()
   emit_local_get(b, 0)
@@ -1351,11 +1466,15 @@ export fn static_str_eq_body() -> Bytes {
   static_str_eq_body_bytes
 }
 
-export fn gen_str_char_code_at_body(enable_rc: Bool) -> Bytes {
+export fn gen_str_char_code_at_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: bounds check — idx (untagged, i32-wrapped) must be < length (the
   // fat pointer's low 32 bits). ge_u catches negative indices too (they wrap
   // to huge unsigned values). OOB reads previously returned adjacent memory.
+  // #2199: before the trap, call __rt_oob_abort with this operation's prefix
+  // plus the signed index and the length, so the abort line names the
+  // operation and both values. oob_abort_idx < 0 emits the historical
+  // bare-trap form (the static twin pins that shape).
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
@@ -1366,6 +1485,20 @@ export fn gen_str_char_code_at_body(enable_rc: Bool) -> Bytes {
   emit_i32_wrap_i64(b)
   bytebuf_push(b, 79)
   emit_if_void(b)
+  if oob_abort_idx >= 0 {
+    emit_i64_const(b, oob_prefix_fat)
+    emit_local_get(b, 1)
+    if enable_rc {
+      emit_i64_const(b, 1)
+      emit_i64_shr_s(b)
+    }
+    emit_local_get(b, 0)
+    emit_i32_wrap_i64(b)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, oob_abort_idx)
+  } else {
+    ()
+  }
   bytebuf_push(b, 0)
   emit_end(b)
   emit_local_get(b, 0)

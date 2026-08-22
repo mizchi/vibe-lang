@@ -78,6 +78,8 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_map_hash_body,
   gen_map_index_insert_body,
   gen_map_probe_index_body,
+  gen_oob_abort_body,
+  gen_print_i64_raw_body,
   gen_rc_alloc_body,
   gen_rc_drop_body,
   gen_rc_dup_body,
@@ -113,7 +115,6 @@ import @vibe/compiler/codegen/builtin_bodies {
   static_int_to_double_body,
   static_print_i64_body,
   static_print_str_body,
-  static_str_char_code_at_body,
   static_str_eq_body,
   static_str_len_body
 }
@@ -4134,15 +4135,35 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   if !array_contains_str(str_strs, "") {
     Array::push(str_strs, "")
   }
-  // #2199: the Array::get / Array::set OOB abort prints a static message
-  // naming the operation before its `unreachable` (a bare trap reads as a
-  // compiler bug). Seed the messages so the generated builtin bodies can
-  // reference them even when the source never spells them.
-  if !array_contains_str(str_strs, "Array::get: index out of bounds\n") {
-    Array::push(str_strs, "Array::get: index out of bounds\n")
+  // #2199: every bounds-checked builtin's OOB abort prints
+  // `<operation>: index <idx> out of bounds for length <len>` before its
+  // `unreachable` (a bare trap reads as a compiler bug). Seed the message
+  // fragments so the generated builtin bodies can reference them even when
+  // the source never spells them: one prefix per operation, plus the shared
+  // middle and the trailing newline (__rt_oob_abort assembles the line).
+  if !array_contains_str(str_strs, "Array::get: index ") {
+    Array::push(str_strs, "Array::get: index ")
   }
-  if !array_contains_str(str_strs, "Array::set: index out of bounds\n") {
-    Array::push(str_strs, "Array::set: index out of bounds\n")
+  if !array_contains_str(str_strs, "Array::set: index ") {
+    Array::push(str_strs, "Array::set: index ")
+  }
+  if !array_contains_str(str_strs, "Bytes::get: index ") {
+    Array::push(str_strs, "Bytes::get: index ")
+  }
+  if !array_contains_str(str_strs, "Bytes::set: index ") {
+    Array::push(str_strs, "Bytes::set: index ")
+  }
+  // `String::byte_at` is the canonical user-facing spelling (ADR-0098;
+  // char_code_at is its deprecated alias, canonicalized before codegen), so
+  // the abort message names byte_at.
+  if !array_contains_str(str_strs, "String::byte_at: index ") {
+    Array::push(str_strs, "String::byte_at: index ")
+  }
+  if !array_contains_str(str_strs, " out of bounds for length ") {
+    Array::push(str_strs, " out of bounds for length ")
+  }
+  if !array_contains_str(str_strs, "\n") {
+    Array::push(str_strs, "\n")
   }
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(srcs)
@@ -5108,11 +5129,17 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let map_index_insert_idx = map_cap_idx + 1
   let map_build_index_idx = map_index_insert_idx + 1
   let map_probe_index_idx = map_build_index_idx + 1
+  // #2199: the formatted OOB abort pair -- __rt_print_i64_raw (decimal, no
+  // trailing newline) and __rt_oob_abort(prefix, idx, len). Registered after
+  // the map builtins; the trap-site builtins above call oob_abort_idx by
+  // number, which is order-independent.
+  let print_i64_raw_idx = map_probe_index_idx + 1
+  let oob_abort_idx = print_i64_raw_idx + 1
   // ADR-0090 (#1262) region arena bodies. Registered LAST and only when the
   // module has a region, so a module without one is byte-identical to what it
   // was before the arena existed (and max_builtin_func_idx below follows).
   let region_arr_new_idx = if need_region_arena {
-    map_probe_index_idx + 1
+    oob_abort_idx + 1
   } else {
     -1
   }
@@ -5450,7 +5477,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   } else {
     env_args_len_idx
   }
-  // Map hash-index builtins (map_hash_idx..map_probe_index_idx) are the new
+  // The #2199 OOB abort pair (print_i64_raw_idx / oob_abort_idx) are the new
   // last-registered builtins -- this MUST track whatever push_builtin call
   // is last, independently of the bodies/meta_i32/meta_i64/builtin_type_idxs
   // array bookkeeping above (num_generated/func_offset below are derived
@@ -5460,7 +5487,7 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   let max_builtin_func_idx = if need_region_arena {
     region_bytes_new_idx
   } else {
-    map_probe_index_idx
+    oob_abort_idx
   }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -5779,23 +5806,30 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_str_eq_body(), 6, 0, 4)
   push_builtin(gen_str_concat_body(), 6, 0, 4)
   // #2199: raw (ptr<<32)|len string-table constants for the OOB abort
-  // messages, exactly the shape __rt_print_str's parameter takes (no RC tag
-  // on either lane). The strings were seeded above, so the lookups cannot
-  // miss.
-  let oob_get_i = str_table_lookup(str_strs, "Array::get: index out of bounds\n")
-  let oob_get_fat = (Array::get(str_offsets, oob_get_i)<<32)|Array::get(str_lengths, oob_get_i)
-  let oob_set_i = str_table_lookup(str_strs, "Array::set: index out of bounds\n")
-  let oob_set_fat = (Array::get(str_offsets, oob_set_i)<<32)|Array::get(str_lengths, oob_set_i)
+  // message fragments, exactly the shape __rt_print_str's parameter takes
+  // (no RC tag on either lane). The strings were seeded above, so the
+  // lookups cannot miss.
+  let oob_fat_of: (String) -> Int = (frag) -> {
+    let fi = str_table_lookup(str_strs, frag)
+    (Array::get(str_offsets, fi)<<32)|Array::get(str_lengths, fi)
+  }
+  let oob_arr_get_fat = oob_fat_of("Array::get: index ")
+  let oob_arr_set_fat = oob_fat_of("Array::set: index ")
+  let oob_bytes_get_fat = oob_fat_of("Bytes::get: index ")
+  let oob_bytes_set_fat = oob_fat_of("Bytes::set: index ")
+  let oob_ccat_fat = oob_fat_of("String::byte_at: index ")
+  let oob_mid_fat = oob_fat_of(" out of bounds for length ")
+  let oob_nl_fat = oob_fat_of("\n")
   if enable_rc {
     push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
     push_builtin(gen_arr_len_body(true), 0, 0, 3)
-    push_builtin(gen_arr_get_body(true, oob_get_fat, print_str_idx), 1, 0, 4)
+    push_builtin(gen_arr_get_body(true, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
     push_builtin(gen_arr_push_body(true, rc_alloc_idx, rc_shadow, -1, 0, 0), 6, 0, 6)
-    push_builtin(gen_arr_set_body(true, oob_set_fat, print_str_idx), 1, 0, 7)
+    push_builtin(gen_arr_set_body(true, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
   } else {
     push_builtin(gen_arr_new_body(false, rc_alloc_idx), 1, 0, 5)
     push_builtin(static_arr_len_body(), 0, 0, 3)
-    push_builtin(gen_arr_get_body(false, oob_get_fat, print_str_idx), 1, 0, 4)
+    push_builtin(gen_arr_get_body(false, oob_arr_get_fat, oob_abort_idx), 1, 0, 4)
     // ADR-0090 (#1262): ONE arr_push. Which lane a regrow allocates from is a
     // property of the ARRAY (is its block inside the arena segment?), not of
     // the call site, so it is a runtime range check inside the shared body
@@ -5807,15 +5841,11 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
     } else {
       6
     }, 0, 6)
-    push_builtin(gen_arr_set_body(false, oob_set_fat, print_str_idx), 1, 0, 7)
+    push_builtin(gen_arr_set_body(false, oob_arr_set_fat, oob_abort_idx), 1, 0, 7)
   }
   push_builtin(static_double_to_int_body(), 0, 0, 3)
   push_builtin(static_int_to_double_body(), 0, 0, 3)
-  push_builtin(if enable_rc {
-    gen_str_char_code_at_body(true)
-  } else {
-    static_str_char_code_at_body()
-  }, 1, 0, 4)
+  push_builtin(gen_str_char_code_at_body(enable_rc, oob_ccat_fat, oob_abort_idx), 1, 0, 4)
   push_builtin(gen_str_from_char_code_body(enable_rc), 1, 0, 3)
   // #982: substring's clamp prologue needs one i64 scratch (len) — meta 2/1.
   push_builtin(gen_str_substring_body(enable_rc), 2, 1, 8)
@@ -5862,8 +5892,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   }
   push_builtin(gen_bytes_new_body(), 1, 0, 5)
   push_builtin(gen_bytes_len_body(enable_rc), 0, 0, 3)
-  push_builtin(gen_bytes_get_body(enable_rc), 1, 0, 4)
-  push_builtin(gen_bytes_set_body(enable_rc), 1, 0, 7)
+  push_builtin(gen_bytes_get_body(enable_rc, oob_bytes_get_fat, oob_abort_idx), 1, 0, 4)
+  push_builtin(gen_bytes_set_body(enable_rc, oob_bytes_set_fat, oob_abort_idx), 1, 0, 7)
   // ADR-0090 MutBytes: same ONE-body routing as gen_arr_push_body above --
   // whether a regrow allocates from the arena is a runtime range check on
   // the buffer's own block, so MutBytes and ordinary Bytes share this body.
@@ -5904,6 +5934,10 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   push_builtin(gen_map_index_insert_body(), 1, 4, 7)
   push_builtin(gen_map_build_index_body(map_hash_idx, map_cap_idx, map_index_insert_idx, heap_grow_check_idx), 0, 7, 4)
   push_builtin(gen_map_probe_index_body(map_hash_idx, eq_idx), 1, 8, 8)
+  // #2199: the formatted OOB abort pair, in the print_i64_raw_idx /
+  // oob_abort_idx slot order fixed above.
+  push_builtin(gen_print_i64_raw_body(), 3, 1, 1)
+  push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_mid_fat, oob_nl_fat), 0, 0, 7)
   // ADR-0090 (#1262): must stay LAST, in this order -- max_builtin_func_idx
   // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
   // builtin, and num_generated/func_offset are derived from it.
@@ -8506,6 +8540,8 @@ export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String
   Array::set(gen_sec_names, str_lex_diff_idx - num_imported_funcs, "__rt_str_lex_diff")
   Array::set(gen_sec_names, generic_rel_diff_idx - num_imported_funcs, "__rt_generic_rel_diff")
   Array::set(gen_sec_names, generic_add_idx - num_imported_funcs, "__rt_generic_add")
+  Array::set(gen_sec_names, print_i64_raw_idx - num_imported_funcs, "__rt_print_i64_raw")
+  Array::set(gen_sec_names, oob_abort_idx - num_imported_funcs, "__rt_oob_abort")
   let name_sec_names = gen_sec_names
   let mut usn_i = 0
   while usn_i < num_user_funcs {
