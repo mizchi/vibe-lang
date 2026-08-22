@@ -1029,9 +1029,42 @@ fn gc_unresolved_import_message(err: String, stmts: Array[Stmt]) -> Option[Strin
   }
 }
 
-export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
+export fn gc_float_returning_names_pre_erasure(stmts: Array[Stmt]) -> Array[String] {
+  compute_float_returning_names(stmts)
+}
+
+/// Top-level function declaration identities before lambda hoisting.
+export fn gc_top_level_function_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => Array::push(out, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Add only declarations synthesized by lambda hoisting. The before-set is
+/// the provenance boundary: spelling is not authority because users may
+/// legally declare names beginning with `__hoisted_lam_`.
+export fn gc_add_hoisted_float_returning_names(stmts: Array[Stmt], before_names: Array[String], names: Array[String]) -> Unit {
+  let post_desugar = compute_float_returning_names(stmts)
+  let mut i = 0
+  while i < Array::length(post_desugar) {
+    let name = Array::get(post_desugar, i)
+    if !array_contains_str(before_names, name) && !array_contains_str(names, name) {
+      Array::push(names, name)
+    }
+    i = i + 1
+  }
+}
+
+export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int]) -> Bytes with Exception {
   handle {
-    compile_wasi_module_gc_impl(stmts, entry_name, gc_to_string_is_wrapper, direct_abi_generic_names)
+    compile_wasi_module_gc_impl(stmts, entry_name, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
   } with Exception {
     Throw(err) => match gc_unresolved_import_message(err, stmts) {
       Some(better) => throw(better),
@@ -1040,7 +1073,7 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
   }
 }
 
-fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String]) -> Bytes with Exception {
+fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int]) -> Bytes with Exception {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   gc_add_ref_twins(stmts)
@@ -1079,8 +1112,6 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     ()
   }
   let fn_names_list = array_empty()
-  // #2158: one shared walk, in common_analysis (#2156 review).
-  let gc_float_ret_fn_names = compute_float_returning_names(stmts)
   let fn_param_counts = array_empty()
   let fn_needs_env_list = array_empty()
   let user_func_stmts = array_empty()
@@ -2205,6 +2236,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
             gc_global_names: gc_global_names_l,
             gc_float_locals: gc_float_slots_f,
             gc_float_ret_fns: gc_float_ret_fn_names,
+            gc_float_call_offsets: gc_float_call_offsets,
             gc_bool_locals: gc_bool_slots_f,
             gc_native_array_locals: direct_param_slots_f,
             gc_native_array_local_types: array_empty(),
@@ -2303,6 +2335,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
       gc_global_names: gc_global_names_l,
       gc_float_locals: array_empty(),
       gc_float_ret_fns: gc_float_ret_fn_names,
+      gc_float_call_offsets: gc_float_call_offsets,
       gc_bool_locals: array_empty(),
       gc_native_array_locals: array_empty(),
       gc_native_array_local_types: array_empty(),
