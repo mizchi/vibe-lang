@@ -3595,7 +3595,7 @@ fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], _var
 /// produces `"[]"`, and it genuinely has no element type -- unresolved is the
 /// right answer for it too.
 fn shape_has_unknown_slot(sh: String) -> Bool {
-  String::contains(sh, "[]")
+  String::contains(sh, "[]") || String::contains(sh, "(,") || String::contains(sh, ",)") || String::contains(sh, ",,")
 }
 
 /// The two self-describing shapes neither inference call reads, kept HERE
@@ -3643,6 +3643,41 @@ fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]
       }
       if agreed {
         String::concat("[", String::concat(first, "]"))
+      } else {
+        ""
+      }
+    },
+    ETuple(items) => if Array::length(items) == 0 {
+      ""
+    } else {
+      // Same recursion as EArray above: the contract names arrays AND tuples
+      // of self-describing values, so leaving one out would be an arbitrary
+      // seam -- `(1, "a")` resolved while `(-1, ())` did not (#2192 review).
+      // Every element must resolve; unlike an array they need not agree.
+      let no_env = array_empty()
+      let no_fns = array_empty()
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "(")
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        let es = pushed_value_shape(Array::get(items, i), struct_sets, no_env, no_fns)
+        if String::length(es) == 0 {
+          ok = false
+        } else {
+          ()
+        }
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, es)
+        i = i + 1
+      }
+      StringBuilder::push(out, ")")
+      if ok {
+        StringBuilder::freeze(out)
       } else {
         ""
       }
