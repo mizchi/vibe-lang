@@ -574,9 +574,12 @@ export fn gen_arr_slice_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool
   b
 }
 
-export fn gen_bytes_get_body(enable_rc: Bool) -> Bytes {
+export fn gen_bytes_get_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: unsigned bounds check (idx as u32 >= len traps; negatives too).
+  // #2199: before the trap, call __rt_oob_abort with this operation's prefix
+  // plus the signed index and the length (see gen_arr_get_body's comment);
+  // oob_abort_idx < 0 emits the historical bare-trap form.
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
@@ -588,6 +591,21 @@ export fn gen_bytes_get_body(enable_rc: Bool) -> Bytes {
   emit_i32_load(b, 2, 4)
   emit_i32_ge_u(b)
   emit_if_void(b)
+  if oob_abort_idx >= 0 {
+    emit_i64_const(b, oob_prefix_fat)
+    emit_local_get(b, 1)
+    if enable_rc {
+      emit_i64_const(b, 1)
+      emit_i64_shr_s(b)
+    }
+    emit_local_get(b, 0)
+    emit_i32_wrap_i64(b)
+    emit_i32_load(b, 2, 4)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, oob_abort_idx)
+  } else {
+    ()
+  }
   bytebuf_push(b, 0)
   emit_end(b)
   emit_local_get(b, 0)
@@ -1171,9 +1189,11 @@ export fn gen_bytes_new_body() -> Bytes {
   b
 }
 
-export fn gen_bytes_set_body(enable_rc: Bool) -> Bytes {
+export fn gen_bytes_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: unsigned bounds check (idx as u32 >= len traps; negatives too).
+  // #2199: same formatted abort as gen_bytes_get_body (see its comment);
+  // oob_abort_idx < 0 emits the historical bare-trap form.
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
@@ -1185,6 +1205,21 @@ export fn gen_bytes_set_body(enable_rc: Bool) -> Bytes {
   emit_i32_load(b, 2, 4)
   emit_i32_ge_u(b)
   emit_if_void(b)
+  if oob_abort_idx >= 0 {
+    emit_i64_const(b, oob_prefix_fat)
+    emit_local_get(b, 1)
+    if enable_rc {
+      emit_i64_const(b, 1)
+      emit_i64_shr_s(b)
+    }
+    emit_local_get(b, 0)
+    emit_i32_wrap_i64(b)
+    emit_i32_load(b, 2, 4)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, oob_abort_idx)
+  } else {
+    ()
+  }
   bytebuf_push(b, 0)
   emit_end(b)
   emit_local_get(b, 0)

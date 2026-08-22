@@ -350,27 +350,46 @@ EOF
 }
 assert_stale_marker_keeps_real_trap
 
-# #2199 (Codex on #2220): the OOB message capture is EXACT-match only --
-# the generated Array::get/set lines are kept in the condensed report, but
-# a user-printed line that merely ends the same way must not be promoted
-# into the diagnostic.
+# #2199 (Codex on #2220): the OOB message capture is a full-line anchored
+# match on the generated shape (`<op>: index <n> out of bounds for length
+# <n>`) -- those lines are kept in the condensed report, but a user-printed
+# line that merely resembles them (different operation name, or trailing
+# text after the length) must not be promoted into the diagnostic.
 assert_oob_message_capture_is_exact() {
   local errf="$WORK/canned_oob.err" out
   cat > "$errf" <<'EOF'
-my thing: index out of bounds
-Array::get: index out of bounds
+my thing: index 10 out of bounds for length 3
+Array::get: index 10 out of bounds for length 3 and then some
+Array::get: index 10 out of bounds for length 3
+Bytes::set: index -1 out of bounds for length 0
+String::byte_at: index 5 out of bounds for length 3
 [crash debug] heap_ptr=500 (0x1f4), memory_size=4194304 (64 pages) / unreachable
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Array::get: index out of bounds"; then
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Array::get: index 10 out of bounds for length 3"; then
     echo "[vibe-test-smoke] FAIL: generated OOB message lost from the condensed report (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if printf '%s\n' "$out" | rg -q --fixed-strings "my thing: index out of bounds"; then
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Bytes::set: index -1 out of bounds for length 0"; then
+    echo "[vibe-test-smoke] FAIL: Bytes OOB message (negative index) lost from the condensed report (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "String::byte_at: index 5 out of bounds for length 3"; then
+    echo "[vibe-test-smoke] FAIL: String::byte_at OOB message lost from the condensed report (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | rg -q --fixed-strings "my thing: index 10 out of bounds"; then
     echo "[vibe-test-smoke] FAIL: user output masquerading as an OOB diagnostic was promoted (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | rg -q --fixed-strings "and then some"; then
+    echo "[vibe-test-smoke] FAIL: a line with trailing text after the length was promoted (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
