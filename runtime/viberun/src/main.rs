@@ -1701,6 +1701,10 @@ fn profile_filename(label: &str) -> String {
                 '_'
             }
         })
+        // Leave ample room below common 255-byte component limits for the
+        // separator, stable hash, and extension. Sanitization emits ASCII, so
+        // this character bound is also a byte bound.
+        .take(200)
         .collect();
     // Sanitizing is not injective (`a/b` and `a?b` both become `a_b`). Add a
     // deterministic FNV-1a suffix so distinct legal labels cannot overwrite
@@ -4674,6 +4678,13 @@ mod tests {
         assert_ne!(slash, question);
         assert_eq!(slash, profile_filename("bench::a/b"));
         assert!(slash.ends_with(".json"));
+    }
+
+    #[test]
+    fn profile_filenames_fit_common_component_limits() {
+        let filename = profile_filename(&"a".repeat(1_000));
+        assert!(filename.len() <= 255, "filename is {} bytes", filename.len());
+        assert!(filename.ends_with(".json"));
     }
 
     #[test]

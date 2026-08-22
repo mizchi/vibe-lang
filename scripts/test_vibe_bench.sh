@@ -183,6 +183,15 @@ spaced_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$spaced_profile
   && ok "vibe profile: output paths containing whitespace stay one argument" \
   || bad "vibe profile: whitespace output path failed ($spaced_profile_out)"
 
+set +e
+empty_profile_out="$($VIBE profile "$proj/profile.vibex" --out '' 2>&1)"
+empty_profile_status=$?
+set -e
+[ "$empty_profile_status" -ne 0 ] \
+  && printf '%s\n' "$empty_profile_out" | grep -q -- '--out must not be empty' \
+  && ok "vibe profile: rejects an empty output path" \
+  || bad "vibe profile: accepted an empty output path ($empty_profile_out)"
+
 for invalid_interval in 0 -1 100O; do
   set +e
   invalid_interval_out="$($VIBE profile "$proj/profile.vibex" \
