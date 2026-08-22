@@ -540,6 +540,28 @@ if [ ! -s "$cdir2/ok.wasm" ]; then
   echo "[compiler-gate] FAIL: pinned store import did not compile (#730)" >&2
   cat "$cdir2/ok.wasm.diag" 2>/dev/null >&2; exit 1
 fi
+# #2227: check must agree with the build lane it just exercised -- the same
+# require-pin head used to be a parse error on the check lane. A clean check
+# writes no .diag sidecar.
+rm -f "$cdir2/ok.checkout" "$cdir2/ok.checkout.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/ok.vibe" "$cdir2/ok.checkout" main >/dev/null 2>&1 || true
+if [ -s "$cdir2/ok.checkout.diag" ]; then
+  echo "[compiler-gate] FAIL: vibe check rejected the require-pin head the build lane accepts (#2227)" >&2
+  cat "$cdir2/ok.checkout.diag" >&2; exit 1
+fi
+# #2227: same pin head in a .vibex -- the script-head directive scan used to
+# read the pin's #pkg:sha1: as an unknown # directive before pin extraction.
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main with () {\n  let _ = triple(14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
+rm -f "$cdir2/ok_pin.wasm" "$cdir2/ok_pin.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/ok_pin.vibex" "$cdir2/ok_pin.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$cdir2/ok_pin.wasm" ]; then
+  echo "[compiler-gate] FAIL: a .vibex with a require-pin head did not compile (#2227)" >&2
+  cat "$cdir2/ok_pin.wasm.diag" 2>/dev/null >&2; exit 1
+fi
 printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
