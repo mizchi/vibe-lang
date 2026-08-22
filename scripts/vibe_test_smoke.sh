@@ -300,7 +300,7 @@ assert_real_shape_with_crash_debug_suppressed
 
 # #2202 (Codex round 2 on #2213): a rendered value may contain newlines, so
 # the block is not always consecutive -- the generated abort therefore prints
-# a machine marker (`__vibe_assert_abort__`) as its final line, and the
+# a machine marker (`assert failed: aborting`) as its final line, and the
 # recognizer trusts the marker. The marker itself must not appear in the
 # report.
 assert_multiline_value_with_marker_suppressed() {
@@ -311,7 +311,7 @@ assert_eq failed
 c
   actual:   a
 b
-__vibe_assert_abort__
+assert failed: aborting
 [crash debug] heap_ptr=496 (0x1f0), memory_size=4194304 (64 pages) / unreachable
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
@@ -323,7 +323,7 @@ EOF
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if printf '%s\n' "$out" | rg -q --fixed-strings "__vibe_assert_abort__"; then
+  if printf '%s\n' "$out" | rg -q --fixed-strings "assert failed: aborting"; then
     echo "[vibe-test-smoke] FAIL: the assert abort marker leaked into the report (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -336,7 +336,7 @@ assert_multiline_value_with_marker_suppressed
 assert_stale_marker_keeps_real_trap() {
   local errf="$WORK/canned_stale_marker.err" out
   cat > "$errf" <<'EOF'
-__vibe_assert_abort__
+assert failed: aborting
 some unrelated output afterwards
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)

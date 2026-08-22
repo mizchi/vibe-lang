@@ -332,13 +332,13 @@ vt_fail_detail() {
       ndiag++
       diags[ndiag] = "       " $0
     }
-    # The machine marker the generated assert_eq abort prints as its final
-    # line (see lower_assert_eq in normalize/desugar_trait_dict.vibe): the
-    # definitive signal, immune to multiline rendered values and to output
-    # that imitates the block. Hidden from the report. The consecutive-block
-    # recognizer above stays for tests compiled by a seed that predates the
-    # marker.
-    $0 == "__vibe_assert_abort__" {
+    # The closing line the generated assert_eq abort prints (lower_assert_eq
+    # in normalize/desugar_trait_dict.vibe): the definitive signal, immune to
+    # multiline rendered values and to output that imitates the block. Hidden
+    # from the report (the block above already told the story). The
+    # consecutive-block recognizer stays for tests compiled by a seed that
+    # predates the marker.
+    $0 == "assert failed: aborting" {
       __blk = 1
       pending_abort = 1
     }
