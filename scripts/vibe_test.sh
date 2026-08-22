@@ -332,13 +332,14 @@ vt_fail_detail() {
       ndiag++
       diags[ndiag] = "       " $0
     }
-    # #2199: an Array OOB abort prints its operation before trapping; keep
-    # that line in the condensed report -- it is the whole explanation of
-    # the trap that follows. Exact matches only, so ordinary program output
-    # cannot masquerade as a runtime diagnostic. Deliberately NOT marked
-    # __blk: it is not part of an assert diagnostic, so it must still break
-    # assert-abort adjacency like any other output.
-    $0 == "Array::get: index out of bounds" || $0 == "Array::set: index out of bounds" {
+    # #2199: an OOB abort prints its operation plus the index and length
+    # before trapping; keep that line in the condensed report -- it is the
+    # whole explanation of the trap that follows. The full-line anchored
+    # match (fixed operation names, decimal index, decimal length) keeps
+    # ordinary program output from masquerading as a runtime diagnostic.
+    # Deliberately NOT marked __blk: it is not part of an assert diagnostic,
+    # so it must still break assert-abort adjacency like any other output.
+    $0 ~ /^(Array::get|Array::set|Bytes::get|Bytes::set|String::byte_at): index -?[0-9]+ out of bounds for length [0-9]+$/ {
       ndiag++
       diags[ndiag] = "       " $0
     }
