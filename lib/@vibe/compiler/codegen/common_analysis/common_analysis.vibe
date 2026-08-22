@@ -12,6 +12,7 @@ import @vibe/compiler/core {
   builtin_registry,
   bytebuf_push,
   canonical_builtin_name,
+  expr_children,
   is_borrow_ret_builtin,
   is_exception_throw_operation,
   resolve_type_expr_core_shadowed,
@@ -3995,17 +3996,32 @@ export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
 ///     -> D` returns the variable, not a float. That is the `shadow` argument,
 ///     which is what it is for; it needed an explicit guard before.
 export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
-  let defs = collect_alias_type_defs(stmts)
+  let strict_defs = collect_alias_type_defs(stmts)
+  let loose_defs = collect_alias_type_defs_loose(stmts)
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) =>
       match value {
-        EFn(tparams, _, _, ret, _, _) =>
+        EFn(tparams, _, _, ret, _, fbody) =>
         match ret {
-          Some(rt) => match resolve_type_expr_core_shadowed(rt, defs, tparams) {
+          Some(rt) => match resolve_type_expr_core_shadowed(rt, strict_defs, tparams) {
             CtDouble => Array::push(out, name),
+            // The checker could not see through this annotation -- a type
+            // variable, or an alias applying one declared later -- so it
+            // accepts an Int body and a Double body alike. If the annotation
+            // WOULD reach Double once the ordering restriction is lifted, a
+            // Double is what it almost always is; classify it, and step back
+            // only for a body that is PROVABLY an Int.
+            CtNamed(_, _) => match resolve_type_expr_core_shadowed(rt, loose_defs, tparams) {
+              CtDouble => if body_is_definitely_int(fbody) {
+                ()
+              } else {
+                Array::push(out, name)
+              },
+              _ => ()
+            },
             _ => ()
           },
           None => ()
@@ -4016,6 +4032,101 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
     }
     i = i + 1
   }
+  out
+}
+
+/// Is this body PROVABLY an Int?
+///
+/// Used in one place: an annotation the checker could not resolve, which it
+/// therefore accepts with either an Int or a Double body. Those need opposite
+/// renderings and the annotation cannot choose, so something else must.
+///
+/// The direction matters more than the coverage, and this is the second design
+/// here. The first asked "is the body provably a FLOAT?" and classified only
+/// when it could tell -- which made every body shape it did not recognize
+/// answer "not a float". Since such an annotation almost always does denote a
+/// Double, that turned each unrecognized shape into a WRONG answer, and review
+/// found them one after another: a call, a `return`, a `match` with all-float
+/// arms, a value read back out of a `let`. Six rounds, each a regression
+/// against what `main` already rendered correctly.
+///
+/// Asking the opposite question inverts that property. An unrecognized body
+/// keeps the classification the annotation implies -- which is what `main`
+/// does today -- so a shape this cannot see is never a regression, only a
+/// missed improvement. Only a body it can PROVE returns an Int steps back, and
+/// that proof is deliberately narrow: integer literals and arithmetic over
+/// them, through the block forms to the tail, both arms of an `if`, and
+/// through `return`. A call is NOT proof -- the callee's return type is not
+/// visible here, and guessing was the previous design's mistake.
+///
+/// This is why there is no shadow set any more: nothing here consults a name,
+/// so no binder can mask anything, and the "you did not carry the local
+/// bindings / the parameters" class of bug cannot arise.
+fn body_is_definitely_int(e: Expr) -> Bool {
+  tail_is_definitely_int(e) && all_returns_definitely_int(e)
+}
+
+/// The value the body FALLS OUT of -- its tail expression.
+fn tail_is_definitely_int(e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && tail_is_definitely_int(l) && tail_is_definitely_int(r),
+    EUnaryOp(op, x) => op == "-" && tail_is_definitely_int(x),
+    ESeq(_, b) => tail_is_definitely_int(b),
+    ELet(_, _, b, _) => tail_is_definitely_int(b),
+    ELetRec(_, _, b) => tail_is_definitely_int(b),
+    ELetMut(_, _, b, _) => tail_is_definitely_int(b),
+    EIf(_, t, f) => tail_is_definitely_int(t) && tail_is_definitely_int(f),
+    EReturn(x) => tail_is_definitely_int(x),
+    _ => false
+  }
+}
+
+/// Every `return` ANYWHERE in the body returns a provably-Int value.
+///
+/// The tail is not the only way out. `if flag { return 2.5 } else { return 3.5 }
+/// ; 1` falls out of an Int literal that is not even reachable, and reading
+/// only the tail declared it definitely-Int -- so the Double it actually
+/// returns rendered through the non-float path, on both lanes (#2185 review).
+///
+/// The walk descends via `expr_children` rather than a per-constructor match,
+/// and that is deliberate: this predicate is only sound if it finds EVERY
+/// `return`, and an enumeration that silently misses a form fails in the
+/// dangerous direction. Enumerating constructors one at a time is what the
+/// previous design of this file did, six review rounds running.
+///
+/// A nested `EFn` is where the recursion stops -- a lambda's `return` belongs
+/// to the lambda, not to the function being classified.
+fn all_returns_definitely_int(e: Expr) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => true,
+    EReturn(x) => tail_is_definitely_int(x) && all_returns_definitely_int(x),
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut ok = true
+      while i < Array::length(kids) {
+        if !all_returns_definitely_int(Array::get(kids, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
+}
+
+/// `names` plus `n`, as a NEW array. The shadow set must not leak between
+/// sibling subtrees -- pushing in place would let a binder inside one `if`
+/// branch mask a call in the other.
+fn name_list_with(names: Array[String], n: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(out, Array::get(names, i))
+    i = i + 1
+  }
+  Array::push(out, n)
   out
 }
 
@@ -4042,6 +4153,20 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// renders 2.5 today, and answering "not a float" for it would be a
 /// silent-wrong regression -- the exact class this table exists to close.
 ///
+/// The order independence stops at an APPLICATION, and that boundary is not a
+/// nicety: `type A = B[Double]` above `type B[T] = T` is stored by the checker
+/// as the UNRESOLVED `CtNamed("B", [CtDouble])`, which is why it accepts
+/// `fn f() -> A { 1 }` at all. A table that resolves `A` to `CtDouble` anyway
+/// records `f` as float-returning and renders the tagged Int 1 as f64 bits --
+/// `__to_string(f())` printed 0 (#2177 review, measured; the pre-#2177 scan and
+/// the committed seed both print 1). Out-resolving the checker is not a
+/// harmless over-approximation: it silently retypes a program the checker
+/// accepted on the strength of NOT knowing.
+///
+/// A bare name keeps the order-independent view, because there the two agree
+/// on what matters: `type X = Y` above `type Y = Double` renders 2.5 on every
+/// compiler measured, and the checker's own tolerance is what lets it.
+///
 /// So alias bodies are re-resolved until the table stops changing, capped at
 /// `n + 1` passes: a chain that never revisits an alias is at most `n` long,
 /// so that is the acyclic maximum, and a cycle stops changing on its own. The
@@ -4049,6 +4174,72 @@ export fn compute_float_returning_names(stmts: Array[Stmt]) -> Array[String] {
 /// reference the table is stable after the first pass and the second one ends
 /// it, instead of running all `n + 1` (#2177 review). Measured: the flat
 /// module source the compiler actually compiles has 5 aliases.
+/// The same table WITHOUT the checker's ordering restriction: an application
+/// in an alias body resolves against every alias, not only earlier ones.
+///
+/// This is deliberately NOT what the checker sees, and it is not used to
+/// decide anything on its own. Its one job is to answer "would this annotation
+/// reach Double if the ordering restriction were lifted?" -- i.e. to tell an
+/// annotation that is merely ORDER-blocked from one that names something else
+/// entirely. The first denotes a Double in every case anyone writes; the
+/// second does not.
+fn collect_alias_type_defs_loose(stmts: Array[Stmt]) -> Array[TypeDef] {
+  let nominal: Array[TypeDef] = []
+  let alias_names: Array[String] = []
+  let alias_params: Array[Array[String]] = []
+  let alias_targets: Array[TypeExpr] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, ename, eparams, _, _) => Array::push(nominal, TDEnum(ename, eparams, array_empty())),
+      SSuberror(_, sname, _) => Array::push(nominal, TDEnum(sname, array_empty(), array_empty())),
+      SStruct(_, stname, _, _, mut_fields, tparams) => Array::push(nominal, TDStruct(stname, array_empty(), mut_fields, tparams)),
+      STypeAlias(_, aname, aparams, atarget) => {
+        Array::push(alias_names, aname)
+        Array::push(alias_params, aparams)
+        Array::push(alias_targets, atarget)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let n = Array::length(alias_names)
+  let mut defs = nominal
+  let mut prev = ""
+  let mut pass = 0
+  let mut done = false
+  while !done {
+    let next: Array[TypeDef] = []
+    let mut k = 0
+    while k < Array::length(nominal) {
+      Array::push(next, Array::get(nominal, k))
+      k = k + 1
+    }
+    let mut sig = ""
+    let mut j = 0
+    while j < n {
+      let ps = Array::get(alias_params, j)
+      let target = Array::get(alias_targets, j)
+      // An APPLICATION in an alias body sees only earlier declarations, which
+      // is what `next` holds right now (the nominals plus aliases 0..j-1).
+      // Resolving it against the whole table out-resolves the checker and
+      // silently retypes a checker-accepted program -- see the doc comment.
+      let resolved = resolve_type_expr_core_shadowed(target, defs, ps)
+      Array::push(next, TDAlias(Array::get(alias_names, j), ps, resolved))
+      sig = String::concat(sig, String::concat(type_to_string(resolved), " |#| "))
+      j = j + 1
+    }
+    defs = next
+    pass = pass + 1
+    if sig == prev || pass > n {
+      done = true
+    } else {
+      prev = sig
+    }
+  }
+  defs
+}
+
 fn collect_alias_type_defs(stmts: Array[Stmt]) -> Array[TypeDef] {
   let nominal: Array[TypeDef] = []
   let alias_names: Array[String] = []
@@ -4085,7 +4276,16 @@ fn collect_alias_type_defs(stmts: Array[Stmt]) -> Array[TypeDef] {
     let mut j = 0
     while j < n {
       let ps = Array::get(alias_params, j)
-      let resolved = resolve_type_expr_core_shadowed(Array::get(alias_targets, j), defs, ps)
+      let target = Array::get(alias_targets, j)
+      // An APPLICATION in an alias body sees only earlier declarations, which
+      // is what `next` holds right now (the nominals plus aliases 0..j-1).
+      // Resolving it against the whole table out-resolves the checker and
+      // silently retypes a checker-accepted program -- see the doc comment.
+      let scope = match target {
+        TyApp(_, _) => next,
+        _ => defs
+      }
+      let resolved = resolve_type_expr_core_shadowed(target, scope, ps)
       Array::push(next, TDAlias(Array::get(alias_names, j), ps, resolved))
       sig = String::concat(sig, String::concat(type_to_string(resolved), " |#| "))
       j = j + 1

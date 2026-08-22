@@ -198,6 +198,114 @@ fn returns_struct() -> Collide {
   Collide::{ value: 7 }
 }
 
+// #2177 review: an alias body that APPLIES a later parameterized alias. The
+// checker does not pre-claim an `STypeAlias`, so it stores `LaterApp` as the
+// unresolved `CtNamed("LaterBox", [CtDouble])` -- which is precisely why it
+// accepts an Int body here. A table that resolves it to Double anyway records
+// `int_through_forward_app` as float-returning and renders the tagged Int as
+// f64 bits: this printed 0 instead of 1.
+type LaterApp = LaterBox[Double]
+
+type LaterBox[T] = T
+
+fn int_through_forward_app() -> LaterApp {
+  1
+}
+
+// The counterpart that must KEEP resolving: a bare name naming a later alias.
+// Measured correct on the pre-#2177 compiler and the committed seed, so making
+// alias bodies order-dependent across the board would have regressed it.
+type FwdName = FwdTarget
+
+type FwdTarget = Double
+
+fn double_through_forward_name() -> FwdName {
+  2.5
+}
+
+// #2185 review: the SAME accepted declaration with a Double body. The checker
+// leaves `LaterApp` unresolved, so it accepts both an Int and a Double here --
+// and the two need opposite renderings. Restricting the alias table alone
+// fixed the Int and broke this one; the body decides.
+fn double_through_forward_app() -> LaterApp {
+  2.5
+}
+
+// #2185 review (2nd): the ambiguous annotation with a CALL body. The body
+// fallback recognized literals and arithmetic but not calls, so `f` was
+// omitted and the returned f64 bits rendered raw -- 192 on linear,
+// 4612811918334230528 on gc.
+fn plain_double() -> Double {
+  2.5
+}
+
+fn call_through_forward_app() -> LaterApp {
+  plain_double()
+}
+
+// Declared BEFORE its callee on purpose: one statement-order pass would answer
+// by declaration order, so the classification iterates to a fixpoint.
+
+// #2185 review (3rd): a local binder MASKS a top-level float callee. Without
+// carrying the shadow set through the body walk, the lookup found the
+// top-level `plain_double` and rendered the Int 1 through the f64 path -- 0 on
+// both lanes. The direct classifiers take `local_names` for exactly this
+// reason (#2156 review); this walk now carries the same fact.
+
+// The counterpart: the shadow is SCOPED, so the same name called from a body
+// with no local binding still classifies.
+
+// #2185 review (4th): `return e` in an ambiguous-return body. The shape test
+// fell to its catch-all and rendered raw bits -- 192 linear, f64 bits on gc.
+fn explicit_return_double() -> LaterApp {
+  return 2.5
+}
+
+// #2185 review (4th): a PARAMETER masks a top-level float callee exactly as a
+// `let` binder does. The walk started from an empty shadow set, so `pd()` here
+// resolved to the top-level `plain_double` and the Int rendered as f64 (0).
+
+// #2185 review (6th round): body shapes that must KEEP the annotation's
+// classification. Each of these was rendered correctly by `main` and broken by
+// this branch's first design, which asked "is the body provably a FLOAT?" and
+// so answered "no" for every shape it could not read. They are the reason the
+// question is now asked the other way round.
+fn via_match_arms(o: Option[Int]) -> LaterApp {
+  match o {
+    Some(_) => 2.5,
+    None => 3.5
+  }
+}
+
+fn via_local_value() -> LaterApp {
+  let x = 2.5
+  x
+}
+
+// #2185 review (7th round): the tail is not the only way out. This body falls
+// out of an Int literal that is not even reachable; reading only the tail
+// declared it definitely-Int and the Double it actually returns rendered
+// through the non-float path, on both lanes.
+fn early_returns_double(flag: Bool) -> LaterApp {
+  if flag {
+    return 2.5
+  } else {
+    return 3.5
+  }
+  1
+}
+
+// The counterpart: when every escaping return IS an Int, the body really is
+// definitely Int and must stay unclassified. `main` renders this one wrong.
+fn early_returns_int(flag: Bool) -> LaterApp {
+  if flag {
+    return 1
+  } else {
+    return 2
+  }
+  3
+}
+
 test "#2156 review: the shadow is scoped -- the top-level name still works" {
   // The counterpart: masking must key on the binding actually in scope, not
   // disable the table for the name everywhere it appears.
@@ -262,4 +370,42 @@ test "#2177 review: a struct outranks a same-named Double alias" {
   // Renders through the Show renderer. If the alias won, `returns_struct`
   // would be in the float table and this would render f64 bits instead.
   assert_true(__to_string(returns_struct()) == "Collide { value: 7 }")
+}
+
+test "#2177 review: an alias applying a LATER parameterized alias stays unresolved" {
+  // Out-resolving the checker retypes a program it accepted on the strength
+  // of not knowing. The value is an Int and must render as one.
+  assert_true(__to_string(int_through_forward_app()) == "1")
+}
+
+test "#2177 review: a bare name naming a later alias still resolves" {
+  assert_true(__to_string(double_through_forward_name()) == "2.5")
+}
+
+test "#2185 review: a Double body through the same forward application" {
+  assert_true(__to_string(double_through_forward_app()) == "2.5")
+}
+
+test "#2185 review: a call body through an unresolved alias" {
+  assert_true(__to_string(call_through_forward_app()) == "2.5")
+}
+
+test "#2185 review: an explicit return in an ambiguous body" {
+  assert_true(__to_string(explicit_return_double()) == "2.5")
+}
+
+test "#2185 review: all-float match arms keep the classification" {
+  assert_true(__to_string(via_match_arms(None)) == "3.5")
+}
+
+test "#2185 review: a value read back out of a let keeps it" {
+  assert_true(__to_string(via_local_value()) == "2.5")
+}
+
+test "#2185 review: an early return of a Double beats an Int tail" {
+  assert_true(__to_string(early_returns_double(true)) == "2.5")
+}
+
+test "#2185 review: all-Int early returns stay Int" {
+  assert_true(__to_string(early_returns_int(true)) == "1")
 }
