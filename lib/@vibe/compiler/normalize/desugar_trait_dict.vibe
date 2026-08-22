@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   expr_children,
   is_exception_effect_name,
   is_exception_throw_operation,
+  namespace_rename_original,
   sort_perm_by_names,
   str_lt,
   trait_method_sig_binders_deep
@@ -7131,7 +7132,11 @@ fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
 /// `let P::to_string = (self: P) -> String { "P { x: " ++ show(x) ++ ", ... }" }`
 fn gen_show_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
   let segs = empty_expr_array()
-  Array::push(segs, EString(String::concat(tname, " { ")))
+  // #2205: this pass runs after the module-merge rename, so `tname` may be
+  // the mangled `Point_dep_<path>` spelling -- render the SOURCE name (the
+  // generated fn's own name stays mangled; only the string the user sees
+  // recovers the original).
+  Array::push(segs, EString(String::concat(namespace_rename_original(tname), " { ")))
   let mut i = 0
   while i < Array::length(fields) {
     let (fname, fty) = Array::get(fields, i)
@@ -7735,10 +7740,12 @@ fn gen_enum_show_fn(ename: String, variants: Array[(String, Array[TypeExpr])], k
       fi = fi + 1
     }
     let body = if nf == 0 {
-      EString(vname)
+      // #2205: render the source constructor name, not the merge-renamed one
+      // (same as gen_show_fn above; the PCtor pattern below keeps `vname`).
+      EString(namespace_rename_original(vname))
     } else {
       let segs = empty_expr_array()
-      Array::push(segs, EString(String::concat(vname, "(")))
+      Array::push(segs, EString(String::concat(namespace_rename_original(vname), "(")))
       let mut si = 0
       while si < nf {
         let sep = if si == 0 {

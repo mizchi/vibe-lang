@@ -978,6 +978,37 @@ fn namespace_private_name(path: String, name: String) -> String {
   String::concat(name, String::concat("_dep_", sanitize_namespace_path(path)))
 }
 
+/// #2205: (mangled -> original) for private TYPE and CONSTRUCTOR renames.
+/// `derive(Show)` expands after the merge rename has already run, so the
+/// renamed declaration is the only spelling it can see -- and it bakes that
+/// spelling into the rendered string (`Point_dep_... { x: 3 }` in user
+/// output). This table lets the derive generators recover the source name.
+/// Append-only and never reset: a mangled name is `original ++ "_dep_" ++
+/// sanitized-path`, so one key can only ever map to one original, and a
+/// duplicate append records the identical pair.
+let namespace_rename_originals: Array[(String, String)] = array_empty()
+
+fn record_namespace_rename_original(original: String, mangled: String) -> Unit {
+  Array::push(namespace_rename_originals, (mangled, original))
+}
+
+/// The source spelling of a possibly merge-renamed type/constructor name.
+/// Returns the name unchanged when it was never renamed by this process.
+export fn namespace_rename_original(name: String) -> String {
+  let mut i = 0
+  let mut found = name
+  while i < Array::length(namespace_rename_originals) {
+    let (mangled, original) = Array::get(namespace_rename_originals, i)
+    if mangled == name {
+      found = original
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn namespace_private_name_with_suffix(namespace_suffix: String, name: String) -> String {
   String::concat(name, String::concat("_dep_", namespace_suffix))
 }
@@ -1276,16 +1307,22 @@ fn collect_private_type_renames(path: String, stmts: Array[Stmt], namespace_suff
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SEnum(false, name, _, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
+        record_namespace_rename_original(name, mangled)
+        Array::push(renames, (name, mangled))
       },
       SStruct(false, name, _, _, _, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
+        record_namespace_rename_original(name, mangled)
+        Array::push(renames, (name, mangled))
       },
       STypeAlias(false, name, _, _) => if !string_array_contains(exported, name) {
         Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
       },
       SSuberror(false, name, _) => if !string_array_contains(exported, name) {
-        Array::push(renames, (name, namespace_private_name_lazy(path, name, namespace_suffix_box)))
+        let mangled = namespace_private_name_lazy(path, name, namespace_suffix_box)
+        record_namespace_rename_original(name, mangled)
+        Array::push(renames, (name, mangled))
       },
       _ => ()
     }
@@ -1303,7 +1340,9 @@ fn collect_private_ctor_renames(path: String, stmts: Array[Stmt], type_renames: 
         let mut j = 0
         while j < Array::length(ctors) {
           let (ctor_name, _) = Array::get(ctors, j)
-          Array::push(renames, (ctor_name, namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)))
+          let mangled = namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)
+          record_namespace_rename_original(ctor_name, mangled)
+          Array::push(renames, (ctor_name, mangled))
           j = j + 1
         }
       },
@@ -1311,7 +1350,9 @@ fn collect_private_ctor_renames(path: String, stmts: Array[Stmt], type_renames: 
         let mut j = 0
         while j < Array::length(ctors) {
           let (ctor_name, _) = Array::get(ctors, j)
-          Array::push(renames, (ctor_name, namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)))
+          let mangled = namespace_private_name_lazy(path, ctor_name, namespace_suffix_box)
+          record_namespace_rename_original(ctor_name, mangled)
+          Array::push(renames, (ctor_name, mangled))
           j = j + 1
         }
       },
