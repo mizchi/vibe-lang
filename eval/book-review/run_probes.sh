@@ -107,15 +107,18 @@ LAUNCHER=runtime/vibe
 SHIM="$OUT_DIR/viberun-shim"
 cat > "$SHIM" <<SHIM_EOF
 #!/usr/bin/env bash
+# The COMPILER goes to cli_main, program wasm to _start. The compiler is
+# recognized by its exact path (the launcher passes VIBE_CLI_WASM
+# verbatim), never by basename alone -- a BOOK_REVIEW_STAGE2 override
+# with any filename must still reach cli_main, or its CLI measurements
+# would silently record wrong-entry failures as probe data.
 first="\$1"; shift
-case "\$(basename "\$first")" in
-  stage2.wasm|compiler.wasm|vibe-cli.wasm)
-    : "\${VIBE_PREOPEN_DIR:=\$PWD}"; export VIBE_PREOPEN_DIR
-    : "\${VIBE_IMPORT_ABI:=raw}"; export VIBE_IMPORT_ABI
-    exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "\$first" "\$@" ;;
-  *)
-    exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "\$first" "\$@" ;;
-esac
+if [ "\$first" = "$S2" ]; then
+  : "\${VIBE_PREOPEN_DIR:=\$PWD}"; export VIBE_PREOPEN_DIR
+  : "\${VIBE_IMPORT_ABI:=raw}"; export VIBE_IMPORT_ABI
+  exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "\$first" "\$@"
+fi
+exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "\$first" "\$@"
 SHIM_EOF
 chmod +x "$SHIM"
 
@@ -150,7 +153,10 @@ run_cli_directives() {
 
 probes=("$@")
 if [ ${#probes[@]} -eq 0 ]; then
-  probes=(eval/book-review/probes/p*.vibe)
+  # .vibex probes are first-class: the executable-root contract (entry
+  # shape, import rejection, export acceptance #2229) can only be
+  # measured on files that actually carry the extension.
+  probes=(eval/book-review/probes/p*.vibe eval/book-review/probes/p*.vibex)
 fi
 
 harness_fail=0
@@ -165,7 +171,9 @@ for src in "${probes[@]}"; do
     harness_fail=1
     continue
   fi
-  name=$(basename "$src" .vibe)
+  name=$(basename "$src")
+  name="${name%.vibe}"
+  name="${name%.vibex}"
   wasm="$OUT_DIR/$name.wasm"
   rm -f "$wasm" "$wasm.diag"
   echo ""
