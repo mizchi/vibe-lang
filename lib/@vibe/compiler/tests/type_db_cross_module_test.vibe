@@ -119,9 +119,10 @@ fn import_kind_provider_env() -> TypeEnv {
     TDAlias("Alias", [], CtInt),
     TDStruct("Record", [("value", CtInt)], [], []),
     TDEnum("Choice", [], [("First", []), ("Second", [])]),
-    TDEffect("Audit", [("Emit", [CtString], CtUnit)], [])
-  ], ["Alias", "Record", "Choice", "Audit"], EnvTraitDef("Marker", [], false, [], EnvEmpty, [
-  ], []))
+    TDEffect("Audit", [("Emit", [CtString], CtUnit)], []),
+    TDEffectSet("Audits", ["Audit"])
+  ], ["Alias", "Record", "Choice", "Audit", "Audits"], EnvTraitDef("Marker", [], false, [
+  ], EnvBind("make", env_value_binding(CtFn([], CtInt, None)), EnvEmpty), [], []))
 }
 
 fn projected_import_kind_error(source: String) -> String {
@@ -179,6 +180,52 @@ test "projected import kinds use each source module instead of merged name order
   assert(String::contains(mismatch, "import kind mismatch: `X` is a type alias, not a struct"))
 }
 
+test "import kind classification ignores an unrelated trait matching the alias" {
+  let message = projected_import_kind_error("import ./provider.vibe { enum Record as Marker }")
+  assert(String::contains(message, "import kind mismatch: `Record` is a struct, not an enum"))
+}
+
+test "ordinary value exports do not inherit builtin type authority by name" {
+  let dep_path = "workspace/value.vibe"
+  let dep_env = checked_test_env("export let i32 = 1")
+  let message = handle {
+    let _ = projected_import_env_for_test("import ./value.vibe { type i32 }", "workspace/main.vibe", [
+      dep_path
+    ], [(dep_path, dep_env)])
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(String::contains(message, "import kind mismatch: `i32` is a value, not a type alias"))
+}
+
+test "builtin type authority survives a re-exporting module" {
+  // A re-exported opaque builtin is transported as a selectable type name
+  // without a forgeable TypeDef payload.
+  let env = EnvTypeDefs(array_empty(), ["Int"], EnvEmpty)
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./builtin_wrapper.vibe { type Int }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(message == "")
+}
+
+test "import kind classification uses the published declaration on name collision" {
+  let env = EnvTypeDefs([
+    TDAlias("Hidden", [], CtInt),
+    TDAlias("Public", [], CtNamed("Hidden", []))
+  ], ["Public"], EnvBind("Hidden", env_value_binding(CtInt), EnvEmpty))
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./collision.vibe { type Hidden }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(String::contains(message, "import kind mismatch: `Hidden` is a value, not a type alias"))
+}
+
 test "struct imports reject enums" {
   assert(String::contains(projected_import_kind_error("import ./provider.vibe { struct Choice }"), "import kind mismatch: `Choice` is an enum, not a struct"))
 }
@@ -193,6 +240,61 @@ test "effect imports reject traits" {
 
 test "trait imports reject aliases" {
   assert(String::contains(projected_import_kind_error("import ./provider.vibe { trait Alias }"), "import kind mismatch: `Alias` is a type alias, not a trait"))
+}
+
+test "kind-qualified imports reject values and effect sets" {
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { enum make }"), "import kind mismatch: `make` is a value, not an enum"))
+  assert(String::contains(projected_import_kind_error("import ./provider.vibe { effect Audits }"), "import kind mismatch: `Audits` is an effect set, not an effect"))
+}
+
+test "opaque builtin type bindings retain type qualifier authority" {
+  let env = EnvBind("Int", env_value_binding(CtInt), EnvEmpty)
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import @vibe/builtin { type Int }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(message == "")
+}
+
+test "merged trait and type names remain ambiguous after per-source validation" {
+  let env = EnvTypeDefs([TDStruct("X", [], [], [])], ["X"], EnvTraitDef("X", [], false, [
+  ], EnvEmpty, [], []))
+  let source = "import ./record.vibe { struct X as RecordX }\nimport ./marker.vibe { trait X as MarkerX }"
+  let message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", source), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(message == "")
+}
+
+test "colliding published kinds validate the requested qualifier" {
+  let env = EnvTypeDefs([TDStruct("X", [], [], [])], ["X"], EnvTraitDef("X", [], false, [
+  ], EnvEmpty, [], []))
+  let invalid = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./dep.vibe { enum X }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(String::contains(invalid, "import kind mismatch"))
+  assert(projected_import_kind_error("import ./provider.vibe { struct Record }") == "")
+  let trait_message = handle {
+    let _ = check_program_with_env_result(parse_program_with_path("workspace/main.vibe", "import ./dep.vibe { trait X }"), env)
+    ""
+  } with Exception {
+    Throw(error) => error
+  }
+  assert(trait_message == "")
+}
+
+test "private declarations report exportability instead of an ineffective kind edit" {
+  let message = typedef_surface_pair_error("/tmp/vibe_private_kind_followup", "struct Hidden { value: Int }\nexport fn public() -> Int { 1 }", "import ./dep.vibe { type Hidden }\nexport let value = 1\n")
+  assert(String::contains(message, "is not exported by"))
+  assert(!String::contains(message, "import kind mismatch"))
 }
 
 fn imported_forall_bound_label(env: TypeEnv, name: String) -> String {

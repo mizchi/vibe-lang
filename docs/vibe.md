@@ -490,7 +490,7 @@ Imports are source-first `import` only:
 <!-- doctest-skip: 存在しない import 先 / hash・version・symbol ref の構文一覧 (#831: 欠落 import 先は raw crash になる) -->
 ```vibe skip
 import ./path/to/mod.vibe { foo, bar as b }
-import ./path/to/mod.vibe { type IntPair, trait Show, foo, bar }
+import ./path/to/mod.vibe { type IntPair, struct Point, enum Color, effect Console, trait Show, foo, bar }
 import ./path/to/mod.vibe { foo }
 import #abc12345 { foo }
 import version@main { foo }
@@ -499,10 +499,14 @@ import symbol@std/math { foo }
 
 Per-item import kind:
 - `foo` / `foo as alias`: value import (default)
-- `type T`: type import (type alias / enum namespace)
+- `type T`: type alias import
+- `struct T`: struct import
+- `enum T`: enum import
+- `effect E`: effect import
 - `trait Eq`: trait import
-- `type Int` can be used as namespace activation for `Int::...` exports.
-- If a non-default qualifier (`type` / `trait`) does not match the exported
+- A selected owner such as `struct MutMap` activates its `MutMap::...`
+  namespace; importing the same unaliased members separately is redundant.
+- If a non-default qualifier does not match the exported
   symbol category, compiler emits an `import` diagnostic.
 - Importing a non-exported trait emits `[TROP002] non-exported trait: <Name>`.
 

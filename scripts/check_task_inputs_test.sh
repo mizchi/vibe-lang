@@ -159,6 +159,13 @@ run_case "cache false text in string does not bypass inputs" 1 'local t = new Ta
   inputs { ...vibeSources }
 }'
 
+run_case "cache expression beginning with false does not bypass inputs" 1 'local t = new Task {
+  name = "probe"
+  cache = false || true
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...vibeSources }
+}'
+
 run_case "URL in command does not hide compiler invocation" 1 'local t = new Task {
   name = "probe"
   cmd = "printf https://example.invalid && bash scripts/check_freeze_surface.sh"
@@ -248,6 +255,12 @@ run_case "cache = false is accepted instead" 0 'local t = new Task {
   inputs { "docs/cheatsheet.md" }
 }'
 
+run_case "cache = false before same-line member is accepted" 0 'local t = new Task {
+  name = "probe"
+  cache = false; cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { "docs/cheatsheet.md" }
+}'
+
 # A task that does not reach the compiler is none of this gate's business.
 run_case "pure-text task is not flagged" 0 'local t = new Task {
   name = "probe"
@@ -318,4 +331,4 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
 }'
 
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (32 cases)"
+echo "check-task-inputs-test: ok (34 cases)"
