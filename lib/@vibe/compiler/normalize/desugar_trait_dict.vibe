@@ -3572,16 +3572,30 @@ fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], _var
   let no_env = array_empty()
   let no_fns = array_empty()
   let sh = infer_eq_shape(v, struct_sets, no_env, no_fns)
-  if String::length(sh) > 0 {
+  if String::length(sh) > 0 && !shape_has_unknown_slot(sh) {
     sh
   } else {
     let ordinary = infer_shape(v, struct_sets, no_env, no_fns)
-    if String::length(ordinary) > 0 {
+    if String::length(ordinary) > 0 && !shape_has_unknown_slot(ordinary) {
       ordinary
     } else {
       self_describing_fallback(v, struct_sets)
     }
   }
+}
+
+/// `[]` inside a shape is an element slot the inference could not fill, and a
+/// shape carrying one is not usable: `[1]` resolved while `[-1]` produced the
+/// INCOMPLETE `"[]"` and was accepted before the fallback could classify the
+/// child, so the comparison trapped on a value the contract says resolves
+/// (#2192 review). Treating an incomplete shape as unresolved sends it to
+/// `self_describing_fallback`, which recurses with the same classifier.
+///
+/// An empty array literal pushed as a value (`Array::push(xs, [])`) also
+/// produces `"[]"`, and it genuinely has no element type -- unresolved is the
+/// right answer for it too.
+fn shape_has_unknown_slot(sh: String) -> Bool {
+  String::contains(sh, "[]")
 }
 
 /// The two self-describing shapes neither inference call reads, kept HERE
@@ -3607,6 +3621,31 @@ fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]
       EInt(_) => "Int",
       EFloat(_) => "Double",
       _ => ""
+    },
+    EArray(items) => if Array::length(items) == 0 {
+      ""
+    } else {
+      // Recurse with THIS classifier so a child only the fallback recognises
+      // (a negative literal, `()`, a conditional) resolves at any depth, and
+      // every element must agree.
+      let no_env = array_empty()
+      let no_fns = array_empty()
+      let first = pushed_value_shape(Array::get(items, 0), struct_sets, no_env, no_fns)
+      let mut agreed = String::length(first) > 0
+      let mut i = 1
+      while i < Array::length(items) {
+        if pushed_value_shape(Array::get(items, i), struct_sets, no_env, no_fns) != first {
+          agreed = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if agreed {
+        String::concat("[", String::concat(first, "]"))
+      } else {
+        ""
+      }
     },
     EIf(_, t, f) => {
       let no_env = array_empty()
