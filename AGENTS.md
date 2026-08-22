@@ -59,7 +59,10 @@ with `Double`, and `Char` because two distinct equal-content `Char`s cannot be
 constructed to measure it — an unmeasured name gets the trap.
 **`is_scalar_type_name` is the wrong predicate here** and using it was the
 defect: it answers "needs no generated comparator", not "raw `==` compares
-content".
+content". The same exclusion follows declared FIELDS transitively: `struct
+Outer { box: Box[Array[Int]] }` takes no type parameters, so its shape looks
+ordinary, but `Outer::equals` calls `Box::equals` — so `Outer`, anything
+holding an `Outer`, and any alias for one are excluded too.
 **What does not resolve traps** once both sides are
 non-empty, rather than answering by length or by identity, and an annotation
 fixes it. While either side is still empty the lengths decide, annotation or

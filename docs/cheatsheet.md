@@ -454,6 +454,12 @@ from giving that wrong answer a new spelling to arrive through. `Float` goes
 with `Double`; `Char` is excluded because two distinct equal-content `Char`s
 cannot be constructed to measure it.
 
+The exclusion follows declared **fields** as well. `struct Outer { box:
+Box[Array[Int]] }` takes no type parameters, so nothing about its shape looks
+wrong — but `Outer::equals` calls `Box::equals`, and the wrong answer arrives
+one level down. `Outer`, anything holding an `Outer`, and any type alias for
+one are excluded with it.
+
 **What does not resolve fails at run time** once BOTH sides are non-empty —
 it does not fall back to reference equality or to a length-only answer. Annotate
 those bindings (`let xs: Array[Int] = []`). While either side is still empty the

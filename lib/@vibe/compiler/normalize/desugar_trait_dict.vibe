@@ -3429,7 +3429,16 @@ fn adoptable_eq_name(n: String) -> Bool {
     // A generic name reaching here has already been through
     // `eq_type_args_all_scalar` -- `shape_has_generic_leaf` is what keeps the
     // unchecked ones out, and it runs before this.
-    is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
+    //
+    // `dtd_eq_unsafe_types` is the other direction: a name whose own DECLARED
+    // fields reach an unsafe generic instantiation. The shape says `Outer` and
+    // carries no generic leaf, but `Outer::equals` calls `Box::equals`, so the
+    // wrong answer arrives one level down (#2192 review, measured).
+    if str_array_contains(dtd_eq_unsafe_types, n) {
+      false
+    } else {
+      is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
+    }
   }
 }
 
@@ -8007,9 +8016,27 @@ let dtd_eq_known_types: Array[String] = empty_str_array()
 /// on `a == b` with no array in sight.
 let dtd_eq_generic_types: Array[String] = empty_str_array()
 
+/// Declared types that reach an unsafe generic instantiation through their own
+/// DECLARED fields, transitively. `struct Outer { box: Box[Array[Int]] }` has
+/// no type parameters of its own, so its shape is the bare `Outer` and carries
+/// no generic leaf -- but `Outer::equals` calls `Box::equals`, which raw-compares
+/// the erased field, so two equal `Outer`s answer `false`. Measured: the bare
+/// `a == b`, the annotated `Array[Outer]` and a second level of nesting
+/// (`struct Deep { o: Outer }`) all answer `false` on this build, so this is
+/// #2195 reached through a field rather than anything #2157 introduces --
+/// which is exactly why an unannotated binding must not adopt the name and
+/// arrive there.
+///
+/// Type aliases take part so that `type A = Box[Array[Int]]` cannot launder an
+/// unsafe target past a field typed `A`. Conservative in one direction only: a
+/// name is rejected whenever this cannot prove it safe, and rejection costs a
+/// trap.
+let dtd_eq_unsafe_types: Array[String] = empty_str_array()
+
 fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_known_types, 0)
   Array::truncate(dtd_eq_generic_types, 0)
+  Array::truncate(dtd_eq_unsafe_types, 0)
   let names = collect_decl_type_names(stmts)
   let mut i = 0
   while i < Array::length(names) {
@@ -8032,6 +8059,132 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       _ => ()
     }
     j = j + 1
+  }
+  eq_unsafe_types_fill(stmts)
+}
+
+/// Least fixpoint of "this declared name reaches an unsafe generic
+/// instantiation through its own fields". One pass can only see the names
+/// already marked, so `struct Deep { o: Outer }` needs a second one; the loop
+/// runs until a pass adds nothing, bounded by the number of declarations
+/// because each pass that changes anything adds at least one name.
+fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
+  let mut rounds = 0
+  let mut changed = true
+  while changed && rounds <= Array::length(stmts) {
+    changed = false
+    let mut j = 0
+    while j < Array::length(stmts) {
+      match Array::get(stmts, j) {
+        SStruct(_, sname, fields, _, _, _) => if !str_array_contains(dtd_eq_unsafe_types, sname) {
+          let mut fi = 0
+          let mut bad = false
+          while fi < Array::length(fields) {
+            if eq_ty_reaches_unsafe_generic(Array::get(fields, fi).1) {
+              bad = true
+            } else {
+              ()
+            }
+            fi = fi + 1
+          }
+          if bad {
+            Array::push(dtd_eq_unsafe_types, sname)
+            changed = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        SEnum(_, ename, _, variants, _) => if !str_array_contains(dtd_eq_unsafe_types, ename) {
+          let mut vi = 0
+          let mut bad = false
+          while vi < Array::length(variants) {
+            let payload = Array::get(variants, vi).1
+            let mut pi = 0
+            while pi < Array::length(payload) {
+              if eq_ty_reaches_unsafe_generic(Array::get(payload, pi)) {
+                bad = true
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+            vi = vi + 1
+          }
+          if bad {
+            Array::push(dtd_eq_unsafe_types, ename)
+            changed = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        STypeAlias(_, aname, _, target) => if !str_array_contains(dtd_eq_unsafe_types, aname) {
+          if eq_ty_reaches_unsafe_generic(target) {
+            Array::push(dtd_eq_unsafe_types, aname)
+            changed = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      j = j + 1
+    }
+    rounds = rounds + 1
+  }
+}
+
+/// A declared field type that would make its owner's generated `::equals`
+/// answer by identity somewhere inside. A generic head is unsafe unless its
+/// arguments are the ones a raw `==` compares by content; a BARE generic name
+/// says nothing about its arguments and is unsafe for that reason. `Array` and
+/// the other builtin heads are transparent -- a declared `Array[Int]` field is
+/// compared by content -- so only their arguments matter.
+fn eq_ty_reaches_unsafe_generic(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => str_array_contains(dtd_eq_generic_types, n) || str_array_contains(dtd_eq_unsafe_types, n),
+    TyApp(head, args) => {
+      let mut i = 0
+      let mut bad = false
+      while i < Array::length(args) {
+        if eq_ty_reaches_unsafe_generic(Array::get(args, i)) {
+          bad = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if str_array_contains(dtd_eq_unsafe_types, head) {
+        bad = true
+      } else {
+        ()
+      }
+      if str_array_contains(dtd_eq_generic_types, head) && !eq_type_args_all_scalar(args) {
+        bad = true
+      } else {
+        ()
+      }
+      bad
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut bad = false
+      while i < Array::length(ts) {
+        if eq_ty_reaches_unsafe_generic(Array::get(ts, i)) {
+          bad = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      bad
+    },
+    _ => false
   }
 }
 
