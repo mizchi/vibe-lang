@@ -3332,15 +3332,40 @@ fn mask_var_types(var_types: Array[(String, String)], names: Array[String]) -> A
   }
 }
 
-fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
-  let out = empty_str_array()
-  let mut i = 0
-  while i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
-    Array::push(out, pn)
-    i = i + 1
+/// A closure parameter that CARRIES an annotation is not unknown -- it is
+/// declared. Masking it outright (the first version of this fix) turned the
+/// silently wrong answer into a trap and took the annotated case down with it:
+/// `let f = (v: Array[Int]) -> Unit { Array::push(xs, v) }` left the element
+/// shape unknown, so the binding stayed `[__EqEmpty]` and `==` trapped
+/// (#2192 review, measured).
+///
+/// So seed the declared shape on the eq key -- where a composite shape lives --
+/// and mask the ordinary key, so no outer entry can be read for the same
+/// spelling. A parameter with no annotation, and every loop / match-arm binder,
+/// has no declared type to recover and is masked by `mask_var_types`.
+fn bind_scope_params(var_types: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
+  if Array::length(params) == 0 {
+    var_types
+  } else {
+    let out = array_empty()
+    push_all_var_types(out, var_types)
+    let mut i = 0
+    while i < Array::length(params) {
+      let (pn, pty) = Array::get(params, i)
+      Array::push(out, (pn, ""))
+      let sh = match pty {
+        Some(t) => ty_to_eq_shape(t),
+        None => ""
+      }
+      Array::push(out, (eq_shape_key(pn), if shape_is_composite(sh) {
+        sh
+      } else {
+        ""
+      }))
+      i = i + 1
+    }
+    out
   }
-  out
 }
 
 fn loop_bind_names(binds: Array[(String, Expr)]) -> Array[String] {
@@ -3537,7 +3562,7 @@ fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, A
     EFn(_, _, params, _, _, fbody) => if fn_params_bind_name(params, name) {
       ()
     } else {
-      collect_push_elem_shapes(name, fbody, struct_sets, mask_var_types(var_types, fn_param_names(params)), fn_returns, out)
+      collect_push_elem_shapes(name, fbody, struct_sets, bind_scope_params(var_types, params), fn_returns, out)
     },
     EForIn(v, k, iter, body) => {
       collect_push_elem_shapes(name, iter, struct_sets, var_types, fn_returns, out)
@@ -3615,7 +3640,34 @@ fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], var_
   if String::length(sh) > 0 {
     sh
   } else {
-    infer_shape(v, struct_sets, var_types, fn_returns)
+    let ordinary = infer_shape(v, struct_sets, var_types, fn_returns)
+    if String::length(ordinary) > 0 {
+      ordinary
+    } else {
+      // `Array::push(xs, if flag { 1 } else { 2 })` is a direct push in the
+      // binding's own scope, not the documented residual where the mutation
+      // hides behind a helper -- but neither inference call reads a
+      // conditional, so the binding stayed unresolved and `==` took the trap
+      // (#2192 review). Both branches must agree: the value has that shape on
+      // every path, so adopting it invents nothing. Handled HERE rather than in
+      // `infer_shape`, which the whole file consults for other purposes.
+      branch_agreed_shape(v, struct_sets, var_types, fn_returns)
+    }
+  }
+}
+
+fn branch_agreed_shape(v: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match v {
+    EIf(_, t, f) => {
+      let ts = pushed_value_shape(t, struct_sets, var_types, fn_returns)
+      let fs = pushed_value_shape(f, struct_sets, var_types, fn_returns)
+      if String::length(ts) > 0 && ts == fs {
+        ts
+      } else {
+        ""
+      }
+    },
+    _ => ""
   }
 }
 
