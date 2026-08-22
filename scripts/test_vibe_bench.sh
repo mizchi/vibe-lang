@@ -183,6 +183,14 @@ spaced_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$spaced_profile
   && ok "vibe profile: output paths containing whitespace stay one argument" \
   || bad "vibe profile: whitespace output path failed ($spaced_profile_out)"
 
+separator_profile="$WORK/separator-profile.json"
+separator_child_profile="$WORK/guest-owned-profile.json"
+separator_profile_out="$($VIBE profile "$proj/profile.vibex" --out "$separator_profile" \
+  --interval-us 100 -- --guest-profile="$separator_child_profile" 2>&1)"
+[ -s "$separator_profile" ] && [ ! -e "$separator_child_profile" ] \
+  && ok "vibe profile: launcher preserves flags after the guest argument separator" \
+  || bad "vibe profile: launcher consumed a guest flag ($separator_profile_out)"
+
 set +e
 empty_profile_out="$($VIBE profile "$proj/profile.vibex" --out '' 2>&1)"
 empty_profile_status=$?

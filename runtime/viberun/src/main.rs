@@ -180,6 +180,7 @@ struct HostState {
     // Opt-in Wasmtime guest CPU profiler. Kept in Store data so epoch and call
     // hooks can temporarily take it out while also borrowing the Store context.
     guest_profiler: Option<GuestProfiler>,
+    guest_profiler_last_sample: Option<Instant>,
     // debugger breakpoints (DAP P1): set of function names to pause at (from
     // VIBE_BREAK), and whether to auto-continue without reading stdin (not a
     // TTY, or VIBE_BREAK_AUTO=1). Empty set => the `vibe::dbg_break` hook is a
@@ -364,6 +365,7 @@ impl HostState {
             sample_start: Instant::now(),
             samples: Vec::new(),
             guest_profiler: None,
+            guest_profiler_last_sample: None,
             break_set: Arc::new(break_set),
             break_auto,
             line_break_set: Arc::new(line_break_set),
@@ -1129,6 +1131,20 @@ fn advance_epoch_deadline(mut deadline: Instant, interval: Duration, now: Instan
     deadline
 }
 
+fn guest_profile_sample_due(
+    last: &mut Instant,
+    now: Instant,
+    interval: Duration,
+) -> Option<Duration> {
+    let delta = now.duration_since(*last);
+    if delta < interval {
+        None
+    } else {
+        *last = now;
+        Some(delta)
+    }
+}
+
 fn run_epoch_ticker(
     engine: Engine,
     stop: Arc<std::sync::atomic::AtomicBool>,
@@ -1248,6 +1264,7 @@ fn run(args: Vec<String>) -> Result<i32> {
         store.set_epoch_deadline(1_000_000_000);
     }
     if guest_profile_path.is_some() {
+        store.data_mut().guest_profiler_last_sample = Some(Instant::now());
         store.call_hook(|mut ctx, kind| {
             let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
             profiler.call_hook(ctx.as_context(), kind);
@@ -1257,6 +1274,7 @@ fn run(args: Vec<String>) -> Result<i32> {
                 // running. Rebase the relative deadline on guest re-entry so
                 // that debt is coalesced instead of producing a callback burst.
                 ctx.set_epoch_deadline(1);
+                ctx.data_mut().guest_profiler_last_sample = Some(Instant::now());
             }
             Ok(())
         });
@@ -1353,7 +1371,6 @@ fn run(args: Vec<String>) -> Result<i32> {
         }
         store.set_epoch_deadline(1);
         let mut last_heap = Instant::now();
-        let mut last_guest = Instant::now();
         store.epoch_deadline_callback(move |mut ctx| {
             let now = Instant::now();
             if heap_interval.is_some_and(|interval| now.duration_since(last_heap) >= interval) {
@@ -1368,14 +1385,15 @@ fn run(args: Vec<String>) -> Result<i32> {
                 }
                 last_heap = now;
             }
-            if ctx.data().guest_profiler.is_some()
-                && now.duration_since(last_guest) >= guest_profile_interval
-            {
-                let delta = now.duration_since(last_guest);
+            let guest_delta = ctx
+                .data_mut()
+                .guest_profiler_last_sample
+                .as_mut()
+                .and_then(|last| guest_profile_sample_due(last, now, guest_profile_interval));
+            if let Some(delta) = guest_delta {
                 let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
                 profiler.sample(ctx.as_context(), delta);
                 ctx.data_mut().guest_profiler = Some(profiler);
-                last_guest = now;
             }
             Ok(wasmtime::UpdateDeadline::Continue(1))
         });
@@ -1647,24 +1665,30 @@ fn arm_guest_profile(
         interval,
         [(name.to_string(), module.clone())],
     )?);
+    store.data_mut().guest_profiler_last_sample = Some(Instant::now());
     store.call_hook(|mut ctx, kind| {
         let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
         profiler.call_hook(ctx.as_context(), kind);
         ctx.data_mut().guest_profiler = Some(profiler);
         if matches!(kind, CallHook::ReturningFromHost) {
             ctx.set_epoch_deadline(1);
+            ctx.data_mut().guest_profiler_last_sample = Some(Instant::now());
         }
         Ok(())
     });
     store.set_epoch_deadline(1);
-    let mut last = Instant::now();
     store.epoch_deadline_callback(move |mut ctx| {
         let now = Instant::now();
-        let delta = now.duration_since(last);
-        let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
-        profiler.sample(ctx.as_context(), delta);
-        ctx.data_mut().guest_profiler = Some(profiler);
-        last = now;
+        let delta = ctx
+            .data_mut()
+            .guest_profiler_last_sample
+            .as_mut()
+            .and_then(|last| guest_profile_sample_due(last, now, interval));
+        if let Some(delta) = delta {
+            let mut profiler = ctx.data_mut().guest_profiler.take().unwrap();
+            profiler.sample(ctx.as_context(), delta);
+            ctx.data_mut().guest_profiler = Some(profiler);
+        }
         Ok(wasmtime::UpdateDeadline::Continue(1))
     });
     Ok(spawn_epoch_ticker(store.engine().clone(), interval))
@@ -4706,6 +4730,29 @@ mod tests {
             start + Duration::from_millis(20),
         );
         assert_eq!(next.duration_since(start), Duration::from_micros(20_002));
+    }
+
+    #[test]
+    fn guest_sample_clock_excludes_time_spent_in_host_calls() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        let mut last = start + Duration::from_secs(10);
+        assert_eq!(
+            guest_profile_sample_due(
+                &mut last,
+                start + Duration::from_secs(10) + Duration::from_micros(500),
+                interval,
+            ),
+            None
+        );
+        assert_eq!(
+            guest_profile_sample_due(
+                &mut last,
+                start + Duration::from_secs(10) + interval,
+                interval,
+            ),
+            Some(interval)
+        );
     }
 
     #[test]
