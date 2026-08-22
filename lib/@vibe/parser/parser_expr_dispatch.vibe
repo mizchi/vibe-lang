@@ -387,20 +387,26 @@ fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_n
 }
 
 fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
-  let (effect_name, operation_name) = match peek(tokens, pos) {
-    TIdent(effect_name) => match peek(tokens, pos + 1) {
-      TDoubleColon => match peek(tokens, pos + 2) {
-        TIdent(operation_name) => (effect_name, operation_name),
+  let (effect_label, operation_pos, operation_name) = match peek(tokens, pos) {
+    TIdent(effect_name) => {
+      let (label, after_label) = match peek(tokens, pos + 1) {
+        TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(effect_name, "[")),
+        _ => (effect_name, pos + 1)
+      }
+      match peek(tokens, after_label) {
+        TDoubleColon => match peek(tokens, after_label + 1) {
+          TIdent(operation_name) => (label, after_label + 1, operation_name),
+          _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
+        },
         _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
-      },
-      _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
+      }
     },
     _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
   }
-  let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
+  let (pat, pat_next) = parse_pattern_with_binder_context(tokens, operation_pos, context)
   let qualified_pat = match pat {
     PCtor(name, args) => if name == operation_name {
-      PCtor(String::concat(effect_name, String::concat("::", operation_name)), args)
+      PCtor(String::concat(effect_label, String::concat("::", operation_name)), args)
     } else {
       throw("handler-set arm operation did not match its qualified pattern")
     },

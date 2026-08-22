@@ -26,16 +26,16 @@ fn risky(x: Int) -> Int with Exception {
 fn main with Console {
   let safe = handle {
     risky(0)
-  } with Exception {
-    Throw(message) => {
+  } with {
+    Exception::Throw(message) => {
       println("exception: \{message}")
       0 - 1
     }
   }
   let fine = handle {
     risky(4)
-  } with Exception {
-    Throw(_) => 0 - 1
+  } with {
+    Exception::Throw(_) => 0 - 1
   }
   println("safe = \{safe}")
   println("fine = \{fine}")
@@ -48,7 +48,7 @@ safe = -1
 fine = 25
 ```
 
-`handle { body } with Exception { ... }` が境界です。その内側では `risky`
+`handle { body } with { Exception::Throw(...) => ... }` が境界です。その内側では `risky`
 は throw してよく、外側の `main` の row に `Exception` は現れません。義務が
 そこで果たされたからです。
 
@@ -77,8 +77,8 @@ fn answer_of(q: String) -> Int with Ask {
 fn main with Console {
   let v = handle {
     answer_of("life")
-  } with Ask {
-    Value(_q) => resume(41)
+  } with {
+    Ask::Value(_q) => resume(41)
   }
   println("v = \{v}")
 }
@@ -147,8 +147,8 @@ fn ask_once() -> Int with Ask {
 
 fn main() -> Int {
   let bump = (x: Int) -> Int { x + 1 }
-  handle { bump(ask_once()) } with Ask {
-    Once() => resume(41)
+  handle { bump(ask_once()) } with {
+    Ask::Once() => resume(41)
   }
 }
 ```

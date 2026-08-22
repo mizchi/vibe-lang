@@ -16,9 +16,7 @@ fn first_check_error(source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
-  } with Exception {
-    Throw(msg) => msg
-  }
+  } with { Exception::Throw(msg) => msg }
 }
 
 //# Misc
@@ -49,79 +47,79 @@ test "resume at a fn's tail but outside any handle is rejected" {
 }
 
 test "resume in the handled body (not in an arm) is rejected" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { resume(1) } with Ask { Get() => resume(2) } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { resume(1) } with { Ask::Get() => resume(2) } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "only valid inside a handler arm"))
 }
 
 test "double resume via let-bind in one arm is rejected (non-tail)" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { let a = resume(1); resume(2) } } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { let a = resume(1); resume(2) } } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "tail position"))
   assert(String::contains(msg, "#942"))
 }
 
 test "statement-position resume followed by another resume is rejected" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { resume(1); resume(2) } } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { resume(1); resume(2) } } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "tail position"))
 }
 
 test "resume whose value feeds another expression is rejected (non-tail)" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => resume(1) + 1 } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with { Ask::Get() => resume(1) + 1 } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "tail position"))
 }
 
 test "resume inside a while loop in an arm is rejected (would resume per iteration)" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => { let mut i = 0\n  while i < 2 { resume(1)\n    i = i + 1 }\n  0 } } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with { Ask::Get() => { let mut i = 0\n  while i < 2 { resume(1)\n    i = i + 1 }\n  0 } } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "tail position"))
 }
 
 test "single tail resume stays accepted" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => resume(1) } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => resume(1) } }\n"
   assert(first_check_error(src) == "")
 }
 
 test "multi-statement arm ending in tail resume stays accepted" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { let mut tick = 0\n  handle { perform Ask::Get() } with Ask { Get() => { tick = tick + 1\n    resume(tick) } } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { let mut tick = 0\n  handle { perform Ask::Get() } with { Ask::Get() => { tick = tick + 1\n    resume(tick) } } }\n"
   assert(first_check_error(src) == "")
 }
 
 test "branch-tail resumes (if/else) stay accepted" {
-  let src = "effect Gate { Check(Int) -> Int }\nfn main() -> Int { handle { perform Gate::Check(10) } with Gate { Check(n) => if n > 5 { resume(1) } else { resume(2) } } }\n"
+  let src = "effect Gate { Check(Int) -> Int }\nfn main() -> Int { handle { perform Gate::Check(10) } with { Gate::Check(n) => if n > 5 { resume(1) } else { resume(2) } } }\n"
   assert(first_check_error(src) == "")
 }
 
 test "match-arm tail resumes stay accepted" {
-  let src = "effect Gate { Check(Int) -> Int }\nfn main() -> Int { handle { perform Gate::Check(1) } with Gate { Check(n) => match n { 0 => resume(10), _ => resume(20) } } }\n"
+  let src = "effect Gate { Check(Int) -> Int }\nfn main() -> Int { handle { perform Gate::Check(1) } with { Gate::Check(n) => match n { 0 => resume(10), _ => resume(20) } } }\n"
   assert(first_check_error(src) == "")
 }
 
 test "nested handle with tail resumes at both levels stays accepted" {
-  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { handle { perform Ask::Get() + perform Tell::Say(5) } with Tell { Say(n) => resume(n * 2) } } with Ask { Get() => resume(100) } }\n"
+  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { handle { perform Ask::Get() + perform Tell::Say(5) } with { Tell::Say(n) => resume(n * 2) } } with { Ask::Get() => resume(100) } }\n"
   assert(first_check_error(src) == "")
 }
 
 test "nested handle INSIDE an arm with its own tail resume stays accepted" {
-  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => handle { resume(perform Tell::Say(3)) } with Tell { Say(n) => resume(n + 1) } } }\n"
+  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with { Ask::Get() => handle { resume(perform Tell::Say(3)) } with { Tell::Say(n) => resume(n + 1) } } }\n"
   assert(first_check_error(src) == "")
 }
 
 test "non-tail resume inside a nested handle's arm is rejected too" {
-  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with Ask { Get() => handle { resume(perform Tell::Say(3)) } with Tell { Say(n) => { let x = resume(n); resume(x) } } } }\n"
+  let src = "effect Ask { Get() -> Int }\neffect Tell { Say(Int) -> Int }\nfn main() -> Int { handle { perform Ask::Get() } with { Ask::Get() => handle { resume(perform Tell::Say(3)) } with { Tell::Say(n) => { let x = resume(n); resume(x) } } } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "tail position"))
 }
 
 test "arm without resume stays accepted" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => 42 } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => 42 } }\n"
   assert(first_check_error(src) == "")
 }
 
 test "throw-then-resume arm shape stays accepted (resume is the block's tail)" {
-  let src = "effect Ask { Question(String) -> String }\nfn main() -> Int { handle { handle { let a = perform Ask::Question(\"ok?\")\n  String::length(a) } with Ask { Question(_q) => { throw(\"handler failure\")\n  resume(\"x\") } } } with Exception { Throw(msg) => String::length(msg) } }\n"
+  let src = "effect Ask { Question(String) -> String }\nfn main() -> Int { handle { handle { let a = perform Ask::Question(\"ok?\")\n  String::length(a) } with { Ask::Question(_q) => { throw(\"handler failure\")\n  resume(\"x\") } } } with { Exception::Throw(msg) => String::length(msg) } }\n"
   assert(first_check_error(src) == "")
 }
 
@@ -146,7 +144,7 @@ test "local binding named resume stays callable outside handlers" {
 }
 
 test "shadowing binding named resume inside an arm escapes the tail rule" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { let resume = (x: Int) -> { x + 5 }\n  let y = resume(3)\n  y } } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { let resume = (x: Int) -> { x + 5 }\n  let y = resume(3)\n  y } } }\n"
   assert(first_check_error(src) == "")
 }
 
@@ -155,25 +153,25 @@ test "shadowing binding named resume inside an arm escapes the tail rule" {
 // at runtime pre-#942 to yield the same value as a plain tail resume).
 
 test "return resume(v) as the arm's final expression stays accepted" {
-  let src = "effect Ask { Get() -> Int }\nfn run() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => return resume(1) } }\nfn main() -> Int { run() }\n"
+  let src = "effect Ask { Get() -> Int }\nfn run() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => return resume(1) } }\nfn main() -> Int { run() }\n"
   assert(first_check_error(src) == "")
 }
 
 test "unshadowed non-tail resume is still rejected when another local exists" {
-  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with Ask { Get() => { let other = 1\n  let a = resume(other)\n  resume(2) } } }\n"
+  let src = "effect Ask { Get() -> Int }\nfn main() -> Int { handle { perform Ask::Get() + 100 } with { Ask::Get() => { let other = 1\n  let a = resume(other)\n  resume(2) } } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "tail position"))
 }
 
 test "Error arm resume keeps the #640 non-resumable message (not the #942 one)" {
-  let src = "fn main() -> Int { handle { throw(\"x\")\n  1 } with Exception { Throw(_e) => resume(0) } }\n"
+  let src = "fn main() -> Int { handle { throw(\"x\")\n  1 } with { Exception::Throw(_e) => resume(0) } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "non-resumable"))
   assert(String::contains(msg, "#640"))
 }
 
 test "Exception alias arm also rejects resume" {
-  let src = "fn main() -> Int { handle { perform Exception::Throw(\"x\")\n  1 } with Exception { Throw(_e) => resume(0) } }\n"
+  let src = "fn main() -> Int { handle { perform Exception::Throw(\"x\")\n  1 } with { Exception::Throw(_e) => resume(0) } }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "non-resumable"))
   assert(String::contains(msg, "#640"))
@@ -184,7 +182,7 @@ test "Exception alias arm also rejects resume" {
 /// tail-position check — env_lookup(env, "resume") in check_resume_values now
 /// sees the same lexical shadow the checker itself uses everywhere else.
 test "local resume binding inside an arm escapes the resume-value check" {
-  let src = "effect Ask { Get() -> String }\nfn go() -> String { handle { perform Ask::Get() } with Ask { Get() => { let resume = (x: Int) -> Int { x }\n  let n = resume(1)\n  \"ok\" } } }\nfn main() -> Int { String::length(go()) }\n"
+  let src = "effect Ask { Get() -> String }\nfn go() -> String { handle { perform Ask::Get() } with { Ask::Get() => { let resume = (x: Int) -> Int { x }\n  let n = resume(1)\n  \"ok\" } } }\nfn main() -> Int { String::length(go()) }\n"
   assert(first_check_error(src) == "")
 }
 

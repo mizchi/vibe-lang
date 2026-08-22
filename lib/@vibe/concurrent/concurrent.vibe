@@ -663,24 +663,22 @@ export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with 
       rc.value = Some(v)
       cell.status = 2
       conc_notify_waiters(cell)
-    } with Exception {
-      Throw(payload) => {
-        // #1372 review (Codex P1) / #1374: `payload` is not necessarily a
-        // String -- see conc_exn_message.
-        let msg = conc_exn_message("\{payload}", __exn_kind())
-        cell.status = 3
-        cell.fail_msg = msg
-        conc_notify_waiters(cell)
-        if !n.failing {
-          n.failing = true
-          n.fail_msg = msg
-          if n.phase == 0 {
-            n.phase = 1
-          }
+    } with { Exception::Throw(payload) => {
+      // #1372 review (Codex P1) / #1374: `payload` is not necessarily a
+      // String -- see conc_exn_message.
+      let msg = conc_exn_message("\{payload}", __exn_kind())
+      cell.status = 3
+      cell.fail_msg = msg
+      conc_notify_waiters(cell)
+      if !n.failing {
+        n.failing = true
+        n.fail_msg = msg
+        if n.phase == 0 {
+          n.phase = 1
         }
-        conc_cancel_parked(n)
       }
-    }
+      conc_cancel_parked(n)
+    } }
   }
   // The append is INLINE on purpose: an append helper of the shape
   // `if has-space { Array::set(.., v) .. } else { while { push(.., v) } .. }`
@@ -1043,36 +1041,32 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
     handle {
       let v = f()
       SDone(v)
-    } with Async {
-      Suspend(r) => {
-        // Payload convention: 0 = yield, 1 = poll wait, NEGATIVE = a sleep
-        // debt of -r ms (#1227). Payloads >= 2 are RESERVED for waitable
-        // handles (ADR-0089 D2: the third wait kind; realized today at the
-        // component lowering level -- comp_emit_component_wasm_host_
-        // future_value parks the task on waitable-set.wait -- not in this
-        // in-guest scheduler, which has no host waitables to wait on).
-        // They park as POLLERS here so the in-guest backend degrades to
-        // the deadlock trap (nothing in-guest can ever complete a host
-        // waitable) rather than to a silent yield livelock (a yielder is
-        // resumed for free forever and never counts as stalled).
-        if r < 0 {
-          TaskHandle::park_kind(h, resume, true, 0 - r)
-        } else {
-          TaskHandle::park_kind(h, resume, r >= 1, 0)
-        }
-        SParked
+    } with { Async::Suspend(r) => {
+      // Payload convention: 0 = yield, 1 = poll wait, NEGATIVE = a sleep
+      // debt of -r ms (#1227). Payloads >= 2 are RESERVED for waitable
+      // handles (ADR-0089 D2: the third wait kind; realized today at the
+      // component lowering level -- comp_emit_component_wasm_host_
+      // future_value parks the task on waitable-set.wait -- not in this
+      // in-guest scheduler, which has no host waitables to wait on).
+      // They park as POLLERS here so the in-guest backend degrades to
+      // the deadlock trap (nothing in-guest can ever complete a host
+      // waitable) rather than to a silent yield livelock (a yielder is
+      // resumed for free forever and never counts as stalled).
+      if r < 0 {
+        TaskHandle::park_kind(h, resume, true, 0 - r)
+      } else {
+        TaskHandle::park_kind(h, resume, r >= 1, 0)
       }
-    }
-  } with Exception {
-    Throw(msg) => {
-      // Error escaping the first (settle) leg: Failed conversion +
-      // fail-fast, exactly like spawn's runner. The Async handle is
-      // CPS-lowered (no exceptions), so only real throws land here.
-      // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
-      conc_fail_cell(n, h.cell, conc_exn_message("\{msg}", __exn_kind()))
       SParked
-    }
-  }
+    } }
+  } with { Exception::Throw(msg) => {
+    // Error escaping the first (settle) leg: Failed conversion +
+    // fail-fast, exactly like spawn's runner. The Async handle is
+    // CPS-lowered (no exceptions), so only real throws land here.
+    // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
+    conc_fail_cell(n, h.cell, conc_exn_message("\{msg}", __exn_kind()))
+    SParked
+  } }
   conc_running_pop()
   TaskHandle::settle(h, step)
   h
@@ -1166,13 +1160,11 @@ export fn TaskHandle::park_kind[rg, e, T](h: TaskHandle[rg, e, T], k: (Int) -> T
     // handler — without this it would unwind straight out of pump_all.
     let step = handle {
       k(rv)
-    } with Exception {
-      Throw(msg) => {
-        // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
-        conc_fail_cell(grp, cell, conc_exn_message("\{msg}", __exn_kind()))
-        SParked
-      }
-    }
+    } with { Exception::Throw(msg) => {
+      // #1374: same erased-arm hazard as the runner -- see conc_exn_message.
+      conc_fail_cell(grp, cell, conc_exn_message("\{msg}", __exn_kind()))
+      SParked
+    } }
     conc_running_pop()
     match step {
       SDone(v) => {

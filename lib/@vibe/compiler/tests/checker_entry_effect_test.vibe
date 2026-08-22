@@ -16,9 +16,7 @@ fn first_check_error(source: String) -> String {
   handle {
     let _ = check_program(parse_program(lex(source)))
     ""
-  } with Exception {
-    Throw(msg) => msg
-  }
+  } with { Exception::Throw(msg) => msg }
 }
 
 fn first_located_check_error(source: String) -> String {
@@ -26,9 +24,7 @@ fn first_located_check_error(source: String) -> String {
     let (tokens, starts, _) = lex_with_offsets(source)
     let _ = check_program(parse_program_located(tokens, starts, source))
     ""
-  } with Exception {
-    Throw(msg) => locate_type_error(source, msg)
-  }
+  } with { Exception::Throw(msg) => locate_type_error(source, msg) }
 }
 
 test "#1683: a declared user effect cannot escape main" {
@@ -80,7 +76,7 @@ test "#1683: a user effect named Fs is not admitted as the host provider at _sta
 }
 
 test "#1961: lexically handled operations require no provider" {
-  let source = "effect Ask { Get() -> Int }\nfn main() -> Int {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
   assert_eq(first_check_error(source), "")
 }
 
@@ -109,12 +105,12 @@ test "#1961: allows is not a second spelling of with" {
 }
 
 test "#1961: lexically handled emit does not need allows authority" {
-  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
   assert_eq(first_check_error(source), "")
 }
 
 test "#1961: a handle that does not enclose the perform is not lexical" {
-  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  let x = perform Ask::Get()\n  handle { 0 } with Ask { Get() => resume(1) }\n  x\n}\n"
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  let x = perform Ask::Get()\n  handle { 0 } with { Ask::Get() => resume(1) }\n  x\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "emits unhandled `Ask::Get`"))
   assert(String::contains(msg, "not authorized by `allows Fs`"))
@@ -170,9 +166,7 @@ test "#1961: instantiate preflight rejects a required op the host did not grant"
   let msg = handle {
     let _ = preflight_instantiate(["Fs::read_file"], [])
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "Fs::read_file"))
   assert(String::contains(msg, "preflight"))
   assert(String::contains(msg, "--allow-fs"))
@@ -252,7 +246,7 @@ test "#1961: ::-less user Console::Get is not a host-provider impersonation" {
 }
 
 test "#1961: lexically handled ::-less user Console needs no provider" {
-  let source = "effect Console { Get() -> Int }\nfn main() -> Int {\n  handle { perform Console::Get() } with Console { Get() => resume(1) }\n}\n"
+  let source = "effect Console { Get() -> Int }\nfn main() -> Int {\n  handle { perform Console::Get() } with { Console::Get() => resume(1) }\n}\n"
   assert_eq(first_check_error(source), "")
 }
 
@@ -314,7 +308,7 @@ test "#2145: the rejection is reported once, not once per occurrence" {
 test "#2145: plain perform is untouched by the perform? rejection" {
   // The scan keys on the exact callee name `perform?`, so `perform` -- the
   // feature that does work -- must not be caught by it.
-  let source = "effect Ask { Get() -> Int }\nfn main() -> Int {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
   assert_eq(first_check_error(source), "")
 }
 
@@ -367,7 +361,7 @@ test "#1961: perform? on a required allows is rejected" {
 }
 
 test "#1961: transcript of handled / unhandled / impersonation diagnostics" {
-  let handled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with Ask { Get() => resume(1) }\n}\n"
+  let handled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
   let unhandled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
   let impersonation = "effect Fs { read_file(String) -> String }\nfn main() -> String with Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
   let handled_msg = first_check_error(handled)
