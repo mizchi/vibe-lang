@@ -192,6 +192,38 @@ error while executing at wasm backtrace:
 EOF
 echo "[vibe-test-smoke] ok (percent-encoded quoted names decode on FAIL)"
 
+# #2228: the launcher condenser's detail lines carry the SAME 7-space
+# indent as vt_fail_detail's, so the two reporters render one format (the
+# one book/en/12_tests.vibe.md documents). Pin the indent on the canned
+# trap above: `failing test:` and `at` frames must start at column 8.
+assert_condense_indent() {
+  local errf="$WORK/canned_condense_indent.err" out
+  cat > "$errf" <<'EOF'
+RuntimeError: unreachable
+    at some_helper (wasm://wasm/00000000:wasm-function[7]:0x99)
+    at __test_indent_pin (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(condense_test_trap "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q '^       failing test: indent_pin$'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap failing-test line is not 7-space indented (#2228)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q '^       trap: RuntimeError: unreachable$'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap trap line is not 7-space indented (#2228)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q '^       at some_helper'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap frame line is not 7-space indented (#2228)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_condense_indent
+echo "[vibe-test-smoke] ok (launcher condenser indent matches vt_fail_detail, #2228)"
+
 # #1946 leftover: vt_fail_detail must surface the assert_eq diagnostic that
 # the guest writes to stderr (vibe test discards stdout).
 assert_canned_assert_eq_diag() {
