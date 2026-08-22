@@ -1322,50 +1322,6 @@ fn find_matching_rbrace(toks: Array[LTok], start: Int) -> Int {
   }
 }
 
-fn prev_non_trivia_index(toks: Array[LTok], start: Int) -> Int {
-  let mut i = start - 1
-  let mut result = -1
-  while result < 0 && i >= 0 {
-    let k = Array::get(toks, i).kind
-    if k == k_ws || k == k_newline || k == k_comment {
-      i = i - 1
-    } else {
-      result = i
-    }
-  }
-  result
-}
-
-fn find_matching_lbrace(toks: Array[LTok], close: Int) -> Int {
-  let mut depth = 0
-  let mut i = close
-  let mut result = -1
-  while result < 0 && i >= 0 {
-    let k = Array::get(toks, i).kind
-    if k == k_rbrace {
-      depth = depth + 1
-    } else if k == k_lbrace {
-      depth = depth - 1
-      if depth == 0 {
-        result = i
-      }
-    }
-    i = i - 1
-  }
-  result
-}
-
-fn is_handler_with(toks: Array[LTok], with_pos: Int) -> Bool {
-  let close = prev_non_trivia_index(toks, with_pos)
-  if close < 0 || Array::get(toks, close).kind != k_rbrace {
-    false
-  } else {
-    let open_idx = find_matching_lbrace(toks, close)
-    let before = prev_non_trivia_index(toks, open_idx)
-    before >= 0 && Array::get(toks, before).kind == k_handle
-  }
-}
-
 /// #? import-list wrap: is the `{` at open_idx the item-list brace of an
 /// `import <path> { .. }` / `export { .. }` / `import <path> as X only { .. }`
 /// header, as opposed to some unrelated brace (a fn/match/struct-literal body,
@@ -2563,143 +2519,6 @@ fn reorder_import_lists(toks: Array[LTok]) -> Array[LTok] {
   out
 }
 
-fn next_non_trivia_index(toks: Array[LTok], start: Int) -> Int {
-  let mut i = start + 1
-  let mut result = -1
-  while result < 0 && i < Array::length(toks) {
-    let k = Array::get(toks, i).kind
-    if k == k_ws || k == k_newline || k == k_comment {
-      i = i + 1
-    } else {
-      result = i
-    }
-  }
-  result
-}
-
-fn handler_arm_starts_at(toks: Array[LTok], start: Int, close: Int) -> Bool {
-  if start < 0 || start >= close || Array::get(toks, start).kind != k_name {
-    false
-  } else {
-    let mut paren = 0
-    let mut bracket = 0
-    let mut i = start
-    let mut result = false
-    let mut going = true
-    while going && i < close {
-      let k = Array::get(toks, i).kind
-      if k == k_lparen {
-        paren = paren + 1
-      } else if k == k_rparen {
-        paren = paren - 1
-      } else if k == k_lbracket {
-        bracket = bracket + 1
-      } else if k == k_rbracket {
-        bracket = bracket - 1
-      } else if paren == 0 && bracket == 0 && k == k_arrow {
-        result = true
-        going = false
-      } else if paren == 0 && bracket == 0 &&
-      (k == k_semicolon || k == k_comma || k == k_newline || k == k_rbrace) {
-        going = false
-      }
-      i = i + 1
-    }
-    result
-  }
-}
-
-/// ADR-0102 migration fix-it:
-///
-///   handle { body } with E { Op(x) => arm }
-///   -> handle { body } with { E::Op(x) => arm }
-///
-/// This is deliberately a lossless-token pre-pass so it remains available
-/// after the parser eventually rejects the legacy spelling. It only rewrites
-/// a `with` whose preceding balanced block is introduced by `handle`.
-fn normalize_legacy_handler_headers(toks: Array[LTok]) -> Array[LTok] {
-  let out = Array::slice([LTok::{ kind: k_none, text: "" }], 0, 0)
-  let n = Array::length(toks)
-  let mut i = 0
-  while i < n {
-    let t = Array::get(toks, i)
-    let effect_start = if t.kind == k_with && is_handler_with(toks, i) {
-      next_non_trivia_index(toks, i)
-    } else {
-      -1
-    }
-    if effect_start >= 0 && Array::get(toks, effect_start).kind == k_name {
-      let mut arm_open = effect_start + 1
-      let mut bracket_depth = 0
-      while arm_open < n &&
-      !(Array::get(toks, arm_open).kind == k_lbrace && bracket_depth == 0) {
-        let k = Array::get(toks, arm_open).kind
-        if k == k_lbracket {
-          bracket_depth = bracket_depth + 1
-        } else if k == k_rbracket {
-          bracket_depth = bracket_depth - 1
-        }
-        arm_open = arm_open + 1
-      }
-      let arm_close = if arm_open < n {
-        find_matching_rbrace(toks, arm_open)
-      } else {
-        -1
-      }
-      if arm_close < 0 {
-        Array::push(out, t)
-        i = i + 1
-      } else {
-        Array::push(out, t)
-        Array::push(out, LTok::{ kind: k_ws, text: " " })
-        Array::push(out, Array::get(toks, arm_open))
-        let mut j = arm_open + 1
-        let mut brace_depth = 1
-        let mut arm_start = true
-        while j < arm_close {
-          let cur = Array::get(toks, j)
-          if arm_start && cur.kind != k_ws && cur.kind != k_newline &&
-          cur.kind != k_comment && handler_arm_starts_at(toks, j, arm_close) {
-            let already_qualified = next_non_trivia_kind(toks, j) == k_double_colon
-            if !already_qualified {
-              let mut q = effect_start
-              while q < arm_open {
-                let qt = Array::get(toks, q)
-                if qt.kind != k_ws && qt.kind != k_newline && qt.kind != k_comment {
-                  Array::push(out, qt)
-                }
-                q = q + 1
-              }
-              Array::push(out, LTok::{ kind: k_double_colon, text: "::" })
-            }
-            arm_start = false
-          }
-          Array::push(out, cur)
-          if cur.kind == k_lbrace {
-            brace_depth = brace_depth + 1
-          } else if cur.kind == k_rbrace {
-            brace_depth = brace_depth - 1
-          } else if brace_depth == 1 && (cur.kind == k_semicolon || cur.kind == k_comma) {
-            arm_start = true
-          } else if cur.kind == k_newline && brace_depth == 1 {
-            let candidate = next_non_trivia_index(toks, j)
-            if candidate >= 0 && handler_arm_starts_at(toks, candidate, arm_close) {
-              arm_start = true
-            }
-          }
-          j = j + 1
-        }
-        Array::push(out, Array::get(toks, arm_close))
-        i = arm_close + 1
-      }
-    } else {
-      Array::push(out, t)
-      i = i + 1
-    }
-  }
-  out
-}
-
 /// #1429: rewrite a braced effect row into the braceless spelling.
 ///
 ///   with { A, B }  ->  with A + B
@@ -2730,7 +2549,7 @@ fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
   let mut i = 0
   while i < n {
     let t = Array::get(toks, i)
-    if t.kind == k_with && next_non_trivia_kind(toks, i) == k_lbrace && !is_handler_with(toks, i) {
+    if t.kind == k_with && next_non_trivia_kind(toks, i) == k_lbrace {
       Array::push(out, t)
       // Find the row's `{` and its matching `}` (rows do not nest braces).
       let mut open_i = i + 1
@@ -2832,7 +2651,7 @@ fn normalize_retired_effect_labels(toks: Array[LTok]) -> Array[LTok] {
 }
 
 export fn format_script(src: String) -> String {
-  format_tokens(normalize_retired_effect_labels(normalize_effect_rows(normalize_legacy_handler_headers(reorder_import_lists(lex_lossless(src))))), 2)
+  format_tokens(normalize_retired_effect_labels(normalize_effect_rows(reorder_import_lists(lex_lossless(src)))), 2)
 }
 
 //# ======================================================================
