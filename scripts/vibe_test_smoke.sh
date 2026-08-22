@@ -297,6 +297,58 @@ EOF
   fi
 }
 assert_real_shape_with_crash_debug_suppressed
+
+# #2202 (Codex round 2 on #2213): a rendered value may contain newlines, so
+# the block is not always consecutive -- the generated abort therefore prints
+# a machine marker (`__vibe_assert_abort__`) as its final line, and the
+# recognizer trusts the marker. The marker itself must not appear in the
+# report.
+assert_multiline_value_with_marker_suppressed() {
+  local errf="$WORK/canned_multiline_assert.err" out
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: a
+c
+  actual:   a
+b
+__vibe_assert_abort__
+[crash debug] heap_ptr=496 (0x1f0), memory_size=4194304 (64 pages) / unreachable
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if printf '%s\n' "$out" | rg -q --fixed-strings "trap:"; then
+    echo "[vibe-test-smoke] FAIL: multiline assert abort (with marker) still echoed its trap (#2202)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | rg -q --fixed-strings "__vibe_assert_abort__"; then
+    echo "[vibe-test-smoke] FAIL: the assert abort marker leaked into the report (#2202)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_multiline_value_with_marker_suppressed
+
+# ...and a marker that is NOT adjacent to the trap (other output after it)
+# must not suppress: the trap is then something else.
+assert_stale_marker_keeps_real_trap() {
+  local errf="$WORK/canned_stale_marker.err" out
+  cat > "$errf" <<'EOF'
+__vibe_assert_abort__
+some unrelated output afterwards
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: real trap after a stale abort marker was suppressed (#2202)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_stale_marker_keeps_real_trap
 echo "[vibe-test-smoke] ok (assert abort trap suppressed; bare/imitated traps still reported)"
 
 # Directory input: scripts/vibe_test.sh already expands *_test.vibe; lock it.

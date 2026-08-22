@@ -332,20 +332,33 @@ vt_fail_detail() {
       ndiag++
       diags[ndiag] = "       " $0
     }
+    # The machine marker the generated assert_eq abort prints as its final
+    # line (see lower_assert_eq in normalize/desugar_trait_dict.vibe): the
+    # definitive signal, immune to multiline rendered values and to output
+    # that imitates the block. Hidden from the report. The consecutive-block
+    # recognizer above stays for tests compiled by a seed that predates the
+    # marker.
+    $0 == "__vibe_assert_abort__" {
+      __blk = 1
+      pending_abort = 1
+    }
     # First trap-reason line (backtrace frames never contain these markers;
     # strip anyhow chain numbering / runner prefixes).
     !seen_reason && /RuntimeError:|wasm trap:/ {
       __blk = 1
       seen_reason = 1
-      assert_abort = (ablk == 3)
+      assert_abort = (ablk == 3 || pending_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
       sub(/^viberun: /, "", reason)
     }
-    # Any other non-blank, non-crash-debug line between the block and the
-    # trap breaks the adjacency: the trap is then not the assert abort.
-    !seen_reason && ablk > 0 && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ { ablk = 0 }
+    # Any other non-blank, non-crash-debug line between the block/marker and
+    # the trap breaks the adjacency: the trap is then not the assert abort.
+    !seen_reason && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ {
+      ablk = 0
+      pending_abort = 0
+    }
     # Wasm backtrace frames (node: `at <fn> (wasm://...)`, wasmtime:
     # `N: 0x.. - <unknown>!<fn>`), capped, annotated via the funcmap.
     nframes < 6 {

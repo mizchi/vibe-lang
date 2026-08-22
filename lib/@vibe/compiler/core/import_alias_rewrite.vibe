@@ -983,10 +983,20 @@ fn namespace_private_name(path: String, name: String) -> String {
 /// renamed declaration is the only spelling it can see -- and it bakes that
 /// spelling into the rendered string (`Point_dep_... { x: 3 }` in user
 /// output). This table lets the derive generators recover the source name.
-/// Append-only and never reset: a mangled name is `original ++ "_dep_" ++
-/// sanitized-path`, so one key can only ever map to one original, and a
-/// duplicate append records the identical pair.
+///
+/// The table is scoped to ONE merged program (Codex round 2 on #2213): each
+/// merge driver resets it before populating, and desugar_trait_dicts clears
+/// it after the derive generators have read it. Left to accumulate across
+/// compilations in a long-lived process, it would both grow without bound
+/// and mis-render a LATER program's genuine type whose name equals a former
+/// mangled name (`Point_dep_a_vibe` rendering as `Point`).
 let namespace_rename_originals: Array[(String, String)] = array_empty()
+
+/// Reset the #2205 rename table. Called by each merge driver before it
+/// populates, and by desugar_trait_dicts once the derive generators are done.
+export fn namespace_rename_originals_reset() -> Unit {
+  Array::truncate(namespace_rename_originals, 0)
+}
 
 fn record_namespace_rename_original(original: String, mangled: String) -> Unit {
   Array::push(namespace_rename_originals, (mangled, original))

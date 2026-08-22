@@ -11,6 +11,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   is_exception_throw_operation,
   namespace_rename_original,
+  namespace_rename_originals_reset,
   sort_perm_by_names,
   str_lt,
   trait_method_sig_binders_deep
@@ -5796,7 +5797,14 @@ fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String
   let expected = EIdent(en, -1)
   let actual_s = assert_eq_render(actual, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   let expected_s = assert_eq_render(expected, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
-  let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\n")))))
+  // The trailing `__vibe_assert_abort__` line is a machine marker for the
+  // test harness (#2202, Codex round 2 on #2213): the abort that follows is
+  // this assert's own deliberate trap, so the condensers in
+  // scripts/vibe_test.sh / runtime/vibe can suppress the trap echo without
+  // guessing from the message text -- rendered values may contain newlines,
+  // and a test's own output may imitate the block, so text alone cannot
+  // distinguish the shapes. The condensers hide the marker line.
+  let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\n__vibe_assert_abort__")))))
   // stdout, not Stderr::write_stream: the gc lane only reserves host
   // imports when the source already used one, and flipping that on a
   // SIMD-only file shifts every generated-body index (gc-gate
@@ -13181,6 +13189,12 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)
+  // #2205: the derive generators above are the only readers of the merge
+  // rename table; clear it so a LATER compilation in this process (e.g. a
+  // single-file lane, which runs no merge and therefore no reset) cannot see
+  // stale entries. A second run of this pass over the same program
+  // regenerates nothing and never reads the table.
+  namespace_rename_originals_reset()
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
   // program declares no method-bearing trait `traits` is empty, the dict-passing
