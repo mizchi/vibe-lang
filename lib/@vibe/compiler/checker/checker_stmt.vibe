@@ -3891,6 +3891,60 @@ export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with Except
   check_program_type_defs_observation_impl(stmts, None, None).checked_program
 }
 
+/// Check once and retain only source-located primary call results whose
+/// checker-confirmed instantiated type is Double. Offset alone is not enough:
+/// a dot-call receiver and its non-Double result can share the same offset.
+export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int])] with Exception {
+  let capture = TypedOccurrenceRoleLaneCapture::{
+    entries: array_empty(),
+    provenance_entries: array_empty(),
+    statement_path: array_empty(),
+    frame_paths: array_empty(),
+    frame_next_children: array_empty(),
+    frame_expected_children: array_empty(),
+    frame_direct_recorded: array_empty(),
+    direct_entries: array_empty(),
+    direct_enabled: false,
+    frame_depth: 0,
+    complete: true
+  }
+  let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
+  if Array::length(capture.entries) != Array::length(checked.typed_occurrences) {
+    None
+  } else {
+    let out: Array[Int] = []
+    let mut i = 0
+    while i < Array::length(checked.typed_occurrences) {
+      let (off, raw_ty) = Array::get(checked.typed_occurrences, i)
+      let (role, lane) = Array::get(capture.entries, i)
+      match subst_apply(checked.final_subst, raw_ty) {
+        CtDouble => {
+          if off >= 0 && role == "CallResult" && lane == "Primary" {
+            let mut seen = false
+            let mut j = 0
+            while j < Array::length(out) {
+              if Array::get(out, j) == off {
+                seen = true
+                j = Array::length(out)
+              } else {
+                j = j + 1
+              }
+            }
+            if !seen {
+              Array::push(out, off)
+            }
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    Some((checked, out))
+  }
+}
+
 /// Compatibility API: preserve the historical TypeEnv result and error
 /// behavior while delegating through the successful production result.
 export fn check_program(stmts: Array[Stmt]) -> TypeEnv with Exception {

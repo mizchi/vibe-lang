@@ -1,0 +1,65 @@
+// GC-only regressions for #2182 review. The linear lane does not yet carry
+// checker-confirmed call-result types, so this file is registered explicitly
+// in the two GC fixture lists instead of using the repository-wide `_test`
+// suffix.
+
+type GenericValue = Double
+
+fn generic_return[GenericValue](x: GenericValue) -> GenericValue {
+  x
+}
+
+type UserPrefixedValue = Double
+
+fn __hoisted_lam_user[UserPrefixedValue](x: Int) -> UserPrefixedValue {
+  x
+}
+
+effect FloatProbe {
+  Read -> Double
+}
+
+fn hoisted_float_return() -> String with FloatProbe {
+  let local = () -> Double with FloatProbe {
+    perform FloatProbe::Read
+  }
+  __to_string(local())
+}
+
+fn Double::whole(x: Double) -> Int {
+  Double::to_int(x)
+}
+
+fn render_int_array_after_try(value: Option[Double]) -> Option[String] {
+  let _unwrapped = value?
+  Some(__to_string([1, 2]))
+}
+
+test "#2182 review gc: a generic call uses its instantiated return type" {
+  assert_true(__to_string(generic_return(2.5)) == "2.5")
+}
+
+test "#2182 review gc: a user hoist-prefix name keeps binder shadowing" {
+  assert_true(__to_string(__hoisted_lam_user(7)) == "7")
+}
+
+test "#2182 review gc: an effectful hoisted lambda retains its float return" {
+  let rendered = handle {
+    hoisted_float_return()
+  } with FloatProbe {
+    Read => resume(2.5)
+  }
+  assert_true(rendered == "2.5")
+}
+
+test "#2182 review gc: a Double receiver does not classify an Int call result as float" {
+  let d = 2.5
+  assert_true(__to_string(d.whole()) == "2")
+}
+
+test "#2182 review gc: a synthetic Double occurrence does not classify synthetic Int calls as float" {
+  match render_int_array_after_try(Some(2.5)) {
+    Some(rendered) => assert_true(rendered == "[1, 2]"),
+    None => assert_true(false)
+  }
+}

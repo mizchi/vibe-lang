@@ -1,14 +1,14 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  Token, lex, parse_program, parse_stmt
+  Token, lex, lex_with_offsets, parse_program, parse_program_located, parse_stmt
 }
 
 import @vibe/core {
   array_empty
 }
 import @vibe/compiler/checker {
-  check_program
+  check_program_double_call_result_observation
 }
 
 import @vibe/compiler/codegen {
@@ -16,7 +16,12 @@ import @vibe/compiler/codegen {
 }
 
 import @vibe/compiler/codegen/gc {
-  compile_wasi_module_gc, gc_direct_abi_pre_erasure_generic_names, gc_float_ret_pre_erasure_names, gc_to_string_resolves_to_show_wrapper
+  compile_wasi_module_gc,
+  gc_add_hoisted_float_returning_names,
+  gc_direct_abi_pre_erasure_generic_names,
+  gc_float_returning_names_pre_erasure,
+  gc_to_string_resolves_to_show_wrapper,
+  gc_top_level_function_names
 }
 
 // #847 Phase C exception: this file drives the wasm-gc backend
@@ -327,8 +332,8 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> String with E
 /// etc.); without it the gc lane compared ctor POINTERS, so the gc-compiled
 /// checker's Option/effect-row comparisons were silently wrong.
 export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   expand_interp_stmts(stmts)
   // #683: lower test/bench blocks BEFORE the check so the synthesized
   // `__test_*` lets and the no-entry `_start` runner are type-checked like
@@ -344,7 +349,10 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   // `lowered_test_ambient_effects` recognizes these two prefixes, so the
   // grant survives the lowering without changing what CODEGEN sees.
   let effective_entry = lower_test_blocks_gc(stmts, entry_name)
-  let _ = check_program(stmts)
+  let (checked, gc_float_call_offsets) = match check_program_double_call_result_observation(stmts) {
+    Some(observation) => observation,
+    None => throw("internal compiler error: incomplete GC call-result type observation")
+  }
   // #1015: MUST run before strip_generic_type_params below -- that pass
   // unconditionally zeroes every top-level generic fn's type_params/bounds
   // (erasure, not specific to `to_string`), so checking the Show-bounded
@@ -354,13 +362,19 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   // See the doc comment on gc_to_string_resolves_to_show_wrapper.
   let gc_to_string_is_wrapper = gc_to_string_resolves_to_show_wrapper(stmts)
   let direct_abi_generic_names = gc_direct_abi_pre_erasure_generic_names(stmts)
-  // #2178: same ORDER requirement -- the float-return classification needs
-  // each generic fn's own type params to exclude a return that names one.
-  let float_ret_fn_names = gc_float_ret_pre_erasure_names(stmts)
+  // #2178: this table must retain the function's type binders. Once the
+  // erasure below removes them, a return type parameter that shadows a
+  // Double alias is indistinguishable from that alias and is misclassified.
+  let gc_float_ret_fn_names = gc_float_returning_names_pre_erasure(stmts)
+  let gc_pre_hoist_fn_names = gc_top_level_function_names(stmts)
   // Same effective order as the linear lane: strip source-level generic
   // params, then the trait-dict desugar (compile_wasi_module_linked_impl
   // runs it as its first step).
   strip_generic_type_params(stmts)
   desugar_trait_dicts(stmts)
-  compile_wasi_module_gc(stmts, effective_entry, gc_to_string_is_wrapper, direct_abi_generic_names, float_ret_fn_names)
+  // Trait-dict desugaring hoists capture-free effectful lambdas after the
+  // pre-erasure snapshot. Add only those generated declarations; ordinary
+  // declarations must keep the binder-aware pre-erasure answer.
+  gc_add_hoisted_float_returning_names(stmts, gc_pre_hoist_fn_names, gc_float_ret_fn_names)
+  compile_wasi_module_gc(stmts, effective_entry, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
 }
