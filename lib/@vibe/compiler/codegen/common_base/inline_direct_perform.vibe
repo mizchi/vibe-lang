@@ -8455,6 +8455,18 @@ fn scps_mk_fn1(param: String, body: Expr) -> Expr {
   EFn(array_empty_str(), scps_empty_tbs(), ps, None, None, body)
 }
 
+/// A one-parameter continuation that preserves the source callee's declared
+/// result type. The suspend split runs after checking, so this annotation is
+/// codegen provenance rather than a new typing claim. In particular, a
+/// `Double` returned by a needing call must still mark the bubble callback's
+/// local slot as floatish; dropping the annotation made `let k = resume;
+/// k(v)` stringify the raw f64 bits through the Int path (#2188).
+fn scps_mk_fn1_typed(param: String, ty: Option[TypeExpr], body: Expr) -> Expr {
+  let ps = scps_empty_params()
+  Array::push(ps, (param, ty))
+  EFn(array_empty_str(), scps_empty_tbs(), ps, None, None, body)
+}
+
 fn scps_mk_fn2(p1: String, p2: String, body: Expr) -> Expr {
   let ps = scps_empty_params()
   Array::push(ps, (p1, None))
@@ -10326,7 +10338,7 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
                   let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
                   (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
                     ECall(EIdent(scps_clone_name(eff, vn), -1), vargs, -1),
-                    scps_mk_fn1(x, bexpr)
+                    scps_mk_fn1_typed(x, scps_call_ret_ty(v, ctx, e), bexpr)
                   ], -1))
                 }
               } else if vc != "" {
