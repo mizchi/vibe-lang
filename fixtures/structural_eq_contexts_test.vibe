@@ -332,3 +332,87 @@ test "local closure return annotation directs array equality" {
   }
   assert(make() == make())
 }
+
+// #2192 review: the push scan in desugar_trait_dict carries the binding site's
+// `var_types` UNCHANGED into a closure body, a for-in body, a loop body and a
+// match arm -- it checks only whether the ARRAY's spelling is rebound, not
+// whether a binder there shadows the name of the pushed VALUE. A review read
+// that as a silent-wrong: outer `v: Int`, closure parameter `v: String`, so
+// `Array::push(xs, v)` records the Int shape for an `Array[String]` and the
+// comparison answers by pointer.
+//
+// Measured on the merged tree, it does not: every shape below answers by
+// content, including the sharpest possible mismatch (a `derive(Eq)` struct
+// outside, a String parameter inside). What makes the mechanism inert is NOT
+// established -- so these exist to make the answer a fixed point rather than
+// an observation. If a later change makes any of them answer by pointer, that
+// is the silent-wrong the review predicted and these fail on it.
+//
+// The strings are built through `mk` from different pieces so equal content is
+// never the same allocation; comparing them as scalars would give `false`.
+
+fn eqctx_mk(a: String, b: String) -> String {
+  String::concat(a, b)
+}
+
+struct EqCtxPoint {
+  x: Int;
+  y: Int
+} derive(Eq)
+
+test "a closure parameter shadowing an outer Int does not scalarize a String array" {
+  let v = 1
+  let xs = []
+  let ys = []
+  let f = (v: String) -> Unit { Array::push(xs, v) }
+  let g = (v: String) -> Unit { Array::push(ys, v) }
+  f(eqctx_mk("ab", "c"))
+  g(eqctx_mk("a", "bc"))
+  assert(xs == ys)
+  assert(v == 1)
+}
+
+test "a closure parameter shadowing an outer String does not mistype an Int array" {
+  let v = "outer"
+  let xs = []
+  let ys = []
+  let f = (v: Int) -> Unit { Array::push(xs, v) }
+  let g = (v: Int) -> Unit { Array::push(ys, v) }
+  f(3)
+  g(3)
+  assert(xs == ys)
+  f(1)
+  g(2)
+  assert(xs != ys)
+  assert(v == "outer")
+}
+
+test "a closure parameter shadowing an outer struct does not misread a String array" {
+  let v = EqCtxPoint::{ x: 1, y: 2 }
+  let xs = []
+  let ys = []
+  let f = (v: String) -> Unit { Array::push(xs, v) }
+  let g = (v: String) -> Unit { Array::push(ys, v) }
+  f(eqctx_mk("ab", "c"))
+  g(eqctx_mk("a", "bc"))
+  assert(xs == ys)
+  assert(v.x == 1)
+}
+
+test "a match arm binder shadowing an outer Int does not scalarize a String array" {
+  let v = 1
+  let xs = []
+  let ys = []
+  let o1: Option[String] = Some(eqctx_mk("ab", "c"))
+  let o2: Option[String] = Some(eqctx_mk("a", "bc"))
+  match o1 {
+    Some(v) => Array::push(xs, v),
+    None => ()
+  }
+  match o2 {
+    Some(v) => Array::push(ys, v),
+    None => ()
+  }
+  assert(xs == ys)
+  assert(v == 1)
+}
