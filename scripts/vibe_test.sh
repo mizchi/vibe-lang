@@ -332,6 +332,15 @@ vt_fail_detail() {
       ndiag++
       diags[ndiag] = "       " $0
     }
+    # #2199: an Array OOB abort prints its operation before trapping; keep
+    # that line in the condensed report -- it is the whole explanation of
+    # the trap that follows. Deliberately NOT marked __blk: it is not part
+    # of an assert diagnostic, so it must still break assert-abort
+    # adjacency like any other output.
+    $0 ~ /: index out of bounds$/ {
+      ndiag++
+      diags[ndiag] = "       " $0
+    }
     # The closing line the generated assert_eq abort prints (lower_assert_eq
     # in normalize/desugar_trait_dict.vibe): the definitive signal, immune to
     # multiline rendered values and to output that imitates the block. Hidden

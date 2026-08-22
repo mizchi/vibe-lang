@@ -205,12 +205,20 @@ import @vibe/compiler/codegen/wasm_emit {
 
 //# Functions
 
-export fn gen_arr_get_body(enable_rc: Bool) -> Bytes {
+export fn gen_arr_get_body(enable_rc: Bool, oob_msg_fat: Int, print_str_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: bounds check — an out-of-range (or negative) index silently read
   // adjacent memory ([1,2,3][5] returned garbage). One UNSIGNED compare
   // catches both directions (idx as u32 >= len rejects negatives too) and
   // traps via `unreachable`.
+  //
+  // #2199: before the trap, print a static message naming the operation --
+  // a bare `unreachable` is indistinguishable from a compiler bug to the
+  // reader. `oob_msg_fat` is the message's raw (ptr<<32)|len string-table
+  // constant (exactly what __rt_print_str takes on both lanes; no RC tag
+  // is involved in either) and `print_str_idx` its function index. Pass
+  // print_str_idx < 0 to omit the print and emit the historical bare-trap
+  // body (the static twin pins that form).
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
@@ -226,6 +234,12 @@ export fn gen_arr_get_body(enable_rc: Bool) -> Bytes {
   emit_i32_load(b, 2, 4)
   emit_i32_ge_u(b)
   emit_if_void(b)
+  if print_str_idx >= 0 {
+    emit_i64_const(b, oob_msg_fat)
+    emit_call(b, print_str_idx)
+  } else {
+    ()
+  }
   bytebuf_push(b, 0)
   emit_end(b)
   emit_local_get(b, 0)
@@ -474,10 +488,11 @@ export fn gen_region_bytes_new_body(region_ptr_addr: Int, region_data_base: Int,
   b
 }
 
-export fn gen_arr_set_body(enable_rc: Bool) -> Bytes {
+export fn gen_arr_set_body(enable_rc: Bool, oob_msg_fat: Int, print_str_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: same unsigned bounds check as gen_arr_get_body — an OOB set
-  // silently corrupted adjacent memory.
+  // silently corrupted adjacent memory. #2199: same print-then-trap as
+  // gen_arr_get_body (see its comment); print_str_idx < 0 omits the print.
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
@@ -493,6 +508,12 @@ export fn gen_arr_set_body(enable_rc: Bool) -> Bytes {
   emit_i32_load(b, 2, 4)
   emit_i32_ge_u(b)
   emit_if_void(b)
+  if print_str_idx >= 0 {
+    emit_i64_const(b, oob_msg_fat)
+    emit_call(b, print_str_idx)
+  } else {
+    ()
+  }
   bytebuf_push(b, 0)
   emit_end(b)
   emit_local_get(b, 0)
