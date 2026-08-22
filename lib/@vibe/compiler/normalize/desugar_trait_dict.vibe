@@ -3328,6 +3328,315 @@ fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, st
   out
 }
 
+// ---- #2157: an unannotated `let xs = []` gets its element type from a push ----
+//
+// `eq_shape_bind` records `[__EqEmpty]` for an empty array literal: no element
+// type, so `==` on that binding compiled to a length check guarded by a runtime
+// trap (an array that has since grown can be compared neither by length nor by
+// identity). The element type is not missing, though -- it is written at the
+// `Array::push(xs, v)` that made the array non-empty, and the `let`'s own body
+// is exactly the region where such a push has to live. Reading it there gives
+// the unannotated binding the same static shape the annotated form gets from
+// `let xs: Array[Int] = []`, so it answers instead of trapping.
+//
+// Conservative on three counts, each of which would otherwise trade a trap for
+// a WRONG answer -- the worse failure under the triage order:
+//
+//   - the walk stops at every construct that re-binds the spelling (a
+//     shadowing `let`, a lambda parameter, a loop or pattern binder), so an
+//     inner binding's element type can never be attributed to this one;
+//   - every push it can still see must agree on one shape;
+//   - every leaf of that shape must be a type `eq_for_typed` compares by
+//     content (see `adoptable_pushed_elem_shape`).
+//
+// It answers "" -- keep `[__EqEmpty]`, keep today's behaviour -- for everything
+// else, including a push this pass cannot type and a push made through a
+// function this binding is merely passed to.
+
+/// The eq-shape an unannotated empty-array binding should adopt from the pushes
+/// in its body, or "" for "no answer, keep the empty shape".
+fn pushed_empty_elem_shape(name: String, body: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let shapes = empty_str_array()
+  collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, shapes)
+  if Array::length(shapes) == 0 {
+    ""
+  } else {
+    let first = Array::get(shapes, 0)
+    let mut i = 1
+    let mut agreed = true
+    while i < Array::length(shapes) {
+      if Array::get(shapes, i) != first {
+        agreed = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if agreed && adoptable_pushed_elem_shape(first) {
+      first
+    } else {
+      ""
+    }
+  }
+}
+
+/// Element shapes this pass will adopt from a push: scalars, declared
+/// struct/enum names, and arrays and tuples built out of those. The whole shape
+/// has to be adoptable, because `eq_for_typed` descends into all of it and an
+/// unknown leaf would be compared with the raw word `==` -- the identity
+/// comparison this whole area exists to keep out.
+///
+/// A declared name is admitted because `desugar_derives` generates a `::equals`
+/// for EVERY declared struct/enum, not only `derive(Eq)` ones -- which is the
+/// same fact `dtd_eq_known_types` records for the shape dispatch below.
+/// `Option` / `Result` shapes are left out: their `__EqUnknown` positions would
+/// re-introduce exactly that raw `==`.
+fn adoptable_pushed_elem_shape(sh: String) -> Bool {
+  if shape_is_composite(sh) {
+    adoptable_eq_ty(shape_to_eq_ty(sh))
+  } else {
+    adoptable_eq_name(sh)
+  }
+}
+
+fn adoptable_eq_ty(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => adoptable_eq_name(n),
+    TyApp(head, args) => head == "Array" && Array::length(args) == 1 && adoptable_eq_ty(Array::get(args, 0)),
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut ok = Array::length(ts) > 0
+      while i < Array::length(ts) {
+        if !adoptable_eq_ty(Array::get(ts, i)) {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => false
+  }
+}
+
+/// #2141: a spelling that is a type parameter of an enclosing binder names no
+/// concrete type here, whatever else the merged program declares under it.
+fn adoptable_eq_name(n: String) -> Bool {
+  if formal_in_scope(n) {
+    false
+  } else {
+    is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
+  }
+}
+
+/// Every `Array::push(<name>, v)` in `e` that still refers to THIS binding, as
+/// the eq-shape of the pushed value.
+///
+/// The descent is scope-aware: a sub-expression under a construct that re-binds
+/// the spelling is skipped, because a push in there is a push onto a different
+/// array. `EAssign` is deliberately not a stop -- `let mut xs = []; xs = other`
+/// rebinds the same NAME to an array the checker has already unified with this
+/// one, so the element type is unchanged.
+///
+/// The environment is carried the way `rewrite_expr` carries it, so a push of a
+/// value bound BETWEEN this binding and the push (`let mut i = 0; ...
+/// Array::push(xs, i)`) still resolves -- the binding site's own environment
+/// knows nothing about names introduced after it.
+fn collect_push_elem_shapes(name: String, e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], out: Array[String]) -> Unit {
+  match pushed_value_for_name(e, name) {
+    Some(v) => Array::push(out, pushed_value_shape(v, struct_sets, var_types, fn_returns)),
+    None => ()
+  }
+  match e {
+    ELet(n, val, body, _) => {
+      collect_push_elem_shapes(name, val, struct_sets, var_types, fn_returns, out)
+      if n != name {
+        collect_push_elem_shapes(name, body, struct_sets, bound_var_types(var_types, n, val, struct_sets, fn_returns), fn_returns, out)
+      } else {
+        ()
+      }
+    },
+    ELetMut(n, val, body, _) => {
+      collect_push_elem_shapes(name, val, struct_sets, var_types, fn_returns, out)
+      if n != name {
+        collect_push_elem_shapes(name, body, struct_sets, bound_var_types(var_types, n, val, struct_sets, fn_returns), fn_returns, out)
+      } else {
+        ()
+      }
+    },
+    ELetRec(n, val, body) => if n != name {
+      collect_push_elem_shapes(name, val, struct_sets, var_types, fn_returns, out)
+      collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
+    } else {
+      ()
+    },
+    EFn(_, _, params, _, _, fbody) => if fn_params_bind_name(params, name) {
+      ()
+    } else {
+      collect_push_elem_shapes(name, fbody, struct_sets, var_types, fn_returns, out)
+    },
+    EForIn(v, k, iter, body) => {
+      collect_push_elem_shapes(name, iter, struct_sets, var_types, fn_returns, out)
+      let shadowed = v == name || match k {
+        Some(kn) => kn == name,
+        None => false
+      }
+      if shadowed {
+        ()
+      } else {
+        collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
+      }
+    },
+    ELoop(binds, body) => {
+      let mut i = 0
+      while i < Array::length(binds) {
+        let (_, init) = Array::get(binds, i)
+        collect_push_elem_shapes(name, init, struct_sets, var_types, fn_returns, out)
+        i = i + 1
+      }
+      if loop_binds_bind_name(binds, name) {
+        ()
+      } else {
+        collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
+      }
+    },
+    EMatch(scrut, arms) => {
+      collect_push_elem_shapes(name, scrut, struct_sets, var_types, fn_returns, out)
+      collect_push_elem_shapes_in_arms(name, arms, struct_sets, var_types, fn_returns, out)
+    },
+    EHandle(hbody, arms) => {
+      collect_push_elem_shapes(name, hbody, struct_sets, var_types, fn_returns, out)
+      collect_push_elem_shapes_in_arms(name, arms, struct_sets, var_types, fn_returns, out)
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      while i < Array::length(kids) {
+        collect_push_elem_shapes(name, Array::get(kids, i), struct_sets, var_types, fn_returns, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn collect_push_elem_shapes_in_arms(name: String, arms: Array[(Pat, Expr)], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, body) = Array::get(arms, i)
+    if pat_binds_name(p, name) {
+      ()
+    } else {
+      collect_push_elem_shapes(name, body, struct_sets, var_types, fn_returns, out)
+    }
+    i = i + 1
+  }
+}
+
+/// The shape of one pushed value. `infer_eq_shape` answers "" for a plain
+/// scalar binding (it records only composites), and "" is indistinguishable
+/// from "no idea" here, so the ordinary shape answers second.
+fn pushed_value_shape(v: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let sh = infer_eq_shape(v, struct_sets, var_types, fn_returns)
+  if String::length(sh) > 0 {
+    sh
+  } else {
+    infer_shape(v, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// The same binding-site records `rewrite_expr` makes at an `ELet`/`ELetMut`,
+/// so the walk above reads names the way the comparison site will.
+fn bound_var_types(var_types: Array[(String, String)], n: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let base = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
+  eq_shape_bind(bind_shapes(base, n, val, struct_sets, fn_returns), n, val, struct_sets, fn_returns)
+}
+
+/// The value `e` pushes onto the array bound to `name`. Only the qualified
+/// spelling exists -- the checker rejects `xs.push(v)` for a builtin method
+/// ("dot-call syntax is not supported for the builtin method `Array::push`"),
+/// so there is no second form to match.
+fn pushed_value_for_name(e: Expr, name: String) -> Option[Expr] {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(fname, _) => if fname == "Array::push" && Array::length(args) == 2 && expr_is_ident(Array::get(args, 0), name) {
+        Some(Array::get(args, 1))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+fn opt_ty_is_some(t: Option[TypeExpr]) -> Bool {
+  match t {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn expr_is_ident(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    _ => false
+  }
+}
+
+fn fn_params_bind_name(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    if pn == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn loop_binds_bind_name(binds: Array[(String, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(binds) {
+    let (bn, _) = Array::get(binds, i)
+    if bn == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2157: replace the `[__EqEmpty]` shape `eq_shape_bind` just recorded for
+/// `name` with the element shape its own body pushes, when there is one. A
+/// no-op for every other binding.
+fn empty_array_shape_from_body(var_types: Array[(String, String)], name: String, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let is_untyped_empty = match lookup_var_type(var_types, eq_shape_key(name)) {
+    Some(sh) => sh == "[__EqEmpty]",
+    None => false
+  }
+  if !is_untyped_empty {
+    var_types
+  } else {
+    let elem = pushed_empty_elem_shape(name, body, struct_sets, var_types, fn_returns)
+    if String::length(elem) == 0 {
+      var_types
+    } else {
+      let out = array_empty()
+      push_all_var_types(out, var_types)
+      Array::push(out, (eq_shape_key(name), String::concat("[", String::concat(elem, "]"))))
+      out
+    }
+  }
+}
+
 /// #1445 cause 3: the var-type environment for ONE match arm's body.
 ///
 /// A pattern binder never entered `var_types`, so anything reached through one
@@ -6214,7 +6523,10 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
-      let body_vars = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
+      let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
+      // #2157: an unannotated `let xs = []` reads its element type off the
+      // pushes in its own body, so it compares like the annotated form.
+      let body_vars = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -6222,7 +6534,8 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
-      let body_vars = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
+      let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
+      let body_vars = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -6292,8 +6605,8 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // whose element type is otherwise undeterminable.
         let empty_bound_l = is_untyped_empty_array_name(l, var_types)
         let empty_bound_r = is_untyped_empty_array_name(r, var_types)
-        let empty_l = is_empty_array_lit(l) || empty_bound_l
-        let empty_r = is_empty_array_lit(r) || empty_bound_r
+        let empty_lit_l = is_empty_array_lit(l)
+        let empty_lit_r = is_empty_array_lit(r)
         // #695: a bare array `==` (operand is an array literal whose element type
         // is statically determinable) dispatches to the monomorphic
         // `__arr_equals__<key>` helper (emitted by desugar_derives), since the
@@ -6317,32 +6630,50 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
           Some(t) => Some(subst_scope_formals_ty(t)),
           None => None
         }
-        if empty_l || empty_r {
-          let other = if empty_l {
+        if empty_lit_l || empty_lit_r {
+          // An empty LITERAL decides the answer on its own: the array it is
+          // compared against is equal to it exactly when that array is empty.
+          // Exact for any element type, so no guard and no comparator.
+          let other = if empty_lit_l {
             rr
           } else {
             rl
           }
           let lencmp = EBinOp("==", ECall(EIdent("Array::length", -1), [other], -1), EInt(0))
-          // An unannotated `let xs = []` has no element type to direct a
-          // comparator. It is exact while still empty. Arrays are mutable even
-          // through `let`, though, so if that binding became non-empty we must
-          // trap instead of silently using either length-only or identity
-          // equality. An annotation supplies the missing static shape.
-          let empty_bound_value = if empty_bound_l {
-            rl
-          } else {
-            rr
-          }
-          let guarded = if empty_bound_l || empty_bound_r {
-            EIf(EBinOp("==", ECall(EIdent("Array::length", -1), [
-              empty_bound_value
-            ], -1), EInt(0)), lencmp, ESeq(ECall(EIdent("assert_true", -1), [
-              EBool(false)
-            ], -1), EBool(false)))
-          } else {
+          if op == "==" {
             lencmp
+          } else {
+            ECall(EIdent("not", -1), [lencmp], -1)
           }
+        } else if (empty_bound_l || empty_bound_r) && !opt_ty_is_some(arr_elem) {
+          // An unannotated `let xs = []` whose element type #2157's push scan
+          // could not recover, and whose PARTNER supplies none either (an
+          // operand with a known element type takes the monomorphic comparator
+          // below, which handles an empty array like any other).
+          //
+          // The lengths still decide the answer whenever EITHER side is empty:
+          // two arrays cannot be equal unless their lengths are, and a length
+          // of zero on one side leaves nothing to compare element-wise. That
+          // covers every program in which one of the two never grew, which is
+          // the shape this residual is usually reached by.
+          //
+          // Only two arrays that BOTH grew, with no element type on either
+          // side, are genuinely undecidable here, and that case still traps
+          // rather than falling back to length-only or identity equality --
+          // answering wrongly is worse than falling over. An annotation
+          // (`let xs: Array[Int] = []`) supplies the missing static shape.
+          //
+          // The lengths are bound rather than re-spelled: an operand may be an
+          // arbitrary expression, and it must be evaluated exactly once.
+          let ln = "__eqempty_ln"
+          let rn = "__eqempty_rn"
+          let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0)), EBinOp("==", EIdent(rn, -1), EInt(0)))
+          let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1)), ESeq(ECall(EIdent("assert_true", -1), [
+            EBool(false)
+          ], -1), EBool(false)))
+          let guarded = ELet(ln, ECall(EIdent("Array::length", -1), [rl], -1), ELet(rn, ECall(EIdent("Array::length", -1), [
+            rr
+          ], -1), decided, -1), -1)
           if op == "==" {
             guarded
           } else {

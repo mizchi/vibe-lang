@@ -1486,12 +1486,16 @@ fi
 rm -rf "$undir"
 echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map keys) ok"
 
-# #1681 / ADR-0097: an unannotated empty-array binding has no element type to
-# select a structural comparator. Empty values compare exactly by length, but
-# after mutation to non-empty the compiler must fail closed at runtime rather
-# than silently falling back to reference/length equality. Pin both spellings:
-# `!=` is lowered through the same guarded equality and then negated.
-echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681)"
+# #1681 / ADR-0097, narrowed by #2157: an unannotated empty-array binding takes
+# its element type from the `Array::push` calls in its own scope, so the
+# ordinary `let xs = []` / `let mut xs = []` spellings now ANSWER after a push
+# (pinned in fixtures/structural_eq_contexts_test.vibe, which the unit lane
+# runs). What is left here is the residual: an array whose pushes all happen
+# inside a function it is merely passed to, where no element comparator can be
+# selected. Once BOTH sides are non-empty that must fail closed at runtime
+# rather than silently falling back to reference or length equality. Pin both
+# spellings: `!=` is lowered through the same guarded equality and negated.
+echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681/#2157)"
 eqtrapdir="_build/_gate_eq_untyped_empty"
 rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe; do
@@ -1513,6 +1517,51 @@ for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe; do
 done
 rm -rf "$eqtrapdir"
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
+
+# #2157: the other half of the same contract. The four fixtures that used to
+# live above pinned `let` / `let mut` x `==` / `!=` as traps; those spellings
+# answer now, and a lane that only checks the residual would pass just as well
+# if the fix were reverted. So assert the ANSWERS here too, in the same lane
+# that owns the fail-closed side.
+echo "[compiler-gate] untyped-empty equality answers after a push (#2157)"
+eqansdir="_build/_gate_eq_untyped_empty_answers"
+rm -rf "$eqansdir"; mkdir -p "$eqansdir"
+cat > "$eqansdir/a.vibe" <<'EOF'
+export fn _start() -> Int {
+  let left = []
+  let right = []
+  Array::push(left, 1)
+  Array::push(right, 2)
+  // Same length, different elements: only a CONTENT comparison says false.
+  // A length-only answer would say true and a trap would not get here.
+  assert(left != right)
+  Array::push(right, 3)
+  assert(left != right)
+  let mut ml = []
+  let mut mr = []
+  Array::push(ml, "a")
+  Array::push(mr, "a")
+  assert(ml == mr)
+  Array::push(mr, "b")
+  assert(ml != mr)
+  0
+}
+EOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eqansdir/a.vibe" "$eqansdir/a.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$eqansdir/a.wasm" ]; then
+  echo "[compiler-gate] FAIL: untyped-empty answer probe did not compile" >&2
+  cat "$eqansdir/a.wasm.diag" 2>/dev/null >&2
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke _start "$eqansdir/a.wasm" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: untyped-empty equality did not answer by content (#2157)" >&2
+  exit 1
+fi
+rm -rf "$eqansdir"
+echo "[compiler-gate] untyped-empty equality answers after a push ok"
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's

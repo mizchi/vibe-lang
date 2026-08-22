@@ -104,15 +104,18 @@ does not.
 (ADR-0085). You will still see `Error` as an *operation qualifier* in
 older rows; do not add new ones.
 
-## Annotate an empty array literal
+## `==` on arrays
 
 `==` compares by value, including arrays with non-scalar elements,
-arrays returned from a function, and annotated empties. The one shape
-that bites: `let xs = []` with no annotation has no element type, so
-comparing it after a push **traps at run time** instead of answering
-(#2157). Write `let xs: Array[Int] = []`.
+arrays returned from a function, and empty literals — annotated or not.
+An unannotated `let xs = []` takes its element type from the
+`Array::push` calls that fill it (#2157), so it answers like the
+annotated form. Annotating is still the clearer thing to write, and it
+is what a binding filled somewhere this rule cannot see — inside a
+function you merely pass the array to, say — needs in order to compare
+once both sides are non-empty.
 
-A generic `T` with no `Eq` witness is the other boundary, and that one
+A generic `T` with no `Eq` witness is the boundary worth knowing, and it
 is a compile error rather than a surprise — `no impl `Eq` for
 `Array[Int]``. See [Equality](16_equality.vibe.md).
 
