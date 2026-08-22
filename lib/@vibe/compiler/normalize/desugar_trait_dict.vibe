@@ -3640,12 +3640,16 @@ fn expr_is_ident(e: Expr, name: String) -> Bool {
   }
 }
 
+/// `strip_label_tilde`, like every other scope helper in this file: a labeled
+/// parameter is stored as `xs~` while its body spells it `xs`, so a raw
+/// comparison misses the shadow and the scan attributes an inner
+/// `Array::push(xs, ...)` to the OUTER array of that name (#2192 review).
 fn fn_params_bind_name(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(params) {
     let (pn, _) = Array::get(params, i)
-    if pn == name {
+    if strip_label_tilde(pn) == name {
       found = true
     } else {
       ()
@@ -6721,8 +6725,14 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
           //
           // The lengths are bound rather than re-spelled: an operand may be an
           // arbitrary expression, and it must be evaluated exactly once.
-          let ln = "__eqempty_ln"
-          let rn = "__eqempty_rn"
+          // Minted FRESH against both operands, the way assert_eq and inspect
+          // mint theirs: an operand is arbitrary user code, and a fixed name is
+          // capturable. `let __eqempty_ln = []; xs == __eqempty_ln` bound the
+          // outer temporary over the right operand while the inner one was
+          // still being initialized, so `Array::length` was applied to the left
+          // LENGTH rather than to the second array (#2192 review).
+          let ln = dinsp_fresh_name("__eqempty_l", rl, rr)
+          let rn = dinsp_fresh_name("__eqempty_r", rl, rr)
           let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0)), EBinOp("==", EIdent(rn, -1), EInt(0)))
           let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1)), ESeq(ECall(EIdent("assert_true", -1), [
             EBool(false)
