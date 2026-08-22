@@ -609,10 +609,13 @@ annotate_run_stream() {
 # raw stream is replayed verbatim so information is never lost.
 #   $1 = captured stderr file, $2 = funcmap path (""/missing ok), $3 = entry basename
 condense_test_trap() {
-  local errf="$1" fm="$2" base="$3" out
+  # pre_abort=1: the caller already saw the assert abort marker as the last
+  # guest-stdout line, so the trap that follows is the assert aborting --
+  # suppress its echo even though this condenser only reads the stderr side.
+  local errf="$1" fm="$2" base="$3" pre_abort="${4:-0}" out
   [ -s "$errf" ] || return 0
   [ -f "$fm" ] || fm=""
-  out="$(awk -v base="$base" -v fmfile="$fm" '
+  out="$(awk -v base="$base" -v fmfile="$fm" -v pre_abort="$pre_abort" '
     function hexval(c) {
       if (c >= "0" && c <= "9") return c + 0
       if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
@@ -712,7 +715,7 @@ condense_test_trap() {
     !seen_reason && /RuntimeError:|wasm trap:/ {
       __blk = 1
       seen_reason = 1
-      assert_abort = (ablk == 3 || pending_abort == 1)
+      assert_abort = (ablk == 3 || pending_abort == 1 || pre_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
@@ -2085,11 +2088,22 @@ case "$cmd" in
           rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
           continue
         fi
+        # Replay the test's own stdout verbatim (its debug output, the
+        # assert_eq block, the Array OOB message) minus the machine marker
+        # line -- previously stdout streamed through live, and swallowing it
+        # on failure would delete exactly the information that explains the
+        # failure (Codex round 2 on #2220). The condenser then summarizes
+        # only the stderr trap side; whether the trap was the assert
+        # aborting is decided here from the marker being the LAST stdout
+        # line and passed in as pre_abort, so nothing is shown twice.
+        pre_abort=0
+        if [ -s "$tout" ] && [ "$(grep -v '^$' "$tout" | tail -n 1)" = "assert failed: aborting" ]; then
+          pre_abort=1
+        fi
+        [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; }
         echo "FAIL: $src"
-        tboth="$(mktemp -t vibe-testboth-XXXXXX)"
-        cat "$tout" "$terr" > "$tboth"
-        condense_test_trap "$tboth" "$out.funcmap" "$(basename "$src")" >&2
-        rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout" "$tboth"
+        condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" "$pre_abort" >&2
+        rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
         return 1
       done
     }
