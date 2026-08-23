@@ -77,8 +77,28 @@ if embedded != order:
     sys.exit(1)
 
 problems = []
+unverifiable = []
 for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     block = m.group(0)
+    # FAIL CLOSED on what this scanner cannot read. An arm that selects its
+    # adapter branch through a VARIABLE (`env $fs_env ...`) is invisible to the
+    # literal `SELECTOR=1` match below -- and `vibe compile` was hijackable
+    # that way while this check reported "no arm can be hijacked" (#2246
+    # review). Silence about an unparsed arm is the same defect the check
+    # exists to prevent, so an env block that runs the CLI through an
+    # unresolved expansion must name a derived clear set explicitly.
+    # Only blocks that run the runner ON THE CLI WASM select an adapter
+    # branch. `env ... "$RUNNER" "$out"` executes the user's compiled program,
+    # where no selector applies.
+    runs_cli = '"$RUNNER"' in block and re.search(r'"?\$\{?cli\}?"?', block)
+    # The clears may be computed just above the block (a branch picking the
+    # target), so look back a little rather than only inside it.
+    lookback = src[max(0, m.start() - 900):m.start()]
+    if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) \
+       and 'selector_clears_before' not in block \
+       and 'selector_clears_before' not in lookback:
+        unverifiable.append(src[:m.start()].count("\n") + 1)
+        continue
     cleared = set(re.findall(r'-u (VIBE_[A-Z_]+)', block))
     # `env $(selector_clears_before T) ...` clears every predecessor of T.
     for t in re.findall(r'selector_clears_before (VIBE_[A-Z_]+)', block):
@@ -107,6 +127,16 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
         missing = [e for e in required if e not in cleared]
         if missing:
             problems.append((line_no, sel, missing))
+
+if unverifiable:
+    print("[selector-precedence] FAIL: env blocks that run the CLI through an"
+          " unresolved expansion:", file=sys.stderr)
+    for line_no in unverifiable:
+        print("  %s:%d -- this scanner cannot tell which adapter branch it selects,"
+              % (launcher, line_no), file=sys.stderr)
+        print("     so it must call selector_clears_before <SELECTOR> explicitly.",
+              file=sys.stderr)
+    sys.exit(1)
 
 if problems:
     print("[selector-precedence] FAIL: launcher arms that a leaked selector can hijack:", file=sys.stderr)

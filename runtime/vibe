@@ -416,7 +416,24 @@ compile_to() {
     fs_env=""
     backend_env="VIBE_BACKEND=gc"
   fi
-  env $fs_env $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
+  # #2243: this arm selects its adapter branch through VARIABLES, so the
+  # literal `SELECTOR=1` scan in check_selector_precedence.sh cannot see it --
+  # and it was hijackable while that check reported "no arm can be hijacked".
+  # Measured: `VIBE_CHECK_ONLY=1 vibe compile in.vibe -o out.wasm` exited 0
+  # having written the three bytes `ok\n` as the .wasm artifact.
+  #
+  # The clear set follows whichever branch this lane is actually selecting:
+  # the gc lane targets VIBE_BACKEND (evaluated last, so every selector is a
+  # predecessor), the default lane targets VIBE_FS_COMPILE. Assignments come
+  # after the -u flags and win over them, which is what lets $debug_env still
+  # set VIBE_DEBUG / VIBE_COVERAGE here.
+  local sel_clears
+  if [ "$backend" = "gc" ]; then
+    sel_clears="$(selector_clears_before VIBE_BACKEND)"
+  else
+    sel_clears="$(selector_clears_before VIBE_FS_COMPILE)"
+  fi
+  env $sel_clears $fs_env $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
     "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   if [ -s "$out" ]; then
     rm -f "$out.diag" "$rerr"
