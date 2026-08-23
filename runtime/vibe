@@ -1880,6 +1880,15 @@ case "$cmd" in
       -*) die "vibe fmt: unknown flag: $1" ;;
     esac
     [ "$#" -ge 1 ] || die "usage: vibe fmt [--check|--stdout] <file.vibe>"
+    # EXACTLY one file. `src="$1"` alone silently ignored the rest, so
+    # `vibe fmt a.vibe b.vibe` formatted `a`, left `b` untouched, and exited 0
+    # -- a green that means nothing. scripts/vibe_fmt.sh rejects this for the
+    # same reason: that shape is how an unformatted file reached CI in #2156.
+    if [ "$#" -gt 1 ]; then
+      echo "vibe fmt: takes ONE file, got $#: $*" >&2
+      echo "  for several: for f in ...; do vibe fmt \"\$f\"; done" >&2
+      exit 2
+    fi
     src="$1"
     [ -f "$src" ] || die "not found: $src"
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
@@ -1903,15 +1912,30 @@ case "$cmd" in
         -u VIBE_HASH -u VIBE_HASH_WRITE \
         -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \
         -u VIBE_PUBLISH_CHECK \
-      VIBE_FMT=1 \
+        -u VIBE_CHECK_ONLY -u VIBE_LSP -u VIBE_MODULE_JOB_DIR \
+        -u VIBE_PUBLISH_ENV_CACHE -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN \
+        VIBE_FMT=1 \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >"$out.rc" 2>"$out.err" || true
-    if [ ! -s "$out" ]; then
+    # An EMPTY result is legitimate: an empty (or whitespace-only) file formats
+    # to an empty one. So existence, not size, is the "did it run" test -- and
+    # the captured return value, not the output, is the verdict. Testing `-s`
+    # here rejected those files with "fmt failed"; it also happened to catch a
+    # leaked selector that writes an empty output, which is why the env -u list
+    # above has to be complete rather than lucky.
+    if [ ! -f "$out" ]; then
       [ -s "$out.diag" ] && cat "$out.diag" >&2
       [ -s "$out.err" ] && cat "$out.err" >&2
       die "fmt failed: $src"
     fi
     frc="$(tail -1 "$out.rc" 2>/dev/null || true)"
+    # No rc line at all means the runner died before returning; that is a
+    # failure, not a refusal, and must not be reported as one.
+    if [ -z "$frc" ]; then
+      [ -s "$out.diag" ] && cat "$out.diag" >&2
+      [ -s "$out.err" ] && cat "$out.err" >&2
+      die "fmt failed: $src"
+    fi
     if [ "$frc" != "0" ]; then
       # The guard fired: the formatted output does not parse and the input
       # did. $out holds the INPUT unchanged, so writing it would be a silent
@@ -1968,8 +1992,10 @@ case "$cmd" in
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         -u VIBE_HASH -u VIBE_HASH_WRITE \
         -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \
-        -u VIBE_PUBLISH_CHECK \
-      VIBE_NORMALIZE=1 \
+        -u VIBE_PUBLISH_CHECK -u VIBE_FMT \
+        -u VIBE_CHECK_ONLY -u VIBE_LSP -u VIBE_MODULE_JOB_DIR \
+        -u VIBE_PUBLISH_ENV_CACHE -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN \
+        VIBE_NORMALIZE=1 \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>"$out.err" || true
     if [ ! -s "$out" ]; then
