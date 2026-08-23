@@ -445,7 +445,20 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
   }
 }
 
-fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int) -> Expr with Exception {
+/// #2231: `lparen_off` is the source offset of the `(` that opens this call's
+/// argument list, used ONLY when the callee carries none of its own.
+///
+/// The ECall offset is the key `CompileCtx.float_call_offsets` uses to hand
+/// codegen the checker's per-call-site `Double` answer (#2158), and the
+/// checker records an occurrence only when the offset is >= 0. A callee that
+/// is not a name has no offset to lend -- an immediately-invoked lambda is the
+/// smallest such shape -- so its call was never recorded, and a `Double`
+/// returned through one printed its raw f64 bits.
+///
+/// The callee's own offset is still preferred where it exists: `[@off=N:M]`
+/// diagnostics point at the callee (#1514), which is the better edit point,
+/// and moving every call to the `(` would move all of them.
+fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> Expr with Exception {
   let ctor_name = match expr {
     EIdent(name, _) => name,
     _ => ""
@@ -459,7 +472,12 @@ fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int) -> Expr with Excepti
   } else if ctor_name == "Map::from_pairs" {
     EMap(map_from_pairs_fields(args, pos))
   } else {
-    ECall(expr, args, callee_offset(expr))
+    let own = callee_offset(expr)
+    ECall(expr, args, if own >= 0 {
+      own
+    } else {
+      lparen_off
+    })
   }
 }
 
@@ -491,7 +509,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], pos: Int, expr: Expr,
       EForIn(_, _, _, _) => (expr, pos),
       EHandle(_, _) => (expr, pos),
       _ => match peek(tokens, pos + 1) {
-        TRParen => parse_postfix(tokens, starts, pos + 2, build_call_expr(expr, empty_exprs(), pos), parse_recur, context),
+        TRParen => parse_postfix(tokens, starts, pos + 2, build_call_expr(expr, empty_exprs(), pos, field_offset_at(starts, pos)), parse_recur, context),
         _ => {
           let b = ArrayBuilder::new()
           let row_marks = match context {
@@ -515,7 +533,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], pos: Int, expr: Expr,
           } else {
             args
           }
-          parse_postfix(tokens, starts, close_pos, build_call_expr(expr, call_args, pos), parse_recur, context)
+          parse_postfix(tokens, starts, close_pos, build_call_expr(expr, call_args, pos, field_offset_at(starts, pos)), parse_recur, context)
         }
       },
     },
