@@ -166,4 +166,36 @@ if VIBE_RUNNER="$OK_RUNNER" VIBE_CLI_WASM="$CLI" \
 fi
 [ "$(cat "$SRC2")" = "let   b=2" ] || fail "the second path was rewritten by a call that should have been rejected"
 
+# THE OTHER RUNNER CONVENTION. Every fake above prints cli_main's return as the
+# last stdout line, which is what the node runner does. The installed `viberun`
+# running the shipped CLI prints NOTHING and turns that value into the process
+# exit status instead (lib/@vibe/cli/main.vibex). Modelling only the printed
+# path is how an arm that reports every successful format as "fmt failed" for
+# installed users passed its own tests.
+EXIT_OK_RUNNER="$TMP_DIR/exit-ok-runner"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "let a = 1\n" > "$3"' 'exit 0' > "$EXIT_OK_RUNNER"
+chmod +x "$EXIT_OK_RUNNER"
+printf 'let   a=1\n' > "$SRC"
+VIBE_RUNNER="$EXIT_OK_RUNNER" VIBE_CLI_WASM="$CLI" \
+  bash "$ROOT_DIR/runtime/vibe" fmt "$SRC" > "$OUT" 2> "$ERR" \
+  || fail "a runner that reports success by EXIT STATUS was treated as a failure"
+[ "$(cat "$SRC")" = "let a = 1" ] || fail "a status-only runner's successful format was not written"
+
+VIBE_RUNNER="$EXIT_OK_RUNNER" VIBE_CLI_WASM="$CLI" \
+  bash "$ROOT_DIR/runtime/vibe" fmt --stdout "$SRC" > "$OUT" 2> "$ERR" \
+  || fail "--stdout failed against a status-only runner"
+[ "$(cat "$OUT")" = "let a = 1" ] || fail "--stdout printed nothing against a status-only runner"
+
+# ...and a refusal signalled the same way: input echoed back, non-zero EXIT.
+EXIT_REFUSE_RUNNER="$TMP_DIR/exit-refuse-runner"
+printf '%s\n' '#!/usr/bin/env bash' 'cat "$2" > "$3"' 'exit 1' > "$EXIT_REFUSE_RUNNER"
+chmod +x "$EXIT_REFUSE_RUNNER"
+printf 'let   a=1\n' > "$SRC"
+if VIBE_RUNNER="$EXIT_REFUSE_RUNNER" VIBE_CLI_WASM="$CLI" \
+  bash "$ROOT_DIR/runtime/vibe" fmt "$SRC" > "$OUT" 2> "$ERR"; then
+  fail "a refusal signalled by exit status was reported as success"
+fi
+grep -q "refusing to rewrite" "$ERR" || fail "a status-signalled refusal did not say so"
+[ "$(cat "$SRC")" = "let   a=1" ] || fail "a status-signalled refusal still rewrote the source"
+
 echo "[vibe-fmt-launcher] ok"

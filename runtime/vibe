@@ -1910,7 +1910,10 @@ case "$cmd" in
     # line is the formatter's only way to say "I refused to rewrite this".
     # Throwing it away is exactly how a refusal came to look like "nothing to
     # change" (#1821).
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+    # `if ...; then` rather than a bare call: the launcher runs under `set -e`,
+    # so a non-zero runner exit -- which is exactly how the installed viberun
+    # signals a refusal -- would abort the script before $? could be read.
+    if env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE -u VIBE_INSPECT_UPDATE \
         -u VIBE_HASH -u VIBE_HASH_WRITE \
@@ -1920,22 +1923,35 @@ case "$cmd" in
         -u VIBE_PUBLISH_ENV_CACHE -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN \
         VIBE_FMT=1 \
       VIBE_IMPORT_ABI=raw \
-      "$RUNNER" "$cli" "$src" "$out" >"$out.rc" 2>"$out.err" || true
+      "$RUNNER" "$cli" "$src" "$out" >"$out.rc" 2>"$out.err"; then
+      fmt_status=0
+    else
+      fmt_status=$?
+    fi
+    # THE TWO RUNNER CONVENTIONS. The node runner prints cli_main's return as
+    # the last stdout line and exits 0 regardless; the installed `viberun`
+    # running the shipped CLI turns that value into the PROCESS exit status and
+    # prints nothing (`lib/@vibe/cli/main.vibex`: returning it from `main`
+    # "would only be PRINTED by the host _start", which is why it calls
+    # vibe_process_exit_raw instead). Reading only the printed line -- the
+    # convention scripts/vibe_fmt.sh relies on, against a different wasm through
+    # a different runner -- reports EVERY successful format as "fmt failed" for
+    # an installed user, which is exactly the user #2149 exists for.
+    #
+    # So: a bare-integer last line is the verdict when one is printed, and the
+    # process status is the verdict when one is not. Both runners are correct
+    # under this rule and neither is assumed.
+    frc="$(tail -1 "$out.rc" 2>/dev/null || true)"
+    case "$frc" in
+      ''|*[!0-9]*) frc="$fmt_status" ;;
+    esac
     # An EMPTY result is legitimate: an empty (or whitespace-only) file formats
     # to an empty one. So existence, not size, is the "did it run" test -- and
-    # the captured return value, not the output, is the verdict. Testing `-s`
-    # here rejected those files with "fmt failed"; it also happened to catch a
-    # leaked selector that writes an empty output, which is why the env -u list
-    # above has to be complete rather than lucky.
+    # the verdict above, not the output, decides. Testing `-s` here rejected
+    # those files with "fmt failed"; it also happened to catch a leaked selector
+    # that writes an empty output, which is why the env -u list above has to be
+    # complete rather than lucky.
     if [ ! -f "$out" ]; then
-      [ -s "$out.diag" ] && cat "$out.diag" >&2
-      [ -s "$out.err" ] && cat "$out.err" >&2
-      die "fmt failed: $src"
-    fi
-    frc="$(tail -1 "$out.rc" 2>/dev/null || true)"
-    # No rc line at all means the runner died before returning; that is a
-    # failure, not a refusal, and must not be reported as one.
-    if [ -z "$frc" ]; then
       [ -s "$out.diag" ] && cat "$out.diag" >&2
       [ -s "$out.err" ] && cat "$out.err" >&2
       die "fmt failed: $src"
