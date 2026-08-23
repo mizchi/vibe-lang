@@ -428,11 +428,16 @@ compile_to() {
   # predecessor), the default lane targets VIBE_FS_COMPILE. Assignments come
   # after the -u flags and win over them, which is what lets $debug_env still
   # set VIBE_DEBUG / VIBE_COVERAGE here.
-  local sel_clears
+  # Initialized UNCONDITIONALLY at its declaration, then narrowed. A bare
+  # `local sel_clears` with both assignments inside branches leaves a path on
+  # which the variable is EMPTY, and `env $sel_clears ...` then runs with no
+  # clears at all -- which is what the gc lane did while the audit still
+  # reported ok (#2248 review). Declaring with a value makes "every path is
+  # covered" a syntactic property the check can verify instead of a dataflow
+  # question it cannot answer.
+  local sel_clears="$(selector_clears_before VIBE_FS_COMPILE)"
   if [ "$backend" = "gc" ]; then
     sel_clears="$(selector_clears_before VIBE_BACKEND)"
-  else
-    sel_clears="$(selector_clears_before VIBE_FS_COMPILE)"
   fi
   env $sel_clears $fs_env $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
     "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true

@@ -129,6 +129,8 @@ if embedded != order:
 
 problems = []
 unverifiable = []
+uninitialized = []
+underived = []
 for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     block = m.group(0)
     # FAIL CLOSED on what this scanner cannot read. An arm that selects its
@@ -153,6 +155,28 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', block)
     assigned = re.findall(r'(\w+)="?\$\(selector_clears_before (VIBE_[A-Z_]+)\)"?', lookback)
     consumed = [t for v, t in assigned if re.search(r'\$\{?' + v + r'\}?\b', block)]
+
+    # "At least one derived assignment exists nearby" does not mean every path
+    # takes one. With both assignments inside branches, deleting one leaves a
+    # path where the variable is EMPTY and the block runs with NO clears -- the
+    # gc lane did exactly that while this audit reported ok (#2248 review).
+    #
+    # Rather than approximate shell dataflow, require a shape whose coverage is
+    # syntactic: the variable is DECLARED WITH a derived value (so every path
+    # starts covered), and every later assignment to it is also derived (so no
+    # path can narrow it to something underived). A bare `local VAR` leaves an
+    # uncovered path and is rejected. This constrains how the launcher may be
+    # written, which is the point -- it is checkable, and dataflow is not.
+    for v, _t in assigned:
+        if not re.search(r'\$\{?' + v + r'\}?\b', block):
+            continue
+        if re.search(r'\blocal\s+' + v + r'\s*$', lookback, re.M):
+            uninitialized.append((src[:m.start()].count("\n") + 1, v))
+        for am in re.finditer(r'(?:^|;|\bthen\b|\belse\b|\bdo\b)\s*(?:local\s+)?'
+                              + v + r'=(?!=)([^\n]*)', lookback, re.M):
+            if 'selector_clears_before' not in am.group(1):
+                underived.append((src[:m.start()].count("\n") + 1, v, am.group(1).strip()[:40]))
+
     covered = inline + consumed
 
     if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) and not covered:
@@ -191,6 +215,23 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
         missing = [e for e in required if e not in cleared]
         if missing:
             problems.append((line_no, sel, missing))
+
+if uninitialized:
+    print("[selector-precedence] FAIL: a derived clear variable is declared without a"
+          " value, so some path reaches the runner with none:", file=sys.stderr)
+    for line_no, v in uninitialized:
+        print("  %s:%d -- `local %s` then assigned only inside branches."
+              % (launcher, line_no, v), file=sys.stderr)
+        print("     Declare it WITH a selector_clears_before value and narrow after.",
+              file=sys.stderr)
+    sys.exit(1)
+
+if underived:
+    print("[selector-precedence] FAIL: a derived clear variable is also assigned"
+          " something that is not derived:", file=sys.stderr)
+    for line_no, v, rhs in underived:
+        print("  %s:%d -- %s=%s" % (launcher, line_no, v, rhs), file=sys.stderr)
+    sys.exit(1)
 
 if unverifiable:
     print("[selector-precedence] FAIL: env blocks that run the CLI through an"
