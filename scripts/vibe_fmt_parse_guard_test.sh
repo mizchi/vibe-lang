@@ -269,17 +269,23 @@ fi
 # fmt_entry through contract_package_hashes_fs and was tracked by nothing).
 # ensure_entry_wasm.sh captures the closure into <wasm>.deps at build time;
 # prove a transitive dep is IN the manifest and that touching it rebuilds.
+# GNU stat spells the mtime query -c %Y, BSD (macOS) stat spells it -f %m
+# (#2260 round 8); try GNU first, fall back to BSD.
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
+}
+
 entry_wasm="$ROOT_DIR/_build/vibe_fmt/fmt_entry.wasm"
 bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
 if ! grep -q '^lib/@vibe/compiler/loader/header_cache\.vibe$' "$entry_wasm.deps"; then
   echo "vibe_fmt_parse_guard_test: fmt_entry's captured closure is missing a transitive dep (header_cache.vibe)" >&2
   exit 1
 fi
-before_mtime="$(stat -c %Y "$entry_wasm")"
+before_mtime="$(mtime_of "$entry_wasm")"
 sleep 1
 touch "$ROOT_DIR/lib/@vibe/compiler/loader/header_cache.vibe"
 bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
-after_mtime="$(stat -c %Y "$entry_wasm")"
+after_mtime="$(mtime_of "$entry_wasm")"
 if [ "$after_mtime" -le "$before_mtime" ]; then
   echo "vibe_fmt_parse_guard_test: touching a transitive dep did not rebuild the cached formatter" >&2
   exit 1
@@ -291,10 +297,10 @@ fi
 # CREATED next to a closure member can join the closure via `.vpkg` sibling
 # auto-discovery without any recorded file changing, so a closure member's
 # parent-directory mtime is a staleness signal too.
-before_mtime="$(stat -c %Y "$entry_wasm")"
+before_mtime="$(mtime_of "$entry_wasm")"
 echo "lib/@vibe/no_such_recorded_dep.vibe" >> "$entry_wasm.deps"
 bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
-after_mtime="$(stat -c %Y "$entry_wasm")"
+after_mtime="$(mtime_of "$entry_wasm")"
 if [ "$after_mtime" -le "$before_mtime" ]; then
   echo "vibe_fmt_parse_guard_test: a missing recorded dep did not read as stale" >&2
   exit 1
@@ -303,11 +309,11 @@ if grep -q 'no_such_recorded_dep' "$entry_wasm.deps"; then
   echo "vibe_fmt_parse_guard_test: the rebuild did not recapture the closure manifest" >&2
   exit 1
 fi
-before_mtime="$(stat -c %Y "$entry_wasm")"
+before_mtime="$(mtime_of "$entry_wasm")"
 sleep 1
 touch "$ROOT_DIR/lib/@vibe/cli"
 bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
-after_mtime="$(stat -c %Y "$entry_wasm")"
+after_mtime="$(mtime_of "$entry_wasm")"
 if [ "$after_mtime" -le "$before_mtime" ]; then
   echo "vibe_fmt_parse_guard_test: a newer closure-member directory did not read as stale" >&2
   exit 1
