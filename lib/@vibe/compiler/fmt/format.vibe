@@ -2645,6 +2645,15 @@ fn handler_has_unsupported_pattern(toks: Array[LTok], open_idx: Int, close_idx: 
     k != k_ws && k != k_newline && k != k_comment {
       if k != k_name || !handler_arm_name_is_constructor(tok.text) {
         result = true
+      } else if next_non_trivia_kind(toks, i) == k_double_colon {
+        // #2254 review: a `::` after the arm head means either an explicit
+        // qualifier (`Other::Op` -- the legacy parser DROPS it and
+        // dispatches on the header effect, measured, so carrying it into
+        // the qualified set changes which effect the arm handles) or a
+        // struct pattern (`Op::{ value }` -- parse_qualified_handle_arm
+        // accepts only a constructor pattern, so the rewrite would not
+        // parse). Both migrate wrong; keep the legacy handler intact.
+        result = true
       }
       arm_start = false
     } else if brace == 1 && paren == 0 && bracket == 0 && before_arrow && k == k_bit_or {
@@ -2733,18 +2742,18 @@ fn normalize_legacy_handler_headers(toks: Array[LTok]) -> Array[LTok] {
           let cur = Array::get(toks, j)
           if arm_start && cur.kind != k_ws && cur.kind != k_newline &&
           cur.kind != k_comment && handler_arm_starts_at(toks, j, arm_close) {
-            let already_qualified = next_non_trivia_kind(toks, j) == k_double_colon
-            if !already_qualified {
-              let mut q = effect_start
-              while q < arm_open {
-                let qt = Array::get(toks, q)
-                if qt.kind != k_ws && qt.kind != k_newline && qt.kind != k_comment {
-                  Array::push(out, qt)
-                }
-                q = q + 1
+            // An arm head followed by `::` never reaches this loop --
+            // handler_has_unsupported_pattern keeps those handlers legacy
+            // (#2254 review) -- so every arm here takes the header qualifier.
+            let mut q = effect_start
+            while q < arm_open {
+              let qt = Array::get(toks, q)
+              if qt.kind != k_ws && qt.kind != k_newline && qt.kind != k_comment {
+                Array::push(out, qt)
               }
-              Array::push(out, LTok::{ kind: k_double_colon, text: "::" })
+              q = q + 1
             }
+            Array::push(out, LTok::{ kind: k_double_colon, text: "::" })
             arm_start = false
           }
           Array::push(out, cur)

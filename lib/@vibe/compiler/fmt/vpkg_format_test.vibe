@@ -162,6 +162,25 @@ test "ADR-0102: formatter preserves unsupported legacy handler arms" {
   assert(format_script(binding) == binding)
 }
 
+test "ADR-0102: formatter preserves arms whose head carries its own ::" {
+  // #2254 review. Two shapes share the trigger, and both migrate wrong:
+  //   * an explicit qualifier -- the legacy parser DROPS `Other::` and
+  //     dispatches on the header effect (measured: the arm below handles
+  //     Ask::Get), so carrying it into a qualified set changes which
+  //     effect the arm handles (the migrated file stopped compiling);
+  //   * a struct pattern -- parse_qualified_handle_arm accepts only a
+  //     constructor pattern, so `Op::{ value }` in a qualified set does
+  //     not parse and the entry guard refuses the whole file.
+  let foreign = format_script("handle { run() } with Ask { Other::Get => 7 }\n")
+  assert(String::contains(foreign, "with Ask"))
+  assert(!String::contains(foreign, "with { Other::Get"))
+  assert(format_script(foreign) == foreign)
+  let struct_arm = format_script("handle { run() } with Give { Op::{ value } => value }\n")
+  assert(String::contains(struct_arm, "with Give"))
+  assert(!String::contains(struct_arm, "Give::Op"))
+  assert(format_script(struct_arm) == struct_arm)
+}
+
 test "ADR-0102: formatter preserves comments around legacy handler effects" {
   let src = "handle { ask() } with /* rationale */ Ask /* arm docs */ { Get => 1 }\n"
   let got = format_script(src)
