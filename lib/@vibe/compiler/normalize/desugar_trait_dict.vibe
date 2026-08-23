@@ -8152,6 +8152,7 @@ let dtd_eq_generic_types: Array[String] = empty_str_array()
 // aggregate, so call sites record `Box[... ]` and a typed comparator is emitted
 // after the rewrite, like the recorded Array comparators.
 let dtd_eq_generic_structs: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
+let dtd_eq_type_aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
 let dtd_eq_specializations: Array[TypeExpr] = empty_type_exprs()
 let dtd_eq_specialization_ancestries: Array[Array[TypeExpr]] = array_empty()
 let dtd_eq_specialization_stack: Array[TypeExpr] = empty_type_exprs()
@@ -8186,6 +8187,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_generic_types, 0)
   Array::truncate(dtd_eq_unsafe_types, 0)
   Array::truncate(dtd_eq_generic_structs, 0)
+  Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_specializations, 0)
   Array::truncate(dtd_eq_specialization_ancestries, 0)
   Array::truncate(dtd_eq_specialization_stack, 0)
@@ -8209,6 +8211,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       } else {
         ()
       },
+      STypeAlias(_, aname, alias_tparams, target) => Array::push(dtd_eq_type_aliases, (aname, alias_tparams, target)),
       _ => ()
     }
     j = j + 1
@@ -8474,49 +8477,24 @@ fn generic_eq_name(head: String, args: Array[TypeExpr]) -> String {
   name
 }
 
-fn generic_eq_type_properly_contains(outer: TypeExpr, inner: TypeExpr) -> Bool {
-  let outer_key = generic_eq_type_key(outer)
-  let inner_key = generic_eq_type_key(inner)
-  if outer_key == inner_key {
-    false
-  } else {
-    match outer {
-      TyApp(_, args) => generic_eq_types_contain(args, inner),
-      TyFn(params, result, _) => generic_eq_types_contain(params, inner) || generic_eq_type_key(result) == inner_key || generic_eq_type_properly_contains(result, inner),
-      TyTuple(items) => generic_eq_types_contain(items, inner),
-      _ => false
-    }
+fn generic_eq_type_size(ty: TypeExpr) -> Int {
+  match ty {
+    TyName(_) => 1,
+    TyApp(_, args) => 1 + generic_eq_types_size(args),
+    TyFn(params, result, _) => 1 + generic_eq_types_size(params) + generic_eq_type_size(result),
+    TyTuple(items) => 1 + generic_eq_types_size(items),
+    TyUnit => 1
   }
 }
 
-fn generic_eq_types_contain(types: Array[TypeExpr], inner: TypeExpr) -> Bool {
-  let inner_key = generic_eq_type_key(inner)
+fn generic_eq_types_size(types: Array[TypeExpr]) -> Int {
+  let mut size = 0
   let mut i = 0
-  let mut found = false
   while i < Array::length(types) {
-    let item = Array::get(types, i)
-    if generic_eq_type_key(item) == inner_key || generic_eq_type_properly_contains(item, inner) {
-      found = true
-    } else {
-      ()
-    }
+    size = size + generic_eq_type_size(Array::get(types, i))
     i = i + 1
   }
-  found
-}
-
-fn generic_eq_types_properly_contain(types: Array[TypeExpr], inner: TypeExpr) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(types) {
-    if generic_eq_type_properly_contains(Array::get(types, i), inner) {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
+  size
 }
 
 /// Non-regular recursion such as `Loop[T] -> Loop[Array[T]]` grows the
@@ -8532,16 +8510,10 @@ fn generic_eq_is_expanding_recursion(head: String, args: Array[TypeExpr]) -> Boo
       TyApp(active_head, active_args) => if active_head == head {
         if generic_eq_name(active_head, active_args) == generic_eq_name(head, args) {
           ()
+        } else if generic_eq_types_size(args) > generic_eq_types_size(active_args) {
+          expanding = true
         } else {
-          let mut ai = 0
-          while ai < Array::length(active_args) {
-            if generic_eq_types_properly_contain(args, Array::get(active_args, ai)) {
-              expanding = true
-            } else {
-              ()
-            }
-            ai = ai + 1
-          }
+          ()
         }
       } else {
         ()
@@ -8839,6 +8811,9 @@ fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> Ty
     TyApp(n, xs) => TyApp(n, for x in xs {
       eq_subst_ty(x, params, args)
     }),
+    TyFn(ps, result, effect) => TyFn(for p in ps {
+      eq_subst_ty(p, params, args)
+    }, eq_subst_ty(result, params, args), effect),
     TyTuple(xs) => TyTuple(for x in xs {
       eq_subst_ty(x, params, args)
     }),
@@ -8846,9 +8821,49 @@ fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> Ty
   }
 }
 
+fn eq_expand_alias_ty(ty: TypeExpr, depth: Int) -> TypeExpr {
+  if depth >= 32 {
+    ty
+  } else {
+    match ty {
+      TyName(name) => eq_expand_alias_app(name, array_empty(), ty, depth),
+      TyApp(head, args) => {
+        let expanded_args = for arg in args {
+          eq_expand_alias_ty(arg, depth + 1)
+        }
+        eq_expand_alias_app(head, expanded_args, TyApp(head, expanded_args), depth)
+      },
+      TyFn(params, result, effect) => TyFn(for param in params {
+        eq_expand_alias_ty(param, depth + 1)
+      }, eq_expand_alias_ty(result, depth + 1), effect),
+      TyTuple(items) => TyTuple(for item in items {
+        eq_expand_alias_ty(item, depth + 1)
+      }),
+      TyUnit => TyUnit
+    }
+  }
+}
+
+fn eq_expand_alias_app(head: String, args: Array[TypeExpr], fallback: TypeExpr, depth: Int) -> TypeExpr {
+  let mut i = 0
+  let mut out = fallback
+  let mut found = false
+  while i < Array::length(dtd_eq_type_aliases) {
+    let alias = Array::get(dtd_eq_type_aliases, i)
+    if !found && alias.0 == head && Array::length(alias.1) == Array::length(args) {
+      out = eq_expand_alias_ty(eq_subst_ty(alias.2, alias.1, args), depth + 1)
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn gen_specialized_eq_fn(head: String, args: Array[TypeExpr], params0: Array[String], fields0: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
   let fields = for field in fields0 {
-    (field.0, eq_subst_ty(field.1, params0, args))
+    (field.0, eq_expand_alias_ty(eq_subst_ty(field.1, params0, args), 0))
   }
   Array::push(dtd_eq_specialization_stack, TyApp(head, args))
   let mut body = EBool(true)
