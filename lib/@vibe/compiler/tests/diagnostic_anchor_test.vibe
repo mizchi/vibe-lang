@@ -203,6 +203,23 @@ test "a raw string's trailing backslash does not swallow later declarations" {
   assert(anchored_at(alone, 3, 7))
 }
 
+test "hash-pipe raw text neither declares nor swallows" {
+  // #2244 review round 11 (measured: `let s = #|raw text` compiles): a
+  // `#|` line's raw text spelling `fn v \"` used to count a FAKE fn
+  // declaration and flip string mode -- the diagnostic anchored inside
+  // the raw string (line 2:16-17). The scan now skips `#|` lines, so
+  // the real binder anchors normally (line 3, column 7); with an
+  // outside same-named fn the cross-kind rule fails closed.
+  let alone = "fn f() -> Bool {\n  let s = #|fn v \"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(s) > 0 && v == \"\"\n}\n"
+  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
+  assert(anchored_at(alone, 3, 7))
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let s = #|fn v \"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(s) > 0 && v == \"\"\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
 test "a binder declared inside an interpolation fragment counts" {
   // #2244 review round 7: `\{...}` fragments are code, so a binder
   // declared inside one must be visible to the scan. Alone it anchors at
