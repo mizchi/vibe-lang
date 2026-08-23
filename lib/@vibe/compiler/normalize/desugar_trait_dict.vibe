@@ -5958,17 +5958,26 @@ fn interp_missing_show_type(arg: Expr, struct_sets: Array[(String, Array[String]
   }
 }
 
-/// #1514 note (measured, not a guess): this message carries NO `line:col`, and
-/// the ` [@off=N]` marker convention does not help here. `locate_type_error`
-/// decodes that marker, but only the TYPECHECK path calls it -- the compile path
-/// writes the thrown string verbatim (`emit_compile_diag` in cli_adapter.vibe,
-/// 11+ call sites, none of which is handed the source text; for a merged
-/// multi-file compile there is not even one obvious source to resolve an offset
-/// against). Emitting the marker anyway just leaks `[@off=135]` into the user's
-/// message, which is worse than no position -- verified by doing it. Wiring the
-/// compile path is #1514's job, not this one's.
+/// #2198: the synthesized `__to_string` call has no offset (the interp
+/// snippet is re-lexed without offsets), so `[@off=]` cannot help -- but the
+/// enclosing top-level binding's name is in `dtd_show_self_fn`, so the
+/// message carries `[@fn=name]` and `locate_type_error` recovers the
+/// `fn name` / `let name` token in both check lanes. The compile lane
+/// strips unresolved side markers (`strip_side_marker` via
+/// `emit_compile_diag`), so nothing leaks there; wiring a real position
+/// through the compile path stays #1514's job. An interpolation inside a
+/// `test { }` block has no self_fn and stays positionless. Known accepted
+/// hazard (same as every `[@fn=]` use, #1941/#1596): a dep-file culprit
+/// whose binder name also exists in the entry text anchors on the entry's
+/// spelling.
 fn interp_missing_show_msg(tn: String) -> String {
-  String::concat("cannot interpolate a value of type `", String::concat(tn, String::concat("`: it has no Show renderer -- add `derive(Show)` to `", String::concat(tn, String::concat("`, or define `fn ", String::concat(tn, "::to_string(v) -> String` (#1445)"))))))
+  let base = String::concat("cannot interpolate a value of type `", String::concat(tn, String::concat("`: it has no Show renderer -- add `derive(Show)` to `", String::concat(tn, String::concat("`, or define `fn ", String::concat(tn, "::to_string(v) -> String` (#1445)"))))))
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
 }
 
 // ---- #1392: structural interpolation ----

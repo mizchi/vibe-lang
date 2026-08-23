@@ -153,12 +153,13 @@ fn main with Console {
 ```
 
 ```
-line 3:5: type mismatch in '-': operands must be Int or Double
+line 3:5: type mismatch in '-': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)
 ```
 
 Write `(-1)`, or bind it first. A negative literal as a match arm's
-direct body (`None => -1`) is fine. The diagnostic does not yet name
-the continuation as the cause (#2206).
+direct body (`None => -1`) is fine. Since #2206 the diagnostic names
+the continuation and the edit, as quoted above; the position still
+anchors at the start of the glued expression.
 
 ## `fn` is a keyword
 

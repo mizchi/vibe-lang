@@ -268,6 +268,43 @@ test "String::byte_at is silent" {
   assert_eq(warn_count(entry, no_deps()), 0)
 }
 
+test "String::from_char_code warns and names from_byte" {
+  let entry = "fn n() -> String {\n  String::from_char_code(65)\n}"
+  let lines = deprecated_warning_lines(entry, no_deps())
+  assert_eq(Array::length(lines), 1)
+  assert(contains(Array::get(lines, 0), "'String::from_char_code' is deprecated: use String::from_byte"))
+}
+
+test "String::from_byte is silent" {
+  let entry = "fn n() -> String {\n  String::from_byte(65)\n}"
+  assert_eq(warn_count(entry, no_deps()), 0)
+}
+
+//# #2203: uses inside a string interpolation were the measured blind spot --
+//# the book's own recommended shape (`"\{String::from_char_code(n)}"`)
+//# never warned because the scan skipped TStringInterp tokens entirely.
+
+test "deprecated use inside a string interpolation warns with a real position" {
+  let entry = "fn n() -> String {\n  \"c = \\{String::from_char_code(65)}\"\n}"
+  let lines = deprecated_warning_lines(entry, no_deps())
+  assert_eq(Array::length(lines), 1)
+  // The snippet's fragment-relative col shifts back by its absolute source
+  // offset (#947): `String` starts at byte 27 of line 2 -> col 10.
+  assert(contains(Array::get(lines, 0), "line 2:col 10: 'String::from_char_code' is deprecated: use String::from_byte"))
+}
+
+test "non-deprecated use inside a string interpolation is silent" {
+  let entry = "fn n() -> String {\n  \"c = \\{String::from_byte(65)}\"\n}"
+  assert_eq(warn_count(entry, no_deps()), 0)
+}
+
+test "deprecated use inside a nested interpolation warns" {
+  let entry = "fn n(b: Bool) -> String {\n  \"x = \\{if b { \"\\{String::from_char_code(65)}\" } else { \"n\" }}\"\n}"
+  let lines = deprecated_warning_lines(entry, no_deps())
+  assert_eq(Array::length(lines), 1)
+  assert(contains(Array::get(lines, 0), "'String::from_char_code' is deprecated"))
+}
+
 test "StringBuilder::freeze stays silent until a bootstrap bump" {
   let entry = "fn n() -> Array[Int] {\n  ArrayBuilder::freeze(ArrayBuilder::new())\n}"
   assert_eq(warn_count(entry, no_deps()), 0)

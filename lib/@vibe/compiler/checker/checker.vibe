@@ -133,7 +133,10 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
       // #2125: `unknown type` is reported from a function literal's parameter
       // and return annotations, which carry no offset of their own -- so it
       // anchors on the declaration name exactly like the two above.
-      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `")
+      // #2198: `if branches have incompatible types` joins them for the
+      // all-literal case (`if c { "yes" } else { 0 }`) where the else
+      // branch, the then-tail and the condition are all offset-less.
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `") || String::starts_with(msg, "if branches have incompatible types")
       if anchorable && unlocated {
         Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
       }
@@ -4221,7 +4224,26 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
         None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
           Some((resolved, s1)) => (resolved, s1),
           None => {
-            Array::push(errors, binop_mismatch_msg(op, "': operands must be Int or Double", off))
+            // #2206: a Unit LHS under `-` is almost always a line-leading
+            // `-` glued onto the previous statement (a newline does not end
+            // an expression when the next line starts with an operator).
+            // The checker never sees line layout, so the clause states the
+            // language rule rather than claiming this line started with
+            // `-`; the base text stays a prefix so substring pins hold.
+            let minus_unit_lhs = if op == "-" {
+              match subst_apply(s, left_ty) {
+                CtUnit => true,
+                _ => false
+              }
+            } else {
+              false
+            }
+            let tail = if minus_unit_lhs {
+              "': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)"
+            } else {
+              "': operands must be Int or Double"
+            }
+            Array::push(errors, binop_mismatch_msg(op, tail, off))
             (CtUnknown, s)
           }
         }

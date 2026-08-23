@@ -150,12 +150,12 @@ fn main with Console {
 ```
 
 ```
-line 3:5: type mismatch in '-': operands must be Int or Double
+line 3:5: type mismatch in '-': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)
 ```
 
 `(-1)` と書くか、先に束縛する。match 腕の直接の本体としての負リテラル
-(`None => -1`) は問題ない。診断はまだ行継続を原因として名指ししない
-(#2206)。
+(`None => -1`) は問題ない。#2206 以降、診断は上に引用したとおり行継続と
+修正方法を名指しする。位置は引き続き結合された式の先頭を指す。
 
 ## `fn` はキーワード
 

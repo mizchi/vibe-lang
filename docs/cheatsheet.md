@@ -1614,33 +1614,35 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
 
 ### Signature reference
 
-上の節が「何があるか」なら、こちらは「どう呼ぶか」。削除した `docs/language-tour/`
-を畳んだときに引き継いだ表で、各行は `lib/` の実体と照合済み
-(`where` / `path` / `String::from_char_codes` の 3 行は実体が無かったので落とした)。
+The section above says what exists; this one says how to call it. The
+tables were inherited when the deleted `docs/language-tour/` was folded in,
+and every row has been checked against the actual `lib/` entity (the three
+rows `where` / `path` / `String::from_char_codes` had no entity behind them
+and were dropped).
 
-**演算子** — 直接呼ぶのではなく演算子として使う:
+**Operators** — used as operators, not called directly:
 
-| 演算子 | 脱糖先 | 型 |
+| operator | desugars to | types |
 |---|---|---|
 | `a + b` / `a - b` / `a * b` / `a / b` / `a % b` | `__add` / `__sub` / `__mul` / `__div` / `__mod` | Int, Float, Double |
 | `-a` | `__neg(a)` | Int, Float, Double |
 | `a == b` | `__eq(a, b)` | Eq types |
 | `a < b` | `__lt(a, b)` | Ord types |
 | `a & b` / `a \| b` / `a ^ b` | `__bit_and` / `__bit_or` / `__bit_xor` | Int |
-| `a << b` / `a >> b` | `__lshift` / `__rshift` (算術シフト) | Int |
+| `a << b` / `a >> b` | `__lshift` / `__rshift` (arithmetic shift) | Int |
 | `a[i]` | `__index(a, i)` | Array, Map |
 
-prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
+prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 
 **String**:
 
-| 関数 | シグネチャ |
+| function | signature |
 |---|---|
 | `String::length` | `(String) -> Int` |
 | `String::concat` | `(String, String) -> String` |
 | `String::substring` | `(String, Int, Int) -> String` (start, end) |
-| `String::char_code_at` | `(String, Int) -> Int` (別名 `String::byte_at`) |
-| `String::from_char_code` | `(Int) -> String` (別名 `String::from_byte`) |
+| `String::byte_at` | `(String, Int) -> Int` (deprecated alias `String::char_code_at` — `vibe check` warns per use) |
+| `String::from_byte` | `(Int) -> String` (deprecated alias `String::from_char_code` — `vibe check` warns per use, including inside `\{...}` interpolations, #2203) |
 | `String::equals` | `(String, String) -> Bool` |
 | `String::split` / `String::join` | `(String, String) -> Array[String]` / `(Array[String], String) -> String` |
 | `String::contains` | `(String, String) -> Bool` |
@@ -1651,13 +1653,19 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 | `String::to_upper` / `String::to_lower` | `(String) -> String` |
 | `String::count` | `(String, String) -> Int` |
 
+`String::from_byte(n)` always builds a 1-byte string from the low 8 bits of
+`n` (two's complement) and never traps — measured (#2203): `256` → byte 0,
+`257` → byte 1, `-1` → byte 255, `1000` → byte 232. A value above 127 is a
+raw byte, not a code point (ADR-0098); UTF-8-encoding a code point is a
+different, currently nonexistent function.
+
 **Array** (builtin): `length: (Array[T]) -> Int`, `get: (Array[T], Int) -> T`,
 `slice: (Array[T], Int, Int) -> Array[T]`,
-`concat: (Array[T], Array[T]) -> Array[T]`, `reverse: (Array[T]) -> Array[T]`。
+`concat: (Array[T], Array[T]) -> Array[T]`, `reverse: (Array[T]) -> Array[T]`.
 
-**Array** (prelude、コレクション先頭・関数末尾):
+**Array** (prelude; collection first, function last):
 
-| 関数 | シグネチャ |
+| function | signature |
 |---|---|
 | `Array::map` | `(Array[T], (T) -> U) -> Array[U]` |
 | `Array::filter` | `(Array[T], (T) -> Bool) -> Array[T]` |
@@ -1685,21 +1693,21 @@ got Int`. For a generic key, use `MutMap[K, V]` from `@vibe/core`.
 
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
-`Double::floor`, `Double::ceil`。
+`Double::floor`, `Double::ceil`.
 
-**変換**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
+**Conversion**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
 `__to_string: (Any) -> String`. **A bare `to_string` cannot be called** —
 `to_string(1)` is read as a dot-call on `Int`, and answers
 ``dot-call syntax is not supported for the builtin method `Int::to_string` ``.
 Use the per-type spelling (`Int::to_string(1)`) or `__to_string(x)`.
 
-**I/O** (effect 必須). tty の現行名は `Console`。`Stdin` / `Stdout` /
-`Stderr` は同じ host import を共有する **legacy ラベル**で、row は相互に
-認可しない。`allows Console::write_stream` は `Console::read_stream` を
-許さない (#1496)。
+**I/O** (an effect is required). The current name for the tty is `Console`;
+`Stdin` / `Stdout` / `Stderr` are **legacy labels** sharing the same host
+imports, and the rows do not authorize each other. `allows
+Console::write_stream` does not admit `Console::read_stream` (#1496).
 
-| 関数 | シグネチャ | effect |
+| function | signature | effect |
 |---|---|---|
 | `sh` | `(String) -> String` (captured stdout) | `Process` |
 | `sh_lines` | `(String) -> Array[String]` | `Process` |
@@ -1714,26 +1722,27 @@ Use the per-type spelling (`Int::to_string(1)`) or `__to_string(x)`.
 | `Stdin::read_stream` | `(Int) -> String` | `Stdin` (legacy) |
 | `Stdin::read_char` | `() -> Int` | `Stdin` (legacy) |
 | `Stdin::read_via_stream` | `() -> StdinStream` | `Stdin` |
-| `StdinStream::next` | `(StdinStream) -> Int` (EOF 後は `-1`) | `Async` |
-| `StdinStream::close` | `(StdinStream) -> Unit` (成功後は冪等) | `Async` |
+| `StdinStream::next` | `(StdinStream) -> Int` (`-1` after EOF) | `Async` |
+| `StdinStream::close` | `(StdinStream) -> Unit` (idempotent once it succeeds) | `Async` |
 | `StdinStream::read_chunk` | `(StdinStream, Int) -> Option[String]` | `Async` |
 
-stdin provider の 4 つは**直接呼び出し専用**。値として渡したいときは `with` 行に
-`Stdin` / `Async` を明示した wrapper を定義する — builtin 自体への別名や
-値位置の参照は checker が拒否する。
+The four stdin providers are **direct-call only**. To pass one as a value,
+define a wrapper whose `with` row names `Stdin` / `Async` explicitly — the
+checker rejects an alias to the builtin itself or a value-position
+reference.
 
 **JSON**: `Json::stringify: (Any) -> String`, `parse: (String) -> Json`,
 `type_of: (Json) -> String`, `get: (Json, String) -> Json`,
-`index: (Json, Int) -> Json`, `string` / `number` / `bool` の取り出し,
+`index: (Json, Int) -> Json`, the `string` / `number` / `bool` extractors,
 `is_null: (Json) -> Bool`, `length: (Json) -> Int`,
 `keys: (Json) -> Array[String]`, `stringify_lines: (Array[Json]) -> String`,
-`parse_lines: (String) -> Array[Json]`。
+`parse_lines: (String) -> Array[Json]`.
 
-**行操作**: `Lines::parse: (String) -> Array[String]`,
-`Lines::stringify: (Array[String]) -> String`。
+**Lines**: `Lines::parse: (String) -> Array[String]`,
+`Lines::stringify: (Array[String]) -> String`.
 
-**assertion**: `assert: (Bool) -> Unit`, `eq: (Eq, Eq) -> Bool`,
-`assert_eq: (Eq, Eq) -> Unit`。
+**Assertions**: `assert: (Bool) -> Unit`, `eq: (Eq, Eq) -> Bool`,
+`assert_eq: (Eq, Eq) -> Unit`.
 
 ## Shell integration
 
