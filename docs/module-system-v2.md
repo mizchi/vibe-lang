@@ -177,10 +177,15 @@ require @vibe/http ^1.2.3 = #77aa02ef     // ^ = compatible range (full triple r
   lane behind CI's `vibe-fmt-check` and `pkf run fmt`, and the installed
   `vibe fmt`) fill via `fill_require_pins_lenient` (loader). Notes:
   - **fmt is offline.** It fills only when the workspace store
-    (`.vibe/store/<name>/`) can answer; a line the store cannot answer is
-    left verbatim (the current implementation emits no diagnostic — an
-    unpinned require that reaches the build is rejected there; failing
-    `--check` over an unanswerable line is not yet implemented).
+    (`.vibe/store/<name>/`) can answer AND the store copy's declared
+    version satisfies the constraint (exact match, or npm caret semantics
+    for `^`) — the pin is the truth the build verifies, so pinning an
+    installed copy beside a version it does not satisfy would make the
+    build run a release the source never asked for. An absent, versionless,
+    or mismatched copy leaves the line verbatim (the current implementation
+    emits no diagnostic — an unpinned require that reaches the build is
+    rejected there; failing `--check` over an unanswerable line is not yet
+    implemented).
   - Network access belongs to `vibe add` / `vibe update` / the first
     `vibe run`, never to fmt.
   - **The pinned form is canonical.** An unpinned line the store can answer

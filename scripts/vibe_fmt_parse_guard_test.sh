@@ -137,7 +137,7 @@ fill_in="_build/vibe_fmt_pin_fill.$$.vibe"
 fill_abs="$ROOT_DIR/$fill_in"
 trap 'rm -rf "$work" "$batch_pin" "$store_dir" "$fill_abs"' EXIT
 mkdir -p "$store_dir"
-printf 'import ./impl.vibe {}\nfn quadruple(x: Int) -> Int\n' >"$store_dir/index.vibei"
+printf 'version 0.1.0\nimport ./impl.vibe {}\nfn quadruple(x: Int) -> Int\n' >"$store_dir/index.vibei"
 printf 'export fn quadruple(x: Int) -> Int { x * 4 }\n' >"$store_dir/impl.vibe"
 
 printf 'require %s 0.1.0\n\nfn double(n:Int)->Int {\n  n*2\n}\n' "$store_pkg" >"$fill_abs"
@@ -167,18 +167,33 @@ fi
 vpkg_fill="_build/vibe_fmt_pin_fill.$$.vpkg"
 vpkg_fill_abs="$ROOT_DIR/$vpkg_fill"
 trap 'rm -rf "$work" "$batch_pin" "$store_dir" "$fill_abs" "$vpkg_fill_abs"' EXIT
-printf 'name = @fmtpin/consumer\nversion = 0.1.0\nrequire %s 0.1.0\n\nfn double(n: Int) -> Int\n' "$store_pkg" >"$vpkg_fill_abs"
+printf 'name = @fmtpin/consumer\nversion = 0.1.0\nrequire %s ^0.1.0\n\nfn double(n: Int) -> Int\n' "$store_pkg" >"$vpkg_fill_abs"
 if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$vpkg_fill_abs" >/dev/null 2>&1; then
   echo "vibe_fmt_parse_guard_test: formatter declined a .vpkg with an unpinned require" >&2
   exit 1
 fi
-if ! grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$" "$vpkg_fill_abs"; then
+if ! grep -Eq "^require $store_pkg \^0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$" "$vpkg_fill_abs"; then
   echo "vibe_fmt_parse_guard_test: fmt did not fill the require pin in a .vpkg header" >&2
   sed -n '1,4p' "$vpkg_fill_abs" >&2
   exit 1
 fi
 if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$vpkg_fill_abs" >/dev/null 2>&1; then
   echo "vibe_fmt_parse_guard_test: .vpkg pin filling is not a --check fixpoint" >&2
+  exit 1
+fi
+
+# A version the store copy does not satisfy is NOT filled (#2260 round 4):
+# the pin is the truth the build verifies, so pinning the installed 0.1.0's
+# hash beside a claimed 0.2.0 would make the build run a release the source
+# never asked for. The line comes back verbatim instead.
+printf 'require %s 0.2.0\n\nfn id(n:Int)->Int {\n  n\n}\n' "$store_pkg" >"$fill_abs"
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter failed on a version the store cannot satisfy" >&2
+  exit 1
+fi
+if ! head -1 "$fill_abs" | grep -q "^require $store_pkg 0\.2\.0\$"; then
+  echo "vibe_fmt_parse_guard_test: a version-mismatched require was pinned to the wrong release" >&2
+  head -1 "$fill_abs" >&2
   exit 1
 fi
 

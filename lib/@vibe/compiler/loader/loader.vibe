@@ -70,6 +70,7 @@ import @vibe/compiler/contract {
   package_hash_from_sources,
   parse_contract_program,
   replace_generated_hash_directive,
+  semver_parts,
   verify_publish_bump,
   vpkg_shared_import_marker
 }
@@ -2256,6 +2257,40 @@ export fn fill_require_pins_lenient(source: String) -> String with Fs {
   } with { Exception::Throw(_) => source }
 }
 
+/// Does the store copy's declared version satisfy a require constraint?
+/// The grammar (ADR-0063 §6) has exactly two operators: none (exact match)
+/// and `^` (compatible range, npm caret semantics: same major and >= the
+/// triple; for major 0 the minor is the compatibility line, so same minor
+/// and >= patch). An empty or non-triple declared version satisfies
+/// nothing -- unverifiable never fills.
+fn require_constraint_satisfied(constraint: String, version: String) -> Bool {
+  match semver_parts(version) {
+    None => false,
+    Some(vparts) => {
+      let (vmaj, vmin, vpat) = vparts
+      if String::starts_with(constraint, "^") {
+        match semver_parts(String::substring(constraint, 1, String::length(constraint))) {
+          None => false,
+          Some(cparts) => {
+            let (cmaj, cmin, cpat) = cparts
+            if vmaj != cmaj {
+              false
+            } else if cmaj == 0 {
+              vmin == cmin && vpat >= cpat
+            } else if vmin != cmin {
+              vmin > cmin
+            } else {
+              vpat >= cpat
+            }
+          }
+        }
+      } else {
+        constraint == version
+      }
+    }
+  }
+}
+
 // Which lines are require directives is decided by the loader's own header
 // scanner, not by a second region scan here (#2260 Codex round 3): the
 // scanner blanks every recognized directive line to spaces with byte length
@@ -2293,9 +2328,23 @@ fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String 
             store_index_vibei
           }
           if Fs::exists(store_index) {
-            let (pkg_hash, _) = contract_package_hashes_fs(store_index)
-            StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
-            emitted = true
+            // #2260 Codex round 4: the pin is the truth the build verifies,
+            // so writing the installed copy's hash beside a version it does
+            // not satisfy would make the build accept and run a release the
+            // source never asked for -- silently. Fill only when the store
+            // copy DECLARES a version and it satisfies the constraint; a
+            // versionless or mismatched copy leaves the line for `vibe
+            // add`/`update` (lenient) or reports both versions (strict).
+            let store_version = extract_package_version(Fs::read_file(store_index))
+            if require_constraint_satisfied(pver, store_version) {
+              let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+              StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
+              emitted = true
+            } else if lenient {
+              ()
+            } else {
+              throw("cannot pin \{pname}: the store copy declares version '\{store_version}' which does not satisfy the required \{pver} (install the matching release with `vibe add`/`update`, or fix the require line)")
+            }
           } else if lenient {
             // fmt lane: leave the unpinned line for the build to reject;
             // fetching belongs to `vibe add`/`update`, never to fmt.
