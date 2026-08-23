@@ -479,11 +479,64 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
         // Prefix this one message class here; every other message reaching
         // this catch is already path-prefixed by its module job, and
         // prefixing unconditionally would double those.
-        let located = locate_type_error(entry_source, msg)
+        //
+        // #2244 review (Codex P1): the throw itself carries no source
+        // identity -- the desugar ran on the MERGED statements, so the
+        // culprit can live in a dependency. Naming the entry file for a
+        // dep-file error would be confidently wrong, so the path is added
+        // only when exactly one source in the consumed group set resolves
+        // the message's [@fn=] anchor (locate_type_error answers with a
+        // `line ` prefix only when it does): that source owns the culprit,
+        // and its own path and text locate it. Zero owners (the marker was
+        // absent or the merge renamed the binder) or two-plus owners (the
+        // #1596 same-name collision) fail closed to the unlocated message
+        // with no path -- missing information beats misinformation.
         if String::starts_with(msg, "cannot interpolate a value of type `") {
-          throw(String::concat(input_path, String::concat(": ", located)))
+          let mut owner_path = ""
+          let mut owner_source = ""
+          let mut owners = 0
+          let seen_paths: Array[String] = array_empty()
+          let mut gi2 = 0
+          while gi2 < Array::length(source_groups) {
+            let (_gname2, members2) = Array::get(source_groups, gi2)
+            let mut mi2 = 0
+            while mi2 < Array::length(members2) {
+              let (mpath, msource) = Array::get(members2, mi2)
+              let mut seen2 = false
+              let mut si2 = 0
+              while si2 < Array::length(seen_paths) {
+                if Array::get(seen_paths, si2) == mpath {
+                  seen2 = true
+                } else {
+                  ()
+                }
+                si2 = si2 + 1
+              }
+              if seen2 {
+                ()
+              } else {
+                Array::push(seen_paths, mpath)
+                if String::starts_with(locate_type_error(msource, msg), "line ") {
+                  owners = owners + 1
+                  owner_path = mpath
+                  owner_source = msource
+                } else {
+                  ()
+                }
+              }
+              mi2 = mi2 + 1
+            }
+            gi2 = gi2 + 1
+          }
+          if owners == 1 {
+            throw(String::concat(owner_path, String::concat(": ", locate_type_error(owner_source, msg))))
+          } else {
+            // locate against an empty source: the anchor cannot resolve, so
+            // this only strips the side marker from the message.
+            throw(locate_type_error("", msg))
+          }
         } else {
-          throw(located)
+          throw(locate_type_error(entry_source, msg))
         }
       }
     }
