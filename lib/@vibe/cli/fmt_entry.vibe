@@ -16,9 +16,20 @@
 //#
 //# The check lives at the entry rather than inside the formatter because
 //# lib/@vibe/compiler/fmt has no dependencies by design, and the parser is one.
+//#
+//# A leading `require @scope/name x.y.z = #pkg:sha1:...` head is a loader
+//# directive, not vibe syntax (the same reason `.vpkg` headers get their own
+//# writer, #1435). The head split itself lives INSIDE format_source
+//# (format_vibe, #2253 round 6) so every formatter entry -- this one, the
+//# fmt.vibe batch, cli_adapter's `vibe fmt` -- preserves the head verbatim;
+//# this entry only re-derives the boundary (source_header_end) so the parse
+//# guard can ask its question of the BODY, which is the part that is vibe
+//# syntax. A head the classifier refuses (-1) is left untouched by
+//# format_source, so the guard's body is the whole file there and the
+//# comparison stays "no worse".
 
 import ../compiler/fmt {
-  format_source
+  format_source, source_header_end
 }
 
 import ../parser {
@@ -46,9 +57,25 @@ export fn main() -> Int with Fs + Env + Stderr {
   let input = Env::args_get(0)
   let output = Env::args_get(1)
   let src = Fs::read_file(input)
-  // format_source dispatches on the extension: `.vpkg` package contracts
-  // get header handling, everything else is plain vibe source (#1435).
+  // format_source dispatches on the extension: `.vpkg` package contracts get
+  // the canonical header writer, plain vibe sources get the verbatim
+  // require-head split (#1435, #2253 round 6).
   let formatted = format_source(input, src)
+  // The head is reattached verbatim, so the body of both source and output
+  // starts at the same boundary; -1 (refused head) and 0 (no head) both mean
+  // "the body is the whole file".
+  let head_end = if has_suffix(input, ".vpkg") {
+    0
+  } else {
+    let e = source_header_end(src)
+    if e > 0 {
+      e
+    } else {
+      0
+    }
+  }
+  let body = String::substring(src, head_end, String::length(src))
+  let formatted_body = String::substring(formatted, head_end, String::length(formatted))
   // A `.vpkg` header is not vibe syntax, so a whole-file parse never succeeds
   // for one and the comparison below would say nothing. format_vpkg already
   // refuses to touch a header it cannot read, which is the same policy reached
@@ -56,8 +83,9 @@ export fn main() -> Int with Fs + Env + Stderr {
   //
   // Only a rewrite that BREAKS something is rejected. A file that did not parse
   // to begin with is still formatted: the promise is "no worse", not "only
-  // valid input".
-  if !has_suffix(input, ".vpkg") && program_parses(src) && !program_parses(formatted) {
+  // valid input". With a pin head split off, the parse question is asked of
+  // the BODY -- the head is not vibe syntax and is reattached verbatim.
+  if !has_suffix(input, ".vpkg") && program_parses(body) && !program_parses(formatted_body) {
     Fs::write_file(output, src)
     Stderr::write_stream("vibe fmt: refusing to rewrite " + input + "\n" + "  The formatted output does not parse, and the input did. This is a bug in\n" + "  the formatter, not a problem with the file. The file is unchanged; please\n" + "  report it with the source (see #1821).\n")
     1

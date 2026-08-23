@@ -27,7 +27,10 @@ export enum PerceusActionKind {
 
 // PerceusAction is defined transparently in this package's contract
 // (index.vpkg): its field layout (.kind/.name) is real public API surface
-// read directly by tests/perceus_rc_test.vibe. Struct record literals and
+// read directly by tests/perceus_rc_test.vibe. `binding_id` is the lexical
+// binding identity assigned by the count/emit passes; unlike `name`, it keeps
+// shadowed bindings distinct and is the contract needed for per-use RC
+// realization. Struct record literals and
 // field access resolve fine from impl units against the facade definition
 // (@vibe/process ShResult precedent, PR #920), so no local def is kept.
 
@@ -104,10 +107,11 @@ fn name_in(arr: Array[String], s: String) -> Bool {
   found
 }
 
-fn pe_push(ctx: PCtx, kind: PerceusActionKind, name: String) -> Int {
+fn pe_push_for(ctx: PCtx, kind: PerceusActionKind, name: String, binding_id: Int) -> Int {
   Array::push(ctx.actions, PerceusAction::{
     kind: kind,
-    name: name
+    name: name,
+    binding_id: binding_id
   })
   0
 }
@@ -122,7 +126,7 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
     // ref" transfer would consume a reference the binding never acquired.
     let last_view_use = rem == 1 && Array::get(ctx.view_call_let, id)
     if (rem > 1 || last_view_use) && !Array::get(ctx.scalar, id) {
-      pe_push(ctx, PaDup, name)
+      pe_push_for(ctx, PaDup, name, id)
     } else {
       0
     }
@@ -284,7 +288,7 @@ fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
     if Array::get(ctx.view_call_let, id) {
       ()
     } else {
-      pe_push(ctx, PaDrop, name)
+      pe_push_for(ctx, PaDrop, name, id)
     }
     Array::set(ctx.remaining, id, 0)
   }
@@ -1672,7 +1676,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
                 elide_dead_alias = true
                 0
               } else {
-                pe_push(ctx, PaAliasDup, name)
+                pe_push_for(ctx, PaAliasDup, name, ctx.next_id)
               }
             } else {
               0

@@ -90,7 +90,7 @@ import @vibe/compiler/normalize {
 // while 21 documents told them to run `vibe fmt`. The package has `deps = {}`
 // and format.vibe has no imports, so joining the compiler costs it nothing.
 import @vibe/compiler/fmt {
-  format_source
+  format_source, source_header_end
 }
 
 import ./inspect_update.vibe {
@@ -1440,7 +1440,8 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   if Env::get("VIBE_FMT") == "1" {
     let src = Fs::read_file(input_path)
     // format_source dispatches on the extension: `.vpkg` package contracts
-    // get header handling, everything else is plain vibe source (#1435).
+    // get the canonical header writer, plain vibe sources get the verbatim
+    // require-head split (#1435, #2253 round 6).
     let formatted = format_source(input_path, src)
     // A `.vpkg` header is not vibe syntax, so a whole-file parse never
     // succeeds for one and the comparison would say nothing. format_vpkg
@@ -1449,8 +1450,24 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     //
     // Only a rewrite that BREAKS something is rejected. A file that did not
     // parse to begin with is still formatted: the promise is "no worse", not
-    // "only valid input".
-    if !adapter_path_has_suffix(input_path, ".vpkg") && adapter_program_parses(src) && !adapter_program_parses(formatted) {
+    // "only valid input". A require-pin head is not vibe syntax either and
+    // is reattached verbatim, so the parse question is asked of the BODY --
+    // both source and output start their body at the same boundary
+    // (source_header_end; -1 refused and 0 absent both mean "the body is
+    // the whole file").
+    let fmt_head_end = if adapter_path_has_suffix(input_path, ".vpkg") {
+      0
+    } else {
+      let e = source_header_end(src)
+      if e > 0 {
+        e
+      } else {
+        0
+      }
+    }
+    let fmt_body = String::substring(src, fmt_head_end, String::length(src))
+    let fmt_formatted_body = String::substring(formatted, fmt_head_end, String::length(formatted))
+    if !adapter_path_has_suffix(input_path, ".vpkg") && adapter_program_parses(fmt_body) && !adapter_program_parses(fmt_formatted_body) {
       Fs::write_bytes(output_path, adapter_string_to_bytes(src))
       return 1
     }
