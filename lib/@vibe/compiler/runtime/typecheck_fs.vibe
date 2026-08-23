@@ -3542,8 +3542,18 @@ fn loc_kw_before(source: String, off: Int, kw: String) -> Bool {
 }
 
 /// Recover the source offset of a declaration name tagged `[@fn=name]`.
-/// Prefer `fn name`, then `let name` / `let mut name`, then the first
-/// whole-word occurrence. -1 when the name cannot be found.
+/// Prefer a `fn name` declaration, then `let name` / `let mut name`, then a
+/// plain whole-word occurrence. -1 when the name cannot be found.
+///
+/// #2244 review: the scan is a raw-text heuristic, and two failure modes
+/// made it confidently wrong -- a comment or string literal spelling the
+/// declaration (`// let v used to be ...`) anchored the diagnostic at the
+/// comment, and a shadowed binder anchored at the FIRST `let v` rather than
+/// the failing one. So the scan now skips `//` comments and string
+/// literals, and each tier anchors only when it is UNIQUE in what remains:
+/// one `fn name`, else one `let name`, else one bare occurrence. An
+/// ambiguous name (shadowing, re-declaration) returns -1 and the message
+/// stays unlocated -- missing information beats misinformation.
 fn find_fn_anchor_off(source: String, name: String) -> Int {
   let nlen = String::length(name)
   if nlen == 0 {
@@ -3552,26 +3562,61 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
     let slen = String::length(source)
     let mut i = 0
     let mut fn_off = 0 - 1
+    let mut fn_count = 0
     let mut let_off = 0 - 1
+    let mut let_count = 0
     let mut first_off = 0 - 1
-    while i + nlen <= slen {
-      if loc_word_at(source, i, name) {
+    let mut occ_count = 0
+    while i < slen {
+      let c = String::char_code_at(source, i)
+      if c == 47 && i + 1 < slen && String::char_code_at(source, i + 1) == 47 {
+        // `//` line comment: skip to end of line.
+        while i < slen && String::char_code_at(source, i) != 10 {
+          i = i + 1
+        }
+      } else if c == 34 {
+        // String literal: skip its body, honoring `\` escapes (which also
+        // steps over the `\{` interpolation opener -- text inside a string
+        // never hosts the declaration this anchor is looking for).
+        i = i + 1
+        let mut closed = false
+        while !closed && i < slen {
+          let sc = String::char_code_at(source, i)
+          if sc == 92 {
+            i = i + 2
+          } else if sc == 34 {
+            closed = true
+            i = i + 1
+          } else {
+            i = i + 1
+          }
+        }
+      } else if i + nlen <= slen && loc_word_at(source, i, name) {
+        occ_count = occ_count + 1
         if first_off < 0 {
           first_off = i
         } else {
           ()
         }
-        if fn_off < 0 && loc_kw_before(source, i, "fn") {
-          fn_off = i
+        if loc_kw_before(source, i, "fn") {
+          fn_count = fn_count + 1
+          if fn_off < 0 {
+            fn_off = i
+          } else {
+            ()
+          }
         } else {
-          ()
-        }
-        if let_off < 0 {
-          if loc_kw_before(source, i, "let") {
-            let_off = i
+          let is_let_decl = if loc_kw_before(source, i, "let") {
+            true
           } else if loc_kw_before(source, i, "mut") {
             let before_name = loc_skip_ws_back(source, i)
-            if loc_kw_before(source, before_name - 3, "let") {
+            loc_kw_before(source, before_name - 3, "let")
+          } else {
+            false
+          }
+          if is_let_decl {
+            let_count = let_count + 1
+            if let_off < 0 {
               let_off = i
             } else {
               ()
@@ -3579,20 +3624,20 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
           } else {
             ()
           }
-        } else {
-          ()
         }
         i = i + nlen
       } else {
         i = i + 1
       }
     }
-    if fn_off >= 0 {
+    if fn_count == 1 {
       fn_off
-    } else if let_off >= 0 {
+    } else if fn_count == 0 && let_count == 1 {
       let_off
-    } else {
+    } else if fn_count == 0 && let_count == 0 && occ_count == 1 {
       first_off
+    } else {
+      0 - 1
     }
   }
 }
