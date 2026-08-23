@@ -516,12 +516,23 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
                 ()
               } else {
                 Array::push(seen_paths, mpath)
-                if String::starts_with(locate_type_error(msource, msg), "line ") {
-                  owners = owners + 1
-                  owner_path = mpath
-                  owner_source = msource
-                } else {
-                  ()
+                // #2244 review round 5: a directory-shared vpkg import or a
+                // contract facade makes the ingested group source differ
+                // from the physical file (imports prepended / contract
+                // replaced), so an offset computed on it names a line below
+                // the real one. Recover the physical bytes the way
+                // checked_entry_source does -- re-ingest and require an
+                // exact match -- and drop the candidate (not an owner) when
+                // they cannot be verified.
+                match owner_locating_source(mpath, msource) {
+                  Some(mlocating) => if String::starts_with(locate_type_error(mlocating, msg), "line ") {
+                    owners = owners + 1
+                    owner_path = mpath
+                    owner_source = mlocating
+                  } else {
+                    ()
+                  },
+                  None => ()
                 }
               }
               mi2 = mi2 + 1
@@ -562,6 +573,32 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
   check_redundant_import_warnings_from_source_groups(input_path, [
     ("entry", [(input_path, source)])
   ])
+}
+
+/// The source text an offset-bearing diagnostic may be located against for
+/// one (path, source) member of a consumed group set. A plain member locates
+/// against its snapshot as-is. A member whose snapshot carries the loader's
+/// shared-import or contract-facade transform (imports prepended / contract
+/// replaced) must locate against the PHYSICAL file, recovered the same way
+/// checked_entry_source recovers the entry: re-ingest the current bytes and
+/// require the complete synthetic snapshot to match. None when the physical
+/// text cannot be verified -- the caller must then treat the member as
+/// unlocatable rather than emit coordinates computed on synthetic text.
+fn owner_locating_source(path: String, source: String) -> Option[String] with Exception + Fs {
+  if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
+    if Fs::exists(path) {
+      let physical = Fs::read_file(path)
+      if source == ingest_source_text_fs(path, physical) {
+        Some(physical)
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  } else {
+    Some(source)
+  }
 }
 
 fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Option[String] with Exception + Fs {

@@ -601,3 +601,33 @@ test "dependency missing-Show interpolation does not name the entry file" {
   assert(!String::contains(msg, "entrymod.vibe"))
   assert(!String::contains(msg, " [@fn="))
 }
+
+test "shared-import sibling missing-Show locates against the physical file" {
+  // #2244 review round 5: a sibling under an index.vpkg with a directory-
+  // shared import is ingested with the shared-import marker and the
+  // inherited import line PREPENDED, so an offset computed on the group
+  // snapshot names a line below the real one. The owner scan must recover
+  // the physical bytes (re-ingest + exact match) before locating; `render`
+  // is declared at line 5 of the physical file, byte columns 11-17
+  // (half-open end, the range prefix's convention).
+  let base_dir = "/tmp/vibe_cli_support_show_shared/pkg"
+  Fs::mkdir_p(base_dir)
+  let contract_path = String::concat(base_dir, "/index.vpkg")
+  let impl_path = String::concat(base_dir, "/impl.vibe")
+  Fs::write_bytes(contract_path, string_to_bytes("import @vibe/random { seed }\n\nfn render() -> String\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("struct Hidden {\n  x: Int\n}\n\nexport fn render() -> String {\n  let h = Hidden::{ x: 1 }\n  \"\\{h}\"\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(impl_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "cannot interpolate a value of type"))
+  if String::contains(msg, "line ") {
+    // Located answers must carry the PHYSICAL coordinates and the file.
+    assert(String::contains(msg, "/impl.vibe: line 5:11-17:"))
+  } else {
+    // Fail-closed (unlocatable) is acceptable; a wrong line is not.
+    assert(!String::contains(msg, " [@"))
+  }
+}
