@@ -5948,6 +5948,12 @@ bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
 # `xt` and the check answers "no match" forever). #2252.
 bash "$ROOT_DIR/scripts/check_gate_portability.sh"
 bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
+# check_book_console.sh landed (#2253) with no self-test and CI caught it the
+# same day -- the ratchet working as intended. Its cases hand the gate a STUB
+# compiler so the transcripts fail identically for all of them, and assert the
+# message each mutation adds on top: block count, ja/en parity, and whether the
+# chapter's documented 42 -> 43 edit still applies. ~1s, no generation needed.
+bash "$ROOT_DIR/scripts/check_book_console_test.sh"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
