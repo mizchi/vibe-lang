@@ -16,21 +16,28 @@ fn cache_root_prefix() -> String {
   "_build/vibe_"
 }
 
-export fn compact_string_fingerprint(source: String) -> String {
-  let mod1 = 2147483647
-  let mod2 = 2147483629
-  let step1 = 131
-  let step2 = 65599
+// Bootstrap fallback: the previous compiler emits this ordinary Vibe loop.
+// A compiler containing #2241 resolves the same internal name to its direct
+// byte-scanning runtime builtin instead.
+fn __compact_fingerprint_hash(source: String) -> Int {
   let len = String::length(source)
   let mut h1 = 17
   let mut h2 = 29
   let mut i = 0
   while i < len {
     let c = String::char_code_at(source, i)
-    h1 = (h1 * step1 + c + 1) % mod1
-    h2 = (h2 * step2 + c + i + 1) % mod2
+    h1 = (h1 * 131 + c + 1) % 2147483647
+    h2 = (h2 * 65599 + c + i + 1) % 2147483629
     i = i + 1
   }
+  (h1<<31)|h2
+}
+
+export fn compact_string_fingerprint(source: String) -> String {
+  let len = String::length(source)
+  let packed = __compact_fingerprint_hash(source)
+  let h1 = packed>>31
+  let h2 = packed&2147483647
   String::concat(__to_string(len), String::concat(":", String::concat(__to_string(h1), String::concat(":", __to_string(h2)))))
 }
 
