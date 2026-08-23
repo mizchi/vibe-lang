@@ -21,4 +21,14 @@ fi
 grep -q 'missing shared GuestCpuClock' "$TMP_ROOT/out" \
   || { echo "guest-profile contract self-test: missing diagnostic" >&2; exit 1; }
 
+sed 's/fn heap_sample_due/fn removed_heap_sample_due/' \
+  "$ROOT/runtime/viberun/src/main.rs" > "$TMP_ROOT/runtime/viberun/src/main.rs"
+if VIBE_GUEST_PROFILE_LINT_ROOT="$TMP_ROOT" \
+  bash "$ROOT/scripts/lint_guest_profile_contract.sh" >"$TMP_ROOT/out" 2>&1; then
+  echo "guest-profile contract self-test: missing heap deadline unexpectedly passed" >&2
+  exit 1
+fi
+grep -q 'heap sampler absolute-deadline state is missing' "$TMP_ROOT/out" \
+  || { echo "guest-profile contract self-test: missing heap deadline diagnostic" >&2; exit 1; }
+
 echo "guest-profile contract self-test: ok"

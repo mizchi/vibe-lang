@@ -43,6 +43,8 @@ require 'CallHook::ReturningFromHost' "$runner" "host return is not tracked"
 require 'CallHook::CallingWasm' "$runner" "outer harness-to-guest entry is not tracked"
 require 'CallHook::ReturningFromWasm' "$runner" "outer guest-to-harness return is not tracked"
 forbid 'last_guest|guest_profiler_last_sample' "$runner" "wall-clock/reset sampling state reintroduced"
+require 'fn heap_sample_due' "$runner" "heap sampler absolute-deadline state is missing"
+forbid 'last_heap' "$runner" "heap sampler wall-clock rebasing was reintroduced"
 
 # CLI values must distinguish omission from an explicitly empty value, preserve
 # the argv separator, and reject destructive source/output aliasing.

@@ -1131,6 +1131,14 @@ fn advance_epoch_deadline(mut deadline: Instant, interval: Duration, now: Instan
     deadline
 }
 
+fn heap_sample_due(deadline: &mut Instant, interval: Duration, now: Instant) -> bool {
+    if now < *deadline {
+        return false;
+    }
+    *deadline = advance_epoch_deadline(*deadline, interval, now);
+    true
+}
+
 #[derive(Debug, Clone)]
 struct GuestCpuClock {
     accumulated_guest: Duration,
@@ -1412,10 +1420,13 @@ fn run(args: Vec<String>) -> Result<i32> {
             }
         }
         store.set_epoch_deadline(1);
-        let mut last_heap = Instant::now();
+        let mut next_heap_sample = heap_interval.map(|interval| Instant::now() + interval);
         store.epoch_deadline_callback(move |mut ctx| {
             let now = Instant::now();
-            if heap_interval.is_some_and(|interval| now.duration_since(last_heap) >= interval) {
+            if heap_interval
+                .zip(next_heap_sample.as_mut())
+                .is_some_and(|(interval, deadline)| heap_sample_due(deadline, interval, now))
+            {
                 if let Some(g) = ctx.data().sample_global {
                     let v = match g.get(&mut ctx) {
                         Val::I32(x) => x as u32 as u64,
@@ -1425,7 +1436,6 @@ fn run(args: Vec<String>) -> Result<i32> {
                     let t = ctx.data().sample_start.elapsed().as_nanos();
                     ctx.data_mut().samples.push((t, v));
                 }
-                last_heap = now;
             }
             let guest_delta = ctx
                 .data_mut()
@@ -4785,6 +4795,26 @@ mod tests {
             start + Duration::from_millis(20),
         );
         assert_eq!(next.duration_since(start), Duration::from_micros(20_002));
+    }
+
+    #[test]
+    fn heap_sample_deadline_preserves_phase_after_callback_jitter() {
+        let start = Instant::now();
+        let interval = Duration::from_millis(1);
+        let mut deadline = start + interval;
+
+        assert!(heap_sample_due(
+            &mut deadline,
+            interval,
+            start + Duration::from_micros(1_100),
+        ));
+        assert_eq!(deadline, start + Duration::from_millis(2));
+        assert!(heap_sample_due(
+            &mut deadline,
+            interval,
+            start + Duration::from_millis(2),
+        ));
+        assert_eq!(deadline, start + Duration::from_millis(3));
     }
 
     #[test]
