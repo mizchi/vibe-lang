@@ -26,12 +26,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# ENFORCED is the ratchet. The invariant below holds for these selectors and
-# is gated; `--all` audits every selector and is NOT gated, because the audit
-# reports ~23 pre-existing arms that predate this check (filed separately).
-# Move a selector into ENFORCED once its arms are fixed.
-ENFORCED="${VIBE_SELECTOR_PRECEDENCE_ENFORCED:-VIBE_FMT}"
-MODE="enforced"
+# The ratchet is GONE (#2243). It existed because 20 pre-existing arms carried
+# the same exposure as the one #2239 introduced, and gating on them would have
+# failed CI for unrelated reasons. All 20 now derive their clears from
+# VIBE_SELECTOR_ORDER, so the full invariant is enforced by default and `--all`
+# is just its explicit spelling. ENFORCED remains only as an escape hatch for
+# bisecting a future regression down to one selector.
+ENFORCED="${VIBE_SELECTOR_PRECEDENCE_ENFORCED:-}"
+MODE="all"
+if [ -n "$ENFORCED" ]; then MODE="enforced"; fi
 if [ "${1:-}" = "--all" ]; then MODE="all"; shift; fi
 
 ADAPTER="${1:-lib/@vibe/compiler/cli_adapter.vibe}"
@@ -51,10 +54,36 @@ for line in open(adapter, encoding="utf-8"):
         order.append(m.group(1))
 
 src = open(launcher, encoding="utf-8").read()
+
+# The launcher embeds the adapter's selector order once (#2243) and derives each
+# arm's clear list from it. That embedded order is the thing every arm now
+# trusts, so verify it against the adapter before trusting it here.
+m = re.search(r'VIBE_SELECTOR_ORDER="([^"]*)"', src)
+if not m:
+    print("[selector-precedence] FAIL: %s has no VIBE_SELECTOR_ORDER" % launcher, file=sys.stderr)
+    sys.exit(1)
+embedded = m.group(1).split()
+if embedded != order:
+    print("[selector-precedence] FAIL: VIBE_SELECTOR_ORDER is out of sync with %s" % adapter, file=sys.stderr)
+    only_e = [x for x in embedded if x not in order]
+    only_a = [x for x in order if x not in embedded]
+    if only_e:
+        print("  in the launcher but not the adapter: %s" % " ".join(only_e), file=sys.stderr)
+    if only_a:
+        print("  in the adapter but not the launcher: %s" % " ".join(only_a), file=sys.stderr)
+    if not only_e and not only_a:
+        print("  same names, different ORDER -- the clears would be computed against"
+              " the wrong predecessor set", file=sys.stderr)
+    sys.exit(1)
+
 problems = []
 for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     block = m.group(0)
     cleared = set(re.findall(r'-u (VIBE_[A-Z_]+)', block))
+    # `env $(selector_clears_before T) ...` clears every predecessor of T.
+    for t in re.findall(r'selector_clears_before (VIBE_[A-Z_]+)', block):
+        if t in order:
+            cleared.update(order[:order.index(t)])
     line_no = src[:m.start()].count("\n") + 1
     for i, sel in enumerate(order):
         if not re.search(r'(?<![-\w])' + sel + r'=1\b', block):
