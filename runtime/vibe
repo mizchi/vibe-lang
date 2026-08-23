@@ -960,7 +960,10 @@ case "$cmd" in
       cli="$(pick_cli)"
       mkdir -p "$(dirname "$out")"
       rm -f "$out" "$out.diag"
-      env VIBE_EMIT_WIT=1 VIBE_IMPORT_ABI=raw \
+      # -u VIBE_FMT: the fmt branch is evaluated BEFORE VIBE_EMIT_WIT in
+      # cli_adapter, so a leaked selector writes formatted vibe source as the
+      # .wit artifact -- non-empty, so the check below reports success (#2239).
+      env -u VIBE_FMT VIBE_EMIT_WIT=1 VIBE_IMPORT_ABI=raw \
         "$RUNNER" "$cli" "$src" "$out" main >/dev/null 2>&1 || true
       if [ ! -s "$out" ]; then
         [ -s "$out.diag" ] && echo "error: $(cat "$out.diag")" >&2
@@ -1058,7 +1061,8 @@ case "$cmd" in
     cli="$(pick_cli)"
     mkdir -p "$(dirname "$out")"
     rm -f "$out" "$out.diag"
-    env VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="${out%.component.wasm}.wit" \
+    # -u VIBE_FMT: same precedence hazard as the --wit arm above (#2239).
+    env -u VIBE_FMT VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="${out%.component.wasm}.wit" \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" main >/dev/null 2>&1 || true
     if [ ! -s "$out" ]; then
@@ -2192,7 +2196,10 @@ PY
       local usrc="$1" ucaptured="$2"
       local ucli="$CLI_WASM"; [ -f "$ucli" ] || ucli="$(pick_cli)"
       local upatched; upatched="$(mktemp -t vibe-test-patched-XXXXXX.vibe)"
-      if env VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$ucaptured" VIBE_IMPORT_ABI=raw \
+      # -u VIBE_FMT: same precedence hazard (#2239). A leak here would write
+      # a FORMATTED copy of the test file as the "patched" source, and the
+      # cmp below would then copy it over the user's test.
+      if env -u VIBE_FMT VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$ucaptured" VIBE_IMPORT_ABI=raw \
           "$RUNNER" "$ucli" "$usrc" "$upatched" >/dev/null 2>/dev/null \
           && [ -s "$upatched" ] && ! cmp -s "$usrc" "$upatched"; then
         cp "$upatched" "$usrc"

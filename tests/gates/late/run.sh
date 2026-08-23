@@ -5926,6 +5926,12 @@ echo "[compiler-gate] linear source-lane Double call-result offsets ok (#2158)"
 #      the guest branch, not the shell around it.
 echo "[compiler-gate] 106/106 vibe fmt reaches an installed user (#2149)"
 bash "$ROOT_DIR/scripts/test_vibe_fmt_launcher.sh"
+# cli_adapter dispatches on selectors in SOURCE ORDER, so a leaked one hijacks
+# every verb whose selector is evaluated later. Keeping the launcher's `env -u`
+# lists right by hand demonstrably does not work -- this PR shipped an arm
+# missing six selectors, then fixed one arm at a time and still missed three.
+# So the requirement is DERIVED from cli_adapter rather than restated.
+bash "$ROOT_DIR/scripts/check_selector_precedence.sh"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
