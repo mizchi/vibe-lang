@@ -98,8 +98,10 @@ test "a malformed require directive is located on its own line" {
   // #2253 review: the single-file lane blanks require-pin heads (#2227),
   // and a head the loader rejects becomes the diagnostic -- but the
   // loader's message carries no position, which the JSON lane renders as
-  // the synthetic 0:0 range. When the message's quoted offender matches
-  // exactly one leading require line, the diagnostic anchors there.
+  // the synthetic 0:0 range. The locator probes line-prefixes of the
+  // source through the loader's own scanner and anchors at the first one
+  // that throws the same message, so every message form and every header
+  // line kind locates without a second copy of the header grammar.
   let src = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\nrequire @vibe/extra 9.9.9 = #pkg:sha1:zzz\n\nfn f() -> Int {\n  1\n}\n"
   let d = first_diag(src)
   assert(String::contains(d, "require pin must be"))
@@ -113,6 +115,24 @@ test "a malformed require directive is located on its own line" {
   let d2 = first_diag(scoped)
   assert(String::contains(d2, "must start with '@'"))
   assert(String::contains(d2, "line 2:1:"))
+  // #2253 review round 4: the header grammar continues across comments and
+  // the other directives, so a malformed require AFTER one of those must
+  // locate too (the previous locator classified only require/blank lines
+  // as header and gave up at the comment).
+  let after_comment = "// header comment\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  let d3 = first_diag(after_comment)
+  assert(String::contains(d3, "must start with '@'"))
+  assert(String::contains(d3, "line 2:1:"))
+  let after_version = "version = 1.2.3\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  let d4 = first_diag(after_version)
+  assert(String::contains(d4, "must start with '@'"))
+  assert(String::contains(d4, "line 2:1:"))
+  // An unterminated `deps = {` swallows the first code line as a deps
+  // entry; the probe anchors on that line -- where the scanner stopped.
+  let open_deps = "deps = {\n  @vibe/core : 0.2.0\n\nfn f() -> Int {\n  1\n}\n"
+  let d5 = first_diag(open_deps)
+  assert(String::contains(d5, "malformed deps entry"))
+  assert(String::contains(d5, "line 4:1:"))
 }
 
 test "a comment spelling the binder does not capture the anchor" {

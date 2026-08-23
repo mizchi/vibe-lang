@@ -5319,56 +5319,55 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Exceptio
     Throw(m) => (source, m)
   }
   if pin_err != "" {
-    // #2253 review: the loader's message carries no position, and the JSON
-    // lane renders an unlocated diagnostic as the synthetic 0:0 range. The
-    // message quotes the offending text after its `): ` -- when that quote
-    // matches exactly ONE of the leading `require` directive lines, anchor
-    // there (line, column 1). Anything ambiguous -- a short fragment
-    // appearing in several directive lines -- stays unlocated: a bare
-    // message beats a confidently wrong line.
-    let sep = String::index_of(pin_err, "): ")
-    let tail = if sep >= 0 {
-      String::substring(pin_err, sep + 3, String::length(pin_err))
+    // #2253 review rounds 3-4: the loader's message carries no position, and
+    // the JSON lane renders an unlocated diagnostic as the synthetic 0:0
+    // range. Two rounds of parsing the MESSAGE for the offending line drifted
+    // from the header grammar each time (parenthesized vs plain `: ` tails,
+    // then require-only line classification vs the scanner's comments /
+    // version / deps blocks). Ask the scanner itself instead: feed it
+    // line-prefixes of the source and anchor at the FIRST prefix that throws
+    // this exact message -- the scanner is line-oriented, so that prefix's
+    // last line is where its own scan stopped. No grammar mirror, so nothing
+    // to drift; an error only raised at a block opener (unterminated block)
+    // anchors on the opener, which is the actionable line. The probe runs on
+    // the error path only; the cap bounds a pathological file, and past it
+    // the message stays bare -- missing information beats misinformation.
+    let lines = String::split(source, "\n")
+    let nlines = Array::length(lines)
+    let cap = if nlines < 256 {
+      nlines
     } else {
-      // #2253 review round 3: not every loader message parenthesizes its
-      // expectation -- `require package name must start with '@': bad/pkg`
-      // ends with a plain `: <offender>`. Take the text after the LAST
-      // `: ` then; the unique-match gate below still refuses ambiguous
-      // fragments.
-      let last = String::last_index_of(pin_err, ": ")
-      if last >= 0 {
-        String::substring(pin_err, last + 2, String::length(pin_err))
-      } else {
-        ""
-      }
+      256
     }
     let mut hit_line = 0 - 1
-    let mut hit_count = 0
-    if String::length(tail) > 0 {
-      let lines = String::split(source, "\n")
-      let mut li = 0
-      let mut in_head = true
-      while in_head && li < Array::length(lines) {
-        let line = Array::get(lines, li)
-        let t = String::trim(line)
-        if String::starts_with(t, "require ") {
-          if String::contains(line, tail) {
-            hit_count = hit_count + 1
-            hit_line = li
-          } else {
-            ()
-          }
-          li = li + 1
-        } else if t == "" {
-          li = li + 1
+    let mut k = 1
+    while hit_line < 0 && k <= cap {
+      let sb = StringBuilder::new()
+      let mut j = 0
+      while j < k {
+        if j > 0 {
+          StringBuilder::push(sb, "\n")
         } else {
-          in_head = false
+          ()
         }
+        StringBuilder::push(sb, Array::get(lines, j))
+        j = j + 1
       }
-    } else {
-      ()
+      let prefix = StringBuilder::freeze(sb)
+      let m = handle {
+        let (_pins2, _blanked2) = extract_require_pins(prefix)
+        ""
+      } with Exception {
+        Throw(m2) => m2
+      }
+      if m == pin_err {
+        hit_line = k - 1
+      } else {
+        ()
+      }
+      k = k + 1
     }
-    if hit_count == 1 {
+    if hit_line >= 0 {
       return [
         String::concat("line ", String::concat(__to_string(hit_line + 1), String::concat(":1: ", pin_err)))
       ]
