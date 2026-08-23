@@ -76,6 +76,10 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   expand_interp_stmts
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/compiler/loader {
   ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
 }
@@ -5291,6 +5295,31 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
   }
   result
 }
+/// Does the k-line prefix of `lines` make the package-header scanner throw
+/// exactly `pin_err`? The locator's probe (see collect_all_diagnostics):
+/// asking the loader itself, instead of mirroring its grammar, is what keeps
+/// the located line from drifting (#2253 rounds 3-6).
+fn header_prefix_throws(lines: Array[String], k: Int, pin_err: String) -> Bool {
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < k {
+    if j > 0 {
+      StringBuilder::push(sb, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(sb, Array::get(lines, j))
+    j = j + 1
+  }
+  let m = handle {
+    let (_pins2, _blanked2) = extract_require_pins(StringBuilder::freeze(sb))
+    ""
+  } with Exception {
+    Throw(m2) => m2
+  }
+  m == pin_err
+}
+
 /// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
 /// Lexer errors come first (#946): the recovering lexer records every offending
 /// position instead of throwing, so a lex-broken file reports located lexer
@@ -5301,6 +5330,71 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
 /// Returns [] when the source lexes, parses, and checks cleanly.
 /// Foundation for `vibe check` / LSP multi-diagnostic reporting.
 export fn collect_all_diagnostics(source: String) -> Array[String] with Exception {
+  // #2227, round 3 of the book-review eval: a leading `require @scope/name
+  // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
+  // ingestion blanks before parsing -- but this single-file lane parsed the
+  // RAW buffer and answered `unexpected token: =` for a file the build
+  // accepts. Blank it the same way; the blanked twin is offset-preserving,
+  // so every position below stays exact. A head the loader itself rejects
+  // becomes the diagnostic, the same answer the import lane gives.
+  let (pin_blanked, pin_err) = handle {
+    let (_pins, blanked) = extract_require_pins(source)
+    (blanked, "")
+  } with Exception {
+    Throw(m) => (source, m)
+  }
+  if pin_err != "" {
+    // #2253 review rounds 3-4/6: the loader's message carries no position,
+    // and the JSON lane renders an unlocated diagnostic as the synthetic 0:0
+    // range. Two rounds of parsing the MESSAGE for the offending line drifted
+    // from the header grammar each time (parenthesized vs plain `: ` tails,
+    // then require-only line classification vs the scanner's comments /
+    // version / deps blocks). Ask the scanner itself instead: probe it with
+    // line-prefixes of the source and anchor at the SMALLEST prefix that
+    // throws this exact message -- the scanner is line-oriented, so that
+    // prefix's last line is where its own scan stopped. No grammar mirror, so
+    // nothing to drift; an error only raised at a block opener (unterminated
+    // block) anchors on the opener, which is the actionable line. The
+    // predicate "a k-line prefix throws pin_err" is monotone in k (once the
+    // throwing line is included, every longer prefix stops at that same line
+    // with the same message, deterministically), so binary search finds the
+    // boundary in O(log n) probes with no length cap (round 6: the previous
+    // linear probe capped at 256 lines and left a longer header bare). The
+    // probe runs on the error path only.
+    let lines = String::split(source, "\n")
+    let nlines = Array::length(lines)
+    // The full-source prefix reproduces pin_err by construction; confirm it
+    // anyway so a violated assumption answers bare instead of wrong.
+    let mut hit_line = 0 - 1
+    if nlines > 0 && header_prefix_throws(lines, nlines, pin_err) {
+      let mut lo = 0
+      let mut hi = nlines
+      while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if header_prefix_throws(lines, mid, pin_err) {
+          hi = mid
+        } else {
+          lo = mid
+        }
+      }
+      hit_line = hi - 1
+    } else {
+      ()
+    }
+    if hit_line >= 0 {
+      return [
+        String::concat("line ", String::concat(__to_string(hit_line + 1), String::concat(":1: ", pin_err)))
+      ]
+    } else {
+      return [pin_err]
+    }
+  } else {
+    ()
+  }
+  collect_all_diagnostics_on(pin_blanked)
+}
+
+fn collect_all_diagnostics_on(source: String) -> Array[String] with Exception {
   let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(source)
   if Array::length(lex_err_msgs) > 0 {
     // Report ONLY the lexer errors: the recovered token stream has holes, so

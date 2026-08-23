@@ -65,4 +65,62 @@ if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$broken" >/dev/null 2>&1; then
   exit 1
 fi
 
+
+# #2244 round-3 finding: a leading `require ... = #pkg:sha1:` pin head is a
+# loader directive, not vibe syntax. The formatter used to feed it to the CST
+# formatter and mangle it into text the loader rejects (`require @vibe /
+# core0.2.0 = ...`), and the parse guard could not see it -- the RAW input
+# does not parse either. The head must come back byte-identical, the body
+# formatted, and the result must be a --check fixpoint.
+pin="$work/pin_head.vibe"
+printf 'require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn double(n:Int)->Int {\n  n*2\n}\n' >"$pin"
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$pin" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter declined a require-pin-head file" >&2
+  exit 1
+fi
+if ! head -1 "$pin" | grep -q '^require @vibe/core 0\.2\.0 = #pkg:sha1:0000000000000000000000000000000000000000$'; then
+  echo "vibe_fmt_parse_guard_test: formatter mangled the require-pin head" >&2
+  head -1 "$pin" >&2
+  exit 1
+fi
+if ! grep -q '^fn double(n: Int) -> Int {$' "$pin"; then
+  echo "vibe_fmt_parse_guard_test: body under a pin head was not formatted" >&2
+  sed -n '1,6p' "$pin" >&2
+  exit 1
+fi
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$pin" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: pin-head formatting is not a --check fixpoint" >&2
+  exit 1
+fi
+
+# #2253 round-6 finding: the head split must reach EVERY formatter entry, not
+# just fmt_entry -- the batch lane (lib/@vibe/cli/fmt.vibe, what CI's
+# vibe-fmt-check and `pkf run fmt` run) calls format_source directly and used
+# to mangle the same pin head. The split now lives inside format_source, so
+# the batch lane preserves it too; prove it through the real batch runner.
+# (run_vibe_fmt_batch.sh wants repo-relative paths under the preopen root, so
+# the fixture lives under _build.)
+batch_pin_rel="_build/vibe_fmt_parse_guard_batch_pin.$$.vibe"
+batch_pin="$ROOT_DIR/$batch_pin_rel"
+trap 'rm -rf "$work" "$batch_pin"' EXIT
+printf 'require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn double(n:Int)->Int {\n  n*2\n}\n' >"$batch_pin"
+batch_report="$(printf '%s\n' "$batch_pin_rel" | bash "$ROOT_DIR/scripts/run_vibe_fmt_batch.sh" write 1)"
+case "$batch_report" in
+  DIFF*) : ;;
+  *)
+    echo "vibe_fmt_parse_guard_test: batch lane did not rewrite the pin-head file (report: $batch_report)" >&2
+    exit 1
+    ;;
+esac
+if ! head -1 "$batch_pin" | grep -q '^require @vibe/core 0\.2\.0 = #pkg:sha1:0000000000000000000000000000000000000000$'; then
+  echo "vibe_fmt_parse_guard_test: BATCH lane mangled the require-pin head" >&2
+  head -1 "$batch_pin" >&2
+  exit 1
+fi
+if ! grep -q '^fn double(n: Int) -> Int {$' "$batch_pin"; then
+  echo "vibe_fmt_parse_guard_test: batch lane did not format the body under a pin head" >&2
+  sed -n '1,6p' "$batch_pin" >&2
+  exit 1
+fi
+
 echo "vibe_fmt_parse_guard_test: ok"
