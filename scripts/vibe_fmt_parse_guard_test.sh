@@ -123,4 +123,71 @@ if ! grep -q '^fn double(n: Int) -> Int {$' "$batch_pin"; then
   exit 1
 fi
 
+# #730 D-3 (module-system-v2 §6): pinned form is canonical, so fmt COMPLETES
+# an unpinned `require @scope/name x.y.z` head line with `= #hash` when the
+# package is installed in the workspace store -- offline, best-effort. A
+# package the store cannot answer leaves its line byte-identical (fetching
+# belongs to `vibe add`/`update`, and a formatter that fails over an absent
+# store entry would be unusable on machines that never use the pin lane).
+# The store fixture is created here because the workspace store is
+# gitignored -- nothing in a fresh clone provides one.
+store_pkg="@fmtpin/p$$"
+store_dir="$ROOT_DIR/.vibe/store/$store_pkg"
+fill_in="_build/vibe_fmt_pin_fill.$$.vibe"
+fill_abs="$ROOT_DIR/$fill_in"
+trap 'rm -rf "$work" "$batch_pin" "$store_dir" "$fill_abs"' EXIT
+mkdir -p "$store_dir"
+printf 'import ./impl.vibe {}\nfn quadruple(x: Int) -> Int\n' >"$store_dir/index.vibei"
+printf 'export fn quadruple(x: Int) -> Int { x * 4 }\n' >"$store_dir/impl.vibe"
+
+printf 'require %s 0.1.0\n\nfn double(n:Int)->Int {\n  n*2\n}\n' "$store_pkg" >"$fill_abs"
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter declined an unpinned-require file" >&2
+  exit 1
+fi
+if ! head -1 "$fill_abs" | grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$"; then
+  echo "vibe_fmt_parse_guard_test: fmt did not fill the require pin from the store" >&2
+  head -1 "$fill_abs" >&2
+  exit 1
+fi
+if ! grep -q '^fn double(n: Int) -> Int {$' "$fill_abs"; then
+  echo "vibe_fmt_parse_guard_test: body under a filled pin head was not formatted" >&2
+  sed -n '1,6p' "$fill_abs" >&2
+  exit 1
+fi
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$fill_abs" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: pin filling is not a --check fixpoint" >&2
+  exit 1
+fi
+
+# A package absent from the store: the line comes back byte-identical and the
+# run still succeeds (the body is formatted; the build is what rejects an
+# unpinned require).
+printf 'require @fmtpin/absent%s 0.1.0\n\nfn id(n:Int)->Int {\n  n\n}\n' "$$" >"$fill_abs"
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter failed on a require the store cannot answer" >&2
+  exit 1
+fi
+if ! head -1 "$fill_abs" | grep -q "^require @fmtpin/absent$$ 0\.1\.0\$"; then
+  echo "vibe_fmt_parse_guard_test: an unanswerable require line was not left verbatim" >&2
+  head -1 "$fill_abs" >&2
+  exit 1
+fi
+
+# The batch lane (CI's vibe-fmt-check / `pkf run fmt`) fills the same way.
+printf 'require %s 0.1.0\n\nfn double(n:Int)->Int {\n  n*2\n}\n' "$store_pkg" >"$fill_abs"
+fill_report="$(printf '%s\n' "$fill_in" | bash "$ROOT_DIR/scripts/run_vibe_fmt_batch.sh" write 1)"
+case "$fill_report" in
+  DIFF*) : ;;
+  *)
+    echo "vibe_fmt_parse_guard_test: batch lane did not fill the pin (report: $fill_report)" >&2
+    exit 1
+    ;;
+esac
+if ! head -1 "$fill_abs" | grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$"; then
+  echo "vibe_fmt_parse_guard_test: BATCH lane did not fill the require pin" >&2
+  head -1 "$fill_abs" >&2
+  exit 1
+fi
+
 echo "vibe_fmt_parse_guard_test: ok"

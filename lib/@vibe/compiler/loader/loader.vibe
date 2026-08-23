@@ -2237,6 +2237,26 @@ export fn fill_require_pins_fs(source: String) -> String with Exception + Fs {
 /// by-name store there is one installed version per package, so repinning
 /// IS conflict resolution.
 export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with Exception + Fs {
+  fill_require_pins_impl(source, repin, false)
+}
+
+/// The `vibe fmt` lane's fill (#730 D-3): the same offline store lookup as
+/// fill_require_pins_fs, but TOTAL. fmt must format the body whatever the
+/// state of the store, so a package absent from the store leaves its
+/// require line verbatim instead of failing the run, and any error along
+/// the way (a malformed require line the head classifier will refuse
+/// anyway, a store copy the hasher rejects) returns the source unchanged.
+/// Not filling is not wrong -- the build still refuses to resolve an
+/// unpinned require -- whereas aborting the format over it would be; the
+/// strict lane (VIBE_FILL_PINS, above) keeps the loud answer for callers
+/// who asked for pins specifically.
+export fn fill_require_pins_lenient(source: String) -> String with Fs {
+  handle {
+    fill_require_pins_impl(source, false, true)
+  } with { Exception::Throw(_) => source }
+}
+
+fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String with Exception + Fs {
   let sb = StringBuilder::new()
   let len = String::length(source)
   let mut pos = 0
@@ -2264,13 +2284,16 @@ export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with 
             store_index_vibei
           }
           if Fs::exists(store_index) {
+            let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+            StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
+            emitted = true
+          } else if lenient {
+            // fmt lane: leave the unpinned line for the build to reject;
+            // fetching belongs to `vibe add`/`update`, never to fmt.
             ()
           } else {
             throw("cannot pin \{pname} offline: not installed in the store (.vibe/store/\{pname}/)")
           }
-          let (pkg_hash, _) = contract_package_hashes_fs(store_index)
-          StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
-          emitted = true
         } else ()
       } else ()
     } else {

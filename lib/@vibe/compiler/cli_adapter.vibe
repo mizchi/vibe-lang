@@ -56,6 +56,7 @@ import @vibe/compiler/loader {
   collect_source_groups_fs,
   contract_package_hashes_fs,
   fill_require_pins_fs_mode,
+  fill_require_pins_lenient,
   find_deps_missing,
   find_missing_vpkg_dirs,
   ingest_source_text_fs,
@@ -1439,10 +1440,19 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // is how a refusal once looked exactly like "nothing to change" (#1821).
   if Env::get("VIBE_FMT") == "1" {
     let src = Fs::read_file(input_path)
+    // #730 (D-3): pinned form is canonical, so fmt completes an unpinned
+    // leading `require` line with `= #hash` when the workspace store can
+    // answer offline (best-effort; an uninstalled package leaves its line
+    // verbatim -- fetching belongs to `vibe add`/`update`).
+    let fmt_pre = if adapter_path_has_suffix(input_path, ".vpkg") {
+      src
+    } else {
+      fill_require_pins_lenient(src)
+    }
     // format_source dispatches on the extension: `.vpkg` package contracts
     // get the canonical header writer, plain vibe sources get the verbatim
     // require-head split (#1435, #2253 round 6).
-    let formatted = format_source(input_path, src)
+    let formatted = format_source(input_path, fmt_pre)
     // A `.vpkg` header is not vibe syntax, so a whole-file parse never
     // succeeds for one and the comparison would say nothing. format_vpkg
     // already refuses to touch a header it cannot read -- the same policy
@@ -1458,14 +1468,14 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     let fmt_head_end = if adapter_path_has_suffix(input_path, ".vpkg") {
       0
     } else {
-      let e = source_header_end(src)
+      let e = source_header_end(fmt_pre)
       if e > 0 {
         e
       } else {
         0
       }
     }
-    let fmt_body = String::substring(src, fmt_head_end, String::length(src))
+    let fmt_body = String::substring(fmt_pre, fmt_head_end, String::length(fmt_pre))
     let fmt_formatted_body = String::substring(formatted, fmt_head_end, String::length(formatted))
     if !adapter_path_has_suffix(input_path, ".vpkg") && adapter_program_parses(fmt_body) && !adapter_program_parses(fmt_formatted_body) {
       Fs::write_bytes(output_path, adapter_string_to_bytes(src))

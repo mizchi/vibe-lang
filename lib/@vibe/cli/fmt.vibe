@@ -42,6 +42,10 @@ import ../compiler/fmt {
   format_source
 }
 
+import ../compiler/loader {
+  fill_require_pins_lenient
+}
+
 import ../process {
   sh_capture
 }
@@ -104,9 +108,24 @@ fn read_manifest(path: String) -> Array[String] with Fs {
 //# Sequential formatting (always the actual work -- shards just call this
 //# recursively on a slice of the manifest).
 
+fn path_is_vpkg(path: String) -> Bool {
+  let n = String::length(path)
+  n >= 5 && String::substring(path, n - 5, n) == ".vpkg"
+}
+
 fn format_one_line(mode: String, rel_path: String) -> String with Fs {
   let source = Fs::read_file(rel_path)
-  let formatted = format_source(rel_path, source)
+  // #730 (D-3): pinned form is canonical -- complete an unpinned leading
+  // `require` line from the workspace store when it can answer offline
+  // (best-effort; an uninstalled package leaves its line verbatim). Check
+  // mode reports the fillable file as DIFF via the comparison below, which
+  // is exactly "not canonical yet".
+  let pre = if path_is_vpkg(rel_path) {
+    source
+  } else {
+    fill_require_pins_lenient(source)
+  }
+  let formatted = format_source(rel_path, pre)
   let is_fixpoint = formatted == source
   if mode == "write" && !is_fixpoint {
     Fs::write_file(rel_path, formatted)

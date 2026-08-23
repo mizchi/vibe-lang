@@ -171,12 +171,18 @@ require @vibe/http ^1.2.3 = #77aa02ef     // ^ は互換範囲 (full triple 必�
   (`index.lock` は retire)。
 - **hash は fmt / normalize が挿入する**: `require @vibe/core 1.2.3` とだけ
   書けば `vibe fmt` が `= #hash` を補完する (goimports 系の「コードを完成
-  させる formatter」)。ただし:
-  - **fmt はオフライン**。ローカル store / registry キャッシュから引ける
-    ときだけ挿入。引けなければ行を残して diagnostics (`--check` では fail)。
+  させる formatter」)。**実装済み** (#730 D-3): 3 つの fmt entry すべて
+  (`vibe_fmt.sh` 単発 / batch = CI の `vibe-fmt-check` と `pkf run fmt` /
+  installed `vibe fmt`) が `fill_require_pins_lenient` (loader) で埋める。
+  ただし:
+  - **fmt はオフライン**。workspace store (`.vibe/store/<name>/`) から
+    引けるときだけ挿入。引けない行は verbatim のまま残す (現実装は
+    diagnostics を出さない — unpinned のまま build に渡れば build 側が
+    拒否する。`--check` での fail 化は未着手)。
   - ネットワークを触るのは `vibe add` / `vibe update` / 初回 `vibe run` 側。
-  - **pinned form が正規形**。release-check の normalize gate が「コミット
-    されるソースは常に pinned」を強制する (これが実質の lock 検証)。
+  - **pinned form が正規形**。store が答えられる unpinned 行は `--check` で
+    DIFF になる。release-check の normalize gate が「コミットされるソースは
+    常に pinned」を強制する (これが実質の lock 検証)。
 - **重複検知と統一提案**: ビルドは解決しない。同名パッケージが複数 hash で
   閉包に現れたら決定的エラー + 機械可読な衝突列挙 + 提案:
 

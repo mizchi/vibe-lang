@@ -21,6 +21,9 @@ batch_wasm_rel="_build/vibe_fmt/fmt_batch.wasm"
 if [ ! -s "$ROOT_DIR/$batch_wasm_rel" ] || [ "$entry_src" -nt "$ROOT_DIR/$batch_wasm_rel" ] \
    || [ "lib/@vibe/compiler/fmt/format.vibe" -nt "$ROOT_DIR/$batch_wasm_rel" ] \
    || [ "lib/@vibe/compiler/fmt/index.vpkg" -nt "$ROOT_DIR/$batch_wasm_rel" ] \
+   || [ "lib/@vibe/compiler/loader/loader.vibe" -nt "$ROOT_DIR/$batch_wasm_rel" ] \
+   || [ "lib/@vibe/compiler/loader/index.vpkg" -nt "$ROOT_DIR/$batch_wasm_rel" ] \
+   || [ "lib/@vibe/compiler/contract/contract.vibe" -nt "$ROOT_DIR/$batch_wasm_rel" ] \
    || [ "lib/@vibe/process/process.vibe" -nt "$ROOT_DIR/$batch_wasm_rel" ] \
    || [ "lib/@vibe/process/index.vpkg" -nt "$ROOT_DIR/$batch_wasm_rel" ]; then
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
