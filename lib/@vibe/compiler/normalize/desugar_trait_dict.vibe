@@ -3429,17 +3429,7 @@ fn adoptable_eq_ty(t: TypeExpr) -> Bool {
     TyApp(head, args) => if head == "Array" && Array::length(args) == 1 {
       adoptable_eq_ty(Array::get(args, 0))
     } else if generic_eq_struct_declared(head) && !str_array_contains(dtd_eq_unsafe_types, head) && Array::length(args) > 0 {
-      let mut i = 0
-      let mut ok = true
-      while i < Array::length(args) {
-        if !adoptable_eq_ty(Array::get(args, i)) {
-          ok = false
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      ok
+      generic_eq_instantiation_adoptable(head, args)
     } else {
       false
     },
@@ -3458,6 +3448,36 @@ fn adoptable_eq_ty(t: TypeExpr) -> Bool {
     },
     _ => false
   }
+}
+
+/// Whether the specialized comparator for this generic struct reads only
+/// content-comparable fields. An unused argument is irrelevant: `Phantom[F]`
+/// with only an `Int` field is safe even when `F` itself contains a function.
+fn generic_eq_instantiation_adoptable(head: String, args: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  let mut ok = false
+  while i < Array::length(dtd_eq_generic_structs) {
+    let decl = Array::get(dtd_eq_generic_structs, i)
+    if decl.0 == head && Array::length(decl.1) == Array::length(args) {
+      found = true
+      ok = true
+      let mut fi = 0
+      while fi < Array::length(decl.2) {
+        let field_ty = eq_subst_ty(Array::get(decl.2, fi).1, decl.1, args)
+        if !eq_ty_field_is_content_comparable(field_ty, empty_str_array()) {
+          ok = false
+        } else {
+          ()
+        }
+        fi = fi + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found && ok
 }
 
 /// #2141: a spelling that is a type parameter of an enclosing binder names no
@@ -8497,21 +8517,79 @@ fn generic_eq_types_size(types: Array[TypeExpr]) -> Int {
   size
 }
 
+fn generic_eq_ty_contains_specialization(ty: TypeExpr, key: String) -> Bool {
+  match ty {
+    TyName(_) => false,
+    TyApp(head, args) => if generic_eq_name(head, args) == key {
+      true
+    } else {
+      generic_eq_tys_contain_specialization(args, key)
+    },
+    TyFn(params, result, _) => generic_eq_tys_contain_specialization(params, key) || generic_eq_ty_contains_specialization(result, key),
+    TyTuple(items) => generic_eq_tys_contain_specialization(items, key),
+    TyUnit => false
+  }
+}
+
+fn generic_eq_tys_contain_specialization(types: Array[TypeExpr], key: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(types) {
+    if generic_eq_ty_contains_specialization(Array::get(types, i), key) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does this concrete specialization's own field graph immediately close back
+/// over the same specialization? This distinguishes a finite constant edge
+/// (`Stable[T] -> Stable[Array[Int]]`) from a genuinely growing one
+/// (`Loop[T] -> Loop[Array[T]]`).
+fn generic_eq_specialization_closes(head: String, args: Array[TypeExpr]) -> Bool {
+  let key = generic_eq_name(head, args)
+  let mut i = 0
+  let mut closes = false
+  while i < Array::length(dtd_eq_generic_structs) {
+    let decl = Array::get(dtd_eq_generic_structs, i)
+    if decl.0 == head && Array::length(decl.1) == Array::length(args) {
+      let mut fi = 0
+      while fi < Array::length(decl.2) {
+        let field_ty = eq_expand_alias_ty(eq_subst_ty(Array::get(decl.2, fi).1, decl.1, args))
+        if generic_eq_ty_contains_specialization(field_ty, key) {
+          closes = true
+        } else {
+          ()
+        }
+        fi = fi + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  closes
+}
+
 /// Non-regular recursion such as `Loop[T] -> Loop[Array[T]]` grows the
-/// specialization worklist forever. Reject an instantiation that wraps an
-/// argument of an active specialization of the same declaration. Restricting
-/// this to the emission ancestry keeps unrelated concrete instantiations from
-/// being mistaken for recursion.
+/// specialization worklist forever. A larger specialization is allowed only
+/// when its own fields close back over that exact specialization, as in
+/// `Stable[T] -> Stable[Array[Int]]`. An exact active specialization also
+/// proves that the worklist is finite.
 fn generic_eq_is_expanding_recursion(head: String, args: Array[TypeExpr]) -> Bool {
   let mut i = 0
-  let mut expanding = false
+  let mut exact = false
+  let mut larger_than_active = false
   while i < Array::length(dtd_eq_specialization_stack) {
     match Array::get(dtd_eq_specialization_stack, i) {
       TyApp(active_head, active_args) => if active_head == head {
         if generic_eq_name(active_head, active_args) == generic_eq_name(head, args) {
-          ()
+          exact = true
         } else if generic_eq_types_size(args) > generic_eq_types_size(active_args) {
-          expanding = true
+          larger_than_active = true
         } else {
           ()
         }
@@ -8522,7 +8600,7 @@ fn generic_eq_is_expanding_recursion(head: String, args: Array[TypeExpr]) -> Boo
     }
     i = i + 1
   }
-  expanding
+  !exact && larger_than_active && !generic_eq_specialization_closes(head, args)
 }
 
 fn generic_eq_record(head: String, args: Array[TypeExpr]) -> Unit {
