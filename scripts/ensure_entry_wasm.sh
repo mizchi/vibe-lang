@@ -8,12 +8,22 @@
 #
 # The closure comes from the compiler's own module plan (VIBE_MODULE_PLAN,
 # the same resolution `vibe deps` reports), captured into a sibling
-# `<wasm>.deps` manifest at build time. A change that alters the import
-# graph necessarily edits a file already IN the old closure, so checking
-# mtimes of the captured manifest is sound: that edit triggers the rebuild,
-# and the rebuild recaptures the closure. A manifest that cannot be
-# produced is simply not written, which leaves the artifact permanently
-# stale -- always-rebuild is the safe failure mode, never stale-reuse.
+# `<wasm>.deps` manifest at build time. Three staleness signals cover the
+# ways the closure can drift (#2260 Codex round 2 -- mtimes of the old path
+# set alone do not):
+#   1. a recorded file newer than the wasm -- an edit anywhere in the old
+#      closure, which is also how every import-graph change made BY editing
+#      reaches us;
+#   2. a recorded file that no longer exists -- deletions and renames,
+#      where -nt alone would answer "fresh";
+#   3. a closure member's parent DIRECTORY newer than the wasm -- the
+#      loader auto-discovers `.vpkg` sibling implementations, so a newly
+#      created file can join the closure without any recorded file
+#      changing; creating/removing/renaming an entry updates its
+#      directory's mtime.
+# A manifest that cannot be produced is simply not written, which leaves
+# the artifact permanently stale -- always-rebuild is the safe failure
+# mode, never stale-reuse.
 #
 # Usage: ensure_entry_wasm.sh <entry_src_rel> <wasm_rel>
 # Prints the repo-root-relative wasm path on stdout; all build noise on
@@ -37,13 +47,25 @@ if [ ! -s "$ROOT_DIR/$wasm_rel" ] || [ ! -s "$ROOT_DIR/$deps_rel" ] \
    || [ "$seed" -nt "$ROOT_DIR/$wasm_rel" ]; then
   stale=1
 else
+  declare -A dep_dirs=()
   while IFS= read -r dep; do
     [ -n "$dep" ] || continue
-    if [ "$dep" -nt "$ROOT_DIR/$wasm_rel" ]; then
+    if [ ! -e "$ROOT_DIR/$dep" ] || [ "$ROOT_DIR/$dep" -nt "$ROOT_DIR/$wasm_rel" ]; then
       stale=1
       break
     fi
+    d="${dep%/*}"
+    [ "$d" = "$dep" ] && d="."
+    dep_dirs["$d"]=1
   done < "$ROOT_DIR/$deps_rel"
+  if [ "$stale" = "0" ]; then
+    for d in "${!dep_dirs[@]}"; do
+      if [ "$ROOT_DIR/$d" -nt "$ROOT_DIR/$wasm_rel" ]; then
+        stale=1
+        break
+      fi
+    done
+  fi
 fi
 
 if [ "$stale" = "1" ]; then

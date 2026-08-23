@@ -212,4 +212,32 @@ if [ "$after_mtime" -le "$before_mtime" ]; then
   exit 1
 fi
 
+# #2260 Codex round 2: mtimes of the recorded path set alone are not enough.
+# A recorded dependency that no longer exists (deletion, rename) must read
+# as stale -- `-nt` against a missing path answers "fresh" -- and a file
+# CREATED next to a closure member can join the closure via `.vpkg` sibling
+# auto-discovery without any recorded file changing, so a closure member's
+# parent-directory mtime is a staleness signal too.
+before_mtime="$(stat -c %Y "$entry_wasm")"
+echo "lib/@vibe/no_such_recorded_dep.vibe" >> "$entry_wasm.deps"
+bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
+after_mtime="$(stat -c %Y "$entry_wasm")"
+if [ "$after_mtime" -le "$before_mtime" ]; then
+  echo "vibe_fmt_parse_guard_test: a missing recorded dep did not read as stale" >&2
+  exit 1
+fi
+if grep -q 'no_such_recorded_dep' "$entry_wasm.deps"; then
+  echo "vibe_fmt_parse_guard_test: the rebuild did not recapture the closure manifest" >&2
+  exit 1
+fi
+before_mtime="$(stat -c %Y "$entry_wasm")"
+sleep 1
+touch "$ROOT_DIR/lib/@vibe/cli"
+bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
+after_mtime="$(stat -c %Y "$entry_wasm")"
+if [ "$after_mtime" -le "$before_mtime" ]; then
+  echo "vibe_fmt_parse_guard_test: a newer closure-member directory did not read as stale" >&2
+  exit 1
+fi
+
 echo "vibe_fmt_parse_guard_test: ok"
