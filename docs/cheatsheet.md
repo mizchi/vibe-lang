@@ -2138,7 +2138,7 @@ arity/type check に進む。
 | File | Purpose |
 |------|---------|
 | `*.vibe` | Source |
-| `*.vibex` | Executable root; exactly one `fn main`, not importable (ADR-0075 target contract) |
+| `*.vibex` | Executable root; exactly one `fn main`, not importable, no `export` surface (#2229 enforces; ADR-0075 target contract) |
 | `index.vpkg` | Package boundary, bodyless public contract, dependency/shared-import declarations |
 | `index.vibe` / `index.vibei` | Legacy index spellings; not package boundaries |
 | `*_test.vibe` | Explicitly-run test companion; excluded from normal build/hash and cannot be imported |

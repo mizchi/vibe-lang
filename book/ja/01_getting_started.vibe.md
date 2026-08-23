@@ -37,7 +37,8 @@ vibe run hello.vibex
 `println` は組み込みなので import は要りません。
 
 拡張子 `.vibex` は**実行可能ルート**の印です: ちょうど1つの `fn main` を
-持ち、他のファイルからは import できないファイル (ADR-0075)。再利用する
+持ち、他のファイルからは import できない — したがって何も export しない
+ファイル (ADR-0075)。再利用する
 ソースモジュールは `.vibe` で終わります。あと2つ、後で出会うファイルが
 あります: この下の `vibe.deps` はプロジェクトのメタデータで、パッケージの
 `index.vpkg` — [モジュールとパッケージ](11_modules_packages.vibe.md) —

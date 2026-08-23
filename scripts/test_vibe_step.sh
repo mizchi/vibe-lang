@@ -52,8 +52,8 @@ proj="$WORK/proj"; mkdir -p "$proj"
 # A clear call chain: main (line 3) -> mid (line 2) -> leaf (line 1). leaf(40)=41,
 # mid=42, main=42.
 cat > "$proj/prog.vibex" <<'EOF'
-export let leaf = (x: Int) -> Int { x + 1 }
-export let mid = (x: Int) -> Int { leaf(x) + 1 }
+let leaf = (x: Int) -> Int { x + 1 }
+let mid = (x: Int) -> Int { leaf(x) + 1 }
 fn main with Stdout { Stdout::write_stream("\{mid(40)}\n") }
 EOF
 

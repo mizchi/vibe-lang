@@ -37,7 +37,8 @@ vibe run hello.vibex
 `println` is built in, so there is nothing to import.
 
 The `.vibex` extension marks an *executable root*: a file with exactly
-one `fn main`, which other files cannot import (ADR-0075). Reusable
+one `fn main`, which other files cannot import — and which therefore
+exports nothing (ADR-0075). Reusable
 source modules end in `.vibe`. Two more files appear later:
 `vibe.deps` below is project metadata, and a package's `index.vpkg` —
 [Modules and packages](11_modules_packages.vibe.md) — is its public

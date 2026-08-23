@@ -129,16 +129,33 @@ fn validate_vibex_entry_source(path: String, source: String) -> Unit with Except
   if !String::ends_with(path, ".vibex") {
     ()
   } else {
-    let stmts = parse_program_preserving(lex(source))
+    // #2227: a `require ... = #pkg:sha1:` pin head is a header directive,
+    // not statement grammar -- blank it exactly as every build-lane
+    // ingestion does (offset-preserving), or the parse below reads the
+    // pin's `#pkg` as a `#` directive and rejects a file the loader
+    // otherwise accepts.
+    let (_, pin_blanked) = extract_require_pins(source)
+    let stmts = parse_program_preserving(lex(pin_blanked))
     let mut main_count = 0
     let mut saw_value_main = false
     let mut invalid_shape = false
     let mut missing_effect_row = false
     let mut exported_main = false
+    let mut export_display = ""
     let mut i = 0
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
-        SFnDecl(exported, name, value, _, _) => if name == "main" {
+        SFnDecl(exported, name, value, _, _) => if name != "main" {
+          // #2229 (ADR-0075): an executable root has no export surface --
+          // nothing can import a .vibex, so an export in one is a promise
+          // no consumer can ever reach. Record the first one; the throw
+          // is below with the other shape rules.
+          if exported && export_display == "" {
+            export_display = "export fn \{name}"
+          } else {
+            ()
+          }
+        } else {
           main_count = main_count + 1
           if exported {
             exported_main = true
@@ -167,11 +184,67 @@ fn validate_vibex_entry_source(path: String, source: String) -> Unit with Except
               invalid_shape = true
             }
           }
+        },
+        SLet(exported, _, name, _, _) => if name == "main" {
+          saw_value_main = true
+        } else {
+          if exported && export_display == "" {
+            export_display = "export let \{name}"
+          } else {
+            ()
+          }
+        },
+        SEnum(exported, name, _, _, _) => if exported && export_display == "" {
+          export_display = "export enum \{name}"
         } else {
           ()
         },
-        SLet(_, _, name, _, _) => if name == "main" {
-          saw_value_main = true
+        SSuberror(exported, name, _) => if exported && export_display == "" {
+          export_display = "export suberror \{name}"
+        } else {
+          ()
+        },
+        SStruct(exported, name, _, _, _, _) => if exported && export_display == "" {
+          export_display = "export struct \{name}"
+        } else {
+          ()
+        },
+        STypeAlias(exported, name, _, _) => if exported && export_display == "" {
+          export_display = "export type \{name}"
+        } else {
+          ()
+        },
+        STrait(exported, name, _, _, _, _) => if exported && export_display == "" {
+          export_display = "export trait \{name}"
+        } else {
+          ()
+        },
+        SModule(exported, name, _) => if exported && export_display == "" {
+          export_display = "export module \{name}"
+        } else {
+          ()
+        },
+        SEffectDef(exported, name, _, _) => if exported && export_display == "" {
+          export_display = "export effect \{name}"
+        } else {
+          ()
+        },
+        SEffectSet(exported, name, _) => if exported && export_display == "" {
+          export_display = "export effectset \{name}"
+        } else {
+          ()
+        },
+        SExport(names) => if export_display == "" {
+          if Array::length(names) > 0 {
+            export_display = "export { \{Array::get(names, 0)} }"
+          } else {
+            export_display = "export { }"
+          }
+        } else {
+          ()
+        },
+        SReExport(from_path, _) => if export_display == "" {
+          export_display = "export \{from_path} { ... }"
         } else {
           ()
         },
@@ -185,6 +258,10 @@ fn validate_vibex_entry_source(path: String, source: String) -> Unit with Except
       throw("\{path}: .vibex executable requires exactly one fn main")
     } else if exported_main {
       throw("\{path}: .vibex fn main is an entry declaration and cannot be exported")
+    } else if export_display != "" {
+      // #2229 (ADR-0075): nothing can import a .vibex, so an export in one
+      // is unreachable by construction -- reject it and name the move.
+      throw("\{path}: .vibex is an executable root and has no export surface; move '\{export_display}' to a .vibe module and import it from main")
     } else if invalid_shape {
       throw("\{path}: .vibex fn main must have type () -> Unit")
     } else if missing_effect_row {
