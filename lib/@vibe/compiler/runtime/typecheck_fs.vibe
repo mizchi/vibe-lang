@@ -5295,6 +5295,31 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
   }
   result
 }
+/// Does the k-line prefix of `lines` make the package-header scanner throw
+/// exactly `pin_err`? The locator's probe (see collect_all_diagnostics):
+/// asking the loader itself, instead of mirroring its grammar, is what keeps
+/// the located line from drifting (#2253 rounds 3-6).
+fn header_prefix_throws(lines: Array[String], k: Int, pin_err: String) -> Bool {
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < k {
+    if j > 0 {
+      StringBuilder::push(sb, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(sb, Array::get(lines, j))
+    j = j + 1
+  }
+  let m = handle {
+    let (_pins2, _blanked2) = extract_require_pins(StringBuilder::freeze(sb))
+    ""
+  } with Exception {
+    Throw(m2) => m2
+  }
+  m == pin_err
+}
+
 /// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
 /// Lexer errors come first (#946): the recovering lexer records every offending
 /// position instead of throwing, so a lex-broken file reports located lexer
@@ -5319,53 +5344,42 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Exceptio
     Throw(m) => (source, m)
   }
   if pin_err != "" {
-    // #2253 review rounds 3-4: the loader's message carries no position, and
-    // the JSON lane renders an unlocated diagnostic as the synthetic 0:0
+    // #2253 review rounds 3-4/6: the loader's message carries no position,
+    // and the JSON lane renders an unlocated diagnostic as the synthetic 0:0
     // range. Two rounds of parsing the MESSAGE for the offending line drifted
     // from the header grammar each time (parenthesized vs plain `: ` tails,
     // then require-only line classification vs the scanner's comments /
-    // version / deps blocks). Ask the scanner itself instead: feed it
-    // line-prefixes of the source and anchor at the FIRST prefix that throws
-    // this exact message -- the scanner is line-oriented, so that prefix's
-    // last line is where its own scan stopped. No grammar mirror, so nothing
-    // to drift; an error only raised at a block opener (unterminated block)
-    // anchors on the opener, which is the actionable line. The probe runs on
-    // the error path only; the cap bounds a pathological file, and past it
-    // the message stays bare -- missing information beats misinformation.
+    // version / deps blocks). Ask the scanner itself instead: probe it with
+    // line-prefixes of the source and anchor at the SMALLEST prefix that
+    // throws this exact message -- the scanner is line-oriented, so that
+    // prefix's last line is where its own scan stopped. No grammar mirror, so
+    // nothing to drift; an error only raised at a block opener (unterminated
+    // block) anchors on the opener, which is the actionable line. The
+    // predicate "a k-line prefix throws pin_err" is monotone in k (once the
+    // throwing line is included, every longer prefix stops at that same line
+    // with the same message, deterministically), so binary search finds the
+    // boundary in O(log n) probes with no length cap (round 6: the previous
+    // linear probe capped at 256 lines and left a longer header bare). The
+    // probe runs on the error path only.
     let lines = String::split(source, "\n")
     let nlines = Array::length(lines)
-    let cap = if nlines < 256 {
-      nlines
-    } else {
-      256
-    }
+    // The full-source prefix reproduces pin_err by construction; confirm it
+    // anyway so a violated assumption answers bare instead of wrong.
     let mut hit_line = 0 - 1
-    let mut k = 1
-    while hit_line < 0 && k <= cap {
-      let sb = StringBuilder::new()
-      let mut j = 0
-      while j < k {
-        if j > 0 {
-          StringBuilder::push(sb, "\n")
+    if nlines > 0 && header_prefix_throws(lines, nlines, pin_err) {
+      let mut lo = 0
+      let mut hi = nlines
+      while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if header_prefix_throws(lines, mid, pin_err) {
+          hi = mid
         } else {
-          ()
+          lo = mid
         }
-        StringBuilder::push(sb, Array::get(lines, j))
-        j = j + 1
       }
-      let prefix = StringBuilder::freeze(sb)
-      let m = handle {
-        let (_pins2, _blanked2) = extract_require_pins(prefix)
-        ""
-      } with Exception {
-        Throw(m2) => m2
-      }
-      if m == pin_err {
-        hit_line = k - 1
-      } else {
-        ()
-      }
-      k = k + 1
+      hit_line = hi - 1
+    } else {
+      ()
     }
     if hit_line >= 0 {
       return [
