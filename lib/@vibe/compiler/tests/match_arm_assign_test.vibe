@@ -1,0 +1,144 @@
+//# #2197: a match or handle arm body may be a bare assignment.
+//#
+//# The braced form (`_ => { ok = false }`) always worked. The unbraced one is
+//# what Rust accepts and what readers reach for, and it used to fail with
+//# `unexpected in pattern: =` anchored at the enclosing declaration -- the arm
+//# body stopped at the `=`, so the arm collector read that token as the next
+//# arm's PATTERN. These tests pin both that it parses and that it assigns.
+
+struct Point {
+  mut x: Int;
+  mut y: Int
+}
+
+test "match arm body is a bare assignment" {
+  let mut ok = false
+  match 1 {
+    2 => ok = false,
+    _ => ok = true
+  }
+  assert(ok)
+}
+
+test "the arm that does not match does not assign" {
+  let mut n = 0
+  match 7 {
+    1 => n = 100,
+    7 => n = 42,
+    _ => n = 200
+  }
+  assert(n == 42)
+}
+
+test "a bare assignment arm still separates on the comma" {
+  let mut xs = [0]
+  match 1 {
+    1 => xs = [1, 2, 3],
+    _ => xs = [9]
+  }
+  assert(Array::length(xs) == 3)
+}
+
+fn pick_second(a: Int, b: Int) -> Int {
+  let _ = a
+  b
+}
+
+test "a call with its own commas in the assigned value" {
+  let mut n = 0
+  match 1 {
+    1 => n = pick_second(3, 8),
+    _ => n = 0
+  }
+  assert(n == 8)
+}
+
+test "compound assignment as an arm body" {
+  let mut n = 10
+  match 1 {
+    1 => n += 5,
+    _ => n -= 5
+  }
+  assert(n == 15)
+}
+
+test "every compound operator" {
+  let mut a = 10
+  match 0 {
+    _ => a -= 4
+  }
+  let mut b = 10
+  match 0 {
+    _ => b *= 3
+  }
+  let mut c = 10
+  match 0 {
+    _ => c /= 2
+  }
+  let mut d = 10
+  match 0 {
+    _ => d %= 3
+  }
+  assert(a == 6 && b == 30 && c == 5 && d == 1)
+}
+
+test "field assignment as an arm body" {
+  let p = Point::{ x: 1, y: 2 }
+  match 1 {
+    1 => p.x = 40,
+    _ => p.y = 50
+  }
+  assert(p.x == 40 && p.y == 2)
+}
+
+test "index assignment as an arm body" {
+  let xs = [1, 2, 3]
+  match 1 {
+    1 => xs[1] = 20,
+    _ => xs[2] = 30
+  }
+  assert(Array::get(xs, 1) == 20 && Array::get(xs, 2) == 3)
+}
+
+test "a guarded arm may also assign" {
+  let mut n = 0
+  let g = false
+  match 1 {
+    1 if g => n = 1,
+    _ => n = 2
+  }
+  assert(n == 2)
+}
+
+test "the last arm needs no trailing comma" {
+  let mut n = 0
+  match 3 {
+    1 => n = 1,
+    _ => n = 3
+  }
+  assert(n == 3)
+}
+
+test "the braced form still works and agrees" {
+  let mut a = 0
+  match 1 {
+    _ => a = 5
+  }
+  let mut b = 0
+  match 1 {
+    _ => {
+      b = 5
+    }
+  }
+  assert(a == b)
+}
+
+test "a handler arm body may be a bare assignment" {
+  let mut seen = ""
+  handle {
+    throw("boom")
+  } with Exception {
+    Throw(e) => seen = e
+  }
+  assert(seen == "boom")
+}
