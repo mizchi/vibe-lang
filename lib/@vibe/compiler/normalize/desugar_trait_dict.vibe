@@ -8545,6 +8545,33 @@ fn generic_eq_tys_contain_specialization(types: Array[TypeExpr], key: String) ->
   found
 }
 
+fn generic_eq_ty_contains_other_specialization(ty: TypeExpr, head: String, key: String) -> Bool {
+  match ty {
+    TyName(_) => false,
+    TyApp(item_head, args) => {
+      let other_here = item_head == head && generic_eq_name(item_head, args) != key
+      other_here || generic_eq_tys_contain_other_specialization(args, head, key)
+    },
+    TyFn(params, result, _) => generic_eq_tys_contain_other_specialization(params, head, key) || generic_eq_ty_contains_other_specialization(result, head, key),
+    TyTuple(items) => generic_eq_tys_contain_other_specialization(items, head, key),
+    TyUnit => false
+  }
+}
+
+fn generic_eq_tys_contain_other_specialization(types: Array[TypeExpr], head: String, key: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(types) {
+    if generic_eq_ty_contains_other_specialization(Array::get(types, i), head, key) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// Does this concrete specialization's own field graph immediately close back
 /// over the same specialization? This distinguishes a finite constant edge
 /// (`Stable[T] -> Stable[Array[Int]]`) from a genuinely growing one
@@ -8553,6 +8580,7 @@ fn generic_eq_specialization_closes(head: String, args: Array[TypeExpr]) -> Bool
   let key = generic_eq_name(head, args)
   let mut i = 0
   let mut closes = false
+  let mut diverges = false
   while i < Array::length(dtd_eq_generic_structs) {
     let decl = Array::get(dtd_eq_generic_structs, i)
     if decl.0 == head && Array::length(decl.1) == Array::length(args) {
@@ -8564,6 +8592,11 @@ fn generic_eq_specialization_closes(head: String, args: Array[TypeExpr]) -> Bool
         } else {
           ()
         }
+        if generic_eq_ty_contains_other_specialization(field_ty, head, key) {
+          diverges = true
+        } else {
+          ()
+        }
         fi = fi + 1
       }
     } else {
@@ -8571,7 +8604,7 @@ fn generic_eq_specialization_closes(head: String, args: Array[TypeExpr]) -> Bool
     }
     i = i + 1
   }
-  closes
+  closes && !diverges
 }
 
 /// Non-regular recursion such as `Loop[T] -> Loop[Array[T]]` grows the
