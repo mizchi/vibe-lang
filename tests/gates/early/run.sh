@@ -520,7 +520,10 @@ echo "[compiler-gate] cross-package contract import resolution regression ok"
 echo "[compiler-gate] 6c content-addressed store regression (#730)"
 sdir=".vibe/store/@gate/d2pkg"
 rm -rf ".vibe/store/@gate"; mkdir -p "$sdir"
-printf 'import ./impl.vibe {}\nfn triple(x: Int) -> Int\n' > "$sdir/index.vibei"
+# The store copy declares its version (the vibe_pkg.sh publish contract
+# requires the directive) -- the fill verifies it against the require
+# constraint before pinning, and a versionless copy never fills (#2260).
+printf 'version 1.0.0\nimport ./impl.vibe {}\nfn triple(x: Int) -> Int\n' > "$sdir/index.vibei"
 printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$sdir/impl.vibe"
 cdir2="_build/_gate_store"
 rm -rf "$cdir2"; mkdir -p "$cdir2"
