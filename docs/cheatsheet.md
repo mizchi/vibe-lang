@@ -1638,8 +1638,8 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 | `String::length` | `(String) -> Int` |
 | `String::concat` | `(String, String) -> String` |
 | `String::substring` | `(String, Int, Int) -> String` (start, end) |
-| `String::char_code_at` | `(String, Int) -> Int` (別名 `String::byte_at`) |
-| `String::from_char_code` | `(Int) -> String` (別名 `String::from_byte`) |
+| `String::byte_at` | `(String, Int) -> Int` (deprecated alias `String::char_code_at` — `vibe check` warns per use) |
+| `String::from_byte` | `(Int) -> String` (deprecated alias `String::from_char_code` — `vibe check` warns per use, including inside `\{...}` interpolations, #2203) |
 | `String::equals` | `(String, String) -> Bool` |
 | `String::split` / `String::join` | `(String, String) -> Array[String]` / `(Array[String], String) -> String` |
 | `String::contains` | `(String, String) -> Bool` |
@@ -1649,6 +1649,12 @@ prelude wrapper: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`。
 | `String::replace` / `String::replace_all` | `(String, String, String) -> String` |
 | `String::to_upper` / `String::to_lower` | `(String) -> String` |
 | `String::count` | `(String, String) -> Int` |
+
+`String::from_byte(n)` always builds a 1-byte string from the low 8 bits of
+`n` (two's complement) and never traps — measured (#2203): `256` → byte 0,
+`257` → byte 1, `-1` → byte 255, `1000` → byte 232. A value above 127 is a
+raw byte, not a code point (ADR-0098); UTF-8-encoding a code point is a
+different, currently nonexistent function.
 
 **Array** (builtin): `length: (Array[T]) -> Int`, `get: (Array[T], Int) -> T`,
 `slice: (Array[T], Int, Int) -> Array[T]`,

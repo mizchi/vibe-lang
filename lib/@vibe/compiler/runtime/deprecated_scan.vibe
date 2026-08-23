@@ -254,7 +254,11 @@ export fn legacy_handler_warning_lines(source: String) -> Array[String] with Exc
 
 /// Scan `tokens` (with `starts` offsets into `source`) for uses of any
 /// deprecated name; one formatted warning line per use, in source order.
-fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: Array[Int], deprecated: Array[(String, String)]) -> Array[String] {
+/// `base` shifts every reported offset: 0 for a whole-file scan, and the
+/// snippet's absolute source offset when re-scanning a string
+/// interpolation's expression fragment (whose own starts are
+/// fragment-relative). Nested interpolations accumulate their bases.
+fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: Array[Int], deprecated: Array[(String, String)], base: Int) -> Array[String] {
   let out = dep_empty_strs()
   if Array::length(deprecated) == 0 {
     return out
@@ -305,7 +309,7 @@ fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: 
         }
         if hit2 >= 0 {
           let (dn, dm) = Array::get(deprecated, hit2)
-          Array::push(out, dep_warning_line(source, Array::get(starts, i), dn, dm))
+          Array::push(out, dep_warning_line(source, base + Array::get(starts, i), dn, dm))
         } else {
           ()
         }
@@ -314,6 +318,39 @@ fn deprecated_use_warnings_tokens(source: String, tokens: Array[Token], starts: 
         } else {
           i = i + 1
         }
+      },
+      TStringInterp(iparts, ioffsets) => {
+        // #2203: a deprecated name used inside a string interpolation
+        // (`"\{String::from_char_code(n)}"`) must warn like any other use --
+        // this arm was the measured blind spot behind "no warning fires".
+        // Expression snippets carry their absolute source offset (#947);
+        // literal chunks carry -1 and hold no code. Each snippet re-lexes in
+        // isolation and scans recursively with its base accumulated, so a
+        // nested interpolation still reports real file positions. A snippet
+        // that fails to re-lex is skipped: a warning pass must never fail a
+        // clean check (unreachable in practice -- the whole file already
+        // lexed once to produce this token).
+        let mut pi = 0
+        while pi < Array::length(iparts) {
+          let part_base = Array::get(ioffsets, pi)
+          if part_base >= 0 {
+            handle {
+              let (sub_tokens, sub_starts, _sub_ends) = lex_with_offsets(Array::get(iparts, pi))
+              let sub = deprecated_use_warnings_tokens(source, sub_tokens, sub_starts, deprecated, base + part_base)
+              let mut wi = 0
+              while wi < Array::length(sub) {
+                Array::push(out, Array::get(sub, wi))
+                wi = wi + 1
+              }
+            } with Exception {
+              Throw(_) => ()
+            }
+          } else {
+            ()
+          }
+          pi = pi + 1
+        }
+        i = i + 1
       },
       _ => {
         i = i + 1
@@ -385,7 +422,7 @@ export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Ar
     }
     d = d + 1
   }
-  let out = deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated)
+  let out = deprecated_use_warnings_tokens(entry_source, tokens, starts, deprecated, 0)
   let syntax_warnings = legacy_handler_warning_lines(entry_source)
   let mut wi = 0
   while wi < Array::length(syntax_warnings) {
