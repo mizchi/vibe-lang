@@ -289,17 +289,37 @@ fn desugar_guarded(arms: Array[(Pat, Expr, Expr)], i: Int, scrut: Expr, context:
   }
 }
 
-/// #2197: the compound-assignment token's operator, or None when `tk` is not
-/// one. Kept separate so the arm-body tail below states each target shape once
-/// instead of once per operator, the way parse_block_steps has to.
-fn arm_assign_op(tk: Token) -> Option[String] {
+/// #2197: does an assignment tail begin at `tk`? The arm parsers ask this
+/// BEFORE calling parse_arm_assign_tail, because the answer is `false` for
+/// almost every arm and the call is not free: its `(Expr, Int)` result is a
+/// heap tuple, and paying for one per arm cost 15.4 B/arm -- +5.4% B/op on
+/// parser_bench's parse_wide_match, +5.1% on parse_expr_match (measured).
+///
+/// parse_arm_assign_tail stays TOTAL on its own -- it answers `(body, at)` for
+/// a token that is not an assignment. This predicate only skips the call, so a
+/// disagreement between the two costs a missed tail or a wasted call, never a
+/// wrong parse.
+fn arm_assign_follows(tk: Token) -> Bool {
   match tk {
-    TPlusEq => Some("+"),
-    TMinusEq => Some("-"),
-    TStarEq => Some("*"),
-    TSlashEq => Some("/"),
-    TPercentEq => Some("%"),
-    _ => None
+    TEq => true,
+    TPlusEq => true,
+    TMinusEq => true,
+    TStarEq => true,
+    TSlashEq => true,
+    TPercentEq => true,
+    _ => false
+  }
+}
+
+/// #2197: `body op= <rhs>` as an arm body. Split out so each compound operator
+/// is named exactly once in the dispatch below, without an Option to carry it.
+fn parse_arm_compound_assign(tokens: Array[Token], body: Expr, at: Int, op: String, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  match body {
+    EIdent(name, _) => {
+      let (val, next) = parse_recur(tokens, at + 1, 0, context)
+      (EAssignOp(name, op, val, EUnit), next)
+    },
+    _ => throw("invalid assignment target")
   }
 }
 
@@ -321,49 +341,44 @@ fn arm_assign_op(tk: Token) -> Option[String] {
 /// same `invalid assignment target` a block statement gets, not the pattern
 /// error.
 fn parse_arm_assign_tail(tokens: Array[Token], body: Expr, at: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  let tk = peek(tokens, at)
-  match arm_assign_op(tk) {
-    Some(op) => match body {
+  match peek(tokens, at) {
+    TPlusEq => parse_arm_compound_assign(tokens, body, at, "+", parse_recur, context),
+    TMinusEq => parse_arm_compound_assign(tokens, body, at, "-", parse_recur, context),
+    TStarEq => parse_arm_compound_assign(tokens, body, at, "*", parse_recur, context),
+    TSlashEq => parse_arm_compound_assign(tokens, body, at, "/", parse_recur, context),
+    TPercentEq => parse_arm_compound_assign(tokens, body, at, "%", parse_recur, context),
+    TEq => match body {
       EIdent(name, _) => {
         let (val, next) = parse_recur(tokens, at + 1, 0, context)
-        (EAssignOp(name, op, val, EUnit), next)
+        (EAssign(name, val, EUnit), next)
+      },
+      EDot(obj, field, _, _) => {
+        let (val, next) = parse_recur(tokens, at + 1, 0, context)
+        let set_args = empty_exprs()
+        Array::push(set_args, obj)
+        Array::push(set_args, EString(field))
+        Array::push(set_args, val)
+        (ECall(EIdent("__set_field", -1), set_args, -1), next)
+      },
+      ECall(idx_callee, idx_args, _) => {
+        let is_index = match idx_callee {
+          EIdent(icn, _) => icn == "__index",
+          _ => false
+        }
+        if is_index && Array::length(idx_args) == 2 {
+          let (val, next) = parse_recur(tokens, at + 1, 0, context)
+          let set_args = empty_exprs()
+          Array::push(set_args, Array::get(idx_args, 0))
+          Array::push(set_args, Array::get(idx_args, 1))
+          Array::push(set_args, val)
+          (ECall(EIdent("Array::set", -1), set_args, -1), next)
+        } else {
+          throw("invalid assignment target")
+        }
       },
       _ => throw("invalid assignment target")
     },
-    None => match tk {
-      TEq => match body {
-        EIdent(name, _) => {
-          let (val, next) = parse_recur(tokens, at + 1, 0, context)
-          (EAssign(name, val, EUnit), next)
-        },
-        EDot(obj, field, _, _) => {
-          let (val, next) = parse_recur(tokens, at + 1, 0, context)
-          let set_args = empty_exprs()
-          Array::push(set_args, obj)
-          Array::push(set_args, EString(field))
-          Array::push(set_args, val)
-          (ECall(EIdent("__set_field", -1), set_args, -1), next)
-        },
-        ECall(idx_callee, idx_args, _) => {
-          let is_index = match idx_callee {
-            EIdent(icn, _) => icn == "__index",
-            _ => false
-          }
-          if is_index && Array::length(idx_args) == 2 {
-            let (val, next) = parse_recur(tokens, at + 1, 0, context)
-            let set_args = empty_exprs()
-            Array::push(set_args, Array::get(idx_args, 0))
-            Array::push(set_args, Array::get(idx_args, 1))
-            Array::push(set_args, val)
-            (ECall(EIdent("Array::set", -1), set_args, -1), next)
-          } else {
-            throw("invalid assignment target")
-          }
-        },
-        _ => throw("invalid assignment target")
-      },
-      _ => (body, at)
-    }
+    _ => (body, at)
   }
 }
 
@@ -392,7 +407,15 @@ fn collect_match_arms(tokens: Array[Token], starts: Array[Int], pos: Int, b: Arr
   let body_mark = binder_capture_mark(context)
   let (raw_body, raw_bn) = parse_recur(tokens, arrow, 0, context)
   // #2197: `_ => ok = false` -- the assignment is part of THIS arm's body.
-  let (body, bn) = parse_arm_assign_tail(tokens, raw_body, raw_bn, parse_recur, context)
+  // Guarded so an ordinary arm does not pay for the helper's result tuple; see
+  // arm_assign_follows. These stay wasm locals (nothing captures them).
+  let mut body = raw_body
+  let mut bn = raw_bn
+  if arm_assign_follows(peek(tokens, raw_bn)) {
+    let (assigned, after_assign) = parse_arm_assign_tail(tokens, raw_body, raw_bn, parse_recur, context)
+    body = assigned
+    bn = after_assign
+  }
   let body_rows = binder_capture_take_from(context, body_mark)
   ArrayBuilder::push(b, (pat, arm_guard, body))
   match row_b {
@@ -462,9 +485,16 @@ fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_n
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
   let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, context)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
-  // #2197: a handler body is an arm body too -- same bare-assignment tail.
+  // #2197: a handler body is an arm body too -- same bare-assignment tail,
+  // same guard against paying for its result tuple on every arm.
   let (raw_expr, raw_next) = parse_recur(tokens, arrow_pos, 0, context)
-  let (expr, next) = parse_arm_assign_tail(tokens, raw_expr, raw_next, parse_recur, context)
+  let mut expr = raw_expr
+  let mut next = raw_next
+  if arm_assign_follows(peek(tokens, raw_next)) {
+    let (assigned, after_assign) = parse_arm_assign_tail(tokens, raw_expr, raw_next, parse_recur, context)
+    expr = assigned
+    next = after_assign
+  }
   ((qualified_pat, expr), next)
 }
 
@@ -489,9 +519,16 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
   }
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
-  // #2197: a handler body is an arm body too -- same bare-assignment tail.
+  // #2197: a handler body is an arm body too -- same bare-assignment tail,
+  // same guard against paying for its result tuple on every arm.
   let (raw_expr, raw_next) = parse_recur(tokens, arrow_pos, 0, context)
-  let (expr, next) = parse_arm_assign_tail(tokens, raw_expr, raw_next, parse_recur, context)
+  let mut expr = raw_expr
+  let mut next = raw_next
+  if arm_assign_follows(peek(tokens, raw_next)) {
+    let (assigned, after_assign) = parse_arm_assign_tail(tokens, raw_expr, raw_next, parse_recur, context)
+    expr = assigned
+    next = after_assign
+  }
   ((qualified_pat, expr), next)
 }
 
