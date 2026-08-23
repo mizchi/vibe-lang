@@ -3545,15 +3545,19 @@ fn loc_kw_before(source: String, off: Int, kw: String) -> Bool {
 /// Prefer a `fn name` declaration, then `let name` / `let mut name`, then a
 /// plain whole-word occurrence. -1 when the name cannot be found.
 ///
-/// #2244 review: the scan is a raw-text heuristic, and two failure modes
+/// #2244 review: the scan is a raw-text heuristic, and three failure modes
 /// made it confidently wrong -- a comment or string literal spelling the
 /// declaration (`// let v used to be ...`) anchored the diagnostic at the
-/// comment, and a shadowed binder anchored at the FIRST `let v` rather than
-/// the failing one. So the scan now skips `//` comments and string
-/// literals, and each tier anchors only when it is UNIQUE in what remains:
-/// one `fn name`, else one `let name`, else one bare occurrence. An
-/// ambiguous name (shadowing, re-declaration) returns -1 and the message
-/// stays unlocated -- missing information beats misinformation.
+/// comment, a shadowed binder anchored at the FIRST `let v` rather than
+/// the failing one, and a cross-kind collision (`fn v` at top level while
+/// the failing binding is a local `let v`) anchored at the unrelated fn --
+/// the marker records only the NAME, so the kind cannot break the tie.
+/// So the scan skips `//` comments and string literals, and it anchors
+/// only when exactly ONE declaration of the name exists across BOTH
+/// declaration kinds (`fn name` and `let name` combined), falling back to
+/// a bare occurrence only when it is the name's sole appearance. Anything
+/// ambiguous (shadowing, re-declaration, fn/let collision) returns -1 and
+/// the message stays unlocated -- missing information beats misinformation.
 fn find_fn_anchor_off(source: String, name: String) -> Int {
   let nlen = String::length(name)
   if nlen == 0 {
@@ -3630,11 +3634,14 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
         i = i + 1
       }
     }
-    if fn_count == 1 {
-      fn_off
-    } else if fn_count == 0 && let_count == 1 {
-      let_off
-    } else if fn_count == 0 && let_count == 0 && occ_count == 1 {
+    let decl_count = fn_count + let_count
+    if decl_count == 1 {
+      if fn_count == 1 {
+        fn_off
+      } else {
+        let_off
+      }
+    } else if decl_count == 0 && occ_count == 1 {
       first_off
     } else {
       0 - 1
