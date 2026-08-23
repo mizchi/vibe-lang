@@ -5941,6 +5941,13 @@ bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
 # a real input and asserts the gate fails (ratcheted -- 18 predate the rule).
 bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
 bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
+# ...and the two ways a self-test stops meaning anything without ever going
+# red: it depends on a tool CI does not have (ripgrep -- five of them did, and
+# were exempted rather than fixed), or its pattern quietly means something
+# other than it reads (`grep -E` does not interpret `\t`, so `'x\t'` matches
+# `xt` and the check answers "no match" forever). #2252.
+bash "$ROOT_DIR/scripts/check_gate_portability.sh"
+bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"

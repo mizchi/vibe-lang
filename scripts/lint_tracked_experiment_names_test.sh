@@ -9,12 +9,23 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 git -C "$TMP_ROOT" init -q
 mkdir -p "$TMP_ROOT/lib/@vibe/compiler" "$TMP_ROOT/scripts"
 
-cat > "$TMP_ROOT/lib/@vibe/compiler/cache_probe_test.vibe" <<'EOF'
-test "allowed legacy probe" { assert(true) }
+# These fixtures sat under lib/ and lib/ is not in the lint's scope, so BOTH
+# the "allowed" and the "violation" case were vacuous: the lint never looked at
+# either file, and the test failed with "missing new probe violation" against a
+# lint that was behaving correctly (#2252). A fixture outside the scanned scope
+# proves nothing about the scan.
+cat > "$TMP_ROOT/scripts/cache_probe_gate.sh" <<'EOF'
+echo allowed legacy probe
 EOF
 
-cat > "$TMP_ROOT/lib/@vibe/compiler/new_probe_test.vibe" <<'EOF'
-test "new probe" { assert(true) }
+cat > "$TMP_ROOT/scripts/new_probe_gate.sh" <<'EOF'
+echo new probe
+EOF
+
+# Out of scope on purpose: a probe-named file under lib/ must NOT be reported,
+# which is what makes the scope a claim and not a coincidence.
+cat > "$TMP_ROOT/lib/@vibe/compiler/cache_probe_test.vibe" <<'EOF'
+test "out of scope" { assert(true) }
 EOF
 
 cat > "$TMP_ROOT/scripts/.tmp_probe.sh" <<'EOF'
@@ -25,7 +36,7 @@ git -C "$TMP_ROOT" add .
 
 cat > "$TMP_ROOT/allowlist.txt" <<'EOF'
 # path category reason
-lib/@vibe/compiler/cache_probe_test.vibe gate legacy probe fixture
+scripts/cache_probe_gate.sh gate legacy probe fixture
 EOF
 
 if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
@@ -35,20 +46,29 @@ if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
   exit 1
 fi
 
-if ! rg -q 'lib/@vibe/compiler/new_probe_test.vibe' "$TMP_ROOT/fail.stderr"; then
+if ! grep -qE 'scripts/new_probe_gate\.sh' "$TMP_ROOT/fail.stderr"; then
   echo "experiment-name lint self-test: missing new probe violation" >&2
   cat "$TMP_ROOT/fail.stderr" >&2
   exit 1
 fi
 
-if ! rg -q 'scripts/.tmp_probe.sh' "$TMP_ROOT/fail.stderr"; then
+if ! grep -qE 'scripts/.tmp_probe.sh' "$TMP_ROOT/fail.stderr"; then
   echo "experiment-name lint self-test: missing .tmp violation" >&2
   cat "$TMP_ROOT/fail.stderr" >&2
   exit 1
 fi
 
+# The scope is a claim: a probe-named file OUTSIDE it must not be reported.
+# Without this, widening the scope to the whole tree would pass every case
+# above and quietly demand an allowlist entry for 16 compiler fixtures.
+if grep -qE 'lib/@vibe/compiler/cache_probe_test\.vibe' "$TMP_ROOT/fail.stderr"; then
+  echo "experiment-name lint self-test: reported a file outside the scanned scope" >&2
+  cat "$TMP_ROOT/fail.stderr" >&2
+  exit 1
+fi
+
 cat >> "$TMP_ROOT/allowlist.txt" <<'EOF'
-lib/@vibe/compiler/new_probe_test.vibe gate new gate fixture
+scripts/new_probe_gate.sh gate new gate fixture
 scripts/.tmp_probe.sh manual-experiment temporary script fixture
 EOF
 
@@ -57,8 +77,8 @@ VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
   bash "$CHECK_SCRIPT" >/dev/null
 
 cat > "$TMP_ROOT/allowlist.txt" <<'EOF'
-lib/@vibe/compiler/cache_probe_test.vibe invalid-category bad category
-lib/@vibe/compiler/missing_probe_test.vibe gate stale entry
+scripts/cache_probe_gate.sh invalid-category bad category
+scripts/missing_probe_gate.sh gate stale entry
 EOF
 
 if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
@@ -68,13 +88,13 @@ if VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
   exit 1
 fi
 
-if ! rg -q 'invalid category' "$TMP_ROOT/invalid.stderr"; then
+if ! grep -qE 'invalid category' "$TMP_ROOT/invalid.stderr"; then
   echo "experiment-name lint self-test: missing invalid category error" >&2
   cat "$TMP_ROOT/invalid.stderr" >&2
   exit 1
 fi
 
-if ! rg -q 'stale allowlist entry' "$TMP_ROOT/invalid.stderr"; then
+if ! grep -qE 'stale allowlist entry' "$TMP_ROOT/invalid.stderr"; then
   echo "experiment-name lint self-test: missing stale allowlist error" >&2
   cat "$TMP_ROOT/invalid.stderr" >&2
   exit 1

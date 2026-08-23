@@ -20,7 +20,7 @@ done
 
 require() {
   local pattern="$1" file="$2" message="$3"
-  if ! rg -q -- "$pattern" "$file"; then
+  if ! grep -qE -- "$pattern" "$file"; then
     echo "guest-profile contract: $message" >&2
     failed=1
   fi
@@ -28,7 +28,7 @@ require() {
 
 forbid() {
   local pattern="$1" file="$2" message="$3"
-  if rg -q -- "$pattern" "$file"; then
+  if grep -qE -- "$pattern" "$file"; then
     echo "guest-profile contract: $message" >&2
     failed=1
   fi
@@ -58,7 +58,14 @@ forbid 'finish\(io::BufWriter::new' "$runner" "profile writer can hide final flu
 require '\.take\(200\)' "$runner" "profile filename component bound is missing"
 
 # This short standalone document is English-only under the repository policy.
-if LC_ALL=C rg -q '[ぁ-んァ-ヶ一-龠]' "$profiling_doc"; then
+#
+# Matched as UTF-8 BYTE ranges under LC_ALL=C rather than as literal kana/kanji,
+# so the answer does not depend on the runner's locale or on ripgrep being
+# installed (#2252): `\xe3[\x81-\x83]` is exactly U+3040..U+30FF (kana) and
+# `[\xe4-\xe9]` + two continuation bytes is U+4000..U+9FFF (CJK). Verified to
+# match Japanese and to stay clean on English, Korean and emoji.
+ja_bytes="$(printf '\xe3[\x81-\x83]|[\xe4-\xe9][\x80-\xbf][\x80-\xbf]')"
+if LC_ALL=C grep -qE "$ja_bytes" "$profiling_doc"; then
   echo "guest-profile contract: docs/spec/profiling.md mixes Japanese into an English short document" >&2
   failed=1
 fi

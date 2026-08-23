@@ -48,6 +48,36 @@ if [ -f "$ALLOWLIST_FILE" ]; then
   cat "$ALLOWLIST_FILE" >> "$allowlist_in"
 fi
 
+# rg glob -> anchored ERE over repo-relative paths.
+#   **/  zero or more directories       *  anything but a separator
+#   **   anything at all                ?  one character but a separator
+# Written as an explicit scan rather than a sed pipeline because the sed form
+# got this wrong in a way that still LOOKED right: `[.[\]$()+^|{}]` closes the
+# bracket expression at the `\]` (POSIX bracket expressions have no backslash
+# escape), so only `. [ \` were escaped and `*.vibe` came out as `[^/]*.vibe`
+# -- a dot matching any character. Same defect class as the rest of #2248: a
+# check that appeared to hold because nothing distinguished the two outcomes.
+glob_to_path_regex() {
+  local glob="$1" out="" i=0 c
+  local n
+  n=${#glob}
+  while [ "$i" -lt "$n" ]; do
+    c="${glob:i:1}"
+    case "$c" in
+      '*')
+        if [ "${glob:i:3}" = '**/' ]; then out="$out(.*/)?"; i=$((i + 3)); continue; fi
+        if [ "${glob:i:2}" = '**' ]; then out="$out.*"; i=$((i + 2)); continue; fi
+        out="$out[^/]*"
+        ;;
+      '?') out="$out[^/]" ;;
+      '.' | '[' | ']' | '$' | '(' | ')' | '+' | '^' | '|' | '{' | '}' | '\') out="$out\\$c" ;;
+      *) out="$out$c" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
 while IFS=$'\t' read -r rule_id severity scope pattern message issue rest; do
   case "$rule_id" in
     ""|\#*) continue ;;
@@ -64,17 +94,32 @@ while IFS=$'\t' read -r rule_id severity scope pattern message issue rest; do
       ;;
   esac
 
-  set +e
-  matches="$(cd "$SCAN_ROOT" && rg --line-number --no-heading --glob "$scope" --regexp "$pattern" . 2>"$tmp_dir/rg.err")"
-  rg_status=$?
-  set -e
-  if [ "$rg_status" -eq 1 ]; then
+  # The scope is an rg-style glob; POSIX grep has no glob filter, so the file
+  # set is selected first and the pattern is applied to exactly those files.
+  # `-H` is what keeps the output shape stable: grep drops the filename when
+  # handed a single file, and the awk join below parses positionally as
+  # path:line:text (#2252).
+  scope_re="$(glob_to_path_regex "$scope")"
+  scope_files=()
+  while IFS= read -r scoped; do
+    [ -n "$scoped" ] || continue
+    scope_files+=("$scoped")
+  done < <(cd "$SCAN_ROOT" && find . -type f | sed 's|^\./||' | grep -E "^${scope_re}$" || true)
+  if [ "${#scope_files[@]}" -eq 0 ]; then
     continue
   fi
-  if [ "$rg_status" -ne 0 ]; then
-    echo "architecture-debt lint: rg failed for $rule_id" >&2
-    cat "$tmp_dir/rg.err" >&2
-    exit "$rg_status"
+
+  set +e
+  matches="$(cd "$SCAN_ROOT" && grep -nHE -- "$pattern" "${scope_files[@]}" 2>"$tmp_dir/scan.err")"
+  scan_status=$?
+  set -e
+  if [ "$scan_status" -eq 1 ]; then
+    continue
+  fi
+  if [ "$scan_status" -ne 0 ]; then
+    echo "architecture-debt lint: scan failed for $rule_id" >&2
+    cat "$tmp_dir/scan.err" >&2
+    exit "$scan_status"
   fi
 
   # The match TEXT, trimmed, is the allowlist key -- not the line number. See

@@ -2,6 +2,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# The self-test must not inherit its own answer. `.claude/hooks/session-start.sh`
+# EXPORTS `VIBE_REVIEW_LINT_GREP_BIN`, and inheriting it silently turned the
+# three "AST tier skipped" cases at the bottom of this file into no-ops: the
+# tier ran, so no WARNING was printed and the test failed with "a skipped AST
+# tier did not print the WARNING summary" (#2252). Every case below sets the
+# variables it depends on explicitly, so clearing them here is what makes the
+# result a property of the lint rather than of the machine.
+unset VIBE_REVIEW_LINT_GREP_BIN
+unset VIBE_REVIEW_LINT_RUNNER
+unset VIBE_REVIEW_LINT_REQUIRE_AST
+unset VIBE_REVIEW_LINT_PROJECT_ROOT
 CHECK_SCRIPT="$SCRIPT_DIR/lint_review_regressions.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_review_lint_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -26,7 +38,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$TMP_ROOT/fail.ou
   echo "review-regressions lint self-test: expected fixed synthetic binder violation" >&2
   exit 1
 fi
-if ! rg -q '__fixed_tmp' "$TMP_ROOT/fail.out"; then
+if ! grep -qE '__fixed_tmp' "$TMP_ROOT/fail.out"; then
   echo "review-regressions lint self-test: missing violation diagnostic" >&2
   cat "$TMP_ROOT/fail.out" >&2
   exit 1
@@ -78,7 +90,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: expected AST backend violation" >&2
   exit 1
 fi
-if ! rg -q '__multiline_tmp' "$TMP_ROOT/ast-fail.out"; then
+if ! grep -qE '__multiline_tmp' "$TMP_ROOT/ast-fail.out"; then
   echo "review-regressions lint self-test: AST backend lost the capture" >&2
   cat "$TMP_ROOT/ast-fail.out" >&2
   exit 1
@@ -115,7 +127,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: expected EAssignOp field-order violation" >&2
   exit 1
 fi
-if ! rg -q 'EAssignOp.*operator' "$TMP_ROOT/assign-op-fail.out"; then
+if ! grep -qE 'EAssignOp.*operator' "$TMP_ROOT/assign-op-fail.out"; then
   echo "review-regressions lint self-test: missing EAssignOp field-order diagnostic" >&2
   cat "$TMP_ROOT/assign-op-fail.out" >&2
   exit 1
@@ -148,7 +160,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: expected Async substring violation" >&2
   exit 1
 fi
-if ! rg -q 'Async effect membership must be exact' "$TMP_ROOT/async-row-fail.out"; then
+if ! grep -qE 'Async effect membership must be exact' "$TMP_ROOT/async-row-fail.out"; then
   echo "review-regressions lint self-test: missing Async substring diagnostic" >&2
   cat "$TMP_ROOT/async-row-fail.out" >&2
   exit 1
@@ -222,7 +234,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: changed multiline child escaped AST lint" >&2
   exit 1
 fi
-if ! rg -q 'EAssignOp.*operator' "$TMP_ROOT/multiline-fail.out"; then
+if ! grep -qE 'EAssignOp.*operator' "$TMP_ROOT/multiline-fail.out"; then
   echo "review-regressions lint self-test: missing multiline span diagnostic" >&2
   cat "$TMP_ROOT/multiline-fail.out" >&2
   exit 1
@@ -243,17 +255,17 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: runner exit 1 was ignored" >&2
   exit 1
 fi
-if ! rg -q 'bootstrap failed before lint execution' "$TMP_ROOT/runner-fail.out"; then
+if ! grep -qE 'bootstrap failed before lint execution' "$TMP_ROOT/runner-fail.out"; then
   echo "review-regressions lint self-test: runner failure diagnostic was lost" >&2
   cat "$TMP_ROOT/runner-fail.out" >&2
   exit 1
 fi
-if ! rg -q 'the AST scan did not run' "$TMP_ROOT/runner-fail.out"; then
+if ! grep -qE 'the AST scan did not run' "$TMP_ROOT/runner-fail.out"; then
   echo "review-regressions lint self-test: runner exit 1 was reported as a finding" >&2
   cat "$TMP_ROOT/runner-fail.out" >&2
   exit 1
 fi
-if rg -q 'structural regression\(s\) added' "$TMP_ROOT/runner-fail.out"; then
+if grep -qE 'structural regression\(s\) added' "$TMP_ROOT/runner-fail.out"; then
   echo "review-regressions lint self-test: runner exit 1 accused the staged diff" >&2
   cat "$TMP_ROOT/runner-fail.out" >&2
   exit 1
@@ -275,7 +287,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: silent runner exit 1 was ignored" >&2
   exit 1
 fi
-if ! rg -q 'the AST scan did not run' "$TMP_ROOT/runner-silent-fail.out"; then
+if ! grep -qE 'the AST scan did not run' "$TMP_ROOT/runner-silent-fail.out"; then
   echo "review-regressions lint self-test: silent runner failure diagnostic was lost" >&2
   cat "$TMP_ROOT/runner-silent-fail.out" >&2
   exit 1
@@ -308,7 +320,7 @@ if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   cat "$TMP_ROOT/unavailable.out" >&2
   exit 1
 fi
-if rg -q 'structural regression\(s\) added' "$TMP_ROOT/unavailable.out"; then
+if grep -qE 'structural regression\(s\) added' "$TMP_ROOT/unavailable.out"; then
   echo "review-regressions lint self-test: an unrunnable grep binary was reported as a regression" >&2
   cat "$TMP_ROOT/unavailable.out" >&2
   exit 1
@@ -330,7 +342,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: a failed scan must fail closed" >&2
   exit 1
 fi
-if ! rg -q 'the AST scan did not run' "$TMP_ROOT/scan-error.out"; then
+if ! grep -qE 'the AST scan did not run' "$TMP_ROOT/scan-error.out"; then
   echo "review-regressions lint self-test: a failed scan was reported as a finding" >&2
   cat "$TMP_ROOT/scan-error.out" >&2
   exit 1
@@ -354,12 +366,12 @@ if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   echo "review-regressions lint self-test: an unrunnable grep must still exit 0 by default" >&2
   exit 1
 fi
-if ! rg -q 'WARNING -- AST tier skipped \(text tier only; this is not a clean scan\)' "$TMP_ROOT/skip-summary.out"; then
+if ! grep -qE 'WARNING -- AST tier skipped \(text tier only; this is not a clean scan\)' "$TMP_ROOT/skip-summary.out"; then
   echo "review-regressions lint self-test: a skipped AST tier did not print the WARNING summary" >&2
   cat "$TMP_ROOT/skip-summary.out" >&2
   exit 1
 fi
-if rg -q '^review-regressions lint: ok' "$TMP_ROOT/skip-summary.out"; then
+if grep -qE '^review-regressions lint: ok' "$TMP_ROOT/skip-summary.out"; then
   echo "review-regressions lint self-test: a skipped AST tier still claimed ok" >&2
   cat "$TMP_ROOT/skip-summary.out" >&2
   exit 1
@@ -374,7 +386,7 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   cat "$TMP_ROOT/require-ast.out" >&2
   exit 1
 fi
-if ! rg -q 'the AST tier is required here and did not run' "$TMP_ROOT/require-ast.out"; then
+if ! grep -qE 'the AST tier is required here and did not run' "$TMP_ROOT/require-ast.out"; then
   echo "review-regressions lint self-test: REQUIRE_AST failure did not say why" >&2
   cat "$TMP_ROOT/require-ast.out" >&2
   exit 1

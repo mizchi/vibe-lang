@@ -57,10 +57,10 @@ staged_paths="$(git -C "$PROJECT_ROOT" diff "${DIFF_SELECTOR[@]}" --name-only --
 grep_available=0
 if [ -n "${VIBE_REVIEW_LINT_GREP_BIN:-}" ]; then
   grep_available=1
-elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN" \
+elif [ -x "$GREP_BIN" ] && grep -qE '^  grep\)' "$GREP_BIN" \
   && "$GREP_BIN" --version >/dev/null 2>&1; then
   grep_available=1
-elif [ -x "$GREP_BIN" ] && rg -q '^  grep\)' "$GREP_BIN"; then
+elif [ -x "$GREP_BIN" ] && grep -qE '^  grep\)' "$GREP_BIN"; then
   # #1870: `runtime/vibe` is here but its Rust runner (`bin/viberun`) is not,
   # which is the state of every checkout that has not built one. That is not
   # the same as "this machine cannot run vibe": the repository ships a node
@@ -153,8 +153,8 @@ if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
   if [ "$ast_status" -eq 0 ]; then
     violations=""
   elif [ "$ast_status" -eq 1 ]; then
-    if ! printf '%s\n' "$ast_output" | rg -q '^review-lint: found [0-9]+ structural regression\(s\)$' \
-      || ! printf '%s\n' "$ast_output" | rg -q '^review-lint:finding\t'; then
+    if ! printf '%s\n' "$ast_output" | grep -qE '^review-lint: found [0-9]+ structural regression\(s\)$' \
+      || ! printf '%s\n' "$ast_output" | grep -qE $'^review-lint:finding\t'; then
       # The runner also uses exit 1 for bootstrap and compile failures. Only a
       # completed lint result with machine-identifiable findings is filterable.
       ast_tool_error=1

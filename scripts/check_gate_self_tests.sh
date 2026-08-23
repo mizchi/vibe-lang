@@ -50,11 +50,10 @@ check_package_sibling_scope.sh check_playground_presets.sh
 check_portable_boundary.sh check_rc_default.sh
 check_tutorial_translation_parity.sh check_typecheck_fixtures.sh
 check_vibe_fmt.sh"
-baseline_failing="lint_review_regressions_test.sh
-lint_tracked_experiment_names_test.sh
-check_lock_clean_test.sh
-lint_architecture_debt_test.sh
-lint_guest_profile_contract_test.sh"
+# Pinned EMPTY (#2252): all five original entries were repaired, so any name
+# appearing in the failing list from here on is rejected outright. There is no
+# longer a supported way to exempt a failing self-test.
+baseline_failing=""
 fi
 
 not_baseline=""

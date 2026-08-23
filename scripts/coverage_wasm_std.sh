@@ -42,10 +42,10 @@ done
 cd "$PROJECT_ROOT"
 mapfile -t tests < <(find lib/@vibe/builtin -name '*_test.vibe' | sort)
 if [ -n "$FILTER" ]; then
-  mapfile -t tests < <(printf '%s\n' "${tests[@]}" | rg "$FILTER" || true)
+  mapfile -t tests < <(printf '%s\n' "${tests[@]}" | grep -E "$FILTER" || true)
 fi
 if [ -n "$EXCLUDE" ]; then
-  mapfile -t tests < <(printf '%s\n' "${tests[@]}" | rg -v "$EXCLUDE" || true)
+  mapfile -t tests < <(printf '%s\n' "${tests[@]}" | grep -vE "$EXCLUDE" || true)
 fi
 if [ "${#tests[@]}" -eq 0 ]; then
   echo "[wasm std coverage] no test files selected under lib/@vibe/builtin" >&2

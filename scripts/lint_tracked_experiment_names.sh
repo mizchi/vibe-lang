@@ -22,8 +22,14 @@ is_candidate_path() {
   local path="$1"
   local base="${path##*/}"
 
+  # `src/` and `vibe/` were in this list and neither directory exists: `src/`
+  # was the MoonBit host, retired in #594. A scope naming directories that are
+  # gone reads as broader coverage than it has (#2252). `lib/` is deliberately
+  # NOT here -- `probe` is an established naming convention for permanent
+  # measurement fixtures there (cache_probe_*, *_hotspot_probe), so the rule
+  # would be 16 allowlist entries and no signal.
   case "$path" in
-    .github/*|scripts/*|src/*|vibe/*) ;;
+    .github/*|scripts/*) ;;
     *) return 1 ;;
   esac
 

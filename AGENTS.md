@@ -888,3 +888,22 @@ PR レビューや Bug Issue の修正で、同種の問題が今後も起こり
   一般形は「代理を1つ潰す」ではなく「**代理が必要になる構造を無くす**」。
 - **scanner が読めないものについては黙らない。** 解決できない展開を含む呼び出しは
   FAIL にする。沈黙は「安全」ではなく「未検査」であり、両者は見分けがつかない。
+- **ゲートは自分が走る環境を仮定しない (#2252)。** 5 つの self-test が「壊れている」
+  ことにされていたが、原因は 2 つとも**環境の継承**だった: `.claude/hooks/session-start.sh`
+  が export する `VIBE_REVIEW_LINT_GREP_BIN` を self-test が受け取り、
+  「AST tier が動かない」前提の 3 ケースが無言で no-op になっていた。残りは
+  `rg` (ripgrep) — dev container にはあり CI には無い。どちらも、**検査対象と
+  無関係な理由で落ちるゲートは、直されずに免除される**という同じ結末になる。
+  self-test は依存する変数を先頭で `unset` してから各ケースで明示的に設定し、
+  ゲートは POSIX に無いツールを使わない。`scripts/check_gate_portability.sh` が
+  この 2 つを字句的に強制する。
+- **`grep -E` は `\t` を解釈しない。** `rg -q '^x:finding\t'` を
+  `grep -qE '^x:finding\t'` に機械的に置き換えると、パターンは静かに
+  `^x:findingt` になり**永久にマッチしなくなる**。それが通る側の条件だと
+  ゲートは緑のまま何も見なくなる。タブは ANSI-C quoting で書く:
+  `grep -qE $'^x:finding\t'`。`\d` も同じ (`\s` / `\w` / `\b` は GNU 拡張
+  として実在するので可)。これも `check_gate_portability.sh` が検出する。
+- **免除リストは空にできる。** `scripts/gate_self_test_failing.txt` は 5 件から
+  0 件になり、baseline も空に pin した — 以後この列に名前を足すと**拒否される**。
+  「落ちる self-test を免除する」という手段自体を無くすのが、免除を管理するより
+  安い。

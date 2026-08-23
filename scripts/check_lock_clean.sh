@@ -14,7 +14,7 @@ if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 else
   while IFS= read -r file; do
     LOCK_FILES+=("$file")
-  done < <(rg --files -g '**/index.lock')
+  done < <(find . -type f -name index.lock | sed 's|^\./||')
 fi
 
 if [ "${#LOCK_FILES[@]}" -eq 0 ]; then
@@ -24,7 +24,7 @@ fi
 
 # Keep this allowlist strict: probes/tmp entries must never ship in lock files.
 matches=$(
-  rg -n --no-heading --only-matching \
+  grep -noE \
     -e '"[^"]*\.vibe_test_wasm_[^"]*"' \
     -e '"\./\.tmp[^"]*"' \
     -e '"\./_build/[^"]*"' \
@@ -56,7 +56,7 @@ for lock_path in "${LOCK_FILES[@]}"; do
   if [ ! -f "$manifest_path" ]; then
     missing_manifest+=("$manifest_path")
   else
-    if ! rg -q '^[[:space:]]*export[[:space:]]+let[[:space:]]+version([[:space:]]*:[[:space:]]*[^=]+)?[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' "$manifest_path"; then
+    if ! grep -qE '^[[:space:]]*export[[:space:]]+let[[:space:]]+version([[:space:]]*:[[:space:]]*[^=]+)?[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' "$manifest_path"; then
       invalid_manifest+=("$manifest_path")
     fi
   fi
