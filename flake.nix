@@ -9,9 +9,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # pkfire (pkf) — canonical task runner (Taskfile.pkl). Not in nixpkgs;
-    # pinned to the same tag CI and the session-start hook use (v0.10.0).
+    # pinned to the same tag CI and the session-start hook use (v0.14.2).
     pkfire = {
-      url = "git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.10.0";
+      url = "git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.14.2";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -98,7 +98,7 @@
             # See docs/pkfire-pkspec.md for usage.
             pkgs.pkl
 
-            # pkfire (pkf) — canonical task runner, pinned to v0.10.0 via the
+            # pkfire (pkf) — canonical task runner, pinned to v0.14.2 via the
             # `pkfire` flake input. Not in nixpkgs.
             pkfire.packages.${system}.default
           ];
