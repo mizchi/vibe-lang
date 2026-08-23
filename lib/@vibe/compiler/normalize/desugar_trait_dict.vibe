@@ -8605,7 +8605,9 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   // this is the identity.
   let fty = subst_scope_formals_ty(fty0)
   match fty {
-    TyName(n) => if n == "Double" || n == "Float" {
+    TyName(n) => if n == "__EqAliasCycle" {
+      ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+    } else if n == "Double" || n == "Float" {
       // Under RC a Double is a BOXED heap value, so a raw `==` between two
       // Double fields compares box identity (always false) instead of the f64
       // payload. Wrap each operand in the identity `Double::to_float` so the
@@ -8717,11 +8719,19 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else {
       EBinOp("==", lhs, rhs)
     },
-    TyApp(n, args) => if generic_eq_is_expanding_recursion(n, args) {
-      ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
-    } else if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
-      generic_eq_record(n, args)
-      ECall(EIdent(generic_eq_name(n, args), -1), Array::slice([lhs, rhs], 0, 2), -1)
+    TyApp(n, args) => if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
+      let canonical_args = for arg in args {
+        eq_expand_alias_ty(arg)
+      }
+      if generic_eq_is_expanding_recursion(n, canonical_args) {
+        ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+      } else {
+        generic_eq_record(n, canonical_args)
+        ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
+          lhs,
+          rhs
+        ], 0, 2), -1)
+      }
     } else if str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
     } else {
@@ -8821,37 +8831,45 @@ fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> Ty
   }
 }
 
-fn eq_expand_alias_ty(ty: TypeExpr, depth: Int) -> TypeExpr {
-  if depth >= 32 {
-    ty
-  } else {
-    match ty {
-      TyName(name) => eq_expand_alias_app(name, array_empty(), ty, depth),
-      TyApp(head, args) => {
-        let expanded_args = for arg in args {
-          eq_expand_alias_ty(arg, depth + 1)
-        }
-        eq_expand_alias_app(head, expanded_args, TyApp(head, expanded_args), depth)
-      },
-      TyFn(params, result, effect) => TyFn(for param in params {
-        eq_expand_alias_ty(param, depth + 1)
-      }, eq_expand_alias_ty(result, depth + 1), effect),
-      TyTuple(items) => TyTuple(for item in items {
-        eq_expand_alias_ty(item, depth + 1)
-      }),
-      TyUnit => TyUnit
-    }
+fn eq_expand_alias_ty(ty: TypeExpr) -> TypeExpr {
+  eq_expand_alias_ty_seen(ty, array_empty())
+}
+
+fn eq_expand_alias_ty_seen(ty: TypeExpr, seen: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(name) => eq_expand_alias_app(name, array_empty(), ty, seen),
+    TyApp(head, args) => {
+      let expanded_args = for arg in args {
+        eq_expand_alias_ty_seen(arg, seen)
+      }
+      eq_expand_alias_app(head, expanded_args, TyApp(head, expanded_args), seen)
+    },
+    TyFn(params, result, effect) => TyFn(for param in params {
+      eq_expand_alias_ty_seen(param, seen)
+    }, eq_expand_alias_ty_seen(result, seen), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      eq_expand_alias_ty_seen(item, seen)
+    }),
+    TyUnit => TyUnit
   }
 }
 
-fn eq_expand_alias_app(head: String, args: Array[TypeExpr], fallback: TypeExpr, depth: Int) -> TypeExpr {
+fn eq_expand_alias_app(head: String, args: Array[TypeExpr], fallback: TypeExpr, seen: Array[String]) -> TypeExpr {
   let mut i = 0
   let mut out = fallback
   let mut found = false
   while i < Array::length(dtd_eq_type_aliases) {
     let alias = Array::get(dtd_eq_type_aliases, i)
     if !found && alias.0 == head && Array::length(alias.1) == Array::length(args) {
-      out = eq_expand_alias_ty(eq_subst_ty(alias.2, alias.1, args), depth + 1)
+      if str_array_contains(seen, head) {
+        out = TyName("__EqAliasCycle")
+      } else {
+        let next_seen = for item in seen {
+          item
+        }
+        Array::push(next_seen, head)
+        out = eq_expand_alias_ty_seen(eq_subst_ty(alias.2, alias.1, args), next_seen)
+      }
       found = true
     } else {
       ()
@@ -8863,7 +8881,7 @@ fn eq_expand_alias_app(head: String, args: Array[TypeExpr], fallback: TypeExpr, 
 
 fn gen_specialized_eq_fn(head: String, args: Array[TypeExpr], params0: Array[String], fields0: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
   let fields = for field in fields0 {
-    (field.0, eq_expand_alias_ty(eq_subst_ty(field.1, params0, args), 0))
+    (field.0, eq_expand_alias_ty(eq_subst_ty(field.1, params0, args)))
   }
   Array::push(dtd_eq_specialization_stack, TyApp(head, args))
   let mut body = EBool(true)
