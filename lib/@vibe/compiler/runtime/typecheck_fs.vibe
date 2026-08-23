@@ -76,6 +76,10 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   expand_interp_stmts
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/compiler/loader {
   ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
 }
@@ -5301,6 +5305,28 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
 /// Returns [] when the source lexes, parses, and checks cleanly.
 /// Foundation for `vibe check` / LSP multi-diagnostic reporting.
 export fn collect_all_diagnostics(source: String) -> Array[String] with Exception {
+  // #2227, round 3 of the book-review eval: a leading `require @scope/name
+  // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
+  // ingestion blanks before parsing -- but this single-file lane parsed the
+  // RAW buffer and answered `unexpected token: =` for a file the build
+  // accepts. Blank it the same way; the blanked twin is offset-preserving,
+  // so every position below stays exact. A head the loader itself rejects
+  // becomes the diagnostic, the same answer the import lane gives.
+  let (pin_blanked, pin_err) = handle {
+    let (_pins, blanked) = extract_require_pins(source)
+    (blanked, "")
+  } with Exception {
+    Throw(m) => (source, m)
+  }
+  if pin_err != "" {
+    return [pin_err]
+  } else {
+    ()
+  }
+  collect_all_diagnostics_on(pin_blanked)
+}
+
+fn collect_all_diagnostics_on(source: String) -> Array[String] with Exception {
   let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(source)
   if Array::length(lex_err_msgs) > 0 {
     // Report ONLY the lexer errors: the recovered token stream has holes, so
