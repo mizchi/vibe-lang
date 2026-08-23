@@ -78,7 +78,13 @@ run_transcript() {
   local rc=0
   (
     cd "$workdir"
-    VIBE_RUNNER="$SHIM" VIBE_CLI_WASM="$STAGE2" VIBE_TEST_CLI_WASM="$STAGE2" \
+    # The launcher's pass-cache is PERSISTENT ($VIBE_HOME/cache/test, keyed
+    # on the compiled wasm's sha256); a warm cache answers
+    # `ok <file> (cached)`, which is not the transcript the book shows.
+    # Point the cache inside this gate's own scratch tree so every run is a
+    # first run.
+    VIBE_TEST_CACHE="$workdir/tcache" \
+      VIBE_RUNNER="$SHIM" VIBE_CLI_WASM="$STAGE2" VIBE_TEST_CLI_WASM="$STAGE2" \
       bash "$ROOT_DIR/runtime/vibe" test demo_test.vibe >transcript.actual 2>&1
   ) || rc=$?
   if [ "$rc" != "$want_rc" ]; then
