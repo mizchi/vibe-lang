@@ -10,9 +10,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/scripts"
 fail() { echo "[gate-self-tests-test] FAIL: $1" >&2; exit 1; }
-# The scratch tree has its own exemption baseline, and companions are not
-# executed here -- this test is about the gate's bookkeeping, and running the
-# scratch stubs would only prove that `#!/usr/bin/env bash` exits 0.
+# Bookkeeping cases run with execution OFF (the scratch stubs would only prove
+# `#!/usr/bin/env bash` exits 0); the execution behaviour itself is covered by
+# run_exec() below. Disabling it for every case left the gate's CENTRAL claim
+# untested -- deleting the execution loop entirely still passed this suite
+# (#2248 review).
 run() {
   VIBE_GATE_SELF_TEST_ROOT="$WORK" \
   VIBE_GATE_SELF_TEST_BASELINE="${SCRATCH_BASELINE:-check_thing.sh}" \
@@ -61,5 +63,32 @@ rm -f "$WORK/scripts/check_thing_test.sh"
 SCRATCH_BASELINE="something_else.sh" run && fail "an exemption outside the baseline was accepted"
 grep -q "not in the pinned baseline" "$WORK/out" || fail "the failure did not name the baseline rule"
 echo "  ok  an exemption outside the pinned baseline is rejected"
+
+# THE CENTRAL BEHAVIOUR: a companion that fails must be rejected. Without this
+# case, a regression that stops running companions leaves the gate green while
+# the guarantee it advertises is gone -- which is the very defect this gate was
+# written to stop, so the gate not being tested for it was the same mistake one
+# level up.
+run_exec() {
+  VIBE_GATE_SELF_TEST_ROOT="$WORK" \
+  VIBE_GATE_SELF_TEST_BASELINE="check_thing.sh" \
+  VIBE_GATE_SELF_TEST_BASELINE_FAILING="none_test.sh" \
+  VIBE_GATE_SELF_TESTS_RUN=1 \
+  bash "$CHECK" >"$WORK/out" 2>&1
+}
+
+hdr
+printf '#!/usr/bin/env bash\n' > "$WORK/scripts/check_thing.sh"
+printf '#!/usr/bin/env bash\necho boom >&2\nexit 1\n' > "$WORK/scripts/check_thing_test.sh"
+if run_exec; then fail "a FAILING companion was accepted"; fi
+grep -q "check_thing_test.sh" "$WORK/out" || fail "the failure did not name the companion"
+grep -q "do not pass" "$WORK/out" || fail "the failure did not say the companion failed"
+echo "  ok  a failing companion is rejected (execution actually happens)"
+
+# ...and a passing one is accepted, so the case above is not passing because
+# the gate rejects everything.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
+run_exec || { cat "$WORK/out" >&2; fail "a PASSING companion was rejected"; }
+echo "  ok  a passing companion is accepted"
 
 echo "[gate-self-tests-test] ok"

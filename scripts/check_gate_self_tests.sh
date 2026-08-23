@@ -23,7 +23,12 @@ trap 'rm -f "$WORK_LOG"' EXIT
 ALLOWLIST="scripts/gate_self_test_allowlist.txt"
 FAILING="scripts/gate_self_test_failing.txt"
 allowed="$(grep -v '^\s*#' "$ALLOWLIST" | grep -v '^\s*$' || true)"
-failing_allowed="$(grep -v '^\s*#' "$FAILING" | grep -v '^\s*$' || true)"
+failing_allowed="$(grep -v '^\s*#' "$FAILING" | grep -v '^\s*$' | awk '{print $1}' || true)"
+# Only `broken` entries are repair-checked. An `env-dependent` one passing
+# here says nothing about CI, and removing it on that evidence turns CI red --
+# measured: the three ripgrep-dependent tests pass in the dev container and
+# fail in the late lane (#2248 review).
+failing_broken="$(grep -v '^\s*#' "$FAILING" | awk '$2 == "broken" {print $1}' || true)"
 
 # BASELINE PIN. Documenting "deletion only" does not enforce it: a new gate
 # with no self-test could simply be appended to the allowlist and accepted
@@ -107,6 +112,7 @@ EOF
 # was written to stop (#2248 review). Discovery is by glob, so a future
 # companion is run without anyone remembering to add it to a list.
 failed_tests=""
+repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   for t in scripts/check_*_test.sh scripts/lint_*_test.sh; do
     [ -e "$t" ] || continue
@@ -114,7 +120,17 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
     [ -f "${t%_test.sh}.sh" ] || continue
     base="${t#scripts/}"
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
-      continue  # pre-existing failure, tracked in #2252
+      # A known-failing exemption is still RUN, because the interesting case is
+      # that it starts passing: skipping it outright means a repaired test (or
+      # one whose missing dependency arrived) stays permanently unexecuted, and
+      # any later regression in it is invisible until someone edits the list by
+      # hand (#2248 review). The ratchet has to notice its own entries going
+      # stale, exactly as the no-test allowlist does.
+      if bash "$t" >"$WORK_LOG" 2>&1 \
+         && printf '%s\n' "$failing_broken" | grep -qxF "$base"; then
+        repaired="$repaired $base"
+      fi
+      continue
     fi
     if ! bash "$t" >"$WORK_LOG" 2>&1; then
       failed_tests="$failed_tests $t"
@@ -125,6 +141,13 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
 fi
 
 rc=0
+if [ -n "$repaired" ]; then
+  echo "[gate-self-tests] FAIL: known-failing exemptions that now PASS:" >&2
+  for n in $repaired; do echo "  $n" >&2; done
+  echo "  Remove them from $FAILING -- the ratchet only tightens, and an" >&2
+  echo "  exemption left in place stops the test from being run at all." >&2
+  rc=1
+fi
 if [ -n "$failed_tests" ]; then
   echo "[gate-self-tests] FAIL: gate self-tests that do not pass:" >&2
   for t in $failed_tests; do echo "  $t" >&2; done
