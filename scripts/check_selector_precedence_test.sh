@@ -128,4 +128,18 @@ red "a derived clear variable is narrowed to an underived value" \
     "not derived" \
     'out = s.replace("sel_clears=\"$(selector_clears_before VIBE_BACKEND)\"", "sel_clears=\"\"", 1)'
 
+# #2248 review: anchoring assignment detection on line starts and
+# `;`/`then`/`else`/`do` missed shell's other separators, so an assignment
+# hidden behind `&&` right before the invocation was ignored.
+red "an assignment hidden behind &&" \
+    "not derived" \
+    'out = s.replace("  env $sel_clears $fs_env", "  true && sel_clears=\"\"\n  env $sel_clears $fs_env", 1)'
+
+# #2248 review: rejecting only the BARE `local VAR` let the initialized
+# declaration be deleted outright while the conditional assignment remained --
+# which aborts under `set -u`, or takes an INHERITED value into `env`.
+red "the derived declaration is deleted entirely" \
+    "never declared with a derived value" \
+    'out = s.replace("  local sel_clears=\"$(selector_clears_before VIBE_FS_COMPILE)\"\n", "", 1)'
+
 echo "[selector-precedence-test] ok"

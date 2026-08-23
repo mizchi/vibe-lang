@@ -170,12 +170,31 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     for v, _t in assigned:
         if not re.search(r'\$\{?' + v + r'\}?\b', block):
             continue
+        line_no = src[:m.start()].count("\n") + 1
+
+        # EVERY assignment to the variable, wherever it hides. Anchoring on
+        # line starts and `;`/`then`/`else`/`do` missed `&&` and `||`, so
+        # `true && sel_clears=""` right before the invocation was ignored
+        # (#2248 review). Rather than enumerate shell's separators -- the
+        # enumeration is what keeps being incomplete -- match the assignment
+        # ANYWHERE and let a false positive be the failure mode.
+        found_decl = False
+        for am in re.finditer(r'(?<![\w$])(local\s+)?' + v + r'=(?!=)([^\n]*)', lookback):
+            if 'selector_clears_before' not in am.group(2):
+                underived.append((line_no, v, am.group(2).strip()[:48] or "(empty)"))
+            elif am.group(1):
+                found_decl = True
+
+        # A bare `local VAR` leaves an uncovered path...
         if re.search(r'\blocal\s+' + v + r'\s*$', lookback, re.M):
-            uninitialized.append((src[:m.start()].count("\n") + 1, v))
-        for am in re.finditer(r'(?:^|;|\bthen\b|\belse\b|\bdo\b)\s*(?:local\s+)?'
-                              + v + r'=(?!=)([^\n]*)', lookback, re.M):
-            if 'selector_clears_before' not in am.group(1):
-                underived.append((src[:m.start()].count("\n") + 1, v, am.group(1).strip()[:40]))
+            uninitialized.append((line_no, v, "declared without a value"))
+        # ...and so does no declaration at all. Only rejecting the BARE form
+        # let the initialized `local VAR=...` line be deleted outright while
+        # the conditional assignment remained, which either aborts under
+        # `set -u` or -- worse -- takes an INHERITED value from the
+        # environment straight into `env` (#2248 review).
+        elif not found_decl:
+            uninitialized.append((line_no, v, "never declared with a derived value"))
 
     covered = inline + consumed
 
@@ -219,9 +238,8 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
 if uninitialized:
     print("[selector-precedence] FAIL: a derived clear variable is declared without a"
           " value, so some path reaches the runner with none:", file=sys.stderr)
-    for line_no, v in uninitialized:
-        print("  %s:%d -- `local %s` then assigned only inside branches."
-              % (launcher, line_no, v), file=sys.stderr)
+    for line_no, v, why in uninitialized:
+        print("  %s:%d -- %s: %s." % (launcher, line_no, v, why), file=sys.stderr)
         print("     Declare it WITH a selector_clears_before value and narrow after.",
               file=sys.stderr)
     sys.exit(1)

@@ -10,7 +10,16 @@ trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/scripts"
 fail() { echo "[gate-self-tests-test] FAIL: $1" >&2; exit 1; }
-run() { VIBE_GATE_SELF_TEST_ROOT="$WORK" bash "$CHECK" >"$WORK/out" 2>&1; }
+# The scratch tree has its own exemption baseline, and companions are not
+# executed here -- this test is about the gate's bookkeeping, and running the
+# scratch stubs would only prove that `#!/usr/bin/env bash` exits 0.
+run() {
+  VIBE_GATE_SELF_TEST_ROOT="$WORK" \
+  VIBE_GATE_SELF_TEST_BASELINE="${SCRATCH_BASELINE:-check_thing.sh}" \
+  VIBE_GATE_SELF_TEST_BASELINE_FAILING="none_test.sh" \
+  VIBE_GATE_SELF_TESTS_RUN=0 \
+  bash "$CHECK" >"$WORK/out" 2>&1
+}
 
 hdr() { printf '# scratch\n' > "$WORK/scripts/gate_self_test_allowlist.txt"; }
 
@@ -43,5 +52,14 @@ rm "$WORK/scripts/check_thing.sh" "$WORK/scripts/check_thing_test.sh"
 if run; then fail "a stale exemption (script gone) was accepted"; fi
 grep -q "script-gone" "$WORK/out" || fail "the failure did not name the removed script"
 echo "  ok  an exemption for a removed script is rejected"
+
+# An exemption outside the pinned baseline is rejected, so the documented
+# deletion-only ratchet is mechanically enforced rather than merely stated.
+hdr; printf 'check_thing.sh\n' >> "$WORK/scripts/gate_self_test_allowlist.txt"
+printf '#!/usr/bin/env bash\n' > "$WORK/scripts/check_thing.sh"
+rm -f "$WORK/scripts/check_thing_test.sh"
+SCRATCH_BASELINE="something_else.sh" run && fail "an exemption outside the baseline was accepted"
+grep -q "not in the pinned baseline" "$WORK/out" || fail "the failure did not name the baseline rule"
+echo "  ok  an exemption outside the pinned baseline is rejected"
 
 echo "[gate-self-tests-test] ok"
