@@ -65,4 +65,32 @@ if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$broken" >/dev/null 2>&1; then
   exit 1
 fi
 
+
+# #2244 round-3 finding: a leading `require ... = #pkg:sha1:` pin head is a
+# loader directive, not vibe syntax. The formatter used to feed it to the CST
+# formatter and mangle it into text the loader rejects (`require @vibe /
+# core0.2.0 = ...`), and the parse guard could not see it -- the RAW input
+# does not parse either. The head must come back byte-identical, the body
+# formatted, and the result must be a --check fixpoint.
+pin="$work/pin_head.vibe"
+printf 'require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn double(n:Int)->Int {\n  n*2\n}\n' >"$pin"
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$pin" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter declined a require-pin-head file" >&2
+  exit 1
+fi
+if ! head -1 "$pin" | grep -q '^require @vibe/core 0\.2\.0 = #pkg:sha1:0000000000000000000000000000000000000000$'; then
+  echo "vibe_fmt_parse_guard_test: formatter mangled the require-pin head" >&2
+  head -1 "$pin" >&2
+  exit 1
+fi
+if ! grep -q '^fn double(n: Int) -> Int {$' "$pin"; then
+  echo "vibe_fmt_parse_guard_test: body under a pin head was not formatted" >&2
+  sed -n '1,6p' "$pin" >&2
+  exit 1
+fi
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$pin" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: pin-head formatting is not a --check fixpoint" >&2
+  exit 1
+fi
+
 echo "vibe_fmt_parse_guard_test: ok"

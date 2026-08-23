@@ -16,6 +16,23 @@
 //#
 //# The check lives at the entry rather than inside the formatter because
 //# lib/@vibe/compiler/fmt has no dependencies by design, and the parser is one.
+//#
+//# A leading `require @scope/name x.y.z = #pkg:sha1:...` head is a loader
+//# directive, not vibe syntax (the same reason `.vpkg` headers get their own
+//# writer, #1435) -- every build-lane ingestion blanks it before parsing.
+//# The formatter used to feed those lines to the CST formatter and mangle
+//# them into text the loader rejects (`require @vibe / core0.2.0 = #pkg:
+//# sha1: ...`), and the #1821 parse guard could not see it: the RAW input
+//# does not parse either, so "input was not a program" excused the wreckage.
+//# The head is now split off with the loader's own classifier
+//# (extract_require_pins) and reattached verbatim; only the body is
+//# formatted, and the guard parses the body. A head the loader itself
+//# rejects (a malformed require line throws) falls back to the old
+//# whole-file path -- the promise stays "no worse", not "only valid input".
+
+import ../compiler/contract {
+  extract_require_pins
+}
 
 import ../compiler/fmt {
   format_source
@@ -44,13 +61,75 @@ fn has_suffix(s: String, suffix: String) -> Bool {
   }
 }
 
+/// The number of leading lines belonging to the require-pin head: the
+/// blanked twin (offset-preserving, pins overwritten with spaces) differs
+/// from the source exactly on the directive lines, so the head extends to
+/// the LAST differing line. 0 when the file has no pin head.
+fn require_head_line_count(src: String) -> Int with Exception {
+  let (pins, blanked) = extract_require_pins(src)
+  if Array::length(pins) == 0 {
+    0
+  } else {
+    let src_lines = String::split(src, "\n")
+    let blank_lines = String::split(blanked, "\n")
+    let mut last = 0 - 1
+    let mut i = 0
+    while i < Array::length(src_lines) && i < Array::length(blank_lines) {
+      if Array::get(src_lines, i) == Array::get(blank_lines, i) {
+        ()
+      } else {
+        last = i
+      }
+      i = i + 1
+    }
+    last + 1
+  }
+}
+
+fn join_lines(lines: Array[String], from: Int, to: Int) -> String {
+  let out = StringBuilder::new()
+  let mut i = from
+  while i < to {
+    if i > from {
+      StringBuilder::push(out, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(out, Array::get(lines, i))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
 export fn main() -> Int with Fs + Env + Stderr {
   let input = Env::args_get(0)
   let output = Env::args_get(1)
   let src = Fs::read_file(input)
+  // `.vpkg` package contracts get header handling inside format_source
+  // (#1435); the require-head split below is for plain vibe sources only.
+  let head_lines = if has_suffix(input, ".vpkg") {
+    0
+  } else {
+    handle {
+      require_head_line_count(src)
+    } with Exception {
+      Throw(_) => 0
+    }
+  }
+  let (head, body) = if head_lines > 0 {
+    let lines = String::split(src, "\n")
+    (join_lines(lines, 0, head_lines), join_lines(lines, head_lines, Array::length(lines)))
+  } else {
+    ("", src)
+  }
   // format_source dispatches on the extension: `.vpkg` package contracts
   // get header handling, everything else is plain vibe source (#1435).
-  let formatted = format_source(input, src)
+  let formatted_body = format_source(input, body)
+  let formatted = if head_lines > 0 {
+    head + "\n" + formatted_body
+  } else {
+    formatted_body
+  }
   // A `.vpkg` header is not vibe syntax, so a whole-file parse never succeeds
   // for one and the comparison below would say nothing. format_vpkg already
   // refuses to touch a header it cannot read, which is the same policy reached
@@ -58,8 +137,9 @@ export fn main() -> Int with Fs + Env + Stderr {
   //
   // Only a rewrite that BREAKS something is rejected. A file that did not parse
   // to begin with is still formatted: the promise is "no worse", not "only
-  // valid input".
-  if !has_suffix(input, ".vpkg") && program_parses(src) && !program_parses(formatted) {
+  // valid input". With a pin head split off, the parse question is asked of
+  // the BODY -- the head is not vibe syntax and is reattached verbatim.
+  if !has_suffix(input, ".vpkg") && program_parses(body) && !program_parses(formatted_body) {
     Fs::write_file(output, src)
     Stderr::write_stream("vibe fmt: refusing to rewrite " + input + "\n" + "  The formatted output does not parse, and the input did. This is a bug in\n" + "  the formatter, not a problem with the file. The file is unchanged; please\n" + "  report it with the source (see #1821).\n")
     1

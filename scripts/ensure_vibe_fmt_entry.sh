@@ -21,6 +21,8 @@ entry_wasm_rel="_build/vibe_fmt/fmt_entry.wasm"
 if [ ! -s "$ROOT_DIR/$entry_wasm_rel" ] || [ "$entry_src" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
    || [ "lib/@vibe/compiler/fmt/format.vibe" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
    || [ "lib/@vibe/compiler/fmt/index.vpkg" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
+   || [ "lib/@vibe/compiler/contract/contract.vibe" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
+   || [ "lib/@vibe/compiler/contract/index.vpkg" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
    || [ "lib/@vibe/parser/lexer.vibe" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
    || [ "lib/@vibe/parser/parser.vibe" -nt "$ROOT_DIR/$entry_wasm_rel" ] \
    || [ "lib/@vibe/parser/index.vpkg" -nt "$ROOT_DIR/$entry_wasm_rel" ]; then
