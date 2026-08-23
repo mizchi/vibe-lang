@@ -96,8 +96,10 @@ run_transcript() {
   fi
 }
 
-WORK="$ROOT_DIR/_build/_book_console"
-rm -rf "$WORK"; mkdir -p "$WORK"
+# Unique per invocation (#2253 review round 5): two overlapping gate runs in
+# the same checkout must not delete each other's shim, fixtures, or cache.
+mkdir -p "$ROOT_DIR/_build"
+WORK="$(mktemp -d "$ROOT_DIR/_build/_book_console.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # Launcher shim: route the compiler wasm (matched by exact path) to cli_main,
