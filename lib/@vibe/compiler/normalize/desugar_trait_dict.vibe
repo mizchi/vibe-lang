@@ -8374,7 +8374,7 @@ fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Boo
       } else {
         // Concrete declared generic instantiations get a comparator specialized
         // with these arguments. Unknown heads (Map included) remain fail-closed.
-        generic_eq_struct_declared(head) && args_ok
+        generic_eq_struct_declared(head) && generic_eq_observed_args_content_comparable(head, args, tparams)
       }
     },
     TyTuple(ts) => eq_tys_all_content_comparable(ts, tparams),
@@ -8390,6 +8390,95 @@ fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Boo
     // and the caller cannot tell the two apart from the outside.
     TyFn(_, _, _) => false
   }
+}
+
+fn generic_eq_formal_is_observed(head: String, formal: String, visiting: Array[String]) -> Bool {
+  let key = String::concat(head, String::concat("::", formal))
+  if str_array_contains(visiting, key) {
+    false
+  } else {
+    Array::push(visiting, key)
+    let mut observed = false
+    let mut i = 0
+    while i < Array::length(dtd_eq_generic_structs) {
+      let decl = Array::get(dtd_eq_generic_structs, i)
+      if decl.0 == head {
+        let mut fi = 0
+        while fi < Array::length(decl.2) {
+          if generic_eq_type_observes_formal(Array::get(decl.2, fi).1, formal, visiting) {
+            observed = true
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    Array::truncate(visiting, Array::length(visiting) - 1)
+    observed
+  }
+}
+
+fn generic_eq_type_observes_formal(ty: TypeExpr, formal: String, visiting: Array[String]) -> Bool {
+  match ty {
+    TyName(name) => name == formal,
+    TyApp(head, args) => if generic_eq_struct_declared(head) {
+      let mut observed = false
+      let mut i = 0
+      while i < Array::length(dtd_eq_generic_structs) {
+        let decl = Array::get(dtd_eq_generic_structs, i)
+        if decl.0 == head && Array::length(decl.1) == Array::length(args) {
+          let mut ai = 0
+          while ai < Array::length(args) {
+            if generic_eq_formal_is_observed(head, Array::get(decl.1, ai), visiting) && ty_mentions_name_in(Array::get(args, ai), Array::slice([
+              formal
+            ], 0, 1)) {
+              observed = true
+            } else {
+              ()
+            }
+            ai = ai + 1
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      observed
+    } else {
+      ty_mentions_name_in(ty, Array::slice([formal], 0, 1))
+    },
+    TyFn(_, _, _) => ty_mentions_name_in(ty, Array::slice([formal], 0, 1)),
+    TyTuple(_) => ty_mentions_name_in(ty, Array::slice([formal], 0, 1)),
+    TyUnit => false
+  }
+}
+
+fn generic_eq_observed_args_content_comparable(head: String, args: Array[TypeExpr], tparams: Array[String]) -> Bool {
+  let mut ok = false
+  let mut i = 0
+  while i < Array::length(dtd_eq_generic_structs) {
+    let decl = Array::get(dtd_eq_generic_structs, i)
+    if decl.0 == head && Array::length(decl.1) == Array::length(args) {
+      ok = true
+      let mut ai = 0
+      while ai < Array::length(args) {
+        if generic_eq_formal_is_observed(head, Array::get(decl.1, ai), empty_str_array()) && !eq_ty_field_is_content_comparable(Array::get(args, ai), tparams) {
+          ok = false
+        } else {
+          ()
+        }
+        ai = ai + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }
 
 fn eq_tys_all_content_comparable(ts: Array[TypeExpr], tparams: Array[String]) -> Bool {
