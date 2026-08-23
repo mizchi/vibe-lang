@@ -5932,6 +5932,15 @@ bash "$ROOT_DIR/scripts/test_vibe_fmt_launcher.sh"
 # missing six selectors, then fixed one arm at a time and still missed three.
 # So the requirement is DERIVED from cli_adapter rather than restated.
 bash "$ROOT_DIR/scripts/check_selector_precedence.sh"
+# ...and prove that check can FAIL. It reported ok on a hijackable tree five
+# separate times; each defect was caught by a reviewer, and each red test that
+# proved the fix lived only in a commit message, so the guarantee did not
+# survive the next edit. Every one of those five is now a case.
+bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
+# The same rule, for every gate: a new one ships with a self-test that mutates
+# a real input and asserts the gate fails (ratcheted -- 18 predate the rule).
+bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
+bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
