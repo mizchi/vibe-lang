@@ -1,0 +1,307 @@
+//# Generic derived equality uses each concrete field type.
+
+struct Box[T] {
+  value: T
+} derive (Eq)
+
+struct Outer {
+  box: Box[Array[Int]]
+} derive (Eq)
+
+struct Deep {
+  outer: Outer
+} derive (Eq)
+
+struct Leaf[T] {
+  value: T
+} derive (Eq)
+
+struct Holder[T] {
+  values: Array[T]
+} derive (Eq)
+
+struct Array_Int {
+  value: Int
+} derive (Eq)
+
+struct Chain[T] {
+  value: T;
+  next: Option[Chain[T]]
+} derive (Eq)
+
+struct Inner[T] {
+  value: T
+} derive (Eq)
+
+struct OuterGeneric[T] {
+  inner: Inner[T]
+} derive (Eq)
+
+struct RelatedChain[A, B] {
+  first: A;
+  second: B;
+  next: Option[RelatedChain[A, B]]
+} derive (Eq)
+
+struct Flip[A, B] {
+  first: A;
+  second: B;
+  next: Option[Flip[B, A]]
+} derive (Eq)
+
+struct Stable[T] {
+  value: T;
+  next: Option[Stable[Array[Int]]]
+} derive (Eq)
+
+struct Callback {
+  run: () -> Int
+}
+
+struct Phantom[T] {
+  id: Int
+} derive (Eq)
+
+struct FiniteA[T] {
+  value: T;
+  next: Option[FiniteB[Array[Int]]]
+} derive (Eq)
+
+struct FiniteB[T] {
+  value: T;
+  next: Option[FiniteA[Array[Int]]]
+} derive (Eq)
+
+type Ints = Array[Int]
+type DeepAlias00 = Array[Int]
+type DeepAlias01 = DeepAlias00
+type DeepAlias02 = DeepAlias01
+type DeepAlias03 = DeepAlias02
+type DeepAlias04 = DeepAlias03
+type DeepAlias05 = DeepAlias04
+type DeepAlias06 = DeepAlias05
+type DeepAlias07 = DeepAlias06
+type DeepAlias08 = DeepAlias07
+type DeepAlias09 = DeepAlias08
+type DeepAlias10 = DeepAlias09
+type DeepAlias11 = DeepAlias10
+type DeepAlias12 = DeepAlias11
+type DeepAlias13 = DeepAlias12
+type DeepAlias14 = DeepAlias13
+type DeepAlias15 = DeepAlias14
+type DeepAlias16 = DeepAlias15
+type DeepAlias17 = DeepAlias16
+type DeepAlias18 = DeepAlias17
+type DeepAlias19 = DeepAlias18
+type DeepAlias20 = DeepAlias19
+type DeepAlias21 = DeepAlias20
+type DeepAlias22 = DeepAlias21
+type DeepAlias23 = DeepAlias22
+type DeepAlias24 = DeepAlias23
+type DeepAlias25 = DeepAlias24
+type DeepAlias26 = DeepAlias25
+type DeepAlias27 = DeepAlias26
+type DeepAlias28 = DeepAlias27
+type DeepAlias29 = DeepAlias28
+type DeepAlias30 = DeepAlias29
+type DeepAlias31 = DeepAlias30
+type DeepAlias32 = DeepAlias31
+type DeepAlias33 = DeepAlias32
+
+fn equality_snapshot(value: Bool) -> String {
+  if value {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+test "explicit generic Bytes fields compare structurally" {
+  inspect(equality_snapshot(Box[Bytes]::{ value: Bytes::from_array([1, 2]) } == Box[Bytes]::{
+    value: Bytes::from_array([1, 2])
+  }), content = "true")
+}
+
+test "explicit generic Double fields compare structurally" {
+  inspect(equality_snapshot(Box[Double]::{ value: 1.5 } == Box[Double]::{
+    value: 1.5
+  }), content = "true")
+}
+
+test "explicit generic Map fields compare structurally" {
+  let left = Map::new()
+  let right = Map::new()
+  Map::set(left, "x", 1)
+  Map::set(right, "x", 1)
+  inspect(equality_snapshot(Box[Map[String, Int]]::{ value: left } == Box[Map[String, Int]]::{
+    value: right
+  }), content = "true")
+}
+
+test "generic alias arguments expand before field equality" {
+  let a = Box[Ints]::{ value: [1, 2] }
+  let b = Box[Ints]::{ value: [1, 2] }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "deep acyclic aliases expand without a fixed depth cutoff" {
+  let a = Box[DeepAlias33]::{ value: [1, 2] }
+  let b = Box[DeepAlias33]::{ value: [1, 2] }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "generic aggregate fields compare structurally" {
+  let a = Box::{ value: [1, 2] }
+  let b = Box::{ value: [1, 2] }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "generic aggregate equality stays structural through fields" {
+  let a = Deep::{ outer: Outer::{ box: Box::{ value: [1, 2] } } }
+  let b = Deep::{ outer: Outer::{ box: Box::{ value: [1, 2] } } }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "array and generic comparator worklists reach a fixpoint" {
+  let a = Holder[Leaf[Array[Int]]]::{ values: [Leaf::{ value: [1, 2] }] }
+  let b = Holder[Leaf[Array[Int]]]::{ values: [Leaf::{ value: [1, 2] }] }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "generic comparator names distinguish nested and declared types" {
+  let arrays_a = Box[Array[Int]]::{ value: [1, 2] }
+  let arrays_b = Box[Array[Int]]::{ value: [1, 2] }
+  inspect(equality_snapshot(arrays_a == arrays_b), content = "true")
+  let arrays_c = Box[Array[Int]]::{ value: [1, 3] }
+  inspect(equality_snapshot(arrays_a == arrays_c), content = "false")
+  let named_a = Box[Array_Int]::{ value: Array_Int::{ value: 7 } }
+  let named_b = Box[Array_Int]::{ value: Array_Int::{ value: 7 } }
+  inspect(equality_snapshot(named_a == named_b), content = "true")
+  let named_c = Box[Array_Int]::{ value: Array_Int::{ value: 8 } }
+  inspect(equality_snapshot(named_a == named_c), content = "false")
+}
+
+test "regular generic recursion reuses its specialization" {
+  let a = Chain[Int]::{
+    value: 1,
+    next: Some(Chain[Int]::{ value: 2, next: None })
+  }
+  let b = Chain[Int]::{
+    value: 1,
+    next: Some(Chain[Int]::{ value: 2, next: None })
+  }
+  let c = Chain[Int]::{
+    value: 1,
+    next: Some(Chain[Int]::{ value: 3, next: None })
+  }
+  inspect(equality_snapshot(a == b), content = "true")
+  inspect(equality_snapshot(a == c), content = "false")
+}
+
+test "regular recursion canonicalizes aggregate aliases" {
+  let tail_a = Chain[Ints]::{ value: [2], next: None }
+  let tail_b = Chain[Ints]::{ value: [2], next: None }
+  let a = Chain[Ints]::{ value: [1], next: Some(tail_a) }
+  let b = Chain[Ints]::{ value: [1], next: Some(tail_b) }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "unrelated concrete specializations are not recursion" {
+  let inner_a = Inner[Int]::{ value: 1 }
+  let inner_b = Inner[Int]::{ value: 1 }
+  inspect(equality_snapshot(inner_a == inner_b), content = "true")
+  let outer_a = OuterGeneric[Array[Int]]::{
+    inner: Inner[Array[Int]]::{ value: [1, 2] }
+  }
+  let outer_b = OuterGeneric[Array[Int]]::{
+    inner: Inner[Array[Int]]::{ value: [1, 2] }
+  }
+  inspect(equality_snapshot(outer_a == outer_b), content = "true")
+}
+
+test "regular recursion reuses an identical related specialization" {
+  let tail_a = RelatedChain[Int, Array[Int]]::{
+    first: 2,
+    second: [3],
+    next: None
+  }
+  let tail_b = RelatedChain[Int, Array[Int]]::{
+    first: 2,
+    second: [3],
+    next: None
+  }
+  let a = RelatedChain[Int, Array[Int]]::{
+    first: 1,
+    second: [2],
+    next: Some(tail_a)
+  }
+  let b = RelatedChain[Int, Array[Int]]::{
+    first: 1,
+    second: [2],
+    next: Some(tail_b)
+  }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "finite recursive argument permutations stay structural" {
+  let tail_a = Flip[Array[Int], Int]::{ first: [2], second: 3, next: None }
+  let tail_b = Flip[Array[Int], Int]::{ first: [2], second: 3, next: None }
+  let a = Flip[Int, Array[Int]]::{ first: 1, second: [2], next: Some(tail_a) }
+  let b = Flip[Int, Array[Int]]::{ first: 1, second: [2], next: Some(tail_b) }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "finite constant recursive specializations stay structural" {
+  let tail_a = Stable[Array[Int]]::{ value: [2], next: None }
+  let tail_b = Stable[Array[Int]]::{ value: [2], next: None }
+  let a = Stable[Int]::{ value: 1, next: Some(tail_a) }
+  let b = Stable[Int]::{ value: 1, next: Some(tail_b) }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "finite mutual specialization cycles stay structural" {
+  let tail_a = FiniteB[Array[Int]]::{ value: [2], next: None }
+  let tail_b = FiniteB[Array[Int]]::{ value: [2], next: None }
+  let a = FiniteA[Int]::{ value: 1, next: Some(tail_a) }
+  let b = FiniteA[Int]::{ value: 1, next: Some(tail_b) }
+  inspect(equality_snapshot(a == b), content = "true")
+}
+
+test "untyped empty bindings adopt concrete generic equality" {
+  let arrays_left = []
+  let arrays_right = []
+  Array::push(arrays_left, Box[Array[Int]]::{ value: [1, 2] })
+  Array::push(arrays_right, Box[Array[Int]]::{ value: [1, 2] })
+  inspect(equality_snapshot(arrays_left == arrays_right), content = "true")
+  let doubles_left = []
+  let doubles_right = []
+  Array::push(doubles_left, Box[Double]::{ value: 1.5 })
+  Array::push(doubles_right, Box[Double]::{ value: 1.5 })
+  inspect(equality_snapshot(doubles_left == doubles_right), content = "true")
+  let deep_left = []
+  let deep_right = []
+  Array::push(deep_left, Deep::{ outer: Outer::{ box: Box::{ value: [1, 2] } } })
+  Array::push(deep_right, Deep::{ outer: Outer::{ box: Box::{ value: [1, 2] } } })
+  inspect(equality_snapshot(deep_left == deep_right), content = "true")
+}
+
+test "unused generic arguments do not block equality adoption" {
+  let left = []
+  let right = []
+  Array::push(left, Phantom[Callback]::{ id: 1 })
+  Array::push(right, Phantom[Callback]::{ id: 1 })
+  inspect(equality_snapshot(left == right), content = "true")
+}
+
+test "explicit unit generic arguments survive equality shapes" {
+  let tuple_left = []
+  let tuple_right = []
+  Array::push(tuple_left, Box[()]::{ value: () })
+  Array::push(tuple_right, Box[()]::{ value: () })
+  inspect(equality_snapshot(tuple_left == tuple_right), content = "true")
+  let named_left = []
+  let named_right = []
+  Array::push(named_left, Box[Unit]::{ value: () })
+  Array::push(named_right, Box[Unit]::{ value: () })
+  inspect(equality_snapshot(named_left == named_right), content = "true")
+}
