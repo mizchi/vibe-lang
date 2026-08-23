@@ -472,7 +472,19 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
         let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
         throw(locate_type_error(snapshot_entry_source, verified))
       } else {
-        throw(locate_type_error(entry_source, msg))
+        // #2198: the missing-Show interpolation throw escapes the desugar
+        // (reached via check_file_fs_mode's effect_lowering_prelude, or via
+        // expand_interp_stmts below) with no `<path>: ` prefix -- path
+        // prefixing lives in check_module_job, which that throw bypasses.
+        // Prefix this one message class here; every other message reaching
+        // this catch is already path-prefixed by its module job, and
+        // prefixing unconditionally would double those.
+        let located = locate_type_error(entry_source, msg)
+        if String::starts_with(msg, "cannot interpolate a value of type `") {
+          throw(String::concat(input_path, String::concat(": ", located)))
+        } else {
+          throw(located)
+        }
       }
     }
   }

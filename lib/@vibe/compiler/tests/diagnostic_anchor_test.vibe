@@ -82,6 +82,27 @@ test "mismatched if branches with a literal else still anchor on the if" {
   assert(anchored_at(src, 3, 13))
 }
 
+test "all-literal if branches anchor on the binder" {
+  // #2198 (p11 shape): both branches, the then-tail AND the condition are
+  // literals, so every offset fallback comes up empty. The `[@fn=]` binder
+  // anchor recovers `let v` -- coarser than the disagreeing branch, but a
+  // real position instead of a file-only message.
+  //    123456
+  //  `  let v` -- `v` is column 7.
+  let src = "fn f() -> Bool {\n  let v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 2, 7))
+}
+
+test "interpolating a Show-less struct anchors on the enclosing binding" {
+  // #2198 (p04 shape): the synthesized __to_string call has no offset (the
+  // interp snippet re-lexes without offsets), so the message carries the
+  // enclosing binding's [@fn=] marker instead and anchors at `fn main`.
+  let src = "struct Point {\n  x: Int\n}\n\nfn main() -> Unit {\n  let p = Point::{ x: 3 }\n  let s = \"\\{p}\"\n  ()\n}\n"
+  assert(String::contains(first_diag(src), "cannot interpolate a value of type `Point`"))
+  assert(String::contains(first_diag(src), "line 5:4"))
+}
+
 test "an incompatible array element points at that element" {
   let src = "fn f() -> Int {\n  let s = \"x\"\n  let a = [1, s]\n  1\n}\n"
   assert(String::contains(first_diag(src), "array elements have incompatible types"))
