@@ -69,7 +69,7 @@ fn main with Console {
   let p = Point::{
     x: 3, y: 4
   }
-  println("p = \{Point::to_string(p)}")
+  println("p = \{p}")
   println("opt = \{Some(1)}")
   println("pair = \{(2, 3)}")
 }
