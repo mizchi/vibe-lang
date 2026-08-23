@@ -633,6 +633,32 @@ A | B               // or-pattern
 x if x > 0          // guard (match arm only)
 ```
 
+### Arm bodies
+
+An arm body is an expression, and **an assignment counts** (#2197) -- `_ => ok =
+false` needs no braces, and neither do the compound operators or a field or
+index target. The braced form is the same program.
+
+```vibe
+let demo_arm_assign: (Int) -> Int = (n) -> {
+  let mut total = 0
+  let xs = [1, 2, 3]
+  match n {
+    0 => total = 10,
+    1 => total += 5,
+    2 => xs[0] = 9,
+    _ => total = n
+  }
+  total + Array::get(xs, 0)
+}
+```
+
+This used to be a parse error whose position pointed at the enclosing
+declaration (`unexpected in pattern: =`), because the body stopped at the `=`
+and the arm collector read that token as the NEXT arm's pattern. An
+unassignable target now says `invalid assignment target`, the same message the
+statement position gives.
+
 ### Destructuring let
 
 パターン `let` (tuple destructure `let (a, b) = ..`、named-struct destructure
@@ -1931,30 +1957,6 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
-
-### A match arm body cannot be a bare assignment
-
-`_ => ok = false` is rejected; `_ => { ok = false }` is accepted. Both the
-committed seed and the current stage2 answer the same way (measured
-2026-08-22), so this is the language, not a bootstrap lag. Rust accepts the
-unbraced form, which is why it gets reached for.
-
-```vibe skip
-// skip: this is a parse error, shown for the message it produces
-match n {
-  2 => ok = false,
-  _ => ok = true
-}
-```
-
-```
-line 1:1: unexpected in pattern: =
-```
-
-The diagnostic is worth knowing precisely because it is bad on both counts the
-CLI policy names: the position is the **enclosing declaration**, not the arm,
-and the message names an internal parser state rather than the edit that fixes
-it (add the braces). Tracked as #2197.
 
 ### A `handle` that type-checks can still fail to compile
 

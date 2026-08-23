@@ -45,3 +45,36 @@ test "parse else call expr without braces" {
   }
   assert(result == "if cond { x } else { f(y) }")
 }
+
+//# #2197: a bare assignment as a match / handle arm body
+
+test "parse match arm body as a bare assignment" {
+  let result = handle {
+    parse_print("match x { 1 => ok = false, _ => ok = true }")
+  } with Exception {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "match x { 1 => { ok = false; () }, _ => { ok = true; () } }")
+}
+
+test "parse match arm body as a compound assignment" {
+  let result = handle {
+    parse_print("match x { _ => n += 1 }")
+  } with Exception {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "match x { _ => { n += 1; () } }")
+}
+
+/// An assignment token can never begin a pattern, so `=` after an arm body is
+/// always an assignment attempt -- an unassignable target gets the same message
+/// a block statement gets, not `unexpected in pattern: =` at the enclosing
+/// declaration (#2197).
+test "an unassignable match arm assignment target is named as such" {
+  let result = handle {
+    parse_print("match x { _ => 1 = 2 }")
+  } with Exception {
+    Throw(e) => String::concat("ERROR: ", e)
+  }
+  assert(result == "ERROR: invalid assignment target")
+}
