@@ -89,6 +89,56 @@ let b: Bool = true
 let u: Unit = ()
 ```
 
+### Multi-line raw strings (`#|`)
+
+`#|` spells an ordinary `String` literal (MoonBit-style). Each `#|` takes the
+rest of its physical line **verbatim** — no `\{}` interpolation, no `\n`/`\\`
+escape processing — and consecutive `#|` lines whose `#` sits at the **same
+column** join with `"\n"`. The first following line that does not start with
+`#|` simply ends the literal (that is not an error); a continuation `#|` at a
+*different* column is a located lex error, never a silently shorter block.
+Measured (2026-08-23):
+
+```vibe
+test "same column joins with newline" {
+  let s = #|line one
+          #|line two
+  assert_eq(s, "line one\nline two")
+}
+
+test "content is raw: no interpolation, no escapes" {
+  let s = #|no \{interp} and no \n escapes
+  assert_eq(s, "no \\{interp} and no \\n escapes")
+}
+
+test "an ordinary String: concat and length work" {
+  let s = #|ab
+          #|cd
+  assert_eq(String::length(s), 5)
+  assert_eq(String::concat(s, "!"), "ab\ncd!")
+}
+```
+
+Because the content runs to end of line, nothing else can share the line: a
+closing `)` or `,` after the text becomes part of the string, so `#|` works as
+a binding's right-hand side but not inline inside an argument list. Misaligned
+continuations are rejected with a position:
+
+```vibe skip
+// Both lines are deliberate errors (measured): the first swallows `)` into
+// the string, so the parser reports `expected ) but got }`; the second is
+// the located lex error "#| multi-line string continuation must start at
+// the same column as the opening #|".
+test "what NOT to write" {
+  assert_eq(#|hello, "hello")
+  let s = #|line one
+        #|misaligned
+}
+```
+
+The same alignment rule is what `.vpkg` `description` blocks reuse for their
+`#|` continuation lines (see the `index.vpkg` header section below).
+
 Int の範囲 (±2^61) を超える整数は `@vibe/core` の任意精度 `BigInt`
 (sign + 30-bit limbs) を使う — `parse`/`to_string`/`add`/`sub`/`mul`/`divmod`/`pow`:
 
