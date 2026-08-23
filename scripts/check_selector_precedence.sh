@@ -129,8 +129,6 @@ if embedded != order:
 
 problems = []
 unverifiable = []
-uninitialized = []
-underived = []
 for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     block = m.group(0)
     # FAIL CLOSED on what this scanner cannot read. An arm that selects its
@@ -145,67 +143,27 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     # where no selector applies.
     runs_cli = '"$RUNNER"' in block and re.search(r'"?\$\{?cli\}?"?', block)
 
-    # What this block actually CONSUMES, not what happens to sit near it.
-    # Checking only for a nearby `selector_clears_before` credited proximity:
-    # deleting `$sel_clears` from the invocation while leaving its computation
-    # above left the check green (#2246 review). So: either the helper is
-    # called inline in the block, or the block expands a variable this file
-    # assigned from the helper.
-    lookback = src[max(0, m.start() - 900):m.start()]
-    inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', block)
-    assigned = re.findall(r'(\w+)="?\$\(selector_clears_before (VIBE_[A-Z_]+)\)"?', lookback)
-    consumed = [t for v, t in assigned if re.search(r'\$\{?' + v + r'\}?\b', block)]
-
-    # "At least one derived assignment exists nearby" does not mean every path
-    # takes one. With both assignments inside branches, deleting one leaves a
-    # path where the variable is EMPTY and the block runs with NO clears -- the
-    # gc lane did exactly that while this audit reported ok (#2248 review).
+    # INLINE ONLY. The clears must be lexically part of this command; a
+    # variable carrying them is rejected outright.
     #
-    # Rather than approximate shell dataflow, require a shape whose coverage is
-    # syntactic: the variable is DECLARED WITH a derived value (so every path
-    # starts covered), and every later assignment to it is also derived (so no
-    # path can narrow it to something underived). A bare `local VAR` leaves an
-    # uncovered path and is rejected. This constrains how the launcher may be
-    # written, which is the point -- it is checkable, and dataflow is not.
-    for v, _t in assigned:
-        if not re.search(r'\$\{?' + v + r'\}?\b', block):
-            continue
-        line_no = src[:m.start()].count("\n") + 1
-
-        # EVERY assignment to the variable, wherever it hides. Anchoring on
-        # line starts and `;`/`then`/`else`/`do` missed `&&` and `||`, so
-        # `true && sel_clears=""` right before the invocation was ignored
-        # (#2248 review). Rather than enumerate shell's separators -- the
-        # enumeration is what keeps being incomplete -- match the assignment
-        # ANYWHERE and let a false positive be the failure mode.
-        found_decl = False
-        for am in re.finditer(r'(?<![\w$])(local\s+)?' + v + r'=(?!=)([^\n]*)', lookback):
-            if 'selector_clears_before' not in am.group(2):
-                underived.append((line_no, v, am.group(2).strip()[:48] or "(empty)"))
-            elif am.group(1):
-                found_decl = True
-
-        # A bare `local VAR` leaves an uncovered path...
-        if re.search(r'\blocal\s+' + v + r'\s*$', lookback, re.M):
-            uninitialized.append((line_no, v, "declared without a value"))
-        # ...and so does no declaration at all. Only rejecting the BARE form
-        # let the initialized `local VAR=...` line be deleted outright while
-        # the conditional assignment remained, which either aborts under
-        # `set -u` or -- worse -- takes an INHERITED value from the
-        # environment straight into `env` (#2248 review).
-        elif not found_decl:
-            uninitialized.append((line_no, v, "never declared with a derived value"))
-
-    covered = inline + consumed
+    # Routing them through a variable was tried and broken four times, each
+    # by a different piece of shell this scanner does not actually parse: an
+    # assignment on a path that left it empty, one behind `&&`, one after a
+    # `;` on the same line, one under `false &&` (#2248 review). Every fix
+    # taught the regex one more construct and the next construct arrived.
+    # Reading shell with regular expressions does not converge, so the
+    # question is changed rather than answered: no variables, and the check
+    # becomes "is the call spelled here", which a scanner CAN decide.
+    inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', block)
+    covered = inline
 
     if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) and not covered:
         unverifiable.append(src[:m.start()].count("\n") + 1)
         continue
     cleared = set(re.findall(r'-u (VIBE_[A-Z_]+)', block))
-    # Credit only what is guaranteed on EVERY path: when one variable is
-    # assigned from the helper under several branches (compile_to picks
-    # VIBE_BACKEND or VIBE_FS_COMPILE), the smallest predecessor set is the one
-    # that always holds.
+    # A block may spell more than one call (it does not today); credit the
+    # smallest predecessor set, which is what holds regardless of which one
+    # the reader looks at.
     if covered:
         weakest = min(order.index(t) for t in covered if t in order) \
             if any(t in order for t in covered) else None
@@ -234,22 +192,6 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
         missing = [e for e in required if e not in cleared]
         if missing:
             problems.append((line_no, sel, missing))
-
-if uninitialized:
-    print("[selector-precedence] FAIL: a derived clear variable is declared without a"
-          " value, so some path reaches the runner with none:", file=sys.stderr)
-    for line_no, v, why in uninitialized:
-        print("  %s:%d -- %s: %s." % (launcher, line_no, v, why), file=sys.stderr)
-        print("     Declare it WITH a selector_clears_before value and narrow after.",
-              file=sys.stderr)
-    sys.exit(1)
-
-if underived:
-    print("[selector-precedence] FAIL: a derived clear variable is also assigned"
-          " something that is not derived:", file=sys.stderr)
-    for line_no, v, rhs in underived:
-        print("  %s:%d -- %s=%s" % (launcher, line_no, v, rhs), file=sys.stderr)
-    sys.exit(1)
 
 if unverifiable:
     print("[selector-precedence] FAIL: env blocks that run the CLI through an"

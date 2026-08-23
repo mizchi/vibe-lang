@@ -100,46 +100,26 @@ red "a clear target the derivation does not know" \
     "not a selector this derivation knows" \
     'out = s.replace("selector_clears_before VIBE_BACKEND", "selector_clears_before VIBE_NOPE", 1)'
 
-# #2246 follow-up: the check credited a `selector_clears_before` sitting NEARBY
-# rather than one whose result actually reaches the env invocation.
-red "the derived clears are computed but not passed" \
+# #2248 review, rounds 3 and 4: routing the clears through a VARIABLE was
+# broken twice more -- `; sel_clears=""` on the same line as the declaration,
+# and `false && ` in front of it. Both are now impossible rather than
+# detected: a variable carrying the clears is rejected outright, so the
+# scanner never has to understand shell assignment at all.
+red "the clears are routed through a variable" \
     "unresolved expansion" \
-    'out = s.replace("env $sel_clears $fs_env", "env $fs_env", 1)'
+    'out = s.replace("    env $(selector_clears_before VIBE_FS_COMPILE) $fs_env", "    local sc=\"$(selector_clears_before VIBE_FS_COMPILE)\"\n    env $sc $fs_env", 1)'
 
-# #2248: "a derived assignment exists" is not "every path assigns one". With a
-# bare `local VAR` and both assignments inside branches, one path reaches the
-# runner with NO clears.
-red "a derived clear variable has an uncovered path" \
-    "declared without a value" \
-    '''old = """  local sel_clears="$(selector_clears_before VIBE_FS_COMPILE)"
-  if [ "$backend" = "gc" ]; then
-    sel_clears="$(selector_clears_before VIBE_BACKEND)"
-  fi"""
-new = """  local sel_clears
-  if [ "$backend" = "gc" ]; then
-    sel_clears="$(selector_clears_before VIBE_BACKEND)"
-  else
-    sel_clears="$(selector_clears_before VIBE_FS_COMPILE)"
-  fi"""
-out = s.replace(old, new, 1)'''
+# ...and the gc lane must carry its own, since the two lanes are two calls.
+red "the gc lane drops its inline clears" \
+    "unresolved expansion" \
+    'out = s.replace("    env $(selector_clears_before VIBE_BACKEND)", "    env", 1)'
 
-# #2248: and no path may narrow it to something underived.
-red "a derived clear variable is narrowed to an underived value" \
-    "not derived" \
-    'out = s.replace("sel_clears=\"$(selector_clears_before VIBE_BACKEND)\"", "sel_clears=\"\"", 1)'
-
-# #2248 review: anchoring assignment detection on line starts and
-# `;`/`then`/`else`/`do` missed shell's other separators, so an assignment
-# hidden behind `&&` right before the invocation was ignored.
-red "an assignment hidden behind &&" \
-    "not derived" \
-    'out = s.replace("  env $sel_clears $fs_env", "  true && sel_clears=\"\"\n  env $sel_clears $fs_env", 1)'
-
-# #2248 review: rejecting only the BARE `local VAR` let the initialized
-# declaration be deleted outright while the conditional assignment remained --
-# which aborts under `set -u`, or takes an INHERITED value into `env`.
-red "the derived declaration is deleted entirely" \
-    "never declared with a derived value" \
-    'out = s.replace("  local sel_clears=\"$(selector_clears_before VIBE_FS_COMPILE)\"\n", "", 1)'
+# Five cases used to live here, all mutating the variable that carried the
+# clears (an uncovered path, an underived narrowing, an assignment behind
+# `&&`, one after `;`, a deleted declaration). Routing them through a variable
+# is now rejected outright, so those constructs cannot occur -- and a case
+# whose mutation matches nothing proves nothing. This suite told me so by
+# failing when they went stale, which is the property it exists for. They are
+# replaced by the two above: no variable, and each lane carries its own call.
 
 echo "[selector-precedence-test] ok"
