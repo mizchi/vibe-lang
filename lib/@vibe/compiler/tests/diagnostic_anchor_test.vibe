@@ -185,6 +185,24 @@ test "a char literal quote does not swallow later declarations" {
   assert(anchored_at(alone, 3, 7))
 }
 
+test "a raw string's trailing backslash does not swallow later declarations" {
+  // #2244 review round 10 (measured: `let q = r\"\\\"` compiles -- a raw
+  // string ends at the next quote with NO escape processing): the
+  // escape-honoring string skip used to read the trailing backslash as
+  // escaping the closing quote, hiding every later declaration, so a
+  // same-named outside fn owned the anchor. Colliding, the cross-kind
+  // rule fails closed; alone, the binder anchors normally (line 3,
+  // column 7).
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let q = r\"\\\"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(q) == 1 && v == \"\"\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+  let alone = "fn f() -> Bool {\n  let q = r\"\\\"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(q) == 1 && v == \"\"\n}\n"
+  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
+  assert(anchored_at(alone, 3, 7))
+}
+
 test "a binder declared inside an interpolation fragment counts" {
   // #2244 review round 7: `\{...}` fragments are code, so a binder
   // declared inside one must be visible to the scan. Alone it anchors at
