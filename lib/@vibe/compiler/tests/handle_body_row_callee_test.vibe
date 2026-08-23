@@ -45,18 +45,14 @@ fn compiles_linear(src: String) -> Bool {
   handle {
     let bytes = compile_source_wasi(src, "__no_entry__")
     Bytes::length(bytes) > 8
-  } with Exception {
-    Throw(_) => false
-  }
+  } with { Exception::Throw(_) => false }
 }
 
 fn compiles_gc(src: String) -> Bool {
   handle {
     let bytes = compile_source_gc_only(src, "__no_entry__")
     Bytes::length(bytes) > 8
-  } with Exception {
-    Throw(_) => false
-  }
+  } with { Exception::Throw(_) => false }
 }
 
 fn compiles_both(src: String) -> Bool with Exception {
@@ -66,7 +62,7 @@ fn compiles_both(src: String) -> Bool with Exception {
 //# Tests
 
 test "a callee carrying an unrelated row is callable from a handled body" {
-  let src = program("let side = (n: Int) -> Int with Stdout {\n  println(\"side\")\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("let side = (n: Int) -> Int with Stdout {\n  println(\"side\")\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with {\n    Ask::Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
 }
 
@@ -74,15 +70,15 @@ test "a print builtin is callable from a handled body" {
   // The builtin half of the same rule: `println` cannot run a user closure,
   // so it cannot hide a perform either. Read off the registry signature, not
   // a hand-kept list -- `edp_builtin_is_first_order`.
-  let src = program("test \"t\" {\n  let r = handle {\n    println(\"x\")\n    f()\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let src = program("test \"t\" {\n  let r = handle {\n    println(\"x\")\n    f()\n  } with {\n    Ask::Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(src))
 }
 
 test "assert_eq and inspect work inside a handled body" {
   // Both expand to a `println` call before the checker runs, which is how the
   // rejection reached ordinary test code in the first place.
-  let with_assert = program("test \"t\" {\n  handle {\n    assert_eq(f(), 42)\n  } with Ask {\n    Get => resume(42)\n  }\n}\n")
-  let with_inspect = program("test \"t\" {\n  handle {\n    inspect(f(), \"42\")\n  } with Ask {\n    Get => resume(42)\n  }\n}\n")
+  let with_assert = program("test \"t\" {\n  handle {\n    assert_eq(f(), 42)\n  } with {\n    Ask::Get => resume(42)\n  }\n}\n")
+  let with_inspect = program("test \"t\" {\n  handle {\n    inspect(f(), \"42\")\n  } with {\n    Ask::Get => resume(42)\n  }\n}\n")
   assert(compiles_both(with_assert))
   assert(compiles_both(with_inspect))
 }
@@ -91,8 +87,8 @@ test "a rowless callee still compiles, generic or not" {
   // The control: these compiled before the fix too, and must keep doing so --
   // if they ever stop, the change below them broke something wider than the
   // rule under test.
-  let plain = program("let side = (n: Int) -> Int {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
-  let generic = program("let side = [T](n: T) -> T {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with Ask {\n    Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let plain = program("let side = (n: Int) -> Int {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with {\n    Ask::Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
+  let generic = program("let side = [T](n: T) -> T {\n  n\n}\n\ntest \"t\" {\n  let r = handle {\n    side(f())\n  } with {\n    Ask::Get => resume(42)\n  }\n  assert_eq(r, 42)\n}\n")
   assert(compiles_both(plain))
   assert(compiles_both(generic))
 }
