@@ -76,6 +76,21 @@ fn dup_binding_ids(plan: Array[PerceusAction], name: String) -> Array[Int] {
   out
 }
 
+fn dup_use_offsets(plan: Array[PerceusAction], name: String) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_dup(a) && a.name == name {
+      Array::push(out, a.use_offset)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// A heap binding only borrowed (field access) is dropped once at scope end.
 test "perceus: pure-borrow binding is dropped once" {
   // let t = (1, 2); t.0
@@ -393,10 +408,11 @@ test "perceus: multi-alias dups all but the last (elision does not fire when use
 test "perceus: exclusive if-branch mentions merge to one dup" {
   // let out = (1, 2); match out { _ => 0 }; if true { out } else { out }
   let borrow_use = EMatch(EIdent("out", -1), [(PWild, EInt(0))])
-  let tail = EIf(EBool(true), EIdent("out", -1), EIdent("out", -1))
+  let tail = EIf(EBool(true), EIdent("out", 101), EIdent("out", 202))
   let body = ELet("out", ETuple([EInt(1), EInt(2)]), ESeq(borrow_use, tail), -1)
   let plan = build_perceus_plan(body)
   inspect(count_dups(plan, "out"), "1")
+  inspect(dup_use_offsets(plan, "out"), "[-1]")
   inspect(count_drops(plan, "out"), "1")
 }
 
@@ -405,12 +421,13 @@ test "perceus: exclusive match-arm mentions merge to one dup" {
   // let out = (1, 2); match out { _ => 0 }; match 1 { p => out, _ => out }
   let borrow_use = EMatch(EIdent("out", -1), [(PWild, EInt(0))])
   let tail = EMatch(EInt(1), [
-    (PBind("p"), EIdent("out", -1)),
-    (PWild, EIdent("out", -1))
+    (PBind("p"), EIdent("out", 303)),
+    (PWild, EIdent("out", 404))
   ])
   let body = ELet("out", ETuple([EInt(1), EInt(2)]), ESeq(borrow_use, tail), -1)
   let plan = build_perceus_plan(body)
   inspect(count_dups(plan, "out"), "1")
+  inspect(dup_use_offsets(plan, "out"), "[-1]")
   inspect(count_drops(plan, "out"), "1")
 }
 
@@ -421,13 +438,14 @@ test "perceus: branch-local shadow keeps its dups through the merge" {
   // let out = (1, 2); match out { _ => 0 };
   // if true { let out = (3, 4); (out, out) } else { out }
   let borrow_use = EMatch(EIdent("out", -1), [(PWild, EInt(0))])
-  let shadow_body = ETuple([EIdent("out", -1), EIdent("out", -1)])
+  let shadow_body = ETuple([EIdent("out", 202), EIdent("out", 303)])
   let then_e = ELet("out", ETuple([EInt(3), EInt(4)]), shadow_body, -1)
-  let tail = EIf(EBool(true), then_e, EIdent("out", -1))
+  let tail = EIf(EBool(true), then_e, EIdent("out", 404))
   let body = ELet("out", ETuple([EInt(1), EInt(2)]), ESeq(borrow_use, tail), -1)
   let plan = build_perceus_plan(body)
   // One dup for the shadow's double use + one for the outer else mention.
   inspect(count_dups(plan, "out"), "2")
   // The ESeq scratch binding is id 1, so the branch-local shadow is id 2.
   inspect(dup_binding_ids(plan, "out"), "[2, 0]")
+  inspect(dup_use_offsets(plan, "out"), "[202, 404]")
 }
