@@ -548,6 +548,123 @@ export fn collect_strings_stmts(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
+/// #2158: count how many `ECall` nodes in `e` carry each candidate offset.
+///
+/// The descent goes through `expr_children` rather than a per-constructor
+/// match for the same reason `all_returns_definitely_int` does: this counter is
+/// only sound if it finds EVERY call, and an enumeration that silently misses a
+/// form under-counts -- which is the dangerous direction here (an offset that
+/// is really shared would survive as "unique" and classify the wrong call).
+/// Nested `EFn` bodies are descended into as well: a lambda's calls are
+/// compiled by this same program and share its offset space.
+fn count_call_offsets_expr(e: Expr, counts: MutMap[Int, Int]) -> Unit {
+  match e {
+    ECall(_, _, off) => if off >= 0 {
+      match MutMap::get(counts, off) {
+        Some(n) => MutMap::set(counts, off, n + 1),
+        None => ()
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut i = 0
+  while i < Array::length(kids) {
+    count_call_offsets_expr(Array::get(kids, i), counts)
+    i = i + 1
+  }
+}
+
+fn count_call_offsets_stmts(stmts: Array[Stmt], counts: MutMap[Int, Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => count_call_offsets_expr(expr, counts),
+      SLetMut(_, _, expr) => count_call_offsets_expr(expr, counts),
+      SLetPat(_, expr) => count_call_offsets_expr(expr, counts),
+      SExpr(expr) => count_call_offsets_expr(expr, counts),
+      STest(_, expr) => count_call_offsets_expr(expr, counts),
+      SBench(_, expr) => count_call_offsets_expr(expr, counts),
+      SExample(_, expr) => count_call_offsets_expr(expr, counts),
+      SFnDecl(_, _, decl_expr, pre_exprs, post_exprs) => {
+        count_call_offsets_expr(decl_expr, counts)
+        let mut pi = 0
+        while pi < Array::length(pre_exprs) {
+          count_call_offsets_expr(Array::get(pre_exprs, pi), counts)
+          pi = pi + 1
+        }
+        let mut qi = 0
+        while qi < Array::length(post_exprs) {
+          count_call_offsets_expr(Array::get(post_exprs, qi), counts)
+          qi = qi + 1
+        }
+      },
+      SModule(_, _, inner) => count_call_offsets_stmts(inner, counts),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// How many `ECall` nodes were counted at `off`; 0 when it was never a
+/// candidate. A named reader rather than an inline match at the use site: the
+/// answer is a number to compare, not a membership test, and reading it out
+/// here keeps the caller's condition an ordinary numeric comparison.
+fn call_offset_count(counts: MutMap[Int, Int], off: Int) -> Int {
+  match MutMap::get(counts, off) {
+    Some(n) => n,
+    None => 0
+  }
+}
+
+/// #2158: of `candidates`, keep only the offsets that identify EXACTLY ONE
+/// `ECall` node in `stmts`.
+///
+/// The checker hands codegen a set of source offsets whose call result it
+/// typed as `Double`, and codegen looks an offset up on an `ECall` node. That
+/// is sound only while an offset names one call and one call only, and it is
+/// NOT free: the FS lanes merge many files into a single statement array, and
+/// each file's offsets are relative to its own text -- file A's offset 100 and
+/// file B's offset 100 are the same key. A collision that lands a `Double`
+/// classification on an Int-valued call is silently wrong, which is worse than
+/// the bug the table exists to fix.
+///
+/// So the disjointness is ESTABLISHED here, on exactly the statements codegen
+/// is about to walk, instead of being assumed from how some entry parsed. An
+/// offset survives only when the whole program carries one call node at it; two
+/// files colliding makes the count 2 and drops it. Fail closed: a dropped
+/// offset classifies nothing and the syntactic answer stands.
+///
+/// Empty `candidates` returns immediately without walking, so every lane that
+/// supplies no checker offsets pays nothing at all for this.
+export fn unique_call_offsets_in_stmts(stmts: Array[Stmt], candidates: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = array_empty()
+  if Array::length(candidates) == 0 {
+    out
+  } else {
+    let counts: MutMap[Int, Int] = MutMap::new_int()
+    let mut i = 0
+    while i < Array::length(candidates) {
+      MutMap::set(counts, Array::get(candidates, i), 0)
+      i = i + 1
+    }
+    count_call_offsets_stmts(stmts, counts)
+    let mut j = 0
+    while j < Array::length(candidates) {
+      let off = Array::get(candidates, j)
+      if call_offset_count(counts, off) == 1 {
+        Array::push(out, off)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    out
+  }
+}
+
 export fn emit_i64_extend_i32_u(buf: Bytes) -> Unit {
   bytebuf_push(buf, op_i64_extend_i32_u)
 }

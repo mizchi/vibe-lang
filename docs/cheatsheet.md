@@ -467,14 +467,14 @@ Which field types keep a struct usable is an allow-list, measured on a
 | `Int`, `String`, `Double`, `Bytes` | `true` |
 | `Array[Int]`, `Array[Double]`, `Option[Int]`, `(Int, String)` | `true` |
 | a declared struct | `true` |
-| `Map[String, Int]` | `false` — see #2218 |
+| `Map[String, Int]` | `true`, since #2218 |
 
 A declared `Double` or `Bytes` field is fine even though `Box[Double]` is not:
 `derive` generates a type-directed comparison when the type is still known
 where the comparison is emitted, and the erased field of a generic struct is
-exactly where it is not. `Map` is the one measured outlier, and any head
-nobody has measured costs its owner a trap rather than the benefit of the
-doubt.
+exactly where it is not. `Map` was the one measured outlier until #2218 gave
+it a comparator; any head nobody has measured still costs its owner a trap
+rather than the benefit of the doubt.
 
 **What does not resolve fails at run time** once BOTH sides are non-empty —
 it does not fall back to reference equality or to a length-only answer. Annotate
@@ -2138,7 +2138,7 @@ arity/type check に進む。
 | File | Purpose |
 |------|---------|
 | `*.vibe` | Source |
-| `*.vibex` | Executable root; exactly one `fn main`, not importable (ADR-0075 target contract) |
+| `*.vibex` | Executable root; exactly one `fn main`, not importable, no `export` surface (#2229 enforces; ADR-0075 target contract) |
 | `index.vpkg` | Package boundary, bodyless public contract, dependency/shared-import declarations |
 | `index.vibe` / `index.vibei` | Legacy index spellings; not package boundaries |
 | `*_test.vibe` | Explicitly-run test companion; excluded from normal build/hash and cannot be imported |

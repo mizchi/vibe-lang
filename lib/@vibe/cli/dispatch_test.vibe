@@ -9,11 +9,43 @@ import ./dispatch.vibe {
   selfhost_cli_check_args,
   selfhost_cli_compile_args,
   selfhost_cli_compile_lite_args,
-  selfhost_cli_low_level_args_profiled
+  selfhost_cli_low_level_args_profiled,
+  selfhost_cli_profile_plan_args
 }
 
 import ./entry.vibe {
   format_check_report, run_cli_main_with_args
+}
+
+test "profile command plans a versioned host action without losing spaces" {
+  let plan_path = "/tmp/vibe_selfhost_cli_profile_action.txt"
+  let status = selfhost_cli_profile_plan_args([
+    "profile",
+    "program.vibex",
+    "--out",
+    "/tmp/cpu profiles/run.json",
+    "--interval-us=250",
+    "--",
+    "guest arg"
+  ], plan_path)
+  assert(status == 0)
+  let plan = Fs::read_file(plan_path)
+  assert(plan == "vibe-host-action-v1\nrun-guest-profile\nprogram.vibex\n/tmp/cpu profiles/run.json\n250\nguest arg\n")
+}
+
+test "profile command rejects an empty output path" {
+  for args in [
+    ["profile", "program.vibex", "--out", ""],
+    ["profile", "program.vibex", "--out="]
+  ] {
+    let result = handle {
+      let _ = selfhost_cli_profile_plan_args(args, "/tmp/vibe_empty_profile_action.txt")
+      "OK"
+    } with Exception {
+      Throw(e) => e
+    }
+    assert(result == "profile: --out must not be empty")
+  }
 }
 
 //# Effects
@@ -534,6 +566,37 @@ test "selfhost cli build requires explicit vibex main effect row" {
   assert(String::contains(result, ".vibex fn main requires an explicit effect row"))
 }
 
+test "selfhost cli build rejects non-main export in vibex" {
+  // #2229 (ADR-0075): nothing can import a .vibex, so an export in one is
+  // unreachable by construction. The diagnostic names the move.
+  let main_path = "/tmp/vibe_selfhost_cli_vibex_export.vibex"
+  Fs::write_bytes(main_path, string_to_bytes("export fn helper() -> Int { 7 }\nfn main with () { () }\n"))
+  let result = handle {
+    let _ = selfhost_cli_build_args([
+      "build",
+      main_path,
+      "-o",
+      "/tmp/vibe_selfhost_cli_vibex_export.wasm"
+    ])
+    "OK"
+  } with Exception {
+    Throw(e) => e
+  }
+  assert(String::contains(result, ".vibex is an executable root and has no export surface"))
+  assert(String::contains(result, "move 'export fn helper' to a .vibe module"))
+}
+
+test "selfhost cli build accepts vibex with require pin head" {
+  // #2227: a `require ... = #pkg:sha1:` head is a directive, not statement
+  // grammar. It used to be read as an unknown `#` directive on this lane.
+  let main_path = "/tmp/vibe_selfhost_cli_vibex_pin_head.vibex"
+  let output_path = "/tmp/vibe_selfhost_cli_vibex_pin_head.wasm"
+  Fs::write_bytes(main_path, string_to_bytes("require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn main with () { () }\n"))
+  let status = selfhost_cli_build_args(["build", main_path, "-o", output_path])
+  assert(status == 0)
+  assert(Fs::exists(output_path))
+}
+
 test "selfhost cli build consumes profile flag" {
   let (input_path, output_path, entry_name, mode) = parse_build_args([
     "build",
@@ -620,6 +683,19 @@ test "selfhost cli check rejects missing tsv profile path" {
 test "selfhost cli check command accepts valid file" {
   let main_path = "/tmp/vibe_selfhost_cli_check_main.vibe"
   let source = "let answer: () -> Int = () -> { 40 + 2 }\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let status = selfhost_cli_check_args(["check", main_path])
+  assert(status == 0)
+}
+
+test "selfhost cli check accepts a require pin head" {
+  // #2227: the build lane always blanked `require ... = #pkg:sha1:` heads
+  // before parsing; check's own pre-parse did not, so it reported
+  // `unexpected token: =` for a file the build compiles. The two lanes
+  // must answer alike -- check is the designated authority on "does this
+  // compile".
+  let main_path = "/tmp/vibe_selfhost_cli_check_pin_head.vibe"
+  let source = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nlet answer: () -> Int = () -> { 40 + 2 }\n"
   Fs::write_bytes(main_path, string_to_bytes(source))
   let status = selfhost_cli_check_args(["check", main_path])
   assert(status == 0)

@@ -192,14 +192,16 @@ if [ "$dsout" != "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" ]; then
 fi
 echo "[compiler-gate] derive(Show) source-name rendering ok"
 
-# 4e. Array::get OOB abort names the operation (#2199): an out-of-range
-#     index used to trap with a bare `unreachable` and a crash-debug dump --
-#     nothing said what went wrong, which is indistinguishable from a
-#     compiler bug. The generated bounds check now prints
-#     `Array::get: index out of bounds` before the trap. The program must
-#     still FAIL (trapping stays the design answer: crash > silently wrong);
-#     only the message is new.
-echo "[compiler-gate] 4e Array::get OOB abort names the operation (#2199)"
+# 4e. OOB abort names the operation, index, and length (#2199): an
+#     out-of-range index used to trap with a bare `unreachable` and a
+#     crash-debug dump -- nothing said what went wrong, which is
+#     indistinguishable from a compiler bug. The generated bounds check now
+#     prints `<op>: index <idx> out of bounds for length <len>` before the
+#     trap (__rt_oob_abort). The program must still FAIL (trapping stays the
+#     design answer: crash > silently wrong); only the message is new. Two
+#     runs: Array::get pins the exact line with both values, Bytes::get pins
+#     that the sibling trap sites route through the same abort.
+echo "[compiler-gate] 4e OOB abort names the operation, index, and length (#2199)"
 oobdir="_build/_gate_arr_oob"
 rm -rf "$oobdir"; mkdir -p "$oobdir"
 cat > "$oobdir/main.vibe" <<'VEOF'
@@ -209,30 +211,48 @@ fn main with Console {
   println("\{Array::get(xs, 10)}")
 }
 VEOF
+cat > "$oobdir/bytes.vibe" <<'VEOF'
+fn main with Console {
+  let b = Bytes::from_array([1, 2, 3])
+  println("\{Bytes::get(b, 9)}")
+}
+VEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$oobdir/main.vibe" "$oobdir/main.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$oobdir/main.wasm" ]; then
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$oobdir/bytes.vibe" "$oobdir/bytes.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$oobdir/main.wasm" ] || [ ! -s "$oobdir/bytes.wasm" ]; then
   echo "[compiler-gate] FAIL: OOB message sample did not compile" >&2
   cat "$oobdir/main.wasm.diag" >&2 2>/dev/null || true
+  cat "$oobdir/bytes.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 set +e
 oob_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$oobdir/main.wasm" 2>&1)"
 oob_rc=$?
+oob_bytes_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$oobdir/bytes.wasm" 2>&1)"
+oob_bytes_rc=$?
 set -e
 rm -rf "$oobdir"
-if [ "$oob_rc" -eq 0 ]; then
-  echo "[compiler-gate] FAIL: OOB Array::get did not trap (exit 0) — bounds check regressed" >&2
+if [ "$oob_rc" -eq 0 ] || [ "$oob_bytes_rc" -eq 0 ]; then
+  echo "[compiler-gate] FAIL: OOB access did not trap (exit 0) — bounds check regressed" >&2
+  printf '%s\n' "$oob_out" >&2
+  printf '%s\n' "$oob_bytes_out" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$oob_out" | grep -qF "Array::get: index 10 out of bounds for length 3"; then
+  echo "[compiler-gate] FAIL: Array::get OOB trap did not report operation + index + length (#2199)" >&2
   printf '%s\n' "$oob_out" >&2
   exit 1
 fi
-if ! printf '%s\n' "$oob_out" | grep -q "Array::get: index out of bounds"; then
-  echo "[compiler-gate] FAIL: OOB trap did not name the operation (#2199)" >&2
-  printf '%s\n' "$oob_out" >&2
+if ! printf '%s\n' "$oob_bytes_out" | grep -qF "Bytes::get: index 9 out of bounds for length 3"; then
+  echo "[compiler-gate] FAIL: Bytes::get OOB trap did not report operation + index + length (#2199)" >&2
+  printf '%s\n' "$oob_bytes_out" >&2
   exit 1
 fi
-echo "[compiler-gate] Array::get OOB abort message ok"
+echo "[compiler-gate] OOB abort messages ok (Array::get, Bytes::get)"
 
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
@@ -519,6 +539,28 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
 if [ ! -s "$cdir2/ok.wasm" ]; then
   echo "[compiler-gate] FAIL: pinned store import did not compile (#730)" >&2
   cat "$cdir2/ok.wasm.diag" 2>/dev/null >&2; exit 1
+fi
+# #2227: check must agree with the build lane it just exercised -- the same
+# require-pin head used to be a parse error on the check lane. A clean check
+# writes no .diag sidecar.
+rm -f "$cdir2/ok.checkout" "$cdir2/ok.checkout.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/ok.vibe" "$cdir2/ok.checkout" main >/dev/null 2>&1 || true
+if [ -s "$cdir2/ok.checkout.diag" ]; then
+  echo "[compiler-gate] FAIL: vibe check rejected the require-pin head the build lane accepts (#2227)" >&2
+  cat "$cdir2/ok.checkout.diag" >&2; exit 1
+fi
+# #2227: same pin head in a .vibex -- the script-head directive scan used to
+# read the pin's #pkg:sha1: as an unknown # directive before pin extraction.
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main with () {\n  let _ = triple(14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
+rm -f "$cdir2/ok_pin.wasm" "$cdir2/ok_pin.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$cdir2/ok_pin.vibex" "$cdir2/ok_pin.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$cdir2/ok_pin.wasm" ]; then
+  echo "[compiler-gate] FAIL: a .vibex with a require-pin head did not compile (#2227)" >&2
+  cat "$cdir2/ok_pin.wasm.diag" 2>/dev/null >&2; exit 1
 fi
 printf 'require @gate/d2pkg 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' > "$cdir2/bad.vibe"
 if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \

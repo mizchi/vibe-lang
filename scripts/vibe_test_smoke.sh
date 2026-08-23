@@ -192,6 +192,38 @@ error while executing at wasm backtrace:
 EOF
 echo "[vibe-test-smoke] ok (percent-encoded quoted names decode on FAIL)"
 
+# #2228: the launcher condenser's detail lines carry the SAME 7-space
+# indent as vt_fail_detail's, so the two reporters render one format (the
+# one book/en/12_tests.vibe.md documents). Pin the indent on the canned
+# trap above: `failing test:` and `at` frames must start at column 8.
+assert_condense_indent() {
+  local errf="$WORK/canned_condense_indent.err" out
+  cat > "$errf" <<'EOF'
+RuntimeError: unreachable
+    at some_helper (wasm://wasm/00000000:wasm-function[7]:0x99)
+    at __test_indent_pin (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(condense_test_trap "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | rg -q '^       failing test: indent_pin$'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap failing-test line is not 7-space indented (#2228)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q '^       trap: RuntimeError: unreachable$'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap trap line is not 7-space indented (#2228)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q '^       at some_helper'; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap frame line is not 7-space indented (#2228)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_condense_indent
+echo "[vibe-test-smoke] ok (launcher condenser indent matches vt_fail_detail, #2228)"
+
 # #1946 leftover: vt_fail_detail must surface the assert_eq diagnostic that
 # the guest writes to stderr (vibe test discards stdout).
 assert_canned_assert_eq_diag() {
@@ -350,27 +382,46 @@ EOF
 }
 assert_stale_marker_keeps_real_trap
 
-# #2199 (Codex on #2220): the OOB message capture is EXACT-match only --
-# the generated Array::get/set lines are kept in the condensed report, but
-# a user-printed line that merely ends the same way must not be promoted
-# into the diagnostic.
+# #2199 (Codex on #2220): the OOB message capture is a full-line anchored
+# match on the generated shape (`<op>: index <n> out of bounds for length
+# <n>`) -- those lines are kept in the condensed report, but a user-printed
+# line that merely resembles them (different operation name, or trailing
+# text after the length) must not be promoted into the diagnostic.
 assert_oob_message_capture_is_exact() {
   local errf="$WORK/canned_oob.err" out
   cat > "$errf" <<'EOF'
-my thing: index out of bounds
-Array::get: index out of bounds
+my thing: index 10 out of bounds for length 3
+Array::get: index 10 out of bounds for length 3 and then some
+Array::get: index 10 out of bounds for length 3
+Bytes::set: index -1 out of bounds for length 0
+String::byte_at: index 5 out of bounds for length 3
 [crash debug] heap_ptr=500 (0x1f4), memory_size=4194304 (64 pages) / unreachable
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Array::get: index out of bounds"; then
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Array::get: index 10 out of bounds for length 3"; then
     echo "[vibe-test-smoke] FAIL: generated OOB message lost from the condensed report (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if printf '%s\n' "$out" | rg -q --fixed-strings "my thing: index out of bounds"; then
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Bytes::set: index -1 out of bounds for length 0"; then
+    echo "[vibe-test-smoke] FAIL: Bytes OOB message (negative index) lost from the condensed report (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | rg -q --fixed-strings "String::byte_at: index 5 out of bounds for length 3"; then
+    echo "[vibe-test-smoke] FAIL: String::byte_at OOB message lost from the condensed report (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | rg -q --fixed-strings "my thing: index 10 out of bounds"; then
     echo "[vibe-test-smoke] FAIL: user output masquerading as an OOB diagnostic was promoted (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | rg -q --fixed-strings "and then some"; then
+    echo "[vibe-test-smoke] FAIL: a line with trailing text after the length was promoted (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi

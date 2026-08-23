@@ -50,7 +50,7 @@ proj="$WORK/proj"
 mkdir -p "$proj"
 # `boom` is defined on line 1, traps on integer divide-by-zero; main calls it.
 cat > "$proj/prog.vibex" <<'EOF'
-export let boom = (x: Int) -> Int { x / 0 }
+let boom = (x: Int) -> Int { x / 0 }
 fn main with () { let _ = boom(3); () }
 EOF
 

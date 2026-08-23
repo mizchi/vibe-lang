@@ -205,19 +205,21 @@ import @vibe/compiler/codegen/wasm_emit {
 
 //# Functions
 
-export fn gen_arr_get_body(enable_rc: Bool, oob_msg_fat: Int, print_str_idx: Int) -> Bytes {
+export fn gen_arr_get_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: bounds check — an out-of-range (or negative) index silently read
   // adjacent memory ([1,2,3][5] returned garbage). One UNSIGNED compare
   // catches both directions (idx as u32 >= len rejects negatives too) and
   // traps via `unreachable`.
   //
-  // #2199: before the trap, print a static message naming the operation --
-  // a bare `unreachable` is indistinguishable from a compiler bug to the
-  // reader. `oob_msg_fat` is the message's raw (ptr<<32)|len string-table
-  // constant (exactly what __rt_print_str takes on both lanes; no RC tag
-  // is involved in either) and `print_str_idx` its function index. Pass
-  // print_str_idx < 0 to omit the print and emit the historical bare-trap
+  // #2199: before the trap, call __rt_oob_abort with this operation's
+  // prefix, the signed index, and the length -- a bare `unreachable` is
+  // indistinguishable from a compiler bug to the reader, and the two values
+  // turn "my index is wrong" into "index 10 against length 3".
+  // `oob_prefix_fat` is the prefix's raw (ptr<<32)|len string-table constant
+  // (exactly what __rt_print_str takes on both lanes; no RC tag is involved
+  // in either) and `oob_abort_idx` the abort helper's function index. Pass
+  // oob_abort_idx < 0 to omit the call and emit the historical bare-trap
   // body (the static twin pins that form).
   emit_local_get(b, 1)
   if enable_rc {
@@ -234,9 +236,22 @@ export fn gen_arr_get_body(enable_rc: Bool, oob_msg_fat: Int, print_str_idx: Int
   emit_i32_load(b, 2, 4)
   emit_i32_ge_u(b)
   emit_if_void(b)
-  if print_str_idx >= 0 {
-    emit_i64_const(b, oob_msg_fat)
-    emit_call(b, print_str_idx)
+  if oob_abort_idx >= 0 {
+    emit_i64_const(b, oob_prefix_fat)
+    emit_local_get(b, 1)
+    if enable_rc {
+      emit_i64_const(b, 1)
+      emit_i64_shr_s(b)
+    }
+    emit_local_get(b, 0)
+    if enable_rc {
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+    }
+    emit_i32_wrap_i64(b)
+    emit_i32_load(b, 2, 4)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, oob_abort_idx)
   } else {
     ()
   }
@@ -488,11 +503,11 @@ export fn gen_region_bytes_new_body(region_ptr_addr: Int, region_data_base: Int,
   b
 }
 
-export fn gen_arr_set_body(enable_rc: Bool, oob_msg_fat: Int, print_str_idx: Int) -> Bytes {
+export fn gen_arr_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: same unsigned bounds check as gen_arr_get_body — an OOB set
-  // silently corrupted adjacent memory. #2199: same print-then-trap as
-  // gen_arr_get_body (see its comment); print_str_idx < 0 omits the print.
+  // silently corrupted adjacent memory. #2199: same formatted abort as
+  // gen_arr_get_body (see its comment); oob_abort_idx < 0 omits the call.
   emit_local_get(b, 1)
   if enable_rc {
     emit_i64_const(b, 1)
@@ -508,9 +523,22 @@ export fn gen_arr_set_body(enable_rc: Bool, oob_msg_fat: Int, print_str_idx: Int
   emit_i32_load(b, 2, 4)
   emit_i32_ge_u(b)
   emit_if_void(b)
-  if print_str_idx >= 0 {
-    emit_i64_const(b, oob_msg_fat)
-    emit_call(b, print_str_idx)
+  if oob_abort_idx >= 0 {
+    emit_i64_const(b, oob_prefix_fat)
+    emit_local_get(b, 1)
+    if enable_rc {
+      emit_i64_const(b, 1)
+      emit_i64_shr_s(b)
+    }
+    emit_local_get(b, 0)
+    if enable_rc {
+      emit_i64_const(b, -2)
+      emit_i64_and(b)
+    }
+    emit_i32_wrap_i64(b)
+    emit_i32_load(b, 2, 4)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, oob_abort_idx)
   } else {
     ()
   }

@@ -88,9 +88,115 @@ print(m["source"]["commit"],
 fi
 echo "[book-review] compiler: $S2"
 
+# --- CLI-verb lane -----------------------------------------------------
+# A probe may carry `//! cli: <verb> [args...]` directives. Each runs the
+# REAL launcher verb (runtime/vibe) against the probe with the same
+# stage2, so CLI-side answers -- `vibe check` diagnostics and warnings,
+# `type-at`/`symbols`, the launcher's own test reporter -- are reproduced
+# by this harness rather than by a comment asking the reader to re-run
+# them. `vibe check` resolves imports; it is NOT interchangeable with the
+# compile lane above, which is exactly why probes that measure it say so
+# explicitly. The verb's output and exit code are probe data (a check
+# that answers a diagnostic is a measurement); only a missing launcher
+# or runner-shim failure is a harness error.
+#
+# The launcher needs a `viberun` host; provide the same node-runner shim
+# the gates use, routing the CLI wasm to cli_main and program wasm to
+# _start. Mode env vars are the launcher's to set -- the shim adds none.
+LAUNCHER=runtime/vibe
+SHIM="$OUT_DIR/viberun-shim"
+cat > "$SHIM" <<SHIM_EOF
+#!/usr/bin/env bash
+# The COMPILER goes to cli_main, program wasm to _start. The compiler is
+# recognized by its exact path (the launcher passes VIBE_CLI_WASM
+# verbatim), never by basename alone -- a BOOK_REVIEW_STAGE2 override
+# with any filename must still reach cli_main, or its CLI measurements
+# would silently record wrong-entry failures as probe data.
+first="\$1"; shift
+if [ "\$first" = "$S2" ]; then
+  : "\${VIBE_PREOPEN_DIR:=\$PWD}"; export VIBE_PREOPEN_DIR
+  : "\${VIBE_IMPORT_ABI:=raw}"; export VIBE_IMPORT_ABI
+  exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "\$first" "\$@"
+fi
+exec bash "$PWD/scripts/run_wasm_vibe_host_runner.sh" --invoke _start "\$first" "\$@"
+SHIM_EOF
+chmod +x "$SHIM"
+
+run_cli_directives() {
+  local src="$1" name="$2" directive verb rest rc n=0
+  while IFS= read -r directive; do
+    n=$((n + 1))
+    # shellcheck disable=SC2086
+    set -- ${directive#*cli:}
+    verb="${1:-}"
+    shift 2>/dev/null || true
+    rest="$*"
+    if [ -z "$verb" ]; then
+      echo "--- HARNESS ERROR: empty cli directive in $src"
+      harness_fail=1
+      continue
+    fi
+    echo "--- cli: vibe $verb $src${rest:+ $rest}"
+    if [ ! -f "$LAUNCHER" ]; then
+      echo "--- HARNESS ERROR: launcher not found: $LAUNCHER"
+      harness_fail=1
+      return
+    fi
+    # shellcheck disable=SC2086
+    VIBE_RUNNER="$PWD/$SHIM" VIBE_CLI_WASM="$S2" VIBE_TEST_CLI_WASM="$S2" \
+      bash "$LAUNCHER" "$verb" "$src" $rest >"$OUT_DIR/$name.cli$n.log" 2>&1
+    rc=$?
+    sed 's/^/    /' "$OUT_DIR/$name.cli$n.log"
+    echo "    (exit $rc)"
+  done < <(grep -E '^//! cli:' "$src" || true)
+}
+
+# `//! cli-scaffold: <verb>` -- for verbs that CREATE a project
+# directory rather than read the probe (`vibe new`). The verb runs
+# against a fresh directory under OUT_DIR and the report prints the
+# generated file list and contents, so the scaffold's shape is harness
+# data rather than a manual exception. The probe file itself is only a
+# descriptor; its compile-lane result is incidental.
+run_scaffold_directives() {
+  local src="$1" name="$2" directive verb rc sdir f
+  while IFS= read -r directive; do
+    # shellcheck disable=SC2086
+    set -- ${directive#*cli-scaffold:}
+    verb="${1:-}"
+    if [ -z "$verb" ]; then
+      echo "--- HARNESS ERROR: empty cli-scaffold directive in $src"
+      harness_fail=1
+      continue
+    fi
+    sdir="$OUT_DIR/scaffold-$name"
+    rm -rf "$sdir"; mkdir -p "$sdir"
+    echo "--- cli-scaffold: vibe $verb $sdir/proj"
+    if [ ! -f "$LAUNCHER" ]; then
+      echo "--- HARNESS ERROR: launcher not found: $LAUNCHER"
+      harness_fail=1
+      return
+    fi
+    VIBE_RUNNER="$PWD/$SHIM" VIBE_CLI_WASM="$S2" \
+      bash "$LAUNCHER" "$verb" "$sdir/proj" >"$OUT_DIR/$name.scaffold.log" 2>&1
+    rc=$?
+    sed 's/^/    /' "$OUT_DIR/$name.scaffold.log"
+    echo "    (exit $rc)"
+    if [ -d "$sdir/proj" ]; then
+      echo "--- scaffold files and contents:"
+      while IFS= read -r f; do
+        echo "    $f"
+        sed 's/^/    |   /' "$sdir/proj/$f"
+      done < <(cd "$sdir/proj" && find . -type f | LC_ALL=C sort)
+    fi
+  done < <(grep -E '^//! cli-scaffold:' "$src" || true)
+}
+
 probes=("$@")
 if [ ${#probes[@]} -eq 0 ]; then
-  probes=(eval/book-review/probes/p*.vibe)
+  # .vibex probes are first-class: the executable-root contract (entry
+  # shape, import rejection, export acceptance #2229) can only be
+  # measured on files that actually carry the extension.
+  probes=(eval/book-review/probes/p*.vibe eval/book-review/probes/p*.vibex)
 fi
 
 harness_fail=0
@@ -105,7 +211,9 @@ for src in "${probes[@]}"; do
     harness_fail=1
     continue
   fi
-  name=$(basename "$src" .vibe)
+  name=$(basename "$src")
+  name="${name%.vibe}"
+  name="${name%.vibex}"
   wasm="$OUT_DIR/$name.wasm"
   rm -f "$wasm" "$wasm.diag"
   echo ""
@@ -130,6 +238,8 @@ for src in "${probes[@]}"; do
         echo "    this is not a compiler answer."
         harness_fail=1
       fi
+      run_cli_directives "$src" "$name"
+      run_scaffold_directives "$src" "$name"
       continue
   fi
   if VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -156,6 +266,8 @@ for src in "${probes[@]}"; do
       harness_fail=1
     fi
   fi
+  run_cli_directives "$src" "$name"
+  run_scaffold_directives "$src" "$name"
 done
 
 if [ "$harness_fail" -ne 0 ]; then

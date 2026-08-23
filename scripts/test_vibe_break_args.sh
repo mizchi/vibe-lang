@@ -54,7 +54,7 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail+1)); }
 proj="$WORK/proj"; mkdir -p "$proj"
 # helper (line 1) called by main (line 2). main calls helper(20) then helper(1).
 cat > "$proj/prog.vibex" <<'EOF'
-export let helper = (x: Int) -> Int { x * 2 }
+let helper = (x: Int) -> Int { x * 2 }
 fn main with Stdout { Stdout::write_stream("\{helper(20) + helper(1)}\n") }
 EOF
 

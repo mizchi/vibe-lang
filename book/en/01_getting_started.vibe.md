@@ -37,7 +37,8 @@ vibe run hello.vibex
 `println` is built in, so there is nothing to import.
 
 The `.vibex` extension marks an *executable root*: a file with exactly
-one `fn main`, which other files cannot import (ADR-0075). Reusable
+one `fn main`, which other files cannot import — and which therefore
+exports nothing (ADR-0075). Reusable
 source modules end in `.vibe`. Two more files appear later:
 `vibe.deps` below is project metadata, and a package's `index.vpkg` —
 [Modules and packages](11_modules_packages.vibe.md) — is its public
@@ -81,7 +82,8 @@ vibe run main.vibex
 ```
 
 `vibe new` writes two files: `main.vibex`, the entry point, and
-`vibe.deps`, where dependencies go. That is the whole scaffold — a
+`vibe.deps`, where `vibe add` records URL dependencies to vendor
+(one `<name> <url>` per line). That is the whole scaffold — a
 package contract (`index.vpkg`) is something you add when you have
 something to publish, and [Modules and packages](11_modules_packages.vibe.md)
 picks that up. You do not need any of it for a single file, which is why

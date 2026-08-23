@@ -5094,59 +5094,6 @@ fn expression_mentions_active_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
   expression_mentions_active_region_scan(expr, env, env, defs, s, c, ce)
 }
 
-/// `obj[i]` desugars to `__index(obj, i)`, typed fully polymorphically, so
-/// indexing a non-indexable scalar (`let n = 5; n[0]`) was accepted silently.
-/// Report when `obj` resolves to a concrete scalar that cannot be indexed
-/// (Array/String/Bytes ARE indexable; type vars / unknown / named stay
-/// tolerated). Pure side-effect over a throwaway error/type table.
-fn index_target_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
-  if name == "__index" && Array::length(args) == 2 {
-    let throwaway = array_empty()
-    let throwtab = array_empty()
-    let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
-    let resolved_obj = subst_apply(s, obj_ty)
-    let not_indexable = match resolved_obj {
-      CtInt => true,
-      CtDouble => true,
-      CtBool => true,
-      CtChar => true,
-      CtUnit => true,
-      _ => false
-    }
-    if not_indexable {
-      Array::push(errors, "cannot index a non-indexable value (expected Array, String, or Bytes)")
-    } else {
-      // For an indexable receiver (Array/String/Bytes), the subscript must be an
-      // Int — `a["x"]` was accepted silently. Only flag a concrete non-Int index;
-      // type vars / unknown / named stay tolerated.
-      let indexable = match resolved_obj {
-        CtArray(_) => true,
-        CtString => true,
-        CtBytes => true,
-        _ => false
-      }
-      if indexable {
-        let throwaway2 = array_empty()
-        let throwtab2 = array_empty()
-        let (idx_ty, _, _) = ce(Array::get(args, 1), env, defs, s, c, throwaway2, throwtab2)
-        let bad_index = match subst_apply(s, idx_ty) {
-          CtInt => false,
-          _ => type_is_ground(subst_apply(s, idx_ty))
-        }
-        if bad_index {
-          Array::push(errors, "index must be an Int")
-        } else {
-          ()
-        }
-      } else {
-        ()
-      }
-    }
-  } else {
-    ()
-  }
-}
-
 /// An arm pattern is a CATCH-ALL (makes a match exhaustive regardless of which
 /// constructors precede it) when it is a wildcard or a bare binding. `POr` is a
 /// catch-all if either side is.
@@ -6101,7 +6048,6 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         typed_occurrence_capture_skip_children(capture, 1)
         field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_expr)
         retaining_write_region_check(name, args, env, defs, s, c, errors, check_expr)
-        index_target_check(name, args, env, defs, s, c, errors, check_expr)
         if name == "perform" || name == "perform?" {
           let (pty, ps, pc) = if Array::length(args) == 1 {
             match Array::get(args, 0) {
@@ -6361,11 +6307,40 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // `CtArray(elem)`, refine the result to `elem`; String/Bytes indexing
           // yields the char/byte code (`Int`) so `let s: String = "abc"[0]`
           // (which returns 97) must be rejected. Var / unknown / named receivers
-          // keep the conservative CtUnknown. (index_target_check above still
-          // validates the receiver/subscript shapes on a throwaway channel.)
+          // keep the conservative CtUnknown. Validate receiver/subscript shape
+          // from these same inference results: re-checking both expressions on
+          // a throwaway channel used to duplicate this hot traversal.
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-          let (_, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let result = match subst_apply(s2, obj_ty) {
+          let (idx_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let resolved_obj = subst_apply(s2, obj_ty)
+          let not_indexable = match resolved_obj {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtChar => true,
+            CtUnit => true,
+            _ => false
+          }
+          if not_indexable {
+            Array::push(errors, "cannot index a non-indexable value (expected Array, String, or Bytes)")
+          } else {
+            let indexable = match resolved_obj {
+              CtArray(_) => true,
+              CtString => true,
+              CtBytes => true,
+              _ => false
+            }
+            let resolved_idx = subst_apply(s2, idx_ty)
+            if indexable && match resolved_idx {
+              CtInt => false,
+              _ => type_is_ground(resolved_idx)
+            } {
+              Array::push(errors, "index must be an Int")
+            } else {
+              ()
+            }
+          }
+          let result = match resolved_obj {
             CtArray(elem) => elem,
             CtString => CtInt,
             CtBytes => CtInt,

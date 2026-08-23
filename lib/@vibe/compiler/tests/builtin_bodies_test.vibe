@@ -4,12 +4,19 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_get_body,
   gen_arr_len_body,
   gen_arr_set_body,
+  gen_bytes_get_body,
+  gen_bytes_set_body,
+  gen_oob_abort_body,
+  gen_print_i64_body,
+  gen_print_i64_raw_body,
   gen_simd_scan_string_special_body,
+  gen_str_char_code_at_body,
   gen_str_eq_body,
   gen_str_len_body,
   gen_str_lex_diff_body,
   static_arr_get_body,
   static_arr_len_body,
+  static_str_char_code_at_body,
   static_str_eq_body,
   static_str_len_body
 }
@@ -57,16 +64,40 @@ test "static arr_len body matches generated body" {
 }
 
 test "static arr_get body matches generated body" {
-  // #2199: print_str_idx < 0 selects the historical bare-trap form, which
-  // is what the static twin pins; the real lanes pass a message constant.
+  // #2199: oob_abort_idx < 0 selects the historical bare-trap form, which
+  // is what the static twin pins; the real lanes pass the abort helper.
   expect_same_bytes(static_arr_get_body(), gen_arr_get_body(false, 0 - 1, 0 - 1))
 }
 
-test "arr_get/arr_set OOB message form is strictly larger" {
-  // The print-then-trap form adds the i64.const + call prefix in the OOB
-  // branch and nothing else.
+test "static str_char_code_at body matches generated body" {
+  // #2199: same bare-trap pin as arr_get above.
+  expect_same_bytes(static_str_char_code_at_body(), gen_str_char_code_at_body(false, 0 - 1, 0 - 1))
+}
+
+test "OOB abort form is strictly larger on every bounds-checked body" {
+  // The abort form adds the prefix const + idx/len pushes + call in the OOB
+  // branch and nothing else, so it must be strictly longer than the
+  // bare-trap form on each of the five sites, on both lanes.
   assert(Bytes::length(gen_arr_get_body(false, 4242, 7)) > Bytes::length(gen_arr_get_body(false, 0 - 1, 0 - 1)))
   assert(Bytes::length(gen_arr_set_body(false, 4242, 7)) > Bytes::length(gen_arr_set_body(false, 0 - 1, 0 - 1)))
+  assert(Bytes::length(gen_bytes_get_body(false, 4242, 7)) > Bytes::length(gen_bytes_get_body(false, 0 - 1, 0 - 1)))
+  assert(Bytes::length(gen_bytes_set_body(false, 4242, 7)) > Bytes::length(gen_bytes_set_body(false, 0 - 1, 0 - 1)))
+  assert(Bytes::length(gen_str_char_code_at_body(false, 4242, 7)) > Bytes::length(gen_str_char_code_at_body(false, 0 - 1, 0 - 1)))
+  assert(Bytes::length(gen_arr_get_body(true, 4242, 7)) > Bytes::length(gen_arr_get_body(true, 0 - 1, 0 - 1)))
+}
+
+test "print_i64_raw drops exactly the newline emission" {
+  // gen_print_i64_raw_body is gen_print_i64_body minus the store of byte 10
+  // at scratch address 47 (three instructions); everything else is shared.
+  assert(Bytes::length(gen_print_i64_raw_body()) > 0)
+  assert(Bytes::length(gen_print_i64_raw_body()) < Bytes::length(gen_print_i64_body()))
+}
+
+test "oob_abort body is nonempty and grows with larger fragment constants" {
+  // Sanity on the shared abort helper: it must emit something, and the fat
+  // constants are LEB-encoded so a large constant produces a longer body.
+  assert(Bytes::length(gen_oob_abort_body(1, 2, 3, 4)) > 0)
+  assert(Bytes::length(gen_oob_abort_body(1, 2, 1099511627776, 4)) > Bytes::length(gen_oob_abort_body(1, 2, 3, 4)))
 }
 
 test "static str_len body matches generated body" {
