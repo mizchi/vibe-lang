@@ -2860,7 +2860,7 @@ fn shape_key(pname: String) -> String {
 }
 
 fn shape_is_composite(sh: String) -> Bool {
-  String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:") || String::starts_with(sh, "{m:") || String::starts_with(sh, "{g:")
+  sh == "{u}" || String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:") || String::starts_with(sh, "{m:") || String::starts_with(sh, "{g:")
 }
 
 /// Equality's shape grammar is a strict superset of interpolation's. Reuse the
@@ -3426,6 +3426,7 @@ fn adoptable_pushed_elem_shape(sh: String) -> Bool {
 fn adoptable_eq_ty(t: TypeExpr) -> Bool {
   match t {
     TyName(n) => adoptable_eq_name(n),
+    TyUnit => true,
     TyApp(head, args) => if head == "Array" && Array::length(args) == 1 {
       adoptable_eq_ty(Array::get(args, 0))
     } else if generic_eq_struct_declared(head) && !str_array_contains(dtd_eq_unsafe_types, head) && Array::length(args) > 0 {
@@ -8517,94 +8518,99 @@ fn generic_eq_types_size(types: Array[TypeExpr]) -> Int {
   size
 }
 
-fn generic_eq_ty_contains_specialization(ty: TypeExpr, key: String) -> Bool {
-  match ty {
-    TyName(_) => false,
-    TyApp(head, args) => if generic_eq_name(head, args) == key {
-      true
-    } else {
-      generic_eq_tys_contain_specialization(args, key)
-    },
-    TyFn(params, result, _) => generic_eq_tys_contain_specialization(params, key) || generic_eq_ty_contains_specialization(result, key),
-    TyTuple(items) => generic_eq_tys_contain_specialization(items, key),
-    TyUnit => false
-  }
-}
-
-fn generic_eq_tys_contain_specialization(types: Array[TypeExpr], key: String) -> Bool {
+fn generic_eq_graph_types_are_finite(types: Array[TypeExpr], visiting: Array[TypeExpr], done: Array[String]) -> Bool {
   let mut i = 0
-  let mut found = false
+  let mut finite = true
   while i < Array::length(types) {
-    if generic_eq_ty_contains_specialization(Array::get(types, i), key) {
-      found = true
+    if !generic_eq_graph_type_is_finite(Array::get(types, i), visiting, done) {
+      finite = false
     } else {
       ()
     }
     i = i + 1
   }
-  found
+  finite
 }
 
-fn generic_eq_ty_contains_other_specialization(ty: TypeExpr, head: String, key: String) -> Bool {
+fn generic_eq_graph_type_is_finite(ty: TypeExpr, visiting: Array[TypeExpr], done: Array[String]) -> Bool {
   match ty {
-    TyName(_) => false,
-    TyApp(item_head, args) => {
-      let other_here = item_head == head && generic_eq_name(item_head, args) != key
-      other_here || generic_eq_tys_contain_other_specialization(args, head, key)
-    },
-    TyFn(params, result, _) => generic_eq_tys_contain_other_specialization(params, head, key) || generic_eq_ty_contains_other_specialization(result, head, key),
-    TyTuple(items) => generic_eq_tys_contain_other_specialization(items, head, key),
-    TyUnit => false
-  }
-}
-
-fn generic_eq_tys_contain_other_specialization(types: Array[TypeExpr], head: String, key: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(types) {
-    if generic_eq_ty_contains_other_specialization(Array::get(types, i), head, key) {
-      found = true
+    TyName(_) => true,
+    TyApp(head, args) => if generic_eq_struct_declared(head) && Array::length(args) > 0 {
+      let canonical_args = for arg in args {
+        eq_expand_alias_ty(arg)
+      }
+      generic_eq_graph_node_is_finite(head, canonical_args, visiting, done)
     } else {
-      ()
-    }
-    i = i + 1
+      generic_eq_graph_types_are_finite(args, visiting, done)
+    },
+    TyFn(params, result, _) => generic_eq_graph_types_are_finite(params, visiting, done) && generic_eq_graph_type_is_finite(result, visiting, done),
+    TyTuple(items) => generic_eq_graph_types_are_finite(items, visiting, done),
+    TyUnit => true
   }
-  found
 }
 
-/// Does this concrete specialization's own field graph immediately close back
-/// over the same specialization? This distinguishes a finite constant edge
-/// (`Stable[T] -> Stable[Array[Int]]`) from a genuinely growing one
-/// (`Loop[T] -> Loop[Array[T]]`).
-fn generic_eq_specialization_closes(head: String, args: Array[TypeExpr]) -> Bool {
+/// Prove that every specialized-comparator edge reachable from this node is
+/// finite. Exact cycles are valid; revisiting a head with larger arguments on
+/// the active path proves non-regular growth. Walking every field prevents a
+/// regular self-edge from hiding a growing edge through this or another head.
+fn generic_eq_graph_node_is_finite(head: String, args: Array[TypeExpr], visiting: Array[TypeExpr], done: Array[String]) -> Bool {
   let key = generic_eq_name(head, args)
   let mut i = 0
-  let mut closes = false
-  let mut diverges = false
-  while i < Array::length(dtd_eq_generic_structs) {
-    let decl = Array::get(dtd_eq_generic_structs, i)
-    if decl.0 == head && Array::length(decl.1) == Array::length(args) {
-      let mut fi = 0
-      while fi < Array::length(decl.2) {
-        let field_ty = eq_expand_alias_ty(eq_subst_ty(Array::get(decl.2, fi).1, decl.1, args))
-        if generic_eq_ty_contains_specialization(field_ty, key) {
-          closes = true
-        } else {
-          ()
-        }
-        if generic_eq_ty_contains_other_specialization(field_ty, head, key) {
-          diverges = true
-        } else {
-          ()
-        }
-        fi = fi + 1
-      }
-    } else {
-      ()
+  let mut exact = false
+  let mut growing = false
+  while i < Array::length(visiting) {
+    match Array::get(visiting, i) {
+      TyApp(active_head, active_args) => if generic_eq_name(active_head, active_args) == key {
+        exact = true
+      } else if active_head == head && generic_eq_types_size(args) > generic_eq_types_size(active_args) {
+        growing = true
+      } else {
+        ()
+      },
+      _ => ()
     }
     i = i + 1
   }
-  closes && !diverges
+  if exact {
+    true
+  } else if growing {
+    false
+  } else if str_array_contains(done, key) {
+    true
+  } else {
+    Array::push(visiting, TyApp(head, args))
+    let mut finite = true
+    let mut di = 0
+    while di < Array::length(dtd_eq_generic_structs) {
+      let decl = Array::get(dtd_eq_generic_structs, di)
+      if decl.0 == head && Array::length(decl.1) == Array::length(args) {
+        let mut fi = 0
+        while fi < Array::length(decl.2) {
+          let field_ty = eq_expand_alias_ty(eq_subst_ty(Array::get(decl.2, fi).1, decl.1, args))
+          if !generic_eq_graph_type_is_finite(field_ty, visiting, done) {
+            finite = false
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      } else {
+        ()
+      }
+      di = di + 1
+    }
+    Array::truncate(visiting, Array::length(visiting) - 1)
+    if finite {
+      Array::push(done, key)
+    } else {
+      ()
+    }
+    finite
+  }
+}
+
+fn generic_eq_specialization_graph_is_finite(head: String, args: Array[TypeExpr]) -> Bool {
+  generic_eq_graph_node_is_finite(head, args, empty_type_exprs(), empty_str_array())
 }
 
 /// Non-regular recursion such as `Loop[T] -> Loop[Array[T]]` grows the
@@ -8615,14 +8621,13 @@ fn generic_eq_specialization_closes(head: String, args: Array[TypeExpr]) -> Bool
 fn generic_eq_is_expanding_recursion(head: String, args: Array[TypeExpr]) -> Bool {
   let mut i = 0
   let mut exact = false
-  let mut larger_than_active = false
+  let mut has_active = false
   while i < Array::length(dtd_eq_specialization_stack) {
+    has_active = true
     match Array::get(dtd_eq_specialization_stack, i) {
       TyApp(active_head, active_args) => if active_head == head {
         if generic_eq_name(active_head, active_args) == generic_eq_name(head, args) {
           exact = true
-        } else if generic_eq_types_size(args) > generic_eq_types_size(active_args) {
-          larger_than_active = true
         } else {
           ()
         }
@@ -8633,7 +8638,7 @@ fn generic_eq_is_expanding_recursion(head: String, args: Array[TypeExpr]) -> Boo
     }
     i = i + 1
   }
-  !exact && larger_than_active && !generic_eq_specialization_closes(head, args)
+  has_active && !exact && !generic_eq_specialization_graph_is_finite(head, args)
 }
 
 fn generic_eq_record(head: String, args: Array[TypeExpr]) -> Unit {
@@ -9571,6 +9576,7 @@ fn ty_mentions_name_in(t: TypeExpr, names: Array[String]) -> Bool {
 fn ty_to_eq_shape(t: TypeExpr) -> String {
   match t {
     TyName(n) => n,
+    TyUnit => "{u}",
     TyTuple(ts) => if Array::length(ts) == 0 {
       ""
     } else {
@@ -9623,6 +9629,8 @@ fn ty_to_eq_shape(t: TypeExpr) -> String {
 fn shape_to_eq_ty(sh: String) -> TypeExpr {
   if String::length(sh) == 0 {
     TyName("__EqUnknown")
+  } else if sh == "{u}" {
+    TyUnit
   } else if String::starts_with(sh, "(") {
     let parts = shape_split(shape_inner(sh))
     let ts = empty_type_exprs()
