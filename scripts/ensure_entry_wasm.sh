@@ -47,24 +47,31 @@ if [ ! -s "$ROOT_DIR/$wasm_rel" ] || [ ! -s "$ROOT_DIR/$deps_rel" ] \
    || [ "$seed" -nt "$ROOT_DIR/$wasm_rel" ]; then
   stale=1
 else
-  declare -A dep_dirs=()
   while IFS= read -r dep; do
     [ -n "$dep" ] || continue
     if [ ! -e "$ROOT_DIR/$dep" ] || [ "$ROOT_DIR/$dep" -nt "$ROOT_DIR/$wasm_rel" ]; then
       stale=1
       break
     fi
-    d="${dep%/*}"
-    [ "$d" = "$dep" ] && d="."
-    dep_dirs["$d"]=1
   done < "$ROOT_DIR/$deps_rel"
   if [ "$stale" = "0" ]; then
-    for d in "${!dep_dirs[@]}"; do
+    # Dedupe the parent directories without an associative array -- stock
+    # macOS runs Bash 3.2, where `declare -A` is a hard error (#2260
+    # round 7; scripts/test_affected_test.sh documents 3.2 as supported).
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
       if [ "$ROOT_DIR/$d" -nt "$ROOT_DIR/$wasm_rel" ]; then
         stale=1
         break
       fi
-    done
+    done < <(
+      while IFS= read -r dep; do
+        [ -n "$dep" ] || continue
+        d="${dep%/*}"
+        [ "$d" = "$dep" ] && d="."
+        printf '%s\n' "$d"
+      done < "$ROOT_DIR/$deps_rel" | sort -u
+    )
   fi
 fi
 
