@@ -128,6 +128,29 @@ test "a shadowed binder fails closed to no position" {
   assert(!String::contains(d, " [@"))
 }
 
+test "a raw-identifier binder counts as a declaration" {
+  // #2244 review round 6: `let r#v` lexes to binder name `v`, but the
+  // `r#` sat between the name and its keyword, so the scan used to count
+  // it as a bare occurrence. Alone it must anchor like any binding.
+  //    12345678
+  //  `  let r#v` -- `v` is column 9.
+  let src = "fn f() -> Bool {\n  let r#v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 2, 9))
+}
+
+test "a raw-identifier binder colliding with a plain fn fails closed" {
+  // #2244 review round 6 (the finding's exact shape, reproduced before
+  // the fix anchoring at the unrelated `fn v`): the raw `let r#v` is a
+  // let declaration of `v`, so fn+let cross-kind ambiguity applies and
+  // the message carries no position.
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let r#v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
 test "interpolating a Show-less struct anchors on the enclosing binding" {
   // #2198 (p04 shape): the synthesized __to_string call has no offset (the
   // interp snippet re-lexes without offsets), so the message carries the

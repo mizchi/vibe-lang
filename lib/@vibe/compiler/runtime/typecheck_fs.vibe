@@ -3602,7 +3602,19 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
         } else {
           ()
         }
-        if loc_kw_before(source, i, "fn") {
+        // #2244 review round 6 (measured: `let r#v = 1` compiles): a
+        // raw-identifier binder lexes to the bare name, so the occurrence
+        // matches -- but the `r#` prefix sat between the name and its
+        // keyword, making the scan count it as a bare occurrence and hand
+        // a same-named plain declaration sole ownership. Probe the keyword
+        // from before a whole-word `r#` so raw spellings count as the
+        // declarations they are.
+        let decl_probe = if i >= 2 && String::char_code_at(source, i - 1) == 35 && String::char_code_at(source, i - 2) == 114 && (i - 2 == 0 || !loc_ident_char(String::char_code_at(source, i - 3))) {
+          i - 2
+        } else {
+          i
+        }
+        if loc_kw_before(source, decl_probe, "fn") {
           fn_count = fn_count + 1
           if fn_off < 0 {
             fn_off = i
@@ -3610,10 +3622,10 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
             ()
           }
         } else {
-          let is_let_decl = if loc_kw_before(source, i, "let") {
+          let is_let_decl = if loc_kw_before(source, decl_probe, "let") {
             true
-          } else if loc_kw_before(source, i, "mut") {
-            let before_name = loc_skip_ws_back(source, i)
+          } else if loc_kw_before(source, decl_probe, "mut") {
+            let before_name = loc_skip_ws_back(source, decl_probe)
             loc_kw_before(source, before_name - 3, "let")
           } else {
             false
