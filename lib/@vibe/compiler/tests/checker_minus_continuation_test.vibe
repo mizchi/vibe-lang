@@ -1,0 +1,35 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_error_message, check_source_ok
+}
+
+//# Misc
+
+// #2206: a line-leading `-` glues onto the previous expression (a newline
+// does not end an expression when the next line starts with an operator),
+// so the checker sees `f() - 1` with a Unit LHS. The diagnostic must name
+// the continuation rule and the `(-1)` edit; the base text stays a prefix
+// so existing substring pins keep matching.
+
+test "unit lhs minus names the line continuation" {
+  let src = "fn f() -> Unit { () }\nfn main() -> Int {\n  let v = {\n    f()\n    -1\n  }\n  v\n}"
+  assert(check_source_err_contains(src, "type mismatch in '-': operands must be Int or Double"))
+  assert(check_source_err_contains(src, "the left operand is Unit"))
+  assert(check_source_err_contains(src, "continues the previous line's expression"))
+  assert(check_source_err_contains(src, "parenthesize `(-1)`"))
+}
+
+test "non-unit lhs minus keeps the plain message" {
+  // String - String misses every candidate but the LHS is not Unit, so
+  // the continuation clause must NOT appear.
+  let src = "fn main() -> Int {\n  let s = \"a\" - \"b\"\n  0\n}"
+  assert(check_source_err_contains(src, "type mismatch in '-': operands must be Int or Double"))
+  let msg = check_source_error_message(src)
+  assert(!String::contains(msg, "the left operand is Unit"))
+}
+
+test "parenthesized negative literal repairs the glue" {
+  let src = "fn f() -> Unit { () }\nfn main() -> Int {\n  let v = {\n    f()\n    (-1)\n  }\n  v\n}"
+  assert(check_source_ok(src))
+}
