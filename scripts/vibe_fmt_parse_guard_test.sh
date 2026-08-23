@@ -190,4 +190,26 @@ if ! head -1 "$fill_abs" | grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:sha1:[0-
   exit 1
 fi
 
+# #2260 Codex round 1: the formatter artifact's staleness must track the
+# entry's RESOLVED import closure, not a hand list -- a hand list cannot see
+# transitive dependencies (loader/header_cache.vibe is reachable from
+# fmt_entry through contract_package_hashes_fs and was tracked by nothing).
+# ensure_entry_wasm.sh captures the closure into <wasm>.deps at build time;
+# prove a transitive dep is IN the manifest and that touching it rebuilds.
+entry_wasm="$ROOT_DIR/_build/vibe_fmt/fmt_entry.wasm"
+bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
+if ! grep -q '^lib/@vibe/compiler/loader/header_cache\.vibe$' "$entry_wasm.deps"; then
+  echo "vibe_fmt_parse_guard_test: fmt_entry's captured closure is missing a transitive dep (header_cache.vibe)" >&2
+  exit 1
+fi
+before_mtime="$(stat -c %Y "$entry_wasm")"
+sleep 1
+touch "$ROOT_DIR/lib/@vibe/compiler/loader/header_cache.vibe"
+bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
+after_mtime="$(stat -c %Y "$entry_wasm")"
+if [ "$after_mtime" -le "$before_mtime" ]; then
+  echo "vibe_fmt_parse_guard_test: touching a transitive dep did not rebuild the cached formatter" >&2
+  exit 1
+fi
+
 echo "vibe_fmt_parse_guard_test: ok"
