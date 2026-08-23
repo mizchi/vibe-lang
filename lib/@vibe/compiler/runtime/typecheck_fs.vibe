@@ -5319,7 +5319,50 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Exceptio
     Throw(m) => (source, m)
   }
   if pin_err != "" {
-    return [pin_err]
+    // #2253 review: the loader's message carries no position, and the JSON
+    // lane renders an unlocated diagnostic as the synthetic 0:0 range. The
+    // message quotes the offending text after its `): ` -- when that quote
+    // matches exactly ONE of the leading `require` directive lines, anchor
+    // there (line, column 1). Anything ambiguous -- a short fragment
+    // appearing in several directive lines -- stays unlocated: a bare
+    // message beats a confidently wrong line.
+    let sep = String::index_of(pin_err, "): ")
+    let tail = if sep >= 0 {
+      String::substring(pin_err, sep + 3, String::length(pin_err))
+    } else {
+      ""
+    }
+    let mut hit_line = 0 - 1
+    let mut hit_count = 0
+    if String::length(tail) > 0 {
+      let lines = String::split(source, "\n")
+      let mut li = 0
+      let mut in_head = true
+      while in_head && li < Array::length(lines) {
+        let line = Array::get(lines, li)
+        let t = String::trim(line)
+        if String::starts_with(t, "require ") {
+          if String::contains(line, tail) {
+            hit_count = hit_count + 1
+            hit_line = li
+          } else {
+            ()
+          }
+          li = li + 1
+        } else if t == "" {
+          li = li + 1
+        } else {
+          in_head = false
+        }
+      }
+    } else {
+      ()
+    }
+    if hit_count == 1 {
+      return [String::concat("line ", String::concat(__to_string(hit_line + 1), String::concat(":1: ", pin_err)))]
+    } else {
+      return [pin_err]
+    }
   } else {
     ()
   }

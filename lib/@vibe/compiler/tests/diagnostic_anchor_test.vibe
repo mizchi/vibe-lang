@@ -94,6 +94,21 @@ test "all-literal if branches anchor on the binder" {
   assert(anchored_at(src, 2, 7))
 }
 
+test "a malformed require directive is located on its own line" {
+  // #2253 review: the single-file lane blanks require-pin heads (#2227),
+  // and a head the loader rejects becomes the diagnostic -- but the
+  // loader's message carries no position, which the JSON lane renders as
+  // the synthetic 0:0 range. When the message's quoted offender matches
+  // exactly one leading require line, the diagnostic anchors there.
+  let src = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\nrequire @vibe/extra 9.9.9 = #pkg:sha1:zzz\n\nfn f() -> Int {\n  1\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "require pin must be"))
+  assert(String::contains(d, "line 2:1:"))
+  // A clean pin head stays clean.
+  let ok = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  assert(first_diag(ok) == "")
+}
+
 test "a comment spelling the binder does not capture the anchor" {
   // #2244 review: find_fn_anchor_off scans raw text; before the fix a
   // comment like this source's line 2 anchored the diagnostic at the
