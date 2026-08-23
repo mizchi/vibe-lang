@@ -47,13 +47,64 @@ adapter, launcher, mode, enforced = sys.argv[1], sys.argv[2], sys.argv[3], sys.a
 
 # Selector branch order, as cli_main evaluates it. VIBE_RC is a mode modifier
 # read inside a branch, not a branch of its own.
+# Names that appear only in EXPRESSION position and do not pick a branch: they
+# modify observation inside whichever branch was already selected, and a caller
+# sets them deliberately (both are documented user-facing knobs). Clearing them
+# would break that, so they are excluded BY NAME -- and the check below fails on
+# any expression-position selector not accounted for here, so a new one cannot
+# be silently dropped the way VIBE_COVERAGE was (#2246 review).
+OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS"}
+
+# The order is SOURCE ORDER, and a selector counts wherever it is tested --
+# `let bytes = if Env::get("VIBE_COVERAGE") == "1" { .. } else if
+# Env::get("VIBE_BACKEND") == "gc" { .. }` is a branch choice even though it is
+# an expression. Matching only statement position missed VIBE_COVERAGE, so an
+# inherited coverage flag silently produced a linear coverage build while the
+# caller believed they had measured the gc lane.
 order = []
+expr_seen = []
 for line in open(adapter, encoding="utf-8"):
     m = re.match(r'\s*(?:\} else )?if Env::get\("(VIBE_[A-Z_]+)"\) == "1" \{', line)
-    if m and m.group(1) != "VIBE_RC" and m.group(1) not in order:
-        order.append(m.group(1))
+    if m:
+        if m.group(1) != "VIBE_RC" and m.group(1) not in order:
+            order.append(m.group(1))
+        continue
+    # VIBE_BACKEND is the one branch discriminator not compared against "1"
+    # (`== "gc"`), and restricting the match to "1" silently dropped it -- so
+    # `selector_clears_before VIBE_BACKEND` was clearing everything by accident
+    # rather than by derivation. Every other non-"1" comparison in the adapter
+    # (VIBE_RC, VIBE_TESTMETA_OUT, VIBE_CHECK_ERROR_ROW, VIBE_HOST_ACTION_OUT,
+    # VIBE_ARTIFACT_INPUT_TRACE_NONCE) is a mode or a value, not a branch.
+    for em in re.finditer(r'Env::get\("(VIBE_[A-Z_]+)"\) == "(?:1|gc)"', line):
+        n = em.group(1)
+        if n != "VIBE_RC" and n not in expr_seen:
+            expr_seen.append(n)
+        if n != "VIBE_RC" and n not in order and n not in OBSERVATION_ONLY:
+            order.append(n)
+
+# Fail closed on a selector this file has not classified. Every
+# expression-position name must be either ordered above or named in
+# OBSERVATION_ONLY with a reason; silence is what let VIBE_COVERAGE through.
+unclassified = [n for n in expr_seen if n not in order and n not in OBSERVATION_ONLY]
+if unclassified:
+    print("[selector-precedence] FAIL: expression-position selectors with no"
+          " classification: %s" % " ".join(unclassified), file=sys.stderr)
+    print("  Add each to the order (it picks a branch or an artifact) or to"
+          " OBSERVATION_ONLY with a reason.", file=sys.stderr)
+    sys.exit(1)
 
 src = open(launcher, encoding="utf-8").read()
+
+# A clear target this derivation does not know is not a clear set -- it silently
+# falls through selector_clears_before's loop and clears EVERYTHING, which looks
+# like it works and is not derived from anything. Fail instead.
+for t in sorted(set(re.findall(r'selector_clears_before (VIBE_[A-Z_]+)', src))):
+    if t not in order:
+        print("[selector-precedence] FAIL: selector_clears_before names %s, which is"
+              " not a selector this derivation knows" % t, file=sys.stderr)
+        print("  Its clear set would be 'everything', by accident rather than"
+              " by derivation.", file=sys.stderr)
+        sys.exit(1)
 
 # The launcher embeds the adapter's selector order once (#2243) and derives each
 # arm's clear list from it. That embedded order is the thing every arm now
