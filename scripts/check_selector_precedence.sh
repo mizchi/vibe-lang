@@ -142,19 +142,32 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     # branch. `env ... "$RUNNER" "$out"` executes the user's compiled program,
     # where no selector applies.
     runs_cli = '"$RUNNER"' in block and re.search(r'"?\$\{?cli\}?"?', block)
-    # The clears may be computed just above the block (a branch picking the
-    # target), so look back a little rather than only inside it.
+
+    # What this block actually CONSUMES, not what happens to sit near it.
+    # Checking only for a nearby `selector_clears_before` credited proximity:
+    # deleting `$sel_clears` from the invocation while leaving its computation
+    # above left the check green (#2246 review). So: either the helper is
+    # called inline in the block, or the block expands a variable this file
+    # assigned from the helper.
     lookback = src[max(0, m.start() - 900):m.start()]
-    if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) \
-       and 'selector_clears_before' not in block \
-       and 'selector_clears_before' not in lookback:
+    inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', block)
+    assigned = re.findall(r'(\w+)="?\$\(selector_clears_before (VIBE_[A-Z_]+)\)"?', lookback)
+    consumed = [t for v, t in assigned if re.search(r'\$\{?' + v + r'\}?\b', block)]
+    covered = inline + consumed
+
+    if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) and not covered:
         unverifiable.append(src[:m.start()].count("\n") + 1)
         continue
     cleared = set(re.findall(r'-u (VIBE_[A-Z_]+)', block))
-    # `env $(selector_clears_before T) ...` clears every predecessor of T.
-    for t in re.findall(r'selector_clears_before (VIBE_[A-Z_]+)', block):
-        if t in order:
-            cleared.update(order[:order.index(t)])
+    # Credit only what is guaranteed on EVERY path: when one variable is
+    # assigned from the helper under several branches (compile_to picks
+    # VIBE_BACKEND or VIBE_FS_COMPILE), the smallest predecessor set is the one
+    # that always holds.
+    if covered:
+        weakest = min(order.index(t) for t in covered if t in order) \
+            if any(t in order for t in covered) else None
+        if weakest is not None:
+            cleared.update(order[:weakest])
     line_no = src[:m.start()].count("\n") + 1
     for i, sel in enumerate(order):
         if not re.search(r'(?<![-\w])' + sel + r'=1\b', block):
