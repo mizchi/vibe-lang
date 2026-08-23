@@ -251,6 +251,11 @@ fi
 # dropped, gluing them into a single `returnhandle` token, which cascaded
 # into an unrelated far-later "unexpected token: with" parse error (the
 # merge-flatten compile step of scripts/generate_bundle.sh).
+# Since the ADR-0102 migration the formatter also rewrites the legacy
+# `with Exception { Throw(msg) => .. }` header into the qualified
+# `with { Exception::Throw(msg) => .. }` form, so the input is no longer a
+# byte-fixpoint -- the guard here is only that `return handle` keeps its
+# space (and the migrated output is itself a fixpoint).
 cat > "$WORK/return_handle.in.vibe" <<'EOF'
 fn foo() -> Int with Exception {
   return handle {
@@ -260,10 +265,28 @@ fn foo() -> Int with Exception {
   }
 }
 EOF
+cat > "$WORK/return_handle.expected.vibe" <<'EOF'
+fn foo() -> Int with Exception {
+  return handle {
+    1
+  } with { Exception::Throw(msg) => 0 }
+}
+EOF
 bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/return_handle.in.vibe" > "$WORK/return_handle.got.vibe" 2>/dev/null
-if ! cmp -s "$WORK/return_handle.in.vibe" "$WORK/return_handle.got.vibe"; then
+if grep -q 'returnhandle' "$WORK/return_handle.got.vibe"; then
   echo "[vibe-fmt-smoke] FAIL: 'return handle {' lost its space and glued into 'returnhandle'" >&2
-  diff "$WORK/return_handle.in.vibe" "$WORK/return_handle.got.vibe" >&2 || true
+  sed -n '1,8p' "$WORK/return_handle.got.vibe" >&2
+  exit 1
+fi
+if ! cmp -s "$WORK/return_handle.expected.vibe" "$WORK/return_handle.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: 'return handle' did not format to the qualified-handler canonical form" >&2
+  diff "$WORK/return_handle.expected.vibe" "$WORK/return_handle.got.vibe" >&2 || true
+  exit 1
+fi
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/return_handle.expected.vibe" > "$WORK/return_handle.again.vibe" 2>/dev/null
+if ! cmp -s "$WORK/return_handle.expected.vibe" "$WORK/return_handle.again.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: qualified return-handle form is not a fixpoint" >&2
+  diff "$WORK/return_handle.expected.vibe" "$WORK/return_handle.again.vibe" >&2 || true
   exit 1
 fi
 
