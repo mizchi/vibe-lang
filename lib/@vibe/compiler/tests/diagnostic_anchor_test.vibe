@@ -82,6 +82,228 @@ test "mismatched if branches with a literal else still anchor on the if" {
   assert(anchored_at(src, 3, 13))
 }
 
+test "all-literal if branches anchor on the binder" {
+  // #2198 (p11 shape): both branches, the then-tail AND the condition are
+  // literals, so every offset fallback comes up empty. The `[@fn=]` binder
+  // anchor recovers `let v` -- coarser than the disagreeing branch, but a
+  // real position instead of a file-only message.
+  //    123456
+  //  `  let v` -- `v` is column 7.
+  let src = "fn f() -> Bool {\n  let v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 2, 7))
+}
+
+test "a malformed require directive is located on its own line" {
+  // #2253 review: the single-file lane blanks require-pin heads (#2227),
+  // and a head the loader rejects becomes the diagnostic -- but the
+  // loader's message carries no position, which the JSON lane renders as
+  // the synthetic 0:0 range. The locator probes line-prefixes of the
+  // source through the loader's own scanner and anchors at the first one
+  // that throws the same message, so every message form and every header
+  // line kind locates without a second copy of the header grammar.
+  let src = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\nrequire @vibe/extra 9.9.9 = #pkg:sha1:zzz\n\nfn f() -> Int {\n  1\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "require pin must be"))
+  assert(String::contains(d, "line 2:1:"))
+  // A clean pin head stays clean.
+  let ok = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  assert(first_diag(ok) == "")
+  // #2253 review round 3: a message with no parenthesized expectation
+  // (plain `: <offender>` tail) locates too.
+  let scoped = "require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  let d2 = first_diag(scoped)
+  assert(String::contains(d2, "must start with '@'"))
+  assert(String::contains(d2, "line 2:1:"))
+  // #2253 review round 4: the header grammar continues across comments and
+  // the other directives, so a malformed require AFTER one of those must
+  // locate too (the previous locator classified only require/blank lines
+  // as header and gave up at the comment).
+  let after_comment = "// header comment\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  let d3 = first_diag(after_comment)
+  assert(String::contains(d3, "must start with '@'"))
+  assert(String::contains(d3, "line 2:1:"))
+  let after_version = "version = 1.2.3\nrequire bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  let d4 = first_diag(after_version)
+  assert(String::contains(d4, "must start with '@'"))
+  assert(String::contains(d4, "line 2:1:"))
+  // An unterminated `deps = {` swallows the first code line as a deps
+  // entry; the probe anchors on that line -- where the scanner stopped.
+  let open_deps = "deps = {\n  @vibe/core : 0.2.0\n\nfn f() -> Int {\n  1\n}\n"
+  let d5 = first_diag(open_deps)
+  assert(String::contains(d5, "malformed deps entry"))
+  assert(String::contains(d5, "line 4:1:"))
+  // #2253 review round 6: the probe binary-searches the prefix boundary, so
+  // there is no length cap -- an offending directive past line 256 still
+  // locates (the previous linear probe gave up there).
+  let mut long_head = ""
+  let mut li = 0
+  while li < 300 {
+    long_head = long_head + "// filler\n"
+    li = li + 1
+  }
+  let long_src = long_head + "require bad/pkg 1.2.3 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn f() -> Int {\n  1\n}\n"
+  let d6 = first_diag(long_src)
+  assert(String::contains(d6, "must start with '@'"))
+  assert(String::contains(d6, "line 301:1:"))
+}
+
+test "a comment spelling the binder does not capture the anchor" {
+  // #2244 review: find_fn_anchor_off scans raw text; before the fix a
+  // comment like this source's line 2 anchored the diagnostic at the
+  // comment. The scan now skips comments and strings, so the anchor lands
+  // on the real binding (line 3, column 7).
+  let src = "fn f() -> Bool {\n  // let v used to be an Int\n  let v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 3, 7))
+}
+
+test "a same-named fn and let fail closed to no position" {
+  // #2244 review round 3: the failing binding is the local `let v`, but the
+  // file also declares `fn v` -- the marker records only the name, so the
+  // kind cannot break the tie. Before the fix the unique fn declaration won
+  // and the diagnostic pointed at the unrelated top-level function.
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
+test "a shadowed binder fails closed to no position" {
+  // #2244 review: two `let v` declarations make the by-name anchor
+  // ambiguous -- the old scan picked the FIRST one, reporting line 2 for a
+  // failure on line 3. Ambiguity now returns no anchor at all: the message
+  // keeps its text and carries no line, rather than a confidently wrong one.
+  let src = "fn f() -> Bool {\n  let v = 1\n  let v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
+test "a raw-identifier binder counts as a declaration" {
+  // #2244 review round 6: `let r#v` lexes to binder name `v`, but the
+  // `r#` sat between the name and its keyword, so the scan used to count
+  // it as a bare occurrence. Alone it must anchor like any binding.
+  //    12345678
+  //  `  let r#v` -- `v` is column 9.
+  let src = "fn f() -> Bool {\n  let r#v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 2, 9))
+}
+
+test "a raw-identifier binder colliding with a plain fn fails closed" {
+  // #2244 review round 6 (the finding's exact shape, reproduced before
+  // the fix anchoring at the unrelated `fn v`): the raw `let r#v` is a
+  // let declaration of `v`, so fn+let cross-kind ambiguity applies and
+  // the message carries no position.
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let r#v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
+test "a let rec binder counts as a declaration" {
+  // #2244 review round 8: the intervening `rec` (like `mut`, like `r#`)
+  // used to make the binder count as a mere occurrence, handing a
+  // same-named outside fn sole ownership. Colliding, the cross-kind rule
+  // fails closed; alone it anchors at the binder.
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let rec v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+  //    1234567890
+  //  `  let rec v` -- `v` is column 11.
+  let alone = "fn f() -> Bool {\n  let rec v = if true { \"yes\" } else { 0 }\n  true\n}\n"
+  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
+  assert(anchored_at(alone, 2, 11))
+}
+
+test "a char literal quote does not swallow later declarations" {
+  // #2244 review round 9: `'\"'` used to flip the scanner's string mode,
+  // making every later declaration invisible -- a same-named outside fn
+  // then owned the anchor. Colliding, the cross-kind rule fails closed;
+  // alone, the binder after the char literal anchors normally (line 3,
+  // column 7). (The fragment variant of this finding does not lex --
+  // scan_interp_end counts raw bytes the same way this scan does.)
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let q = '\"'\n  let v = if true { \"yes\" } else { 0 }\n  q == 34 && v == \"\"\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+  let alone = "fn f() -> Bool {\n  let q = '\"'\n  let v = if true { \"yes\" } else { 0 }\n  q == 34 && v == \"\"\n}\n"
+  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
+  assert(anchored_at(alone, 3, 7))
+}
+
+test "a raw string's trailing backslash does not swallow later declarations" {
+  // #2244 review round 10 (measured: `let q = r\"\\\"` compiles -- a raw
+  // string ends at the next quote with NO escape processing): the
+  // escape-honoring string skip used to read the trailing backslash as
+  // escaping the closing quote, hiding every later declaration, so a
+  // same-named outside fn owned the anchor. Colliding, the cross-kind
+  // rule fails closed; alone, the binder anchors normally (line 3,
+  // column 7).
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let q = r\"\\\"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(q) == 1 && v == \"\"\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+  let alone = "fn f() -> Bool {\n  let q = r\"\\\"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(q) == 1 && v == \"\"\n}\n"
+  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
+  assert(anchored_at(alone, 3, 7))
+}
+
+test "hash-pipe raw text neither declares nor swallows" {
+  // #2244 review round 11 (measured: `let s = #|raw text` compiles): a
+  // `#|` line's raw text spelling `fn v \"` used to count a FAKE fn
+  // declaration and flip string mode -- the diagnostic anchored inside
+  // the raw string (line 2:16-17). The scan now skips `#|` lines, so
+  // the real binder anchors normally (line 3, column 7); with an
+  // outside same-named fn the cross-kind rule fails closed.
+  let alone = "fn f() -> Bool {\n  let s = #|fn v \"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(s) > 0 && v == \"\"\n}\n"
+  assert(String::contains(first_diag(alone), "if branches have incompatible types"))
+  assert(anchored_at(alone, 3, 7))
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let s = #|fn v \"\n  let v = if true { \"yes\" } else { 0 }\n  String::length(s) > 0 && v == \"\"\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
+test "a binder declared inside an interpolation fragment counts" {
+  // #2244 review round 7: `\{...}` fragments are code, so a binder
+  // declared inside one must be visible to the scan. Alone it anchors at
+  // the fragment declaration; the exact columns are pinned by measurement.
+  let src = "fn f() -> String {\n  \"x = \\{ { let v = if true { \"yes\" } else { 0 }\n  v } }\"\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 2, 17))
+}
+
+test "a fragment binder colliding with an outside fn fails closed" {
+  // #2244 review round 7 (the finding's exact shape, reproduced before
+  // the fix anchoring at the unrelated top-level `fn v` on line 1): the
+  // fragment's `let v` now counts as a declaration, so the cross-kind
+  // ambiguity rule reports without a position.
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> String {\n  \"x = \\{ { let v = if true { \"yes\" } else { 0 }\n  v } }\"\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
+test "interpolating a Show-less struct anchors on the enclosing binding" {
+  // #2198 (p04 shape): the synthesized __to_string call has no offset (the
+  // interp snippet re-lexes without offsets), so the message carries the
+  // enclosing binding's [@fn=] marker instead and anchors at `fn main`.
+  let src = "struct Point {\n  x: Int\n}\n\nfn main() -> Unit {\n  let p = Point::{ x: 3 }\n  let s = \"\\{p}\"\n  ()\n}\n"
+  assert(String::contains(first_diag(src), "cannot interpolate a value of type `Point`"))
+  assert(String::contains(first_diag(src), "line 5:4"))
+}
+
 test "an incompatible array element points at that element" {
   let src = "fn f() -> Int {\n  let s = \"x\"\n  let a = [1, s]\n  1\n}\n"
   assert(String::contains(first_diag(src), "array elements have incompatible types"))

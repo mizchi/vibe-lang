@@ -133,7 +133,10 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
       // #2125: `unknown type` is reported from a function literal's parameter
       // and return annotations, which carry no offset of their own -- so it
       // anchors on the declaration name exactly like the two above.
-      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `")
+      // #2198: `if branches have incompatible types` joins them for the
+      // all-literal case (`if c { "yes" } else { 0 }`) where the else
+      // branch, the then-tail and the condition are all offset-less.
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `") || String::starts_with(msg, "if branches have incompatible types")
       if anchorable && unlocated {
         Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
       }
@@ -4221,7 +4224,26 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
         None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
           Some((resolved, s1)) => (resolved, s1),
           None => {
-            Array::push(errors, binop_mismatch_msg(op, "': operands must be Int or Double", off))
+            // #2206: a Unit LHS under `-` is almost always a line-leading
+            // `-` glued onto the previous statement (a newline does not end
+            // an expression when the next line starts with an operator).
+            // The checker never sees line layout, so the clause states the
+            // language rule rather than claiming this line started with
+            // `-`; the base text stays a prefix so substring pins hold.
+            let minus_unit_lhs = if op == "-" {
+              match subst_apply(s, left_ty) {
+                CtUnit => true,
+                _ => false
+              }
+            } else {
+              false
+            }
+            let tail = if minus_unit_lhs {
+              "': operands must be Int or Double (the left operand is Unit -- a `-` at the start of a line continues the previous line's expression instead of starting a new one; parenthesize the negated value, e.g. `(-1)` or `(-x)`, or bind it with `let` if you meant a negative value)"
+            } else {
+              "': operands must be Int or Double"
+            }
+            Array::push(errors, binop_mismatch_msg(op, tail, off))
             (CtUnknown, s)
           }
         }
@@ -4904,26 +4926,58 @@ fn tail_returns_binding(expr: Expr, name: String) -> Bool {
   }
 }
 
+/// Region-provenance scanning runs after the expression has already passed
+/// ordinary checking. Ground literals cannot mention a region and cannot
+/// change substitution state, so re-entering the full checker for them only
+/// pays its large RC parameter-dup plan again.
+fn tail_region_check(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
+  match expr {
+    EInt(_) => (CtInt, s, c),
+    EFloat(_) => (CtDouble, s, c),
+    EString(_) => (CtString, s, c),
+    EBool(_) => (CtBool, s, c),
+    EUnit => (CtUnit, s, c),
+    _ => ce(expr, env, defs, s, c, array_empty(), array_empty())
+  }
+}
+
+fn tail_region_closed_ground_fn(expr: Expr) -> Bool {
+  match expr {
+    EFn(tparams, tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(tbounds) == 0 && Array::length(params) == 0 && ret_ty == None && effect == None {
+      match body {
+        EInt(_) => true,
+        EFloat(_) => true,
+        EString(_) => true,
+        EBool(_) => true,
+        EUnit => true,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
 fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_name: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
   match expr {
     ELet(name, val, body, _) => {
-      let throwaway = array_empty()
-      let throwtab = array_empty()
-      let (val_ty, s1, c1) = ce(val, env, defs, s, c, throwaway, throwtab)
+      let (val_ty, s1, c1) = tail_region_check(val, env, defs, s, c, ce)
       let next_env = bind_named_record_provenance(name, val, env_bind(env, name, val_ty), defs, s1, c1, ce)
       (tail_returns_binding(body, name) && tail_named_record_mentions_region(val, env, defs, s, c, region_name, ce)) || tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
     },
     ELetMut(name, val, body, _) => {
-      let throwaway = array_empty()
-      let throwtab = array_empty()
-      let (val_ty, s1, c1) = ce(val, env, defs, s, c, throwaway, throwtab)
+      let (val_ty, s1, c1) = tail_region_check(val, env, defs, s, c, ce)
       let next_env = bind_named_record_provenance(name, val, env_bind_mut(env, name, val_ty, false), defs, s1, c1, ce)
       tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
     },
     ESeq(left, right) => {
-      let throwaway = array_empty()
-      let throwtab = array_empty()
-      let (_, s1, c1) = ce(left, env, defs, s, c, throwaway, throwtab)
+      let (s1, c1) = if tail_region_closed_ground_fn(left) {
+        (s, c)
+      } else {
+        let (_, next_s, next_c) = tail_region_check(left, env, defs, s, c, ce)
+        (next_s, next_c)
+      }
       tail_named_record_mentions_region(right, env, defs, s1, c1, region_name, ce)
     },
     ECall(callee, args, _) => {

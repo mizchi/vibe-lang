@@ -558,3 +558,76 @@ test "shipped HashMap type alias in core/index.vpkg is still a transparent alias
   assert(String::contains(src, "type HashMap[K, V] = MutMap[K, V]"))
   assert(!String::contains(src, "#deprecated(\"use MutMap\")"))
 }
+
+//# #2198 / #2244 review: the missing-Show interpolation path prefix must
+//# name the culprit's file, never the entry's by default. The throw
+//# carries no source identity, so the prefix rides [@fn=] ownership: added
+//# only when exactly one source in the consumed group set resolves the
+//# anchor; otherwise the message stays unlocated with no path.
+
+test "entry-file missing-Show interpolation names the entry path and line" {
+  let base_dir = "/tmp/vibe_cli_support_show_entry"
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(main_path, string_to_bytes("struct Bare {\n  x: Int\n}\n\nfn main() -> Unit {\n  let b = Bare::{ x: 1 }\n  let s = \"\\{b}\"\n  ()\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(main_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "cannot interpolate a value of type"))
+  assert(String::contains(msg, "/main.vibe: line 5:4-8:"))
+}
+
+test "dependency missing-Show interpolation does not name the entry file" {
+  // Red before the fix: `<entry path>: cannot interpolate ...` for an
+  // error living entirely in dep.vibe. The merged binder name does not
+  // resolve in any single source (the merge renames dep declarations), so
+  // the fail-closed answer is the bare message: no path, no location.
+  let base_dir = "/tmp/vibe_cli_support_show_dep"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/entrymod.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("struct Hidden {\n  x: Int\n}\n\nexport fn render() -> String {\n  let h = Hidden::{ x: 1 }\n  \"\\{h}\"\n}\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { render }\n\nfn main() -> Unit {\n  let _s = render()\n  ()\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(main_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "cannot interpolate a value of type"))
+  assert(!String::contains(msg, "entrymod.vibe"))
+  assert(!String::contains(msg, " [@fn="))
+}
+
+test "shared-import sibling missing-Show locates against the physical file" {
+  // #2244 review round 5: a sibling under an index.vpkg with a directory-
+  // shared import is ingested with the shared-import marker and the
+  // inherited import line PREPENDED, so an offset computed on the group
+  // snapshot names a line below the real one. The owner scan must recover
+  // the physical bytes (re-ingest + exact match) before locating; `render`
+  // is declared at line 5 of the physical file, byte columns 11-17
+  // (half-open end, the range prefix's convention).
+  let base_dir = "/tmp/vibe_cli_support_show_shared/pkg"
+  Fs::mkdir_p(base_dir)
+  let contract_path = String::concat(base_dir, "/index.vpkg")
+  let impl_path = String::concat(base_dir, "/impl.vibe")
+  Fs::write_bytes(contract_path, string_to_bytes("import @vibe/random { seed }\n\nfn render() -> String\n"))
+  Fs::write_bytes(impl_path, string_to_bytes("struct Hidden {\n  x: Int\n}\n\nexport fn render() -> String {\n  let h = Hidden::{ x: 1 }\n  \"\\{h}\"\n}\n"))
+  let msg = handle {
+    let _ = check_linked_file(impl_path)
+    ""
+  } with Exception {
+    Throw(m) => m
+  }
+  assert(String::contains(msg, "cannot interpolate a value of type"))
+  if String::contains(msg, "line ") {
+    // Located answers must carry the PHYSICAL coordinates and the file.
+    assert(String::contains(msg, "/impl.vibe: line 5:11-17:"))
+  } else {
+    // Fail-closed (unlocatable) is acceptable; a wrong line is not.
+    assert(!String::contains(msg, " [@"))
+  }
+}

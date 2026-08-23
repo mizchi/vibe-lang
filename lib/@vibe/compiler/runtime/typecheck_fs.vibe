@@ -76,6 +76,10 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   expand_interp_stmts
 }
 
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
 import @vibe/compiler/loader {
   ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
 }
@@ -3542,8 +3546,22 @@ fn loc_kw_before(source: String, off: Int, kw: String) -> Bool {
 }
 
 /// Recover the source offset of a declaration name tagged `[@fn=name]`.
-/// Prefer `fn name`, then `let name` / `let mut name`, then the first
-/// whole-word occurrence. -1 when the name cannot be found.
+/// Prefer a `fn name` declaration, then `let name` / `let mut name`, then a
+/// plain whole-word occurrence. -1 when the name cannot be found.
+///
+/// #2244 review: the scan is a raw-text heuristic, and three failure modes
+/// made it confidently wrong -- a comment or string literal spelling the
+/// declaration (`// let v used to be ...`) anchored the diagnostic at the
+/// comment, a shadowed binder anchored at the FIRST `let v` rather than
+/// the failing one, and a cross-kind collision (`fn v` at top level while
+/// the failing binding is a local `let v`) anchored at the unrelated fn --
+/// the marker records only the NAME, so the kind cannot break the tie.
+/// So the scan skips `//` comments and string literals, and it anchors
+/// only when exactly ONE declaration of the name exists across BOTH
+/// declaration kinds (`fn name` and `let name` combined), falling back to
+/// a bare occurrence only when it is the name's sole appearance. Anything
+/// ambiguous (shadowing, re-declaration, fn/let collision) returns -1 and
+/// the message stays unlocated -- missing information beats misinformation.
 fn find_fn_anchor_off(source: String, name: String) -> Int {
   let nlen = String::length(name)
   if nlen == 0 {
@@ -3552,26 +3570,150 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
     let slen = String::length(source)
     let mut i = 0
     let mut fn_off = 0 - 1
+    let mut fn_count = 0
     let mut let_off = 0 - 1
+    let mut let_count = 0
     let mut first_off = 0 - 1
-    while i + nlen <= slen {
-      if loc_word_at(source, i, name) {
+    let mut occ_count = 0
+    // #2244 round 7: a string literal's TEXT never hosts a declaration,
+    // but its `\{...}` interpolation fragments are parsed as expression
+    // code and can declare the very binder this anchor is looking for --
+    // skipping whole literals handed a same-named outside declaration
+    // sole ownership. So the scan is a small mode machine: string text is
+    // skipped, `\{` re-enters code scanning until the fragment's matching
+    // `}` (brace-counted; nested strings and fragments push further), and
+    // `//` comments are skipped in code positions only.
+    let mut in_string = false
+    let depths = [0]
+    let mut frag_top = 0
+    while i < slen {
+      let c = String::char_code_at(source, i)
+      if in_string {
+        if c == 92 {
+          if i + 1 < slen && String::char_code_at(source, i + 1) == 123 {
+            in_string = false
+            frag_top = frag_top + 1
+            if frag_top >= Array::length(depths) {
+              Array::push(depths, 1)
+            } else {
+              Array::set(depths, frag_top, 1)
+            }
+            i = i + 2
+          } else {
+            i = i + 2
+          }
+        } else if c == 34 {
+          in_string = false
+          i = i + 1
+        } else {
+          i = i + 1
+        }
+      } else if c == 47 && i + 1 < slen && String::char_code_at(source, i + 1) == 47 {
+        // `//` line comment: skip to end of line.
+        while i < slen && String::char_code_at(source, i) != 10 {
+          i = i + 1
+        }
+      } else if c == 39 {
+        // #2244 round 9: a character literal's byte can be `"` -- letting
+        // it reach the branch below flipped string mode and swallowed the
+        // declarations after it (measured: `let q = '\"'` before the
+        // binder handed a same-named outside fn the anchor). Skip the
+        // literal, honoring one `\` escape. Inside a fragment this stays
+        // brace-parity with the lexer: a `'}'`/`'\"'` there does not lex
+        // (scan_interp_end counts raw bytes the same way), so no compiling
+        // program puts a counted byte inside a fragment char literal.
+        i = i + 1
+        if i < slen && String::char_code_at(source, i) == 92 {
+          i = i + 2
+        } else {
+          i = i + 1
+        }
+        if i < slen && String::char_code_at(source, i) == 39 {
+          i = i + 1
+        } else {
+          ()
+        }
+      } else if c == 35 && i + 1 < slen && String::char_code_at(source, i + 1) == 124 {
+        // #2244 round 11 (measured: `let s = #|raw text` compiles): a
+        // `#|` line is a RAW multiline-string segment running to end of
+        // line -- its text can spell declarations and quotes, and reading
+        // it as code both counted a fake declaration and flipped string
+        // mode (anchoring INSIDE the raw text). Skip the whole line; each
+        // continuation line's own `#|` is skipped the same way when the
+        // scan reaches it, so the indent-match rule needs no bookkeeping.
+        while i < slen && String::char_code_at(source, i) != 10 {
+          i = i + 1
+        }
+      } else if c == 114 && i + 1 < slen && String::char_code_at(source, i + 1) == 34 && (i == 0 || !loc_ident_char(String::char_code_at(source, i - 1))) {
+        // #2244 round 10 (measured: `let q = r"\"` compiles): a
+        // whole-token `r` before `"` opens a RAW string, which the lexer
+        // ends at the next quote with no escape processing -- the
+        // escape-honoring string mode below would read a trailing
+        // backslash as escaping the closing quote and swallow the
+        // declarations after it. Skip to the next quote verbatim; no
+        // interpolation fires inside a raw string for the same reason.
+        i = i + 2
+        while i < slen && String::char_code_at(source, i) != 34 {
+          i = i + 1
+        }
+        i = i + 1
+      } else if c == 34 {
+        in_string = true
+        i = i + 1
+      } else if frag_top > 0 && c == 123 {
+        Array::set(depths, frag_top, Array::get(depths, frag_top) + 1)
+        i = i + 1
+      } else if frag_top > 0 && c == 125 {
+        let d = Array::get(depths, frag_top) - 1
+        if d == 0 {
+          // The fragment closed; the enclosing string resumes.
+          frag_top = frag_top - 1
+          in_string = true
+        } else {
+          Array::set(depths, frag_top, d)
+        }
+        i = i + 1
+      } else if i + nlen <= slen && loc_word_at(source, i, name) {
+        occ_count = occ_count + 1
         if first_off < 0 {
           first_off = i
         } else {
           ()
         }
-        if fn_off < 0 && loc_kw_before(source, i, "fn") {
-          fn_off = i
+        // #2244 review round 6 (measured: `let r#v = 1` compiles): a
+        // raw-identifier binder lexes to the bare name, so the occurrence
+        // matches -- but the `r#` prefix sat between the name and its
+        // keyword, making the scan count it as a bare occurrence and hand
+        // a same-named plain declaration sole ownership. Probe the keyword
+        // from before a whole-word `r#` so raw spellings count as the
+        // declarations they are.
+        let decl_probe = if i >= 2 && String::char_code_at(source, i - 1) == 35 && String::char_code_at(source, i - 2) == 114 && (i - 2 == 0 || !loc_ident_char(String::char_code_at(source, i - 3))) {
+          i - 2
         } else {
-          ()
+          i
         }
-        if let_off < 0 {
-          if loc_kw_before(source, i, "let") {
-            let_off = i
-          } else if loc_kw_before(source, i, "mut") {
-            let before_name = loc_skip_ws_back(source, i)
-            if loc_kw_before(source, before_name - 3, "let") {
+        if loc_kw_before(source, decl_probe, "fn") {
+          fn_count = fn_count + 1
+          if fn_off < 0 {
+            fn_off = i
+          } else {
+            ()
+          }
+        } else {
+          // #2244 round 8: `rec` joins `mut` as an intervening keyword --
+          // `let rec v` is a declaration of `v` (both spell 3 bytes, so
+          // one backtrack serves them).
+          let is_let_decl = if loc_kw_before(source, decl_probe, "let") {
+            true
+          } else if loc_kw_before(source, decl_probe, "mut") || loc_kw_before(source, decl_probe, "rec") {
+            let before_name = loc_skip_ws_back(source, decl_probe)
+            loc_kw_before(source, before_name - 3, "let")
+          } else {
+            false
+          }
+          if is_let_decl {
+            let_count = let_count + 1
+            if let_off < 0 {
               let_off = i
             } else {
               ()
@@ -3579,20 +3721,23 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
           } else {
             ()
           }
-        } else {
-          ()
         }
         i = i + nlen
       } else {
         i = i + 1
       }
     }
-    if fn_off >= 0 {
-      fn_off
-    } else if let_off >= 0 {
-      let_off
-    } else {
+    let decl_count = fn_count + let_count
+    if decl_count == 1 {
+      if fn_count == 1 {
+        fn_off
+      } else {
+        let_off
+      }
+    } else if decl_count == 0 && occ_count == 1 {
       first_off
+    } else {
+      0 - 1
     }
   }
 }
@@ -5150,6 +5295,31 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
   }
   result
 }
+/// Does the k-line prefix of `lines` make the package-header scanner throw
+/// exactly `pin_err`? The locator's probe (see collect_all_diagnostics):
+/// asking the loader itself, instead of mirroring its grammar, is what keeps
+/// the located line from drifting (#2253 rounds 3-6).
+fn header_prefix_throws(lines: Array[String], k: Int, pin_err: String) -> Bool {
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < k {
+    if j > 0 {
+      StringBuilder::push(sb, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(sb, Array::get(lines, j))
+    j = j + 1
+  }
+  let m = handle {
+    let (_pins2, _blanked2) = extract_require_pins(StringBuilder::freeze(sb))
+    ""
+  } with Exception {
+    Throw(m2) => m2
+  }
+  m == pin_err
+}
+
 /// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
 /// Lexer errors come first (#946): the recovering lexer records every offending
 /// position instead of throwing, so a lex-broken file reports located lexer
@@ -5160,6 +5330,71 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
 /// Returns [] when the source lexes, parses, and checks cleanly.
 /// Foundation for `vibe check` / LSP multi-diagnostic reporting.
 export fn collect_all_diagnostics(source: String) -> Array[String] with Exception {
+  // #2227, round 3 of the book-review eval: a leading `require @scope/name
+  // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
+  // ingestion blanks before parsing -- but this single-file lane parsed the
+  // RAW buffer and answered `unexpected token: =` for a file the build
+  // accepts. Blank it the same way; the blanked twin is offset-preserving,
+  // so every position below stays exact. A head the loader itself rejects
+  // becomes the diagnostic, the same answer the import lane gives.
+  let (pin_blanked, pin_err) = handle {
+    let (_pins, blanked) = extract_require_pins(source)
+    (blanked, "")
+  } with Exception {
+    Throw(m) => (source, m)
+  }
+  if pin_err != "" {
+    // #2253 review rounds 3-4/6: the loader's message carries no position,
+    // and the JSON lane renders an unlocated diagnostic as the synthetic 0:0
+    // range. Two rounds of parsing the MESSAGE for the offending line drifted
+    // from the header grammar each time (parenthesized vs plain `: ` tails,
+    // then require-only line classification vs the scanner's comments /
+    // version / deps blocks). Ask the scanner itself instead: probe it with
+    // line-prefixes of the source and anchor at the SMALLEST prefix that
+    // throws this exact message -- the scanner is line-oriented, so that
+    // prefix's last line is where its own scan stopped. No grammar mirror, so
+    // nothing to drift; an error only raised at a block opener (unterminated
+    // block) anchors on the opener, which is the actionable line. The
+    // predicate "a k-line prefix throws pin_err" is monotone in k (once the
+    // throwing line is included, every longer prefix stops at that same line
+    // with the same message, deterministically), so binary search finds the
+    // boundary in O(log n) probes with no length cap (round 6: the previous
+    // linear probe capped at 256 lines and left a longer header bare). The
+    // probe runs on the error path only.
+    let lines = String::split(source, "\n")
+    let nlines = Array::length(lines)
+    // The full-source prefix reproduces pin_err by construction; confirm it
+    // anyway so a violated assumption answers bare instead of wrong.
+    let mut hit_line = 0 - 1
+    if nlines > 0 && header_prefix_throws(lines, nlines, pin_err) {
+      let mut lo = 0
+      let mut hi = nlines
+      while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if header_prefix_throws(lines, mid, pin_err) {
+          hi = mid
+        } else {
+          lo = mid
+        }
+      }
+      hit_line = hi - 1
+    } else {
+      ()
+    }
+    if hit_line >= 0 {
+      return [
+        String::concat("line ", String::concat(__to_string(hit_line + 1), String::concat(":1: ", pin_err)))
+      ]
+    } else {
+      return [pin_err]
+    }
+  } else {
+    ()
+  }
+  collect_all_diagnostics_on(pin_blanked)
+}
+
+fn collect_all_diagnostics_on(source: String) -> Array[String] with Exception {
   let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(source)
   if Array::length(lex_err_msgs) > 0 {
     // Report ONLY the lexer errors: the recovered token stream has holes, so

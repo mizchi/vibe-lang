@@ -3153,17 +3153,48 @@ export fn format_vpkg(src: String) -> String {
   }
 }
 
+/// Byte offset just past a plain vibe source's leading loader-directive
+/// head (`require @scope/name x.y.z = #pkg:sha1:...` pins and the other
+/// scan_package_header directives), 0 when there is none, -1 when the head
+/// is malformed in a way that makes the split unsafe (vp_header_end's
+/// contract). Exported for the entries' #1821 parse guards, which must ask
+/// the parse question of the BODY -- the head is not vibe syntax.
+export fn source_header_end(src: String) -> Int {
+  vp_header_end(src)
+}
+
+/// Format a plain vibe source. A leading require-pin head is a loader
+/// directive region, not vibe syntax (#2227) -- feeding it to the CST
+/// formatter mangles it into text the loader rejects (`require @vibe /
+/// core0.2.0 = ...`). Split it off VERBATIM (unlike `.vpkg`, whose header
+/// gets a canonical writer) and format only the body. A head vp_header_end
+/// cannot classify safely (-1) leaves the file untouched, the same policy
+/// as format_vpkg: refusing beats mangling. This lives here, not in an
+/// entry, so every formatter entry (fmt_entry single-file, fmt.vibe batch,
+/// cli_adapter `vibe fmt`) behaves the same (#2253 round 6).
+fn format_vibe(src: String) -> String {
+  let end = vp_header_end(src)
+  if end < 0 {
+    src
+  } else if end == 0 {
+    format_script(src)
+  } else {
+    String::concat(String::substring(src, 0, end), format_script(String::substring(src, end, String::length(src))))
+  }
+}
+
 /// Format `src` the way `path`'s extension calls for. The dispatch lives
-/// here rather than in the two entries that drive the formatter
-/// (lib/@vibe/cli/fmt_entry.vibe single-file, lib/@vibe/cli/fmt.vibe batch)
-/// so they cannot drift apart on which files get header handling.
+/// here rather than in the entries that drive the formatter
+/// (lib/@vibe/cli/fmt_entry.vibe single-file, lib/@vibe/cli/fmt.vibe batch,
+/// cli_adapter.vibe's `vibe fmt`) so they cannot drift apart on which
+/// files get header handling.
 export fn format_source(path: String, src: String) -> String {
   let n = String::length(path)
   if n < 5 {
-    format_script(src)
+    format_vibe(src)
   } else if String::substring(path, n - 5, n) == ".vpkg" {
     format_vpkg(src)
   } else {
-    format_script(src)
+    format_vibe(src)
   }
 }
