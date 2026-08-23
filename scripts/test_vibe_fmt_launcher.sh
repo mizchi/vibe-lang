@@ -95,6 +95,21 @@ if VIBE_RUNNER="$EMPTY_RUNNER" VIBE_CLI_WASM="$CLI" \
   fail "a runner that wrote nothing was reported as a clean format"
 fi
 
+# ...and the same with a SUCCESSFUL exit. mktemp creates the output file, so
+# the existence check was true before the runner had written anything: a
+# status-0 runner that writes nothing was read as a legitimate empty format,
+# and write mode copied the zero-byte temp OVER the source. Measured: it
+# truncated the input to 0 bytes and reported success.
+NOOP_RUNNER="$TMP_DIR/noop-runner"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$NOOP_RUNNER"
+chmod +x "$NOOP_RUNNER"
+printf 'let a = 1\n' > "$SRC"
+if VIBE_RUNNER="$NOOP_RUNNER" VIBE_CLI_WASM="$CLI" \
+  bash "$ROOT_DIR/runtime/vibe" fmt "$SRC" > "$OUT" 2> "$ERR"; then
+  fail "a status-0 runner that wrote nothing was reported as a clean format"
+fi
+[ "$(cat "$SRC")" = "let a = 1" ] || fail "a status-0 runner that wrote nothing TRUNCATED the source"
+
 # Adapter-mode envs must be cleared. cli_adapter evaluates VIBE_HASH before
 # VIBE_FMT, so a leaked selector would write a HASH as $out -- and write mode
 # would then copy it over the user's source file.

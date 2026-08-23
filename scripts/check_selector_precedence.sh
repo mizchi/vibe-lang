@@ -59,8 +59,23 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     for i, sel in enumerate(order):
         if not re.search(r'(?<![-\w])' + sel + r'=1\b', block):
             continue
-        candidates = order[:i] if mode == "all" else [e for e in order[:i] if e in enforced]
-        missing = [e for e in candidates if e not in cleared]
+        preds = order[:i]
+        if mode == "all":
+            required = preds
+        elif sel in enforced:
+            # Rule 1 -- a block that SETS an enforced selector must clear every
+            # predecessor. This is what protects `vibe fmt` itself, and it is
+            # the rule the first version of this check silently omitted:
+            # filtering the PREDECESSOR list by `enforced` left the fmt block
+            # with nothing to require, because a selector cannot precede
+            # itself. A new adapter selector added before VIBE_FMT would have
+            # sailed through the gate built to catch exactly that.
+            required = preds
+        else:
+            # Rule 2 -- every other block must clear an enforced selector that
+            # precedes it. This is what stops VIBE_FMT hijacking other verbs.
+            required = [e for e in preds if e in enforced]
+        missing = [e for e in required if e not in cleared]
         if missing:
             problems.append((line_no, sel, missing))
 
