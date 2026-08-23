@@ -5954,6 +5954,49 @@ bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
 # message each mutation adds on top: block count, ja/en parity, and whether the
 # chapter's documented 42 -> 43 edit still applies. ~1s, no generation needed.
 bash "$ROOT_DIR/scripts/check_book_console_test.sh"
+
+# 107/107. The host runner's `[crash debug]` dump is OFF by default (#2199).
+#      It is compiler-developer diagnostics -- heap bytes, the RC freelist, raw
+#      memory windows -- and it printed on EVERY trap, so the first thing a
+#      reader saw when `Array::get(xs, 10)` went out of range was a page of hex
+#      ahead of the message naming the index and the length. Both directions
+#      are asserted: silence alone would also pass if the program stopped
+#      trapping, and the dump alone would pass if it were unconditional again.
+echo "[compiler-gate] 107/107 the host runner's crash dump is opt-in (#2199)"
+cdbg="_build/_gate_crash_debug"
+rm -rf "$cdbg"; mkdir -p "$cdbg"
+cat > "$cdbg/oob.vibe" <<'CDBGEOF'
+fn main() -> Int with Console {
+  let xs = [1, 2, 3]
+  println("get = \{Array::get(xs, 10)}")
+  0
+}
+CDBGEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$cdbg/oob.vibe" "$cdbg/oob.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$cdbg/oob.wasm" ]; then
+  echo "[compiler-gate] FAIL: crash-debug fixture did not compile (#2199)" >&2
+  cat "$cdbg/oob.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh   --invoke _start "$cdbg/oob.wasm" >"$cdbg/quiet.log" 2>&1 || true
+VIBE_CRASH_DEBUG=1 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh   --invoke _start "$cdbg/oob.wasm" >"$cdbg/loud.log" 2>&1 || true
+if grep -qF '[crash debug]' "$cdbg/quiet.log"; then
+  echo "[compiler-gate] FAIL: the crash dump printed without VIBE_CRASH_DEBUG (#2199)" >&2
+  cat "$cdbg/quiet.log" >&2
+  exit 1
+fi
+if ! grep -qF 'Array::get: index 10 out of bounds for length 3' "$cdbg/quiet.log"; then
+  echo "[compiler-gate] FAIL: the bounds message the reader needs is gone too (#2199)" >&2
+  cat "$cdbg/quiet.log" >&2
+  exit 1
+fi
+if ! grep -qF '[crash debug]' "$cdbg/loud.log"; then
+  echo "[compiler-gate] FAIL: VIBE_CRASH_DEBUG=1 produced no dump -- the gate above proves nothing (#2199)" >&2
+  cat "$cdbg/loud.log" >&2
+  exit 1
+fi
+rm -rf "$cdbg"
+echo "[compiler-gate] crash dump opt-in ok (#2199)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
