@@ -151,6 +151,27 @@ test "a raw-identifier binder colliding with a plain fn fails closed" {
   assert(!String::contains(d, " [@"))
 }
 
+test "a binder declared inside an interpolation fragment counts" {
+  // #2244 review round 7: `\{...}` fragments are code, so a binder
+  // declared inside one must be visible to the scan. Alone it anchors at
+  // the fragment declaration; the exact columns are pinned by measurement.
+  let src = "fn f() -> String {\n  \"x = \\{ { let v = if true { \"yes\" } else { 0 }\n  v } }\"\n}\n"
+  assert(String::contains(first_diag(src), "if branches have incompatible types"))
+  assert(anchored_at(src, 2, 17))
+}
+
+test "a fragment binder colliding with an outside fn fails closed" {
+  // #2244 review round 7 (the finding's exact shape, reproduced before
+  // the fix anchoring at the unrelated top-level `fn v` on line 1): the
+  // fragment's `let v` now counts as a declaration, so the cross-kind
+  // ambiguity rule reports without a position.
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> String {\n  \"x = \\{ { let v = if true { \"yes\" } else { 0 }\n  v } }\"\n}\n"
+  let d = first_diag(src)
+  assert(String::contains(d, "if branches have incompatible types"))
+  assert(!String::contains(d, "line "))
+  assert(!String::contains(d, " [@"))
+}
+
 test "interpolating a Show-less struct anchors on the enclosing binding" {
   // #2198 (p04 shape): the synthesized __to_string call has no offset (the
   // interp snippet re-lexes without offsets), so the message carries the

@@ -3571,30 +3571,60 @@ fn find_fn_anchor_off(source: String, name: String) -> Int {
     let mut let_count = 0
     let mut first_off = 0 - 1
     let mut occ_count = 0
+    // #2244 round 7: a string literal's TEXT never hosts a declaration,
+    // but its `\{...}` interpolation fragments are parsed as expression
+    // code and can declare the very binder this anchor is looking for --
+    // skipping whole literals handed a same-named outside declaration
+    // sole ownership. So the scan is a small mode machine: string text is
+    // skipped, `\{` re-enters code scanning until the fragment's matching
+    // `}` (brace-counted; nested strings and fragments push further), and
+    // `//` comments are skipped in code positions only.
+    let mut in_string = false
+    let depths = [0]
+    let mut frag_top = 0
     while i < slen {
       let c = String::char_code_at(source, i)
-      if c == 47 && i + 1 < slen && String::char_code_at(source, i + 1) == 47 {
+      if in_string {
+        if c == 92 {
+          if i + 1 < slen && String::char_code_at(source, i + 1) == 123 {
+            in_string = false
+            frag_top = frag_top + 1
+            if frag_top >= Array::length(depths) {
+              Array::push(depths, 1)
+            } else {
+              Array::set(depths, frag_top, 1)
+            }
+            i = i + 2
+          } else {
+            i = i + 2
+          }
+        } else if c == 34 {
+          in_string = false
+          i = i + 1
+        } else {
+          i = i + 1
+        }
+      } else if c == 47 && i + 1 < slen && String::char_code_at(source, i + 1) == 47 {
         // `//` line comment: skip to end of line.
         while i < slen && String::char_code_at(source, i) != 10 {
           i = i + 1
         }
       } else if c == 34 {
-        // String literal: skip its body, honoring `\` escapes (which also
-        // steps over the `\{` interpolation opener -- text inside a string
-        // never hosts the declaration this anchor is looking for).
+        in_string = true
         i = i + 1
-        let mut closed = false
-        while !closed && i < slen {
-          let sc = String::char_code_at(source, i)
-          if sc == 92 {
-            i = i + 2
-          } else if sc == 34 {
-            closed = true
-            i = i + 1
-          } else {
-            i = i + 1
-          }
+      } else if frag_top > 0 && c == 123 {
+        Array::set(depths, frag_top, Array::get(depths, frag_top) + 1)
+        i = i + 1
+      } else if frag_top > 0 && c == 125 {
+        let d = Array::get(depths, frag_top) - 1
+        if d == 0 {
+          // The fragment closed; the enclosing string resumes.
+          frag_top = frag_top - 1
+          in_string = true
+        } else {
+          Array::set(depths, frag_top, d)
         }
+        i = i + 1
       } else if i + nlen <= slen && loc_word_at(source, i, name) {
         occ_count = occ_count + 1
         if first_off < 0 {
