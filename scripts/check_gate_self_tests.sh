@@ -46,7 +46,10 @@ check_portable_boundary.sh check_rc_default.sh
 check_tutorial_translation_parity.sh check_typecheck_fixtures.sh
 check_vibe_fmt.sh"
 baseline_failing="lint_review_regressions_test.sh
-lint_tracked_experiment_names_test.sh"
+lint_tracked_experiment_names_test.sh
+check_lock_clean_test.sh
+lint_architecture_debt_test.sh
+lint_guest_profile_contract_test.sh"
 fi
 
 not_baseline=""
