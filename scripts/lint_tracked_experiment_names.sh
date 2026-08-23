@@ -23,7 +23,7 @@ is_candidate_path() {
   local base="${path##*/}"
 
   case "$path" in
-    .github/*|scripts/*|src/*|vibe/*) ;;
+    .github/*|lib/*|scripts/*|src/*|vibe/*) ;;
     *) return 1 ;;
   esac
 
