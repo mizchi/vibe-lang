@@ -8153,6 +8153,7 @@ let dtd_eq_generic_types: Array[String] = empty_str_array()
 // after the rewrite, like the recorded Array comparators.
 let dtd_eq_generic_structs: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
 let dtd_eq_specializations: Array[TypeExpr] = empty_type_exprs()
+let dtd_eq_specialization_ancestries: Array[Array[TypeExpr]] = array_empty()
 let dtd_eq_specialization_stack: Array[TypeExpr] = empty_type_exprs()
 
 fn generic_eq_struct_declared(name: String) -> Bool {
@@ -8186,6 +8187,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_unsafe_types, 0)
   Array::truncate(dtd_eq_generic_structs, 0)
   Array::truncate(dtd_eq_specializations, 0)
+  Array::truncate(dtd_eq_specialization_ancestries, 0)
   Array::truncate(dtd_eq_specialization_stack, 0)
   let names = collect_decl_type_names(stmts)
   let mut i = 0
@@ -8528,14 +8530,18 @@ fn generic_eq_is_expanding_recursion(head: String, args: Array[TypeExpr]) -> Boo
   while i < Array::length(dtd_eq_specialization_stack) {
     match Array::get(dtd_eq_specialization_stack, i) {
       TyApp(active_head, active_args) => if active_head == head {
-        let mut ai = 0
-        while ai < Array::length(active_args) {
-          if generic_eq_types_properly_contain(args, Array::get(active_args, ai)) {
-            expanding = true
-          } else {
-            ()
+        if generic_eq_name(active_head, active_args) == generic_eq_name(head, args) {
+          ()
+        } else {
+          let mut ai = 0
+          while ai < Array::length(active_args) {
+            if generic_eq_types_properly_contain(args, Array::get(active_args, ai)) {
+              expanding = true
+            } else {
+              ()
+            }
+            ai = ai + 1
           }
-          ai = ai + 1
         }
       } else {
         ()
@@ -8564,6 +8570,9 @@ fn generic_eq_record(head: String, args: Array[TypeExpr]) -> Unit {
   }
   if !found {
     Array::push(dtd_eq_specializations, TyApp(head, args))
+    Array::push(dtd_eq_specialization_ancestries, for item in dtd_eq_specialization_stack {
+      item
+    })
   } else {
     ()
   }
@@ -8867,7 +8876,16 @@ fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
         while j < Array::length(dtd_eq_generic_structs) {
           let decl = Array::get(dtd_eq_generic_structs, j)
           if decl.0 == head && !top_level_fn_exists(stmts, generic_eq_name(head, args)) {
+            Array::truncate(dtd_eq_specialization_stack, 0)
+            if i < Array::length(dtd_eq_specialization_ancestries) {
+              for ancestor in Array::get(dtd_eq_specialization_ancestries, i) {
+                Array::push(dtd_eq_specialization_stack, ancestor)
+              }
+            } else {
+              ()
+            }
             Array::push(stmts, gen_specialized_eq_fn(head, args, decl.1, decl.2, known))
+            Array::truncate(dtd_eq_specialization_stack, 0)
           } else {
             ()
           }
