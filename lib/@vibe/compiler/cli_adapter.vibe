@@ -84,6 +84,15 @@ import @vibe/compiler/normalize {
   normalize_source
 }
 
+// #2149: `vibe fmt`. Until now the formatter was reachable only through
+// lib/@vibe/cli/fmt_entry.vibe, a separate wasm that scripts/vibe_fmt.sh
+// FS-compiles on demand -- so an INSTALLED user could not format at all,
+// while 21 documents told them to run `vibe fmt`. The package has `deps = {}`
+// and format.vibe has no imports, so joining the compiler costs it nothing.
+import @vibe/compiler/fmt {
+  format_source
+}
+
 import ./inspect_update.vibe {
   compute_updated_source
 }
@@ -429,6 +438,30 @@ fn adapter_split_nonempty_lines(text: String) -> Array[String] {
     i = i + 1
   }
   out
+}
+
+/// #2149: does `s` end with `suffix`? Used only to spot a `.vpkg` path, whose
+/// header is not vibe syntax and so can never be parse-checked as a whole file.
+fn adapter_path_has_suffix(s: String, suffix: String) -> Bool {
+  let n = String::length(s)
+  let m = String::length(suffix)
+  if n < m {
+    false
+  } else {
+    String::substring(s, n - m, n) == suffix
+  }
+}
+
+/// #2149: is `src` a program the parser accepts? The `vibe fmt` guard's whole
+/// question -- see the VIBE_FMT branch for why it is asked by parsing rather
+/// than by enumerating token shapes.
+fn adapter_program_parses(src: String) -> Bool {
+  handle {
+    let _ = parse_program(lex(src))
+    true
+  } with Exception {
+    Throw(_) => false
+  }
 }
 
 fn adapter_string_to_bytes(s: String) -> Bytes {
@@ -1416,6 +1449,45 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // stripped, unlocated message as before.
       Throw(msg) => emit_compile_diag_fs_located(output_path, msg, input_path)
     }
+  }
+  // #2149 `vibe fmt`: format a source file and write the result. Same
+  // (input, output) interface as `vibe normalize` below.
+  //
+  // The GUARD is the reason this is not a bare call to format_source. The
+  // formatter turned source that compiles into source that does not on four
+  // separate occasions (#945, #1429, #1505, #1821), and `--check` then
+  // reported the wreckage as correctly formatted. So the output is PARSED:
+  // if the input was a program and the output is not, the rewrite is
+  // discarded and the run reports non-zero. That question has a bounded
+  // answer, and it holds for the next spelling nobody has thought of yet.
+  //
+  // Ported from lib/@vibe/cli/fmt_entry.vibe rather than restated: this is
+  // the path an installed user runs, where no CI fmt gate is watching.
+  //
+  // On refusal the INPUT is written back, so the caller always has a valid
+  // file at output_path; the non-zero return is what says "I refused". The
+  // runner exits 0 whatever this returns and prints the value as the last
+  // stdout line, so runtime/vibe's `fmt` arm reads that line -- discarding it
+  // is how a refusal once looked exactly like "nothing to change" (#1821).
+  if Env::get("VIBE_FMT") == "1" {
+    let src = Fs::read_file(input_path)
+    // format_source dispatches on the extension: `.vpkg` package contracts
+    // get header handling, everything else is plain vibe source (#1435).
+    let formatted = format_source(input_path, src)
+    // A `.vpkg` header is not vibe syntax, so a whole-file parse never
+    // succeeds for one and the comparison would say nothing. format_vpkg
+    // already refuses to touch a header it cannot read -- the same policy
+    // reached by a different route (#1435).
+    //
+    // Only a rewrite that BREAKS something is rejected. A file that did not
+    // parse to begin with is still formatted: the promise is "no worse", not
+    // "only valid input".
+    if !adapter_path_has_suffix(input_path, ".vpkg") && adapter_program_parses(src) && !adapter_program_parses(formatted) {
+      Fs::write_bytes(output_path, adapter_string_to_bytes(src))
+      return 1
+    }
+    Fs::write_bytes(output_path, adapter_string_to_bytes(formatted))
+    return 0
   }
   // #594 `vibe normalize`: canonicalize a source file (module flatten + DCE +
   // section layout) and write the result. Same (input, output) interface.

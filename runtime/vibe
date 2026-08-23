@@ -91,6 +91,11 @@
 #                                           --where-row '$f with Async'  effect row
 #                                           --only-ill-typed / --only-well-typed
 #                                         --json for machine-readable output
+#   vibe fmt     [--check|--stdout] <file.vibe|file.vpkg>
+#                                         format a source file in place with the
+#                                         canonical CST-token formatter
+#                                         (--check: exit 1 if not formatted;
+#                                          --stdout: print, don't write)
 #   vibe normalize [--check|--stdout] <file.vibe>
 #                                         canonicalize a source file in place
 #                                         (--check: exit 1 if not normalized;
@@ -955,7 +960,10 @@ case "$cmd" in
       cli="$(pick_cli)"
       mkdir -p "$(dirname "$out")"
       rm -f "$out" "$out.diag"
-      env VIBE_EMIT_WIT=1 VIBE_IMPORT_ABI=raw \
+      # -u VIBE_FMT: the fmt branch is evaluated BEFORE VIBE_EMIT_WIT in
+      # cli_adapter, so a leaked selector writes formatted vibe source as the
+      # .wit artifact -- non-empty, so the check below reports success (#2239).
+      env -u VIBE_FMT VIBE_EMIT_WIT=1 VIBE_IMPORT_ABI=raw \
         "$RUNNER" "$cli" "$src" "$out" main >/dev/null 2>&1 || true
       if [ ! -s "$out" ]; then
         [ -s "$out.diag" ] && echo "error: $(cat "$out.diag")" >&2
@@ -1053,7 +1061,8 @@ case "$cmd" in
     cli="$(pick_cli)"
     mkdir -p "$(dirname "$out")"
     rm -f "$out" "$out.diag"
-    env VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="${out%.component.wasm}.wit" \
+    # -u VIBE_FMT: same precedence hazard as the --wit arm above (#2239).
+    env -u VIBE_FMT VIBE_SERVE_COMPONENT=1 VIBE_SERVE_WIT_OUT="${out%.component.wasm}.wit" \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" main >/dev/null 2>&1 || true
     if [ ! -s "$out" ]; then
@@ -1197,7 +1206,7 @@ case "$cmd" in
       out="$(mktemp -t vibe-check-sf-XXXXXX)"
       trap 'rm -f "$out" "$out.diag"' EXIT
       env -u VIBE_FS_COMPILE -u VIBE_CHECK_ONLY -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-          -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_SYMBOLS -u VIBE_NORMALIZE \
+          -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_SYMBOLS -u VIBE_NORMALIZE -u VIBE_FMT \
           -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_DIAGNOSTICS=1 \
         VIBE_DIAGNOSTICS_JSON="$([ "$chk_json" = "1" ] && echo 1 || echo "")" \
@@ -1280,7 +1289,7 @@ case "$cmd" in
       out="$(mktemp -t vibe-check-XXXXXX)"
       trap 'rm -f "$out" "$out.diag"' EXIT
       env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
-          -u VIBE_SYMBOLS -u VIBE_NORMALIZE -u VIBE_COVERAGE -u VIBE_DEBUG \
+          -u VIBE_SYMBOLS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_COVERAGE -u VIBE_DEBUG \
           -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_CHECK_ONLY=1 \
         VIBE_IMPORT_ABI=raw \
@@ -1341,7 +1350,7 @@ case "$cmd" in
     # the compile path (which would emit wasm bytes instead of the type string).
     # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
     # written so the LSP degrades gracefully instead of the whole query failing.
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_TYPE_AT=1 VIBE_TYPE_LINE="$ta_line" VIBE_TYPE_COL="$ta_col" \
       VIBE_IMPORT_ABI=raw \
@@ -1366,7 +1375,7 @@ case "$cmd" in
     # the compile path (which would emit wasm bytes instead of the doc text).
     # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
     # written so the LSP degrades gracefully instead of the whole query failing.
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_DOC_AT=1 VIBE_TYPE_LINE="$da_line" VIBE_TYPE_COL="$da_col" \
@@ -1394,7 +1403,7 @@ case "$cmd" in
     # compile path (which would emit wasm bytes instead of the occurrence list).
     # Don't `die` on a non-zero exit — emit whatever (possibly empty) result was
     # written so the LSP degrades gracefully instead of the whole query failing.
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_BINDING_AT=1 VIBE_TYPE_LINE="$ba_line" VIBE_TYPE_COL="$ba_col" \
       VIBE_IMPORT_ABI=raw \
@@ -1455,7 +1464,7 @@ case "$cmd" in
     trap 'rm -f "$out" "$out.diag"' EXIT
     # Clear any inherited compile-mode envs so this query can't be diverted to the
     # compile path (which would emit wasm bytes instead of the symbol list).
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_SYMBOLS=1 \
@@ -1498,7 +1507,7 @@ case "$cmd" in
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-escapes-XXXXXX)"
     trap 'rm -f "$out" "$out.diag"' EXIT
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_ESCAPES=1 \
@@ -1531,7 +1540,7 @@ case "$cmd" in
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-rc-classify-XXXXXX)"
     trap 'rm -f "$out" "$out.diag"' EXIT
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_RC_PLAN -u VIBE_RC_PLAN_FN -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
@@ -1586,7 +1595,7 @@ case "$cmd" in
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-rc-plan-XXXXXX)"
     trap 'rm -f "$out" "$out.diag"' EXIT
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_RC_CLASSIFY -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
         -u VIBE_EMIT_MODULE_SOURCE \
@@ -1621,7 +1630,7 @@ case "$cmd" in
         -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \
         -u VIBE_PUBLISH_CHECK -u VIBE_MODULE_JOB_DIR -u VIBE_PUBLISH_ENV_CACHE \
         -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN -u VIBE_CHECK_ONLY \
-        -u VIBE_NORMALIZE -u VIBE_INSPECT_UPDATE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_INSPECT_UPDATE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT \
         -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_DEPS_DIRECT -u VIBE_GREP \
         -u VIBE_DIAGNOSTICS -u VIBE_DIAGNOSTICS_JSON \
@@ -1687,7 +1696,7 @@ case "$cmd" in
     trap 'rm -f "$out" "$out.diag"' EXIT
     deps_direct_env=""
     [ "$deps_direct" = "1" ] && deps_direct_env="VIBE_DEPS_DIRECT=1"
-    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+    env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
         -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG \
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE -u VIBE_CHECK_ONLY \
       VIBE_DEPS=1 ${deps_direct_env} \
@@ -1740,7 +1749,7 @@ case "$cmd" in
     # failure) so the LSP treats empty as "no diagnostics" / falls back.
     diag_json_env=""
     [ "$diag_json" = "1" ] && diag_json_env=1
-    env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_NORMALIZE -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
+    env -u VIBE_FS_COMPILE -u VIBE_TYPE_AT -u VIBE_DOC_AT -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS \
         -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
       VIBE_DIAGNOSTICS=1 \
       VIBE_DIAGNOSTICS_JSON="$diag_json_env" \
@@ -1837,7 +1846,7 @@ case "$cmd" in
       [ -e "$g_path" ] || die "not found: $g_path"
       # Clear inherited adapter-mode envs so a leaked selector can't divert this
       # into compiling and emitting wasm bytes as "matches".
-      env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+      env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
           -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
           -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         VIBE_GREP=1 \
@@ -1858,6 +1867,126 @@ case "$cmd" in
       if [ -s "$out" ]; then cat "$out"; fi
       : >"$out"; : >"$out.warn"
     done
+    ;;
+  fmt)
+    # vibe fmt [--check|--stdout] <file.vibe|file.vpkg>  (#2149)
+    # Format a source file with the selfhost CST-token formatter
+    # (lib/@vibe/compiler/fmt/format.vibe). Default rewrites in place;
+    # --check exits 1 without writing when the file is not formatted;
+    # --stdout prints the result without writing. Same engine
+    # scripts/vibe_fmt.sh drives in-repo -- but that script needs the repo
+    # checkout (its paths must live under VIBE_PREOPEN_DIR), which is why an
+    # installed user could not format at all before this arm existed.
+    fmode="write"
+    case "${1:-}" in
+      --check) fmode="check"; shift ;;
+      --stdout) fmode="stdout"; shift ;;
+      -*) die "vibe fmt: unknown flag: $1" ;;
+    esac
+    [ "$#" -ge 1 ] || die "usage: vibe fmt [--check|--stdout] <file.vibe>"
+    # EXACTLY one file. `src="$1"` alone silently ignored the rest, so
+    # `vibe fmt a.vibe b.vibe` formatted `a`, left `b` untouched, and exited 0
+    # -- a green that means nothing. scripts/vibe_fmt.sh rejects this for the
+    # same reason: that shape is how an unformatted file reached CI in #2156.
+    if [ "$#" -gt 1 ]; then
+      echo "vibe fmt: takes ONE file, got $#: $*" >&2
+      echo "  for several: for f in ...; do vibe fmt \"\$f\"; done" >&2
+      exit 2
+    fi
+    src="$1"
+    [ -f "$src" ] || die "not found: $src"
+    cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
+    out="$(mktemp -t vibe-fmt-XXXXXX.vibe)"
+    trap 'rm -f "$out" "$out.diag" "$out.err" "$out.rc"' EXIT
+    # mktemp CREATES the file, so `-f "$out"` below would be true before the
+    # runner has written anything -- and a runner that exits 0 without writing
+    # (a VIBE_RUNNER wrapper that terminates early) would then be read as a
+    # legitimate empty format, and write mode would copy the zero-byte temp
+    # OVER the user's source. Measured: it truncated the input to 0 bytes and
+    # reported success. Unlink it here so `-f` distinguishes "no output" from
+    # "legitimately empty output"; mktemp's value is the reserved PATHNAME.
+    rm -f "$out"
+    # Clear inherited adapter-mode envs, for the reason spelled out on the
+    # normalize arm below: the adapter handles VIBE_HASH / VIBE_HASH_WRITE /
+    # VIBE_MISSING_VPKG_SCAN / VIBE_DEPS_MISSING_SCAN / VIBE_FILL_PINS /
+    # VIBE_PUBLISH_CHECK BEFORE VIBE_FMT, so a leaked selector would write a
+    # hash/report as $out and the default write mode would copy it OVER the
+    # user's source file.
+    #
+    # stdout is CAPTURED rather than discarded: the runner exits 0 whatever
+    # cli_main returns and prints the value as the last stdout line, so that
+    # line is the formatter's only way to say "I refused to rewrite this".
+    # Throwing it away is exactly how a refusal came to look like "nothing to
+    # change" (#1821).
+    # `if ...; then` rather than a bare call: the launcher runs under `set -e`,
+    # so a non-zero runner exit -- which is exactly how the installed viberun
+    # signals a refusal -- would abort the script before $? could be read.
+    if env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+        -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_COVERAGE -u VIBE_DEBUG \
+        -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE -u VIBE_INSPECT_UPDATE \
+        -u VIBE_HASH -u VIBE_HASH_WRITE \
+        -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \
+        -u VIBE_PUBLISH_CHECK \
+        -u VIBE_CHECK_ONLY -u VIBE_LSP -u VIBE_MODULE_JOB_DIR \
+        -u VIBE_PUBLISH_ENV_CACHE -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN \
+        VIBE_FMT=1 \
+      VIBE_IMPORT_ABI=raw \
+      "$RUNNER" "$cli" "$src" "$out" >"$out.rc" 2>"$out.err"; then
+      fmt_status=0
+    else
+      fmt_status=$?
+    fi
+    # THE TWO RUNNER CONVENTIONS. The node runner prints cli_main's return as
+    # the last stdout line and exits 0 regardless; the installed `viberun`
+    # running the shipped CLI turns that value into the PROCESS exit status and
+    # prints nothing (`lib/@vibe/cli/main.vibex`: returning it from `main`
+    # "would only be PRINTED by the host _start", which is why it calls
+    # vibe_process_exit_raw instead). Reading only the printed line -- the
+    # convention scripts/vibe_fmt.sh relies on, against a different wasm through
+    # a different runner -- reports EVERY successful format as "fmt failed" for
+    # an installed user, which is exactly the user #2149 exists for.
+    #
+    # So: a bare-integer last line is the verdict when one is printed, and the
+    # process status is the verdict when one is not. Both runners are correct
+    # under this rule and neither is assumed.
+    frc="$(tail -1 "$out.rc" 2>/dev/null || true)"
+    case "$frc" in
+      ''|*[!0-9]*) frc="$fmt_status" ;;
+    esac
+    # An EMPTY result is legitimate: an empty (or whitespace-only) file formats
+    # to an empty one. So existence, not size, is the "did it run" test -- and
+    # the verdict above, not the output, decides. Testing `-s` here rejected
+    # those files with "fmt failed"; it also happened to catch a leaked selector
+    # that writes an empty output, which is why the env -u list above has to be
+    # complete rather than lucky.
+    if [ ! -f "$out" ]; then
+      [ -s "$out.diag" ] && cat "$out.diag" >&2
+      [ -s "$out.err" ] && cat "$out.err" >&2
+      die "fmt failed: $src"
+    fi
+    if [ "$frc" != "0" ]; then
+      # The guard fired: the formatted output does not parse and the input
+      # did. $out holds the INPUT unchanged, so writing it would be a silent
+      # no-op that --check would then call "formatted". Refuse instead.
+      [ -s "$out.err" ] && cat "$out.err" >&2
+      echo "vibe fmt: refusing to rewrite $src" >&2
+      echo "  The formatted output does not parse, and the input did. This is a bug in" >&2
+      echo "  the formatter, not a problem with the file. The file is unchanged; please" >&2
+      echo "  report it with the source (see #1821)." >&2
+      exit 1
+    fi
+    case "$fmode" in
+      stdout) cat "$out" ;;
+      check)
+        if cmp -s "$src" "$out"; then
+          exit 0
+        else
+          echo "not formatted: $src" >&2
+          exit 1
+        fi
+        ;;
+      write) cp "$out" "$src" ;;
+    esac
     ;;
   normalize)
     # vibe normalize [--check|--stdout] <file.vibe>  (#882)
@@ -1891,8 +2020,10 @@ case "$cmd" in
         -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
         -u VIBE_HASH -u VIBE_HASH_WRITE \
         -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS \
-        -u VIBE_PUBLISH_CHECK \
-      VIBE_NORMALIZE=1 \
+        -u VIBE_PUBLISH_CHECK -u VIBE_FMT \
+        -u VIBE_CHECK_ONLY -u VIBE_LSP -u VIBE_MODULE_JOB_DIR \
+        -u VIBE_PUBLISH_ENV_CACHE -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN \
+        VIBE_NORMALIZE=1 \
       VIBE_IMPORT_ABI=raw \
       "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>"$out.err" || true
     if [ ! -s "$out" ]; then
@@ -2089,7 +2220,10 @@ PY
       local usrc="$1" ucaptured="$2"
       local ucli="$CLI_WASM"; [ -f "$ucli" ] || ucli="$(pick_cli)"
       local upatched; upatched="$(mktemp -t vibe-test-patched-XXXXXX.vibe)"
-      if env VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$ucaptured" VIBE_IMPORT_ABI=raw \
+      # -u VIBE_FMT: same precedence hazard (#2239). A leak here would write
+      # a FORMATTED copy of the test file as the "patched" source, and the
+      # cmp below would then copy it over the user's test.
+      if env -u VIBE_FMT VIBE_INSPECT_UPDATE=1 VIBE_INSPECT_UPDATE_STDOUT="$ucaptured" VIBE_IMPORT_ABI=raw \
           "$RUNNER" "$ucli" "$usrc" "$upatched" >/dev/null 2>/dev/null \
           && [ -s "$upatched" ] && ! cmp -s "$usrc" "$upatched"; then
         cp "$upatched" "$usrc"
