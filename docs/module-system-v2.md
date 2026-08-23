@@ -184,9 +184,13 @@ require @vibe/http ^1.2.3 = #77aa02ef     // ^ = compatible range (full triple r
   - Network access belongs to `vibe add` / `vibe update` / the first
     `vibe run`, never to fmt.
   - **The pinned form is canonical.** An unpinned line the store can answer
-    is a DIFF under `--check`. The release-check normalize gate enforces
-    "committed sources are always pinned" (this is the effective lock
-    verification).
+    is a DIFF under `--check` — including in an `index.vpkg` header, whose
+    require directives fill the same way. The design also calls for the
+    release-check normalize gate to enforce "committed sources are always
+    pinned" (the effective lock verification); that half is **not yet
+    wired** — `vibe normalize` re-emits unpinned lines unchanged
+    (`normalize_source` deliberately leaves pin filling to the fmt/fill
+    lanes), so today `vibe fmt` is the only canonicalizer.
 - **Duplicate detection with a unification hint**: the build never resolves
   conflicts. When one package name appears in the closure under multiple
   hashes, the answer is a deterministic error plus a machine-readable

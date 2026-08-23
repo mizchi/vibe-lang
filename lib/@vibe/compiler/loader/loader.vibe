@@ -2256,11 +2256,20 @@ export fn fill_require_pins_lenient(source: String) -> String with Fs {
   } with { Exception::Throw(_) => source }
 }
 
+// Which lines are require directives is decided by the loader's own header
+// scanner, not by a second region scan here (#2260 Codex round 3): the
+// scanner blanks every recognized directive line to spaces with byte length
+// preserved, so a line that starts with `require ` in the source and is
+// all-blank in the blanked output IS a recognized require directive --
+// including one sitting after `name =`/`version =`/`deps = { .. }` in an
+// `index.vpkg` header, which a "stop at the first non-require line" scan
+// (this function's previous shape) never reached. A `require`-looking line
+// the scanner did NOT blank (i.e. body text) is left alone.
 fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String with Exception + Fs {
+  let (_, blanked) = extract_require_pins(source)
   let sb = StringBuilder::new()
   let len = String::length(source)
   let mut pos = 0
-  let mut scanning = true
   while pos < len {
     let mut nl = pos
     while nl < len && String::char_code_at(source, nl) != 10 {
@@ -2269,7 +2278,7 @@ fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String 
     let line = String::substring(source, pos, nl)
     let trimmed = String::trim(line)
     let mut emitted = false
-    if scanning && String::starts_with(trimmed, "require ") {
+    if String::starts_with(trimmed, "require ") && String::length(String::trim(String::substring(blanked, pos, nl))) == 0 {
       let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
       if Array::length(pins_one) == 1 {
         let (pname, pver, ppin) = Array::get(pins_one, 0)
@@ -2296,13 +2305,7 @@ fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String 
           }
         } else ()
       } else ()
-    } else {
-      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
-        ()
-      } else {
-        scanning = false
-      }
-    }
+    } else ()
     if emitted {
       ()
     } else {

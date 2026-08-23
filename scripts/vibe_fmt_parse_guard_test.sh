@@ -160,6 +160,28 @@ if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$fill_abs" >/dev/null 2>&1; t
   exit 1
 fi
 
+# A `.vpkg` header's require directive fills the same way (#2260 round 3):
+# it sits AFTER name=/version=, which the old "stop at the first non-require
+# line" scan never reached -- directive recognition now comes from the
+# loader's own header scanner (the blanked output of extract_require_pins).
+vpkg_fill="_build/vibe_fmt_pin_fill.$$.vpkg"
+vpkg_fill_abs="$ROOT_DIR/$vpkg_fill"
+trap 'rm -rf "$work" "$batch_pin" "$store_dir" "$fill_abs" "$vpkg_fill_abs"' EXIT
+printf 'name = @fmtpin/consumer\nversion = 0.1.0\nrequire %s 0.1.0\n\nfn double(n: Int) -> Int\n' "$store_pkg" >"$vpkg_fill_abs"
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$vpkg_fill_abs" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter declined a .vpkg with an unpinned require" >&2
+  exit 1
+fi
+if ! grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$" "$vpkg_fill_abs"; then
+  echo "vibe_fmt_parse_guard_test: fmt did not fill the require pin in a .vpkg header" >&2
+  sed -n '1,4p' "$vpkg_fill_abs" >&2
+  exit 1
+fi
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$vpkg_fill_abs" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: .vpkg pin filling is not a --check fixpoint" >&2
+  exit 1
+fi
+
 # A package absent from the store: the line comes back byte-identical and the
 # run still succeeds (the body is formatted; the build is what rejects an
 # unpinned require).
