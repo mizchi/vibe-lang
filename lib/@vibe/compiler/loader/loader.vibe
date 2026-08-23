@@ -2257,6 +2257,26 @@ export fn fill_require_pins_lenient(source: String) -> String with Fs {
   } with { Exception::Throw(_) => source }
 }
 
+/// digits_to_int (behind semver_parts) folds digit runs with the wrapping
+/// 63-bit arithmetic every Int operation has (#1877), so a long-enough
+/// component wraps -- `^0.1.4611686018427387904` gets a NEGATIVE patch
+/// bound and an installed 0.1.0 "satisfies" it (#2260 round 6, measured).
+/// 18 decimal digits max out below 2^62-1, so components up to that length
+/// convert exactly; anything longer is unverifiable and never fills.
+fn semver_components_convert_exactly(v: String) -> Bool {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else {
+    0
+  }
+  let parts = String::split(String::substring(v, start, String::length(v)), ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    String::length(Array::get(parts, 0)) <= 18 && String::length(Array::get(parts, 1)) <= 18 && String::length(Array::get(parts, 2)) <= 18
+  }
+}
+
 /// Does the store copy's declared version satisfy a require constraint?
 /// The grammar (ADR-0063 §6) has exactly two operators: none (exact match)
 /// and `^` (compatible range, npm caret semantics: the leftmost non-zero
@@ -2265,6 +2285,9 @@ export fn fill_require_pins_lenient(source: String) -> String with Fs {
 /// the exact triple satisfies, #2260 round 5). An empty or non-triple
 /// declared version satisfies nothing -- unverifiable never fills.
 fn require_constraint_satisfied(constraint: String, version: String) -> Bool {
+  if !semver_components_convert_exactly(constraint) || !semver_components_convert_exactly(version) {
+    return false
+  }
   match semver_parts(version) {
     None => false,
     Some(vparts) => {

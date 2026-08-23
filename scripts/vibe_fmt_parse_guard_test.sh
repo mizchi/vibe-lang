@@ -221,6 +221,18 @@ if ! head -1 "$fill_abs" | grep -Eq "^require $zero_pkg \^0\.0\.2 = #pkg:sha1:[0
   exit 1
 fi
 
+# A component long enough to wrap 63-bit Int conversion (#2260 round 6):
+# digits_to_int wraps, so ^0.1.4611686018427387904 used to get a NEGATIVE
+# patch bound that an installed 0.1.0 "satisfied". Unconvertible components
+# are unverifiable and never fill.
+printf 'require %s ^0.1.4611686018427387904\n\nfn id(n:Int)->Int {\n  n\n}\n' "$store_pkg" >"$fill_abs"
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1 || true
+if ! head -1 "$fill_abs" | grep -q "^require $store_pkg \^0\.1\.4611686018427387904\$"; then
+  echo "vibe_fmt_parse_guard_test: an Int-wrapping version component was pinned (lower bound defeated)" >&2
+  head -1 "$fill_abs" >&2
+  exit 1
+fi
+
 # A package absent from the store: the line comes back byte-identical and the
 # run still succeeds (the body is formatted; the build is what rejects an
 # unpinned require).
