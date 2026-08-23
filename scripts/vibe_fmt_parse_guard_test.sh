@@ -197,6 +197,30 @@ if ! head -1 "$fill_abs" | grep -q "^require $store_pkg 0\.2\.0\$"; then
   exit 1
 fi
 
+# npm caret for 0.0.z (#2260 round 5): the leftmost non-zero digit is the
+# compatibility line, so ^0.0.1 has upper bound <0.0.2 -- an installed 0.0.2
+# must NOT satisfy ^0.0.1, and only the exact ^0.0.2 fills.
+zero_pkg="@fmtpin/z$$"
+zero_dir="$ROOT_DIR/.vibe/store/$zero_pkg"
+trap 'rm -rf "$work" "$batch_pin" "$store_dir" "$zero_dir" "$fill_abs" "$vpkg_fill_abs"' EXIT
+mkdir -p "$zero_dir"
+printf 'version 0.0.2\nimport ./impl.vibe {}\nfn quintuple(x: Int) -> Int\n' >"$zero_dir/index.vibei"
+printf 'export fn quintuple(x: Int) -> Int { x * 5 }\n' >"$zero_dir/impl.vibe"
+printf 'require %s ^0.0.1\n\nfn id(n:Int)->Int {\n  n\n}\n' "$zero_pkg" >"$fill_abs"
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1 || true
+if ! head -1 "$fill_abs" | grep -q "^require $zero_pkg \^0\.0\.1\$"; then
+  echo "vibe_fmt_parse_guard_test: ^0.0.1 was pinned to an installed 0.0.2 (npm caret upper bound violated)" >&2
+  head -1 "$fill_abs" >&2
+  exit 1
+fi
+printf 'require %s ^0.0.2\n\nfn id(n:Int)->Int {\n  n\n}\n' "$zero_pkg" >"$fill_abs"
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1 || true
+if ! head -1 "$fill_abs" | grep -Eq "^require $zero_pkg \^0\.0\.2 = #pkg:sha1:[0-9a-f]{40}\$"; then
+  echo "vibe_fmt_parse_guard_test: the exact ^0.0.2 against an installed 0.0.2 did not fill" >&2
+  head -1 "$fill_abs" >&2
+  exit 1
+fi
+
 # A package absent from the store: the line comes back byte-identical and the
 # run still succeeds (the body is formatted; the build is what rejects an
 # unpinned require).
