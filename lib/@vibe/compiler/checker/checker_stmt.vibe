@@ -86,7 +86,7 @@ import ./checked_expression_structure_core.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  compiler_owned_type_arity, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import @vibe/compiler/normalize {
@@ -108,6 +108,29 @@ import @vibe/parser {
   binder_authority_slot_binder,
   located_program_binder_authority_nodes,
   located_program_binder_authority_program
+}
+
+/// Declared arity of a type constructor used by an erased generic impl target.
+/// The parser can prove that target arguments mirror the impl formals, but the
+/// SImpl AST cannot carry the target TypeExpr far enough to check its arity.
+/// Keep builtin container authority here; user declarations come from defs.
+fn impl_target_declared_arity(defs: Array[TypeDef], name: String) -> Option[Int] {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDEnum(_, params, _) => Some(Array::length(params)),
+      TDStruct(_, _, _, params) => Some(Array::length(params)),
+      TDAlias(_, params, _) => Some(Array::length(params)),
+      TDEffect(_, _, params) => Some(Array::length(params)),
+      TDEffectSet(_, _) => Some(0)
+    },
+    None => match compiler_owned_type_arity(name) {
+      Some(arity) => Some(arity),
+      None => match resolve_builtin(name) {
+        Some(_) => Some(0),
+        None => None
+      }
+    }
+  }
 }
 
 //# Types
@@ -1632,12 +1655,14 @@ fn stmt_is_type_decl(stmt: Stmt) -> Bool {
     SSuberror(_, _, _) => true,
     SStruct(_, _, _, _, _, _) => true,
     STypeAlias(_, _, _, _) => true,
+    SEffectDef(_, _, _, _) => true,
     _ => false
   }
 }
 
-/// #613: process type declarations (enum / struct / type-alias / suberror) before
-/// value definitions so a `let` may construct or reference a type or constructor
+/// #613: process type declarations (enum / struct / type-alias / suberror /
+/// effect) before value definitions so a `let` or impl may reference a type
+/// or constructor
 /// declared LATER in the same statement list (a forward reference). check_stmts
 /// records each type into `defs` and binds its constructors into `env` only when
 /// the declaration statement is reached, so without this a value defined before
@@ -2479,6 +2504,18 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // would let a non-sendable type cross task/channel boundaries.
         if trait_name == "Send" {
           Array::push(errors, "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
+        } else {
+          ()
+        }
+        if Array::length(tparams) > 0 {
+          match impl_target_declared_arity(defs, type_name) {
+            Some(want) => if want != Array::length(tparams) {
+              Array::push(errors, String::concat("type `", String::concat(type_name, String::concat("` expects ", String::concat(__to_string(want), String::concat(" type argument(s), got ", String::concat(__to_string(Array::length(tparams)), " in impl target")))))))
+            } else {
+              ()
+            },
+            None => ()
+          }
         } else {
           ()
         }
