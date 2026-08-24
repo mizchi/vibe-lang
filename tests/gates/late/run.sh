@@ -6191,3 +6191,75 @@ fi
 rm -rf "$fmtdir"
 echo "[compiler-gate] vibe fmt ok (#2149)"
 
+# 109/109. A multiline closure literal in a NON-FINAL argument slot formats to
+# a fixpoint (#2271). Reported as permanently unformattable -- apply changed
+# nothing, --check kept reporting a diff. The construct was never the problem:
+# the formatter ENTRY had failed to compile (a fresh checkout has none of the
+# untracked generated artifacts), and `vibe fmt` spelled "I could not build
+# myself" with the same exit 1 it uses for "this file is not formatted", so a
+# caller looped forever. Fixed in scripts/ensure_entry_wasm.sh (the failure is
+# loud) and scripts/vibe_fmt.sh (it exits 2), pinned there by
+# scripts/ensure_entry_wasm_test.sh. This section pins the other half of the
+# report -- that the SHAPE formats, on the stage2 lane -- so the issue's claim
+# is a regression test in both directions.
+echo "[compiler-gate] 109/109 a multiline closure in a non-final argument slot formats to a fixpoint (#2271)"
+nfdir="_build/_gate_nonfinal_closure"
+rm -rf "$nfdir"; mkdir -p "$nfdir"
+cat > "$nfdir/in.vibe" <<'NFIN'
+fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  ()
+}
+fn caller(shadow: Array[String], out: Array[String]) -> Unit {
+  collect_by((head) -> {
+      let mut found = false
+      if Array::length(shadow) > 0 {
+    found = true
+      } else {
+        ()
+      }
+      found
+  }, out)
+}
+NFIN
+cat > "$nfdir/expected.vibe" <<'NFEXP'
+fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  ()
+}
+fn caller(shadow: Array[String], out: Array[String]) -> Unit {
+  collect_by((head) -> {
+    let mut found = false
+    if Array::length(shadow) > 0 {
+      found = true
+    } else {
+      ()
+    }
+    found
+  }, out)
+}
+NFEXP
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$nfdir/in.vibe" "$nfdir/out.vibe" >"$nfdir/run.log" 2>&1 || true
+if [ ! -s "$nfdir/out.vibe" ]; then
+  echo "[compiler-gate] FAIL: the formatter produced nothing for a non-final closure argument (#2271)" >&2
+  cat "$nfdir/run.log" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$nfdir/expected.vibe" "$nfdir/out.vibe"; then
+  echo "[compiler-gate] FAIL: non-final closure argument not formatted as expected (#2271)" >&2
+  diff -u "$nfdir/expected.vibe" "$nfdir/out.vibe" >&2 || true
+  exit 1
+fi
+# The fixpoint is the half the issue said was unreachable: formatting the
+# formatted form again must change nothing, or `pkf run fmt` and CI's
+# vibe-fmt-check disagree about the file forever.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$nfdir/expected.vibe" "$nfdir/again.vibe" >"$nfdir/again.log" 2>&1 || true
+if ! cmp -s "$nfdir/expected.vibe" "$nfdir/again.vibe"; then
+  echo "[compiler-gate] FAIL: the formatted non-final closure is not a fixpoint (#2271)" >&2
+  diff -u "$nfdir/expected.vibe" "$nfdir/again.vibe" >&2 || true
+  exit 1
+fi
+rm -rf "$nfdir"
+echo "[compiler-gate] non-final closure argument fixpoint ok (#2271)"

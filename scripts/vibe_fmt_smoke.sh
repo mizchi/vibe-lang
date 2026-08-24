@@ -319,4 +319,54 @@ if ! cmp -s "$WORK/as_only.expected.vibe" "$WORK/as_only.got.vibe"; then
   exit 1
 fi
 
-echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap + enum/struct guard + nested-call block newlines + from-identifier guard + is-ctor guard + return-handle guard + as-only guard)"
+# A multiline closure literal in a NON-FINAL argument slot (#2271). Reported
+# as unformattable -- apply changed nothing, --check kept reporting a diff,
+# forever. It was never this construct: the formatter entry had failed to
+# compile, and `vibe fmt` spelled that with the same exit 1 it uses for "not
+# formatted" (fixed in scripts/ensure_entry_wasm.sh + scripts/vibe_fmt.sh).
+# Pinned here so the claim in the issue is a regression test either way.
+cat > "$WORK/nonfinal_closure.in.vibe" <<'EOF'
+fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  ()
+}
+fn caller(shadow: Array[String], out: Array[String]) -> Unit {
+  collect_by((head) -> {
+      let mut found = false
+      if Array::length(shadow) > 0 {
+    found = true
+      } else {
+        ()
+      }
+      found
+  }, out)
+}
+EOF
+cat > "$WORK/nonfinal_closure.expected.vibe" <<'EOF'
+fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  ()
+}
+fn caller(shadow: Array[String], out: Array[String]) -> Unit {
+  collect_by((head) -> {
+    let mut found = false
+    if Array::length(shadow) > 0 {
+      found = true
+    } else {
+      ()
+    }
+    found
+  }, out)
+}
+EOF
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" --stdout "$WORK/nonfinal_closure.in.vibe" > "$WORK/nonfinal_closure.got.vibe" 2>/dev/null
+if ! cmp -s "$WORK/nonfinal_closure.expected.vibe" "$WORK/nonfinal_closure.got.vibe"; then
+  echo "[vibe-fmt-smoke] FAIL: multiline closure in a non-final argument slot not formatted" >&2
+  diff "$WORK/nonfinal_closure.expected.vibe" "$WORK/nonfinal_closure.got.vibe" >&2 || true
+  exit 1
+fi
+# The fixpoint is the half the issue said was unreachable: --check must
+# accept the formatted form, so `pkf run fmt` and CI cannot disagree forever.
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$WORK/nonfinal_closure.expected.vibe" >/dev/null 2>&1; then
+  echo "[vibe-fmt-smoke] FAIL: formatted non-final closure is not a fixpoint" >&2; exit 1
+fi
+
+echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap + enum/struct guard + nested-call block newlines + from-identifier guard + is-ctor guard + return-handle guard + as-only guard + non-final closure arg #2271)"

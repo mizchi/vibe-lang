@@ -76,10 +76,33 @@ else
 fi
 
 if [ "$stale" = "1" ]; then
+  # Remove the previous artifact FIRST. A failed rebuild used to leave it in
+  # place, so the caller kept answering with the old formatter -- the exact
+  # stale-reuse the staleness rules above exist to prevent (#2271).
+  rm -f "$ROOT_DIR/$wasm_rel" "$ROOT_DIR/$deps_rel" "$ROOT_DIR/$wasm_rel.diag"
+  # `|| compile_rc=$?` is load-bearing: as a bare command under `set -e` a
+  # non-zero runner abandoned the script HERE, one line above the check that
+  # was written to explain the failure, so the message below never printed
+  # and the cause stayed in the .diag sidecar that nothing reads (#2271).
+  compile_rc=0
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main "$seed" "$entry_src" "$wasm_rel" main >&2
-  [ -s "$ROOT_DIR/$wasm_rel" ] || { echo "ensure_entry_wasm.sh: failed to compile $entry_src" >&2; exit 1; }
+    --invoke cli_main "$seed" "$entry_src" "$wasm_rel" main >&2 || compile_rc=$?
+  if [ "$compile_rc" != "0" ] || [ ! -s "$ROOT_DIR/$wasm_rel" ]; then
+    echo "ensure_entry_wasm.sh: failed to compile $entry_src -> $wasm_rel" >&2
+    if [ -s "$ROOT_DIR/$wasm_rel.diag" ]; then
+      # awk, not `sed s/^/  /`: the compiler writes the sidecar with NO
+      # trailing newline, so sed ran the hint below onto the same line.
+      awk '{ printf "  %s\n", $0 }' "$ROOT_DIR/$wasm_rel.diag" >&2
+    else
+      echo "  the compiler wrote no diagnostics (runner exit $compile_rc)" >&2
+    fi
+    # The overwhelmingly common cause on a fresh checkout: the untracked
+    # generated artifacts are not there yet, so the compiler package's own
+    # contract has declarations with no implementation.
+    echo "  if that names a generated artifact (lib/@vibe/compiler/cache/, *_bundle.vibe), run: bash scripts/ensure_generated.sh" >&2
+    exit 1
+  fi
   # Capture the closure the compiler just resolved. The plan mode also
   # writes one `.N.src` sidecar per module; keep them in a scratch dir so
   # only the manifest survives. Best-effort: on failure no manifest is
