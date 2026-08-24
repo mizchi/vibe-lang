@@ -453,75 +453,71 @@ fn collect_unsupported_map_keys(t: Type, out: Array[Type]) -> Unit {
 /// (a one-node `TypeExpr` in every real spelling), and an alias is read from
 /// the already-resolved `Type` its `TypeDef` carries -- which is also what
 /// catches `type IntMap = Map[Int, String]` at the USE.
-fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[Type], depth: Int) -> Unit {
-  if depth > 8 {
-    ()
-  } else {
-    match te {
-      TyName(name) => if string_array_has(shadow, name) {
-        ()
-      } else {
+fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[Type]) -> Unit {
+  match te {
+    TyName(name) => if string_array_has(shadow, name) {
+      ()
+    } else {
+      match find_typedef(defs, name) {
+        Some(td) => match td {
+          TDAlias(_, _, body) => collect_unsupported_map_keys(body, out),
+          _ => ()
+        },
+        None => ()
+      }
+    },
+    TyUnit => (),
+    TyApp(name, args) => {
+      if name == "Map" && Array::length(args) == 2 && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
+        let k = resolve_type_expr_shadowed(Array::get(args, 0), defs, shadow)
+        if map_key_type_is_supported(k) {
+          ()
+        } else {
+          Array::push(out, k)
+        }
+      } else if !string_array_has(shadow, name) {
         match find_typedef(defs, name) {
           Some(td) => match td {
-            TDAlias(_, _, body) => collect_unsupported_map_keys(body, out),
+            TDAlias(_, params, body) => {
+              let resolved_args = for arg in args {
+                resolve_type_expr_shadowed(arg, defs, shadow)
+              }
+              collect_unsupported_map_keys(resolve_type_alias_params(body, params, resolved_args), out)
+            },
             _ => ()
           },
           None => ()
         }
-      },
-      TyUnit => (),
-      TyApp(name, args) => {
-        if name == "Map" && Array::length(args) == 2 && !string_array_has(shadow, name) {
-          let k = resolve_type_expr_shadowed(Array::get(args, 0), defs, shadow)
-          if map_key_type_is_supported(k) {
-            ()
-          } else {
-            Array::push(out, k)
-          }
-        } else if !string_array_has(shadow, name) {
-          match find_typedef(defs, name) {
-            Some(td) => match td {
-              TDAlias(_, params, body) => {
-                let resolved_args = for arg in args {
-                  resolve_type_expr_shadowed(arg, defs, shadow)
-                }
-                collect_unsupported_map_keys(resolve_type_alias_params(body, params, resolved_args), out)
-              },
-              _ => ()
-            },
-            None => ()
-          }
-        } else {
-          ()
-        }
-        let mut i = 0
-        while i < Array::length(args) {
-          report_map_key_types_walk(Array::get(args, i), defs, shadow, out, depth + 1)
-          i = i + 1
-        }
-      },
-      TyTuple(items) => {
-        let mut i = 0
-        while i < Array::length(items) {
-          report_map_key_types_walk(Array::get(items, i), defs, shadow, out, depth + 1)
-          i = i + 1
-        }
-      },
-      TyFn(params, ret, _) => {
-        let mut i = 0
-        while i < Array::length(params) {
-          report_map_key_types_walk(Array::get(params, i), defs, shadow, out, depth + 1)
-          i = i + 1
-        }
-        report_map_key_types_walk(ret, defs, shadow, out, depth + 1)
+      } else {
+        ()
       }
+      let mut i = 0
+      while i < Array::length(args) {
+        report_map_key_types_walk(Array::get(args, i), defs, shadow, out)
+        i = i + 1
+      }
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        report_map_key_types_walk(Array::get(items, i), defs, shadow, out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        report_map_key_types_walk(Array::get(params, i), defs, shadow, out)
+        i = i + 1
+      }
+      report_map_key_types_walk(ret, defs, shadow, out)
     }
   }
 }
 
 export fn report_map_key_types(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
   let bad = array_empty()
-  report_map_key_types_walk(te, defs, shadow, bad, 0)
+  report_map_key_types_walk(te, defs, shadow, bad)
   let mut i = 0
   while i < Array::length(bad) {
     Array::push(errors, String::concat(String::concat(String::concat(String::concat("the builtin map is String-keyed, so a `", type_to_string(Array::get(bad, i))), "` key has no implementation in "), where_label), " -- spell the String-keyed map `StringMap[V]`, or use `MutMap[K, V]` from `@vibe/core` for other keys (generic `Map` keys are #2263)"))

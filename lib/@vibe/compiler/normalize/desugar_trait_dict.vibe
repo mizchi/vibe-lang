@@ -8201,6 +8201,25 @@ fn generic_eq_struct_declared(name: String) -> Bool {
   found
 }
 
+fn eq_alias_declared(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(dtd_eq_type_aliases) {
+    if Array::get(dtd_eq_type_aliases, i).0 == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The compiler-owned spelling applies only when source does not own the name.
+fn builtin_string_map_applied(name: String, args: Array[TypeExpr]) -> Bool {
+  name == "StringMap" && Array::length(args) == 1 && !str_array_contains(dtd_eq_known_types, name) && !eq_alias_declared(name)
+}
+
 /// Declared types with a field this pass cannot show is compared by content,
 /// transitively. Generic instantiations now use concrete specialized
 /// comparators (#2195), and Map has a structural arm (#2218). A nominal opaque
@@ -8908,6 +8927,16 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       }
       let inner = EMatch(rhs, Array::slice([(PTuple(rpats), conj)], 0, 1))
       EMatch(lhs, Array::slice([(PTuple(lpats), inner)], 0, 1))
+    },
+    TyApp("StringMap", args) => if builtin_string_map_applied("StringMap", args) {
+      let value_ty = Array::get(args, 0)
+      map_eq_needed_record(TyName("String"), value_ty)
+      ECall(EIdent(map_equals_name(TyName("String"), value_ty), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs)
     },
     TyApp("Map", args) => if Array::length(args) == 2 {
       // #2218: the only site that builds a `__map_equals__` call.
@@ -9695,6 +9724,8 @@ fn ty_to_eq_shape(t: TypeExpr) -> String {
       String::concat("{o:", String::concat(ty_to_eq_shape(Array::get(args, 0)), "}"))
     } else if n == "Result" && Array::length(args) == 2 {
       String::concat("{r:", String::concat(ty_to_eq_shape(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape(Array::get(args, 1)), "}"))))
+    } else if builtin_string_map_applied(n, args) {
+      String::concat("{m:String,", String::concat(ty_to_eq_shape(Array::get(args, 0)), "}"))
     } else if n == "Map" && Array::length(args) == 2 {
       // #2218: a Map shape, so an ANNOTATED binding (`let m: Map[String, Int]`)
       // or a typed parameter reaches `eq_for_typed`'s Map arm the same way an
@@ -9799,7 +9830,7 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
 fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
   match t {
     TyName(n) => n == "Bytes",
-    TyApp(n, args) => if n == "Array" || n == "Map" || generic_eq_struct_declared(n) {
+    TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) {
       true
     } else {
       let mut i = 0
