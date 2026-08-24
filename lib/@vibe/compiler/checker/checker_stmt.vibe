@@ -110,6 +110,31 @@ import @vibe/parser {
   located_program_binder_authority_program
 }
 
+/// Declared arity of a type constructor used by an erased generic impl target.
+/// The parser can prove that target arguments mirror the impl formals, but the
+/// SImpl AST cannot carry the target TypeExpr far enough to check its arity.
+/// Keep builtin container authority here; user declarations come from defs.
+fn impl_target_declared_arity(defs: Array[TypeDef], name: String) -> Option[Int] {
+  if name == "Array" || name == "Option" || name == "FrozenArray" || name == "Future" || name == "Stream" || name == "Task" {
+    Some(1)
+  } else if name == "Map" || name == "MapBuilder" || name == "Result" {
+    Some(2)
+  } else {
+    match find_typedef(defs, name) {
+      Some(td) => match td {
+        TDEnum(_, params, _) => Some(Array::length(params)),
+        TDStruct(_, _, _, params) => Some(Array::length(params)),
+        TDAlias(_, params, _) => Some(Array::length(params)),
+        TDEffect(_, _, _)|TDEffectSet(_, _) => Some(0)
+      },
+      None => match resolve_builtin(name) {
+        Some(_) => Some(0),
+        None => None
+      }
+    }
+  }
+}
+
 //# Types
 
 /// Successful production-check boundary. `checked_stmts` is the same
@@ -2479,6 +2504,18 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // would let a non-sendable type cross task/channel boundaries.
         if trait_name == "Send" {
           Array::push(errors, "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
+        } else {
+          ()
+        }
+        if Array::length(tparams) > 0 {
+          match impl_target_declared_arity(defs, type_name) {
+            Some(want) => if want != Array::length(tparams) {
+              Array::push(errors, String::concat("type `", String::concat(type_name, String::concat("` expects ", String::concat(__to_string(want), String::concat(" type argument(s), got ", String::concat(__to_string(Array::length(tparams)), " in impl target")))))))
+            } else {
+              ()
+            },
+            None => ()
+          }
         } else {
           ()
         }

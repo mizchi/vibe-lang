@@ -952,6 +952,28 @@ fn skip_bracketed_args(tokens: Array[Token], pos: Int) -> Int {
 /// soundly: `[T1, ..., Tn]` in the same order as the impl formals. Nested,
 /// concrete, reordered, repeated, missing, and extra arguments all fail
 /// closed until SImpl retains the target TypeExpr (#2262).
+fn impl_target_formal_end(tokens: Array[Token], pos: Int, formal: String) -> Int {
+  match peek(tokens, pos) {
+    TIdent(name) => if name == formal {
+      pos + 1
+    } else {
+      0 - 1
+    },
+    TLParen => {
+      let inner_end = impl_target_formal_end(tokens, pos + 1, formal)
+      if inner_end >= 0 {
+        match peek(tokens, inner_end) {
+          TRParen => inner_end + 1,
+          _ => 0 - 1
+        }
+      } else {
+        0 - 1
+      }
+    },
+    _ => 0 - 1
+  }
+}
+
 fn impl_target_args_match_formals(tokens: Array[Token], pos: Int, formals: Array[String]) -> Bool {
   match peek(tokens, pos) {
     TLBracket => {
@@ -959,15 +981,11 @@ fn impl_target_args_match_formals(tokens: Array[Token], pos: Int, formals: Array
       let mut i = 0
       let mut valid = Array::length(formals) > 0
       while valid && i < Array::length(formals) {
-        match peek(tokens, p) {
-          TIdent(name) => if name == Array::get(formals, i) {
-            p = p + 1
-          } else {
-            valid = false
-          },
-          _ => {
-            valid = false
-          }
+        let arg_end = impl_target_formal_end(tokens, p, Array::get(formals, i))
+        if arg_end >= 0 {
+          p = arg_end
+        } else {
+          valid = false
         }
         if valid {
           i = i + 1
