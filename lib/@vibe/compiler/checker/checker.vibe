@@ -389,12 +389,54 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
 /// is what expands it. A key that is a type formal, an inference variable,
 /// `CtUnknown`, or an unresolved nominal head is ACCEPTED -- generic code is
 /// unaffected, and a typo is the unknown-type check's answer, not this one.
-fn map_key_type_is_supported(k: Type) -> Bool {
+fn map_key_type_is_supported(k: Type, defs: Array[TypeDef]) -> Bool {
+  map_key_type_is_supported_at(k, defs, 0)
+}
+
+fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], depth: Int) -> Bool {
   match k {
     CtString => true,
     CtVar(_) => true,
     CtUnknown => true,
-    CtNamed(_, kargs) => Array::length(kargs) == 0,
+    // A nominal head with NO arguments is a formal or an opaque name this
+    // pass cannot judge, and one with arguments is judged by whether it
+    // RESOLVES (Codex round 6 on #2276).
+    //
+    // An unresolved applied head is a FORWARD reference, not a bad key:
+    // `type M[T] = Map[Key[T], Int]` above `type Key[T] = String` sees the
+    // key as `CtNamed("Key", [T])` because `Key` is not declared yet, and it
+    // ultimately resolves to `String`. Rejecting every applied `CtNamed` made
+    // that valid program depend on DECLARATION ORDER -- measured, the same
+    // two declarations were accepted with `Key` first and rejected with `Key`
+    // second, while the identical shape under `Array` was accepted either
+    // way. A head that does not resolve at all is the unknown-type check's
+    // answer, not this one; a head that DOES resolve while still carrying
+    // arguments is a declared generic struct or enum, and stays rejected.
+    CtNamed(kname, kargs) => if Array::length(kargs) == 0 {
+      true
+    } else {
+      match find_typedef(defs, kname) {
+        // Not declared (yet): a FORWARD reference or a typo. Either way not
+        // this check's answer.
+        None => true,
+        // Declared as an alias: judge its BODY. Reading the already-resolved
+        // body needs no substitution -- and must not use one, since
+        // `resolve_type_alias_params` corrupts the heap (#2279). A body that
+        // still mentions the alias's own parameters leaves them as rigid
+        // zero-argument names, which the first arm accepts, exactly as an
+        // unbound formal is accepted anywhere else.
+        Some(td) => match td {
+          TDAlias(_, _, abody) => if depth > 4 {
+            true
+          } else {
+            map_key_type_is_supported_at(abody, defs, depth + 1)
+          },
+          // A declared struct or enum applied to arguments really is a key
+          // with no implementation.
+          _ => false
+        }
+      }
+    },
     _ => false
   }
 }
@@ -444,7 +486,7 @@ fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: A
           },
           _ => k0
         }
-        if map_key_type_is_supported(k) {
+        if map_key_type_is_supported(k, defs) {
           ()
         } else {
           Array::push(out, k)
@@ -492,7 +534,7 @@ fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], out: Array[Type])
     CtNamed(head, targs) => {
       if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
         let k = Array::get(targs, 0)
-        if map_key_type_is_supported(k) {
+        if map_key_type_is_supported(k, defs) {
           ()
         } else {
           Array::push(out, k)
@@ -599,7 +641,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
       }
       if name == "Map" && Array::length(args) == 2 && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
         let k = resolve_type_expr_shadowed(Array::get(args, 0), defs, shadow)
-        if map_key_type_is_supported(k) {
+        if map_key_type_is_supported(k, defs) {
           ()
         } else {
           Array::push(out, k)
