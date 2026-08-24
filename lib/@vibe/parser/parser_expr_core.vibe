@@ -445,6 +445,57 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
   }
 }
 
+/// Does this callee expression root at a CALL?
+///
+/// #2231: the answer decides whether the callee's offset belongs to the callee
+/// or to a call node one level down.
+fn callee_roots_at_call(e: Expr) -> Bool {
+  match e {
+    ECall(_, _, _) => true,
+    EDot(inner, _, _, _) => callee_roots_at_call(inner),
+    _ => false
+  }
+}
+
+/// Source offset that identifies THIS call node.
+///
+/// `callee_offset` answers a different question -- where the callee STARTS --
+/// and for a callee that is or roots at a call, the two answers are the same
+/// number. That makes two distinct call nodes share one offset, and the
+/// checker's per-call-site Double table (#2158) is keyed by exactly that, so
+/// `mkf()()`, `mkh().f()` and `Array::get(hs, 0).f()` printed raw f64 bits
+/// while `f()`, `(f)()` and `h.f()` did not (#2231).
+///
+/// The historical answer is kept wherever it is unambiguous, so no existing
+/// diagnostic position moves: only a callee that roots at a call is given a
+/// different offset -- the field name for a dot-call, the `(` otherwise.
+fn call_site_offset(callee: Expr, lparen_off: Int) -> Int {
+  if callee_roots_at_call(callee) {
+    // The `(` that opens the argument list, which belongs to no other node.
+    //
+    // Using the dot's FIELD-NAME offset here was wrong in a way the #2231
+    // symptom could not show: `type_at.vibe` identifies the `get` token of
+    // `mk_box().get()` by that same offset, and the type table is last-wins,
+    // so hovering `get` reported the call's result (`Double`) instead of the
+    // field's own type (`() -> Double`). Trading one collision for another
+    // is not a fix -- named callees avoid this via `CalleeHit`, and the `EDot`
+    // path has no such escape (#2248 review).
+    //
+    // A negative `lparen_off` stays negative: that is the unlocated parse
+    // entry point, where every offset is -1 and the call is simply not
+    // recorded. Falling back to the callee's offset there would restore the
+    // collision this function exists to remove.
+    lparen_off
+  } else {
+    let own = callee_offset(callee)
+    if own >= 0 {
+      own
+    } else {
+      lparen_off
+    }
+  }
+}
+
 /// #2231: `lparen_off` is the source offset of the `(` that opens this call's
 /// argument list, used ONLY when the callee carries none of its own.
 ///
@@ -458,6 +509,11 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
 /// The callee's own offset is still preferred where it exists: `[@off=N:M]`
 /// diagnostics point at the callee (#1514), which is the better edit point,
 /// and moving every call to the `(` would move all of them.
+///
+/// "Where it exists" was not the whole condition, which is why the first pass
+/// at this was partial (5a14721e). A callee can HAVE an offset without OWNING
+/// it: `mkf()()` and `mkh().f()` borrow the inner call's, so the outer and
+/// inner nodes key the same table entry. `call_site_offset` is the full rule.
 fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> Expr with Exception {
   let ctor_name = match expr {
     EIdent(name, _) => name,
@@ -472,12 +528,7 @@ fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> 
   } else if ctor_name == "Map::from_pairs" {
     EMap(map_from_pairs_fields(args, pos))
   } else {
-    let own = callee_offset(expr)
-    ECall(expr, args, if own >= 0 {
-      own
-    } else {
-      lparen_off
-    })
+    ECall(expr, args, call_site_offset(expr, lparen_off))
   }
 }
 

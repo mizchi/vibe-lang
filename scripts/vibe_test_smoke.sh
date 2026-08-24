@@ -53,7 +53,7 @@ PATH="$fake_bin:$PATH" VIBE_TEST_CLI_WASM="$fake_cli" \
   >"$missing_cov_out" 2>&1
 missing_cov_code=$?
 set -e
-if [ "$missing_cov_code" -eq 0 ] || ! rg -q 'FAIL \(coverage\)' "$missing_cov_out"; then
+if [ "$missing_cov_code" -eq 0 ] || ! grep -qE 'FAIL \(coverage\)' "$missing_cov_out"; then
   echo "[vibe-test-smoke] FAIL: missing fresh coverage did not fail" >&2
   cat "$missing_cov_out" >&2
   exit 1
@@ -82,7 +82,7 @@ assert_full_failing_name() {
     cat "$out" >&2
     exit 1
   fi
-  if ! rg -q --fixed-strings "failing test: $want" "$out"; then
+  if ! grep -qF "failing test: $want" "$out"; then
     echo "[vibe-test-smoke] FAIL: expected 'failing test: $want' in the FAIL output" >&2
     cat "$out" >&2
     exit 1
@@ -103,7 +103,7 @@ echo "[vibe-test-smoke] ok (quoted test names preserved on FAIL)"
 printf 'test "real name" {\n  Stderr::write_stream("__test_!!!\\n")\n  assert(false)\n}\n' \
   > "$WORK/guest_prefix_test.vibe"
 assert_full_failing_name "$WORK/guest_prefix_test.vibe" "real name"
-if rg -q --fixed-strings "failing test: !!!" "$WORK/name_guest_prefix_test.out"; then
+if grep -qF "failing test: !!!" "$WORK/name_guest_prefix_test.out"; then
   echo "[vibe-test-smoke] FAIL: guest stderr __test_!!! was reported as the failing test" >&2
   cat "$WORK/name_guest_prefix_test.out" >&2
   exit 1
@@ -119,12 +119,12 @@ assert_canned_failing_name() {
   errf="$WORK/canned_${label}.err"
   cat > "$errf"
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "failing test: $want"; then
+  if ! printf '%s\n' "$out" | grep -qF "failing test: $want"; then
     echo "[vibe-test-smoke] FAIL: canned $label expected 'failing test: $want'" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if printf '%s\n' "$out" | rg -q --fixed-strings "failing test: !!!"; then
+  if printf '%s\n' "$out" | grep -qF "failing test: !!!"; then
     echo "[vibe-test-smoke] FAIL: canned $label reported guest stderr as the name" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -168,7 +168,7 @@ assert_condense_failing_name() {
   errf="$WORK/canned_condense_${label}.err"
   cat > "$errf"
   out="$(condense_test_trap "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "failing test: $want"; then
+  if ! printf '%s\n' "$out" | grep -qF "failing test: $want"; then
     echo "[vibe-test-smoke] FAIL: condense $label expected 'failing test: $want'" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -205,17 +205,17 @@ RuntimeError: unreachable
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
   out="$(condense_test_trap "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q '^       failing test: indent_pin$'; then
+  if ! printf '%s\n' "$out" | grep -qE '^       failing test: indent_pin$'; then
     echo "[vibe-test-smoke] FAIL: condense_test_trap failing-test line is not 7-space indented (#2228)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$out" | rg -q '^       trap: RuntimeError: unreachable$'; then
+  if ! printf '%s\n' "$out" | grep -qE '^       trap: RuntimeError: unreachable$'; then
     echo "[vibe-test-smoke] FAIL: condense_test_trap trap line is not 7-space indented (#2228)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$out" | rg -q '^       at some_helper'; then
+  if ! printf '%s\n' "$out" | grep -qE '^       at some_helper'; then
     echo "[vibe-test-smoke] FAIL: condense_test_trap frame line is not 7-space indented (#2228)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -237,24 +237,24 @@ RuntimeError: unreachable
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "assert_eq failed"; then
+  if ! printf '%s\n' "$out" | grep -qF "assert_eq failed"; then
     echo "[vibe-test-smoke] FAIL: canned assert_eq missing 'assert_eq failed'" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "expected: 2"; then
+  if ! printf '%s\n' "$out" | grep -qF "expected: 2"; then
     echo "[vibe-test-smoke] FAIL: canned assert_eq missing expected value" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "actual:   1"; then
+  if ! printf '%s\n' "$out" | grep -qF "actual:   1"; then
     echo "[vibe-test-smoke] FAIL: canned assert_eq missing actual value" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
   # #2202: the assert's own abort trap must NOT be echoed after the assert
   # block -- it read as a second, unexplained failure.
-  if printf '%s\n' "$out" | rg -q --fixed-strings "trap:"; then
+  if printf '%s\n' "$out" | grep -qF "trap:"; then
     echo "[vibe-test-smoke] FAIL: assert_eq failure still echoes its own abort trap (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -273,7 +273,7 @@ RuntimeError: unreachable
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: bare trap (no assert diag) lost its trap: line" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -297,7 +297,7 @@ RuntimeError: unreachable
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: real trap after an imitated assert block was suppressed (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -322,7 +322,7 @@ RuntimeError: unreachable
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if printf '%s\n' "$out" | rg -q --fixed-strings "trap:"; then
+  if printf '%s\n' "$out" | grep -qF "trap:"; then
     echo "[vibe-test-smoke] FAIL: real assert abort (with crash-debug between) still echoed its trap (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -350,12 +350,12 @@ RuntimeError: unreachable
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if printf '%s\n' "$out" | rg -q --fixed-strings "trap:"; then
+  if printf '%s\n' "$out" | grep -qF "trap:"; then
     echo "[vibe-test-smoke] FAIL: multiline assert abort (with marker) still echoed its trap (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if printf '%s\n' "$out" | rg -q --fixed-strings "assert failed: aborting"; then
+  if printf '%s\n' "$out" | grep -qF "assert failed: aborting"; then
     echo "[vibe-test-smoke] FAIL: the assert abort marker leaked into the report (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -374,7 +374,7 @@ RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: real trap after a stale abort marker was suppressed (#2202)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -400,32 +400,32 @@ RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
 EOF
   out="$(vt_fail_detail "$errf" "" "canned.vibe")"
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Array::get: index 10 out of bounds for length 3"; then
+  if ! printf '%s\n' "$out" | grep -qF "Array::get: index 10 out of bounds for length 3"; then
     echo "[vibe-test-smoke] FAIL: generated OOB message lost from the condensed report (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "Bytes::set: index -1 out of bounds for length 0"; then
+  if ! printf '%s\n' "$out" | grep -qF "Bytes::set: index -1 out of bounds for length 0"; then
     echo "[vibe-test-smoke] FAIL: Bytes OOB message (negative index) lost from the condensed report (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "String::byte_at: index 5 out of bounds for length 3"; then
+  if ! printf '%s\n' "$out" | grep -qF "String::byte_at: index 5 out of bounds for length 3"; then
     echo "[vibe-test-smoke] FAIL: String::byte_at OOB message lost from the condensed report (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if printf '%s\n' "$out" | rg -q --fixed-strings "my thing: index 10 out of bounds"; then
+  if printf '%s\n' "$out" | grep -qF "my thing: index 10 out of bounds"; then
     echo "[vibe-test-smoke] FAIL: user output masquerading as an OOB diagnostic was promoted (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if printf '%s\n' "$out" | rg -q --fixed-strings "and then some"; then
+  if printf '%s\n' "$out" | grep -qF "and then some"; then
     echo "[vibe-test-smoke] FAIL: a line with trailing text after the length was promoted (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
   fi
-  if ! printf '%s\n' "$out" | rg -q --fixed-strings "trap: RuntimeError: unreachable"; then
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
     echo "[vibe-test-smoke] FAIL: OOB trap reason lost (#2199)" >&2
     printf '%s\n' "$out" >&2
     exit 1
@@ -475,7 +475,7 @@ if ! bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/pass_test.vibe" >/dev/null 2>"
   cat "$notice_err" >&2
   exit 1
 fi
-if ! rg -q "compiler: the committed seed" "$notice_err"; then
+if ! grep -qE "compiler: the committed seed" "$notice_err"; then
   echo "[vibe-test-smoke] FAIL: a compiler source is modified but no seed notice was printed" >&2
   echo "  (probe: ${PROBE#"$ROOT_DIR"/})" >&2
   cat "$notice_err" >&2
@@ -487,7 +487,7 @@ fi
 # which paths are checked. Only the uncommitted count can distinguish them:
 # the probe is the sole uncommitted file, and a predicate that does not cover
 # lib/@vibe/parser reports zero of them.
-if ! rg -q "uncommitted file" "$notice_err"; then
+if ! grep -qE "uncommitted file" "$notice_err"; then
   echo "[vibe-test-smoke] FAIL: a modified compiler source outside lib/@vibe/compiler was not counted" >&2
   echo "  (probe: ${PROBE#"$ROOT_DIR"/} -- it is a compiler source; see lib/@vibe/compiler/compiler_sources_manifest.tsv)" >&2
   cat "$notice_err" >&2
@@ -495,7 +495,7 @@ if ! rg -q "uncommitted file" "$notice_err"; then
 fi
 # Naming the file is not the point -- `[ensure-seed]` already does that. The
 # notice exists to say the seed is BEHIND, and to give the way out.
-if ! rg -q "CANNOT observe" "$notice_err" || ! rg -q "VIBE_TEST_CLI_WASM=" "$notice_err"; then
+if ! grep -qE "CANNOT observe" "$notice_err" || ! grep -qE "VIBE_TEST_CLI_WASM=" "$notice_err"; then
   echo "[vibe-test-smoke] FAIL: the notice must state the consequence and the override" >&2
   cat "$notice_err" >&2
   exit 1
@@ -505,7 +505,7 @@ fi
 for silent_env in "VIBE_TEST_CLI_WASM=$ROOT_DIR/bootstrap/seed/compiler.wasm" \
                   "VIBE_TEST_QUIET_COMPILER_NOTE=1"; do
   if env "$silent_env" bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/pass_test.vibe" \
-      2>&1 >/dev/null | rg -q "compiler: the committed seed"; then
+      2>&1 >/dev/null | grep -qE "compiler: the committed seed"; then
     echo "[vibe-test-smoke] FAIL: notice printed despite $silent_env" >&2
     exit 1
   fi

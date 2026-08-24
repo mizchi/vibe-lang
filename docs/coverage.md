@@ -558,8 +558,13 @@ The command prints per-file and aggregate function/branch coverage and writes
 per-file JSON to `_build/vibe_test/coverage/`. Any compile or test failure makes
 the task fail; measuring zero selected files also fails.
 
-`VIBE_WASM_STD_COVERAGE_FILTER` and `VIBE_WASM_STD_COVERAGE_EXCLUDE` accept `rg`
-patterns for a focused run. `VIBE_TEST_CLI_WASM` selects the compiler, following
+`VIBE_WASM_STD_COVERAGE_FILTER` and `VIBE_WASM_STD_COVERAGE_EXCLUDE` accept
+**POSIX extended regular expressions** (`grep -E`) for a focused run. They took
+`rg` patterns until #2252 removed ripgrep from `scripts/` -- CI does not have
+it -- and the two dialects are not the same language: `\d`, `(?i)` and the
+other PCRE/Rust-regex constructs are rejected rather than reinterpreted. An
+invalid pattern fails the run and says so; it is not reported as an empty
+corpus. `VIBE_TEST_CLI_WASM` selects the compiler, following
 the same contract as `scripts/vibe_test.sh`. Variables from the retired
 wasm-source report pipeline are rejected instead of being silently ignored.
 

@@ -337,8 +337,30 @@ local testReviewLintVibex = new Task {
   inputs { ...vibeSources; ...scriptSources }
   cache = false
 }
-local lintTrackedExperimentNames =
-  scriptTask("lint-tracked-experiment-names", "scripts/lint_tracked_experiment_names.sh")
+// NOT scriptTask: that factory keys on compiler sources plus
+// `scripts/**/*.{sh,mjs,vibex}`, and this lint reads neither of those things.
+// It walks the git index for every probe-like path under `scripts/` AND
+// `.github/` at any extension, and it reads
+// `scripts/tracked_experiment_name_allowlist.txt` -- so a new
+// `.github/cache_probe.yml`, a new `scripts/new_probe.vibe`, or an edit to the
+// allowlist leaves the key unchanged and a cached `ok` can replay over a tree
+// nobody inspected (#2248 review).
+//
+// Declaring those paths would work, but it is the same shape of bookkeeping
+// that just went wrong: the input list has to be re-derived every time the
+// scan widens. The lint is 0.15s. Not caching it cannot be wrong, and this
+// PR's own rule is to remove the structure that needs the bookkeeping rather
+// than to keep the bookkeeping correct.
+local lintTrackedExperimentNames = new Task {
+  name = "lint-tracked-experiment-names"
+  description = "tracked throwaway/probe-like filenames need an explicit allowlist entry"
+  cmd = "bash scripts/lint_tracked_experiment_names.sh"
+  cache = false
+}
+local checkGatePortability =
+  scriptTask("check-gate-portability", "scripts/check_gate_portability.sh")
+local testCheckGatePortability =
+  scriptTask("test-check-gate-portability", "scripts/check_gate_portability_test.sh")
 local testLintTrackedExperimentNames =
   scriptTask("test-lint-tracked-experiment-names", "scripts/lint_tracked_experiment_names_test.sh")
 // The bundles and the flat module source are no longer committed, so there is
@@ -1525,6 +1547,19 @@ local checkBookConsole = new Task {
   deps { selfhostGeneration }
 }
 
+local testCheckBookConsole = new Task {
+  name = "test-check-book-console"
+  description = "red/green for check-book-console: mutate the chapter, assert the gate fails"
+  cmd = "bash scripts/check_book_console_test.sh"
+  // Deliberately NOT deps { selfhostGeneration }: the cases hand the gate a
+  // stub compiler, so the transcripts fail identically for every case and what
+  // each asserts is the message its mutation adds on top -- extraction, ja/en
+  // parity, and whether the chapter's documented 42 -> 43 edit still applies.
+  // All three are decidable without a compiler, which is what keeps this at
+  // ~1s so check_gate_self_tests.sh can run it on every gate pass.
+  cache = false
+}
+
 local vibeMdFmtCheck = new Task {
   name = "vibe-md-fmt-check"
   description =
@@ -1592,6 +1627,13 @@ local releaseCheck = new Task {
     // and it passes vacuously. Its self-test is the part that carries meaning
     // away from the hook.
     lintArchitectureDebt
+    // Registered but depended on by nothing until #2252, so it ran nowhere --
+    // and in that time its allowlist file went missing, leaving the lint
+    // failing on the tree with no one to see it. Same failure mode the
+    // `testWasmValidateParity` comment below describes.
+    lintTrackedExperimentNames
+    checkGatePortability
+    testCheckGatePortability
     checkDocPathCitations
     testDocPathCitations
     testLintArchitecture
@@ -1623,6 +1665,7 @@ local releaseCheck = new Task {
     vibeMdTutorialGated
     checkTutorialTranslationParity
     checkBookConsole
+    testCheckBookConsole
     checkExamplesTypecheck
     checkPlaygroundPresets
     // Skips itself when wasm-tools is absent (it is the oracle), so this
@@ -1675,6 +1718,8 @@ tasks {
   testReviewLintVibex
   lintTrackedExperimentNames
   testLintTrackedExperimentNames
+  checkGatePortability
+  testCheckGatePortability
   checkSelfhostPortableBoundary
   checkHostRuntimeContract
   checkVibeFmt
@@ -1816,6 +1861,7 @@ tasks {
   vibeMdTutorialGated
   checkTutorialTranslationParity
   checkBookConsole
+  testCheckBookConsole
   vibeMdFmtCheck
   vibeMdFmt
   bookBuild

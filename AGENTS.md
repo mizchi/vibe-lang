@@ -850,3 +850,55 @@ PR レビューや Bug Issue の修正で、同種の問題が今後も起こり
   `scripts/lint_review_regressions_test.sh` または `.vibex` の self-test に固定する。
 - pre-commit で実行できる速度を保ち、`pkf run test-review-lint-vibex` と
   `pkf run pre-commit` の両方で検証する。
+
+### ゲートは「失敗できること」を証明してから信用する (#2248)
+
+**通ったゲートは、失敗できると分かるまで何も意味しない。**
+`check_selector_precedence.sh` は hijack 可能なツリーに対して **5 回** ok を返した。
+5 回とも人間のレビュアーが見つけ、5 回とも修正を裏づける red test は手で走らせて
+コミットメッセージに書いただけだったので、次の編集で保証が消えた。
+
+毎回同じ壊れ方だった — 検証が**性質そのものではなく代理**を信用していた:
+近くにある呼び出し / リストに載った名前 / 印字される戻り値行 / 分岐しない fake を
+相手にしたループ / 「代入が存在する」が「全パスが代入する」の代わり。
+
+だから規則は機械的にする:
+
+- **新しい gate script には `scripts/<name>_test.sh` を付ける。**
+  実入力を**変異させて** gate が FAIL することを主張する。
+  `scripts/check_gate_self_tests.sh` が強制する (ratchet — 既存 18 件は
+  `scripts/gate_self_test_allowlist.txt`、**削除のみ可**)。
+- **red test は「変異が当たったこと」を先に検証する。** 何にもマッチしない編集は
+  合格しながら何も証明しない。実際に踏んだ: order ブロックが複数行なので
+  スライスが 1 行目しか掴まず、red test が「通って」しまった。
+- **答えられない問いは、答えられる問いに置き換える。** shell のデータフローは
+  scanner には解けない。「宣言と同時に初期化し以降の代入も derived」という
+  *書き方*を要求する案を一度採ったが、これも破れた — 同一行の `;` の後ろ、
+  `false &&` の下。代入を追う限り scanner は shell を理解し続ける必要があり、
+  収束しない。**最終的に変数経由そのものを禁止した**: clears は
+  `env $(selector_clears_before T) ...` と**使うコマンドの中にインラインで**
+  書く。呼び出しは重複するが、字句的な性質なので検査できる。
+  一般形は「代理を1つ潰す」ではなく「**代理が必要になる構造を無くす**」。
+- **scanner が読めないものについては黙らない。** 解決できない展開を含む呼び出しは
+  FAIL にする。沈黙は「安全」ではなく「未検査」であり、両者は見分けがつかない。
+- **ゲートは自分が走る環境を仮定しない (#2252)。** 5 つの self-test が「壊れている」
+  ことにされていたが、原因は 2 つとも**環境の継承**だった: `.claude/hooks/session-start.sh`
+  が export する `VIBE_REVIEW_LINT_GREP_BIN` を self-test が受け取り、
+  「AST tier が動かない」前提の 3 ケースが無言で no-op になっていた。残りは
+  `rg` (ripgrep) — dev container にはあり CI には無い。どちらも、**検査対象と
+  無関係な理由で落ちるゲートは、直されずに免除される**という同じ結末になる。
+  self-test は依存する変数を先頭で `unset` してから各ケースで明示的に設定し、
+  ゲートは POSIX に無いツールを使わない。`scripts/check_gate_portability.sh` が
+  これらを字句的に強制する — `rg` は絶対パス (`/usr/bin/rg`) 経由も検出し、
+  `sed -i` は**接尾辞なしを拒否**する (GNU は省略可、BSD/macOS は必須なので
+  素の形はそこで中断する)。`sed -i.bak` と一時ファイル経由は通る。
+- **`grep -E` は `\t` を解釈しない。** `rg -q '^x:finding\t'` を
+  `grep -qE '^x:finding\t'` に機械的に置き換えると、パターンは静かに
+  `^x:findingt` になり**永久にマッチしなくなる**。それが通る側の条件だと
+  ゲートは緑のまま何も見なくなる。タブは ANSI-C quoting で書く:
+  `grep -qE $'^x:finding\t'`。`\d` も同じ (`\s` / `\w` / `\b` は GNU 拡張
+  として実在するので可)。これも `check_gate_portability.sh` が検出する。
+- **免除リストは空にできる。** `scripts/gate_self_test_failing.txt` は 5 件から
+  0 件になり、baseline も空に pin した — 以後この列に名前を足すと**拒否される**。
+  「落ちる self-test を免除する」という手段自体を無くすのが、免除を管理するより
+  安い。

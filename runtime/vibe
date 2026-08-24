@@ -428,14 +428,24 @@ compile_to() {
   # predecessor), the default lane targets VIBE_FS_COMPILE. Assignments come
   # after the -u flags and win over them, which is what lets $debug_env still
   # set VIBE_DEBUG / VIBE_COVERAGE here.
-  local sel_clears
+  # The clears are spelled INLINE in each invocation, never routed through a
+  # variable -- so the two lanes are two calls rather than one call and a
+  # branch. That is deliberate duplication.
+  #
+  # Every attempt to let a variable carry them was broken by a reader that
+  # tries to understand shell with regular expressions: the variable was
+  # assignable on a path that left it empty, then behind `&&`, then after a
+  # `;` on the same line, then under `false &&` (#2248 review, four rounds).
+  # Each fix taught the scanner one more piece of shell syntax and the next
+  # one arrived. Inline has no such surface: the clears are lexically part of
+  # the command that uses them, which a scanner CAN check.
   if [ "$backend" = "gc" ]; then
-    sel_clears="$(selector_clears_before VIBE_BACKEND)"
+    env $(selector_clears_before VIBE_BACKEND) $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
+      "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   else
-    sel_clears="$(selector_clears_before VIBE_FS_COMPILE)"
+    env $(selector_clears_before VIBE_FS_COMPILE) $fs_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
+      "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   fi
-  env $sel_clears $fs_env $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
-    "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   if [ -s "$out" ]; then
     rm -f "$out.diag" "$rerr"
     return 0

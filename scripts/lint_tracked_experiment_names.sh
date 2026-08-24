@@ -6,7 +6,11 @@ PROJECT_ROOT="${VIBE_EXPERIMENT_NAME_LINT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 ALLOWLIST_FILE="${VIBE_EXPERIMENT_NAME_LINT_ALLOWLIST:-$PROJECT_ROOT/scripts/tracked_experiment_name_allowlist.txt}"
 VALID_CATEGORIES="gate bench-fixture manual-experiment archive-candidate"
 
-if [ ! -d "$PROJECT_ROOT/.git" ]; then
+# Asked of git, not of the filesystem: a linked worktree stores `.git` as a
+# FILE, so `-d` reports "not a git repository" and this lint -- now a
+# release-check dependency -- would abort every `pkf run` made from one
+# (#2248 review).
+if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "experiment-name lint: project root is not a git repository: $PROJECT_ROOT" >&2
   exit 1
 fi
@@ -22,8 +26,22 @@ is_candidate_path() {
   local path="$1"
   local base="${path##*/}"
 
+  # `src/` and `vibe/` were in this list and neither directory exists: `src/`
+  # was the MoonBit host, retired in #594. A scope naming directories that are
+  # gone reads as broader coverage than it has (#2252).
+  #
+  # `lib/` is here because main's ab0190c5 put it there. That commit and this
+  # branch found the same defect from opposite sides -- the self-test's
+  # fixtures sat under `lib/`, which the lint did not scan, so both the
+  # "allowed" and the "violation" case were vacuous. It widened the scan to
+  # reach the fixtures; this branch moved the fixtures into the scan. Keeping
+  # the wider scan is the stronger of the two, but only once the allowlist
+  # exists: with `lib/` in scope and no allowlist file (main's state), the lint
+  # reports all 16 `lib/**probe*` files as violations and FAILS on the tree.
+  # Nobody saw that because nothing ran it; this branch also adds it to
+  # release-check, which is what makes the allowlist load-bearing.
   case "$path" in
-    .github/*|lib/*|scripts/*|src/*|vibe/*) ;;
+    .github/*|lib/*|scripts/*) ;;
     *) return 1 ;;
   esac
 

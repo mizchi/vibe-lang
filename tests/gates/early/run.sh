@@ -110,7 +110,12 @@ import ./does_not_exist.vibe { helper }
 
 export let _start = () -> Int { helper(1) }
 VEOF
-mi_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+# VIBE_CRASH_DEBUG=1 on purpose (#2199). The dump is now OFF by default, and
+# the "no crash debug" assertion below would then hold no matter what happened
+# -- it would stop telling a graceful diagnostic apart from the raw host
+# exception it exists to catch. Asking for the dump keeps that check able to
+# fail; the located-diagnostic assertion further down carries the rest.
+mi_out="$(VIBE_CRASH_DEBUG=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$midir/main.vibe" "$midir/main.wasm" _start 2>&1)" || true
 mi_wasm_produced=0

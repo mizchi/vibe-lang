@@ -142,19 +142,48 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     # branch. `env ... "$RUNNER" "$out"` executes the user's compiled program,
     # where no selector applies.
     runs_cli = '"$RUNNER"' in block and re.search(r'"?\$\{?cli\}?"?', block)
-    # The clears may be computed just above the block (a branch picking the
-    # target), so look back a little rather than only inside it.
-    lookback = src[max(0, m.start() - 900):m.start()]
-    if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) \
-       and 'selector_clears_before' not in block \
-       and 'selector_clears_before' not in lookback:
+
+    # INLINE ONLY. The clears must be lexically part of this command; a
+    # variable carrying them is rejected outright.
+    #
+    # Routing them through a variable was tried and broken four times, each
+    # by a different piece of shell this scanner does not actually parse: an
+    # assignment on a path that left it empty, one behind `&&`, one after a
+    # `;` on the same line, one under `false &&` (#2248 review). Every fix
+    # taught the regex one more construct and the next construct arrived.
+    # Reading shell with regular expressions does not converge, so the
+    # question is changed rather than answered: no variables, and the check
+    # becomes "is the call spelled here", which a scanner CAN decide.
+    #
+    # Searched with single-quoted spans REMOVED first. The shell does not
+    # expand `$( ... )` inside single quotes, so `env 'X=$(selector_clears_
+    # before VIBE_BACKEND)' ...` passes a literal string and clears nothing --
+    # and matching the helper's TEXT anywhere in the block credited exactly
+    # that (#2248 review). Same defect as every earlier round: the check read
+    # a proxy (the characters are present) for the property (the shell runs
+    # it). A single-quoted span cannot execute anything, so deleting those
+    # spans before looking is the whole fix.
+    #
+    # Double quotes are left alone on purpose: `"$(selector_clears_before X)"`
+    # DOES expand -- though it would then be one argument rather than the word
+    # list `env` needs, which is a different bug and one the runner would
+    # surface immediately.
+    executable = re.sub(r"'[^']*'", "", block)
+    inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', executable)
+    covered = inline
+
+    if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) and not covered:
         unverifiable.append(src[:m.start()].count("\n") + 1)
         continue
     cleared = set(re.findall(r'-u (VIBE_[A-Z_]+)', block))
-    # `env $(selector_clears_before T) ...` clears every predecessor of T.
-    for t in re.findall(r'selector_clears_before (VIBE_[A-Z_]+)', block):
-        if t in order:
-            cleared.update(order[:order.index(t)])
+    # A block may spell more than one call (it does not today); credit the
+    # smallest predecessor set, which is what holds regardless of which one
+    # the reader looks at.
+    if covered:
+        weakest = min(order.index(t) for t in covered if t in order) \
+            if any(t in order for t in covered) else None
+        if weakest is not None:
+            cleared.update(order[:weakest])
     line_no = src[:m.start()].count("\n") + 1
     for i, sel in enumerate(order):
         if not re.search(r'(?<![-\w])' + sel + r'=1\b', block):

@@ -38,7 +38,7 @@ if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
   exit 1
 fi
 
-if ! rg -q "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
+if ! grep -qE "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
   echo "lock-check self-test: missing expected failure message" >&2
   cat "$FAIL_LOG" >&2
   exit 1
@@ -53,7 +53,7 @@ if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
   exit 1
 fi
 
-if ! rg -q "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
+if ! grep -qE "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
   echo "lock-check self-test: missing expected .vibe_test_wasm failure message" >&2
   cat "$FAIL_LOG" >&2
   exit 1
@@ -68,7 +68,7 @@ if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
   exit 1
 fi
 
-if ! rg -q "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
+if ! grep -qE "lock-check: found temporary entries in index.lock" "$FAIL_LOG"; then
   echo "lock-check self-test: missing expected .tmp failure message" >&2
   cat "$FAIL_LOG" >&2
   exit 1
@@ -87,7 +87,7 @@ if VIBE_LOCK_CHECK_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$FAIL_LOG" 2>&1; then
   exit 1
 fi
 
-if ! rg -q 'lock-check: index.vibe must include export let version = "x.y.z"' "$FAIL_LOG"; then
+if ! grep -qE 'lock-check: index.vibe must include export let version = "x.y.z"' "$FAIL_LOG"; then
   echo "lock-check self-test: missing expected index.vibe failure message" >&2
   cat "$FAIL_LOG" >&2
   exit 1

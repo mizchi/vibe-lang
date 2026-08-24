@@ -41,11 +41,28 @@ done
 
 cd "$PROJECT_ROOT"
 mapfile -t tests < <(find lib/@vibe/builtin -name '*_test.vibe' | sort)
+# `|| true` used to swallow BOTH of grep's non-zero statuses, and they mean
+# opposite things: 1 is "no line matched" (legitimate -- the empty-selection
+# check below reports it), 2 is "this pattern is not valid ERE", which must
+# not be reported as an empty corpus (#2248 review). These accept POSIX ERE,
+# not ripgrep's dialect -- see docs/coverage.md.
+select_tests() { # <label> <grep-args...>
+  local label="$1"; shift
+  local out status=0
+  out="$(printf '%s\n' "${tests[@]}" | "$@")" || status=$?
+  if [ "$status" -gt 1 ]; then
+    echo "[wasm std coverage] $label is not a valid POSIX extended regex (grep exit $status)" >&2
+    echo "[wasm std coverage]   these are grep -E patterns, not ripgrep patterns:" >&2
+    echo "[wasm std coverage]   \\d, (?i) and other PCRE/Rust-regex constructs are rejected." >&2
+    exit 2
+  fi
+  mapfile -t tests < <(printf '%s' "$out" | grep -v '^$' || true)
+}
 if [ -n "$FILTER" ]; then
-  mapfile -t tests < <(printf '%s\n' "${tests[@]}" | rg "$FILTER" || true)
+  select_tests VIBE_WASM_STD_COVERAGE_FILTER grep -E "$FILTER"
 fi
 if [ -n "$EXCLUDE" ]; then
-  mapfile -t tests < <(printf '%s\n' "${tests[@]}" | rg -v "$EXCLUDE" || true)
+  select_tests VIBE_WASM_STD_COVERAGE_EXCLUDE grep -vE "$EXCLUDE"
 fi
 if [ "${#tests[@]}" -eq 0 ]; then
   echo "[wasm std coverage] no test files selected under lib/@vibe/builtin" >&2

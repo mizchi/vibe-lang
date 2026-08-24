@@ -3196,74 +3196,85 @@ async function main() {
       }
       return { result, isSelfhost };
     } catch (err) {
-      const heapGlobal = instance.exports.__heap_ptr;
-      const mem = new Uint8Array(instance.exports.memory.buffer);
-      const hpRaw = heapGlobal?.value;
-      const hp = typeof hpRaw === "bigint" ? Number(hpRaw) : hpRaw;
-      const hpHex =
-        typeof hpRaw === "bigint"
-          ? hpRaw.toString(16)
-          : hpRaw !== undefined && hpRaw !== null
+      // #2199: this dump is COMPILER-developer diagnostics -- heap bytes, the
+      // RC freelist, raw memory windows. It printed on EVERY trap, so the
+      // first thing a reader saw when their `Array::get(xs, 10)` went out of
+      // range was a page of hex, ahead of the message that names the index and
+      // the length. Off by default; the trap and its stack still print below,
+      // which is what `vibe test`'s report parser reads.
+      const crashDebug = process.env.VIBE_CRASH_DEBUG === "1"
+        || process.env.VIBE_DEBUG === "1"
+        || !!process.env.VIBE_DEBUG708_MEMDUMP;
+      if (crashDebug) {
+        const heapGlobal = instance.exports.__heap_ptr;
+        const mem = new Uint8Array(instance.exports.memory.buffer);
+        const hpRaw = heapGlobal?.value;
+        const hp = typeof hpRaw === "bigint" ? Number(hpRaw) : hpRaw;
+        const hpHex =
+          typeof hpRaw === "bigint"
             ? hpRaw.toString(16)
-            : "n/a";
-      console.error(`[crash debug] heap_ptr=${hpRaw} (0x${hpHex}), memory_size=${mem.length} (${(mem.length / 65536)} pages) / ${err?.message || err}`);
-      console.error(`[crash debug] mem[0..32]: ${Array.from(mem.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-      if (typeof hp === "number" && hp >= 8 && hp < mem.length - 32) {
-        console.error(`[crash debug] mem[heap-8..heap+24]: ${Array.from(mem.slice(hp - 8, hp + 24)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-      }
-      // #1262: walk the RC legacy free list (global 2, exported as
-      // __rc_freelist) from the trap. Nodes are value pointers (block+8);
-      // the size word lives at p-8 and the next link at p-4; 0 terminates.
-      const flGlobal = instance.exports.__rc_freelist;
-      if (flGlobal instanceof WebAssembly.Global && typeof hp === "number") {
-        const dv = new DataView(instance.exports.memory.buffer);
-        const heapLo = Number(process.env.VIBE_RC_HEAP_START || 58928);
-        // #1262: a binary built from the size-word poison tree ORs 0x40000000
-        // into the size word of every freed block. Mask it off for display —
-        // leaving it in makes every healthy free-list node look corrupt.
-        const poison = Number(process.env.VIBE_RC_POISON_MASK || 0);
-        const rd = (a) => (a >= 0 && a + 4 <= mem.length ? dv.getUint32(a, true) : null);
-        const rdsz = (a) => { const v = rd(a); return v === null ? null : (v & ~poison) >>> 0; };
-        let p = flGlobal.value >>> 0;
-        console.error(`[crash debug] __rc_freelist head=${p} (0x${p.toString(16)})`);
-        const seen = new Set();
-        let n = 0;
-        let verdict = "clean (terminated at 0)";
-        while (p !== 0) {
-          if (p < heapLo + 8 || p > hp) {
-            verdict = `OUT OF HEAP at node ${n}: p=${p} (0x${p.toString(16)}) not in [${heapLo + 8}, ${hp}]`;
-            break;
-          }
-          if (seen.has(p)) { verdict = `CYCLE at node ${n}: p=${p} seen before`; break; }
-          seen.add(p);
-          const sz = rdsz(p - 8), nx = rd(p - 4);
-          // __rt_arr_new asks for 84 bytes (84 & 7 == 4), so the bump pointer
-          // is not always 8-aligned -- low3 != 0 is reported, not fatal.
-          if (n < 24 || (p & 7)) {
-            console.error(`[crash debug]   fl[${n}] p=${p} low3=${p & 7} size=${sz} next=${nx}`);
-          }
-          if (n < 6 && process.env.VIBE_RC_FL_WINDOW) {
-            const lo = Math.max(0, p - 32), hi = Math.min(mem.length, p + 64);
-            const w = Array.from(mem.slice(lo, hi));
-            const hex = w.map(b => b.toString(16).padStart(2, "0")).join(" ");
-            const asc = w.map(b => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join("");
-            console.error(`[crash debug]     win[${n}] ${lo}..${hi} hex=${hex}`);
-            console.error(`[crash debug]     win[${n}] ascii=${asc}`);
-          }
-          if (sz === null || nx === null) { verdict = `UNREADABLE header at node ${n}: p=${p}`; break; }
-          p = nx >>> 0;
-          n += 1;
-          if (n > 4000000) { verdict = `TOO LONG (>4M nodes), last p=${p}`; break; }
+            : hpRaw !== undefined && hpRaw !== null
+              ? hpRaw.toString(16)
+              : "n/a";
+        console.error(`[crash debug] heap_ptr=${hpRaw} (0x${hpHex}), memory_size=${mem.length} (${(mem.length / 65536)} pages) / ${err?.message || err}`);
+        console.error(`[crash debug] mem[0..32]: ${Array.from(mem.slice(0, 32)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+        if (typeof hp === "number" && hp >= 8 && hp < mem.length - 32) {
+          console.error(`[crash debug] mem[heap-8..heap+24]: ${Array.from(mem.slice(hp - 8, hp + 24)).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
         }
-        console.error(`[crash debug] __rc_freelist: ${n} nodes walked -> ${verdict}`);
-        if (verdict.indexOf("clean") !== 0) {
-          const b = p >>> 0;
-          console.error(`[crash debug] bad link raw=${b} hex=0x${b.toString(16)} low3=${b & 7} as_untagged_int=${b >> 1}`);
+        // #1262: walk the RC legacy free list (global 2, exported as
+        // __rc_freelist) from the trap. Nodes are value pointers (block+8);
+        // the size word lives at p-8 and the next link at p-4; 0 terminates.
+        const flGlobal = instance.exports.__rc_freelist;
+        if (flGlobal instanceof WebAssembly.Global && typeof hp === "number") {
+          const dv = new DataView(instance.exports.memory.buffer);
+          const heapLo = Number(process.env.VIBE_RC_HEAP_START || 58928);
+          // #1262: a binary built from the size-word poison tree ORs 0x40000000
+          // into the size word of every freed block. Mask it off for display —
+          // leaving it in makes every healthy free-list node look corrupt.
+          const poison = Number(process.env.VIBE_RC_POISON_MASK || 0);
+          const rd = (a) => (a >= 0 && a + 4 <= mem.length ? dv.getUint32(a, true) : null);
+          const rdsz = (a) => { const v = rd(a); return v === null ? null : (v & ~poison) >>> 0; };
+          let p = flGlobal.value >>> 0;
+          console.error(`[crash debug] __rc_freelist head=${p} (0x${p.toString(16)})`);
+          const seen = new Set();
+          let n = 0;
+          let verdict = "clean (terminated at 0)";
+          while (p !== 0) {
+            if (p < heapLo + 8 || p > hp) {
+              verdict = `OUT OF HEAP at node ${n}: p=${p} (0x${p.toString(16)}) not in [${heapLo + 8}, ${hp}]`;
+              break;
+            }
+            if (seen.has(p)) { verdict = `CYCLE at node ${n}: p=${p} seen before`; break; }
+            seen.add(p);
+            const sz = rdsz(p - 8), nx = rd(p - 4);
+            // __rt_arr_new asks for 84 bytes (84 & 7 == 4), so the bump pointer
+            // is not always 8-aligned -- low3 != 0 is reported, not fatal.
+            if (n < 24 || (p & 7)) {
+              console.error(`[crash debug]   fl[${n}] p=${p} low3=${p & 7} size=${sz} next=${nx}`);
+            }
+            if (n < 6 && process.env.VIBE_RC_FL_WINDOW) {
+              const lo = Math.max(0, p - 32), hi = Math.min(mem.length, p + 64);
+              const w = Array.from(mem.slice(lo, hi));
+              const hex = w.map(b => b.toString(16).padStart(2, "0")).join(" ");
+              const asc = w.map(b => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join("");
+              console.error(`[crash debug]     win[${n}] ${lo}..${hi} hex=${hex}`);
+              console.error(`[crash debug]     win[${n}] ascii=${asc}`);
+            }
+            if (sz === null || nx === null) { verdict = `UNREADABLE header at node ${n}: p=${p}`; break; }
+            p = nx >>> 0;
+            n += 1;
+            if (n > 4000000) { verdict = `TOO LONG (>4M nodes), last p=${p}`; break; }
+          }
+          console.error(`[crash debug] __rc_freelist: ${n} nodes walked -> ${verdict}`);
+          if (verdict.indexOf("clean") !== 0) {
+            const b = p >>> 0;
+            console.error(`[crash debug] bad link raw=${b} hex=0x${b.toString(16)} low3=${b & 7} as_untagged_int=${b >> 1}`);
+          }
         }
-      }
-      if (process.env.VIBE_DEBUG708_MEMDUMP) {
-        require("fs").writeFileSync(process.env.VIBE_DEBUG708_MEMDUMP, Buffer.from(mem.slice(0, typeof hp === "number" ? hp + 4096 : mem.length)));
-        console.error(`[crash debug] full memory dumped to ${process.env.VIBE_DEBUG708_MEMDUMP} (${typeof hp === "number" ? hp + 4096 : mem.length} bytes)`);
+        if (process.env.VIBE_DEBUG708_MEMDUMP) {
+          require("fs").writeFileSync(process.env.VIBE_DEBUG708_MEMDUMP, Buffer.from(mem.slice(0, typeof hp === "number" ? hp + 4096 : mem.length)));
+          console.error(`[crash debug] full memory dumped to ${process.env.VIBE_DEBUG708_MEMDUMP} (${typeof hp === "number" ? hp + 4096 : mem.length} bytes)`);
+        }
       }
       throw err;
     }

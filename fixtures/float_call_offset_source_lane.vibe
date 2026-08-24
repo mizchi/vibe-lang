@@ -128,22 +128,86 @@ test "#2158 offsets: a parenthesised callee is still a name" {
   // hoist buys today: parentheses do not change the AST, so this was always an
   // `EIdent` callee -- it is the control that says the hoist did not break the
   // shapes that already worked.
-  //
-  // Measured on this branch's stage2, after the offset fallback:
-  //
-  //   f()                  -> 2.5   identifier
-  //   (f)()                -> 2.5   same AST
-  //   dbl(1.25)            -> 2.5   alias binding
-  //   (() -> { 2.5 })()    -> 2.5   immediately-invoked lambda (was 372)
-  //   (mkh().f)()          -> 624   field callee -- STILL WRONG
-  //
-  // The field callee's ECall does carry an offset (`callee_offset` reads the
-  // `EDot`'s field-name token), so the fallback is not what it needs: the
-  // checker does not record that call as a primary `CallResult`. Separate
-  // cause, same issue -- #2231 stays open for it, and it is not asserted here
-  // because asserting the current answer would pin a wrong one.
   let f = () -> {
     2.5
   }
   assert_true(__to_string((f)()) == "2.5")
+}
+
+// #2231: a call whose callee IS, or roots at, another call.
+//
+// These printed raw f64 bits until `call_site_offset` (parser_expr_core.vibe).
+// The cause was not a missing offset -- `build_call_expr` took the callee's,
+// and for these shapes the callee's offset IS the inner call's, so the outer
+// and inner nodes keyed the SAME entry in `float_call_offsets`.
+//
+// This comment used to say the checker "does not record that call as a primary
+// CallResult", and used `(mkh().f)()` alone as the evidence, which pointed at
+// the callee being a field. Measuring more shapes killed that reading: an `if`
+// EXPRESSION receiver works (it lends no offset, so the `(` fallback gives the
+// call a unique one), and `mkf()()` fails with no dot anywhere. Whether the
+// callee is a name was never the variable; whether it owns its offset was.
+//
+// Measured on stage2 `fix2231_4d336bf7`, before -> after:
+//
+//   h.f()                    2.5  ->  2.5   receiver is a binding
+//   o.h.f()                  2.5  ->  2.5   receiver is a nested field
+//   (if c { h } else { h }).f()
+//                            2.5  ->  2.5   receiver is an if EXPRESSION
+//   mkh().f()                868  ->  2.5
+//   (mkh().f)()              908  ->  2.5
+//   mkf()()                  936  ->  2.5   no dot at all
+//   idh(mkh()).f()           976  ->  2.5
+//   Array::get(hs, 0).f()   1004  ->  2.5
+struct FloatBox {
+  get: () -> Double
+}
+
+fn mk_box() -> FloatBox {
+  FloatBox::{
+    get: () -> {
+      2.5
+    }
+  }
+}
+
+fn mk_thunk() -> (() -> Double) {
+  () -> {
+    2.5
+  }
+}
+
+fn box_id(b: FloatBox) -> FloatBox {
+  b
+}
+
+test "#2231 offsets: a call whose callee is itself a call" {
+  // No dot: the outer call's callee is the inner call. Nothing here is a name,
+  // a field, or a parenthesis -- the shape is the whole finding.
+  assert_true(__to_string(mk_thunk()()) == "2.5")
+}
+
+test "#2231 offsets: a dot-call whose receiver is a call" {
+  assert_true(__to_string(mk_box().get()) == "2.5")
+  assert_true(__to_string((mk_box().get)()) == "2.5")
+  assert_true(__to_string(box_id(mk_box()).get()) == "2.5")
+  let boxes = [mk_box()]
+  assert_true(__to_string(Array::get(boxes, 0).get()) == "2.5")
+}
+
+test "#2231 offsets: the shapes that already worked still do" {
+  // The controls. Each has a receiver that does NOT root at a call, so each
+  // keeps the historical callee-start offset -- if `call_site_offset` widened
+  // to every callee these would still pass, which is why the failing rows
+  // above are the ones that carry the claim, and these only guard against a
+  // regression in the other direction.
+  let b = mk_box()
+  assert_true(__to_string(b.get()) == "2.5")
+  let outer = (b, 1)
+  assert_true(__to_string(outer.0.get()) == "2.5")
+  assert_true(__to_string((if true {
+    b
+  } else {
+    b
+  }).get()) == "2.5")
 }

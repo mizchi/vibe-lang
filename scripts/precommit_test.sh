@@ -48,7 +48,7 @@ if VIBE_PRECOMMIT_PROJECT_ROOT="$TMP_ROOT" \
   echo "precommit self-test: staged architecture violation was hidden by working tree" >&2
   exit 1
 fi
-if ! rg -q 'ARCH999' "$TMP_ROOT/fail.out"; then
+if ! grep -qE 'ARCH999' "$TMP_ROOT/fail.out"; then
   echo "precommit self-test: missing staged architecture diagnostic" >&2
   cat "$TMP_ROOT/fail.out" >&2
   exit 1
@@ -86,7 +86,7 @@ if VIBE_PRECOMMIT_PROJECT_ROOT="$TMP_ROOT" \
   echo "precommit self-test: untracked cited path hid a staged dangling citation" >&2
   exit 1
 fi
-if ! rg -q 'vendor/local-only/schema.wit' "$TMP_ROOT/citation-fail.out"; then
+if ! grep -qE 'vendor/local-only/schema.wit' "$TMP_ROOT/citation-fail.out"; then
   echo "precommit self-test: missing staged dangling-citation diagnostic" >&2
   cat "$TMP_ROOT/citation-fail.out" >&2
   exit 1

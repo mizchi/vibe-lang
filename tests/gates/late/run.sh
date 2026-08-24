@@ -5912,6 +5912,31 @@ fi
 rm -rf "$fcodir"
 echo "[compiler-gate] linear source-lane Double call-result offsets ok (#2158)"
 
+# ...and the offset that channel uses must not be one another node already
+# owns. #2231's first fix gave a call-rooted dot-call the DOT FIELD NAME's
+# offset, which `type_at.vibe` uses to identify that token; the type table is
+# last-wins, so the call's result type would have overwritten it (#2248
+# review). The `(` of the argument list belongs to no other node, and this
+# pins that: an identifier in a call-rooted dot-call keeps its own type.
+tadir="_build/_gate_typeat_callsite"
+rm -rf "$tadir"; mkdir -p "$tadir"
+cat > "$tadir/ta.vibe" <<'TAEOF'
+struct Box { get: () -> Double }
+fn mk_box() -> Box { Box::{ get: () -> { 2.5 } } }
+fn main() -> Int {
+  let v = mk_box().get()
+  0
+}
+TAEOF
+ta_out="$(VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" type-at "$tadir/ta.vibe" 4 11 2>/dev/null | head -1)"
+if [ "$ta_out" != "() -> Box" ]; then
+  echo "[compiler-gate] FAIL: type-at on \`mk_box\` in a call-rooted dot-call reports '$ta_out', not '() -> Box' -- the call-site offset is stealing an identifier token (#2231/#2248)" >&2
+  exit 1
+fi
+rm -rf "$tadir"
+echo "[compiler-gate] call-site offset does not steal an identifier token ok (#2231)"
+
 # 106/106. `vibe fmt` (#2149). The formatter has always been real and
 #      CI-enforced, but reachable only through lib/@vibe/cli/fmt_entry.vibe --
 #      a separate wasm scripts/vibe_fmt.sh FS-compiles on demand, whose paths
@@ -5932,6 +5957,71 @@ bash "$ROOT_DIR/scripts/test_vibe_fmt_launcher.sh"
 # missing six selectors, then fixed one arm at a time and still missed three.
 # So the requirement is DERIVED from cli_adapter rather than restated.
 bash "$ROOT_DIR/scripts/check_selector_precedence.sh"
+# ...and prove that check can FAIL. It reported ok on a hijackable tree five
+# separate times; each defect was caught by a reviewer, and each red test that
+# proved the fix lived only in a commit message, so the guarantee did not
+# survive the next edit. Every one of those five is now a case.
+bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
+# The same rule, for every gate: a new one ships with a self-test that mutates
+# a real input and asserts the gate fails (ratcheted -- 18 predate the rule).
+bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
+bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
+# ...and the two ways a self-test stops meaning anything without ever going
+# red: it depends on a tool CI does not have (ripgrep -- five of them did, and
+# were exempted rather than fixed), or its pattern quietly means something
+# other than it reads (`grep -E` does not interpret `\t`, so `'x\t'` matches
+# `xt` and the check answers "no match" forever). #2252.
+bash "$ROOT_DIR/scripts/check_gate_portability.sh"
+bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
+# check_book_console.sh landed (#2253) with no self-test and CI caught it the
+# same day -- the ratchet working as intended. Its cases hand the gate a STUB
+# compiler so the transcripts fail identically for all of them, and assert the
+# message each mutation adds on top: block count, ja/en parity, and whether the
+# chapter's documented 42 -> 43 edit still applies. ~1s, no generation needed.
+bash "$ROOT_DIR/scripts/check_book_console_test.sh"
+
+# 107/107. The host runner's `[crash debug]` dump is OFF by default (#2199).
+#      It is compiler-developer diagnostics -- heap bytes, the RC freelist, raw
+#      memory windows -- and it printed on EVERY trap, so the first thing a
+#      reader saw when `Array::get(xs, 10)` went out of range was a page of hex
+#      ahead of the message naming the index and the length. Both directions
+#      are asserted: silence alone would also pass if the program stopped
+#      trapping, and the dump alone would pass if it were unconditional again.
+echo "[compiler-gate] 107/107 the host runner's crash dump is opt-in (#2199)"
+cdbg="_build/_gate_crash_debug"
+rm -rf "$cdbg"; mkdir -p "$cdbg"
+cat > "$cdbg/oob.vibe" <<'CDBGEOF'
+fn main() -> Int with Console {
+  let xs = [1, 2, 3]
+  println("get = \{Array::get(xs, 10)}")
+  0
+}
+CDBGEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$cdbg/oob.vibe" "$cdbg/oob.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$cdbg/oob.wasm" ]; then
+  echo "[compiler-gate] FAIL: crash-debug fixture did not compile (#2199)" >&2
+  cat "$cdbg/oob.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh   --invoke _start "$cdbg/oob.wasm" >"$cdbg/quiet.log" 2>&1 || true
+VIBE_CRASH_DEBUG=1 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh   --invoke _start "$cdbg/oob.wasm" >"$cdbg/loud.log" 2>&1 || true
+if grep -qF '[crash debug]' "$cdbg/quiet.log"; then
+  echo "[compiler-gate] FAIL: the crash dump printed without VIBE_CRASH_DEBUG (#2199)" >&2
+  cat "$cdbg/quiet.log" >&2
+  exit 1
+fi
+if ! grep -qF 'Array::get: index 10 out of bounds for length 3' "$cdbg/quiet.log"; then
+  echo "[compiler-gate] FAIL: the bounds message the reader needs is gone too (#2199)" >&2
+  cat "$cdbg/quiet.log" >&2
+  exit 1
+fi
+if ! grep -qF '[crash debug]' "$cdbg/loud.log"; then
+  echo "[compiler-gate] FAIL: VIBE_CRASH_DEBUG=1 produced no dump -- the gate above proves nothing (#2199)" >&2
+  cat "$cdbg/loud.log" >&2
+  exit 1
+fi
+rm -rf "$cdbg"
+echo "[compiler-gate] crash dump opt-in ok (#2199)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"

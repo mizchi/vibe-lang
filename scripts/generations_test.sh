@@ -74,16 +74,16 @@ NODE
 
 status_out="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
   --manifest "$TMP_ROOT/bootstrap/seed.json" --out-dir "$TMP_ROOT/out")"
-echo "$status_out" | rg -q "^seed\.name=test-seed$" || { echo "status missing seed.name" >&2; echo "$status_out" >&2; exit 1; }
-echo "$status_out" | rg -q "^seed\.artifact\.pin=ok " || { echo "status missing pin ok" >&2; echo "$status_out" >&2; exit 1; }
-echo "$status_out" | rg -q "^generation\.manifest=" || { echo "status missing generation manifest" >&2; echo "$status_out" >&2; exit 1; }
-echo "$status_out" | rg -q "^stage2\.sha256=" || { echo "status missing stage2 sha" >&2; echo "$status_out" >&2; exit 1; }
-echo "$status_out" | rg -q "^stage3_equal_stage2=" || { echo "status missing stage3_equal_stage2" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | grep -qE "^seed\.name=test-seed$" || { echo "status missing seed.name" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | grep -qE "^seed\.artifact\.pin=ok " || { echo "status missing pin ok" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | grep -qE "^generation\.manifest=" || { echo "status missing generation manifest" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | grep -qE "^stage2\.sha256=" || { echo "status missing stage2 sha" >&2; echo "$status_out" >&2; exit 1; }
+echo "$status_out" | grep -qE "^stage3_equal_stage2=" || { echo "status missing stage3_equal_stage2" >&2; echo "$status_out" >&2; exit 1; }
 
 # status against an unbuilt out-dir reports not-built without failing.
 status_empty="$(VIBE_PROJECT_ROOT="$TMP_ROOT" bash "$SCRIPT" status \
   --manifest "$TMP_ROOT/bootstrap/seed.json" --out-dir "$TMP_ROOT/never-built")"
-echo "$status_empty" | rg -q "^generation\.status=not-built$" || { echo "status missing not-built state" >&2; echo "$status_empty" >&2; exit 1; }
+echo "$status_empty" | grep -qE "^generation\.status=not-built$" || { echo "status missing not-built state" >&2; echo "$status_empty" >&2; exit 1; }
 
 echo "selfhost generations status self-test: ok"
 
@@ -109,7 +109,7 @@ if [ "$bad_status" -eq 0 ]; then
   echo "expected sha mismatch to fail" >&2
   exit 1
 fi
-if ! rg -q "sha256 mismatch" "$TMP_ROOT/bad.stderr"; then
+if ! grep -qE "sha256 mismatch" "$TMP_ROOT/bad.stderr"; then
   echo "expected sha mismatch diagnostic" >&2
   cat "$TMP_ROOT/bad.stderr" >&2
   exit 1
@@ -199,12 +199,12 @@ VIBE_GENERATION_VALIDATE_RUN=0 \
 test -s "$CLI_ROOT/out/cli_adapter_module_source.vibe"
 test -s "$CLI_ROOT/out/stage1.wasm"
 test -s "$CLI_ROOT/out/stage2.wasm"
-if rg -q '^lib/@vibe/compiler/cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
+if grep -qE '^lib/@vibe/compiler/cli_support\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to use generated flat compiler source, not import entry" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
 fi
-if ! rg -q '^out/cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
+if ! grep -qE '^out/cli_adapter_module_source\.vibe$' "$CLI_ROOT/invocations.log"; then
   echo "expected cli seed build to invoke generated flat compiler source" >&2
   cat "$CLI_ROOT/invocations.log" >&2
   exit 1
@@ -229,7 +229,7 @@ if [ "$split_status" -eq 0 ]; then
   echo "expected legacy seed to reject split CLI generation before bootstrap bump" >&2
   exit 1
 fi
-if ! rg -q "split CLI generation requires a bootstrap bump" "$CLI_ROOT/split.stderr"; then
+if ! grep -qE "split CLI generation requires a bootstrap bump" "$CLI_ROOT/split.stderr"; then
   echo "expected split CLI bootstrap bump diagnostic" >&2
   cat "$CLI_ROOT/split.stderr" >&2
   exit 1
@@ -302,13 +302,13 @@ if [ "$fail_status" -eq 0 ]; then
   echo "expected a failing compile to fail the build (#1890)" >&2
   exit 1
 fi
-if ! rg -q "compile failed \(exit 1\)" "$FAIL_ROOT/fail.stderr"; then
+if ! grep -qE "compile failed \(exit 1\)" "$FAIL_ROOT/fail.stderr"; then
   echo "expected the compile's exit status to be reported" >&2
   cat "$FAIL_ROOT/fail.stderr" >&2
   exit 1
 fi
 # Without this the terminal shows only that the build stopped, never why.
-if ! rg -q "synthetic compile error" "$FAIL_ROOT/fail.stderr"; then
+if ! grep -qE "synthetic compile error" "$FAIL_ROOT/fail.stderr"; then
   echo "expected the .diag contents on stderr" >&2
   cat "$FAIL_ROOT/fail.stderr" >&2
   exit 1
@@ -328,7 +328,7 @@ if [ -e "$FAIL_ROOT/out/generation.json" ]; then
 fi
 fail_status_out="$(VIBE_PROJECT_ROOT="$FAIL_ROOT" bash "$SCRIPT" status \
   --manifest "$FAIL_ROOT/bootstrap/seed.json" --out-dir "$FAIL_ROOT/out")"
-if ! echo "$fail_status_out" | rg -q "^generation\.status=not-built$"; then
+if ! echo "$fail_status_out" | grep -qE "^generation\.status=not-built$"; then
   echo "expected status to report not-built after a failed build" >&2
   echo "$fail_status_out" >&2
   exit 1
