@@ -399,10 +399,10 @@ fn map_key_type_is_supported(k: Type) -> Bool {
   }
 }
 
-fn collect_unsupported_map_keys(t: Type, out: Array[Type]) -> Unit {
+fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], out: Array[Type]) -> Unit {
   match t {
     CtNamed(head, targs) => {
-      if head == "Map" && Array::length(targs) == 2 {
+      if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
         let k = Array::get(targs, 0)
         if map_key_type_is_supported(k) {
           ()
@@ -414,32 +414,32 @@ fn collect_unsupported_map_keys(t: Type, out: Array[Type]) -> Unit {
       }
       let mut i = 0
       while i < Array::length(targs) {
-        collect_unsupported_map_keys(Array::get(targs, i), out)
+        collect_unsupported_map_keys(Array::get(targs, i), defs, out)
         i = i + 1
       }
     },
-    CtArray(e) => collect_unsupported_map_keys(e, out),
-    CtOption(e) => collect_unsupported_map_keys(e, out),
+    CtArray(e) => collect_unsupported_map_keys(e, defs, out),
+    CtOption(e) => collect_unsupported_map_keys(e, defs, out),
     CtTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_unsupported_map_keys(Array::get(items, i), out)
+        collect_unsupported_map_keys(Array::get(items, i), defs, out)
         i = i + 1
       }
     },
     CtFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        collect_unsupported_map_keys(Array::get(params, i), out)
+        collect_unsupported_map_keys(Array::get(params, i), defs, out)
         i = i + 1
       }
-      collect_unsupported_map_keys(ret, out)
+      collect_unsupported_map_keys(ret, defs, out)
     },
     CtRecord(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, ft) = Array::get(fields, i)
-        collect_unsupported_map_keys(ft, out)
+        collect_unsupported_map_keys(ft, defs, out)
         i = i + 1
       }
     },
@@ -460,7 +460,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
     } else {
       match find_typedef(defs, name) {
         Some(td) => match td {
-          TDAlias(_, _, body) => collect_unsupported_map_keys(body, out),
+          TDAlias(_, _, body) => collect_unsupported_map_keys(body, defs, out),
           _ => ()
         },
         None => ()
@@ -482,7 +482,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
               let resolved_args = for arg in args {
                 resolve_type_expr_shadowed(arg, defs, shadow)
               }
-              collect_unsupported_map_keys(resolve_type_alias_params(body, params, resolved_args), out)
+              collect_unsupported_map_keys(resolve_type_alias_params(body, params, resolved_args), defs, out)
             },
             _ => ()
           },
