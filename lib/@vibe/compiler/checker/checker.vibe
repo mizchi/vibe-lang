@@ -399,6 +399,94 @@ fn map_key_type_is_supported(k: Type) -> Bool {
   }
 }
 
+/// The actual argument bound to alias parameter `name`, or the rigid name
+/// itself when it is not one of `params`.
+fn alias_arg_for_param(name: String, params: Array[String], args: Array[Type]) -> Type {
+  let mut i = 0
+  let mut found = CtNamed(name, array_empty())
+  while i < Array::length(params) {
+    if Array::get(params, i) == name && i < Array::length(args) {
+      found = Array::get(args, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `collect_unsupported_map_keys` over an alias BODY that is being applied to
+/// `args`, without materializing the substituted type.
+///
+/// The obvious spelling -- `collect_unsupported_map_keys(
+/// resolve_type_alias_params(body, params, args), ...)` -- corrupts the heap
+/// (#2279). That function returns `Array::get(args, idx)` directly for a
+/// parameter, so the tree it hands back SHARES subterms with `args` without
+/// owning them; walking that tree drops borrowed nodes and a later, unrelated
+/// allocation traps with `memory access out of bounds at __rt_rc_alloc`.
+/// Measured: calling it and DISCARDING the result is clean, and consuming the
+/// result is what traps, which is what identifies the aliasing rather than the
+/// substitution as the fault.
+///
+/// Only a KEY that is a bare parameter name needs the mapping: every other
+/// unsupported key is unsupported whatever the parameter stands for, so no
+/// substituted node is ever needed.
+fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: Array[String], args: Array[Type], out: Array[Type]) -> Unit {
+  match t {
+    CtNamed(head, targs) => {
+      if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
+        let k0 = Array::get(targs, 0)
+        let k = match k0 {
+          CtNamed(kn, kargs) => if Array::length(kargs) == 0 {
+            alias_arg_for_param(kn, params, args)
+          } else {
+            k0
+          },
+          _ => k0
+        }
+        if map_key_type_is_supported(k) {
+          ()
+        } else {
+          Array::push(out, k)
+        }
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(targs) {
+        collect_unsupported_map_keys_applied(Array::get(targs, i), defs, params, args, out)
+        i = i + 1
+      }
+    },
+    CtArray(e) => collect_unsupported_map_keys_applied(e, defs, params, args, out),
+    CtOption(e) => collect_unsupported_map_keys_applied(e, defs, params, args, out),
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_unsupported_map_keys_applied(Array::get(items, i), defs, params, args, out)
+        i = i + 1
+      }
+    },
+    CtFn(fparams, ret, _) => {
+      let mut i = 0
+      while i < Array::length(fparams) {
+        collect_unsupported_map_keys_applied(Array::get(fparams, i), defs, params, args, out)
+        i = i + 1
+      }
+      collect_unsupported_map_keys_applied(ret, defs, params, args, out)
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, ft) = Array::get(fields, i)
+        collect_unsupported_map_keys_applied(ft, defs, params, args, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
 fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], out: Array[Type]) -> Unit {
   match t {
     CtNamed(head, targs) => {
@@ -523,7 +611,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
               let resolved_args = for arg in args {
                 resolve_type_expr_shadowed(arg, defs, shadow)
               }
-              collect_unsupported_map_keys(resolve_type_alias_params(body, params, resolved_args), defs, out)
+              collect_unsupported_map_keys_applied(body, defs, params, resolved_args, out)
             },
             _ => ()
           },
