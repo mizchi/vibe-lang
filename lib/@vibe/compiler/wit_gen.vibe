@@ -651,6 +651,30 @@ fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
       } else {
         ()
       },
+      // #2276 (Codex): an IMPORT can bind the name too --
+      // `import ./dep.vibe { Box as StringMap }` makes `StringMap` a
+      // source-owned nominal type just as a local declaration does. The WIT
+      // CLI parses only the entry file and never resolves imports, so this
+      // scan is the only place that ownership can be seen; without this arm
+      // the projection published `list<tuple<string, V>>` for a user's own
+      // type -- an ABI that does not match the function's representation,
+      // and silently so.
+      SImport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          let bound = match item.alias {
+            Some(a) => a,
+            None => item.name
+          }
+          if bound == needle {
+            found = true
+          } else {
+            ()
+          }
+          ii = ii + 1
+        }
+      },
       _ => ()
     }
     i = i + 1

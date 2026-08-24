@@ -10,7 +10,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, ImportItem, Stmt, TypeExpr
 }
 
 import @vibe/compiler/syntax {
@@ -96,6 +96,29 @@ test "wit_from_program: source StringMap is not the builtin projection" {
   ]
   let message = handle {
     let _ = wit_from_program(stmts, stmts, "shadowed")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: an IMPORTED StringMap is not the builtin projection" {
+  // #2276 (Codex): an import binds the name just as a declaration does --
+  // `import ./dep.vibe { Box as StringMap }` makes `StringMap` a source-owned
+  // nominal type. The WIT CLI parses only the entry file and never resolves
+  // imports, so the ownership scan is the only place this can be seen.
+  // Before the `SImport` arm the projection published
+  // `list<tuple<string, s64>>` for the user's own type -- an ABI that does not
+  // match the function's representation, and silently so.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: None, name: "Box", alias: Some("StringMap") }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "imported")
     ""
   } with { Exception::Throw(m) => m }
   assert(String::contains(message, "no WIT mapping"))
