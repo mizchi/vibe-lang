@@ -879,6 +879,31 @@ fn keep[T: Measured](x: T) -> T { x }
 let ok = keep([1, 2, 3])
 ```
 
+### A type parameter cannot take type arguments (#2268)
+
+**A type formal in constructor position — `F[A]` — is rejected.** A type
+parameter always stands for a complete type; if the shape were accepted, `F`
+would unify with the whole applied type and the bracket arguments would be
+ignored, so a signature spelled `(F[A], (A) -> B) -> F[B]` would silently
+accept the identity function. Higher-kinded parameters are not implemented;
+which release implements them is decided on #2269. The diagnostic reads
+``type parameter `F` cannot take type arguments in parameter `x` ``.
+
+<!-- doctest-skip: deliberately rejected shapes (#2268 fail-close) -->
+```vibe skip
+fn fake_map[F, A, B](x: F[A], f: (A) -> B) -> F[B] {  // rejected
+  x
+}
+struct Holder[F] {
+  inner: F[Int]                                       // also rejected
+}
+```
+
+A `trait Functor[F] { .. }` **declaration** still parses (trait type
+parameters ride the #636 erasure path), but dispatching its operations
+through a bound stops at the witness-carrier diagnostic — a declarable but
+unusable shape, so do not write it.
+
 > #1503 以前は、**concrete な impl (`impl M for Array[Int]`) が method-bearing
 > trait でも解決しなかった**。パーサが `for` の後ろの `[Int]` を捨てるため、
 > 環境には `Array` という頭だけが残る。今は generic 版と同じく**コンストラクタで
