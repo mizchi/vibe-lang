@@ -86,7 +86,7 @@ import ./checked_expression_structure_core.vibe {
 }
 
 import ./checker_resolve.vibe {
-  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  compiler_owned_type_arity, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import @vibe/compiler/normalize {
@@ -115,18 +115,15 @@ import @vibe/parser {
 /// SImpl AST cannot carry the target TypeExpr far enough to check its arity.
 /// Keep builtin container authority here; user declarations come from defs.
 fn impl_target_declared_arity(defs: Array[TypeDef], name: String) -> Option[Int] {
-  if name == "Array" || name == "Option" || name == "FrozenArray" || name == "Future" || name == "Stream" || name == "Task" {
-    Some(1)
-  } else if name == "Map" || name == "MapBuilder" || name == "Result" {
-    Some(2)
-  } else {
-    match find_typedef(defs, name) {
-      Some(td) => match td {
-        TDEnum(_, params, _) => Some(Array::length(params)),
-        TDStruct(_, _, _, params) => Some(Array::length(params)),
-        TDAlias(_, params, _) => Some(Array::length(params)),
-        TDEffect(_, _, _)|TDEffectSet(_, _) => Some(0)
-      },
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDEnum(_, params, _) => Some(Array::length(params)),
+      TDStruct(_, _, _, params) => Some(Array::length(params)),
+      TDAlias(_, params, _) => Some(Array::length(params)),
+      TDEffect(_, _, _)|TDEffectSet(_, _) => Some(0)
+    },
+    None => match compiler_owned_type_arity(name) {
+      Some(arity) => Some(arity),
       None => match resolve_builtin(name) {
         Some(_) => Some(0),
         None => None
