@@ -1,0 +1,207 @@
+//# Imports
+
+// Second half of unknown_type_name_enforced_test.vibe (#2278). Split so a
+// single check_program-driving file does not sit on the allocator ceiling
+// that made the batch runner's verdict unreproducible.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+//# Tests
+
+test "#1863: a region ROW variable declared by this signature is not a typo" {
+  // `r` is bound by the function's own effect row, not by any enclosing
+  // `region r { .. }`, so nothing binds it as a value where the parameter is
+  // resolved. The row is the binder.
+  let src = "fn fill(l: MutList[Int, r]) -> Unit with r {\n  MutList::push(l, 1)\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#1869: a reserved `__dict_` parameter reports the reserved name, not its type" {
+  // The witness-dictionary type has no `TypeDef` either, so both rules fire on
+  // the same parameter. The reserved name is the actionable edit, so the
+  // annotation stays quiet and #1869's diagnostic is the one that surfaces.
+  let src = "trait Default {\n  default() -> Self\n}\n\nimpl Default for Int {\n  default() -> Int {\n    0\n  }\n}\n\nfn sneaky[T: Default](__dict_Default_T: DefaultDict[T]) -> T {\n  T::default()\n}\n"
+  let msg = first_check_error(src)
+  inspect(String::contains(msg, "reserved"), content = "true")
+  inspect(String::contains(msg, "unknown type"), content = "false")
+}
+
+test "#2147 review: a row variable is not a type HEAD" {
+  // Codex on #2147 (round 3): the region/row exemptions were name-based, so a
+  // row variable written where a TYPE belongs was excused and the parameter
+  // went back to being a wildcard. Measured before the fix: this compiled, and
+  // both `f(1)` and `f("s")` passed the same slot.
+  let src = "fn f(x: r) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2147 review: a region token is not a type HEAD either" {
+  // The skolem-token half of the same blindness: inside `region r { .. }`,
+  // `r` is bound (to the rigid `#region_<n>` skolem), so a bare `x: r`
+  // annotation was excused. Measured before the fix: `let y: r = "s"` beside
+  // `let x: r = 1` was accepted.
+  let src = "fn main() -> Int {\n  region r {\n    let x: r = 1\n    0\n  }\n}\n"
+  inspect(String::contains(first_check_error(src), "unknown type `r`"), content = "true")
+}
+
+test "#2147 review: the region SLOT of a container still accepts the token" {
+  // The position the exemption exists for, both spellings: the row variable
+  // in a signature (#1863, above) and the skolem token inside its own region.
+  let src = "fn main() -> Int {\n  region r {\n    let xs: MutList[Int, r] = MutList::empty(r)\n    MutList::push(xs, 1)\n    MutList::length(xs)\n  }\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2125: a region token in type-argument position is not a typo" {
+  // ADR-0090: `MutList[T, r]`'s second argument names the region TOKEN, which
+  // is an ordinary value binding, not a type.
+  let src = "fn f() -> Int {\n  region r {\n    let xs: MutList[Int, r] = MutList::empty(r)\n    MutList::length(xs)\n  }\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2125: a compiler-owned nominal head with no TypeDef is not a typo" {
+  inspect(first_check_error("fn f(b: StringBuilder) -> Int {\n  1\n}\n"), content = "")
+  inspect(first_check_error("fn f(b: FixedArray[Int]) -> Int {\n  1\n}\n"), content = "")
+}
+
+test "#2125: a real declared type is not a typo, in either order" {
+  inspect(first_check_error("struct P {\n  x: Int\n}\n\nfn f(p: P) -> Int {\n  p.x\n}\n"), content = "")
+  inspect(first_check_error("fn f(p: P) -> Int {\n  p.x\n}\n\nstruct P {\n  x: Int\n}\n"), content = "")
+}
+
+test "#2147 review round 4: a user struct's last argument is not a region slot" {
+  // The round-3 positional fix marked the last argument of EVERY
+  // non-Array/Option application as a region slot, so a declared row variable
+  // was excused inside an ordinary generic struct's arguments. Measured before
+  // this fix: this compiled clean and `r` stayed a wildcard. The region slot
+  // belongs to the `ty_region_slot_index` heads only.
+  let src = "struct Pair[A, B] {\n  a: A;\n  b: B\n}\n\nfn f(x: Pair[Int, r]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2147 review round 4: Self outside a trait declaration is reported" {
+  // `Self` was in `is_wellknown_nominal_head`, so a plain fn's `x: Self`
+  // stayed the wildcard `CtNamed(\"Self\", [])` -- `subst_self_in_type`
+  // replaces it only when typing a trait-method call, which never happens
+  // here. Measured before this fix: clean, with or without a trait in scope.
+  inspect(first_check_error("fn f(x: Self) -> Int {\n  1\n}\n"), content = "unknown type `Self` in parameter `x` [@fn=f]")
+  let with_trait = "trait Show2[T] {\n  show2(Self) -> T\n}\n\nfn f(x: Self) -> Int {\n  1\n}\n"
+  inspect(first_check_error(with_trait), content = "unknown type `Self` in parameter `x` [@fn=f]")
+}
+
+test "#2159 review: a transparent alias of a region-bearing head keeps its region slot" {
+  // The surface-name allowlist alone regressed this previously-accepted
+  // helper signature (Codex on #2159): resolution expands `ML[Int, r]` to
+  // `MutList[Int, r]`, so the slot must be computed through the alias too.
+  let src = "type ML[T, R] = MutList[T, R]\n\nfn fill(xs: ML[Int, r]) -> Unit with r {\n  MutList::push(xs, 1)\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2159 review: the alias's own parameter order decides the slot" {
+  // `W` reorders: its FIRST parameter lands in the region slot of the body,
+  // so `W[r, Int]` is the accepted spelling and `W[Int, r]` reports.
+  let ok = "type W[R, T] = MutList[T, R]\n\nfn fill(xs: W[r, Int]) -> Unit with r {\n  MutList::push(xs, 1)\n}\n"
+  inspect(first_check_error(ok), content = "")
+  let bad = "type W[R, T] = MutList[T, R]\n\nfn fill(xs: W[Int, r]) -> Unit with r {\n  MutList::push(xs, 1)\n}\n"
+  inspect(first_check_error(bad), content = "unknown type `r` in parameter `xs` [@fn=fill]")
+}
+
+test "#2159 review round 2: a parameter used at BOTH slot and type positions is not exempt" {
+  // With an existential occurrence check, `R`'s region-slot occurrence excused
+  // the whole argument while the tuple's second component expanded to the
+  // unresolved `r` and stayed a wildcard. Every occurrence must land in a
+  // region slot.
+  let src = "type W2[R, T] = (MutList[T, R], R)\n\nfn f(x: W2[r, Int]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2159 review round 2: the task types' region slot is their FIRST argument" {
+  // `lib/@vibe/concurrent` declares `TaskHandle[rg, e, T]` -- region first,
+  // payload last. A uniform last-argument rule exempted a row variable in the
+  // PAYLOAD position and reported the real region spelling.
+  let ok = "fn f(h: TaskHandle[r, Unit, Int]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(ok), content = "")
+  let bad = "fn f(h: TaskHandle[Unit, Int, r]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(bad), content = "unknown type `r` in parameter `h` [@fn=f]")
+}
+
+test "#2159 review round 3: a user declaration shadowing a compiler-owned name grants no slot" {
+  // The slot is a property of the CONSTRUCTOR the head resolves to, not of
+  // the spelling: a local `struct TaskHandle[A, B, C]` has ordinary
+  // parameters, so a row variable in its first argument is a wildcard, not a
+  // region. Measured before this fix: accepted clean.
+  let src = "struct TaskHandle[A, B, C] {\n  a: A;\n  b: B;\n  c: C\n}\n\nfn f(x: TaskHandle[r, Int, Int]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2159 review: an alias of an ordinary struct still has no region slot" {
+  let src = "struct Pair[A, B] {\n  a: A;\n  b: B\n}\n\ntype PA[A, B] = Pair[A, B]\n\nfn f(x: PA[Int, r]) -> Int with r {\n  1\n}\n"
+  inspect(first_check_error(src), content = "unknown type `r` in parameter `x` [@fn=f]")
+}
+
+test "#2125 fields: a typo in a struct field type is reported" {
+  inspect(first_check_error("struct B {\n  x: Intt\n}\n"), content = "unknown type `Intt` in field `x` of struct `B`")
+}
+
+test "#2125 payloads: a typo in an enum payload is reported" {
+  inspect(first_check_error("enum E {\n  V(Wrong)\n}\n"), content = "unknown type `Wrong` in the payload of `E::V`")
+}
+
+test "#2125 fields: a struct's own type parameter is not a typo" {
+  inspect(first_check_error("struct Box2[T] {\n  v: T\n}\n\nfn use_it(b: Box2[Int]) -> Int {\n  1\n}\n"), content = "")
+}
+
+test "#2125 fields: a trait-dict witness struct's erased names are not typos" {
+  // Whole-program lanes re-check desugar_trait_dict's output, where the
+  // `<Trait>Dict` struct spells `Self` (and the trait's params) verbatim.
+  // Exempt under provenance: the struct name is the trait's dict spelling AND
+  // the field is a method that trait declares.
+  let dict_ok = "trait Default3 {\n  default3() -> Self\n}\n\nstruct Default3Dict {\n  default3: () -> Self\n}\n"
+  inspect(first_check_error(dict_ok), content = "")
+  // No such trait: the same struct is ordinary and `Self` is a wildcard.
+  let no_trait = "struct Default3Dict {\n  default3: () -> Self\n}\n"
+  inspect(first_check_error(no_trait), content = "unknown type `Self` in field `default3` of struct `Default3Dict`")
+  // Trait exists but the field is not one of its methods: still reported.
+  let wrong_field = "trait Default3 {\n  default3() -> Self\n}\n\nstruct Default3Dict {\n  other: () -> Self\n}\n"
+  inspect(first_check_error(wrong_field), content = "unknown type `Self` in field `other` of struct `Default3Dict`")
+}
+
+test "#2162 review: a method's generic binder is scoped to its own field" {
+  // Codex on #2162: a trait-wide union of method binders let field `a` spell
+  // method `b`'s binder and stay a wildcard. Each dict field carries only its
+  // own method's binders (plus `Self` and the trait's params).
+  let own = "trait Tr2 {\n  a[X](Self) -> X\n  b[Y](Self) -> Y\n}\n\nstruct Tr2Dict {\n  a: (Self) -> X\n}\n"
+  inspect(first_check_error(own), content = "")
+  let crossed = "trait Tr2 {\n  a[X](Self) -> X\n  b[Y](Self) -> Y\n}\n\nstruct Tr2Dict {\n  a: (Self) -> Y\n}\n"
+  inspect(first_check_error(crossed), content = "unknown type `Y` in field `a` of struct `Tr2Dict`")
+}
+
+test "#2162 review round 3: a sentinel exempts only the declarations it names" {
+  // The `<protected> : <deferred>` sentinel format scopes the exemption: in
+  // a whole-program merge an unscoped sentinel would excuse an UNRELATED
+  // declaration misspelling one of the deferred names.
+  let scoped = "let __vpkg_deferred_type_names_t__: String = \"Prot : Missing\"\n\nstruct Prot {\n  x: Missing\n}\n"
+  inspect(first_check_error(scoped), content = "")
+  let unrelated = "let __vpkg_deferred_type_names_t__: String = \"Prot : Missing\"\n\nstruct Prot {\n  x: Missing\n}\n\nstruct Local {\n  y: Missing\n}\n"
+  inspect(first_check_error(unrelated), content = "unknown type `Missing` in field `y` of struct `Local`")
+}
+
+test "#2147 review round 4: Self inside a trait declaration stays legal" {
+  // The one place `Self` is a type. Trait-method signatures are resolved by
+  // the trait machinery, not by `report_unknown_type_names`' annotation
+  // sites, and the impl spells the concrete receiver type.
+  let src = "trait Default2 {\n  default2() -> Self\n}\n\nimpl Default2 for Int {\n  default2() -> Int {\n    0\n  }\n}\n\nfn main() -> Unit {\n  let _ = Int::default2()\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}

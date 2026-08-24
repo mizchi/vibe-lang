@@ -14,11 +14,11 @@
 # checked.
 #
 # Existence probe: a bare reference (`let g = String::length`). It resolves iff
-# the name exists, which is the question the document is making a promise
-# about, and it needs no arity or argument types -- so the check works for a
-# name it has never seen. Measured alternative rejected: grepping
-# builtin_registry.vibe flags ~13 false misses (`Array::map`, `Int::to_string`,
-# `Map::set`, ...) that reach a program by another route.
+# the name exists AS A VALUE. A real receiver with a real member that is
+# nonetheless not a value (`Map::get`) used to pass this check because the
+# checker printed nothing (#2274) and this script only looked for the
+# substring `unknown name` (#2275). Any diagnostic -- unknown name, "not a
+# value", or the codegen ICE -- means the name does not resolve as a value.
 #
 # Usage: bash scripts/check_freeze_surface.sh
 #   FREEZE_DOC        override the document (default docs/spec/stable-surface.md)
@@ -164,6 +164,17 @@ is_negated() {
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 [ -f "$RUNNER" ] || { echo "check-freeze-surface: missing host runner: $RUNNER" >&2; exit 1; }
 
+# True when the probe output says this name does not resolve as a value.
+# `unknown name` is the missing-member case. `not a value` is the #2274
+# call-only builtin. The codegen ICE is the same hole if it ever leaks past
+# the checker again -- silence is the only passing answer.
+probe_is_missing() {
+  case "$1" in
+    *"unknown name"*|*"not a value"*|*"internal compiler error"*|*"reached code generation"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 probe() { # probe <symbol> -> prints the checker's diagnostics
   printf 'fn __freeze_probe() -> Int {\n  let __g = %s\n  1\n}\n' "$1" > "$WORK/probe.vibe"
   : > "$WORK/out"
@@ -176,8 +187,9 @@ probe() { # probe <symbol> -> prints the checker's diagnostics
 
 calib_present="$(probe "String::length")"
 calib_absent="$(probe "String::__no_such_builtin__")"
+calib_not_a_value="$(probe "Map::get")"
 case "$calib_present" in
-  *"unknown name"*)
+  *"unknown name"*|*"not a value"*|*"internal compiler error"*|*"reached code generation"*)
     echo "check-freeze-surface: FAIL: calibration -- String::length did not resolve, so the probe is not measuring what it claims:" >&2
     echo "  $calib_present" >&2
     exit 1 ;;
@@ -187,21 +199,28 @@ if [ -n "$calib_present" ]; then
   echo "  $calib_present" >&2
   exit 1
 fi
-case "$calib_absent" in
-  *"unknown name"*) : ;;
-  *)
-    echo "check-freeze-surface: FAIL: calibration -- a symbol that cannot exist was not reported missing, so this check cannot detect anything:" >&2
-    echo "  ${calib_absent:-<no output>}" >&2
-    exit 1 ;;
-esac
+if ! probe_is_missing "$calib_absent"; then
+  echo "check-freeze-surface: FAIL: calibration -- a symbol that cannot exist was not reported missing, so this check cannot detect anything:" >&2
+  echo "  ${calib_absent:-<no output>}" >&2
+  exit 1
+fi
+# #2275: a real receiver, a real member, and still not a value. The first two
+# calibration points are outside that population -- String::length is a genuine
+# first-class value, String::__no_such_builtin__ has no such member -- so a
+# gate that only knew those two certified Map::get from checker silence.
+if ! probe_is_missing "$calib_not_a_value"; then
+  echo "check-freeze-surface: FAIL: calibration -- Map::get is a real builtin that is not a value, and the probe did not report it missing, so this check cannot tell a resolving name from a call-only operation:" >&2
+  echo "  ${calib_not_a_value:-<no output>}" >&2
+  exit 1
+fi
 
 checked=0; missing=()
 for sym in "${syms[@]:-}"; do
   is_negated "$sym" && continue
   checked=$((checked + 1))
-  case "$(probe "$sym")" in
-    *"unknown name"*) missing+=("$sym") ;;
-  esac
+  if probe_is_missing "$(probe "$sym")"; then
+    missing+=("$sym")
+  fi
 done
 
 if [ "$checked" -eq 0 ]; then
@@ -257,9 +276,9 @@ fi
 
 index_missing=()
 for sym in "${index_syms[@]}"; do
-  case "$(probe "$sym")" in
-    *"unknown name"*) index_missing+=("$sym") ;;
-  esac
+  if probe_is_missing "$(probe "$sym")"; then
+    index_missing+=("$sym")
+  fi
 done
 
 if [ "${#index_missing[@]}" -gt 0 ]; then

@@ -1225,7 +1225,8 @@ let risky: (Int) -> Int with Exception = (x) -> {
 let safe = handle { risky(0) } with { Exception::Throw(msg) => -1 }
 ```
 
-`throw(x)` は `perform Exception::Throw(x)` と等価 (#640)。`Exception` は再開不能
+`throw` is call-form only: `throw(NotFound("x"))`, not statement-form
+`throw NotFound("x")` (#2265). `throw(x)` は `perform Exception::Throw(x)` と等価 (#640)。`Exception` は再開不能
 (non-resumable) — `Throw` arm の値がそのまま handle の結果になるため、
 arm 内の `resume(...)` は checker がエラーにする。
 Stage 2 (#640) で `throw(x)` は parse 時に `perform Exception::Throw(x)` へ脱糖され、
@@ -1594,9 +1595,13 @@ resolves as one.
 - **String**: `length`, `byte_at`, `from_byte`, `char_code_at`,
   `from_char_code`, `concat`, `substring`, `contains`, `index_of`, `split`,
   `trim`, `starts_with`, `ends_with`, `join`
-- **Array**: `length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`,
-  `all`, `reverse`, `concat`
-- **Map**: `get`, `has_key`, `keys`, `values`, `set`, `size`
+- **Array**: `length`, `get`, `slice`, `concat`
+
+`Map::get` / `has_key` / `keys` / `values` / `set` / `size` and the Array
+HOFs (`map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`) are call-only
+operations, not first-class values (`Array::map(xs, f)`, not
+`let g = Array::map`). They live in the Signature reference; they are not
+indexed here because the freeze probe is a bare reference.
 
 `String` is a byte string: `length`, indexes and slices use byte counts and
 offsets, and iteration yields byte-valued `Int`. Unicode code-point and

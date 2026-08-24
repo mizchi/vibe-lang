@@ -8,6 +8,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  builtin_registry,
   canonical_builtin_name,
   collect_tvars,
   env_bind,
@@ -870,6 +871,64 @@ fn railway_ident_lookup_name(name: String) -> String {
   } else {
     name
   }
+}
+
+/// #2274: a builtin ident is a first-class value iff it has a linear func-table
+/// row. Registry names with only a callsite lowering (`Map::get`) and
+/// fallback-only names (`Map::set`) type-check as `CtFn` today, then ICE in
+/// codegen because there is no function pointer to take. `String::length` is
+/// in the table and stays a value.
+fn builtin_is_first_class_value(name: String) -> Bool {
+  let normalized = canonical_builtin_name(name)
+  let rows = builtin_registry()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(rows) {
+    let (rname, _, _, in_linear, _) = Array::get(rows, i)
+    if rname == normalized && in_linear {
+      found = true
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn call_only_builtin_param_list(n: Int) -> String {
+  if n <= 0 {
+    ""
+  } else if n == 1 {
+    "a"
+  } else if n == 2 {
+    "a, b"
+  } else if n == 3 {
+    "a, b, c"
+  } else {
+    "a, b, c, ..."
+  }
+}
+
+/// Actionable diagnostic for a call-only builtin used as a value. Names the
+/// call form and the wrap form so the reader does not have to invent either,
+/// and so this is never the codegen ICE that asked them to file a compiler bug.
+fn call_only_builtin_ident_error(name: String, ty: Type, ident_off: Int) -> String {
+  let n = match ty {
+    CtFn(params, _, _) => Array::length(params),
+    _ => 0
+  }
+  let params = call_only_builtin_param_list(n)
+  let call_form = if n <= 0 {
+    String::concat(name, "()")
+  } else {
+    String::concat(name, String::concat("(", String::concat(params, ")")))
+  }
+  let wrap_form = if n <= 0 {
+    String::concat("() -> ", call_form)
+  } else {
+    String::concat("(", String::concat(params, String::concat(") -> ", call_form)))
+  }
+  String::concat(String::concat("`", name), String::concat("` is a builtin operation, not a value -- call it (`", String::concat(call_form, String::concat("`), or wrap it (`", String::concat(wrap_form, String::concat("`) to pass it as a function", off_marker_len(ident_off, String::length(name))))))))
 }
 
 fn railway_is_return_none(e: Expr) -> Bool {
@@ -6073,13 +6132,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         (ti, s1, c1)
       },
       None => match lookup_builtin(railway_ident_lookup_name(name)) {
-        Some(t) => {
+        Some(t) => if builtin_is_first_class_value(railway_ident_lookup_name(name)) || !String::contains(name, "::") || ident_off < 0 {
+          // Bare names (`None`) keep the historical lookup: nullary
+          // constructors are values, and rejecting every non-table builtin
+          // silently broke selfhost (`None` is not in the linear func table).
+          // Synthetic idents (off < 0) are compiler-generated call callees
+          // (`StringBuilder::new`); they are not user values. Qualified
+          // call-only ops in SOURCE (`Map::get`) are the #2274 hole.
           if ident_off >= 0 {
             tab_identifier_ty(tytab, ident_off, t, capture, lane)
           } else {
             ()
           }
           (t, s, c)
+        } else {
+          Array::push(errors, call_only_builtin_ident_error(name, t, ident_off))
+          (CtUnknown, s, c)
         },
         None => match resolve_trait_method_ident(name, env, defs, s) {
           Some(mty) => {
