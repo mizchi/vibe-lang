@@ -447,13 +447,48 @@ fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], out: Array[Type])
   }
 }
 
+/// The declared arity of a compiler-known structural head, or -1 when `name`
+/// is not one. `ty_head_is_structural` exempts these heads from the
+/// unknown-name sweep, and `resolve_type_expr_core_shadowed` requires the
+/// EXACT arity and otherwise falls through to an unresolved `CtNamed` --
+/// which `check_assignable` tolerates like a wildcard. Between the two, a
+/// wrong-arity application was reported by nobody and turned the slot off.
+///
+/// Measured on the head before this (Codex round 1 on #2276):
+/// `fn f(m: Array[Int, String]) -> Int { m }` compiled clean and returned a
+/// non-`Int` as `Int`, and `Option[Int, String]` did the same. The
+/// `StringMap` instance was closed by excluding it from the exemption, which
+/// made it loud but named it "unknown type `StringMap`" -- a type the
+/// compiler knows. All three are one defect, so one rule answers for them,
+/// and it names the arity.
+///
+/// A BARE `Array` was already loud, so only the APPLICATION is a hole.
+fn structural_head_arity(name: String) -> Int {
+  if name == "Array" || name == "Option" || name == "StringMap" {
+    1
+  } else {
+    0 - 1
+  }
+}
+
+/// The hint spells `Name[T]`, which is right because every head
+/// `structural_head_arity` recognizes has arity 1. A head added there with
+/// another arity must derive the hint from `want` instead.
+fn structural_arity_error(name: String, given: Int, want: Int, where_label: String) -> String {
+  String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", name), "` takes "), Int::to_string(want)), " type argument, but "), Int::to_string(given)), " were given in "), String::concat(where_label, String::concat(String::concat(" -- write `", name), "[T]` with a single element type")))
+}
+
 /// Walks the annotation WITHOUT resolving it. Resolution allocates, and this
 /// runs at every one of `report_unknown_type_names`'s ~84 sites, so the whole
 /// annotation is never re-resolved: only a `Map` head's KEY argument is
 /// (a one-node `TypeExpr` in every real spelling), and an alias is read from
 /// the already-resolved `Type` its `TypeDef` carries -- which is also what
 /// catches `type IntMap = Map[Int, String]` at the USE.
-fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[Type]) -> Unit {
+///
+/// Two rules share the walk so an annotation is traversed once: `out`
+/// collects a `Map` head's unsupported KEY types, and `errors` takes a
+/// structural head applied to the wrong ARITY (`structural_head_arity`).
+fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[Type], where_label: String, errors: Array[String]) -> Unit {
   match te {
     TyName(name) => if string_array_has(shadow, name) {
       ()
@@ -468,6 +503,12 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
     },
     TyUnit => (),
     TyApp(name, args) => {
+      let want = structural_head_arity(name)
+      if want >= 0 && Array::length(args) != want && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
+        Array::push(errors, structural_arity_error(name, Array::length(args), want, where_label))
+      } else {
+        ()
+      }
       if name == "Map" && Array::length(args) == 2 && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
         let k = resolve_type_expr_shadowed(Array::get(args, 0), defs, shadow)
         if map_key_type_is_supported(k) {
@@ -493,31 +534,35 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
       }
       let mut i = 0
       while i < Array::length(args) {
-        report_map_key_types_walk(Array::get(args, i), defs, shadow, out)
+        report_map_key_types_walk(Array::get(args, i), defs, shadow, out, where_label, errors)
         i = i + 1
       }
     },
     TyTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        report_map_key_types_walk(Array::get(items, i), defs, shadow, out)
+        report_map_key_types_walk(Array::get(items, i), defs, shadow, out, where_label, errors)
         i = i + 1
       }
     },
     TyFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        report_map_key_types_walk(Array::get(params, i), defs, shadow, out)
+        report_map_key_types_walk(Array::get(params, i), defs, shadow, out, where_label, errors)
         i = i + 1
       }
-      report_map_key_types_walk(ret, defs, shadow, out)
+      report_map_key_types_walk(ret, defs, shadow, out, where_label, errors)
     }
   }
 }
 
+/// Despite the name, this reports BOTH of the walk's rules -- the map-key
+/// one it is named for, and the wrong-arity one
+/// (`structural_head_arity`). The name is kept because it is called from
+/// ~90 sites across `checker_stmt.vibe`; renaming it is churn, not clarity.
 export fn report_map_key_types(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
   let bad = array_empty()
-  report_map_key_types_walk(te, defs, shadow, bad)
+  report_map_key_types_walk(te, defs, shadow, bad, where_label, errors)
   let mut i = 0
   while i < Array::length(bad) {
     Array::push(errors, String::concat(String::concat(String::concat(String::concat("the builtin map is String-keyed, so a `", type_to_string(Array::get(bad, i))), "` key has no implementation in "), where_label), " -- spell the String-keyed map `StringMap[V]`, or use `MutMap[K, V]` from `@vibe/core` for other keys (generic `Map` keys are #2263)"))
