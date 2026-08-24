@@ -54,7 +54,8 @@ of each item is [spec/syntax.md](syntax.md) and the
   `Char` (an `Int` alias), `Bool`, `Unit`.
 - Literals: integers (decimal / `0x` hex), floats (`1.5f` / `3.14`), strings
   (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`.
-- Composite types: tuples `(A, B)`, `Array[T]`, `Map[K, V]`, record, struct,
+- Composite types: tuples `(A, B)`, `Array[T]`, `StringMap[V]` (the builtin
+  map; `Map[K, V]`'s generality is not frozen — see §3), record, struct,
   enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
   trait bounds `[T: A + B]`, and the `Option[T]` sugar `T?` (ADR-0046).
 - **Equality (`==`) — the fail-closed contract** (ADR-0097 as shipped; measured
@@ -161,7 +162,25 @@ The stable symbols listed under "Key Builtins" in the
   registry.
 - **Array**: `length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`,
   `all`, `reverse`, `concat`, plus `ArrayBuilder::new/push/freeze`.
-- **Map**: `get`, `has_key`, `keys`, `values`, `set`, `size`.
+- **StringMap** — the String-keyed builtin map. Its type is spelled
+  `StringMap[V]`; the operations keep the `Map::` qualifier, so the spelling
+  is the type's, not a second operation family. Neither needs an import.
+  `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`,
+  `Map::size`.
+  `Map::new` and `Map::from_pairs` **cannot be frozen** by this list until
+  #2274 lands: both constructors are real and in daily use, but they are not
+  first-class values, so this document's gate cannot probe them.
+  **`Map[K, V]`'s generality is deliberately NOT frozen** (#2263): the builtin
+  is String-keyed today, and an annotation naming a concrete non-String key is
+  rejected where it is written. The name `Map` is reserved for the generic
+  type; completing it turns a rejection into an answer, which is a compatible
+  change. A key that is a type parameter is unaffected — generic code over
+  `Map[K, V]` keeps compiling.
+  **Another key type is already available today**: `MutMap[K, V]` from
+  `@vibe/core` is the generic open-addressing map, and it is what the
+  rejection points at (`MutMap::new_int()` / `new_string()`, or
+  `MutMap::new(hash_fn, eq_fn)` for any other key). It is a library type, so
+  it is frozen by §3's `@vibe/core` entry rather than by the builtin surface.
 - **Int64Array**: `make`, `get`, `set`, `length` (for 32-bit word workloads).
 - **Conversions**: `Int::to_string`, `Int::to_double`, `Double::to_int`.
 - **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
