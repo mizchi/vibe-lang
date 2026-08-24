@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Stmt, TypeExpr, lookup_registry_builtin, resolve_builtin
+  Expr, ImportItem, Stmt, TypeExpr, is_builtin_type_name, lookup_registry_builtin, resolve_builtin
 }
 
 import @vibe/compiler/syntax {
@@ -888,11 +888,12 @@ export let vpkg_types_module_marker: String = "// vibe: vpkg contract types modu
 /// asked for opaque/import provenance): contract conformance is textual and
 /// a cross-package name has no declaration channel in the contract at all --
 /// measured, `TypeEnv` in incremental's `ModuleJob` is spelled with no
-/// `opaque` and no import anywhere in that index.vpkg. The residual is that
-/// a typo INSIDE a contract's transparent type keeps its pre-enforcement
-/// wildcard behavior (every other position now reports); the sentinel
-/// enumerates that residual greppably, and closing it needs a contract-level
-/// provenance declaration first.
+/// `opaque` and no import anywhere in that index.vpkg. Compiler-owned type
+/// heads (`Map`, `MutMap`, `Array`, ...) are not deferred: they go through
+/// `is_builtin_type_name` (#2164). The residual is that a typo INSIDE a
+/// contract's transparent type, or a genuine cross-package name, keeps its
+/// pre-enforcement wildcard behavior; the sentinel enumerates that residual
+/// greppably, and closing it needs a contract-level provenance declaration.
 /// Returns (declared type names, deferred names). A declaration's own
 /// generic binders shadow its references LOCALLY only (Codex round 3 on
 /// #2162: a module-wide `declared` let `struct Box[Counter]`'s binder hide
@@ -965,11 +966,7 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> (Array[String], Array[String]) {
   let mut ri = 0
   while ri < Array::length(referenced) {
     let n = Array::get(referenced, ri)
-    let is_builtin = match resolve_builtin(n) {
-      Some(_) => true,
-      None => n == "Array" || n == "Option"
-    }
-    if is_builtin || ctm_str_list_has(declared, n) || ctm_str_list_has(out, n) {
+    if is_builtin_type_name(n) || ctm_str_list_has(declared, n) || ctm_str_list_has(out, n) {
       ()
     } else {
       Array::push(out, n)

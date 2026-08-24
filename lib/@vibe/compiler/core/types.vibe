@@ -1460,6 +1460,37 @@ export fn env_lookup_flat(bindings: Array[(String, Type)], name: String) -> Opti
   result
 }
 
+/// #2125: nominal heads the compiler owns itself. They resolve to
+/// `CtNamed(name, args)` with no `TypeDef` behind them and no entry in
+/// `resolve_builtin`, so they are indistinguishable from a typo by lookup
+/// alone and have to be named.
+///
+/// This list is EMPIRICAL, not a design: it is what Red runs of
+/// `collect_unknown_type_names` over `lib/**` and `fixtures/**` reported as
+/// unresolved while the tree compiled clean. Adding a compiler-owned type
+/// without adding it here makes every annotation that mentions it an error,
+/// which is a loud failure, not a silent one -- `PromptText` joined the list
+/// that way (`declare PromptText::new(String) -> PromptText`,
+/// builtins/declarations.vibe, names a type `resolve_builtin` does not carry).
+///
+/// Lives in core so the contract sentinel (`ctm_deferred_type_names`, #2164)
+/// and the checker share one predicate. `resolve_builtin` answers for
+/// builtin *values* (and a handful of scalar type names); this answers for
+/// the remaining type heads.
+export fn compiler_owned_type_arity(name: String) -> Option[Int] {
+  if name == "Array" || name == "Option" || name == "Future" || name == "Task" || name == "ArrayBuilder" || name == "FrozenArray" || name == "FixedArray" || name == "MutBytes" {
+    Some(1)
+  } else if name == "Map" || name == "MapBuilder" || name == "Attempt" || name == "TaskGroup" || name == "MutList" {
+    Some(2)
+  } else if name == "TaskHandle" || name == "Sender" || name == "Receiver" || name == "MutMap" {
+    Some(3)
+  } else if name == "ByteStream" || name == "HostStream" || name == "StringBuilder" || name == "PromptText" {
+    Some(0)
+  } else {
+    None
+  }
+}
+
 export fn resolve_builtin(name: String) -> Option[Type] {
   if name == "Int" || name == "i32" {
     Some(CtInt)
@@ -1509,6 +1540,20 @@ export fn resolve_builtin(name: String) -> Option[Type] {
     Some(CtNamed(name, empty_type_args()))
   }
   else None
+}
+
+/// True when `name` is a compiler-owned type head: either a `resolve_builtin`
+/// scalar or a `compiler_owned_type_arity` nominal. Used by the contract
+/// types-module sentinel so `Map` / `MutMap` stop exempting every transparent
+/// field in the module (#2164).
+export fn is_builtin_type_name(name: String) -> Bool {
+  match resolve_builtin(name) {
+    Some(_) => true,
+    None => match compiler_owned_type_arity(name) {
+      Some(_) => true,
+      None => false
+    }
+  }
 }
 
 /// Substitute the formal parameters of a resolved type alias.
