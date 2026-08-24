@@ -57,6 +57,26 @@ of each item is [spec/syntax.md](syntax.md) and the
 - Composite types: tuples `(A, B)`, `Array[T]`, `Map[K, V]`, record, struct,
   enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
   trait bounds `[T: A + B]`, and the `Option[T]` sugar `T?` (ADR-0046).
+- **Equality (`==`) — the fail-closed contract** (ADR-0097 as shipped; measured
+  2026-08-19, #1526/#2157/#2192): where the operand's element type is known —
+  bare, through a name, inside tuples/structs/nested arrays, through a function
+  result, and for an unannotated `let xs = []` whose pushed values describe
+  themselves — `==` is **structural**. A comparison the compiler cannot
+  classify **traps at the comparison** once both sides are non-empty rather
+  than answering by length or identity; adding a type annotation resolves it.
+  An erased type variable (`[T: Eq]`) dispatches through its witness and is
+  rejected at check time for a container with no `Eq` impl; an UNBOUNDED
+  formal comparing containers (`fn f[T](x: Array[T], y: Array[T])`) is the
+  trap side of the same contract — measured 2026-08-24, an
+  equal-but-separately-allocated pair traps rather than answering, and a
+  difference answers `false`. There is **no silent reference equality**
+  anywhere on this surface — every lane answers correctly or traps. SemVer
+  reading: a
+  currently-trapping comparison later becoming a structural answer is a
+  compatible change (the typed lane, #2158); an existing answer changing is
+  breaking. The full contract is the cheatsheet's "`==` on `Array` / `Bytes`
+  (#1526)" section, pinned by `fixtures/structural_eq_contexts_test.vibe` and
+  the `structural_eq_untyped_empty_*_trap` fixtures.
 
 ### 2.2 Bindings and mutability
 - `let` (immutable), `let rec` (recursive), `let mut` (block-scoped mutable,
@@ -93,8 +113,25 @@ of each item is [spec/syntax.md](syntax.md) and the
 ### 2.6 Effect system
 - Pure by default, with `with E` annotations.
 - `throw` / `handle ... with Exception { ... }`, the `?` operator (ADR-0016,
-  ADR-0050).
-- `suberror` (typed errors).
+  ADR-0050). `throw(x)` is call-form and sugar for
+  `perform Exception::Throw(x)` (#640); the bracketless `Exception` row is
+  erased — its payload is deliberately unconstrained.
+- `suberror` (typed errors) and **typed exception rows `Exception[E]`**
+  (ADR-0085, #1344): the row names the thrown payload's **static type**
+  (`with Exception[IoError]` — `E` is any payload type: an enum, a
+  `suberror`, or a primitive such as `String`), kinds compose by `effectset`
+  union, and a kind missing from the row is a check-time diagnostic. The
+  exact-kind discharge is a **checker-side** guarantee over statically kinded
+  rows: `Exception[IoError]::Throw` discharges exactly `IoError` where the
+  handled expression's row is kinded. Where that row is **erased**, kinded
+  and erased are compatible in both directions and the runtime carries a
+  single abortive tag, so a kinded handler also discharges an erased throw
+  whose payload may be another kind. The gradual reading is likewise part of
+  the contract: a payload whose kind cannot be resolved (a pattern binder, a
+  field projection — an ordinary local binding IS resolved from its
+  initializer) is treated as erased and passes any `Exception[K]` — no false
+  positives, known misses. Tightening any of this rejects programs and is a
+  breaking change.
 - User-defined algebraic effects: `effect` / `perform` / `handle ... with` /
   `resume` (one-shot, lexically scoped — ADR-0050, ADR-0021 Phase 1
   tail-resumptive).

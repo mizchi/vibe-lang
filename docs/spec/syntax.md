@@ -298,10 +298,16 @@ A **marker trait** (one declared with no methods, like `Eq` above) dispatches
 to the builtin `==` / `<`. `==` on `Array` / `Bytes` is rewritten to a
 structural compare **only where the element type is statically known**
 (#1526 / ADR-0097); inside a `[T: Eq]`-bounded function the `T` is erased —
-no element type — so the builtin falls back to reference equality there. A
+no element type — so the comparison goes through the `Eq` witness the bound
+was handed, which answers correctly for witness-having types. A
 marker-trait impl on a container therefore **is declarable but is not
 honoured as a bound** — passing an `Array` to a `[T: Eq]` parameter is
-rejected, with a diagnostic that says the impl exists and why it was refused. Give the trait a method and the impl
+rejected at check time, with a diagnostic that says the impl exists and why
+it was refused (`` no impl `Eq` for `Array[Int]` ``). An UNBOUNDED formal
+(`fn f[T](x: Array[T], y: Array[T]) { x == y }`) has no witness either way;
+measured (2026-08-24), it never answers by identity — a comparison it cannot
+resolve structurally traps at run time, and a length/element difference
+answers `false`. Give the trait a method and the impl
 resolves through the witness dictionary instead, in either spelling
 (`impl M for Array[Int]` or `impl [T] M for Array[T]`). See #1503.
 

@@ -136,7 +136,14 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
       // #2198: `if branches have incompatible types` joins them for the
       // all-literal case (`if c { "yes" } else { 0 }`) where the else
       // branch, the then-tail and the condition are all offset-less.
-      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `") || String::starts_with(msg, "if branches have incompatible types")
+      // #2268 (Codex round 7 on #2267): `type parameter ...` joins -- the
+      // formal-application rejection reports from the same offset-less
+      // parameter/return/local-let annotations `unknown type` does, so it
+      // anchors on the declaration name the same way. The declaration-sweep
+      // sites (alias bodies, effect ops, trait methods, struct fields, enum
+      // payloads) stay unlocated exactly like their `unknown type` siblings
+      // -- locating those is the #1567 positions program, not this marker.
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `") || String::starts_with(msg, "type parameter `") || String::starts_with(msg, "if branches have incompatible types")
       if anchorable && unlocated {
         Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
       }
@@ -151,6 +158,15 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
 /// environment the statement returns -- so it cannot reach a published or
 /// cached env.
 let trait_erased_type_param_prefix: String = "__trait_erased_tp__"
+
+/// #2268 (Codex round 5 on #2267): binder provenance for declared fn type
+/// formals, carried in the env under a name no source can spell -- the same
+/// mechanism as `trait_erased_type_param_prefix` above. The EFn arm binds
+/// one marker per declared formal; the local-let ascription path reads them
+/// so `let y: F[Int] = x` under `fn g[F]` rejects like every declaration
+/// surface, without consulting value types (a VALUE binding whose type is a
+/// `CtVar` must never read as a formal -- round 4).
+let fapp_formal_marker_prefix: String = "__fapp_formal__"
 
 /// True when some entry of `methods` declares a method named `method_name`.
 fn trait_methods_declare(methods: Array[(String, Array[TypeExpr], TypeExpr)], method_name: String) -> Bool {
@@ -287,6 +303,80 @@ export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> Typ
 ///      `fn fill(l: MutList[Int, r]) -> Unit with r`. Nothing binds `r` as a
 ///      value there; the binder is the row, so the call site passes its
 ///      variables in `row_binders`.
+/// #2268: collect type applications whose head the caller classifies as a
+/// type formal (`F[A]` under `[F, A]`). Resolution has no application
+/// semantics for that shape: `F` unifies with the WHOLE applied type and the
+/// bracket arguments are ignored, so a signature spelled
+/// `(F[A], (A) -> B) -> F[B]` silently accepts the identity function. Fail
+/// closed at the annotation site until a type parameter can carry a kind.
+export fn collect_formal_applications_by(te: TypeExpr, is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  match te {
+    TyName(_) => (),
+    TyUnit => (),
+    TyApp(head, args) => {
+      if is_formal(head) && !string_array_has(out, head) {
+        Array::push(out, head)
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_formal_applications_by(Array::get(args, i), is_formal, out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_formal_applications_by(Array::get(params, i), is_formal, out)
+        i = i + 1
+      }
+      collect_formal_applications_by(ret, is_formal, out)
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_formal_applications_by(Array::get(items, i), is_formal, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+/// The one diagnostic text for #2268, shared by every surface that rejects a
+/// formal application so the message cannot drift between them.
+export fn formal_application_error(fname: String, where_label: String) -> String {
+  String::concat(String::concat(String::concat(String::concat("type parameter `", fname), "` cannot take type arguments in "), where_label), " -- a type parameter stands for a complete type, so the arguments would be ignored and every application of it would mean the same type. Spell the concrete constructor (e.g. `Array[...]`), or drop the arguments")
+}
+
+/// #2268: the reporting face of `collect_formal_applications_by`. `formals`
+/// must be the declaration's OWN type binders -- never the merged shadow
+/// `report_unknown_type_names` takes, which also carries deferred
+/// cross-package names (`Map` in a `.vpkg`-derived struct) that are types,
+/// not formals (the Codex round-2 false positive on #2267: every
+/// `Map[String, String]` field in `@vibe/http`'s synthesized types was
+/// rejected) -- and never an env lookup: a VALUE binding whose type is a
+/// `CtVar` is indistinguishable from a type formal by env alone, so
+/// `fn f[T](Array: T, xs: Array[Int])` would reject the valid builtin head
+/// (Codex round 4). Binder provenance is the only test. The one
+/// non-declaration site -- a let annotation inside a generic fn -- is
+/// covered separately through the `fapp_formal_marker_prefix` markers the
+/// EFn arm binds (Codex round 5), which are also binder provenance.
+export fn report_formal_applications(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  let applied_formals = array_empty()
+  // Bound to a let rather than written inline: vibe fmt's guard refuses a
+  // multiline closure literal in a non-final argument slot (#2271).
+  let is_formal = (head) -> {
+    string_array_has(formals, head)
+  }
+  collect_formal_applications_by(te, is_formal, applied_formals)
+  let mut ai = 0
+  while ai < Array::length(applied_formals) {
+    Array::push(errors, formal_application_error(Array::get(applied_formals, ai), where_label))
+    ai = ai + 1
+  }
+}
+
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
   // Which of the unresolved names are region-ish binders at all. Asked over
   // the name candidates first because the positional walk below takes a set,
@@ -5950,7 +6040,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EString(_) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name, ident_off) => match env_lookup(env, railway_ident_lookup_name(name)) {
+    EIdent(name, ident_off) => if String::starts_with(name, fapp_formal_marker_prefix) || String::starts_with(name, trait_erased_type_param_prefix) {
+      // #2268 (Codex round 6 on #2267): both prefixes name compiler-internal
+      // env markers bound with ordinary EnvBind. Letting source resolve one
+      // as a value would check clean (the marker's CtUnit) and then die in
+      // codegen, which has no such local -- a check-passes/codegen-fails
+      // hole. Reserve the spellings and reject BEFORE resolution can find
+      // the marker.
+      Array::push(errors, String::concat(String::concat(String::concat("`", name), "` uses a reserved compiler-internal prefix (type-formal markers) -- rename the identifier"), off_marker_len(ident_off, String::length(name))))
+      (CtUnknown, s, c)
+    } else match env_lookup(env, railway_ident_lookup_name(name)) {
       Some(t) => {
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
@@ -7751,6 +7850,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // formals of its own); the env is what knows the enclosing
             // declaration's, which is exactly the #2130 mapping above.
             report_unknown_type_names(ann_te, defs, array_empty(), env, array_empty(), "a local let annotation", errors)
+            // #2268 (Codex round 5): the enclosing EFn marked each declared
+            // formal (`fapp_formal_marker_prefix`), so binder provenance
+            // reaches this non-declaration site and `let y: F[Int] = x`
+            // rejects here too -- without the round-4 value-type misread.
+            let fapp_hits = array_empty()
+            let is_marked_formal = (head) -> {
+              match env_lookup(env, String::concat(fapp_formal_marker_prefix, head)) {
+                Some(_) => true,
+                None => false
+              }
+            }
+            collect_formal_applications_by(ann_te, is_marked_formal, fapp_hits)
+            let mut fapp_i = 0
+            while fapp_i < Array::length(fapp_hits) {
+              Array::push(errors, formal_application_error(Array::get(fapp_hits, fapp_i), "a local let annotation"))
+              fapp_i = fapp_i + 1
+            }
             let actual = subst_apply(ns0, at)
             // #981: `check_assignable` now runs the #844 same-name concrete
             // `CtNamed` check itself (its tolerate branch calls
@@ -8914,7 +9030,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             s0 = if Array::length(bounds) == 0 {
               s0
             } else subst_add_bound(s0, vid, bounds)
-            tp_env = env_bind(tp_env, tpname, tv)
+            tp_env = env_bind(env_bind(tp_env, tpname, tv), String::concat(fapp_formal_marker_prefix, tpname), CtUnit)
             c0 = nc
           },
           _ => ()
@@ -8965,6 +9081,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               ()
             } else {
               report_unknown_type_names(te, defs, tparams, fn_env, declared_row_binders, String::concat(String::concat("parameter `", name), "`"), errors)
+              report_formal_applications(te, tparams, String::concat(String::concat("parameter `", name), "`"), errors)
             }
             (pt2, s1, c1)
           },
@@ -9000,6 +9117,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         Some(rte) => {
           // #2125: see the parameter arm above.
           report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
+          report_formal_applications(rte, tparams, "the return type", errors)
           env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, tparams), fn_env))
         },
         None => env_bind(fn_env, "__return__", CtUnknown)

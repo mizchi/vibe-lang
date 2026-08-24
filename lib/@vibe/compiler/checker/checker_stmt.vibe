@@ -65,13 +65,16 @@ import ./checker.vibe {
   check_assignable,
   check_expr,
   check_expr_capture,
+  collect_formal_applications_by,
   constructor_dependency_row,
   fn_return_env_name,
+  formal_application_error,
   is_array_builder_ty,
   is_region_tagged_ty,
   pat_binds_resume,
   preserve_generic_instantiation,
   reject_resume_outside_handler,
+  report_formal_applications,
   report_unknown_type_names,
   trait_erased_type_param_env,
   typed_occurrence_capture_begin_statement,
@@ -2107,6 +2110,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // #2125: an unknown name in a payload otherwise becomes a wildcard
             // `CtNamed` -- same hole as the annotation sites.
             report_unknown_type_names(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
+            // #2268: formals are the enum's OWN params -- never the merged
+            // report shadow, whose deferred cross-package names are types.
+            report_formal_applications(Array::get(vtypes, ti), params, String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
             // #1512: `params` shadow `defs`, so the substitution below still
             // finds `CtNamed(<param>, [])` when an import bound that name.
             let named_vt = resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params)
@@ -2304,6 +2310,13 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
           let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
           report_unknown_type_names(ftype_expr, defs, report_shadow, env, array_empty(), String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
+          // #2268: formals are the struct's OWN tparams -- never
+          // `report_shadow`, whose deferred cross-package names (`Map` in a
+          // `.vpkg`-derived struct) are types, not formals; and not
+          // `dict_erased`, so a synthesized `<Trait>Dict` witness struct
+          // keeps today's accept-but-undispatchable behavior for a trait
+          // spelling its own formal applied.
+          report_formal_applications(ftype_expr, tparams, String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
@@ -3568,8 +3581,110 @@ fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[
   }
 }
 
+/// #2268 (Codex on #2267, rounds 2-3): a formal application can hide in any
+/// declaration whose signatures are resolved WITHOUT passing through
+/// `report_unknown_type_names` -- a parameterized alias body
+/// (`type Apply[F, A] = F[A]`), a generic effect operation
+/// (`effect Bad[F, A] { Put(F[A]) -> Unit }`, #1340 registers eparams as
+/// rigid names and substitutes them wholesale), and a trait method signature
+/// (`trait Functor[F] { fmap[A, B](F[A], (A) -> B) -> F[B] }`, stored
+/// unchanged by the STrait arm). Each declaration's own params are the whole
+/// formal set -- none of these bodies has an enclosing formal scope -- so
+/// shadow membership is the whole test here.
+fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  let hits = array_empty()
+  // Bound to a let rather than written inline: vibe fmt's guard refuses
+  // a multiline closure literal in a non-final argument slot (#2271).
+  let is_param = (head) -> {
+    let mut pi = 0
+    let mut found = false
+    while pi < Array::length(formals) {
+      if Array::get(formals, pi) == head {
+        found = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    found
+  }
+  collect_formal_applications_by(te, is_param, hits)
+  let mut hi = 0
+  while hi < Array::length(hits) {
+    Array::push(errors, formal_application_error(Array::get(hits, hi), where_label))
+    hi = hi + 1
+  }
+}
+
+fn fapp_decl_label(owner: String, member: String) -> String {
+  String::concat(String::concat(String::concat("the signature of `", owner), String::concat("::", member)), "`")
+}
+
+fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, te) => fapp_report(te, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
+      SEffectDef(_, ename, eparams, ops) => {
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (opname, opparams, opret) = Array::get(ops, oi)
+          let mut pi = 0
+          while pi < Array::length(opparams) {
+            fapp_report(Array::get(opparams, pi), eparams, fapp_decl_label(ename, opname), errors)
+            pi = pi + 1
+          }
+          fapp_report(opret, eparams, fapp_decl_label(ename, opname), errors)
+          oi = oi + 1
+        }
+      },
+      STrait(_, tname, _, methods, method_gens, tparams) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, mparams, mret) = Array::get(methods, mi)
+          // The method's formal set: the trait's own params plus this
+          // method's generic binders (`Self` never takes arguments and an
+          // application of it is equally vacuous, so it is included).
+          let formals = array_empty()
+          Array::push(formals, "Self")
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(formals, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gname, gtp, _) = Array::get(method_gens, gi)
+            if gname == mname {
+              let mut gj = 0
+              while gj < Array::length(gtp) {
+                Array::push(formals, Array::get(gtp, gj))
+                gj = gj + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          let mut pi = 0
+          while pi < Array::length(mparams) {
+            fapp_report(Array::get(mparams, pi), formals, fapp_decl_label(tname, mname), errors)
+            pi = pi + 1
+          }
+          fapp_report(mret, formals, fapp_decl_label(tname, mname), errors)
+          mi = mi + 1
+        }
+      },
+      SModule(_, _, body) => collect_decl_formal_application_errors(body, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   collect_reserved_type_prefix_errors(stmts, errors)
+  collect_decl_formal_application_errors(stmts, errors)
   let local_types = tps_local_type_names(stmts)
   if Array::length(local_types) == 0 {
     ()

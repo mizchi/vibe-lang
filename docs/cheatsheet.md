@@ -488,29 +488,20 @@ silently wrong answer (an outer `let v = 1` read for an inner `v` of another
 type, so `==` said `false` for two equal `[1, 2]` arrays). With no environment
 the element type can be absent but never wrong.
 
-A **generic** struct literal resolves only when every type argument written at
-it is one whose raw `==` compares content. One generated `Box::equals` serves
-every instantiation and compares the erased field with a raw `==`, so the
-argument decides. Measured, two distinct allocations of equal content:
+A **generic** struct literal preserves its concrete type arguments in the
+equality shape (#2195): the compiler emits a comparator per concrete
+instantiation and substitutes the arguments into its field types, so
+`Box[Int]`, `Box[Double]`, `Box[Bytes]`, `Box[Array[Int]]` — and declared
+fields containing them — all compare structurally (measured 2026-08-24, two
+distinct allocations of equal content answer `true`). A self-describing
+literal with an omitted argument, such as `Box::{ value: [1, 2] }`, recovers a
+single directly-used type parameter from the field value; anything more
+ambiguous remains unresolved and traps.
 
-| `T` in `Box[T]` | `==` | |
-|---|---|---|
-| `Int`, `Bool`, `Unit`, `String` | `true` | resolves |
-| `Double`, `Bytes` | `false` | rejected → traps |
-| `Array[Int]`, a struct | `false` | rejected → traps |
-
-The rejected rows answer `false` under an **annotation** too — that is #2195,
-not something the unannotated form introduces — so rejecting them keeps #2157
-from giving that wrong answer a new spelling to arrive through. `Float` goes
-with `Double`; `Char` is excluded because two distinct equal-content `Char`s
-cannot be constructed to measure it.
-
-The exclusion follows declared **fields** as well, transitively and through
-type aliases. `struct Outer { box: Box[Array[Int]] }` takes no type parameters,
-so nothing about its shape looks wrong — but `Outer::equals` calls
-`Box::equals`, and the wrong answer arrives one level down.
-
-Which field types keep a struct usable is an allow-list, measured on a
+A declared name is excluded when any field has **no structural comparator**,
+transitively and through type aliases — the exclusion follows fields so a
+wrapper cannot smuggle an uncomparable head in one level down. Which field
+types keep a struct usable is an allow-list, measured on a
 `struct W { f: T } derive (Eq)`:
 
 | declared field type | `==` |
@@ -520,12 +511,11 @@ Which field types keep a struct usable is an allow-list, measured on a
 | a declared struct | `true` |
 | `Map[String, Int]` | `true`, since #2218 |
 
-A declared `Double` or `Bytes` field is fine even though `Box[Double]` is not:
-`derive` generates a type-directed comparison when the type is still known
-where the comparison is emitted, and the erased field of a generic struct is
-exactly where it is not. `Map` was the one measured outlier until #2218 gave
-it a comparator; any head nobody has measured still costs its owner a trap
-rather than the benefit of the doubt.
+`derive` generates a type-directed comparison when the type is known where the
+comparison is emitted — since #2195 that includes a generic struct's concrete
+instantiations. `Map` was the one measured outlier until #2218 gave it a
+comparator; any head nobody has measured still costs its owner a trap rather
+than the benefit of the doubt.
 
 **What does not resolve fails at run time** once BOTH sides are non-empty —
 it does not fall back to reference equality or to a length-only answer. Annotate
@@ -878,6 +868,34 @@ impl [T] Measured for Array[T] {
 fn keep[T: Measured](x: T) -> T { x }
 let ok = keep([1, 2, 3])
 ```
+
+### A type parameter cannot take type arguments (#2268)
+
+**A type formal in constructor position — `F[A]` — is rejected.** A type
+parameter always stands for a complete type; if the shape were accepted, `F`
+would unify with the whole applied type and the bracket arguments would be
+ignored, so a signature spelled `(F[A], (A) -> B) -> F[B]` would silently
+accept the identity function. Higher-kinded parameters are not implemented;
+which release implements them is decided on #2269. The diagnostic reads
+``type parameter `F` cannot take type arguments in parameter `x` ``.
+
+<!-- doctest-skip: deliberately rejected shapes (#2268 fail-close) -->
+```vibe skip
+fn fake_map[F, A, B](x: F[A], f: (A) -> B) -> F[B] {  // rejected
+  x
+}
+struct Holder[F] {
+  inner: F[Int]                                       // also rejected
+}
+```
+
+The same rejection covers every declaration surface: a parameterized alias
+body (`type Apply[F, A] = F[A]`), a generic effect operation
+(`effect Bad[F, A] { Put(F[A]) -> Unit }`), and a trait method signature
+(`trait Functor[F] { fmap[A, B](F[A], (A) -> B) -> F[B] }`) all reject with
+the same diagnostic, naming the declaration (`` in the signature of
+`Functor::fmap` ``). A trait or effect may still DECLARE type parameters and
+use them unapplied (`trait Iter[A] { nth(Self, Int) -> Option[A] }`).
 
 > #1503 以前は、**concrete な impl (`impl M for Array[Int]`) が method-bearing
 > trait でも解決しなかった**。パーサが `for` の後ろの `[Int]` を捨てるため、
