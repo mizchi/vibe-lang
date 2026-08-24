@@ -6033,7 +6033,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EString(_) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name, ident_off) => match env_lookup(env, railway_ident_lookup_name(name)) {
+    EIdent(name, ident_off) => if String::starts_with(name, fapp_formal_marker_prefix) || String::starts_with(name, trait_erased_type_param_prefix) {
+      // #2268 (Codex round 6 on #2267): both prefixes name compiler-internal
+      // env markers bound with ordinary EnvBind. Letting source resolve one
+      // as a value would check clean (the marker's CtUnit) and then die in
+      // codegen, which has no such local -- a check-passes/codegen-fails
+      // hole. Reserve the spellings and reject BEFORE resolution can find
+      // the marker.
+      Array::push(errors, String::concat(String::concat(String::concat("`", name), "` uses a reserved compiler-internal prefix (type-formal markers) -- rename the identifier"), off_marker_len(ident_off, String::length(name))))
+      (CtUnknown, s, c)
+    } else match env_lookup(env, railway_ident_lookup_name(name)) {
       Some(t) => {
         let (ti, c1, new_bounds) = instantiate(t, c)
         let nblen = Array::length(new_bounds)
