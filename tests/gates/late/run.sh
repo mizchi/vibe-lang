@@ -6216,8 +6216,21 @@ if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/pinned.wasm.diag" 2>/dev/null; then
   cat "$uwdir/pinned.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+
+# The path may be on the NEXT line. `import\n  @vibe/concurrent { .. }` is valid
+# source; a same-line search missed it and fell back to line 1, naming an
+# unrelated declaration. The location comes from the lexer now, so this and the
+# comment case above are the same rule rather than two patches (#2277 review).
+# The import here starts on line 5.
+printf 'fn helper() -> Int {\n  1\n}\n\nimport\n  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/multiline.vibe"
+uw_build "$uwdir/multiline.vibe" "$uwdir/multiline.wasm"
+if ! grep -qF 'line 5:' "$uwdir/multiline.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a multiline import declaration got the wrong line (#2277)" >&2
+  cat "$uwdir/multiline.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace + comment-line + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"

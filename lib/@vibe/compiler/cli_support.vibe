@@ -89,7 +89,7 @@ import @vibe/compiler/runtime {
 // is one-error-at-a-time; `vibe diagnostics` is the multi-diagnostic surface
 // — collect_all_diagnostics already uses this same recovering parser).
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program_recovering
+  Token, lex_with_offsets, parse_program_recovering, token_to_string
 }
 
 //# Functions
@@ -682,79 +682,71 @@ fn unstable_package_note(name: String) -> String {
   }
 }
 
-/// Byte offset of the first character that is not a space or a tab.
-fn unstable_first_nonspace(line: String) -> Int {
-  let n = String::length(line)
-  let mut i = 0
-  while i < n {
-    let c = String::char_code_at(line, i)
-    if c == 32 || c == 9 {
-      i = i + 1
-    } else {
-      return i
-    }
-  }
-  n
-}
-
-/// The character after the package path has to END the token -- end of line,
-/// whitespace, or `{` -- so `@vibe/concurrentx` is not read as
-/// `@vibe/concurrent`.
-fn unstable_path_token_ends(rest: String, n: Int) -> Bool {
-  if String::length(rest) == n {
-    true
-  } else {
-    let c = String::char_code_at(rest, n)
-    c == 32 || c == 9 || c == 123
-  }
-}
-
-/// Which line the reader has to edit. DETECTION is structural (the parsed
-/// `SImport` above); this is presentation only, so a miss costs a position and
-/// never a verdict -- hence the fallback to line 1 rather than a second parse.
+/// Byte offset of the `import` keyword that introduces `pkg`, or -1.
 ///
-/// The path is the token immediately after `import`, not any occurrence of the
-/// text on the line. `import @vibe/core { array_empty } // @vibe/concurrent` is
-/// a stable import that merely MENTIONS the package; naming it told the reader
-/// to delete a line that was not the problem, which is worse than giving no
-/// line at all (#2277 review).
-fn unstable_import_line(source: String, pkg: String) -> Int {
-  let lines = String::split(source, "\n")
+/// TOKENS, not text. Three separate review findings came from trying to
+/// recover this position by reading the source as lines, and each fix only
+/// moved the hole (#2277 review):
+///
+///   - "a line starting with `import` that contains the package name" pointed
+///     at `import @vibe/core { .. } // @vibe/concurrent`, a stable import that
+///     merely mentions it in a comment;
+///   - requiring the path to be the token right after `import` ON THAT LINE
+///     then missed `import\n  @vibe/concurrent { .. }`, valid source whose
+///     path is on the next line, and fell back to line 1 -- an unrelated
+///     declaration.
+///
+/// The lexer already answers this exactly, and `token_to_string` reaches it
+/// through the contract without needing the opaque `Token`'s constructors. A
+/// string literal cannot masquerade either: it renders as `TString("...")`,
+/// never `TIdent(...)`.
+fn unstable_import_offset(tokens: Array[Token], starts: Array[Int], pkg: String) -> Int {
+  let want = String::concat("TIdent(", String::concat(pkg, ")"))
+  let n = Array::length(starts)
   let mut i = 0
-  while i < Array::length(lines) {
-    let line = Array::get(lines, i)
-    let trimmed = String::substring(line, unstable_first_nonspace(line), String::length(line))
-    if String::starts_with(trimmed, "import") {
-      let after = String::substring(trimmed, 6, String::length(trimmed))
-      let path_start = unstable_first_nonspace(after)
-      let rest = String::substring(after, path_start, String::length(after))
-      if path_start > 0 && String::starts_with(rest, pkg) && unstable_path_token_ends(rest, String::length(pkg)) {
-        return i + 1
-      } else {
-        ()
-      }
+  while i + 1 < n {
+    if token_to_string(Array::get(tokens, i)) == "TImport" && token_to_string(Array::get(tokens, i + 1)) == want {
+      return Array::get(starts, i)
     } else {
       ()
     }
     i = i + 1
   }
-  1
+  0 - 1
 }
 
-fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, out: Array[String]) -> Unit {
+/// 1-based line of a byte offset. Offset -1 (the token scan found nothing)
+/// falls back to line 1: a miss costs a position, never a verdict.
+fn unstable_line_of_offset(source: String, off: Int) -> Int {
+  let n = String::length(source)
+  let mut line = 1
+  let mut i = 0
+  while i < off && i < n {
+    if String::char_code_at(source, i) == 10 {
+      line = line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  line
+}
+
+fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[Token], starts: Array[Int], out: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SImport(path, _) => {
         let note = unstable_package_note(path)
         if note != "" {
-          Array::push(out, String::concat("line ", String::concat(Int::to_string(unstable_import_line(source, path)), String::concat(":col 1: ", note))))
+          let line = unstable_line_of_offset(source, unstable_import_offset(tokens, starts, path))
+          Array::push(out, String::concat("line ", String::concat(Int::to_string(line), String::concat(":col 1: ", note))))
         } else {
           ()
         }
       },
       // An import nested in a `module` block is still this file's dependency.
-      SModule(_, _, body) => unstable_stmt_diagnostics(body, source, out),
+      SModule(_, _, body) => unstable_stmt_diagnostics(body, source, tokens, starts, out),
       _ => ()
     }
     i = i + 1
@@ -776,8 +768,9 @@ fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, out: Array[Stri
 /// cannot compile either, and the parse error is what the reader needs first.
 export fn unstable_surface_diagnostics(input_path: String, source: String) -> Array[String] with Exception {
   let out = array_empty()
+  let (tokens, starts, _ends) = lex_with_offsets(source)
   match checked_warning_stmts(input_path, source) {
-    Some(stmts) => unstable_stmt_diagnostics(stmts, source, out),
+    Some(stmts) => unstable_stmt_diagnostics(stmts, source, tokens, starts, out),
     None => ()
   }
   out
