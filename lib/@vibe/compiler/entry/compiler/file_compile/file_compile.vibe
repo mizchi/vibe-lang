@@ -60,6 +60,10 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl, compile_wasi_module_no_dce_impl, effect_lowering_prelude
 }
 
+import @vibe/compiler/contract {
+  contract_facade_marker, vpkg_shared_import_marker
+}
+
 import @vibe/compiler/loader {
   artifact_input_trace_resolution_context_fingerprint_fs, collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
@@ -224,7 +228,13 @@ fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Exce
   // reach a generated bundle and thus never reaches the committed seed, which
   // knows only the two-argument form.
   let stmts = parse_program_with_path(path, source)
-  if source_has_assert_eq(source) {
+  // Only stamp when THIS text's line numbers are the FILE's. The loader
+  // prepends a directory's inherited `.vpkg` imports, and replaces a contract
+  // with its generated facade -- both shift every line after them, so stamping
+  // that text would print the physical path beside a line the reader cannot
+  // find (#2277 review). No line beats a wrong line (#1445), which is the whole
+  // rule this stamping is built on.
+  if source_has_assert_eq(source) && !String::starts_with(source, vpkg_shared_import_marker) && !String::starts_with(source, contract_facade_marker) {
     stamp_assert_stmts(stmts, path, source)
   } else {
     stmts

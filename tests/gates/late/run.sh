@@ -6256,8 +6256,21 @@ if grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.optin.out" 2>/dev/null; then
   cat "$uwdir/buffer.optin.out" 2>/dev/null >&2 || true
   exit 1
 fi
+# ...and the JSON form of that same buffer lane, which is what the editor
+# actually consumes. It serialized only `collect_all_diagnostics`, so it
+# answered `[]` while the text form reported the error -- the LSP would have
+# been the one surface still accepting the unstable import (#2277 review).
+rm -f "$uwdir/buffer.json"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 VIBE_DIAGNOSTICS_JSON=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/buffer.vibe" "$uwdir/buffer.json" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.json" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the single-file JSON lane dropped the unstable diagnostic (#2277)" >&2
+  cat "$uwdir/buffer.json" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + buffer + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + buffer(text+json) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
