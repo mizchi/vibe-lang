@@ -100,4 +100,38 @@ if ! grep -qE 'stale allowlist entry' "$TMP_ROOT/invalid.stderr"; then
   exit 1
 fi
 
+# A linked git worktree stores `.git` as a FILE, not a directory. The lint is a
+# release-check dependency, so a filesystem test for `.git` aborted every
+# `pkf run` made from a worktree (#2248 review). Skipped only where `git
+# worktree` itself is unavailable -- and that skip is announced, because a
+# silent skip and a pass are the same line otherwise.
+WT_ROOT="$TMP_ROOT/linked_worktree"
+# Its own allowlist: the last case above deliberately left an INVALID one in
+# place, and reusing it here would make this case fail for that reason instead
+# of for the worktree.
+cat > "$TMP_ROOT/wt_allowlist.txt" <<'EOF'
+scripts/cache_probe_gate.sh gate legacy probe fixture
+scripts/new_probe_gate.sh gate new gate fixture
+scripts/.tmp_probe.sh manual-experiment temporary script fixture
+EOF
+git -C "$TMP_ROOT" config user.email test@example.com
+git -C "$TMP_ROOT" config user.name test
+git -C "$TMP_ROOT" commit -qm base >/dev/null 2>&1 || true
+if git -C "$TMP_ROOT" worktree add -q --detach "$WT_ROOT" HEAD >/dev/null 2>&1; then
+  if [ -d "$WT_ROOT/.git" ]; then
+    echo "experiment-name lint self-test: this git makes .git a DIRECTORY in a linked worktree; the case proves nothing" >&2
+    exit 1
+  fi
+  if ! VIBE_EXPERIMENT_NAME_LINT_ROOT="$WT_ROOT" \
+    VIBE_EXPERIMENT_NAME_LINT_ALLOWLIST="$TMP_ROOT/wt_allowlist.txt" \
+    bash "$CHECK_SCRIPT" >/dev/null 2>"$TMP_ROOT/wt.stderr"; then
+    echo "experiment-name lint self-test: rejected a linked git worktree" >&2
+    cat "$TMP_ROOT/wt.stderr" >&2
+    exit 1
+  fi
+  git -C "$TMP_ROOT" worktree remove --force "$WT_ROOT" >/dev/null 2>&1 || true
+else
+  echo "experiment-name lint self-test: NOTE git worktree unavailable; worktree case not run" >&2
+fi
+
 echo "experiment-name lint self-test: ok"

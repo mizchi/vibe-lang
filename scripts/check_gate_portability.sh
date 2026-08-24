@@ -35,15 +35,28 @@ fi
 # this file's own comments and regex literals, and its self-test carries
 # deliberate violations as fixtures; a checker that reads either as evidence
 # certifies exactly what it exists to reject (#2138 hit that twice).
+# No `| sort`: under `pkf run` the nix PATH puts a `sort` on it that dies with a
+# GLIBC mismatch, and a gate that cannot run in the runner that invokes it is
+# the exact failure this gate exists to stop. The order of findings is
+# cosmetic; the verdict is not.
+#
+# No `xargs -r` either: `-r`/`--no-run-if-empty` is a GNU extension that stock
+# BSD/macOS xargs rejects, which would abort this gate -- the same defect, in
+# the gate written to stop it (#2248 review). The list is collected into an
+# array and its emptiness is decided here instead.
+scan_files=()
+while IFS= read -r f; do
+  case "$(basename "$f")" in "$SELF" | "$SELF_TEST") continue ;; esac
+  scan_files+=("$f")
+done < <(find "$SCAN_DIR" -type f -name '*.sh')
+
+if [ "${#scan_files[@]}" -eq 0 ]; then
+  echo "[gate-portability] FAIL: no shell scripts found under $SCAN_DIR" >&2
+  exit 1
+fi
+
 findings="$(
-  # No `| sort`: under `pkf run` the nix PATH puts a `sort` on it that dies
-  # with a GLIBC mismatch, and a gate that cannot run in the runner that
-  # invokes it is the exact failure this gate exists to stop. The order of
-  # findings is cosmetic; the verdict is not.
-  find "$SCAN_DIR" -type f -name '*.sh' | while IFS= read -r f; do
-    case "$(basename "$f")" in "$SELF" | "$SELF_TEST") continue ;; esac
-    printf '%s\n' "$f"
-  done | xargs -r awk -v root="$ROOT/" '
+  awk -v root="$ROOT/" '
     FNR == 1 { rel = FILENAME; sub("^" root, "", rel) }
 
     # Whole-line comments carry no behaviour. An inline `#` can sit inside a
@@ -68,13 +81,17 @@ findings="$(
       n = split($0, seg, "|")
       for (i = 1; i <= n; i++) {
         if (seg[i] !~ /(^|[^A-Za-z0-9_.])grep([[:space:]]|$)/) continue
-        if (seg[i] ~ /(^|[^$])'"'"'[^'"'"']*\\[td]/) {
+        # BOTH quote styles. `grep -qE "^row\tvalue$"` is exactly as broken as
+        # the single-quoted spelling -- double quotes do not make the shell
+        # produce a tab either (#2248 review). Only `$'"'"'...'"'"'` does, and its
+        # opening quote is preceded by `$`, which the first alternative excludes.
+        if (seg[i] ~ /(^|[^$])'"'"'[^'"'"']*\\[td]/ || seg[i] ~ /"[^"]*\\[td]/) {
           printf "  %s:%d: grep pattern contains \\t or \\d; grep does not interpret them -- use $%s...%s\n", rel, FNR, "'"'"'", "'"'"'"
           break
         }
       }
     }
-  '
+  ' "${scan_files[@]}"
 )"
 
 if [ -n "$findings" ]; then

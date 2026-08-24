@@ -6,7 +6,11 @@ PROJECT_ROOT="${VIBE_EXPERIMENT_NAME_LINT_ROOT:-$(dirname "$SCRIPT_DIR")}"
 ALLOWLIST_FILE="${VIBE_EXPERIMENT_NAME_LINT_ALLOWLIST:-$PROJECT_ROOT/scripts/tracked_experiment_name_allowlist.txt}"
 VALID_CATEGORIES="gate bench-fixture manual-experiment archive-candidate"
 
-if [ ! -d "$PROJECT_ROOT/.git" ]; then
+# Asked of git, not of the filesystem: a linked worktree stores `.git` as a
+# FILE, so `-d` reports "not a git repository" and this lint -- now a
+# release-check dependency -- would abort every `pkf run` made from one
+# (#2248 review).
+if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "experiment-name lint: project root is not a git repository: $PROJECT_ROOT" >&2
   exit 1
 fi

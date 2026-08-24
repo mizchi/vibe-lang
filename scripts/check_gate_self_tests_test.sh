@@ -32,6 +32,21 @@ printf '#!/usr/bin/env bash\n' > "$WORK/scripts/check_thing_test.sh"
 run || { cat "$WORK/out" >&2; fail "a gate with a self-test was rejected"; }
 echo "  ok  a gate with a self-test passes"
 
+# Discovery is not limited to two prefixes. It covered only `check_*` and
+# `lint_*`, so a gate named any other way -- `verify_release_gate.sh`,
+# `minify_gate.sh` -- bypassed the rule entirely and this gate printed ok
+# (#2248 review).
+hdr
+printf '#!/usr/bin/env bash\n' > "$WORK/scripts/verify_release_gate.sh"
+if run; then cat "$WORK/out" >&2; fail "a *_gate.sh with no self-test was accepted"; fi
+grep -q "verify_release_gate.sh" "$WORK/out" || fail "the failure did not name the *_gate.sh"
+echo "  ok  a *_gate.sh with no self-test is rejected"
+printf '#!/usr/bin/env bash\n' > "$WORK/scripts/verify_release_gate_test.sh"
+hdr
+run || { cat "$WORK/out" >&2; fail "a *_gate.sh WITH a self-test was rejected"; }
+echo "  ok  a *_gate.sh with a self-test passes"
+rm -f "$WORK/scripts/verify_release_gate.sh" "$WORK/scripts/verify_release_gate_test.sh"
+
 # A gate WITHOUT one fails.
 rm "$WORK/scripts/check_thing_test.sh"
 if run; then fail "a gate with no self-test was accepted"; fi

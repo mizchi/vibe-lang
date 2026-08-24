@@ -114,6 +114,15 @@ red "the gc lane drops its inline clears" \
     "unresolved expansion" \
     'out = s.replace("    env $(selector_clears_before VIBE_BACKEND)", "    env", 1)'
 
+# The helper's TEXT is not the helper RUNNING. Single quotes stop the shell
+# expanding `$( ... )`, so this passes a literal string to `env` and clears
+# nothing -- and the scan credited it, because it matched characters rather
+# than an executable command substitution (#2248 review). The scan now deletes
+# single-quoted spans before looking.
+red "the helper is spelled inside single quotes" \
+    "unresolved expansion" \
+    "out = s.replace('env \$(selector_clears_before VIBE_BACKEND)', chr(101)+chr(110)+chr(118)+chr(32)+chr(39)+'X=\$(selector_clears_before VIBE_BACKEND)'+chr(39), 1)"
+
 # Five cases used to live here, all mutating the variable that carried the
 # clears (an uncovered path, an underived narrowing, an assignment behind
 # `&&`, one after `;`, a deleted declaration). Routing them through a variable

@@ -61,6 +61,23 @@ printf '%s\n' "grep -qE '^v\\d+\$' \"\$1\"" >> "$TMP_ROOT/scripts/clean.sh"
 run && fail "an uninterpreted \\d was accepted"
 ok "\\d in a plain single-quoted grep pattern is rejected"
 
+# --- red 4b: the same trap in DOUBLE quotes. Double quotes do not produce a
+# tab either, and covering only one quote style would leave the identical
+# defect one keystroke away (#2248 review).
+reset_tree
+printf '%s\n' 'grep -qE "^row\\tvalue$" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'grep -qE "^row' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 4b did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "an uninterpreted \\t in double quotes was accepted"; }
+ok "\\t in a double-quoted grep pattern is rejected"
+
+# --- green guard for 4b: a double-quoted pattern with no such escape, and an
+# awk -F'"'"'\t'"'"' on the same line, must both still pass. Without this the
+# double-quote rule could be satisfied by rejecting every double-quoted grep.
+reset_tree
+printf '%s\n' 'grep -qE "^ok-[0-9]+$" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+run || { cat "$TMP_ROOT/out" >&2; fail "a clean double-quoted grep pattern was rejected"; }
+ok "a double-quoted grep pattern without \\t or \\d still passes"
+
 # --- red 5: the checker must not exempt a file by finding the violation in a
 # comment only. A commented-out rg call is not a call.
 reset_tree

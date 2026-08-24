@@ -5912,6 +5912,31 @@ fi
 rm -rf "$fcodir"
 echo "[compiler-gate] linear source-lane Double call-result offsets ok (#2158)"
 
+# ...and the offset that channel uses must not be one another node already
+# owns. #2231's first fix gave a call-rooted dot-call the DOT FIELD NAME's
+# offset, which `type_at.vibe` uses to identify that token; the type table is
+# last-wins, so the call's result type would have overwritten it (#2248
+# review). The `(` of the argument list belongs to no other node, and this
+# pins that: an identifier in a call-rooted dot-call keeps its own type.
+tadir="_build/_gate_typeat_callsite"
+rm -rf "$tadir"; mkdir -p "$tadir"
+cat > "$tadir/ta.vibe" <<'TAEOF'
+struct Box { get: () -> Double }
+fn mk_box() -> Box { Box::{ get: () -> { 2.5 } } }
+fn main() -> Int {
+  let v = mk_box().get()
+  0
+}
+TAEOF
+ta_out="$(VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" type-at "$tadir/ta.vibe" 4 11 2>/dev/null | head -1)"
+if [ "$ta_out" != "() -> Box" ]; then
+  echo "[compiler-gate] FAIL: type-at on \`mk_box\` in a call-rooted dot-call reports '$ta_out', not '() -> Box' -- the call-site offset is stealing an identifier token (#2231/#2248)" >&2
+  exit 1
+fi
+rm -rf "$tadir"
+echo "[compiler-gate] call-site offset does not steal an identifier token ok (#2231)"
+
 # 106/106. `vibe fmt` (#2149). The formatter has always been real and
 #      CI-enforced, but reachable only through lib/@vibe/cli/fmt_entry.vibe --
 #      a separate wasm scripts/vibe_fmt.sh FS-compiles on demand, whose paths

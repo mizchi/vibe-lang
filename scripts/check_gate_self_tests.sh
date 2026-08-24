@@ -50,6 +50,30 @@ check_package_sibling_scope.sh check_playground_presets.sh
 check_portable_boundary.sh check_rc_default.sh
 check_tutorial_translation_parity.sh check_typecheck_fixtures.sh
 check_vibe_fmt.sh"
+
+# CORPUS WIDENING, not new exemptions (#2248 review). Discovery covered only
+# `check_*` / `lint_*` until now, so these 27 `*_gate.sh` scripts were never
+# asked for a self-test. They are pinned exactly as they stood the day the
+# scope widened; the list still only SHRINKS from here, and a NEW `*_gate.sh`
+# is rejected like any other gate that arrives without a companion.
+baseline_no_test="$baseline_no_test
+compiler_gate.sh minify_gate.sh test_async_component_gate.sh
+test_async_sleep_component_gate.sh test_async_string_lift_probe_gate.sh
+test_concurrent_awaits_component_gate.sh test_future_value_component_gate.sh
+test_host_future_value_component_gate.sh
+test_host_stream_value_probe_gate.sh
+test_hostfuture_source_component_gate.sh test_http_body_read_probe_gate.sh
+test_http_body_stream_probe_gate.sh test_interleaved_tasks_probe_gate.sh
+test_named_hostfutures_component_gate.sh
+test_named_hoststreams_component_gate.sh test_parallel_warm_pool_gate.sh
+test_serve_async_lift_gate.sh test_serve_body_stream_gate.sh
+test_spawned_future_component_gate.sh test_stream_value_component_gate.sh
+test_wasi_cli_stdin_p3_probe_gate.sh
+test_wasi_cli_stdin_provider_component_gate.sh
+test_wasi_cli_stdin_provider_guest_component_gate.sh
+test_wasi_cli_stdin_provider_source_component_gate.sh
+test_wasi_http_p3_full_gate.sh test_wasi_p3_guarantee_gate.sh
+test_wit_async_import_component_gate.sh"
 # Pinned EMPTY (#2252): all five original entries were repaired, so any name
 # appearing in the failing list from here on is rejected outright. There is no
 # longer a supported way to exempt a failing self-test.
@@ -77,7 +101,13 @@ if [ -n "$not_baseline" ]; then
 fi
 
 missing=""
-for f in scripts/check_*.sh scripts/lint_*.sh; do
+# `*_gate.sh` too. The rule says EVERY gate ships a self-test, and the check
+# covered two prefixes -- so a `verify_release_gate.sh` with no companion was
+# silently accepted, which is the documented requirement bypassed outright
+# (#2248 review). The existing `*_gate.sh` scripts enter the allowlist as a
+# CORPUS WIDENING, not as exemptions anyone granted; see the second baseline
+# block below.
+for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh; do
   # An unmatched glob arrives as its own literal text; skip it rather than
   # reporting `scripts/lint_*.sh` as a gate with no self-test.
   [ -e "$f" ] || continue
@@ -113,7 +143,7 @@ EOF
 failed_tests=""
 repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
-  for t in scripts/check_*_test.sh scripts/lint_*_test.sh; do
+  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh; do
     [ -e "$t" ] || continue
     # Only companions OF a gate in this tree; an orphan is reported below.
     [ -f "${t%_test.sh}.sh" ] || continue

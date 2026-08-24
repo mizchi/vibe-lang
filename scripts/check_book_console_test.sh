@@ -21,6 +21,17 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_book_console_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() { echo "book-console self-test: $1" >&2; exit 1; }
+
+# `timeout` is GNU coreutils, absent on a stock BSD/macOS box. It is a watchdog
+# here, not part of any assertion, so it is used when present and dropped when
+# not -- the rule this branch just documented is that a gate must not fail for
+# a reason unrelated to the property it tests, and a self-test for that rule
+# breaking on the rule is not a good look (#2248 review).
+if command -v timeout >/dev/null 2>&1; then
+  watchdog() { timeout "$@"; }
+else
+  watchdog() { shift; "$@"; }
+fi
 ok() { echo "  ok  $1"; }
 
 W="$TMP_ROOT/tree"
@@ -41,7 +52,7 @@ build_tree() {
 # run -> always expected to exit non-zero (the stub compiler cannot produce the
 # transcript); the verdict of each case is which message appears.
 run() {
-  if BOOK_CONSOLE_STAGE2="$W/stub.wasm" timeout 300 bash "$W/scripts/check_book_console.sh" \
+  if BOOK_CONSOLE_STAGE2="$W/stub.wasm" watchdog 300 bash "$W/scripts/check_book_console.sh" \
       >"$TMP_ROOT/out" 2>&1; then
     fail "the gate passed with a stub compiler -- it is not running the transcripts"
   fi
@@ -62,7 +73,7 @@ ok "an unmutated tree reports none of the mutation messages"
 
 # --- the oracle is missing: fail closed, and say which override was wrong.
 build_tree
-if BOOK_CONSOLE_STAGE2="$W/does-not-exist.wasm" timeout 60 bash "$W/scripts/check_book_console.sh" \
+if BOOK_CONSOLE_STAGE2="$W/does-not-exist.wasm" watchdog 60 bash "$W/scripts/check_book_console.sh" \
     >"$TMP_ROOT/out" 2>&1; then
   fail "a missing compiler override was accepted"
 fi

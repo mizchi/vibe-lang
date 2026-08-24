@@ -154,7 +154,22 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     # Reading shell with regular expressions does not converge, so the
     # question is changed rather than answered: no variables, and the check
     # becomes "is the call spelled here", which a scanner CAN decide.
-    inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', block)
+    #
+    # Searched with single-quoted spans REMOVED first. The shell does not
+    # expand `$( ... )` inside single quotes, so `env 'X=$(selector_clears_
+    # before VIBE_BACKEND)' ...` passes a literal string and clears nothing --
+    # and matching the helper's TEXT anywhere in the block credited exactly
+    # that (#2248 review). Same defect as every earlier round: the check read
+    # a proxy (the characters are present) for the property (the shell runs
+    # it). A single-quoted span cannot execute anything, so deleting those
+    # spans before looking is the whole fix.
+    #
+    # Double quotes are left alone on purpose: `"$(selector_clears_before X)"`
+    # DOES expand -- though it would then be one argument rather than the word
+    # list `env` needs, which is a different bug and one the runner would
+    # surface immediately.
+    executable = re.sub(r"'[^']*'", "", block)
+    inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', executable)
     covered = inline
 
     if runs_cli and re.search(r'\$\{?[a-z_]+\}?(?=\s)', block) and not covered:
