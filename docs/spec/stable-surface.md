@@ -108,8 +108,18 @@ of each item is [spec/syntax.md](syntax.md) and the
 ### 2.6 Effect system
 - Pure by default, with `with E` annotations.
 - `throw` / `handle ... with Exception { ... }`, the `?` operator (ADR-0016,
-  ADR-0050).
-- `suberror` (typed errors).
+  ADR-0050). `throw(x)` is call-form and sugar for
+  `perform Exception::Throw(x)` (#640); the bracketless `Exception` row is
+  erased — its payload is deliberately unconstrained.
+- `suberror` (typed errors) and **typed exception rows `Exception[E]`**
+  (ADR-0085, #1344): the row names the thrown kind (`with Exception[IoError]`,
+  `E` an enum or `suberror`), a handler discharges exactly its kind
+  (`handle .. with { Exception[IoError]::Throw(e) => .. }`), kinds compose by
+  `effectset` union, and a kind missing from the row is a check-time
+  diagnostic. The documented gradual reading is part of this contract: a
+  payload whose kind cannot be resolved (e.g. a local binding) is treated as
+  erased and passes any `Exception[K]` — no false positives, known misses.
+  Tightening that reading rejects programs and is a breaking change.
 - User-defined algebraic effects: `effect` / `perform` / `handle ... with` /
   `resume` (one-shot, lexically scoped — ADR-0050, ADR-0021 Phase 1
   tail-resumptive).
