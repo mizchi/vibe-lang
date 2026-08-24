@@ -3582,44 +3582,101 @@ fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[
   }
 }
 
-/// #2268 (Codex P1 on #2267): a formal application hidden in a parameterized
-/// alias body -- `type Apply[F, A] = F[A]` -- never reaches
-/// `report_unknown_type_names` (the STypeAlias env arm resolves without
-/// reporting), and `resolve_type_alias_params` then replaces the `F` head
-/// wholesale, dropping its arguments, so an `Apply[F, A]` annotation would
-/// recreate the exact identity-as-map hole the fn-signature check closes.
-/// Validate the body with the alias's own params as the formal set -- an
-/// alias body has no enclosing formal scope, so shadow membership is the
-/// whole test here.
-fn collect_alias_formal_application_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+/// #2268 (Codex on #2267, rounds 2-3): a formal application can hide in any
+/// declaration whose signatures are resolved WITHOUT passing through
+/// `report_unknown_type_names` -- a parameterized alias body
+/// (`type Apply[F, A] = F[A]`), a generic effect operation
+/// (`effect Bad[F, A] { Put(F[A]) -> Unit }`, #1340 registers eparams as
+/// rigid names and substitutes them wholesale), and a trait method signature
+/// (`trait Functor[F] { fmap[A, B](F[A], (A) -> B) -> F[B] }`, stored
+/// unchanged by the STrait arm). Each declaration's own params are the whole
+/// formal set -- none of these bodies has an enclosing formal scope -- so
+/// shadow membership is the whole test here.
+fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  let hits = array_empty()
+  // Bound to a let rather than written inline: vibe fmt's guard refuses
+  // a multiline closure literal in a non-final argument slot (#2271).
+  let is_param = (head) -> {
+    let mut pi = 0
+    let mut found = false
+    while pi < Array::length(formals) {
+      if Array::get(formals, pi) == head {
+        found = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    found
+  }
+  collect_formal_applications_by(te, is_param, hits)
+  let mut hi = 0
+  while hi < Array::length(hits) {
+    Array::push(errors, formal_application_error(Array::get(hits, hi), where_label))
+    hi = hi + 1
+  }
+}
+
+fn fapp_decl_label(owner: String, member: String) -> String {
+  String::concat(String::concat(String::concat("the signature of `", owner), String::concat("::", member)), "`")
+}
+
+fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STypeAlias(_, name, params, te) => {
-        let hits = array_empty()
-        // Bound to a let rather than written inline: vibe fmt's guard refuses
-        // a multiline closure literal in a non-final argument slot (#2271).
-        let is_param = (head) -> {
+      STypeAlias(_, name, params, te) => fapp_report(te, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
+      SEffectDef(_, ename, eparams, ops) => {
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (opname, opparams, opret) = Array::get(ops, oi)
           let mut pi = 0
-          let mut found = false
-          while pi < Array::length(params) {
-            if Array::get(params, pi) == head {
-              found = true
+          while pi < Array::length(opparams) {
+            fapp_report(Array::get(opparams, pi), eparams, fapp_decl_label(ename, opname), errors)
+            pi = pi + 1
+          }
+          fapp_report(opret, eparams, fapp_decl_label(ename, opname), errors)
+          oi = oi + 1
+        }
+      },
+      STrait(_, tname, _, methods, method_gens, tparams) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, mparams, mret) = Array::get(methods, mi)
+          // The method's formal set: the trait's own params plus this
+          // method's generic binders (`Self` never takes arguments and an
+          // application of it is equally vacuous, so it is included).
+          let formals = array_empty()
+          Array::push(formals, "Self")
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(formals, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gname, gtp, _) = Array::get(method_gens, gi)
+            if gname == mname {
+              let mut gj = 0
+              while gj < Array::length(gtp) {
+                Array::push(formals, Array::get(gtp, gj))
+                gj = gj + 1
+              }
             } else {
               ()
             }
+            gi = gi + 1
+          }
+          let mut pi = 0
+          while pi < Array::length(mparams) {
+            fapp_report(Array::get(mparams, pi), formals, fapp_decl_label(tname, mname), errors)
             pi = pi + 1
           }
-          found
-        }
-        collect_formal_applications_by(te, is_param, hits)
-        let mut hi = 0
-        while hi < Array::length(hits) {
-          Array::push(errors, formal_application_error(Array::get(hits, hi), String::concat(String::concat("the body of type alias `", name), "`")))
-          hi = hi + 1
+          fapp_report(mret, formals, fapp_decl_label(tname, mname), errors)
+          mi = mi + 1
         }
       },
-      SModule(_, _, body) => collect_alias_formal_application_errors(body, errors),
+      SModule(_, _, body) => collect_decl_formal_application_errors(body, errors),
       _ => ()
     }
     i = i + 1
@@ -3628,7 +3685,7 @@ fn collect_alias_formal_application_errors(stmts: Array[Stmt], errors: Array[Str
 
 fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   collect_reserved_type_prefix_errors(stmts, errors)
-  collect_alias_formal_application_errors(stmts, errors)
+  collect_decl_formal_application_errors(stmts, errors)
   let local_types = tps_local_type_names(stmts)
   if Array::length(local_types) == 0 {
     ()

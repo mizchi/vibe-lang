@@ -889,10 +889,13 @@ struct Holder[F] {
 }
 ```
 
-A `trait Functor[F] { .. }` **declaration** still parses (trait type
-parameters ride the #636 erasure path), but dispatching its operations
-through a bound stops at the witness-carrier diagnostic — a declarable but
-unusable shape, so do not write it.
+The same rejection covers every declaration surface: a parameterized alias
+body (`type Apply[F, A] = F[A]`), a generic effect operation
+(`effect Bad[F, A] { Put(F[A]) -> Unit }`), and a trait method signature
+(`trait Functor[F] { fmap[A, B](F[A], (A) -> B) -> F[B] }`) all reject with
+the same diagnostic, naming the declaration (`` in the signature of
+`Functor::fmap` ``). A trait or effect may still DECLARE type parameters and
+use them unapplied (`trait Iter[A] { nth(Self, Int) -> Option[A] }`).
 
 > #1503 以前は、**concrete な impl (`impl M for Array[Int]`) が method-bearing
 > trait でも解決しなかった**。パーサが `for` の後ろの `[Int]` を捨てるため、
