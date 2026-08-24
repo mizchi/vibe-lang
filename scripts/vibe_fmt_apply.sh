@@ -60,6 +60,17 @@ if [ "${#to_format[@]}" -gt 0 ]; then
       ERROR) errors+=("$rel_path: $message") ;;
     esac
   done < <(printf '%s\n' "${to_format[@]}" | bash scripts/run_vibe_fmt_batch.sh write "$JOBS")
+  # A process substitution's exit status is not this script's, so a batch that
+  # died -- the formatter would not build, a shard produced no report -- fed the
+  # loop zero lines and this printed "formatted 0 file(s)" and exited 0. That is
+  # `pkf run fmt`, the documented whole-tree command, silently rewriting nothing
+  # (#2271; the same hole was fixed in check_vibe_fmt.sh and this caller was
+  # missed). Every file handed to the batch must come back.
+  if [ "$formatted" -ne "${#to_format[@]}" ]; then
+    echo "vibe-fmt apply: the batch reported on $formatted of ${#to_format[@]} file(s); the rest were NOT formatted" >&2
+    echo "  nothing here says those files are clean -- see the batch's diagnostics above" >&2
+    exit 2
+  fi
 fi
 
 if [ "${#errors[@]}" -gt 0 ]; then

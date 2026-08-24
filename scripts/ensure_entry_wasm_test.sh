@@ -86,6 +86,37 @@ for pair in "scripts/vibe_fmt.sh ensure_vibe_fmt_entry.sh" \
   esac
 done
 
+# --- 5. every consumer of the batch must reconcile the report COUNT ---
+# `done < <(... | run_vibe_fmt_batch.sh ...)` hides the batch's exit status, so a
+# dead batch feeds the loop zero lines and the caller reports "0 file(s)" and
+# exits 0 -- green having done nothing. check_vibe_fmt.sh was fixed for this and
+# vibe_fmt_apply.sh was missed, which is `pkf run fmt` silently rewriting
+# nothing (#2271, #2277 review). The check is lexical -- shell dataflow is not
+# decidable here -- so it requires the one structural thing that cannot be
+# faked into existence: a comparison against the input list's length.
+reconciles() {
+  grep -q 'run_vibe_fmt_batch\.sh' "$1" || return 2
+  grep -qE -- '-ne "\$\{#[a-z_]+\[@\]\}"' "$1" || return 1
+  return 0
+}
+for f in scripts/check_vibe_fmt.sh scripts/vibe_fmt_apply.sh; do
+  case "$(reconciles "$f" && echo 0 || echo $?)" in
+    0) ;;
+    1) fail "$f consumes the batch without reconciling the report count against its input" ;;
+    2) fail "$f no longer consumes run_vibe_fmt_batch.sh -- update this test" ;;
+  esac
+done
+
+# Red-test rule 5: strip the guard and it must be rejected.
+mkdir -p "$WORK/mut5"
+grep -v -E -- '-ne "\$\{#[a-z_]+\[@\]\}"' scripts/vibe_fmt_apply.sh > "$WORK/mut5/vibe_fmt_apply.sh"
+if ! grep -q 'run_vibe_fmt_batch\.sh' "$WORK/mut5/vibe_fmt_apply.sh"; then
+  fail "red-test mutation removed the batch call it needed to keep"
+fi
+if reconciles "$WORK/mut5/vibe_fmt_apply.sh"; then
+  fail "rule 5 accepts a caller with no count reconciliation"
+fi
+
 # Red-test rule 4 against a mutated copy: a checker that cannot fail is not a
 # check. Restoring the bare form must be rejected.
 mkdir -p "$WORK/mut/scripts"
@@ -97,4 +128,4 @@ if assert_handles "$WORK/mut/scripts/vibe_fmt.sh" "ensure_vibe_fmt_entry.sh"; th
   fail "rule 4 accepts the bare assignment it exists to reject"
 fi
 
-echo "[ensure-entry-wasm-test] ok (loud failure + diagnostic + stale removal + success path + caller exit-code handling, red-tested)"
+echo "[ensure-entry-wasm-test] ok (loud failure + diagnostic + stale removal + success path + caller exit-code handling + batch count reconciliation, red-tested)"
