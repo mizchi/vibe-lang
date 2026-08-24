@@ -6961,6 +6961,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtOption(CtUnknown)
           }
           (tab_call_ty(tytab, call_off, mbresult, capture, lane), s3, c2)
+        } else if name == "Map::keys" && Array::length(args) == 1 {
+          // #2263: keys() of a key-slotted map is `Array[k]`. The shape table
+          // answers `Array[String]` for every receiver, so a `Map[Int, V]`
+          // annotation handed its keys to `String::length` and compiled clean
+          // -- an annotation that disables checking at the slot, the #2125
+          // class. Every map the builtins can BUILD is still String-keyed
+          // (Map::set and from_pairs reject a non-String key), so for real
+          // programs this is the same answer; it stops the type from lying
+          // where the annotation says otherwise.
+          let (m_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let result = match subst_apply(s1, m_ty) {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              CtArray(subst_apply(s1, Array::get(margs, 0)))
+            } else {
+              CtArray(CtString)
+            },
+            _ => CtArray(CtString)
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
         } else if name == "Map::values" && Array::length(args) == 1 {
           // #983: values() of a value-slotted map is `Array[v]`, not
           // `Array[CtUnknown]`.
