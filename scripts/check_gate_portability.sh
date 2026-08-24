@@ -66,8 +66,26 @@ findings="$(
     # 1. ripgrep, anywhere it is spelled as its own word. Deliberately blunt:
     #    "do not write rg in a gate" is the rule, and a mention inside a
     #    message string is a mention that will be copied into a call.
-    /(^|[^A-Za-z0-9_.\/-])rg([^A-Za-z0-9_.\/-]|$)/ {
+    #
+    #    Two alternatives, because `/` cannot be treated the same on both
+    #    sides. On the RIGHT it must stay excluded (`rg/` is a directory, not
+    #    the tool). On the LEFT excluding it let `/usr/bin/rg -q ...` through
+    #    entirely -- an absolute path is the straightforward way to bring the
+    #    dependency back with this audit still green (#2248 review). So a
+    #    path ending in `/rg` is matched explicitly.
+    /(^|[^A-Za-z0-9_.\/-])rg([^A-Za-z0-9_.\/-]|$)/ ||
+    /(^|[^A-Za-z0-9_.-])[A-Za-z0-9_.\/-]*\/rg([^A-Za-z0-9_.\/-]|$)/ {
       printf "  %s:%d: uses `rg`; CI has no ripgrep -- use grep (-E/-F/-q/-n/-o)\n", rel, FNR
+      next
+    }
+
+    # 3. `sed -i` with no suffix. GNU takes an optional one, BSD/macOS REQUIRES
+    #    one, so the bare form aborts there. Lexical, and a real instance:
+    #    check_book_console_test.sh -- a release-check dependency -- used it,
+    #    so the default gate could not run on the environment this file exists
+    #    to protect (#2248 review). `sed -i.bak` and `sed -i ''` both pass.
+    /(^|[^A-Za-z0-9_.-])sed[[:space:]]+(-[A-Za-z]+[[:space:]]+)*-i([[:space:]]|$)/ {
+      printf "  %s:%d: `sed -i` with no suffix; BSD/macOS requires one -- use a temp file, or `sed -i.bak` and remove it\n", rel, FNR
       next
     }
 
@@ -100,4 +118,4 @@ if [ -n "$findings" ]; then
   exit 1
 fi
 
-echo "[gate-portability] ok (no ripgrep dependency; no uninterpreted \\t in grep patterns)"
+echo "[gate-portability] ok (no ripgrep dependency; no bare sed -i; no uninterpreted \\t in grep patterns)"

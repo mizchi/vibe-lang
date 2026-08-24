@@ -22,6 +22,16 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() { echo "book-console self-test: $1" >&2; exit 1; }
 
+# `sed -i` is not portable: GNU takes an optional suffix, BSD/macOS REQUIRES
+# one, so the bare form aborts there -- and this file is a release-check
+# dependency, so the default gate could not run on the very environments the
+# portability work exists for (#2248 review). Edit through a temp file
+# instead, which needs no dialect at all.
+sed_inplace() { # <sed-expr> <file>
+  local expr="$1" file="$2"
+  sed "$expr" "$file" > "$file.sedtmp" && mv "$file.sedtmp" "$file"
+}
+
 # `timeout` is GNU coreutils, absent on a stock BSD/macOS box. It is a watchdog
 # here, not part of any assertion, so it is used when present and dropped when
 # not -- the rule this branch just documented is that a gate must not fail for
@@ -115,7 +125,7 @@ build_tree
 # Asserted by CONTENT, not by a checksum: under `pkf run` the nix PATH shadows
 # coreutils with binaries that die on a GLIBC mismatch (#2258), and `cksum`
 # is one of them -- a fixture guard that cannot run is worse than none.
-sed -i 's/^ok   demo_test\.vibe$/ok   demo_test.vibe (edited)/' "$W/book/ja/12_tests.vibe.md"
+sed_inplace 's/^ok   demo_test\.vibe$/ok   demo_test.vibe (edited)/' "$W/book/ja/12_tests.vibe.md"
 grep -qF 'ok   demo_test.vibe (edited)' "$W/book/ja/12_tests.vibe.md" || fail "ja fixture did not land"
 run
 says 'translation parity' || { cat "$TMP_ROOT/out" >&2; fail "a ja/en transcript divergence was accepted"; }
@@ -123,7 +133,7 @@ ok "a ja transcript that differs from en is rejected"
 
 # --- the prose-documented edit no longer applies to the chapter's source.
 build_tree
-sed -i 's/assert_eq(double(21), 42)/assert_eq(double(21), 40 + 2)/' "$W/book/en/12_tests.vibe.md"
+sed_inplace 's/assert_eq(double(21), 42)/assert_eq(double(21), 40 + 2)/' "$W/book/en/12_tests.vibe.md"
 grep -qF 'assert_eq(double(21), 40 + 2)' "$W/book/en/12_tests.vibe.md" || fail "edit fixture did not land"
 run
 says 'no longer applies' || { cat "$TMP_ROOT/out" >&2; fail "a stale documented edit was accepted"; }

@@ -40,6 +40,41 @@ run && { cat "$TMP_ROOT/out" >&2; fail "an rg call was accepted"; }
 grep -qF 'uses `rg`' "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "rg finding did not name the reason"; }
 ok "an rg call is rejected"
 
+# --- red 1b: ripgrep through an ABSOLUTE PATH. `/` had to stay excluded on the
+# right of the word boundary (`rg/` is a directory), and excluding it on the
+# LEFT too let `/usr/bin/rg` through entirely -- the straightforward way to
+# bring the dependency back with this audit green (#2248 review).
+reset_tree
+printf '%s\n' '/usr/bin/rg -q pattern "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF '/usr/bin/rg -q' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1b did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "an absolute-path rg call was accepted"; }
+grep -qF 'uses `rg`' "$TMP_ROOT/out" || fail "abs-path rg finding did not name the reason"
+ok "an rg call through an absolute path is rejected"
+
+# --- green guard for 1b: a directory that merely ENDS in rg is not the tool.
+reset_tree
+printf '%s\n' 'grep -qE "^x$" rg/data.txt' >> "$TMP_ROOT/scripts/clean.sh"
+run || { cat "$TMP_ROOT/out" >&2; fail "a path containing rg/ was rejected as the tool"; }
+ok "a directory named rg/ is not mistaken for the tool"
+
+# --- red 1c: `sed -i` with no suffix. GNU takes an optional one, BSD/macOS
+# REQUIRES one, so the bare form aborts there. The instance was in
+# check_book_console_test.sh, a release-check dependency.
+reset_tree
+printf '%s\n' 'sed -i "s/a/b/" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'sed -i "s/a/b/"' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1c did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a bare sed -i was accepted"; }
+grep -qF 'BSD/macOS requires one' "$TMP_ROOT/out" || fail "sed -i finding did not name the reason"
+ok "a bare sed -i is rejected"
+
+# --- green guard for 1c: both portable spellings must still pass, or the rule
+# could be satisfied by rejecting every sed.
+reset_tree
+printf '%s\n' 'sed -i.bak "s/a/b/" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+printf '%s\n' 'sed "s/a/b/" "$1" > "$1.tmp" && mv "$1.tmp" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+run || { cat "$TMP_ROOT/out" >&2; fail "a portable sed spelling was rejected"; }
+ok "sed -i.bak and a temp-file edit still pass"
+
 # --- red 2: ripgrep behind a pipe.
 reset_tree
 printf '%s\n' 'printf x | rg -v y' >> "$TMP_ROOT/scripts/clean.sh"
