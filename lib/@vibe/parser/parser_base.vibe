@@ -1803,6 +1803,55 @@ fn is_lambda_start(tokens: Array[Token], pos: Int) -> Bool {
   is_lambda_start_impl(tokens, pos, 0, 0, false)
 }
 
+/// `(n) { ... }` with no colon and no `->` is the no-arrow lambda shape, but
+/// `is_lambda_start` only accepts that brace when a colon is present so
+/// `(cond) {` after `if`/`while`/`match` stays a parenthesized condition.
+/// When the parens are an untyped ident list and `{` follows, the reader
+/// meant a lambda whose parameter needs a type (#2127). `None` when the
+/// previous token is the control keyword that owns the brace.
+fn untyped_brace_lambda_param(tokens: Array[Token], paren_pos: Int) -> Option[(String, Int)] {
+  let preceded_by_control = if paren_pos <= 0 {
+    false
+  } else {
+    match peek(tokens, paren_pos - 1) {
+      TIf => true,
+      TWhile => true,
+      TMatch => true,
+      THandle => true,
+      TIn => true,
+      _ => false
+    }
+  }
+  if preceded_by_control {
+    None
+  } else {
+    untyped_brace_lambda_param_scan(tokens, paren_pos + 1)
+  }
+}
+
+fn untyped_brace_lambda_param_scan(tokens: Array[Token], pos: Int) -> Option[(String, Int)] {
+  match peek(tokens, pos) {
+    TIdent(name) => untyped_brace_lambda_param_rest(tokens, pos + 1, name),
+    _ => None
+  }
+}
+
+fn untyped_brace_lambda_param_rest(tokens: Array[Token], pos: Int, first: String) -> Option[(String, Int)] {
+  match peek(tokens, pos) {
+    TTilde => untyped_brace_lambda_param_rest(tokens, pos + 1, first),
+    TQuestion => untyped_brace_lambda_param_rest(tokens, pos + 1, first),
+    TComma => match peek(tokens, pos + 1) {
+      TIdent(_) => untyped_brace_lambda_param_rest(tokens, pos + 2, first),
+      _ => None
+    },
+    TRParen => match peek(tokens, pos + 1) {
+      TLBrace => Some((first, pos + 1)),
+      _ => None
+    },
+    _ => None
+  }
+}
+
 fn parse_ctor_types_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int) with Exception {
   match peek(tokens, pos) {
     TComma => {
@@ -2212,5 +2261,6 @@ export {
   reject_retired_effect_label,
   skip_derive,
   skip_semi,
-  tk_name
+  tk_name,
+  untyped_brace_lambda_param
 }
