@@ -75,6 +75,7 @@ import ./checker.vibe {
   preserve_generic_instantiation,
   reject_resume_outside_handler,
   report_formal_applications,
+  report_map_key_types,
   report_unknown_type_names,
   trait_erased_type_param_env,
   typed_occurrence_capture_begin_statement,
@@ -2396,6 +2397,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       STypeAlias(exported, name, params, te) => {
         // #1512: `params` shadow `defs` -- see resolve_type_expr_shadowed.
+        report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), errors)
         let t = resolve_type_expr_shadowed(te, defs, params)
         // Record the alias (with its formal params) so an applied use
         // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
@@ -2471,6 +2473,38 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SAliasDecl(_, _) => (env, s, c)
       ,
       STrait(_, name, supers, methods, method_gens, tparams) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, mparams, mret) = Array::get(methods, mi)
+          let shadow = Array::slice(["Self"], 0, 1)
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(shadow, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gname, gtparams, _) = Array::get(method_gens, gi)
+            if gname == mname {
+              let mut gj = 0
+              while gj < Array::length(gtparams) {
+                Array::push(shadow, Array::get(gtparams, gj))
+                gj = gj + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          let where_label = fapp_decl_label(name, mname)
+          let mut pi = 0
+          while pi < Array::length(mparams) {
+            report_map_key_types(Array::get(mparams, pi), defs, shadow, where_label, errors)
+            pi = pi + 1
+          }
+          report_map_key_types(mret, defs, shadow, where_label, errors)
+          mi = mi + 1
+        }
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
       },
@@ -2517,9 +2551,12 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // #1512: `eparams` shadow `defs` -- the rigid-`CtNamed` convention
             // the comment above relies on is only true while no import alias
             // has claimed the formal's name.
-            Array::push(rp, resolve_type_expr_shadowed(Array::get(opparams, pi), defs, eparams))
+            let op_param = Array::get(opparams, pi)
+            report_map_key_types(op_param, defs, eparams, fapp_decl_label(ename, opname), errors)
+            Array::push(rp, resolve_type_expr_shadowed(op_param, defs, eparams))
             pi = pi + 1
           }
+          report_map_key_types(opret, defs, eparams, fapp_decl_label(ename, opname), errors)
           Array::push(resolved_ops, (opname, rp, resolve_type_expr_shadowed(opret, defs, eparams)))
           oi = oi + 1
         }
