@@ -6263,3 +6263,50 @@ if ! cmp -s "$nfdir/expected.vibe" "$nfdir/again.vibe"; then
 fi
 rm -rf "$nfdir"
 echo "[compiler-gate] non-final closure argument fixpoint ok (#2271)"
+
+# 110/110. An `assert_eq` failure names the line it fired on (#2202).
+# The report gave the test name and both sides but no location, so a test with
+# several asserts sharing an expected value could not say which one failed --
+# and the book's chapter 12 reproduces that output shape verbatim, documenting
+# the gap without naming it.
+#
+# Two directions, because either alone is satisfiable by the wrong thing: the
+# SECOND assert's line must appear (not merely "a line"), and the first
+# assert's line must NOT, or the stamp is attached to the test rather than to
+# the call. `vibe test` compiles through VIBE_FS_COMPILE, which is the lane
+# that merges modules and therefore the lane where offsets are per-module.
+echo "[compiler-gate] 110/110 an assert_eq failure names its own line (#2202)"
+aldir="_build/_gate_assert_line"
+rm -rf "$aldir"; mkdir -p "$aldir"
+cat > "$aldir/two_asserts_test.vibe" <<'ALEOF'
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+test "which assert fired" {
+  assert_eq(double(21), 42)
+  assert_eq(double(2), 5)
+}
+ALEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$aldir/two_asserts_test.vibe" >"$aldir/out.log" 2>&1 || true
+# The failing assert is on line 7; the passing one is on line 6.
+if ! grep -qF 'two_asserts_test.vibe:7' "$aldir/out.log"; then
+  echo "[compiler-gate] FAIL: the assert_eq failure did not name the line it fired on (#2202)" >&2
+  cat "$aldir/out.log" >&2
+  exit 1
+fi
+if grep -qF 'two_asserts_test.vibe:6' "$aldir/out.log"; then
+  echo "[compiler-gate] FAIL: the report named the PASSING assert's line -- the stamp is not per call (#2202)" >&2
+  cat "$aldir/out.log" >&2
+  exit 1
+fi
+# The values still have to be there: a location that replaced the diagnostic
+# would pass the two checks above and be a regression.
+if ! grep -qF 'expected: 5' "$aldir/out.log" || ! grep -qF 'actual:   4' "$aldir/out.log"; then
+  echo "[compiler-gate] FAIL: the assert_eq report lost its operands (#2202)" >&2
+  cat "$aldir/out.log" >&2
+  exit 1
+fi
+rm -rf "$aldir"
+echo "[compiler-gate] assert_eq failure location ok (#2202)"

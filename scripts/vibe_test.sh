@@ -314,7 +314,14 @@ vt_fail_detail() {
     # reason with only the host crash-debug dump or blank lines in between --
     # the exact shape the generated assert_eq abort produces.
     { __blk = 0 }
-    $0 == "assert_eq failed" {
+    # Anchored, and now with the optional location the merge stamps onto the
+    # call (#2202): `assert_eq failed at path:line`. Still a full-line match
+    # ending in `:<digits>`, so ordinary program output cannot masquerade as
+    # the head of an assert block -- the property the exact-match spelling was
+    # there for. An exact match alone silently DROPPED the located line from
+    # the condensed report, which is how the located build first looked like it
+    # had changed nothing.
+    $0 ~ /^assert_eq failed( at .+:[0-9]+)?$/ {
       __blk = 1
       ablk = 1
       ndiag++

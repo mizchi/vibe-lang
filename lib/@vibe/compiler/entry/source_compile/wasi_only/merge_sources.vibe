@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/syntax {
-  lex, parse_program, print_program
+  lex, lex_with_offsets, parse_program, parse_program_located, print_program
 }
 
 import @vibe/compiler/core {
@@ -40,6 +40,8 @@ import @vibe/compiler/core {
   resolve_import_path_candidates,
   resolve_import_path_probe,
   rewrite_imported_value_stmt_to_local,
+  source_has_assert_eq,
+  stamp_assert_stmts,
   stmts_have_import_deep
 }
 
@@ -56,6 +58,43 @@ import @vibe/compiler/loader {
 }
 
 //# Functions
+
+//# assert_eq source locations (#2202)
+
+/// The walk itself lives in `@vibe/compiler/core` so this merge and the FS
+/// lane's merge (entry/compiler/file_compile) stamp identically. What is local
+/// here is WHEN: this lane also has callers that PRINT the merged program as
+/// source, and a printed three-argument `assert_eq` would land in the generated
+/// bundles, which the committed seed compiles -- and the seed knows only the
+/// two-argument form. So the compile entry turns stamping on and every printing
+/// entry turns it off, explicitly, per invocation.
+let assert_stamp_cell = array_empty()
+
+fn assert_stamp_set(on: Bool) -> Unit {
+  Array::truncate(assert_stamp_cell, 0)
+  Array::push(assert_stamp_cell, on)
+}
+
+fn assert_stamp_on() -> Bool {
+  if Array::length(assert_stamp_cell) > 0 {
+    Array::get(assert_stamp_cell, 0)
+  } else {
+    false
+  }
+}
+
+/// One module's statements, located only when it can pay for itself: a module
+/// with no `assert_eq` in its text gets the ordinary unlocated parse, so the
+/// extra `lex_with_offsets` + located parse + walk is confined to the files
+/// that can actually produce an assert failure.
+fn parse_module_stmts(path: String, source: String) -> Array[Stmt] with Exception {
+  if assert_stamp_on() && source_has_assert_eq(source) {
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    stamp_assert_stmts(parse_program_located(tokens, starts, source), path, source)
+  } else {
+    parse_program(lex(source))
+  }
+}
 
 fn string_array_contains_local(items: Array[String], target: String) -> Bool {
   let mut i = 0
@@ -150,7 +189,7 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
     // in THIS lane too, so a contract package in the graph resolves to its
     // conformance-checked facade instead of a parse error on bodyless decls.
     let source = ingest_source_text_fs(path, Fs::read_file(path))
-    let stmts = parse_program(lex(source))
+    let stmts = parse_module_stmts(path, source)
     let base_dir = dir_of_path(path)
     let mut i = 0
     while i < Array::length(stmts) {
@@ -516,6 +555,8 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
 /// names produced by the ordinary export/private namespacing pipeline; no
 /// guessed mangling or visibility broadening is involved.
 export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String) -> String with Exception + Fs {
+  // OFF: this lane prints the merged program as source (see compile_file_wasi_only).
+  assert_stamp_set(false)
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let visited = path_set_new()
@@ -541,6 +582,8 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
 export fn merged_program_source_fs(entry_path: String) -> String with Exception + Fs {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
+  // OFF: this lane prints the merged program as source (see compile_file_wasi_only).
+  assert_stamp_set(false)
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
@@ -550,6 +593,11 @@ export fn merged_program_source_fs(entry_path: String) -> String with Exception 
 export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
+  // #2202: stamp `assert_eq` call sites with their own module's `path:line`.
+  // ON here and OFF in every lane that PRINTS the merged program: a printed
+  // three-argument `assert_eq` would land in the generated bundles, which the
+  // committed seed compiles, and the seed knows only the two-argument form.
+  assert_stamp_set(true)
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)

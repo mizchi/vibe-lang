@@ -6331,10 +6331,39 @@ fn interp_take_repl(r: Option[Expr]) -> Expr {
 /// what the checker sees (effect-free); this pass rewrites it after check so
 /// a failure can print both sides without adding Stderr/Exception to the
 /// source row.
+/// Arity 2 is what the user writes. Arity 3 is the same call after the merge
+/// stamped it with `"path:line"` from its own module's source (#2202) -- that
+/// form exists only between the merge and this lowering, and this lowering
+/// removes it, so neither the checker nor either backend ever sees it.
 fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
   match callee {
-    EIdent(n, _) => n == "assert_eq" && Array::length(args) == 2,
+    EIdent(n, _) => n == "assert_eq" && (Array::length(args) == 2 || (Array::length(args) == 3 && assert_eq_stamp_is_string(args))),
     _ => false
+  }
+}
+
+/// A third argument counts only when it is a literal string, so a user's
+/// `assert_eq(a, b, c)` still fails on arity as it always did rather than
+/// silently dropping its third operand.
+fn assert_eq_stamp_is_string(args: Array[Expr]) -> Bool {
+  match Array::get(args, 2) {
+    EString(_) => true,
+    _ => false
+  }
+}
+
+/// The stamped location, or "" when the call was never stamped -- an unlocated
+/// parse, a lane that does not stamp, or an `assert_eq` in an expression
+/// position the stamping walk does not descend into. No line is the designed
+/// degradation; a wrong line would be worse than none (#1445).
+fn assert_eq_location(args: Array[Expr]) -> String {
+  if Array::length(args) < 3 {
+    ""
+  } else {
+    match Array::get(args, 2) {
+      EString(loc) => loc,
+      _ => ""
+    }
   }
 }
 
@@ -6399,7 +6428,13 @@ fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String
   // block, so the block text alone cannot identify the abort. The
   // condensers hide the line; in a plain `vibe run` it reads as ordinary
   // diagnostic prose rather than harness protocol.
-  let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\nassert failed: aborting")))))
+  let located = assert_eq_location(args)
+  let head = if located == "" {
+    "assert_eq failed\n  expected: "
+  } else {
+    String::concat("assert_eq failed at ", String::concat(located, "\n  expected: "))
+  }
+  let msg = assert_eq_concat(EString(head), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\nassert failed: aborting")))))
   // stdout, not Stderr::write_stream: the gc lane only reserves host
   // imports when the source already used one, and flipping that on a
   // SIMD-only file shifts every generated-body index (gc-gate

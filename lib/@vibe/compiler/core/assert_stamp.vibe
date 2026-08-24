@@ -1,0 +1,133 @@
+//# `assert_eq` source locations (#2202)
+//
+// An `assert_eq` failure named the test and both operands but not the line, so
+// a test with several asserts sharing an expected value could not say which one
+// fired. The reason is structural: the compile lanes MERGE every module into one
+// program, and an offset is a PER-MODULE space -- a merged program cannot say
+// which module one of its offsets belongs to. `cli_support.vibe` documents that
+// hazard, and #1445 settles that a plausible-but-wrong position is worse than
+// none.
+//
+// So the location is taken while the module's OWN source is still in hand, in
+// the merge, and attached to the call as a third argument -- `assert_eq(a, b,
+// "path:line")` -- so it travels with the node. A side table keyed by statement
+// index would not survive: `desugar_trait_dicts` hoists lambdas and inlines
+// wrappers into new top-level definitions before the assert lowering runs, so
+// indices shift under it.
+//
+// Degradation is always toward NO line, never a wrong one: a statement parsed
+// without offsets carries -1 and is left alone, and the walk descends only the
+// expression forms that CARRY statements, so an `assert_eq` buried in (say) a
+// tuple loses its line rather than borrowing someone else's.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./ast.vibe {
+  Expr, Pat, Stmt
+}
+
+/// `path:line`, 1-based, counted in the module's own text.
+fn assert_loc_string(path: String, source: String, off: Int) -> String {
+  let n = String::length(source)
+  let mut line = 1
+  let mut i = 0
+  while i < off && i < n {
+    if String::char_code_at(source, i) == 10 {
+      line = line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  String::concat(path, String::concat(":", Int::to_string(line)))
+}
+
+fn is_two_arg_assert_eq(callee: Expr, args: Array[Expr], off: Int) -> Bool {
+  if off < 0 || Array::length(args) != 2 {
+    false
+  } else {
+    match callee {
+      EIdent(name, _) => name == "assert_eq",
+      _ => false
+    }
+  }
+}
+
+fn stamp_assert_exprs(exprs: Array[Expr], path: String, source: String) -> Array[Expr] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(exprs) {
+    Array::push(out, stamp_assert_expr(Array::get(exprs, i), path, source))
+    i = i + 1
+  }
+  out
+}
+
+fn stamp_assert_arms(arms: Array[(Pat, Expr)], path: String, source: String) -> Array[(Pat, Expr)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    Array::push(out, (pat, stamp_assert_expr(body, path, source)))
+    i = i + 1
+  }
+  out
+}
+
+fn stamp_assert_expr(e: Expr, path: String, source: String) -> Expr {
+  match e {
+    ECall(callee, args, off) => {
+      let stamped_args = stamp_assert_exprs(args, path, source)
+      if is_two_arg_assert_eq(callee, args, off) {
+        Array::push(stamped_args, EString(assert_loc_string(path, source, off)))
+        ECall(callee, stamped_args, off)
+      } else {
+        ECall(stamp_assert_expr(callee, path, source), stamped_args, off)
+      }
+    },
+    ESeq(a, b) => ESeq(stamp_assert_expr(a, path, source), stamp_assert_expr(b, path, source)),
+    EIf(c, t, f) => EIf(stamp_assert_expr(c, path, source), stamp_assert_expr(t, path, source), stamp_assert_expr(f, path, source)),
+    EWhile(c, b) => EWhile(stamp_assert_expr(c, path, source), stamp_assert_expr(b, path, source)),
+    EForIn(v, k, it, b) => EForIn(v, k, stamp_assert_expr(it, path, source), stamp_assert_expr(b, path, source)),
+    ELoop(inits, b) => ELoop(inits, stamp_assert_expr(b, path, source)),
+    ELet(n, v, b, off) => ELet(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source), off),
+    ELetMut(n, v, b, off) => ELetMut(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source), off),
+    ELetRec(n, v, b) => ELetRec(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source)),
+    EMatch(scrutinee, arms) => EMatch(stamp_assert_expr(scrutinee, path, source), stamp_assert_arms(arms, path, source)),
+    EHandle(body, arms) => EHandle(stamp_assert_expr(body, path, source), stamp_assert_arms(arms, path, source)),
+    EFn(gens, bounds, params, ret, row, body) => EFn(gens, bounds, params, ret, row, stamp_assert_expr(body, path, source)),
+    EReturn(inner) => EReturn(stamp_assert_expr(inner, path, source)),
+    _ => e
+  }
+}
+
+/// One module's statements with every locatable two-argument `assert_eq` given
+/// its own `path:line`. Pure: a new spine is returned and nothing the caller
+/// handed in is mutated, which matters because the FS lane's parse is memoized
+/// and its nodes are shared between callers.
+export fn stamp_assert_stmts(stmts: Array[Stmt], path: String, source: String) -> Array[Stmt] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stamped = match Array::get(stmts, i) {
+      SLet(exp, is_rec, name, ann, expr) => SLet(exp, is_rec, name, ann, stamp_assert_expr(expr, path, source)),
+      STest(name, expr) => STest(name, stamp_assert_expr(expr, path, source)),
+      SBench(name, expr) => SBench(name, stamp_assert_expr(expr, path, source)),
+      SExample(name, expr) => SExample(name, stamp_assert_expr(expr, path, source)),
+      SExpr(expr) => SExpr(stamp_assert_expr(expr, path, source)),
+      SModule(exp, name, body) => SModule(exp, name, stamp_assert_stmts(body, path, source)),
+      other => other
+    }
+    Array::push(out, stamped)
+    i = i + 1
+  }
+  out
+}
+
+/// Whether a module can produce an assert failure at all. Callers use it to keep
+/// the walk off the files that cannot, which is nearly all of them.
+export fn source_has_assert_eq(source: String) -> Bool {
+  String::index_of(source, "assert_eq") >= 0
+}

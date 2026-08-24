@@ -37,6 +37,8 @@ import @vibe/compiler/core {
   resolution_env_seed,
   resolve_import_path,
   rewrite_imported_value_stmt_to_local,
+  source_has_assert_eq,
+  stamp_assert_stmts,
   stmts_have_import_deep
 }
 
@@ -209,7 +211,24 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
 /// require. Interior-line breakpoints (span-arc step5) still get their real
 /// EIdent char-offsets: the memoized parse is the same located one.
 fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Exception {
-  parse_program_with_path(path, source)
+  // #2202: give every locatable two-argument `assert_eq` its own
+  // `path:line` HERE, while this module's own source is still in hand. After
+  // the merge it is impossible: an offset is a per-module space and a merged
+  // program cannot say which module one belongs to, so a location recovered
+  // downstream would be plausible and wrong (#1445). The memoized parse above
+  // is already the located one, so this costs a walk and no second parse --
+  // and only for the files whose text contains the call at all.
+  //
+  // Unconditional in this lane, unlike the wasi_only merge's cell: nothing
+  // here PRINTS the merged program, so a three-argument `assert_eq` cannot
+  // reach a generated bundle and thus never reaches the committed seed, which
+  // knows only the two-argument form.
+  let stmts = parse_program_with_path(path, source)
+  if source_has_assert_eq(source) {
+    stamp_assert_stmts(stmts, path, source)
+  } else {
+    stmts
+  }
 }
 
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
