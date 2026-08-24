@@ -9904,8 +9904,10 @@ fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var
     // A partial operand must not win merely because its container head is
     // dispatchable. In particular `{m:String,}` becomes
     // `Map[String, __EqUnknown]`; accepting it here hides a complete shape on
-    // the other operand and makes aggregate values fall back to identity.
-    if ty_needs_typed_eq(t) && !ty_contains_eq_unknown(t) {
+    // the other operand and makes aggregate values fall back to identity. A
+    // Result constructor is the safe exception: its unknown is the inactive
+    // arm, whose payload comparator cannot run for that runtime tag.
+    if ty_needs_typed_eq(t) && ty_eq_shape_is_usable(t) {
       Some(t)
     } else {
       None
@@ -10000,6 +10002,41 @@ fn ty_contains_eq_unknown(t: TypeExpr) -> Bool {
       found
     },
     _ => false
+  }
+}
+
+/// A partial equality shape is usable only when every unknown slot is the
+/// inactive arm of a Result constructor. `Ok(v)` can describe T without E and
+/// `Err(e)` can describe E without T; the runtime tag prevents the inactive
+/// payload comparator from running. Unknowns inside Array, Map, Option, tuple,
+/// or the active Result arm remain unsafe and must let the other operand answer.
+fn ty_eq_shape_is_usable(t: TypeExpr) -> Bool {
+  if !ty_contains_eq_unknown(t) {
+    true
+  } else {
+    match t {
+      TyApp(name, args) => if name == "Result" && Array::length(args) == 2 {
+        let ok_ty = Array::get(args, 0)
+        let err_ty = Array::get(args, 1)
+        match ok_ty {
+          TyName(ok_name) => if ok_name == "__EqUnknown" {
+            ty_eq_shape_is_usable(err_ty)
+          } else {
+            match err_ty {
+              TyName(err_name) => err_name == "__EqUnknown" && ty_eq_shape_is_usable(ok_ty),
+              _ => false
+            }
+          },
+          _ => match err_ty {
+            TyName(err_name) => err_name == "__EqUnknown" && ty_eq_shape_is_usable(ok_ty),
+            _ => false
+          }
+        }
+      } else {
+        false
+      },
+      _ => false
+    }
   }
 }
 
