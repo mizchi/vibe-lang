@@ -1272,13 +1272,17 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // reader never sees. `TaskGroup::run` compiled with `vibe check` clean
       // and no marker of any kind. This is the missing half.
       //
-      // A warning, not an error: the surface has no external users yet (all
-      // 31 `TaskGroup::` files are in-repo, measured), so nothing is broken by
-      // saying so, and an error would need the opt-in threaded through every
-      // gate lane before it could land. Escalating to an error is the next
-      // step, taken before external users appear rather than after.
+      // An ERROR, not a warning, and the escalation is deliberate: the surface
+      // has no external users yet. Measured -- exactly 14 files carry a
+      // column-1 `import @vibe/concurrent`, all of them in this repository
+      // (13 fixtures + 1 eval probe), and NONE under lib/, so the bootstrap
+      // chain never touches it. Refusing now costs 14 opt-ins; refusing after
+      // someone depends on it costs them a rewrite.
       //
-      // `VIBE_UNSTABLE=1` silences it, read in EXPRESSION position like the
+      // The FS-compile branch carries the same gate, because a build that
+      // accepts what the check rejects is worse than either answer alone.
+      //
+      // `VIBE_UNSTABLE=1` opts in, read in EXPRESSION position like the
       // other observation-only knobs: `check_selector_precedence.sh` derives
       // the adapter's BRANCH order from statement-position `if Env::get(..)`,
       // and a selector that picks no verb must not enter that order (it would
@@ -1291,11 +1295,10 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       } else {
         check_unstable_surface_warnings_from_source_groups(input_path, checked_source_groups)
       }
-      let mut uwi = 0
-      while uwi < Array::length(unstable_warns) {
-        StringBuilder::push(out_text, Array::get(unstable_warns, uwi))
-        StringBuilder::push(out_text, "\n")
-        uwi = uwi + 1
+      if Array::length(unstable_warns) > 0 {
+        return emit_compile_diag(output_path, Array::get(unstable_warns, 0))
+      } else {
+        ()
       }
       StringBuilder::push(out_text, "ok\n")
       Fs::write_file(output_path, StringBuilder::freeze(out_text))
@@ -1318,6 +1321,22 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // Request validation and stale-sidecar deletion happened before every
       // CLI early return above. This branch now only consumes the validated
       // request while preserving the ordinary compile-path selection below.
+      //
+      // ADR-0068 gate, BEFORE any compile work. `vibe check` and this branch
+      // must agree: a build that accepts what the check rejects is the same
+      // "two verbs, two answers" defect #1567 fixed for check/diagnostics, and
+      // it is worse here because the accepting verb is the one that ships.
+      // `VIBE_UNSTABLE=1` opts in.
+      let fs_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_source_groups(input_path, collect_source_groups_fs(input_path))
+      }
+      if Array::length(fs_unstable) > 0 {
+        return emit_compile_diag(output_path, Array::get(fs_unstable, 0))
+      } else {
+        ()
+      }
       let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
       // debugger trace (DAP P1 groundwork): `vibe run --trace` sets VIBE_DEBUG=1
       // so the user file (and its imports) is compiled with function-call

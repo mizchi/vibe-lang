@@ -703,7 +703,7 @@ fn str_take_until_space(s: String) -> String {
 
 fn unstable_package_note(name: String) -> String {
   if name == "@vibe/concurrent" {
-    "`@vibe/concurrent` is UNSTABLE (ADR-0068, still proposed): it is outside the SemVer promise and can change within a Minor release -- see docs/spec/stable-surface.md section 6. Set VIBE_UNSTABLE=1 to silence this."
+    "set VIBE_UNSTABLE=1 to build against `@vibe/concurrent`, or drop the import. It is ADR-0068, still proposed: outside the SemVer promise and able to change within a Minor release, so it is opt-in rather than silent (docs/spec/stable-surface.md section 6). The `Async` effect itself is stable and needs no opt-in -- only this package's concurrency model does."
   } else {
     ""
   }
@@ -721,19 +721,25 @@ export fn check_unstable_surface_warnings_from_source_groups(input_path: String,
     let line = Array::get(lines, i)
     // Column 1, no trimming: an `import` is a top-level declaration and the
     // formatter puts it there, so a leading-whitespace form is not a thing
-    // this has to read. It also keeps the scan off `String::trim_start`,
-    // which docs/cheatsheet.md lists but the compiler's own surface does not
-    // have -- measured here, and worth its own issue.
+    // this has to read.
+    //
+    // It also needs no `String::trim_start`, which is a LIBRARY function
+    // rather than a builtin -- reaching it here would mean adding an
+    // `@vibe/builtin` import to this file. docs/cheatsheet.md says so
+    // explicitly ("These are not builtins ... calling one without its import
+    // is `unknown name`", the #2124 fix); the first version of this scan used
+    // it, read the resulting `unknown name` as the cheatsheet being wrong,
+    // and was wrong itself.
     if String::starts_with(line, "import ") {
       let pkg = str_take_until_space(String::substring(line, 7, String::length(line)))
       let note = unstable_package_note(pkg)
       if note != "" {
-        // `warning: line N:col 1: ...`, the spelling deprecated_scan uses.
-        // The launcher's check arm forwards ONLY lines matching `^warning: `
-        // (runtime/vibe), so a `path:line:col: warning:` form -- which is what
-        // `vibe diagnostics` emits -- is silently dropped here. Measured: the
-        // first version of this used that form and printed nothing.
-        Array::push(out, String::concat("warning: line ", String::concat(Int::to_string(i + 1), String::concat(":col 1: ", note))))
+        // `line N:col 1: ...`, the located-diagnostic spelling. This started
+        // as a `warning: ` line, which the launcher's check arm forwards to
+        // stderr; it is now an ERROR routed through emit_compile_diag, and
+        // that channel is the one both `vibe check` and `vibe build` already
+        // read, so the two verbs cannot disagree.
+        Array::push(out, String::concat("line ", String::concat(Int::to_string(i + 1), String::concat(":col 1: ", note))))
       } else {
         ()
       }

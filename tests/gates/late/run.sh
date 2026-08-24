@@ -1819,7 +1819,7 @@ rm -rf "$regiondir"; mkdir -p "$regiondir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/region_ok_basic.vibe "$regiondir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$regiondir/pos.wasm" ]; then
@@ -1835,7 +1835,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_region_escape_return.vibe "$regiondir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$regiondir/neg.wasm" ]; then
@@ -1892,7 +1892,7 @@ rm -rf "$spawnabledir"; mkdir -p "$spawnabledir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/region_ok_spawnable_capture.vibe "$spawnabledir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$spawnabledir/pos.wasm" ]; then
@@ -1908,7 +1908,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_spawnable_capture_array.vibe "$spawnabledir/neg_array.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_array.wasm" ]; then
@@ -1923,7 +1923,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_spawnable_capture_cross_region.vibe "$spawnabledir/neg_cross.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_cross.wasm" ]; then
@@ -1938,7 +1938,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_spawnable_capture_letmut.vibe "$spawnabledir/neg_letmut.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_letmut.wasm" ]; then
@@ -1953,7 +1953,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_spawnable_capture_letmut_outer_scope.vibe "$spawnabledir/neg_letmut_outer.wasm" main >/dev/null 2>&1 || true
 if [ -s "$spawnabledir/neg_letmut_outer.wasm" ]; then
@@ -1974,7 +1974,7 @@ fi
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/region_ok_spawnable_capture_shadowed_letmut.vibe "$spawnabledir/pos_shadow.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$spawnabledir/pos_shadow.wasm" ]; then
@@ -2016,7 +2016,7 @@ rm -rf "$taskgroupdir"; mkdir -p "$taskgroupdir"
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/region_ok_taskgroup_sugar.vibe "$taskgroupdir/pos.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$taskgroupdir/pos.wasm" ]; then
@@ -2032,7 +2032,7 @@ fi
 # #1571: the expectation for this rejection is the diagnostic grep below,
 # so the fixture no longer carries an unread `__DATA__` error_contains copy
 # and is compiled AS-IS -- no `sed` strip, no temp copy.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/err_taskgroup_sugar_region_escape.vibe "$taskgroupdir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$taskgroupdir/neg.wasm" ]; then
@@ -2122,7 +2122,7 @@ fi
 # #1571: the expected value lives in the fixture now (an `inspect` test
 # block declaring the entry's own row, #1508), so this compiles it AS-IS --
 # no `__DATA__` strip, no temp copy, and no expected value in shell.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   fixtures/region_ok_frozen_array_taskgroup_capture.vibe "$frozenarrdir/capture.wasm" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$frozenarrdir/capture.wasm" ]; then
@@ -3322,7 +3322,7 @@ if [ "$asb89_pos_out" != "42" ]; then
   exit 1
 fi
 cp fixtures/err_async_boundary_mixed_convention.vibe "$asb89dir/neg.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$asb89dir/neg.vibe" "$asb89dir/neg.wasm" main >/dev/null 2>&1 || true
 if [ -s "$asb89dir/neg.wasm" ]; then
@@ -3361,7 +3361,7 @@ if ! grep -qF 'mixing the step convention' "$asb89dir/negop.wasm.diag" 2>/dev/nu
   exit 1
 fi
 cp fixtures/async_boundary_user_sleep_test.vibe "$asb89dir/usersleep.vibe"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$asb89dir/usersleep.vibe" "$asb89dir/usersleep.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$asb89dir/usersleep.wasm" ]; then
@@ -6050,16 +6050,21 @@ fi
 rm -rf "$cdbg"
 echo "[compiler-gate] crash dump opt-in ok (#2199)"
 
-# 108/108. The ADR-0068 concurrency surface is MARKED unstable (#2248).
+# 108/108. The ADR-0068 concurrency surface is opt-in (#2248).
 #      docs/spec/stable-surface.md said the unstable surface "is reached only
 #      through `@build.unstable`, an explicit flag, or an ADR still marked
 #      `proposed`" -- and `@build.unstable` appeared nowhere else in the tree,
 #      there was no such flag, and `TaskGroup::run` checked clean with no
-#      marker of any kind. Three directions, because each alone is satisfiable
-#      by the wrong thing: silence would also pass if the warning were deleted,
-#      the warning alone would pass if the opt-in did nothing, and both would
-#      pass if it warned on every file.
-echo "[compiler-gate] 108/108 the ADR-0068 concurrency surface warns unless opted in (#2248)"
+#      marker of any kind.
+#
+#      BOTH verbs, because a build that accepts what the check rejects is the
+#      "two verbs, two answers" defect #1567 fixed for check/diagnostics, and
+#      it is worse here: the accepting verb is the one that ships. And three
+#      directions each, since any one alone is satisfiable by the wrong thing
+#      -- silence would also pass if the gate were deleted, rejection would
+#      also pass if the opt-in did nothing, and both would pass if it rejected
+#      every file.
+echo "[compiler-gate] 108/108 the ADR-0068 concurrency surface is opt-in, in check AND build (#2248)"
 uwdir="_build/_gate_unstable_warn"
 rm -rf "$uwdir"; mkdir -p "$uwdir"
 cat > "$uwdir/uses.vibe" <<'UWEOF'
@@ -6077,31 +6082,69 @@ fn main() -> Int { 1 + 1 }
 UWEOF
 # `env -u VIBE_UNSTABLE`: the no-opt-in cases must not inherit the opt-in.
 # Measured -- with VIBE_UNSTABLE=1 in the ambient environment this section
-# reported "importing @vibe/concurrent did not warn" and would have passed
-# vacuously had the assertion been the other way round. Same defect #2252
-# found in five self-tests: a check that measures the machine, not the
-# property.
+# reported "did not reject" and would have passed vacuously had the assertion
+# been the other way round. Same defect #2252 found in five self-tests: a
+# check that measures the machine, not the property.
 uw_check() { env -u VIBE_UNSTABLE VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
   VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$1" 2>&1; }
-uw_warned="$(uw_check "$uwdir/uses.vibe" | grep -c 'is UNSTABLE (ADR-0068' || true)"
-uw_optin="$(VIBE_UNSTABLE=1 VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
-  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$uwdir/uses.vibe" 2>&1 | grep -c 'is UNSTABLE (ADR-0068' || true)"
-uw_plain="$(uw_check "$uwdir/plain.vibe" | grep -c 'is UNSTABLE (ADR-0068' || true)"
-if [ "$uw_warned" -lt 1 ]; then
-  echo "[compiler-gate] FAIL: importing @vibe/concurrent did not warn (#2248)" >&2
-  uw_check "$uwdir/uses.vibe" >&2
+uw_build() { # <src> <out> [extra env assignments...]
+  local src="$1" out="$2"; shift 2
+  rm -f "$out" "$out.diag"
+  env -u VIBE_UNSTABLE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$src" "$out" main >/dev/null 2>&1 || true
+}
+
+# check: rejected, opt-in accepted, unrelated file untouched.
+#
+# Captured into a variable, not piped: this gate runs under `set -o pipefail`,
+# and `uw_check` exits 1 on the rejection it is asserting, so `uw_check | grep`
+# fails even when grep MATCHES. Measured -- the first version reported "vibe
+# check accepted @vibe/concurrent" while the rejection it was looking for was
+# printed one line above it in the same log.
+uw_uses_out="$(uw_check "$uwdir/uses.vibe" || true)"
+if ! printf '%s\n' "$uw_uses_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+  echo "[compiler-gate] FAIL: vibe check accepted @vibe/concurrent with no opt-in (#2248)" >&2
+  printf '%s\n' "$uw_uses_out" >&2
   exit 1
 fi
-if [ "$uw_optin" -ne 0 ]; then
-  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not silence the ADR-0068 warning (#2248)" >&2
+if ! VIBE_UNSTABLE=1 VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$uwdir/uses.vibe" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let vibe check through (#2248)" >&2
   exit 1
 fi
-if [ "$uw_plain" -ne 0 ]; then
-  echo "[compiler-gate] FAIL: a file not touching @vibe/concurrent warned anyway (#2248)" >&2
+uw_plain_out="$(uw_check "$uwdir/plain.vibe" || true)"
+if printf '%s\n' "$uw_plain_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent was rejected anyway (#2248)" >&2
+  printf '%s\n' "$uw_plain_out" >&2
+  exit 1
+fi
+
+# build: the same three, through the FS-compile lane.
+uw_build "$uwdir/uses.vibe" "$uwdir/uses.wasm"
+if [ -s "$uwdir/uses.wasm" ]; then
+  echo "[compiler-gate] FAIL: vibe build accepted @vibe/concurrent with no opt-in -- the build accepts what the check rejects (#2248)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/uses.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the build rejection did not name the opt-in (#2248)" >&2
+  cat "$uwdir/uses.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+uw_build "$uwdir/uses.vibe" "$uwdir/uses_optin.wasm" VIBE_UNSTABLE=1
+if [ ! -s "$uwdir/uses_optin.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the build through (#2248)" >&2
+  cat "$uwdir/uses_optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+uw_build "$uwdir/plain.vibe" "$uwdir/plain.wasm"
+if [ ! -s "$uwdir/plain.wasm" ]; then
+  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent failed to build (#2248)" >&2
+  cat "$uwdir/plain.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 unstable-surface warning ok (#2248)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build ok (#2248)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
