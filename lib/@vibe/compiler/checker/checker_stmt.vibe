@@ -653,24 +653,40 @@ fn resource_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]
 /// reference resolves to the last one, silently.
 ///
 /// `_` is skipped: `let _ = ...` is a discard, not a name.
+fn duplicate_value_decl_note(seen: Array[String], dname: String, errors: Array[String]) -> Unit {
+  if dname == "_" {
+    ()
+  } else if es_string_array_contains(seen, dname) {
+    Array::push(errors, String::concat("duplicate declaration: ", dname))
+  } else {
+    Array::push(seen, dname)
+  }
+}
+
 fn duplicate_value_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
   let seen = array_empty()
   let mut i = from_idx
   while i < Array::length(stmts) {
-    let dname = match Array::get(stmts, i) {
-      SLet(_, _, n, _, _) => n,
-      SLetMut(n, _, _) => n,
-      SExternLet(n, _) => n,
-      _ => "_"
-    }
-    if dname != "_" {
-      if es_string_array_contains(seen, dname) {
-        Array::push(errors, String::concat("duplicate declaration: ", dname))
-      } else {
-        Array::push(seen, dname)
-      }
-    } else {
-      ()
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => duplicate_value_decl_note(seen, n, errors),
+      SLetMut(n, _, _) => duplicate_value_decl_note(seen, n, errors),
+      SExternLet(n, _) => duplicate_value_decl_note(seen, n, errors),
+      // #2127: two imports binding the same local name used to silently
+      // last-win, so the fixture's call then failed with an arity mismatch
+      // of whichever builtin the alias happened to point at.
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let bound = match item.alias {
+            Some(a) => a,
+            None => item.name
+          }
+          duplicate_value_decl_note(seen, bound, errors)
+          j = j + 1
+        }
+      },
+      _ => ()
     }
     i = i + 1
   }

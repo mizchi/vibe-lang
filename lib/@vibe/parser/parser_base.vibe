@@ -2034,13 +2034,22 @@ export fn parse_effect_stmt_with_binder_context(tokens: Array[Token], pos: Int, 
             }
             let arrow_pos = expect_tk(tokens, after_op_params, "->")
             let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
+            // #2264: `Op(n: Int) -> Int with Fs` — parse_type_impl does not
+            // consume `with` after a non-function return type, so the next
+            // loop iteration used to throw "expected effect operation name
+            // or '}'" with no token index (file-only 1:1). An operation
+            // cannot carry a row; handlers and effectful payload types can.
+            match peek(tokens, after_ret) {
+              TWith => throw("an effect operation cannot declare its own effect row -- effects are carried by the handler that interprets it (put the row on the handling function), or take an effectful function as the operation's parameter at #\{after_ret}"),
+              _ => ()
+            }
             ArrayBuilder::push(ops_b, (op_name, params, ret_type))
             p = match peek(tokens, after_ret) {
               TSemicolon => after_ret + 1,
               _ => after_ret
             }
           },
-          _ => throw("expected effect operation name or '}'")
+          _ => throw("expected effect operation name or '}' at #\{p}")
         }
       }
       (SEffectDef(exported, name, type_params, ArrayBuilder::freeze(ops_b)), p)

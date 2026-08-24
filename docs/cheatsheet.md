@@ -1099,6 +1099,16 @@ directly iterable. This surface is component-only (linear/RC); GC, standalone
 core, `host_stream_named("stdin")`, and mixed named-provider composition are
 rejected.
 
+An operation cannot declare its own effect row. Effects are carried by the
+handler that interprets it, or by an effectful function in the payload
+(`Run(f: () -> Int with Exception) -> Int` is accepted). `#2264`.
+
+```vibe skip
+effect E {
+  Op(n: Int) -> Int with Fs
+}
+```
+
 **Naming.** Effect names are CamelCase. A standard provider builtin is a plain
 `Effect::snake_case` function call; a declared operation is CamelCase and is
 emitted with `perform`:

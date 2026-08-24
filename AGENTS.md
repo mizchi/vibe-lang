@@ -801,7 +801,7 @@ Three related rules, all learned the same way:
 ## Before Commit
 
 ```bash
-pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + operation gates
+pkf run release-check  # fmt + info + check + test + vibe-normalize + operation gates
 ```
 
 ## 生成物 (ビルド時生成、非 tracked)

@@ -685,10 +685,10 @@ condense_test_trap() {
   # pre_abort=1: the caller already saw the assert abort marker as the last
   # guest-stdout line, so the trap that follows is the assert aborting --
   # suppress its echo even though this condenser only reads the stderr side.
-  local errf="$1" fm="$2" base="$3" pre_abort="${4:-0}" out
+  local errf="$1" fm="$2" base="$3" pre_abort="${4:-0}" srcfile="${5:-}" out
   [ -s "$errf" ] || return 0
   [ -f "$fm" ] || fm=""
-  out="$(awk -v base="$base" -v fmfile="$fm" -v pre_abort="$pre_abort" '
+  out="$(awk -v base="$base" -v fmfile="$fm" -v pre_abort="$pre_abort" -v srcfile="$srcfile" '
     function hexval(c) {
       if (c >= "0" && c <= "9") return c + 0
       if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
@@ -725,6 +725,22 @@ condense_test_trap() {
         }
         close(fmfile)
       }
+      src = ""
+      if (srcfile != "") {
+        while ((getline l < srcfile) > 0) src = src l "\n"
+        close(srcfile)
+      }
+    }
+    function byte_to_line(off,    i, line, n, ch) {
+      line = 1
+      n = length(src)
+      i = 0
+      while (i < off && i < n) {
+        ch = substr(src, i + 1, 1)
+        if (ch == "\n") line++
+        i++
+      }
+      return line
     }
     # First __test_<name> stack frame = the failing test. Quoted names
     # keep spaces and Unicode in the wasm name section; some frames
@@ -755,6 +771,15 @@ condense_test_trap() {
       ablk = 1
       ndiag++
       diags[ndiag] = "       " $0
+    }
+    $0 ~ /^  at off=/ {
+      __blk = 1
+      off = $0
+      sub(/^  at off=/, "", off)
+      ndiag++
+      if (off + 0 >= 0 && src != "") diags[ndiag] = "       at line " byte_to_line(off + 0)
+      else if (off + 0 >= 0) diags[ndiag] = "       " $0
+      else ndiag--
     }
     $0 ~ /^  expected:/ {
       __blk = 1
@@ -2439,7 +2464,7 @@ PY
         # can masquerade as an `ok`/`FAIL` verdict to a parser. The whole
         # block goes to stdout, like the script lane.
         echo "FAIL $src"
-        condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" "$pre_abort"
+        condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" "$pre_abort" "$src"
         [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; } | sed 's/^/       /'
         _test_record fail "$n_tests" "$n_tests_exact"
         rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"

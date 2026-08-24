@@ -165,18 +165,10 @@ Status: accepted and moved from `TODO.md`.
 - Scratch-first workflow design:
   default namespace-backed scratch/shell flow, symbol listing with index
   inclusion status, and history reset policy.
-- Bundle-size guardrail workflow is implemented:
-  `scripts/bench_bundle_size.sh` compiles `examples/*.vibe` and
-  `bench/bundle_size/cases.txt` importer cases by default
-  (`bench/importers` is runtime-first:
-  `wasm` -> `wasm-js-string` -> no-dce fallback),
-  supports optional `bench/importers-no-dce` diagnostics via
-  `VIBE_BUNDLE_BENCH_INCLUDE_IMPORTER_NO_DCE=1`,
-  supports opt-in `@vibe/builtin/*.vibe` surfaces via
-  `VIBE_BUNDLE_BENCH_INCLUDE_STD_SURFACES=1`,
-  stores current metrics in `dist/bundle_size/current.tsv`,
-  and enforces per-entry golden budgets from
-  `bench/golden/bundle_size_budget.tsv`.
+- The product/compiler bundle-size monitors (`bench/bundle_size/`,
+  `bench/compiler_size/`, `scripts/bench_bundle_size.sh`) were removed in
+  #2150: nothing drove them after the MoonBit host retired. Live size
+  tracking is `bench/binary_size/`.
 - `export use` re-export syntax is implemented for facade modules:
   `export use <module-ref> { name1, name2 }` desugars to `Stmt::ReExport`
   (existing AST node). Named items are imported from the source module and
