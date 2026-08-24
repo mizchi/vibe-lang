@@ -57,6 +57,21 @@ of each item is [spec/syntax.md](syntax.md) and the
 - Composite types: tuples `(A, B)`, `Array[T]`, `Map[K, V]`, record, struct,
   enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
   trait bounds `[T: A + B]`, and the `Option[T]` sugar `T?` (ADR-0046).
+- **Equality (`==`) — the fail-closed contract** (ADR-0097 as shipped; measured
+  2026-08-19, #1526/#2157/#2192): where the operand's element type is known —
+  bare, through a name, inside tuples/structs/nested arrays, through a function
+  result, and for an unannotated `let xs = []` whose pushed values describe
+  themselves — `==` is **structural**. A comparison the compiler cannot
+  classify **traps at the comparison** once both sides are non-empty rather
+  than answering by length or identity; adding a type annotation resolves it.
+  An erased type variable (`[T: Eq]`) dispatches through its witness and is
+  rejected at check time for a container with no `Eq` impl. There is **no
+  silent reference equality** anywhere on this surface. SemVer reading: a
+  currently-trapping comparison later becoming a structural answer is a
+  compatible change (the typed lane, #2158); an existing answer changing is
+  breaking. The full contract is the cheatsheet's "`==` on `Array` / `Bytes`
+  (#1526)" section, pinned by `fixtures/structural_eq_contexts_test.vibe` and
+  the `structural_eq_untyped_empty_*_trap` fixtures.
 
 ### 2.2 Bindings and mutability
 - `let` (immutable), `let rec` (recursive), `let mut` (block-scoped mutable,
