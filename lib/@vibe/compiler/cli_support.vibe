@@ -664,16 +664,9 @@ fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stm
   }
 }
 
-/// UNSTABLE-surface warnings (ADR-0068). One line per import of a package
+/// UNSTABLE-surface diagnostics (ADR-0068). One line per import of a package
 /// whose design is not settled, so a reader is told at the keyboard rather
 /// than only in docs/spec/stable-surface.md section 6.
-///
-/// The scan is TEXTUAL on the entry source, for the same reason
-/// `deprecated_scan` is token-level: it needs no name resolution and it
-/// reports where the reader actually wrote the dependency. Only the ENTRY
-/// file warns -- a transitive dependency's own imports are its author's
-/// choice, not this file's, and warning about them would be noise nobody
-/// here can act on.
 ///
 /// `@vibe/concurrent` is the whole list today: `Nursery`, `Task`,
 /// `Sender`/`Receiver`, `TaskGroup::run` / `spawn` / `spawn_suspend`, and the
@@ -681,74 +674,111 @@ fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stm
 /// NOT here -- ADR-0012 is accepted and `with Async` ships in builtin
 /// signatures a user can reach (`StdinStream::next`). The unstable part is
 /// the concurrency model built on top, not the row vocabulary.
-
-/// The first whitespace-delimited token. `import @vibe/concurrent { X }` ->
-/// `@vibe/concurrent`. A `{` with no space before it also ends the token, so
-/// `import @vibe/concurrent{X}` is read the same way.
-fn str_take_until_space(s: String) -> String {
-  let n = String::length(s)
-  let mut cut = n
-  let mut i = 0
-  while i < n {
-    let c = String::char_code_at(s, i)
-    if (c == 32 || c == 9 || c == 123) && cut == n {
-      cut = i
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  String::substring(s, 0, cut)
-}
-
 fn unstable_package_note(name: String) -> String {
-  if name == "@vibe/concurrent" {
+  if name == "@vibe/concurrent" || String::starts_with(name, "@vibe/concurrent/") {
     "set VIBE_UNSTABLE=1 to build against `@vibe/concurrent`, or drop the import. It is ADR-0068, still proposed: outside the SemVer promise and able to change within a Minor release, so it is opt-in rather than silent (docs/spec/stable-surface.md section 6). The `Async` effect itself is stable and needs no opt-in -- only this package's concurrency model does."
   } else {
     ""
   }
 }
 
-export fn check_unstable_surface_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
-  let source = match checked_entry_source(input_path, source_groups) {
-    Some(snapshot) => snapshot,
-    None => return array_empty()
+/// Byte offset of the first character that is not a space or a tab.
+fn unstable_first_nonspace(line: String) -> Int {
+  let n = String::length(line)
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(line, i)
+    if c == 32 || c == 9 {
+      i = i + 1
+    } else {
+      return i
+    }
   }
-  let out = array_empty()
+  n
+}
+
+/// Which line the reader has to edit. DETECTION is structural (below); this is
+/// presentation only, so a miss costs a position and never a verdict -- hence
+/// the fallback to line 1 rather than a second parse.
+fn unstable_import_line(source: String, pkg: String) -> Int {
   let lines = String::split(source, "\n")
   let mut i = 0
   while i < Array::length(lines) {
     let line = Array::get(lines, i)
-    // Column 1, no trimming: an `import` is a top-level declaration and the
-    // formatter puts it there, so a leading-whitespace form is not a thing
-    // this has to read.
-    //
-    // It also needs no `String::trim_start`, which is a LIBRARY function
-    // rather than a builtin -- reaching it here would mean adding an
-    // `@vibe/builtin` import to this file. docs/cheatsheet.md says so
-    // explicitly ("These are not builtins ... calling one without its import
-    // is `unknown name`", the #2124 fix); the first version of this scan used
-    // it, read the resulting `unknown name` as the cheatsheet being wrong,
-    // and was wrong itself.
-    if String::starts_with(line, "import ") {
-      let pkg = str_take_until_space(String::substring(line, 7, String::length(line)))
-      let note = unstable_package_note(pkg)
-      if note != "" {
-        // `line N:col 1: ...`, the located-diagnostic spelling. This started
-        // as a `warning: ` line, which the launcher's check arm forwards to
-        // stderr; it is now an ERROR routed through emit_compile_diag, and
-        // that channel is the one both `vibe check` and `vibe build` already
-        // read, so the two verbs cannot disagree.
-        Array::push(out, String::concat("line ", String::concat(Int::to_string(i + 1), String::concat(":col 1: ", note))))
-      } else {
-        ()
-      }
+    let trimmed = String::substring(line, unstable_first_nonspace(line), String::length(line))
+    if String::starts_with(trimmed, "import") && String::index_of(line, pkg) >= 0 {
+      return i + 1
     } else {
       ()
     }
     i = i + 1
   }
+  1
+}
+
+fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, _) => {
+        let note = unstable_package_note(path)
+        if note != "" {
+          Array::push(out, String::concat("line ", String::concat(Int::to_string(unstable_import_line(source, path)), String::concat(":col 1: ", note))))
+        } else {
+          ()
+        }
+      },
+      // An import nested in a `module` block is still this file's dependency.
+      SModule(_, _, body) => unstable_stmt_diagnostics(body, source, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The gate itself, over ONE file's own bytes, read off the PARSED import
+/// statements rather than the line spelling.
+///
+/// The first version matched `String::starts_with(line, "import ")` and sliced
+/// a fixed 7 bytes, so `import\t@vibe/concurrent { .. }` was skipped entirely
+/// and `import  @vibe/concurrent { .. }` (two spaces) yielded an empty package
+/// name -- both valid source the lexer accepts, and both a silent bypass
+/// (#2277 review). An opt-in boundary that whitespace can cross is not one.
+///
+/// Only the ENTRY file is scanned: a transitive dependency's own imports are
+/// its author's choice, not this file's, and reporting them would be noise
+/// nobody here can act on. A source that does not parse yields nothing -- it
+/// cannot compile either, and the parse error is what the reader needs first.
+export fn unstable_surface_diagnostics(input_path: String, source: String) -> Array[String] with Exception {
+  let out = array_empty()
+  match checked_warning_stmts(input_path, source) {
+    Some(stmts) => unstable_stmt_diagnostics(stmts, source, out),
+    None => ()
+  }
   out
+}
+
+/// The BUILD lane's entry point: one file read, no import closure. It used to
+/// call `collect_source_groups_fs`, which parses every reachable file a second
+/// time purely to find the entry again -- measured as a 1.1% self-compile heap
+/// regression that took CI's selfcompile KPI over its +10% ceiling (#2277 CI).
+/// Only the entry is scanned, so only the entry needs reading.
+export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array[String] with Exception + Fs {
+  handle {
+    unstable_surface_diagnostics(input_path, Fs::read_file(input_path))
+  } with {
+  // An unreadable entry is the compile's error to report, in its own words.
+  Exception::Throw(_) => array_empty() }
+}
+
+/// The CHECK lane's entry point: reuses the snapshot the linked check already
+/// collected, so it costs a lookup rather than a second traversal.
+export fn check_unstable_surface_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
+  let source = match checked_entry_source(input_path, source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
+  unstable_surface_diagnostics(input_path, source)
 }
 
 /// Redundant import warnings derived from the exact source snapshot consumed

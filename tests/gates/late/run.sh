@@ -6143,8 +6143,30 @@ if [ ! -s "$uwdir/plain.wasm" ]; then
   cat "$uwdir/plain.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+
+# Whitespace must not cross the boundary (#2277 review). The first version of
+# the scan matched `String::starts_with(line, "import ")` and sliced a fixed 7
+# bytes, so a tab skipped the check outright and two spaces yielded an empty
+# package name. Both spellings are valid source the lexer accepts, so both were
+# a silent bypass; the gate now reads the PARSED import instead. Written with
+# printf rather than a heredoc so the tab survives being read back.
+printf 'import\t@vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/tab.vibe"
+printf 'import  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/spaces.vibe"
+for uw_odd in tab spaces; do
+  uw_odd_out="$(uw_check "$uwdir/$uw_odd.vibe" || true)"
+  if ! printf '%s\n' "$uw_odd_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+    echo "[compiler-gate] FAIL: '$uw_odd' whitespace spelling of the import bypassed the check gate (#2277)" >&2
+    printf '%s\n' "$uw_odd_out" >&2
+    exit 1
+  fi
+  uw_build "$uwdir/$uw_odd.vibe" "$uwdir/$uw_odd.wasm"
+  if [ -s "$uwdir/$uw_odd.wasm" ]; then
+    echo "[compiler-gate] FAIL: '$uw_odd' whitespace spelling of the import bypassed the build gate (#2277)" >&2
+    exit 1
+  fi
+done
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build ok (#2248)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace spellings ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
@@ -6168,3 +6190,4 @@ if ! cmp -s "$fmtdir/expected.vibe" "$fmtdir/out.vibe"; then
 fi
 rm -rf "$fmtdir"
 echo "[compiler-gate] vibe fmt ok (#2149)"
+

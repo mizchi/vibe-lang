@@ -50,11 +50,22 @@ What is enforced today, measured 2026-08-24:
 | wasm-gc backend | opt-in env var (`VIBE_BACKEND=gc` and friends) |
 | `perform?` | the checker rejects it, naming the edit that fixes it |
 | SIMD | the package does not resolve |
-| **ADR-0068 concurrency** | **`vibe check` warns on `import @vibe/concurrent`; `VIBE_UNSTABLE=1` silences it** |
+| **ADR-0068 concurrency** | **`import @vibe/concurrent` is rejected by `vibe check` AND by `vibe build`; `VIBE_UNSTABLE=1` allows it** |
 
-A warning rather than an error, because the surface has no external users yet
-— every one of the 31 files using `TaskGroup::` is inside this repository. It
-escalates to an error before that stops being true, not after.
+An **error**, not a warning. `vibe check` exits non-zero and `vibe build`
+emits no wasm; the diagnostic names the environment variable that opts in.
+Both verbs answer the same way on purpose — a build that accepts what the
+check rejects is the "two verbs, two answers" defect #1567 fixed for
+check/diagnostics, and it is worse here because the accepting verb is the one
+that ships.
+
+The gate reads the entry file's **parsed** imports, so whitespace does not
+cross it (`import\t@vibe/concurrent` is the same as `import @vibe/concurrent`),
+and it looks at the entry only: a dependency's own imports are its author's
+choice. Harnesses inside this repository that compile in-tree sources against
+the surface deliberately (the book's concurrency chapter, the unit-test
+batch) grant the opt-in themselves; the boundary is pinned by
+`tests/gates/late/run.sh` section 108.
 
 The rest of §6 is still a reading obligation rather than an enforced boundary.
 
