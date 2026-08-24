@@ -788,11 +788,20 @@ export fn unstable_surface_diagnostics(input_path: String, source: String) -> Ar
 /// time purely to find the entry again -- measured as a 1.1% self-compile heap
 /// regression that took CI's selfcompile KPI over its +10% ceiling (#2277 CI).
 /// Only the entry is scanned, so only the entry needs reading.
+/// INGESTED, not raw. The build ingests before it parses, and ingestion blanks
+/// the package header -- so a pinned `require @scope/pkg x.y.z = #pkg:sha1:...`
+/// line reaches a raw scan with a `#` in it, the lexer refuses it ("unknown #
+/// directive"), the parse yields nothing, and the gate goes SILENT while the
+/// build compiles the unstable import anyway. Measured: the same file unpinned
+/// produced the diagnostic, pinned produced none. That is the two-verbs-
+/// disagree defect this gate exists to prevent, reintroduced by reading the
+/// file a different way than the build reads it (#2277 review).
 export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array[String] with Exception + Fs {
   handle {
-    unstable_surface_diagnostics(input_path, Fs::read_file(input_path))
+    unstable_surface_diagnostics(input_path, ingest_source_text_fs(input_path, Fs::read_file(input_path)))
   } with {
-  // An unreadable entry is the compile's error to report, in its own words.
+  // An unreadable or uningestable entry is the compile's error to report, in
+  // its own words.
   Exception::Throw(_) => array_empty() }
 }
 

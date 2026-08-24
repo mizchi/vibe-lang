@@ -6186,8 +6186,38 @@ if ! grep -qF 'line 3:' "$uwdir/comment.wasm.diag" 2>/dev/null; then
   cat "$uwdir/comment.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+
+# A PINNED `require` header must not silence the gate. The build ingests before
+# it parses, and ingestion blanks that header; a scan that read the raw bytes
+# instead met the `#` in `#pkg:sha1:...`, the lexer refused it ("unknown #
+# directive"), the parse yielded nothing, and the gate went silent while the
+# build compiled the unstable import. Measured: unpinned produced the
+# diagnostic, pinned produced none (#2277 review).
+#
+# The pin here is deliberately bogus, so the build fails either way -- what is
+# asserted is WHICH diagnostic comes out. A pin error means the gate never
+# spoke.
+cat > "$uwdir/pinned.vibe" <<'UWEOF'
+require @vibe/concurrent 0.0.1 = #pkg:sha1:0123456789abcdef0123456789abcdef01234567
+
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int with Exception {
+  TaskGroup::run((n) -> { 0 })
+}
+UWEOF
+uw_build "$uwdir/pinned.vibe" "$uwdir/pinned.wasm"
+if [ -s "$uwdir/pinned.wasm" ]; then
+  echo "[compiler-gate] FAIL: a pinned-require entry built against @vibe/concurrent with no opt-in (#2277)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/pinned.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a pinned require header silenced the opt-in gate (#2277)" >&2
+  cat "$uwdir/pinned.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace + comment-line ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace + comment-line + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
