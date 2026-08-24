@@ -1556,10 +1556,60 @@ export fn is_builtin_type_name(name: String) -> Bool {
   }
 }
 
+/// Deep copy of a `Type` tree. Every composite arm allocates a fresh node;
+/// leaves are rebuilt rather than returned by identity. Needed because a
+/// shared child is dropped by Perceus when the result is consumed, and the
+/// donor (`args` of `resolve_type_alias_params`, an alias body) still owns it
+/// (#2279).
+fn type_clone(ty: Type) -> Type {
+  match ty {
+    CtInt => CtInt,
+    CtDouble => CtDouble,
+    CtBool => CtBool,
+    CtString => CtString,
+    CtChar => CtChar,
+    CtUnit => CtUnit,
+    CtBytes => CtBytes,
+    CtUnknown => CtUnknown,
+    CtVar(id) => CtVar(id),
+    CtEnum(n) => CtEnum(n),
+    CtStruct(n) => CtStruct(n),
+    CtArray(e) => CtArray(type_clone(e)),
+    CtOption(e) => CtOption(type_clone(e)),
+    CtTuple(es) => CtTuple(for e in es {
+      type_clone(e)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      type_clone(p)
+    }, type_clone(ret), eff),
+    CtNamed(n, ts) => CtNamed(n, for t in ts {
+      type_clone(t)
+    }),
+    CtForAll(ids, bounds, body) => CtForAll(for id in ids {
+      id
+    }, for b in bounds {
+      let (id, names) = b
+      (id, for n in names {
+        n
+      })
+    }, type_clone(body)),
+    CtRecord(fields) => CtRecord(for f in fields {
+      let (name, t) = f
+      (name, type_clone(t))
+    })
+  }
+}
+
 /// Substitute the formal parameters of a resolved type alias.
 ///
 /// This lives in core because both the checker and later compiler passes need
 /// the same canonical TypeExpr resolution without importing the whole checker.
+///
+/// #2279: a parameter arm used to return `Array::get(args, idx)` by identity.
+/// The result was a mixed tree (fresh spine, borrowed leaves). Consuming it
+/// dropped nodes `args` still owned and a later allocation trapped in
+/// `__rt_rc_alloc` far from this function. The returned tree is now fully
+/// owned.
 export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array[Type]) -> Type {
   match ty {
     CtNamed(name, targs) => {
@@ -1572,7 +1622,7 @@ export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array
         i = i + 1
       }
       if idx >= 0 && idx < Array::length(args) {
-        Array::get(args, idx)
+        type_clone(Array::get(args, idx))
       } else {
         CtNamed(name, for a in targs {
           resolve_type_alias_params(a, params, args)
@@ -1587,7 +1637,7 @@ export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array
     CtFn(ps, ret, eff) => CtFn(for p in ps {
       resolve_type_alias_params(p, params, args)
     }, resolve_type_alias_params(ret, params, args), eff),
-    _ => ty
+    _ => type_clone(ty)
   }
 }
 
