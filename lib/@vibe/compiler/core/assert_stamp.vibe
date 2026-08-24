@@ -28,13 +28,28 @@ import ./ast.vibe {
   Expr, Pat, Stmt
 }
 
-/// The internal callee a stamped `assert_eq` is rewritten to. Deliberately NOT
-/// `assert_eq` at arity 3: the single-source lane lowers before it checks, so a
-/// three-argument `assert_eq` recognized by shape would let a user-written
-/// `assert_eq(1, 2, "user")` through as a located call instead of the arity
-/// error (measured; Codex review on #2277). Read by the lowering in
-/// normalize/desugar_trait_dict.vibe, which is the only thing that consumes it.
-export let assert_eq_located_callee: String = "__assert_eq_at"
+/// The internal callee a stamped `assert_eq` is rewritten to. Read by the
+/// lowering in normalize/desugar_trait_dict.vibe, the only thing that consumes
+/// it.
+///
+/// The LEADING `#` is the whole point, and it took two tries to get here. Both
+/// earlier spellings were reachable from source, and in the single-source lane
+/// the lowering runs before `check_program`, so anything it recognizes bypasses
+/// name and arity checking entirely:
+///
+///   - `assert_eq` at arity 3 with a literal string third operand -- exactly
+///     what a user types as `assert_eq(1, 2, "user")`. Measured: compiled and
+///     printed `assert_eq failed at user` instead of the arity error.
+///   - `__assert_eq_at` -- an ordinary identifier. Measured: user source
+///     calling it compiled and ran as an assert, and a user DECLARING that name
+///     would have had their own calls rewritten out from under them.
+///
+/// `#` is not an identifier character: `#assert_eq_at(1, 2, "x")` in source is
+/// rejected by the lexer ("unknown # directive: assert_eq_at"), so this node
+/// cannot be constructed from any input. Same convention as the `#region_`
+/// skolems the checker already relies on. A marker source cannot spell beats a
+/// marker source is unlikely to spell (Codex review on #2277).
+export let assert_eq_located_callee: String = "#assert_eq_at"
 
 /// `path:line`, 1-based, counted in the module's own text.
 fn assert_loc_string(path: String, source: String, off: Int) -> String {

@@ -6341,5 +6341,35 @@ if ! grep -qF 'arity mismatch for assert_eq' "$aldir/user.wasm.diag" 2>/dev/null
   cat "$aldir/user.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+
+# The stamped callee must be UNSPELLABLE, not merely obscure. Two earlier
+# spellings were reachable from source, and in the single-source lane the
+# lowering runs before `check_program`, so anything it recognizes bypasses name
+# and arity checking: `assert_eq` at arity 3 with a string, then the ordinary
+# identifier `__assert_eq_at`. Both compiled and ran as asserts; the second
+# would also have let a user DECLARING that name have their calls rewritten out
+# from under them. `#` is not an identifier character, so the marker cannot be
+# constructed from any input (#2277 review).
+printf 'test "hijack" {\n  __assert_eq_at(1, 2, "user")\n}\n' > "$aldir/hijack.vibe"
+rm -f "$aldir/hijack.wasm" "$aldir/hijack.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$aldir/hijack.vibe" "$aldir/hijack.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$aldir/hijack.wasm" ]; then
+  echo "[compiler-gate] FAIL: user source spelling the stamped callee was lowered as an assert (#2202)" >&2
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$aldir/hijack.wasm" >&2 2>&1 || true
+  exit 1
+fi
+# The `#` spelling is not an identifier at all -- the lexer refuses it, which is
+# what makes the marker unspellable rather than merely unlikely.
+printf 'test "hash" {\n  #assert_eq_at(1, 2, "user")\n}\n' > "$aldir/hash.vibe"
+rm -f "$aldir/hash.wasm" "$aldir/hash.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$aldir/hash.vibe" "$aldir/hash.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$aldir/hash.wasm" ]; then
+  echo "[compiler-gate] FAIL: a '#'-prefixed callee was accepted from source -- the marker is spellable (#2202)" >&2
+  exit 1
+fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq location + user 3-arg rejection ok (#2202)"
+echo "[compiler-gate] assert_eq location + 3-arg + unspellable-marker rejection ok (#2202)"
