@@ -445,6 +445,15 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
   }
 }
 
+/// Is this callee a dot expression? Its offset belongs to the receiver, not
+/// to the call (#2261).
+fn is_dot_callee(e: Expr) -> Bool {
+  match e {
+    EDot(_, _, _, _) => true,
+    _ => false
+  }
+}
+
 /// Does this callee expression root at a CALL?
 ///
 /// #2231: the answer decides whether the callee's offset belongs to the callee
@@ -470,7 +479,18 @@ fn callee_roots_at_call(e: Expr) -> Bool {
 /// diagnostic position moves: only a callee that roots at a call is given a
 /// different offset -- the field name for a dot-call, the `(` otherwise.
 fn call_site_offset(callee: Expr, lparen_off: Int) -> Int {
-  if callee_roots_at_call(callee) {
+  // A DOT callee never owns its offset either. `EDot`'s own offset is its
+  // receiver's root (parser_expr_core's TDot arm passes `callee_offset(expr)`),
+  // so `b.get()` gave the outer call the offset of the identifier `b` -- and
+  // `type_at`'s table is last-wins, so hovering `b` answered `Double`, the
+  // CALL's result, instead of `Box` (#2261). #1941 solved the same collision
+  // for a NAMED callee with `CalleeHit`; that escape resolves through the
+  // top-level env and so cannot answer for a local receiver.
+  //
+  // #2231 moved only the call-ROOTED case off the callee's offset, because
+  // that was the case its symptom could show. The rule is the same one:
+  // a call node's offset must identify that call node.
+  if callee_roots_at_call(callee) || is_dot_callee(callee) {
     // The `(` that opens the argument list, which belongs to no other node.
     //
     // Using the dot's FIELD-NAME offset here was wrong in a way the #2231

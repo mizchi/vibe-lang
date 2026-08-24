@@ -34,8 +34,19 @@ Trait bound compatibility follows the lock in [decisions.md](decisions.md):
 **tighter bounds = Major / looser bounds = Minor**.
 
 The **unstable surface (§6)** is outside this guarantee. Those parts can break
-within a Minor. They are reached only through `@build.unstable`, an explicit
-flag, or an ADR still marked `proposed`.
+within a Minor.
+
+**There is no opt-in gate today, and this document used to claim there was.**
+It said those parts "are reached only through `@build.unstable`, an explicit
+flag, or an ADR still marked `proposed`" — but `@build.unstable` appears
+nowhere else in the tree, and there is no `--unstable` or `--experimental`
+flag. An ADR's status is bookkeeping, invisible to someone writing code. What
+is actually gated, measured 2026-08-24: the wasm-gc backend (an env var),
+`perform?` (the checker rejects it, naming the edit), and SIMD (the package
+does not resolve). What is NOT gated: `TaskGroup::run` and everything else in
+ADR-0068's model — `vibe check` returns clean, with no marker of any kind.
+Closing that gap is tracked separately; until it does, §6 is a reading
+obligation rather than an enforced boundary.
 
 ---
 
@@ -236,12 +247,22 @@ The following is still under construction or its design is not settled. It is
 **outside** the SemVer guarantee and can break within a Minor. Use it knowing
 that.
 
-- **Async / structured concurrency / WASI 0.3** (ADR-0012, ADR-0068,
-  `proposed`): the `{Async}` effect, `Future[T]`, `Stream[T]`, `Task[T]`,
-  `for await`. Today's codegen is an eager prototype; the public semantics are
-  defined in the [structured concurrency spec](../concurrency.md). JSPI/Worker,
-  the WASI Component Model, and shared-everything threads are interchangeable
-  lowerings — the stable surface is tied to none of them.
+- **Structured concurrency / WASI 0.3** (ADR-0068, `proposed`): `Nursery[r]`,
+  `Task[r,T]`, `Sender`/`Receiver`, `TaskGroup::run` / `spawn` /
+  `spawn_suspend`, and the `Send` eligibility rule. Today's codegen is an eager
+  prototype; the public semantics are defined in the
+  [structured concurrency spec](../concurrency.md). JSPI/Worker, the WASI
+  Component Model, and shared-everything threads are interchangeable lowerings
+  — the stable surface is tied to none of them.
+
+  **The `Async` effect ROW ELEMENT is not in this bullet.** ADR-0012 is
+  `accepted`, and `Async` already appears in shipped builtin signatures a user
+  can reach (`StdinStream::next(StdinStream) -> Int with Async`), where `vibe
+  check` enforces it like any other row element. The unsettled part is the
+  concurrency model built on top of it, not the vocabulary. This bullet used to
+  name ADR-0012 alongside ADR-0068 and mark both `proposed`, which was wrong
+  about ADR-0012's status and put a shipped, checked surface on the unstable
+  list. It also listed `for await`, retired in #1350.
 - **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
   of non-tail-resumptive handlers, capability effects.
 - **Capability authorization surface** (ADR-0088, `proposed`): the two-clause

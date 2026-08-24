@@ -5934,6 +5934,33 @@ if [ "$ta_out" != "() -> Box" ]; then
   echo "[compiler-gate] FAIL: type-at on \`mk_box\` in a call-rooted dot-call reports '$ta_out', not '() -> Box' -- the call-site offset is stealing an identifier token (#2231/#2248)" >&2
   exit 1
 fi
+
+# #2261: the same collision for an IDENT-rooted dot-call. `b.get()` gave the
+# outer call the offset of the identifier `b`, and type-at's table is
+# last-wins, so hovering `b` answered `Double` -- the CALL's result -- instead
+# of `Box`. #1941 solved this for a NAMED callee via `CalleeHit`, but that
+# escape resolves through the top-level env and cannot answer for a local
+# receiver. Three positions, because a fix that answered "" everywhere would
+# also stop reporting Double.
+cat > "$tadir/ta2.vibe" <<'TAEOF2'
+struct Box { get: () -> Double }
+fn mk_box() -> Box { Box::{ get: () -> { 2.5 } } }
+fn main() -> Int {
+  let b = mk_box()
+  let w = b.get()
+  let z = b
+  0
+}
+TAEOF2
+ta_q() { VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" type-at "$tadir/ta2.vibe" "$1" "$2" 2>/dev/null | head -1; }
+ta_recv="$(ta_q 5 11)"
+ta_plain="$(ta_q 6 11)"
+ta_fn="$(ta_q 4 11)"
+if [ "$ta_recv" != "Box" ] || [ "$ta_plain" != "Box" ] || [ "$ta_fn" != "() -> Box" ]; then
+  echo "[compiler-gate] FAIL: type-at on a dot-call receiver (#2261): recv='$ta_recv' plain='$ta_plain' fn='$ta_fn'; wanted Box / Box / () -> Box" >&2
+  exit 1
+fi
 rm -rf "$tadir"
 echo "[compiler-gate] call-site offset does not steal an identifier token ok (#2231)"
 
