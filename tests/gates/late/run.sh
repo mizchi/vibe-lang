@@ -6308,5 +6308,38 @@ if ! grep -qF 'expected: 5' "$aldir/out.log" || ! grep -qF 'actual:   4' "$aldir
   cat "$aldir/out.log" >&2
   exit 1
 fi
+
+# A USER-written three-argument `assert_eq` must still be an arity error, in
+# BOTH lanes. The first version of the stamp reused `assert_eq` at arity 3 and
+# recognized it by "third operand is a literal string", which made
+# `assert_eq(1, 2, "user")` indistinguishable from a stamped call -- and the
+# single-source lane lowers BEFORE it checks, so that call compiled and
+# reported `assert_eq failed at user` instead of an arity error (#2277 review).
+# The stamp is a separate internal callee now. Both lanes are checked because
+# the FS lane happened to reject it anyway, by typechecking the unstamped
+# module -- so testing only that lane proves nothing about this.
+cat > "$aldir/user_three_arg.vibe" <<'ALEOF'
+test "user three arg" {
+  assert_eq(1, 2, "user")
+}
+ALEOF
+al_fs_out="$(VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1   bash scripts/vibe_test.sh "$aldir/user_three_arg.vibe" 2>&1 || true)"
+if ! printf '%s\n' "$al_fs_out" | grep -qF 'arity mismatch for assert_eq'; then
+  echo "[compiler-gate] FAIL: a user-written 3-arg assert_eq was accepted by the FS lane (#2202)" >&2
+  printf '%s\n' "$al_fs_out" >&2
+  exit 1
+fi
+rm -f "$aldir/user.wasm" "$aldir/user.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$aldir/user_three_arg.vibe" "$aldir/user.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$aldir/user.wasm" ]; then
+  echo "[compiler-gate] FAIL: a user-written 3-arg assert_eq COMPILED on the single-source lane -- it was lowered as a stamped call (#2202)" >&2
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$aldir/user.wasm" >&2 2>&1 || true
+  exit 1
+fi
+if ! grep -qF 'arity mismatch for assert_eq' "$aldir/user.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the single-source lane rejected the 3-arg assert_eq for the wrong reason (#2202)" >&2
+  cat "$aldir/user.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq failure location ok (#2202)"
+echo "[compiler-gate] assert_eq failure location ok, user 3-arg still rejected in both lanes (#2202)"

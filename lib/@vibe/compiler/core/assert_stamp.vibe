@@ -28,6 +28,14 @@ import ./ast.vibe {
   Expr, Pat, Stmt
 }
 
+/// The internal callee a stamped `assert_eq` is rewritten to. Deliberately NOT
+/// `assert_eq` at arity 3: the single-source lane lowers before it checks, so a
+/// three-argument `assert_eq` recognized by shape would let a user-written
+/// `assert_eq(1, 2, "user")` through as a located call instead of the arity
+/// error (measured; Codex review on #2277). Read by the lowering in
+/// normalize/desugar_trait_dict.vibe, which is the only thing that consumes it.
+export let assert_eq_located_callee: String = "__assert_eq_at"
+
 /// `path:line`, 1-based, counted in the module's own text.
 fn assert_loc_string(path: String, source: String, off: Int) -> String {
   let n = String::length(source)
@@ -82,7 +90,7 @@ fn stamp_assert_expr(e: Expr, path: String, source: String) -> Expr {
       let stamped_args = stamp_assert_exprs(args, path, source)
       if is_two_arg_assert_eq(callee, args, off) {
         Array::push(stamped_args, EString(assert_loc_string(path, source, off)))
-        ECall(callee, stamped_args, off)
+        ECall(EIdent(assert_eq_located_callee, -1), stamped_args, off)
       } else {
         ECall(stamp_assert_expr(callee, path, source), stamped_args, off)
       }

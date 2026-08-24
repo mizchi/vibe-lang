@@ -7,6 +7,7 @@ import @vibe/compiler/core {
   Stmt,
   TypeEnv,
   TypeExpr,
+  assert_eq_located_callee,
   expr_children,
   is_exception_effect_name,
   is_exception_throw_operation,
@@ -6331,29 +6332,28 @@ fn interp_take_repl(r: Option[Expr]) -> Expr {
 /// what the checker sees (effect-free); this pass rewrites it after check so
 /// a failure can print both sides without adding Stderr/Exception to the
 /// source row.
-/// Arity 2 is what the user writes. Arity 3 is the same call after the merge
-/// stamped it with `"path:line"` from its own module's source (#2202) -- that
-/// form exists only between the merge and this lowering, and this lowering
-/// removes it, so neither the checker nor either backend ever sees it.
+/// `assert_eq` is the user's spelling and takes exactly two arguments.
+/// `__assert_eq_at` is the SAME call after the merge stamped it with
+/// `"path:line"` from its own module's source (#2202); it exists only between
+/// the merge and this lowering, which removes it, so neither the checker nor
+/// either backend sees it.
+///
+/// A separate callee, NOT `assert_eq` at arity 3. Recognizing a three-argument
+/// `assert_eq` whose third operand is a literal string made a user-written
+/// `assert_eq(1, 2, "user")` indistinguishable from a stamped call -- and in
+/// the single-source lane `expand_interp_stmts` runs BEFORE `check_program`,
+/// so that call compiled and reported `assert_eq failed at user` instead of
+/// the arity error. Measured, and exactly the silent-wrong the guard was meant
+/// to prevent (Codex review on #2277).
 fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
   match callee {
-    EIdent(n, _) => n == "assert_eq" && (Array::length(args) == 2 || (Array::length(args) == 3 && assert_eq_stamp_is_string(args))),
+    EIdent(n, _) => (n == "assert_eq" && Array::length(args) == 2) || (n == assert_eq_located_callee && Array::length(args) == 3),
     _ => false
   }
 }
 
-/// A third argument counts only when it is a literal string, so a user's
-/// `assert_eq(a, b, c)` still fails on arity as it always did rather than
-/// silently dropping its third operand.
-fn assert_eq_stamp_is_string(args: Array[Expr]) -> Bool {
-  match Array::get(args, 2) {
-    EString(_) => true,
-    _ => false
-  }
-}
-
-/// The stamped location, or "" when the call was never stamped -- an unlocated
-/// parse, a lane that does not stamp, or an `assert_eq` in an expression
+/// The stamped location, or "" when the call was never stamped -- a lane that
+/// does not stamp, an unlocated parse, or an `assert_eq` in an expression
 /// position the stamping walk does not descend into. No line is the designed
 /// degradation; a wrong line would be worse than none (#1445).
 fn assert_eq_location(args: Array[Expr]) -> String {
