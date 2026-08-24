@@ -948,6 +948,54 @@ fn skip_bracketed_args(tokens: Array[Token], pos: Int) -> Int {
   }
 }
 
+/// True only for the erased generic target shape that SImpl can represent
+/// soundly: `[T1, ..., Tn]` in the same order as the impl formals. Nested,
+/// concrete, reordered, repeated, missing, and extra arguments all fail
+/// closed until SImpl retains the target TypeExpr (#2262).
+fn impl_target_args_match_formals(tokens: Array[Token], pos: Int, formals: Array[String]) -> Bool {
+  match peek(tokens, pos) {
+    TLBracket => {
+      let mut p = pos + 1
+      let mut i = 0
+      let mut valid = Array::length(formals) > 0
+      while valid && i < Array::length(formals) {
+        match peek(tokens, p) {
+          TIdent(name) => if name == Array::get(formals, i) {
+            p = p + 1
+          } else {
+            valid = false
+          },
+          _ => {
+            valid = false
+          }
+        }
+        if valid {
+          i = i + 1
+          if i < Array::length(formals) {
+            match peek(tokens, p) {
+              TComma => {
+                p = p + 1
+              },
+              _ => {
+                valid = false
+              }
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      }
+      valid && i == Array::length(formals) && match peek(tokens, p) {
+        TRBracket => true,
+        _ => false
+      }
+    },
+    _ => false
+  }
+}
+
 /// #829: collect the declared type-parameter NAMES of a `[T, U, ...]` header
 /// (returning ([], pos) when there is no bracket). Mirrors parse_enum_stmt's
 /// inline collector: only depth-1 identifiers in name position are kept, so a
@@ -1896,14 +1944,15 @@ fn parse_impl_stmt_with_binder_context(tokens: Array[Token], pos: Int, context: 
           // #2262: SImpl records only the target constructor name. Silently
           // dropping a concrete argument here widens `Array[Int]` to every
           // `Array[T]`, allowing an Int-checked method body to run on values
-          // such as Array[String]. Reject until SImpl can retain target args.
-          if Array::length(type_params) == 0 {
-            match peek(tokens, fp + 1) {
-              TLBracket => throw(String::concat("concrete generic impl target `", String::concat(type_name, "[...]` is not supported; write a generic impl such as `impl [T] Trait for Type[T]`"))),
-              _ => ()
-            }
-          } else {
-            ()
+          // such as Array[String]. Only the exact `[T1, ..., Tn]` family shape
+          // is safe to erase until SImpl can retain target args.
+          match peek(tokens, fp + 1) {
+            TLBracket => if !impl_target_args_match_formals(tokens, fp + 1, type_params) {
+              throw(String::concat("concrete generic impl target `", String::concat(type_name, "[...]` is not supported; write a generic impl such as `impl [T] Trait for Type[T]`")))
+            } else {
+              ()
+            },
+            _ => ()
           }
           // Return the position at the impl body `{` (or the next token when
           // the impl is body-less). The caller (parser.vibe) either expands the
