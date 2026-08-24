@@ -113,6 +113,7 @@ import ./cli_support.vibe {
   check_unstable_surface_warnings_from_path,
   check_unstable_surface_warnings_from_source_groups,
   strip_executable_wasm_env,
+  unstable_surface_diagnostics,
   verify_culprit_off_marker_fs_fail_closed
 }
 
@@ -1757,10 +1758,30 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // diagnostic shape shared by the editor protocol and the CLI.
   if Env::get("VIBE_DIAGNOSTICS") == "1" {
     let src = Fs::read_file(input_path)
+    // ADR-0068 opt-in, in the buffer lane too. This is the mode `vibe check
+    // --single-file` and the editor use, and it does not resolve imports -- so
+    // an UNUSED `import @vibe/concurrent` analyzed clean here while `vibe check`
+    // and `vibe build` both rejected the same buffer (#2277 review). The gate is
+    // a property of the declaration, not of the imported names being reached, so
+    // it belongs in every lane that reads the file. Scanned on the buffer's own
+    // text: this lane exists for unsaved buffers, and ingestion would answer
+    // about the file on disk instead.
+    let unstable_diags = if Env::get("VIBE_UNSTABLE") == "1" {
+      adapter_no_warnings()
+    } else {
+      handle {
+        unstable_surface_diagnostics(input_path, src)
+      } with { Exception::Throw(_) => adapter_no_warnings() }
+    }
     if Env::get("VIBE_DIAGNOSTICS_JSON") == "1" {
       Fs::write_bytes(output_path, adapter_string_to_bytes(lsp_diagnostics_json_string(src)))
     } else {
       let diags = collect_all_diagnostics(src)
+      let mut ui = 0
+      while ui < Array::length(unstable_diags) {
+        Array::push(diags, Array::get(unstable_diags, ui))
+        ui = ui + 1
+      }
       Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_lines(diags))))
     }
     return 0

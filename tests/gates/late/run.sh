@@ -6229,8 +6229,35 @@ if ! grep -qF 'line 5:' "$uwdir/multiline.wasm.diag" 2>/dev/null; then
   cat "$uwdir/multiline.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+
+# The BUFFER lane must agree too. `vibe check --single-file` (VIBE_DIAGNOSTICS)
+# does not resolve imports, so an UNUSED `import @vibe/concurrent` analyzed
+# clean there while both other verbs rejected the same file -- an editor showing
+# nothing is the third answer to the same question (#2277 review). Unused on
+# purpose: that is the shape that slipped through.
+cat > "$uwdir/buffer.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int {
+  1
+}
+UWEOF
+rm -f "$uwdir/buffer.out"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$uwdir/buffer.vibe" "$uwdir/buffer.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the single-file diagnostics lane accepted an unstable import (#2277)" >&2
+  cat "$uwdir/buffer.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$uwdir/buffer.optin.out"
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$uwdir/buffer.vibe" "$uwdir/buffer.optin.out" __no_entry__ >/dev/null 2>&1 || true
+if grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.optin.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the single-file diagnostic (#2277)" >&2
+  cat "$uwdir/buffer.optin.out" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + buffer + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"

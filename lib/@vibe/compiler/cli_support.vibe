@@ -739,8 +739,14 @@ fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[T
       SImport(path, _) => {
         let note = unstable_package_note(path)
         if note != "" {
-          let line = unstable_line_of_offset(source, unstable_import_offset(tokens, starts, path))
-          Array::push(out, String::concat("line ", String::concat(Int::to_string(line), String::concat(":col 1: ", note))))
+          let off = unstable_import_offset(tokens, starts, path)
+          let where_note = if off < 0 {
+            String::concat("this file inherits `", String::concat(path, "` from its directory's index.vpkg (it is not written here). "))
+          } else {
+            ""
+          }
+          let line = unstable_line_of_offset(source, off)
+          Array::push(out, String::concat("line ", String::concat(Int::to_string(line), String::concat(":col 1: ", String::concat(where_note, note)))))
         } else {
           ()
         }
@@ -767,10 +773,28 @@ fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[T
 /// nobody here can act on. A source that does not parse yields nothing -- it
 /// cannot compile either, and the parse error is what the reader needs first.
 export fn unstable_surface_diagnostics(input_path: String, source: String) -> Array[String] with Exception {
+  unstable_surface_diagnostics_located(input_path, source, source)
+}
+
+/// Detection and LOCATION come from different texts on purpose.
+///
+/// `detected` is the INGESTED snapshot -- what the build compiles. `located` is
+/// the file's own bytes. They differ when a directory's `index.vpkg` declares a
+/// shared import that a sibling entry inherits without spelling it: the import
+/// is real, the build rejects it, and it appears nowhere in the file. Scanning
+/// the physical source for the VERDICT let `vibe check` call such an entry
+/// clean while the build refused it -- the two-verbs-disagree defect this gate
+/// exists to prevent (#2277 review).
+///
+/// So the verdict is the ingested text's, and the position is the physical
+/// file's when the import is physically there. When it is not, there is no
+/// honest line to give, and the note says where the import actually comes from
+/// instead of pointing at a line the reader would find nothing on (#1445).
+export fn unstable_surface_diagnostics_located(input_path: String, detected: String, located: String) -> Array[String] with Exception {
   let out = array_empty()
-  let (tokens, starts, _ends) = lex_with_offsets(source)
-  match checked_warning_stmts(input_path, source) {
-    Some(stmts) => unstable_stmt_diagnostics(stmts, source, tokens, starts, out),
+  let (tokens, starts, _ends) = lex_with_offsets(located)
+  match checked_warning_stmts(input_path, detected) {
+    Some(stmts) => unstable_stmt_diagnostics(stmts, located, tokens, starts, out),
     None => ()
   }
   out
@@ -791,7 +815,7 @@ export fn unstable_surface_diagnostics(input_path: String, source: String) -> Ar
 /// file a different way than the build reads it (#2277 review).
 export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array[String] with Exception + Fs {
   handle {
-    unstable_surface_diagnostics(input_path, ingest_source_text_fs(input_path, Fs::read_file(input_path)))
+    unstable_surface_diagnostics_located(input_path, ingest_source_text_fs(input_path, Fs::read_file(input_path)), Fs::read_file(input_path))
   } with {
   // An unreadable or uningestable entry is the compile's error to report, in
   // its own words.
@@ -801,11 +825,15 @@ export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array
 /// The CHECK lane's entry point: reuses the snapshot the linked check already
 /// collected, so it costs a lookup rather than a second traversal.
 export fn check_unstable_surface_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
-  let source = match checked_entry_source(input_path, source_groups) {
-    Some(snapshot) => snapshot,
-    None => return array_empty()
-  }
-  unstable_surface_diagnostics(input_path, source)
+  // NOT `checked_entry_source`: that deliberately hands back the PHYSICAL file
+  // when the loader prepended inherited `.vpkg` imports, which is right for
+  // ordinary warnings and wrong for this verdict -- an inherited
+  // `@vibe/concurrent` would be invisible here and rejected by the build. The
+  // verdict comes from the same ingestion the build uses; only the position
+  // comes from the file's own bytes.
+  handle {
+    unstable_surface_diagnostics_located(input_path, ingest_source_text_fs(input_path, Fs::read_file(input_path)), Fs::read_file(input_path))
+  } with { Exception::Throw(_) => array_empty() }
 }
 
 /// Redundant import warnings derived from the exact source snapshot consumed
