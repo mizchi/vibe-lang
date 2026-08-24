@@ -6049,6 +6049,59 @@ if ! grep -qF '[crash debug]' "$cdbg/loud.log"; then
 fi
 rm -rf "$cdbg"
 echo "[compiler-gate] crash dump opt-in ok (#2199)"
+
+# 108/108. The ADR-0068 concurrency surface is MARKED unstable (#2248).
+#      docs/spec/stable-surface.md said the unstable surface "is reached only
+#      through `@build.unstable`, an explicit flag, or an ADR still marked
+#      `proposed`" -- and `@build.unstable` appeared nowhere else in the tree,
+#      there was no such flag, and `TaskGroup::run` checked clean with no
+#      marker of any kind. Three directions, because each alone is satisfiable
+#      by the wrong thing: silence would also pass if the warning were deleted,
+#      the warning alone would pass if the opt-in did nothing, and both would
+#      pass if it warned on every file.
+echo "[compiler-gate] 108/108 the ADR-0068 concurrency surface warns unless opted in (#2248)"
+uwdir="_build/_gate_unstable_warn"
+rm -rf "$uwdir"; mkdir -p "$uwdir"
+cat > "$uwdir/uses.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int with Exception {
+  TaskGroup::run((n) -> {
+    let _t = TaskGroup::spawn(n, () -> { 7 })
+    0
+  })
+}
+UWEOF
+cat > "$uwdir/plain.vibe" <<'UWEOF'
+fn main() -> Int { 1 + 1 }
+UWEOF
+# `env -u VIBE_UNSTABLE`: the no-opt-in cases must not inherit the opt-in.
+# Measured -- with VIBE_UNSTABLE=1 in the ambient environment this section
+# reported "importing @vibe/concurrent did not warn" and would have passed
+# vacuously had the assertion been the other way round. Same defect #2252
+# found in five self-tests: a check that measures the machine, not the
+# property.
+uw_check() { env -u VIBE_UNSTABLE VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$1" 2>&1; }
+uw_warned="$(uw_check "$uwdir/uses.vibe" | grep -c 'is UNSTABLE (ADR-0068' || true)"
+uw_optin="$(VIBE_UNSTABLE=1 VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$uwdir/uses.vibe" 2>&1 | grep -c 'is UNSTABLE (ADR-0068' || true)"
+uw_plain="$(uw_check "$uwdir/plain.vibe" | grep -c 'is UNSTABLE (ADR-0068' || true)"
+if [ "$uw_warned" -lt 1 ]; then
+  echo "[compiler-gate] FAIL: importing @vibe/concurrent did not warn (#2248)" >&2
+  uw_check "$uwdir/uses.vibe" >&2
+  exit 1
+fi
+if [ "$uw_optin" -ne 0 ]; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not silence the ADR-0068 warning (#2248)" >&2
+  exit 1
+fi
+if [ "$uw_plain" -ne 0 ]; then
+  echo "[compiler-gate] FAIL: a file not touching @vibe/concurrent warned anyway (#2248)" >&2
+  exit 1
+fi
+rm -rf "$uwdir"
+echo "[compiler-gate] ADR-0068 unstable-surface warning ok (#2248)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"

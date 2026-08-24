@@ -53,7 +53,12 @@ adapter, launcher, mode, enforced = sys.argv[1], sys.argv[2], sys.argv[3], sys.a
 # would break that, so they are excluded BY NAME -- and the check below fails on
 # any expression-position selector not accounted for here, so a new one cannot
 # be silently dropped the way VIBE_COVERAGE was (#2246 review).
-OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS"}
+# VIBE_UNSTABLE joins them: it is read INSIDE the already-selected VIBE_CHECK
+# branch and only decides whether ADR-0068 warning lines are appended. It picks
+# no branch, so it cannot hijack a verb -- and clearing it would silence a
+# caller who set it deliberately, which is the same reason the other two are
+# here.
+OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS", "VIBE_UNSTABLE"}
 
 # The order is SOURCE ORDER, and a selector counts wherever it is tested --
 # `let bytes = if Env::get("VIBE_COVERAGE") == "1" { .. } else if

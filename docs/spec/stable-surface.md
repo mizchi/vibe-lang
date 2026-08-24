@@ -36,17 +36,27 @@ Trait bound compatibility follows the lock in [decisions.md](decisions.md):
 The **unstable surface (§6)** is outside this guarantee. Those parts can break
 within a Minor.
 
-**There is no opt-in gate today, and this document used to claim there was.**
-It said those parts "are reached only through `@build.unstable`, an explicit
-flag, or an ADR still marked `proposed`" — but `@build.unstable` appears
-nowhere else in the tree, and there is no `--unstable` or `--experimental`
-flag. An ADR's status is bookkeeping, invisible to someone writing code. What
-is actually gated, measured 2026-08-24: the wasm-gc backend (an env var),
-`perform?` (the checker rejects it, naming the edit), and SIMD (the package
-does not resolve). What is NOT gated: `TaskGroup::run` and everything else in
-ADR-0068's model — `vibe check` returns clean, with no marker of any kind.
-Closing that gap is tracked separately; until it does, §6 is a reading
-obligation rather than an enforced boundary.
+**How the unstable surface is marked.** This document used to claim those
+parts "are reached only through `@build.unstable`, an explicit flag, or an ADR
+still marked `proposed`". None of that was true: `@build.unstable` appeared
+nowhere else in the tree, there was no such flag, and an ADR's status is
+bookkeeping a reader never sees. `TaskGroup::run` compiled with `vibe check`
+clean and no marker of any kind.
+
+What is enforced today, measured 2026-08-24:
+
+| surface | how it is gated |
+| --- | --- |
+| wasm-gc backend | opt-in env var (`VIBE_BACKEND=gc` and friends) |
+| `perform?` | the checker rejects it, naming the edit that fixes it |
+| SIMD | the package does not resolve |
+| **ADR-0068 concurrency** | **`vibe check` warns on `import @vibe/concurrent`; `VIBE_UNSTABLE=1` silences it** |
+
+A warning rather than an error, because the surface has no external users yet
+— every one of the 31 files using `TaskGroup::` is inside this repository. It
+escalates to an error before that stops being true, not after.
+
+The rest of §6 is still a reading obligation rather than an enforced boundary.
 
 ---
 

@@ -664,6 +664,87 @@ fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stm
   }
 }
 
+/// UNSTABLE-surface warnings (ADR-0068). One line per import of a package
+/// whose design is not settled, so a reader is told at the keyboard rather
+/// than only in docs/spec/stable-surface.md section 6.
+///
+/// The scan is TEXTUAL on the entry source, for the same reason
+/// `deprecated_scan` is token-level: it needs no name resolution and it
+/// reports where the reader actually wrote the dependency. Only the ENTRY
+/// file warns -- a transitive dependency's own imports are its author's
+/// choice, not this file's, and warning about them would be noise nobody
+/// here can act on.
+///
+/// `@vibe/concurrent` is the whole list today: `Nursery`, `Task`,
+/// `Sender`/`Receiver`, `TaskGroup::run` / `spawn` / `spawn_suspend`, and the
+/// `Send` rule are ADR-0068, still `proposed`. The `Async` effect itself is
+/// NOT here -- ADR-0012 is accepted and `with Async` ships in builtin
+/// signatures a user can reach (`StdinStream::next`). The unstable part is
+/// the concurrency model built on top, not the row vocabulary.
+
+/// The first whitespace-delimited token. `import @vibe/concurrent { X }` ->
+/// `@vibe/concurrent`. A `{` with no space before it also ends the token, so
+/// `import @vibe/concurrent{X}` is read the same way.
+fn str_take_until_space(s: String) -> String {
+  let n = String::length(s)
+  let mut cut = n
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(s, i)
+    if (c == 32 || c == 9 || c == 123) && cut == n {
+      cut = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  String::substring(s, 0, cut)
+}
+
+fn unstable_package_note(name: String) -> String {
+  if name == "@vibe/concurrent" {
+    "`@vibe/concurrent` is UNSTABLE (ADR-0068, still proposed): it is outside the SemVer promise and can change within a Minor release -- see docs/spec/stable-surface.md section 6. Set VIBE_UNSTABLE=1 to silence this."
+  } else {
+    ""
+  }
+}
+
+export fn check_unstable_surface_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
+  let source = match checked_entry_source(input_path, source_groups) {
+    Some(snapshot) => snapshot,
+    None => return array_empty()
+  }
+  let out = array_empty()
+  let lines = String::split(source, "\n")
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    // Column 1, no trimming: an `import` is a top-level declaration and the
+    // formatter puts it there, so a leading-whitespace form is not a thing
+    // this has to read. It also keeps the scan off `String::trim_start`,
+    // which docs/cheatsheet.md lists but the compiler's own surface does not
+    // have -- measured here, and worth its own issue.
+    if String::starts_with(line, "import ") {
+      let pkg = str_take_until_space(String::substring(line, 7, String::length(line)))
+      let note = unstable_package_note(pkg)
+      if note != "" {
+        // `warning: line N:col 1: ...`, the spelling deprecated_scan uses.
+        // The launcher's check arm forwards ONLY lines matching `^warning: `
+        // (runtime/vibe), so a `path:line:col: warning:` form -- which is what
+        // `vibe diagnostics` emits -- is silently dropped here. Measured: the
+        // first version of this used that form and printed nothing.
+        Array::push(out, String::concat("warning: line ", String::concat(Int::to_string(i + 1), String::concat(":col 1: ", note))))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Redundant import warnings derived from the exact source snapshot consumed
 /// by the successful linked check. Missing or duplicate entry identity is
 /// fail-closed: no warning is safer than describing unchecked contents.

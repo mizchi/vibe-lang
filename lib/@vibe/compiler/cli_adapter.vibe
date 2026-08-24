@@ -110,6 +110,7 @@ import ./cli_support.vibe {
   check_deprecated_warnings_from_source_groups,
   check_linked_file_source_groups,
   check_redundant_import_warnings_from_source_groups,
+  check_unstable_surface_warnings_from_source_groups,
   strip_executable_wasm_env,
   verify_culprit_off_marker_fs_fail_closed
 }
@@ -443,6 +444,13 @@ fn adapter_split_nonempty_lines(text: String) -> Array[String] {
 
 /// #2149: does `s` end with `suffix`? Used only to spot a `.vpkg` path, whose
 /// header is not vibe syntax and so can never be parse-checked as a whole file.
+/// An empty warning list. A named function rather than a bare `[]` so the
+/// `if` arms agree on the element type without an annotation (#2248).
+fn adapter_no_warnings() -> Array[String] {
+  let out: Array[String] = []
+  out
+}
+
 fn adapter_path_has_suffix(s: String, suffix: String) -> Bool {
   let n = String::length(s)
   let m = String::length(suffix)
@@ -1255,6 +1263,39 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         StringBuilder::push(out_text, Array::get(redundant_import_warns, rwi))
         StringBuilder::push(out_text, "\n")
         rwi = rwi + 1
+      }
+      // Unstable-surface warnings (ADR-0068). `docs/spec/stable-surface.md`
+      // section 6 used to claim this surface "is reached only through
+      // `@build.unstable`, an explicit flag, or an ADR still marked
+      // `proposed`" -- and `@build.unstable` appeared NOWHERE else in the
+      // tree, there was no such flag, and an ADR's status is bookkeeping a
+      // reader never sees. `TaskGroup::run` compiled with `vibe check` clean
+      // and no marker of any kind. This is the missing half.
+      //
+      // A warning, not an error: the surface has no external users yet (all
+      // 31 `TaskGroup::` files are in-repo, measured), so nothing is broken by
+      // saying so, and an error would need the opt-in threaded through every
+      // gate lane before it could land. Escalating to an error is the next
+      // step, taken before external users appear rather than after.
+      //
+      // `VIBE_UNSTABLE=1` silences it, read in EXPRESSION position like the
+      // other observation-only knobs: `check_selector_precedence.sh` derives
+      // the adapter's BRANCH order from statement-position `if Env::get(..)`,
+      // and a selector that picks no verb must not enter that order (it would
+      // then take a position in every arm's derived clear list). Read HERE and
+      // not in cli_support so the warning collectors stay pure functions of
+      // (path, sources) -- the same reason every other selector is an adapter
+      // concern.
+      let unstable_warns = if Env::get("VIBE_UNSTABLE") == "1" {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_source_groups(input_path, checked_source_groups)
+      }
+      let mut uwi = 0
+      while uwi < Array::length(unstable_warns) {
+        StringBuilder::push(out_text, Array::get(unstable_warns, uwi))
+        StringBuilder::push(out_text, "\n")
+        uwi = uwi + 1
       }
       StringBuilder::push(out_text, "ok\n")
       Fs::write_file(output_path, StringBuilder::freeze(out_text))
