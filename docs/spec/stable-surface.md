@@ -65,8 +65,13 @@ of each item is [spec/syntax.md](syntax.md) and the
   classify **traps at the comparison** once both sides are non-empty rather
   than answering by length or identity; adding a type annotation resolves it.
   An erased type variable (`[T: Eq]`) dispatches through its witness and is
-  rejected at check time for a container with no `Eq` impl. There is **no
-  silent reference equality** anywhere on this surface. SemVer reading: a
+  rejected at check time for a container with no `Eq` impl; an UNBOUNDED
+  formal comparing containers (`fn f[T](x: Array[T], y: Array[T])`) is the
+  trap side of the same contract — measured 2026-08-24, an
+  equal-but-separately-allocated pair traps rather than answering, and a
+  difference answers `false`. There is **no silent reference equality**
+  anywhere on this surface — every lane answers correctly or traps. SemVer
+  reading: a
   currently-trapping comparison later becoming a structural answer is a
   compatible change (the typed lane, #2158); an existing answer changing is
   breaking. The full contract is the cheatsheet's "`==` on `Array` / `Bytes`
@@ -112,14 +117,21 @@ of each item is [spec/syntax.md](syntax.md) and the
   `perform Exception::Throw(x)` (#640); the bracketless `Exception` row is
   erased — its payload is deliberately unconstrained.
 - `suberror` (typed errors) and **typed exception rows `Exception[E]`**
-  (ADR-0085, #1344): the row names the thrown kind (`with Exception[IoError]`,
-  `E` an enum or `suberror`), a handler discharges exactly its kind
-  (`handle .. with { Exception[IoError]::Throw(e) => .. }`), kinds compose by
-  `effectset` union, and a kind missing from the row is a check-time
-  diagnostic. The documented gradual reading is part of this contract: a
-  payload whose kind cannot be resolved (e.g. a local binding) is treated as
-  erased and passes any `Exception[K]` — no false positives, known misses.
-  Tightening that reading rejects programs and is a breaking change.
+  (ADR-0085, #1344): the row names the thrown payload's **static type**
+  (`with Exception[IoError]` — `E` is any payload type: an enum, a
+  `suberror`, or a primitive such as `String`), kinds compose by `effectset`
+  union, and a kind missing from the row is a check-time diagnostic. The
+  exact-kind discharge is a **checker-side** guarantee over statically kinded
+  rows: `Exception[IoError]::Throw` discharges exactly `IoError` where the
+  handled expression's row is kinded. Where that row is **erased**, kinded
+  and erased are compatible in both directions and the runtime carries a
+  single abortive tag, so a kinded handler also discharges an erased throw
+  whose payload may be another kind. The gradual reading is likewise part of
+  the contract: a payload whose kind cannot be resolved (a pattern binder, a
+  field projection — an ordinary local binding IS resolved from its
+  initializer) is treated as erased and passes any `Exception[K]` — no false
+  positives, known misses. Tightening any of this rejects programs and is a
+  breaking change.
 - User-defined algebraic effects: `effect` / `perform` / `handle ... with` /
   `resume` (one-shot, lexically scoped — ADR-0050, ADR-0021 Phase 1
   tail-resumptive).
