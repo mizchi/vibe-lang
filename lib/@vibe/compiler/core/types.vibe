@@ -2848,21 +2848,12 @@ fn struct_impl_target_matches(target: Type, resolved: Type) -> Bool {
   }
 }
 
-/// #1503: a CONCRETE impl on a parameterized type (`impl Show for Array[Int]`)
-/// records only the head name -- `parse_impl_stmt` reads the identifier after
-/// `for` and `skip_bracketed_args` discards `[Int]` -- so the target lands in
-/// the env as the bare `CtNamed("Array", [])`. `types_equal` then never matches
-/// the concrete `CtArray(CtInt)` at the use site and the impl is invisible,
-/// while the GENERIC spelling of the same impl (`impl [T] Show for Array[T]`,
-/// which goes through EnvTraitImplGen) resolves by constructor and works.
-///
-/// Match by constructor here so the two spellings behave identically. Erasing
-/// the type args on the concrete side loses nothing the env ever had: the
-/// parser already threw them away, so `impl Show for Array[Int]` and
-/// `impl Show for Array[String]` are the same declaration today. Narrowing an
-/// impl to one instantiation needs the parser to keep the args first (that is a
-/// separate, larger change; noted on #1503).
-fn concrete_impl_ctor_matches(target: Type, resolved: Type) -> Bool {
+/// #1503: a bare constructor impl (`impl Show for Array`) records
+/// `CtNamed("Array", [])`, which `types_equal` cannot match against a concrete
+/// `CtArray(CtInt)` use site. Match those intentionally erased targets by
+/// constructor. A concrete generic target (`impl Show for Array[Int]`) is
+/// rejected by the parser (#2262), so it can never be widened through here.
+fn erased_impl_ctor_matches(target: Type, resolved: Type) -> Bool {
   let head = type_constructor_name(resolved)
   match target {
     CtNamed(tname, targs) => Array::length(targs) == 0 && head != "" && tname == head,
@@ -2882,7 +2873,7 @@ fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, reso
       // builtin `==` / `<`, and those are reference equality on `Array` /
       // `Bytes`, so honouring `impl Eq for Array[Int]` would make `==` silently
       // wrong on the very type the bound was written for.
-      if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (concrete_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full, trait_name)) {
+      if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full, trait_name)) {
         true
       }
       else type_implements_check_env(rest, full, trait_name, resolved)
@@ -2895,7 +2886,7 @@ fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, reso
 }
 
 /// #1503 diagnostics: an impl for this trait IS declared on the resolved type's
-/// constructor (either spelling), it just did not satisfy the bound. Lets the
+/// constructor (bare or generic spelling), it just did not satisfy the bound. Lets the
 /// bound checker say "declared but not usable, and here is why" instead of the
 /// flatly false `no impl \`Eq\` for \`Array[Int]\`` when the user wrote that
 /// impl three lines above.
@@ -2988,9 +2979,9 @@ export fn generalize(s: Subst, ty: Type) -> Type {
 /// incomplete in the same way as the direct scan was.
 ///
 ///   * `EnvTraitImpl` matched only `types_equal` / `struct_impl_target_matches`,
-///     so a concrete impl on a parameterized type (whose target the parser
-///     erased to the bare `CtNamed("Array", [])`) never matched -- the same hole
-///     `concrete_impl_ctor_matches` closes for the direct scan, with the same
+///     so a bare constructor impl (`impl Child for Array`) never matched a
+///     concrete instantiation -- the same hole `erased_impl_ctor_matches`
+///     closes for the direct scan, with the same
 ///     method-bearing gate on the BOUND trait (that is the trait the caller
 ///     dispatches through).
 ///   * `EnvTraitImplGen` was skipped outright, so `impl [T] Child for Array[T]`
@@ -3001,7 +2992,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvMutCell(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
-    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (concrete_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full_env, trait_name)) {
+    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full_env, trait_name)) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
       }

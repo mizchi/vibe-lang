@@ -1893,6 +1893,18 @@ fn parse_impl_stmt_with_binder_context(tokens: Array[Token], pos: Int, context: 
       let fp = expect_tk(tokens, after_tp + 1, "for")
       match peek(tokens, fp) {
         TIdent(type_name) => {
+          // #2262: SImpl records only the target constructor name. Silently
+          // dropping a concrete argument here widens `Array[Int]` to every
+          // `Array[T]`, allowing an Int-checked method body to run on values
+          // such as Array[String]. Reject until SImpl can retain target args.
+          if Array::length(type_params) == 0 {
+            match peek(tokens, fp + 1) {
+              TLBracket => throw(String::concat("concrete generic impl target `", String::concat(type_name, "[...]` is not supported; write a generic impl such as `impl [T] Trait for Type[T]`"))),
+              _ => ()
+            }
+          } else {
+            ()
+          }
           // Return the position at the impl body `{` (or the next token when
           // the impl is body-less). The caller (parser.vibe) either expands the
           // method block into `Type::method` let-bindings or skips it; this

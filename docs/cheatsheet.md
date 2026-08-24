@@ -853,8 +853,7 @@ let bad = keep([1, 2, 3])     // reject される
 
 container に対して効かせたいなら **trait にメソッドを持たせる** —
 メソッドがあれば witness dictionary 経由でディスパッチするので、
-concrete (`impl M for Array[Int]`) でも generic (`impl [T] M for Array[T]`)
-でも解決する:
+generic impl (`impl [T] M for Array[T]`) を解決できる:
 
 ```vibe
 trait Measured {
@@ -897,13 +896,11 @@ the same diagnostic, naming the declaration (`` in the signature of
 `Functor::fmap` ``). A trait or effect may still DECLARE type parameters and
 use them unapplied (`trait Iter[A] { nth(Self, Int) -> Option[A] }`).
 
-> #1503 以前は、**concrete な impl (`impl M for Array[Int]`) が method-bearing
-> trait でも解決しなかった**。パーサが `for` の後ろの `[Int]` を捨てるため、
-> 環境には `Array` という頭だけが残る。今は generic 版と同じく**コンストラクタで
-> 照合する**ので両方の綴りが同じ挙動になる。裏を返すと、
-> `impl M for Array[Int]` は今のところ `Array[String]` にも効く
-> (パーサが型引数を保持していないため) — 特定の instantiation だけに
-> 絞る書き方はまだ無い。
+> A concrete generic impl target such as `impl M for Array[Int]` is rejected
+> (#2262). The impl AST cannot retain the `[Int]` argument; accepting it would
+> silently widen the impl to `Array[String]` and every other instantiation.
+> Write the honest generic form, `impl [T] M for Array[T]`. Impl specialization
+> for one generic instantiation is not supported yet.
 
 ## Collections
 
