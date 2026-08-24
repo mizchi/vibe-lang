@@ -6342,4 +6342,4 @@ if ! grep -qF 'arity mismatch for assert_eq' "$aldir/user.wasm.diag" 2>/dev/null
   exit 1
 fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq failure location ok, user 3-arg still rejected in both lanes (#2202)"
+echo "[compiler-gate] assert_eq location + user 3-arg rejection ok (#2202)"
