@@ -123,6 +123,15 @@ red "the helper is spelled inside single quotes" \
     "unresolved expansion" \
     "out = s.replace('env \$(selector_clears_before VIBE_BACKEND)', chr(101)+chr(110)+chr(118)+chr(32)+chr(39)+'X=\$(selector_clears_before VIBE_BACKEND)'+chr(39), 1)"
 
+# ...and in DOUBLE quotes, which is the sharper of the two. The helper really
+# does run; its whole output then becomes one `X=...` argument, which `env`
+# accepts as a valid assignment and which passes no `-u` at all. I left this
+# open deliberately in the previous round, arguing the runner would surface it.
+# It does not (#2248 review).
+red "the helper is spelled inside double quotes" \
+    "unresolved expansion" \
+    "out = s.replace('env \$(selector_clears_before VIBE_BACKEND)', chr(101)+chr(110)+chr(118)+chr(32)+chr(34)+'X=\$(selector_clears_before VIBE_BACKEND)'+chr(34), 1)"
+
 # Five cases used to live here, all mutating the variable that carried the
 # clears (an uncovered path, an underived narrowing, an assignment behind
 # `&&`, one after `;`, a deleted declaration). Routing them through a variable

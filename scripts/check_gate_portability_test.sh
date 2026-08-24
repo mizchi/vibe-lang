@@ -67,13 +67,31 @@ run && { cat "$TMP_ROOT/out" >&2; fail "a bare sed -i was accepted"; }
 grep -qF 'BSD/macOS requires one' "$TMP_ROOT/out" || fail "sed -i finding did not name the reason"
 ok "a bare sed -i is rejected"
 
-# --- green guard for 1c: both portable spellings must still pass, or the rule
-# could be satisfied by rejecting every sed.
+# --- red 1c2/1c3: the OTHER no-suffix spellings. Matching only a standalone
+# `-i` accepted `sed --in-place` and `sed -Ei`, which are the same GNU-only
+# behaviour one keystroke away (#2248 review).
+reset_tree
+printf '%s\n' 'sed --in-place "s/a/b/" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'sed --in-place' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1c2 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "sed --in-place was accepted"; }
+ok "sed --in-place (long form, no suffix) is rejected"
+
+reset_tree
+printf '%s\n' 'sed -Ei "s/a/b/" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'sed -Ei' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1c3 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a clustered -Ei was accepted"; }
+ok "a clustered short option ending in i (-Ei) is rejected"
+
+# --- green guard for 1c: every portable spelling must still pass, or the rule
+# could be satisfied by rejecting every sed. The last one is the false positive
+# the option-run anchor exists to prevent: a `grep -i` AFTER a sed pipeline.
 reset_tree
 printf '%s\n' 'sed -i.bak "s/a/b/" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+printf '%s\n' 'sed --in-place=.bak "s/a/b/" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
 printf '%s\n' 'sed "s/a/b/" "$1" > "$1.tmp" && mv "$1.tmp" "$1"' >> "$TMP_ROOT/scripts/clean.sh"
+printf '%s\n' "sed 's/x/y/' \"\$1\" | grep -i foo" >> "$TMP_ROOT/scripts/clean.sh"
 run || { cat "$TMP_ROOT/out" >&2; fail "a portable sed spelling was rejected"; }
-ok "sed -i.bak and a temp-file edit still pass"
+ok "sed -i.bak, --in-place=.bak, a temp-file edit and a piped grep -i still pass"
 
 # --- red 2: ripgrep behind a pipe.
 reset_tree

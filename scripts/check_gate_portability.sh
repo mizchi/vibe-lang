@@ -79,13 +79,25 @@ findings="$(
       next
     }
 
-    # 3. `sed -i` with no suffix. GNU takes an optional one, BSD/macOS REQUIRES
-    #    one, so the bare form aborts there. Lexical, and a real instance:
-    #    check_book_console_test.sh -- a release-check dependency -- used it,
-    #    so the default gate could not run on the environment this file exists
-    #    to protect (#2248 review). `sed -i.bak` and `sed -i ''` both pass.
-    /(^|[^A-Za-z0-9_.-])sed[[:space:]]+(-[A-Za-z]+[[:space:]]+)*-i([[:space:]]|$)/ {
-      printf "  %s:%d: `sed -i` with no suffix; BSD/macOS requires one -- use a temp file, or `sed -i.bak` and remove it\n", rel, FNR
+    # 3. In-place `sed` with no suffix. GNU takes an optional one, BSD/macOS
+    #    REQUIRES it, so every no-suffix spelling aborts there. Lexical, and a
+    #    real instance: check_book_console_test.sh -- a release-check
+    #    dependency -- used it, so the default gate could not run on the
+    #    environment this file exists to protect (#2248 review).
+    #
+    #    THREE spellings, not one. The first version matched only a standalone
+    #    `-i` and accepted `sed --in-place` and `sed -Ei` (measured, both
+    #    printed ok). The option word is matched as: a short cluster ending in
+    #    `i` (`-i`, `-Ei`, `-ni`) or the long form with no `=SUFFIX`. Anything
+    #    after the `i` is a suffix, so `-i.bak` and `--in-place=.bak` pass, as
+    #    does a temp-file edit -- pinned by a green guard, because a rule that
+    #    rejected every `sed` would satisfy the red cases and be useless.
+    #
+    #    The leading `(-[^[:space:]]+[[:space:]]+)*` requires every word
+    #    between `sed` and the offender to be an option, so `sed 's/x/y/' f |
+    #    grep -i foo` is not mistaken for one.
+    /(^|[^A-Za-z0-9_.-])sed[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(-[A-Za-z]*i|--in-place)([[:space:]]|$)/ {
+      printf "  %s:%d: in-place `sed` with no suffix; BSD/macOS requires one -- use a temp file, or `sed -i.bak` and remove it\n", rel, FNR
       next
     }
 
@@ -118,4 +130,4 @@ if [ -n "$findings" ]; then
   exit 1
 fi
 
-echo "[gate-portability] ok (no ripgrep dependency; no bare sed -i; no uninterpreted \\t in grep patterns)"
+echo "[gate-portability] ok (no ripgrep dependency; no no-suffix in-place sed; no uninterpreted \\t in grep patterns)"

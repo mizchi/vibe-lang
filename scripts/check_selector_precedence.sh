@@ -160,20 +160,30 @@ for m in re.finditer(r'\benv\b((?:[^\n]*\\\n)*[^\n]*)', src):
     # question is changed rather than answered: no variables, and the check
     # becomes "is the call spelled here", which a scanner CAN decide.
     #
-    # Searched with single-quoted spans REMOVED first. The shell does not
-    # expand `$( ... )` inside single quotes, so `env 'X=$(selector_clears_
-    # before VIBE_BACKEND)' ...` passes a literal string and clears nothing --
-    # and matching the helper's TEXT anywhere in the block credited exactly
-    # that (#2248 review). Same defect as every earlier round: the check read
-    # a proxy (the characters are present) for the property (the shell runs
-    # it). A single-quoted span cannot execute anything, so deleting those
-    # spans before looking is the whole fix.
+    # Searched with QUOTED spans removed first -- both kinds. The clears must
+    # reach `env` as separate words, and only a bare, unquoted command
+    # substitution does that.
     #
-    # Double quotes are left alone on purpose: `"$(selector_clears_before X)"`
-    # DOES expand -- though it would then be one argument rather than the word
-    # list `env` needs, which is a different bug and one the runner would
-    # surface immediately.
+    #   'X=$(selector_clears_before VIBE_BACKEND)'  never expands at all
+    #   "X=$(selector_clears_before VIBE_BACKEND)"  expands, then collapses to
+    #                                               ONE `X=...` assignment
+    #
+    # Neither passes a single `-u` to `env`, and the block still reads as
+    # though it clears everything. Both were measured reporting `ok` on a
+    # hijackable tree (#2248 review, two separate rounds).
+    #
+    # The second round is the one worth recording, because I argued myself out
+    # of it: the previous version stripped only single quotes, on the reasoning
+    # that the double-quoted form "DOES expand -- though it would then be one
+    # argument rather than the word list `env` needs, which is a different bug
+    # and one the runner would surface immediately". It does not surface. `env`
+    # accepts `X=...` as a perfectly valid assignment and runs the command with
+    # no clears at all. Same defect as every earlier round -- the check read a
+    # proxy (the characters are present) for the property (the shell passes
+    # them as words) -- and this time the proxy was in my justification for
+    # leaving the hole open.
     executable = re.sub(r"'[^']*'", "", block)
+    executable = re.sub(r'"[^"]*"', "", executable)
     inline = re.findall(r'\$\(selector_clears_before (VIBE_[A-Z_]+)\)', executable)
     covered = inline
 
