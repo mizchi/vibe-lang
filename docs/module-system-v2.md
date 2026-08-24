@@ -154,31 +154,52 @@ export ./syntax as syntax
   contract_hash を宣言ごとに細分化する拡張余地は残す (ADR-0004 の三層 ref
   とはこの点で接続する)。
 
-## 6. `require` — 1 行 = manifest + lock
+## 6. `require` — one line = manifest + lock
 
 ```vibe
-// index.vibei でも、単発スクリプトの先頭でも同じ構文
-require @vibe/core 1.2.3 = #ab12cd34      // bare triple = 完全一致
-require @vibe/http ^1.2.3 = #77aa02ef     // ^ は互換範囲 (full triple 必須)
+// Same syntax in an index.vibei and at the top of a one-off script
+require @vibe/core 1.2.3 = #ab12cd34      // bare triple = exact match
+require @vibe/http ^1.2.3 = #77aa02ef     // ^ = compatible range (full triple required)
 ```
 
-- **semver 表記は厳密**: 演算子は「なし (完全一致)」と `^` の 2 つだけ。
-  `^1` / `^1.2` / `~` / `>=` / `1.x` / `*` は parse error。制約はビルドに
-  使われない (真実は hash) ので grammar は最小でよい。
-- **直接依存だけ書く**。依存先の hash はその依存先自身の `require` 行を
-  含んで計算されるため、直接依存を pin した時点で推移閉包が固定される
-  (git commit hash が tree を固定するのと同じ)。**lock ファイルは廃止**
-  (`index.lock` は retire)。
-- **hash は fmt / normalize が挿入する**: `require @vibe/core 1.2.3` とだけ
-  書けば `vibe fmt` が `= #hash` を補完する (goimports 系の「コードを完成
-  させる formatter」)。ただし:
-  - **fmt はオフライン**。ローカル store / registry キャッシュから引ける
-    ときだけ挿入。引けなければ行を残して diagnostics (`--check` では fail)。
-  - ネットワークを触るのは `vibe add` / `vibe update` / 初回 `vibe run` 側。
-  - **pinned form が正規形**。release-check の normalize gate が「コミット
-    されるソースは常に pinned」を強制する (これが実質の lock 検証)。
-- **重複検知と統一提案**: ビルドは解決しない。同名パッケージが複数 hash で
-  閉包に現れたら決定的エラー + 機械可読な衝突列挙 + 提案:
+- **semver spelling is strict**: the only operators are "none (exact)" and
+  `^`. `^1` / `^1.2` / `~` / `>=` / `1.x` / `*` are parse errors. The
+  constraint is never consumed by the build (the hash is the truth), so the
+  grammar stays minimal.
+- **Only direct dependencies are written.** A dependency's hash is computed
+  over its own `require` lines, so pinning the direct dependencies fixes the
+  transitive closure (the same way a git commit hash fixes a tree). **Lock
+  files are abolished** (`index.lock` is retired).
+- **The hash is inserted by fmt / normalize**: write just
+  `require @vibe/core 1.2.3` and `vibe fmt` completes the `= #hash`
+  (a goimports-style "formatter that completes the code"). **Implemented**
+  (#730 D-3): all three fmt entries (single-file `vibe_fmt.sh`, the batch
+  lane behind CI's `vibe-fmt-check` and `pkf run fmt`, and the installed
+  `vibe fmt`) fill via `fill_require_pins_lenient` (loader). Notes:
+  - **fmt is offline.** It fills only when the workspace store
+    (`.vibe/store/<name>/`) can answer AND the store copy's declared
+    version satisfies the constraint (exact match, or npm caret semantics
+    for `^`) — the pin is the truth the build verifies, so pinning an
+    installed copy beside a version it does not satisfy would make the
+    build run a release the source never asked for. An absent, versionless,
+    or mismatched copy leaves the line verbatim (the current implementation
+    emits no diagnostic — an unpinned require that reaches the build is
+    rejected there; failing `--check` over an unanswerable line is not yet
+    implemented).
+  - Network access belongs to `vibe add` / `vibe update` / the first
+    `vibe run`, never to fmt.
+  - **The pinned form is canonical.** An unpinned line the store can answer
+    is a DIFF under `--check` — including in an `index.vpkg` header, whose
+    require directives fill the same way. The design also calls for the
+    release-check normalize gate to enforce "committed sources are always
+    pinned" (the effective lock verification); that half is **not yet
+    wired** — `vibe normalize` re-emits unpinned lines unchanged
+    (`normalize_source` deliberately leaves pin filling to the fmt/fill
+    lanes), so today `vibe fmt` is the only canonicalizer.
+- **Duplicate detection with a unification hint**: the build never resolves
+  conflicts. When one package name appears in the closure under multiple
+  hashes, the answer is a deterministic error plus a machine-readable
+  conflict listing and a suggestion:
 
 ```
 error: duplicate package @vibe/core
@@ -187,13 +208,15 @@ error: duplicate package @vibe/core
 hint: require @vibe/core 1.2.5 = #cd34ef override
 ```
 
-- `require ... override` (root のみ) は全依存をその hash に統一する
-  (Nix `inputs.follows` 相当)。override 後の整合性は whole-program check が
-  検証する。
-- `vibe dedupe` が全制約を満たす最大バージョンを選び contract diff で互換を
-  確認して提案、`--apply` で書き込み。
-- content-addressing の副産物: 別名 vendoring された同一コード (package_hash
-  ないしファイル hash の一致) も検知して統一提案できる。
+- `require ... override` (root only) unifies every dependency onto that hash
+  (the Nix `inputs.follows` analogue). Post-override consistency is verified
+  by the whole-program check.
+- `vibe dedupe` picks the highest version satisfying every constraint,
+  confirms compatibility via contract diff, and proposes it; `--apply`
+  writes it.
+- A by-product of content addressing: identical code vendored under
+  different names (matching package_hash or file hash) is also detected and
+  proposed for unification.
 
 ## 7. `where` 契約節 — 段階導入
 

@@ -70,6 +70,7 @@ import @vibe/compiler/contract {
   package_hash_from_sources,
   parse_contract_program,
   replace_generated_hash_directive,
+  semver_parts,
   verify_publish_bump,
   vpkg_shared_import_marker
 }
@@ -2237,10 +2238,99 @@ export fn fill_require_pins_fs(source: String) -> String with Exception + Fs {
 /// by-name store there is one installed version per package, so repinning
 /// IS conflict resolution.
 export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with Exception + Fs {
+  fill_require_pins_impl(source, repin, false)
+}
+
+/// The `vibe fmt` lane's fill (#730 D-3): the same offline store lookup as
+/// fill_require_pins_fs, but TOTAL. fmt must format the body whatever the
+/// state of the store, so a package absent from the store leaves its
+/// require line verbatim instead of failing the run, and any error along
+/// the way (a malformed require line the head classifier will refuse
+/// anyway, a store copy the hasher rejects) returns the source unchanged.
+/// Not filling is not wrong -- the build still refuses to resolve an
+/// unpinned require -- whereas aborting the format over it would be; the
+/// strict lane (VIBE_FILL_PINS, above) keeps the loud answer for callers
+/// who asked for pins specifically.
+export fn fill_require_pins_lenient(source: String) -> String with Fs {
+  handle {
+    fill_require_pins_impl(source, false, true)
+  } with { Exception::Throw(_) => source }
+}
+
+/// digits_to_int (behind semver_parts) folds digit runs with the wrapping
+/// 63-bit arithmetic every Int operation has (#1877), so a long-enough
+/// component wraps -- `^0.1.4611686018427387904` gets a NEGATIVE patch
+/// bound and an installed 0.1.0 "satisfies" it (#2260 round 6, measured).
+/// 18 decimal digits max out below 2^62-1, so components up to that length
+/// convert exactly; anything longer is unverifiable and never fills.
+fn semver_components_convert_exactly(v: String) -> Bool {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else {
+    0
+  }
+  let parts = String::split(String::substring(v, start, String::length(v)), ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    String::length(Array::get(parts, 0)) <= 18 && String::length(Array::get(parts, 1)) <= 18 && String::length(Array::get(parts, 2)) <= 18
+  }
+}
+
+/// Does the store copy's declared version satisfy a require constraint?
+/// The grammar (ADR-0063 §6) has exactly two operators: none (exact match)
+/// and `^` (compatible range, npm caret semantics: the leftmost non-zero
+/// digit is the compatibility line -- same major and >= the triple; for
+/// major 0 same minor and >= patch; for 0.0.z the patch itself, so only
+/// the exact triple satisfies, #2260 round 5). An empty or non-triple
+/// declared version satisfies nothing -- unverifiable never fills.
+fn require_constraint_satisfied(constraint: String, version: String) -> Bool {
+  if !semver_components_convert_exactly(constraint) || !semver_components_convert_exactly(version) {
+    return false
+  }
+  match semver_parts(version) {
+    None => false,
+    Some(vparts) => {
+      let (vmaj, vmin, vpat) = vparts
+      if String::starts_with(constraint, "^") {
+        match semver_parts(String::substring(constraint, 1, String::length(constraint))) {
+          None => false,
+          Some(cparts) => {
+            let (cmaj, cmin, cpat) = cparts
+            if vmaj != cmaj {
+              false
+            } else if cmaj == 0 && cmin == 0 {
+              vmin == 0 && vpat == cpat
+            } else if cmaj == 0 {
+              vmin == cmin && vpat >= cpat
+            } else if vmin != cmin {
+              vmin > cmin
+            } else {
+              vpat >= cpat
+            }
+          }
+        }
+      } else {
+        constraint == version
+      }
+    }
+  }
+}
+
+// Which lines are require directives is decided by the loader's own header
+// scanner, not by a second region scan here (#2260 Codex round 3): the
+// scanner blanks every recognized directive line to spaces with byte length
+// preserved, so a line that starts with `require ` in the source and is
+// all-blank in the blanked output IS a recognized require directive --
+// including one sitting after `name =`/`version =`/`deps = { .. }` in an
+// `index.vpkg` header, which a "stop at the first non-require line" scan
+// (this function's previous shape) never reached. A `require`-looking line
+// the scanner did NOT blank (i.e. body text) is left alone.
+fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String with Exception + Fs {
+  let (_, blanked) = extract_require_pins(source)
   let sb = StringBuilder::new()
   let len = String::length(source)
   let mut pos = 0
-  let mut scanning = true
   while pos < len {
     let mut nl = pos
     while nl < len && String::char_code_at(source, nl) != 10 {
@@ -2249,7 +2339,7 @@ export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with 
     let line = String::substring(source, pos, nl)
     let trimmed = String::trim(line)
     let mut emitted = false
-    if scanning && String::starts_with(trimmed, "require ") {
+    if String::starts_with(trimmed, "require ") && String::length(String::trim(String::substring(blanked, pos, nl))) == 0 {
       let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
       if Array::length(pins_one) == 1 {
         let (pname, pver, ppin) = Array::get(pins_one, 0)
@@ -2264,22 +2354,33 @@ export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with 
             store_index_vibei
           }
           if Fs::exists(store_index) {
+            // #2260 Codex round 4: the pin is the truth the build verifies,
+            // so writing the installed copy's hash beside a version it does
+            // not satisfy would make the build accept and run a release the
+            // source never asked for -- silently. Fill only when the store
+            // copy DECLARES a version and it satisfies the constraint; a
+            // versionless or mismatched copy leaves the line for `vibe
+            // add`/`update` (lenient) or reports both versions (strict).
+            let store_version = extract_package_version(Fs::read_file(store_index))
+            if require_constraint_satisfied(pver, store_version) {
+              let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+              StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
+              emitted = true
+            } else if lenient {
+              ()
+            } else {
+              throw("cannot pin \{pname}: the store copy declares version '\{store_version}' which does not satisfy the required \{pver} (install the matching release with `vibe add`/`update`, or fix the require line)")
+            }
+          } else if lenient {
+            // fmt lane: leave the unpinned line for the build to reject;
+            // fetching belongs to `vibe add`/`update`, never to fmt.
             ()
           } else {
             throw("cannot pin \{pname} offline: not installed in the store (.vibe/store/\{pname}/)")
           }
-          let (pkg_hash, _) = contract_package_hashes_fs(store_index)
-          StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
-          emitted = true
         } else ()
       } else ()
-    } else {
-      if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
-        ()
-      } else {
-        scanning = false
-      }
-    }
+    } else ()
     if emitted {
       ()
     } else {

@@ -32,6 +32,10 @@ import ../compiler/fmt {
   format_source, source_header_end
 }
 
+import ../compiler/loader {
+  fill_require_pins_lenient
+}
+
 import ../parser {
   lex, parse_program
 }
@@ -57,24 +61,34 @@ export fn main() -> Int with Fs + Env + Stderr {
   let input = Env::args_get(0)
   let output = Env::args_get(1)
   let src = Fs::read_file(input)
+  // #730 (D-3): pinned form is canonical, so fmt completes an unpinned
+  // `require @scope/name x.y.z` head line with `= #hash` when the package is
+  // installed in the workspace store -- offline, best-effort (a package the
+  // store cannot answer leaves its line verbatim; fetching belongs to
+  // `vibe add`/`update`). Applies to `.vpkg` contracts too -- their headers
+  // carry require directives and format_vpkg re-emits them (#2260 round 3).
+  // Runs BEFORE format_source so the reattached-verbatim head (or the
+  // canonical vpkg header) is the filled one; the body is untouched.
+  let pre = fill_require_pins_lenient(src)
   // format_source dispatches on the extension: `.vpkg` package contracts get
   // the canonical header writer, plain vibe sources get the verbatim
   // require-head split (#1435, #2253 round 6).
-  let formatted = format_source(input, src)
+  let formatted = format_source(input, pre)
   // The head is reattached verbatim, so the body of both source and output
   // starts at the same boundary; -1 (refused head) and 0 (no head) both mean
-  // "the body is the whole file".
+  // "the body is the whole file". The boundary comes from the FILLED source
+  // (pin filling changes head-line lengths, never the body).
   let head_end = if has_suffix(input, ".vpkg") {
     0
   } else {
-    let e = source_header_end(src)
+    let e = source_header_end(pre)
     if e > 0 {
       e
     } else {
       0
     }
   }
-  let body = String::substring(src, head_end, String::length(src))
+  let body = String::substring(pre, head_end, String::length(pre))
   let formatted_body = String::substring(formatted, head_end, String::length(formatted))
   // A `.vpkg` header is not vibe syntax, so a whole-file parse never succeeds
   // for one and the comparison below would say nothing. format_vpkg already
