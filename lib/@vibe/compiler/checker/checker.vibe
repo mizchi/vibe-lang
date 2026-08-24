@@ -152,6 +152,15 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
 /// cached env.
 let trait_erased_type_param_prefix: String = "__trait_erased_tp__"
 
+/// #2268 (Codex round 5 on #2267): binder provenance for declared fn type
+/// formals, carried in the env under a name no source can spell -- the same
+/// mechanism as `trait_erased_type_param_prefix` above. The EFn arm binds
+/// one marker per declared formal; the local-let ascription path reads them
+/// so `let y: F[Int] = x` under `fn g[F]` rejects like every declaration
+/// surface, without consulting value types (a VALUE binding whose type is a
+/// `CtVar` must never read as a formal -- round 4).
+let fapp_formal_marker_prefix: String = "__fapp_formal__"
+
 /// True when some entry of `methods` declares a method named `method_name`.
 fn trait_methods_declare(methods: Array[(String, Array[TypeExpr], TypeExpr)], method_name: String) -> Bool {
   let mut i = 0
@@ -342,10 +351,10 @@ export fn formal_application_error(fname: String, where_label: String) -> String
 /// rejected) -- and never an env lookup: a VALUE binding whose type is a
 /// `CtVar` is indistinguishable from a type formal by env alone, so
 /// `fn f[T](Array: T, xs: Array[Int])` would reject the valid builtin head
-/// (Codex round 4). Binder provenance is the only test. The cost is one
-/// narrow non-declaration site: a let annotation inside a generic fn
-/// (`let x: F[Int]` under `[F]`) has no local binder list and stays
-/// accepted-vacuous -- the same #2130 territory it was in before #2268.
+/// (Codex round 4). Binder provenance is the only test. The one
+/// non-declaration site -- a let annotation inside a generic fn -- is
+/// covered separately through the `fapp_formal_marker_prefix` markers the
+/// EFn arm binds (Codex round 5), which are also binder provenance.
 export fn report_formal_applications(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
   let applied_formals = array_empty()
   // Bound to a let rather than written inline: vibe fmt's guard refuses a
@@ -7825,6 +7834,23 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // formals of its own); the env is what knows the enclosing
             // declaration's, which is exactly the #2130 mapping above.
             report_unknown_type_names(ann_te, defs, array_empty(), env, array_empty(), "a local let annotation", errors)
+            // #2268 (Codex round 5): the enclosing EFn marked each declared
+            // formal (`fapp_formal_marker_prefix`), so binder provenance
+            // reaches this non-declaration site and `let y: F[Int] = x`
+            // rejects here too -- without the round-4 value-type misread.
+            let fapp_hits = array_empty()
+            let is_marked_formal = (head) -> {
+              match env_lookup(env, String::concat(fapp_formal_marker_prefix, head)) {
+                Some(_) => true,
+                None => false
+              }
+            }
+            collect_formal_applications_by(ann_te, is_marked_formal, fapp_hits)
+            let mut fapp_i = 0
+            while fapp_i < Array::length(fapp_hits) {
+              Array::push(errors, formal_application_error(Array::get(fapp_hits, fapp_i), "a local let annotation"))
+              fapp_i = fapp_i + 1
+            }
             let actual = subst_apply(ns0, at)
             // #981: `check_assignable` now runs the #844 same-name concrete
             // `CtNamed` check itself (its tolerate branch calls
@@ -8988,7 +9014,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             s0 = if Array::length(bounds) == 0 {
               s0
             } else subst_add_bound(s0, vid, bounds)
-            tp_env = env_bind(tp_env, tpname, tv)
+            tp_env = env_bind(env_bind(tp_env, tpname, tv), String::concat(fapp_formal_marker_prefix, tpname), CtUnit)
             c0 = nc
           },
           _ => ()
