@@ -463,95 +463,94 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
       Some(msg) => throw(locate_type_error(entry_source, msg)),
       None => ()
     }
-  } with Exception {
-    // #1596: locate only when entry is the unique reachable source matching
-    // the culprit/span. A dependency collision keeps the culprit name but
-    // drops the potentially false entry location.
-    Throw(msg) => {
-      if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
-        let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
-        throw(locate_type_error(snapshot_entry_source, verified))
-      } else {
-        // #2198: the missing-Show interpolation throw escapes the desugar
-        // (reached via check_file_fs_mode's effect_lowering_prelude, or via
-        // expand_interp_stmts below) with no `<path>: ` prefix -- path
-        // prefixing lives in check_module_job, which that throw bypasses.
-        // Prefix this one message class here; every other message reaching
-        // this catch is already path-prefixed by its module job, and
-        // prefixing unconditionally would double those.
-        //
-        // #2244 review (Codex P1): the throw itself carries no source
-        // identity -- the desugar ran on the MERGED statements, so the
-        // culprit can live in a dependency. Naming the entry file for a
-        // dep-file error would be confidently wrong, so the path is added
-        // only when exactly one source in the consumed group set resolves
-        // the message's [@fn=] anchor (locate_type_error answers with a
-        // `line ` prefix only when it does): that source owns the culprit,
-        // and its own path and text locate it. Zero owners (the marker was
-        // absent or the merge renamed the binder) or two-plus owners (the
-        // #1596 same-name collision) fail closed to the unlocated message
-        // with no path -- missing information beats misinformation.
-        if String::starts_with(msg, "cannot interpolate a value of type `") {
-          let mut owner_path = ""
-          let mut owner_source = ""
-          let mut owners = 0
-          let seen_paths: Array[String] = array_empty()
-          let mut gi2 = 0
-          while gi2 < Array::length(source_groups) {
-            let (_gname2, members2) = Array::get(source_groups, gi2)
-            let mut mi2 = 0
-            while mi2 < Array::length(members2) {
-              let (mpath, msource) = Array::get(members2, mi2)
-              let mut seen2 = false
-              let mut si2 = 0
-              while si2 < Array::length(seen_paths) {
-                if Array::get(seen_paths, si2) == mpath {
-                  seen2 = true
+  } with {
+  // #1596: locate only when entry is the unique reachable source matching
+  // the culprit/span. A dependency collision keeps the culprit name but
+  // drops the potentially false entry location.
+  Exception::Throw(msg) => {
+    if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
+      let (snapshot_entry_source, verified) = verify_culprit_off_marker_snapshot(input_path, source_groups, msg)
+      throw(locate_type_error(snapshot_entry_source, verified))
+    } else {
+      // #2198: the missing-Show interpolation throw escapes the desugar
+      // (reached via check_file_fs_mode's effect_lowering_prelude, or via
+      // expand_interp_stmts below) with no `<path>: ` prefix -- path
+      // prefixing lives in check_module_job, which that throw bypasses.
+      // Prefix this one message class here; every other message reaching
+      // this catch is already path-prefixed by its module job, and
+      // prefixing unconditionally would double those.
+      //
+      // #2244 review (Codex P1): the throw itself carries no source
+      // identity -- the desugar ran on the MERGED statements, so the
+      // culprit can live in a dependency. Naming the entry file for a
+      // dep-file error would be confidently wrong, so the path is added
+      // only when exactly one source in the consumed group set resolves
+      // the message's [@fn=] anchor (locate_type_error answers with a
+      // `line ` prefix only when it does): that source owns the culprit,
+      // and its own path and text locate it. Zero owners (the marker was
+      // absent or the merge renamed the binder) or two-plus owners (the
+      // #1596 same-name collision) fail closed to the unlocated message
+      // with no path -- missing information beats misinformation.
+      if String::starts_with(msg, "cannot interpolate a value of type `") {
+        let mut owner_path = ""
+        let mut owner_source = ""
+        let mut owners = 0
+        let seen_paths: Array[String] = array_empty()
+        let mut gi2 = 0
+        while gi2 < Array::length(source_groups) {
+          let (_gname2, members2) = Array::get(source_groups, gi2)
+          let mut mi2 = 0
+          while mi2 < Array::length(members2) {
+            let (mpath, msource) = Array::get(members2, mi2)
+            let mut seen2 = false
+            let mut si2 = 0
+            while si2 < Array::length(seen_paths) {
+              if Array::get(seen_paths, si2) == mpath {
+                seen2 = true
+              } else {
+                ()
+              }
+              si2 = si2 + 1
+            }
+            if seen2 {
+              ()
+            } else {
+              Array::push(seen_paths, mpath)
+              // #2244 review round 5: a directory-shared vpkg import or a
+              // contract facade makes the ingested group source differ
+              // from the physical file (imports prepended / contract
+              // replaced), so an offset computed on it names a line below
+              // the real one. Recover the physical bytes the way
+              // checked_entry_source does -- re-ingest and require an
+              // exact match -- and drop the candidate (not an owner) when
+              // they cannot be verified.
+              match owner_locating_source(mpath, msource) {
+                Some(mlocating) => if String::starts_with(locate_type_error(mlocating, msg), "line ") {
+                  owners = owners + 1
+                  owner_path = mpath
+                  owner_source = mlocating
                 } else {
                   ()
-                }
-                si2 = si2 + 1
+                },
+                None => ()
               }
-              if seen2 {
-                ()
-              } else {
-                Array::push(seen_paths, mpath)
-                // #2244 review round 5: a directory-shared vpkg import or a
-                // contract facade makes the ingested group source differ
-                // from the physical file (imports prepended / contract
-                // replaced), so an offset computed on it names a line below
-                // the real one. Recover the physical bytes the way
-                // checked_entry_source does -- re-ingest and require an
-                // exact match -- and drop the candidate (not an owner) when
-                // they cannot be verified.
-                match owner_locating_source(mpath, msource) {
-                  Some(mlocating) => if String::starts_with(locate_type_error(mlocating, msg), "line ") {
-                    owners = owners + 1
-                    owner_path = mpath
-                    owner_source = mlocating
-                  } else {
-                    ()
-                  },
-                  None => ()
-                }
-              }
-              mi2 = mi2 + 1
             }
-            gi2 = gi2 + 1
+            mi2 = mi2 + 1
           }
-          if owners == 1 {
-            throw(String::concat(owner_path, String::concat(": ", locate_type_error(owner_source, msg))))
-          } else {
-            // locate against an empty source: the anchor cannot resolve, so
-            // this only strips the side marker from the message.
-            throw(locate_type_error("", msg))
-          }
-        } else {
-          throw(locate_type_error(entry_source, msg))
+          gi2 = gi2 + 1
         }
+        if owners == 1 {
+          throw(String::concat(owner_path, String::concat(": ", locate_type_error(owner_source, msg))))
+        } else {
+          // locate against an empty source: the anchor cannot resolve, so
+          // this only strips the side marker from the message.
+          throw(locate_type_error("", msg))
+        }
+      } else {
+        throw(locate_type_error(entry_source, msg))
       }
     }
-  }
+  } }
   source_groups
 }
 
@@ -654,9 +653,7 @@ fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stm
     handle {
       let (_, _, stmts) = parse_contract_program(tokens)
       Some(stmts)
-    } with Exception {
-      Throw(_) => None
-    }
+    } with { Exception::Throw(_) => None }
   } else {
     let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
     if Array::length(parse_diags) > 0 {

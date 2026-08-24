@@ -9846,6 +9846,17 @@ fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_type
         None => infer_shape(e, struct_sets, var_types, fn_returns)
       }
     },
+    // #2234: `Map::from_pairs` is normalized by the parser into EMap before
+    // this pass, so looking for the source-level call can never fire. Keys are
+    // string literals by the EMap contract; the first value stands for every
+    // value just as the EArray arm does for its elements (heterogeneous maps
+    // are rejected by the checker). An empty map still says nothing about V.
+    EMap(fields) => if Array::length(fields) == 0 {
+      ""
+    } else {
+      let (_, first_value) = Array::get(fields, 0)
+      String::concat("{m:String,", String::concat(infer_eq_shape(first_value, struct_sets, var_types, fn_returns), "}"))
+    },
     ECall(EIdent(fname, _), args, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(args) == 1 {
       String::concat("{o:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
     } else if (fname == "Ok" || fname == "Result::Ok") && Array::length(args) == 1 {
@@ -9890,7 +9901,11 @@ fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var
   let sh = infer_eq_shape(e, struct_sets, var_types, fn_returns)
   if shape_is_composite(sh) {
     let t = shape_to_eq_ty(sh)
-    if ty_needs_typed_eq(t) {
+    // A partial operand must not win merely because its container head is
+    // dispatchable. In particular `{m:String,}` becomes
+    // `Map[String, __EqUnknown]`; accepting it here hides a complete shape on
+    // the other operand and makes aggregate values fall back to identity.
+    if ty_needs_typed_eq(t) && !ty_contains_eq_unknown(t) {
       Some(t)
     } else {
       None

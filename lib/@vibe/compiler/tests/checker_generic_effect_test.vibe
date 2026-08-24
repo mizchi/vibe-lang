@@ -35,7 +35,7 @@ test "a bare perform of a parameterful generic op is an arity error" {
 }
 
 test "with State[Int] row items parse and check" {
-  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet read_it = () -> Int with State[Int] {\n  perform State::Get()\n}\n\nlet main = () -> Int {\n  handle {\n    read_it()\n  } with State {\n    Get => resume(7);\n    Put(_v) => resume(())\n  }\n}\n"
+  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet read_it = () -> Int with State[Int] {\n  perform State::Get()\n}\n\nlet main = () -> Int {\n  handle {\n    read_it()\n  } with {\n    State::Get => resume(7);\n    State::Put(_v) => resume(())\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
@@ -55,7 +55,7 @@ test "a multi-argument row instantiation is rejected at parse" {
 }
 
 test "handler arm payload arity for a generic effect is checked" {
-  let src = "effect Box[T] {\n  Put(T) -> Unit\n}\n\nlet main = () -> Int {\n  handle {\n    perform Box::Put(1)\n    42\n  } with Box {\n    Put(a, b) => resume(())\n  }\n}\n"
+  let src = "effect Box[T] {\n  Put(T) -> Unit\n}\n\nlet main = () -> Int {\n  handle {\n    perform Box::Put(1)\n    42\n  } with {\n    Box::Put(a, b) => resume(())\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, 0), "payload binding"))
@@ -64,7 +64,7 @@ test "handler arm payload arity for a generic effect is checked" {
 test "handler arms share one instantiation per handle" {
   // `Get => resume(0)` pins S = Int; the `Put(v)` payload binder must see
   // the SAME S, so annotating it String is a type error.
-  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet main = () -> Int {\n  handle {\n    let n = perform State::Get()\n    perform State::Put(n)\n    n\n  } with State {\n    Get => resume(0);\n    Put(v) => {\n      let s: String = v\n      resume(())\n    }\n  }\n}\n"
+  let src = "effect State[S] {\n  Get() -> S;\n  Put(S) -> Unit\n}\n\nlet main = () -> Int {\n  handle {\n    let n = perform State::Get()\n    perform State::Put(n)\n    n\n  } with {\n    State::Get => resume(0);\n    State::Put(v) => {\n      let s: String = v\n      resume(())\n    }\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
 }
@@ -82,14 +82,14 @@ test "handler arms share one instantiation per handle" {
 test "the handled body shares the handle's instantiation with the arms" {
   // The body pins T = String (`let s: String`); `resume(123)` therefore
   // resumes a String-expecting continuation with an Int and must be rejected.
-  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    String::length(s)\n  } with Box {\n    Get => resume(123)\n  }\n}\n"
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    String::length(s)\n  } with {\n    Box::Get => resume(123)\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
   assert(String::contains(Array::get(diags, 0), "resume value type mismatch"))
 }
 
 test "a body and arm agreeing on the instantiation still type-check" {
-  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    String::length(s)\n  } with Box {\n    Get => resume(\"abcd\")\n  }\n}\n"
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    String::length(s)\n  } with {\n    Box::Get => resume(\"abcd\")\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
@@ -106,7 +106,7 @@ test "a body and arm agreeing on the instantiation still type-check" {
 // instantiation for arm bodies would make this a conflicting second pin of the
 // inner T, i.e. a false rejection of a valid program.
 test "a re-perform inside an arm belongs to the OUTER handler" {
-  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    handle {\n      let n: Int = perform Box::Get()\n      n\n    } with Box {\n      Get => {\n        let m: String = perform Box::Get()\n        resume(String::length(m))\n      }\n    }\n  } with Box {\n    Get => resume(\"s\")\n  }\n}\n"
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    handle {\n      let n: Int = perform Box::Get()\n      n\n    } with {\n      Box::Get => {\n        let m: String = perform Box::Get()\n        resume(String::length(m))\n      }\n    }\n  } with {\n    Box::Get => resume(\"s\")\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
@@ -114,7 +114,7 @@ test "a re-perform inside an arm belongs to the OUTER handler" {
 test "two performs of one generic effect at conflicting types are rejected" {
   // One handler cannot return both a String and an Int, so the two performs
   // must resolve to the SAME instantiation and collide.
-  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    let n: Int = perform Box::Get()\n    String::length(s) + n\n  } with Box {\n    Get => resume(\"abcd\")\n  }\n}\n"
+  let src = "effect Box[T] {\n  Get() -> T\n}\n\nlet main = () -> Int {\n  handle {\n    let s: String = perform Box::Get()\n    let n: Int = perform Box::Get()\n    String::length(s) + n\n  } with {\n    Box::Get => resume(\"abcd\")\n  }\n}\n"
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 1))
 }

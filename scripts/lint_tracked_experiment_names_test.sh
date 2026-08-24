@@ -7,7 +7,7 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_experiment_name_lint_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
 git -C "$TMP_ROOT" init -q
-mkdir -p "$TMP_ROOT/lib/@vibe/compiler" "$TMP_ROOT/scripts"
+mkdir -p "$TMP_ROOT/eval/book-review/probes" "$TMP_ROOT/lib/@vibe/compiler" "$TMP_ROOT/scripts"
 
 # These fixtures sat under lib/ and lib/ is not in the lint's scope, so BOTH
 # the "allowed" and the "violation" case were vacuous: the lint never looked at
@@ -22,10 +22,20 @@ cat > "$TMP_ROOT/scripts/new_probe_gate.sh" <<'EOF'
 echo new probe
 EOF
 
-# Out of scope on purpose: a probe-named file under lib/ must NOT be reported,
-# which is what makes the scope a claim and not a coincidence.
-cat > "$TMP_ROOT/lib/@vibe/compiler/cache_probe_test.vibe" <<'EOF'
-test "out of scope" { assert(true) }
+# Out of scope on purpose. `lib/` used to be the example here and stopped being
+# one when main's ab0190c5 brought lib/ into scope, so the control moved to a
+# directory that is genuinely outside it. `eval/book-review/probes/` is the
+# real instance: 31 tracked probe-named files that the lint must not demand
+# entries for.
+cat > "$TMP_ROOT/eval/book-review/probes/p01_probe_out_of_scope.vibe" <<'EOF'
+fn main() -> Int { 0 }
+EOF
+
+# In scope, and the reason main's ab0190c5 widened the scan: without a fixture
+# under lib/ nothing pins that lib/ is scanned at all, and narrowing the scope
+# back would pass every other case in this file.
+cat > "$TMP_ROOT/lib/@vibe/compiler/lexer_hotspot_probe.vibe" <<'EOF'
+fn main() -> Int { 0 }
 EOF
 
 cat > "$TMP_ROOT/scripts/.tmp_probe.sh" <<'EOF'
@@ -52,6 +62,12 @@ if ! grep -qE 'scripts/new_probe_gate\.sh' "$TMP_ROOT/fail.stderr"; then
   exit 1
 fi
 
+if ! grep -qE 'lib/@vibe/compiler/lexer_hotspot_probe\.vibe' "$TMP_ROOT/fail.stderr"; then
+  echo "experiment-name lint self-test: missing lib/ violation (is lib/ still in scope?)" >&2
+  cat "$TMP_ROOT/fail.stderr" >&2
+  exit 1
+fi
+
 if ! grep -qE 'scripts/.tmp_probe.sh' "$TMP_ROOT/fail.stderr"; then
   echo "experiment-name lint self-test: missing .tmp violation" >&2
   cat "$TMP_ROOT/fail.stderr" >&2
@@ -61,7 +77,7 @@ fi
 # The scope is a claim: a probe-named file OUTSIDE it must not be reported.
 # Without this, widening the scope to the whole tree would pass every case
 # above and quietly demand an allowlist entry for 16 compiler fixtures.
-if grep -qE 'lib/@vibe/compiler/cache_probe_test\.vibe' "$TMP_ROOT/fail.stderr"; then
+if grep -qE 'eval/book-review/probes/p01_probe_out_of_scope\.vibe' "$TMP_ROOT/fail.stderr"; then
   echo "experiment-name lint self-test: reported a file outside the scanned scope" >&2
   cat "$TMP_ROOT/fail.stderr" >&2
   exit 1
@@ -70,6 +86,7 @@ fi
 cat >> "$TMP_ROOT/allowlist.txt" <<'EOF'
 scripts/new_probe_gate.sh gate new gate fixture
 scripts/.tmp_probe.sh manual-experiment temporary script fixture
+lib/@vibe/compiler/lexer_hotspot_probe.vibe bench-fixture lexer hotspot corpus
 EOF
 
 VIBE_EXPERIMENT_NAME_LINT_ROOT="$TMP_ROOT" \
@@ -113,6 +130,7 @@ cat > "$TMP_ROOT/wt_allowlist.txt" <<'EOF'
 scripts/cache_probe_gate.sh gate legacy probe fixture
 scripts/new_probe_gate.sh gate new gate fixture
 scripts/.tmp_probe.sh manual-experiment temporary script fixture
+lib/@vibe/compiler/lexer_hotspot_probe.vibe bench-fixture lexer hotspot corpus
 EOF
 git -C "$TMP_ROOT" config user.email test@example.com
 git -C "$TMP_ROOT" config user.name test

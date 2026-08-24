@@ -87,9 +87,7 @@ test "parser binder context low-level constructor is public but untrusted" {
   let message = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(error) => error
-  }
+  } with { Exception::Throw(error) => error }
   // This is intentionally clean: the constructor is public cross-file
   // plumbing, but remains untrusted and cannot publish authority.
   inspect(message, "")
@@ -107,9 +105,7 @@ test "check_linked_file: bad inline-wasm lane index throws a located error" {
   let msg = handle {
     let _ = check_linked_file(bad_lane_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "lane index 16 is out of range"))
   assert(String::contains(msg, "line 1:"))
 }
@@ -122,9 +118,7 @@ test "check_linked_file: a genuine type error still throws, located" {
   let msg = handle {
     let _ = check_linked_file(bad_name_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "unknown name: zzz"))
   assert(String::contains(msg, "line 1:"))
 }
@@ -148,9 +142,7 @@ test "check_linked_file: wrong-typed call to an imported function throws (#946 P
   let msg = handle {
     let _ = check_linked_file(main_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "f"))
   assert(msg != "")
 }
@@ -163,13 +155,11 @@ test "check_linked_file: wrong-typed call to an imported function throws (#946 P
 /// effect-lowering prelude codegen runs, so it must throw HERE.
 test "check_linked_file: handle body calling a local closure fails eligibility at check (#1511)" {
   let path = "/tmp/vibe_cli_support_check_edp_ineligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "cannot be compiled here"))
 }
 
@@ -179,9 +169,7 @@ test "check_linked_file: an unowned user effect is rejected at the entry boundar
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "line 6:"))
   assert(String::contains(msg, "entry point 'main' cannot discharge { Ask::Get }"))
   assert(String::contains(msg, "handle ... with Ask"))
@@ -196,13 +184,11 @@ test "check_linked_file: an unowned user effect is rejected at the entry boundar
 /// transport marker must never survive to the reader.
 test "check_linked_file: ineligible handle names the culprit call, located (#1514)" {
   let path = "/tmp/vibe_cli_support_check_edp_culprit.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "here: the call to 'bump'"))
   assert(String::contains(msg, "line 5:12"))
   assert(!String::contains(msg, "[@off="))
@@ -219,14 +205,12 @@ test "check_linked_file: dep-module culprit degrades to unlocated, no marker lea
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\nexport fn main() -> Int { run() }\n"))
   let msg = handle {
     let _ = check_linked_file(main_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "here: the call to 'bump'"))
   assert(!String::contains(msg, "[@off="))
 }
@@ -241,14 +225,12 @@ test "check_linked_file: identical dep and entry culprit spans degrade to unloca
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
   let msg = handle {
     let _ = check_linked_file(main_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "here: the call to 'bump'"))
   assert(!String::contains(msg, "line "))
   assert(!String::contains(msg, "[@off="))
@@ -262,7 +244,7 @@ test "culprit snapshot proof is stable across post-collection source changes (#1
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { run }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { run() }\n"))
   let source_groups = collect_source_groups_fs(main_path)
   Fs::write_bytes(dep_path, string_to_bytes("export fn run() -> Int { 0 }\n"))
@@ -282,15 +264,13 @@ test "check_linked_file: transitive dep and entry culprit spans degrade to unloc
   let mid_path = String::concat(base_dir, "/mid.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
-  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(dep_path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn run() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle { bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   Fs::write_bytes(mid_path, string_to_bytes("import ./dep.vibe { run }\nexport fn relay() -> Int { run() }\n"))
   Fs::write_bytes(main_path, string_to_bytes("import ./mid.vibe { relay }\n//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nlet bump = 0\nexport fn main() -> Int { relay() }\n"))
   let msg = handle {
     let _ = check_linked_file(main_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "here: the call to 'bump'"))
   assert(!String::contains(msg, "line "))
   assert(!String::contains(msg, "[@off="))
@@ -324,13 +304,11 @@ test "verify_culprit_off_marker keeps a whole-identifier span (#1594 review)" {
 /// the diagnostic also keeps its `line:col`.
 test "check_linked_file: user-authored __edpsh_ culprit is reported verbatim (#1594 review)" {
   let path = "/tmp/vibe_cli_support_check_edp_user_prefix.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let __edpsh_0_bump = (x: Int) -> Int { x + 1 }\n  handle { __edpsh_0_bump(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  let __edpsh_0_bump = (x: Int) -> Int { x + 1 }\n  handle { __edpsh_0_bump(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "here: the call to '__edpsh_0_bump'"))
   assert(String::contains(msg, "line 5:12"))
   assert(!String::contains(msg, "[@off="))
@@ -341,13 +319,11 @@ test "check_linked_file: user-authored __edpsh_ culprit is reported verbatim (#1
 /// still un-mangle THAT back to the user's spelling, located at the call.
 test "check_linked_file: generated __edpsh_ culprit still un-mangles (#1594 review)" {
   let path = "/tmp/vibe_cli_support_check_edp_gen_prefix.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nfn use_it() -> Int with Ask { ask_once() }\nexport fn main() -> Int {\n  let use_it = (x: Int) -> Int { x + 1 }\n  handle { use_it(ask_once()) } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nfn use_it() -> Int with Ask { ask_once() }\nexport fn main() -> Int {\n  let use_it = (x: Int) -> Int { x + 1 }\n  handle { use_it(ask_once()) } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "here: the call to 'use_it'"))
   assert(String::contains(msg, "line 6:12"))
   assert(!String::contains(msg, "[@off="))
@@ -358,7 +334,7 @@ test "check_linked_file: generated __edpsh_ culprit still un-mangles (#1594 revi
 /// the new prelude run must not reject programs codegen accepts.
 test "check_linked_file: eligible handle still checks clean (#1511)" {
   let path = "/tmp/vibe_cli_support_check_edp_eligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  handle { ask_once() } with Ask {\n    Ask() => resume(10)\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Ask { Ask() -> Int }\nfn ask_once() -> Int with Ask { perform Ask::Ask() }\nexport fn main() -> Int {\n  handle { ask_once() } with {\n    Ask::Ask() => resume(10)\n  }\n}\n"))
   let rc = check_linked_file(path)
   assert(rc == 0)
 }
@@ -384,13 +360,11 @@ test "check_linked_file: eligible handle still checks clean (#1511)" {
 /// exactly where the pass genuinely cannot see the kind.
 test "check_linked_file: suspend-class handle with perform in a for loop fails at check (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_ineligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    let mk = () -> { [1, 2] }\n    for j in mk() {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let mut acc = 0\n    let mk = () -> { [1, 2] }\n    for j in mk() {\n      acc = acc + (perform Sus::Suspend(j))\n    }\n    acc\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "suspend class"))
 }
 
@@ -398,7 +372,7 @@ test "check_linked_file: suspend-class handle with perform in a for loop fails a
 /// resume captured as a value) — must keep checking clean.
 test "check_linked_file: eligible suspend-class handle still checks clean (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_eligible.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let a = perform Sus::Suspend(1)\n    a * 10\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  handle {\n    let a = perform Sus::Suspend(1)\n    a * 10\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let rc = check_linked_file(path)
   assert(rc == 0)
 }
@@ -410,13 +384,11 @@ test "check_linked_file: eligible suspend-class handle still checks clean (#1536
 /// to the reader.
 test "check_linked_file: ineligible suspend handle names the culprit call, located (#1536)" {
   let path = "/tmp/vibe_cli_support_check_scps_culprit.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle {\n    let a = perform Sus::Suspend(1)\n    bump(a)\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nexport fn main() -> Int {\n  let bump = (x: Int) -> Int { x + 1 }\n  handle {\n    let a = perform Sus::Suspend(1)\n    bump(a)\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "suspend class"))
   assert(String::contains(msg, "here: the call to 'bump'"))
   assert(String::contains(msg, "line 7:5"))
@@ -433,13 +405,11 @@ test "check_linked_file: tainted closure-param callee names the culprit, located
   // here performs the split effect, which taints the slot and keeps the
   // see-through error with the same culprit naming and location.
   let path = "/tmp/vibe_cli_support_check_scps_needing_culprit.vibe"
-  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nfn helper(f: (x: Int) -> Int) -> Int with Sus {\n  let a = perform Sus::Suspend(1)\n  f(a)\n}\nexport fn main() -> Int {\n  handle {\n    helper((x: Int) -> Int { perform Sus::Suspend(x) })\n  } with Sus {\n    Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
+  Fs::write_bytes(path, string_to_bytes("effect Sus { Suspend(Int) -> Int }\nlet conts: Array[(Int) -> Int] = []\nfn helper(f: (x: Int) -> Int) -> Int with Sus {\n  let a = perform Sus::Suspend(1)\n  f(a)\n}\nexport fn main() -> Int {\n  handle {\n    helper((x: Int) -> Int { perform Sus::Suspend(x) })\n  } with {\n    Sus::Suspend(t) => {\n      Array::push(conts, resume)\n      0 - t\n    }\n  }\n}\n"))
   let msg = handle {
     let _ = check_linked_file(path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "function `helper`"))
   assert(String::contains(msg, "here: the call to 'f'"))
   assert(String::contains(msg, "line 5:3"))
@@ -573,9 +543,7 @@ test "entry-file missing-Show interpolation names the entry path and line" {
   let msg = handle {
     let _ = check_linked_file(main_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "cannot interpolate a value of type"))
   assert(String::contains(msg, "/main.vibe: line 5:4-8:"))
 }
@@ -594,9 +562,7 @@ test "dependency missing-Show interpolation does not name the entry file" {
   let msg = handle {
     let _ = check_linked_file(main_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "cannot interpolate a value of type"))
   assert(!String::contains(msg, "entrymod.vibe"))
   assert(!String::contains(msg, " [@fn="))
@@ -619,9 +585,7 @@ test "shared-import sibling missing-Show locates against the physical file" {
   let msg = handle {
     let _ = check_linked_file(impl_path)
     ""
-  } with Exception {
-    Throw(m) => m
-  }
+  } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "cannot interpolate a value of type"))
   if String::contains(msg, "line ") {
     // Located answers must carry the PHYSICAL coordinates and the file.

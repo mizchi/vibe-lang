@@ -107,16 +107,17 @@ fn name_in(arr: Array[String], s: String) -> Bool {
   found
 }
 
-fn pe_push_for(ctx: PCtx, kind: PerceusActionKind, name: String, binding_id: Int) -> Int {
+fn pe_push_for(ctx: PCtx, kind: PerceusActionKind, name: String, binding_id: Int, use_offset: Int) -> Int {
   Array::push(ctx.actions, PerceusAction::{
     kind: kind,
     name: name,
-    binding_id: binding_id
+    binding_id: binding_id,
+    use_offset: use_offset
   })
   0
 }
 
-fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
+fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> Int {
   if Map::has_key(scope, name) {
     let id = Map::get(scope, name)
     let rem = Array::get(ctx.remaining, id)
@@ -126,7 +127,7 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String) -> Int {
     // ref" transfer would consume a reference the binding never acquired.
     let last_view_use = rem == 1 && Array::get(ctx.view_call_let, id)
     if (rem > 1 || last_view_use) && !Array::get(ctx.scalar, id) {
-      pe_push_for(ctx, PaDup, name, id)
+      pe_push_for(ctx, PaDup, name, id, use_offset)
     } else {
       0
     }
@@ -288,7 +289,7 @@ fn pe_scope_end(ctx: PCtx, id: Int, name: String) -> Int {
     if Array::get(ctx.view_call_let, id) {
       ()
     } else {
-      pe_push_for(ctx, PaDrop, name, id)
+      pe_push_for(ctx, PaDrop, name, id, -1)
     }
     Array::set(ctx.remaining, id, 0)
   }
@@ -1604,7 +1605,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
-    EIdent(x, _) => pe_use(ctx, scope, x),
+    EIdent(x, off) => pe_use(ctx, scope, x, off),
     ECall(callee, args, _) => {
       // Same lexical-shadow guard as pc_count (and compile_call #875).
       let bmask = pe_borrow_mask(ctx, scope, callee)
@@ -1635,7 +1636,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     ELet(name, value, body, _) => {
       let mut elide_dead_alias = false
       match value {
-        EIdent(src, _) => {
+        EIdent(src, src_off) => {
           if Map::has_key(scope, src) {
             let sid = Map::get(scope, src)
             let rem = Array::get(ctx.remaining, sid)
@@ -1676,7 +1677,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
                 elide_dead_alias = true
                 0
               } else {
-                pe_push_for(ctx, PaAliasDup, name, ctx.next_id)
+                pe_push_for(ctx, PaAliasDup, name, ctx.next_id, src_off)
               }
             } else {
               0
@@ -1778,7 +1779,13 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       // only the duplicate sibling dup disappears. Anything but this exact
       // shape keeps the general per-branch walk below unchanged.
       if eif_same_ident_branches(then_e, else_e) {
-        pc_emit(ctx, scope, then_e)
+        // This action represents either branch, not the first branch's
+        // concrete syntax node. Keep it on the declaration-site fallback
+        // until codegen can represent a set of alternative use sites.
+        match then_e {
+          EIdent(name, _) => pe_use(ctx, scope, name, -1),
+          _ => 0
+        }
       } else {
         let snap = copy_ints(ctx.remaining)
         pc_emit(ctx, scope, then_e)
@@ -1833,7 +1840,7 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       let caps = collect_free_vars(fbody, fn_param_names(params), [])
       let mut i = 0
       while i < Array::length(caps) {
-        pe_use(ctx, scope, Array::get(caps, i))
+        pe_use(ctx, scope, Array::get(caps, i), -1)
         i = i + 1
       }
       0
@@ -1927,7 +1934,12 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
             k = k + 1
           }
           if a == 0 {
-            pc_emit(ctx, s, arm.1)
+            // The one merged action represents every arm. It must not inherit
+            // only the first arm's source position (see the EIf case above).
+            match arm.1 {
+              EIdent(name, _) => pe_use(ctx, s, name, -1),
+              _ => 0
+            }
           } else {
             ()
           }

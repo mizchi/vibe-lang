@@ -527,12 +527,12 @@ risky()?
 
 perform Logger::Log("hello")
 
-handle { risky() } with Exception {
-  Throw(msg) => -1
+handle { risky() } with {
+  Exception::Throw(msg) => -1
 }
 
-handle { greet("world") } with Logger {
-  Log(msg) => {
+handle { greet("world") } with {
+  Logger::Log(msg) => {
     resume(())
   }
 }
@@ -561,8 +561,8 @@ fn ask() -> Int with Ask::Get {
 }
 
 fn main() -> Int {
-  handle { ask() } with Ask {
-    Get() => resume(42)
+  handle { ask() } with {
+    Ask::Get() => resume(42)
   }
 }
 ```

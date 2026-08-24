@@ -27,16 +27,16 @@ fn risky(x: Int) -> Int with Exception {
 fn main with Console {
   let safe = handle {
     risky(0)
-  } with Exception {
-    Throw(message) => {
+  } with {
+    Exception::Throw(message) => {
       println("exception: \{message}")
       (-1)
     }
   }
   let fine = handle {
     risky(4)
-  } with Exception {
-    Throw(_) => -1
+  } with {
+    Exception::Throw(_) => -1
   }
   println("safe = \{safe}")
   println("fine = \{fine}")
@@ -49,7 +49,7 @@ safe = -1
 fine = 25
 ```
 
-`handle { body } with Exception { ... }` is the boundary. Inside it,
+`handle { body } with { Exception::Throw(...) => ... }` is the boundary. Inside it,
 `risky` may throw; outside it, `main` has no `Exception` in its row,
 because the obligation was discharged.
 
@@ -90,8 +90,8 @@ fn answer_of(q: String) -> Int with Ask {
 fn main with Console {
   let v = handle {
     answer_of("life")
-  } with Ask {
-    Value(_q) => resume(41)
+  } with {
+    Ask::Value(_q) => resume(41)
   }
   println("v = \{v}")
 }
@@ -162,8 +162,8 @@ fn ask_once() -> Int with Ask {
 
 fn main() -> Int {
   let bump = (x: Int) -> Int { x + 1 }
-  handle { bump(ask_once()) } with Ask {
-    Once() => resume(41)
+  handle { bump(ask_once()) } with {
+    Ask::Once() => resume(41)
   }
 }
 ```
