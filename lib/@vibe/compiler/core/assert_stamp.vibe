@@ -118,6 +118,13 @@ fn stamp_assert_expr(e: Expr, path: String, source: String) -> Expr {
     ELet(n, v, b, off) => ELet(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source), off),
     ELetMut(n, v, b, off) => ELetMut(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source), off),
     ELetRec(n, v, b) => ELetRec(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source)),
+    // `x = e` and `x += e` carry the REST OF THE BLOCK in their last field,
+    // exactly like `ELet` -- they are not leaves. Treating them as leaves meant
+    // every assert after a mutation in a test body silently lost its line,
+    // which is a common shape and precisely the one #2202 is about
+    // (#2277 review).
+    EAssign(n, v, b) => EAssign(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source)),
+    EAssignOp(op, n, v, b) => EAssignOp(op, n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source)),
     EMatch(scrutinee, arms) => EMatch(stamp_assert_expr(scrutinee, path, source), stamp_assert_arms(arms, path, source)),
     EHandle(body, arms) => EHandle(stamp_assert_expr(body, path, source), stamp_assert_arms(arms, path, source)),
     EFn(gens, bounds, params, ret, row, body) => EFn(gens, bounds, params, ret, row, stamp_assert_expr(body, path, source)),

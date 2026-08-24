@@ -6475,5 +6475,29 @@ if [ -s "$aldir/hash.wasm" ]; then
   echo "[compiler-gate] FAIL: a '#'-prefixed callee was accepted from source -- the marker is spellable (#2202)" >&2
   exit 1
 fi
+
+# An assert AFTER a mutation must still get its line. `x = e` / `x += e` carry
+# the rest of the block in their last field like `ELet` does; treating them as
+# leaves lost the stamp for every assert that follows one, which is the common
+# mutable-state test shape (#2277 review). The failing assert is on line 9.
+cat > "$aldir/after_assign_test.vibe" <<'ALEOF'
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+test "after assignment" {
+  let mut acc = 0
+  acc = double(2)
+  acc += 1
+  assert_eq(acc, 99)
+}
+ALEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$aldir/after_assign_test.vibe" >"$aldir/assign.log" 2>&1 || true
+if ! grep -qF 'after_assign_test.vibe:9' "$aldir/assign.log"; then
+  echo "[compiler-gate] FAIL: an assert following an assignment lost its line (#2202)" >&2
+  cat "$aldir/assign.log" >&2
+  exit 1
+fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq location + 3-arg + unspellable-marker rejection ok (#2202)"
+echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker rejection ok (#2202)"
