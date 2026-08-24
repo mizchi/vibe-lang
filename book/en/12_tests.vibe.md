@@ -44,14 +44,14 @@ both sides, and stops:
 $ vibe test demo_test.vibe
 FAIL demo_test.vibe
        failing test: double works
-       assert_eq failed
+       assert_eq failed at demo_test.vibe:6
          expected: 43
          actual:   42
 [vibe-test] 0 passed, 1 failed (1 files, 1 tests)
 ```
 
-The report does not yet carry a line number, so two asserts with the
-same expected value in one test are indistinguishable (#2202).
+The report names the line the failing assert is on, so a test with
+several asserts sharing an expected value still says which one fired.
 
 `assert_eq(actual, expected)` works for any type that can be compared,
 and compares strings by content — so you can assert directly on a

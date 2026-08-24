@@ -697,17 +697,42 @@ fn unstable_first_nonspace(line: String) -> Int {
   n
 }
 
-/// Which line the reader has to edit. DETECTION is structural (below); this is
-/// presentation only, so a miss costs a position and never a verdict -- hence
-/// the fallback to line 1 rather than a second parse.
+/// The character after the package path has to END the token -- end of line,
+/// whitespace, or `{` -- so `@vibe/concurrentx` is not read as
+/// `@vibe/concurrent`.
+fn unstable_path_token_ends(rest: String, n: Int) -> Bool {
+  if String::length(rest) == n {
+    true
+  } else {
+    let c = String::char_code_at(rest, n)
+    c == 32 || c == 9 || c == 123
+  }
+}
+
+/// Which line the reader has to edit. DETECTION is structural (the parsed
+/// `SImport` above); this is presentation only, so a miss costs a position and
+/// never a verdict -- hence the fallback to line 1 rather than a second parse.
+///
+/// The path is the token immediately after `import`, not any occurrence of the
+/// text on the line. `import @vibe/core { array_empty } // @vibe/concurrent` is
+/// a stable import that merely MENTIONS the package; naming it told the reader
+/// to delete a line that was not the problem, which is worse than giving no
+/// line at all (#2277 review).
 fn unstable_import_line(source: String, pkg: String) -> Int {
   let lines = String::split(source, "\n")
   let mut i = 0
   while i < Array::length(lines) {
     let line = Array::get(lines, i)
     let trimmed = String::substring(line, unstable_first_nonspace(line), String::length(line))
-    if String::starts_with(trimmed, "import") && String::index_of(line, pkg) >= 0 {
-      return i + 1
+    if String::starts_with(trimmed, "import") {
+      let after = String::substring(trimmed, 6, String::length(trimmed))
+      let path_start = unstable_first_nonspace(after)
+      let rest = String::substring(after, path_start, String::length(after))
+      if path_start > 0 && String::starts_with(rest, pkg) && unstable_path_token_ends(rest, String::length(pkg)) {
+        return i + 1
+      } else {
+        ()
+      }
     } else {
       ()
     }

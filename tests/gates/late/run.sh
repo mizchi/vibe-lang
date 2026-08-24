@@ -6165,8 +6165,29 @@ for uw_odd in tab spaces; do
     exit 1
   fi
 done
+
+# The reported line must be the OFFENDING import, not the first line that
+# mentions the package. `import @vibe/core { .. } // @vibe/concurrent` is a
+# stable import carrying the name in a comment; naming it told the reader to
+# delete a line that was not the problem, which is worse than no line at all
+# (#2277 review). The offending import is on line 3 here.
+cat > "$uwdir/comment.vibe" <<'UWEOF'
+import @vibe/core { array_empty } // @vibe/concurrent
+
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int with Exception {
+  TaskGroup::run((n) -> { 0 })
+}
+UWEOF
+uw_build "$uwdir/comment.vibe" "$uwdir/comment.wasm"
+if ! grep -qF 'line 3:' "$uwdir/comment.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the opt-in diagnostic named the wrong import line (#2277)" >&2
+  cat "$uwdir/comment.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace spellings ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + whitespace + comment-line ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
