@@ -63,6 +63,7 @@ import @vibe/compiler/codegen/common_base {
   find_func_stmt,
   find_local_slot,
   func_table_index_of,
+  func_table_user_index_of,
   gc_ctor_field_is_ref,
   gc_ctor_field_slot,
   gc_slot_log_reset_above,
@@ -556,6 +557,40 @@ fn gc_frozen_conversion_copy(value: Expr, tmp: String) -> Expr {
     EInt(0),
     ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1)
   ], -1), -1)
+}
+
+/// #2300: is `name` something the READER wrote -- a lexical binding in this
+/// closure, or a top-level definition -- rather than a generated builtin?
+///
+/// The gc lane's `assert` / `assert_true` / `assert_eq` arms below used to
+/// claim the call unconditionally, so a program that defined its own
+/// `assert_eq` trapped `unreachable` where the linear lane ran the user's
+/// function (#2283/#2285 fixed linear; this is the other half).
+///
+/// Porting linear's guard verbatim does not work and was measured breaking
+/// the lane outright (`expected 1 elements on the stack for fallthru, found
+/// 3`). Linear tests `fn_idx_in_list < 0`, which is meaningful there because
+/// `assert*` are NOT in its func table -- `core/builtin_registry.vibe` gives
+/// those three rows `in_linear_table = false, in_gc_table = true`. Here the
+/// index is >= 0 for every call, shadowed or not, so the guard fired always
+/// and the arms stopped emitting their result.
+///
+/// The distinction the guard wants is user-vs-generated, and the table
+/// already encodes it positionally: `func_offset = 1 + hbo + num_generated`
+/// and user function `j` lives at `j + func_offset` (backend_body.vibe). An
+/// index below `func_offset` is an import or a generated builtin; one at or
+/// above it is the reader's. That is the same `idx >= ctx.func_offset` test
+/// backend_expr.vibe already uses to tell the two apart.
+///
+/// The top-level half goes through `func_table_user_index_of` rather than
+/// through `func_table_index_of` plus an index comparison. When a user shadows
+/// a builtin the table holds both entries under one name, and that lookup
+/// answers with whichever branch it takes -- today the gc `FuncTable` literals
+/// set `names_sorted: array_empty()` so it is the linear first-match one, but
+/// resting a correctness answer on that is resting it on sort stability. The
+/// prefix scan is exact by construction on both backends.
+fn gc_name_is_user_defined(ctx: CompileCtxGc, local_names: Array[String], name: String) -> Bool {
+  find_local_slot(local_names, name) >= 0 || func_table_user_index_of(ctx.func_table, name, ctx.num_user_funcs) >= 0
 }
 
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
@@ -2046,7 +2081,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         }
         nl
       }
-      else if fname == "eq" {
+      else if fname == "eq" && !gc_name_is_user_defined(ctx, local_names, fname) {
+        // #2309 (Codex review on #2312): unconditional until now, so a program
+        // that bound `eq` itself -- locally or at top level -- got content
+        // equality instead of its own function. `let eq = (a: Int, b: Int) ->
+        // Int { a + b }` then `eq(1, 2)` answered 0. Same guard as the assert
+        // arms below, same reason.
         // Content-based equality: i64_eq fast path, then str_eq fallback
         let (str_eq_idx, _, _) = resolve_func(ctx.func_table, "String::equals")
         let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
@@ -2069,7 +2109,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_end(buf)
         nl + 2
       }
-      else if fname == "not" {
+      else if fname == "not" && !gc_name_is_user_defined(ctx, local_names, fname) {
+        // #2309: same as `eq` above. Measured -- `let not = (a: Int) -> Int
+        // { a + 41 }` then `not(1)` gives 42 on linear (its arm is guarded by
+        // `!prefer_bound_call`) and was hijacked here.
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_i64_eqz(buf)
         emit_i64_extend_i32_u(buf)
@@ -3023,8 +3066,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 0)
         nl
       }
-      else if fname == "assert" || fname == "assert_true" {
+      else if (fname == "assert" || fname == "assert_true") && !gc_name_is_user_defined(ctx, local_names, fname) {
         // Trap (unreachable) on a false condition, like the linear backend.
+        // #2300: ...unless the reader defined the name, in which case the
+        // call below compiles it as the ordinary function it is.
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_i64_eqz(buf)
         emit_if_void(buf)
@@ -3033,9 +3078,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 0)
         nl
       }
-      else if fname == "assert_eq" {
+      else if fname == "assert_eq" && !gc_name_is_user_defined(ctx, local_names, fname) {
         // Fallback only. The shipped path rewrites `assert_eq` in
-        // desugar_trait_dicts. Keep parity with the linear fallback:
+        // desugar_trait_dicts -- and when THAT pass stands down for a user's
+        // own `assert_eq` (#2283/#2285), this arm must stand down with it,
+        // which is what the guard above does (#2300).
+        // Keep parity with the linear fallback:
         // synthesized `==` uses the backend's value-aware equality path.
         let nl = ce(buf, EBinOp("==", Array::get(args, 0), Array::get(args, 1)), local_names, next_local, ld)
         emit_i64_eqz(buf)

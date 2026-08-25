@@ -1893,6 +1893,41 @@ export fn func_table_index_of(ft: FuncTable, name: String) -> Int {
   }
 }
 
+/// #2309: is `name` a function the PROGRAM defines, rather than only a
+/// generated builtin registered under that name?
+///
+/// `func_table_index_of` cannot answer this. When a user shadows a builtin the
+/// table holds BOTH entries under one name, and that lookup returns whichever
+/// its branch reaches first -- the linear first-match branch finds the user's,
+/// the `bsearch_leftmost` branch finds whichever the sort happened to order
+/// first. Depending on that is depending on sort stability for a correctness
+/// answer.
+///
+/// The table encodes the distinction positionally instead, on BOTH backends:
+/// `fn_names_list` is filled from the program and only then are `builtin_defs`
+/// appended (linked_compile.vibe, gc/backend_body.vibe), and user function `j`
+/// sits at wasm index `j + func_offset`. So the user entries are exactly the
+/// prefix `[0, num_user_funcs)`, and scanning it is exact by construction.
+export fn func_table_user_index_of(ft: FuncTable, name: String, num_user_funcs: Int) -> Int {
+  let n = Array::length(ft.names)
+  let limit = if num_user_funcs < n {
+    num_user_funcs
+  } else {
+    n
+  }
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < limit {
+    if Array::get(ft.names, i) == name {
+      found = i
+      i = limit
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 export fn resolve_func(ft: FuncTable, name: String) -> (Int, Int, Int) with Exception {
   let found = func_table_index_of(ft, name)
   if found < 0 {

@@ -6691,7 +6691,7 @@ echo "[compiler-gate] non-final closure argument fixpoint ok (#2271)"
 # `assert_eq` by name, and codegen, which had no shadowing guard at all on
 # these three spellings (#1095 removed `prefer_bound_call`, and the half of it
 # that was wrong is `local_idx_hint`, not `fn_idx_in_list`).
-echo "[compiler-gate] 110/110 a user's own assert_eq is the function that runs, top-level or local (#2283, #2285)"
+echo "[compiler-gate] 110/110 a user's own assert_eq is the function that runs, top-level or local, on BOTH lanes (#2283, #2285, #2300)"
 asdir="_build/_gate_assert_shadow"
 rm -rf "$asdir"; mkdir -p "$asdir"
 cat > "$asdir/shadow.vibe" <<'ASEOF'
@@ -6854,5 +6854,524 @@ if ! printf '%s\n' "$lambda_out" | grep -qx 'ok'; then
   printf '%s\n' "$lambda_out" >&2
   exit 1
 fi
+# #2300: everything above is the LINEAR lane. The wasm-gc lane compiled the
+# same three spellings unconditionally, so a user's own `assert_eq` trapped
+# `unreachable` there while linear ran it -- one language, two answers, no
+# diagnostic on either.
+#
+# Both directions are probed, because the naive port of linear's guard breaks
+# the SECOND one: `assert*` are in the gc func table (in_gc_table = true,
+# in_linear_table = false), so `fn_idx_in_list < 0` fires for every call and
+# the arm stops emitting its result at all (`expected 1 elements on the stack
+# for fallthru, found 3`). A green shadow probe with a broken builtin probe is
+# exactly the state this pair exists to reject.
+cat > "$asdir/gc_shadow_test.vibe" <<'ASEOF'
+fn assert_eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+test "own assert_eq" {
+  assert_true(assert_eq(1, 2) == 3)
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1   bash scripts/vibe_test.sh "$asdir/gc_shadow_test.vibe" >"$asdir/gc_shadow.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/gc_shadow.log"; then
+  echo "[compiler-gate] FAIL: the wasm-gc lane still hijacks a user's own assert_eq (#2300)" >&2
+  cat "$asdir/gc_shadow.log" >&2
+  exit 1
+fi
+# ...and the builtin still fires on gc where nothing shadows it, both ways.
+cat > "$asdir/gc_builtin_test.vibe" <<'ASEOF'
+test "builtin assert_eq passes" {
+  assert_eq(1 + 1, 2)
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1   bash scripts/vibe_test.sh "$asdir/gc_builtin_test.vibe" >"$asdir/gc_builtin.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/gc_builtin.log"; then
+  echo "[compiler-gate] FAIL: the gc builtin assert_eq stopped working -- the shadow guard fires for every call (#2300)" >&2
+  cat "$asdir/gc_builtin.log" >&2
+  exit 1
+fi
+cat > "$asdir/gc_builtin_fail_test.vibe" <<'ASEOF'
+test "builtin assert_eq fails" {
+  assert_eq(1, 2)
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1   bash scripts/vibe_test.sh "$asdir/gc_builtin_fail_test.vibe" >"$asdir/gc_builtin_fail.log" 2>&1 || true
+if grep -qF '1 passed, 0 failed' "$asdir/gc_builtin_fail.log"; then
+  echo "[compiler-gate] FAIL: the gc builtin assert_eq no longer rejects 1 vs 2 (#2300)" >&2
+  cat "$asdir/gc_builtin_fail.log" >&2
+  exit 1
+fi
+# A LOCAL binding, not just a top-level one. The gc guard's first test is
+# `find_local_slot`, and that half has its own failure mode -- a lambda bound to
+# the name is what the Codex review on #2311 flagged, with the builtin returning
+# `0` where the reader's function returns 42. Red-tested: both of these fail on
+# a stage2 carrying #2309 but not #2300.
+cat > "$asdir/gc_local_test.vibe" <<'ASEOF'
+test "local assert_true shadow" {
+  let assert_true = (a: Int) -> Int { a + 41 }
+  assert(assert_true(1) == 42)
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$asdir/gc_local_test.vibe" >"$asdir/gc_local.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/gc_local.log"; then
+  echo "[compiler-gate] FAIL: a LOCAL assert_true binding is still hijacked on the gc lane (#2300)" >&2
+  cat "$asdir/gc_local.log" >&2
+  exit 1
+fi
+cat > "$asdir/gc_local_eq_test.vibe" <<'ASEOF'
+fn make_cmp() -> (Int, Int) -> Int {
+  (a, b) -> { a + b }
+}
+
+test "local assert_eq shadow" {
+  let assert_eq = make_cmp()
+  assert(assert_eq(1, 2) == 3)
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$asdir/gc_local_eq_test.vibe" >"$asdir/gc_local_eq.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/gc_local_eq.log"; then
+  echo "[compiler-gate] FAIL: a LOCAL assert_eq binding is still hijacked on the gc lane (#2300)" >&2
+  cat "$asdir/gc_local_eq.log" >&2
+  exit 1
+fi
+# The gc guard reads the closure's local names, so it inherits the same #1095
+# hazard the linear one does: a bare assert inside a lambda must not be seen as
+# a binding. Probe it on this lane too rather than assuming linear's answer
+# transfers -- the two lanes keep these names in different tables, which is the
+# whole reason this issue existed.
+cat > "$asdir/gc_lambda_test.vibe" <<'ASEOF'
+test "bare asserts inside lambdas" {
+  let f = () -> Unit { assert_eq(1, 1) }
+  f()
+  let g = () -> Unit { assert_true(1 == 1) }
+  g()
+  let h = () -> Unit { assert(true) }
+  h()
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1   bash scripts/vibe_test.sh "$asdir/gc_lambda_test.vibe" >"$asdir/gc_lambda.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/gc_lambda.log"; then
+  echo "[compiler-gate] FAIL: a bare assert inside a lambda broke on the gc lane (#1095 shape, #2300)" >&2
+  cat "$asdir/gc_lambda.log" >&2
+  exit 1
+fi
 rm -rf "$asdir"
-echo "[compiler-gate] user-defined assert_eq wins (top-level and local); builtin still fires; no #1095 capture regression ok (#2283, #2285)"
+echo "[compiler-gate] user-defined assert_eq wins (top-level and local, linear and gc); builtin still fires; no #1095 capture regression ok (#2283, #2285, #2300)"
+
+# 111/111. A binding named `eq` is the function that runs (#2309).
+# Measured on a stage2 from f9115cdf: `let eq = (a: Int, b: Int) -> Int { a + b
+# }` then `eq(1, 2)` printed `0`. The checker had already typed the call against
+# the user's `eq` and agreed the result was an `Int`; codegen emitted `i64.eq`
+# anyway. No diagnostic and no trap -- a wrong VALUE, which is the worst way to
+# break by this repo's own triage order.
+#
+# `eq`'s inline arm carries a `cc_arg_is_scalarish` disjunct that deliberately
+# lets the builtin beat `prefer_bound_call` (#710/#711: that flag is a
+# whole-program name match, not a file-scoped one, and dropping the disjunct
+# regressed leb128_test.vibe). The fix splits the flag's two readings rather
+# than removing the disjunct: `fn_idx_in_list` stays exactly as it was, and
+# only `local_idx_hint` -- a lexical binding in this very closure -- wins.
+echo "[compiler-gate] 111/111 a binding named eq is the function that runs (#2309)"
+eqdir="_build/_gate_eq_shadow"
+rm -rf "$eqdir"; mkdir -p "$eqdir"
+cat > "$eqdir/eq.vibe" <<'EQEOF'
+fn main() -> Unit with Stdout {
+  let eq = (a: Int, b: Int) -> Int { a + b }
+  println(Int::to_string(eq(1, 2)))
+  let feq = (a: Double, b: Double) -> Double { a + b }
+  println(Double::to_string(feq(1.5, 2.5)))
+}
+EQEOF
+# The float arm is the sharper of the two: it had no shadowing guard at all, and
+# it only misfires under RC -- the production default -- so a non-RC probe would
+# pass while every shipped build was wrong.
+cat > "$eqdir/eqf.vibe" <<'EQEOF'
+fn main() -> Unit with Stdout {
+  let eq = (a: Double, b: Double) -> Double { a + b }
+  println(Double::to_string(eq(1.5, 2.5)))
+}
+EQEOF
+for probe in eq eqf; do
+  rm -f "$eqdir/$probe.wasm" "$eqdir/$probe.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"     "$eqdir/$probe.vibe" "$eqdir/$probe.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$eqdir/$probe.wasm" ]; then
+    echo "[compiler-gate] FAIL: the $probe shadow probe did not compile (#2309)" >&2
+    cat "$eqdir/$probe.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+eq_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/eq.wasm" 2>&1 || true)"
+if ! printf '%s
+' "$eq_out" | grep -qx '3'; then
+  echo "[compiler-gate] FAIL: a binding named eq is still replaced by the builtin -- want 3 (#2309)" >&2
+  printf '%s
+' "$eq_out" >&2
+  exit 1
+fi
+eqf_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/eqf.wasm" 2>&1 || true)"
+if ! printf '%s
+' "$eqf_out" | grep -qx '4'; then
+  echo "[compiler-gate] FAIL: a binding named eq on Double is still replaced by the builtin -- want 4 (#2309)" >&2
+  printf '%s
+' "$eqf_out" >&2
+  exit 1
+fi
+# The builtin must still answer where nothing shadows it -- and it must still
+# take the INLINE path for the #705 reason the disjunct exists: a bound `eq`'s
+# string fallback reads OOB on Int values that resemble fat pointers.
+cat > "$eqdir/builtin.vibe" <<'EQEOF'
+fn main() -> Unit with Stdout {
+  println(if eq(1, 2) { "y" } else { "n" })
+  println(if eq(7, 7) { "y" } else { "n" })
+  println(if eq(0.5, 0.5) { "y" } else { "n" })
+  println(if eq(0.5, 0.25) { "y" } else { "n" })
+}
+EQEOF
+rm -f "$eqdir/builtin.wasm" "$eqdir/builtin.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$eqdir/builtin.vibe" "$eqdir/builtin.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$eqdir/builtin.wasm" ]; then
+  echo "[compiler-gate] FAIL: the unshadowed eq probe did not compile (#2309)" >&2
+  cat "$eqdir/builtin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+builtin_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/builtin.wasm" 2>&1 || true)"
+if [ "$(printf '%s
+' "$builtin_out" | tr -d '[:space:]')" != "nyyn" ]; then
+  echo "[compiler-gate] FAIL: the builtin eq stopped answering where nothing shadows it -- want n y y n (#2309)" >&2
+  printf '%s
+' "$builtin_out" >&2
+  exit 1
+fi
+# A TOP-LEVEL definition, not just a lexical binding (Codex review on #2312).
+# `local_idx_hint` is -1 for this shape and `fn_idx_in_list` cannot decide it
+# either -- `eq` is in the linear func table unconditionally, so that index is
+# >= 0 for every call whether or not anyone defined one. Measured before the
+# fix: `0`.
+cat > "$eqdir/toplevel.vibe" <<'EQEOF'
+fn eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+fn main() -> Unit with Stdout {
+  println(Int::to_string(eq(1, 2)))
+}
+EQEOF
+rm -f "$eqdir/toplevel.wasm" "$eqdir/toplevel.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eqdir/toplevel.vibe" "$eqdir/toplevel.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$eqdir/toplevel.wasm" ]; then
+  echo "[compiler-gate] FAIL: the top-level eq probe did not compile (#2309)" >&2
+  cat "$eqdir/toplevel.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+top_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/toplevel.wasm" 2>&1 || true)"
+if ! printf '%s\n' "$top_out" | grep -qx '3'; then
+  echo "[compiler-gate] FAIL: a top-level fn eq is still replaced by the builtin -- want 3 (#2309)" >&2
+  printf '%s\n' "$top_out" >&2
+  exit 1
+fi
+# The guard asks whether THIS program defines the name, and a merged program
+# can contain someone else's top-level `eq` -- @vibe/semver exports one. If the
+# guard were a whole-program name match it would stand the builtin down for
+# every `eq` call in any program that imports semver, which is #711's mistake
+# in a new place. Merged top-level names are module-qualified, so it must not.
+cat > "$eqdir/withsemver.vibe" <<'EQEOF'
+import @vibe/semver { parse }
+
+fn main() -> Unit with Stdout {
+  let _ = parse("1.0.0")
+  println(if eq(7, 7) { "y" } else { "n" })
+  println(if eq(1, 2) { "y" } else { "n" })
+}
+EQEOF
+rm -f "$eqdir/withsemver.wasm" "$eqdir/withsemver.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FS_COMPILE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eqdir/withsemver.vibe" "$eqdir/withsemver.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$eqdir/withsemver.wasm" ]; then
+  echo "[compiler-gate] FAIL: the semver+eq probe did not compile (#2309)" >&2
+  cat "$eqdir/withsemver.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sem_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/withsemver.wasm" 2>&1 || true)"
+if [ "$(printf '%s\n' "$sem_out" | tr -d '[:space:]')" != "yn" ]; then
+  echo "[compiler-gate] FAIL: another module's top-level eq stood the builtin down -- want y n (#2309, #711)" >&2
+  printf '%s\n' "$sem_out" >&2
+  exit 1
+fi
+# The gc lane, both shapes plus the builtin. Its `eq` and `not` arms were
+# unconditional, so a bound name of either kind lost to the builtin there while
+# linear honored it.
+cat > "$eqdir/gc_eq_local_test.vibe" <<'EQEOF'
+test "local eq shadow" {
+  let eq = (a: Int, b: Int) -> Int { a + b }
+  assert(eq(1, 2) == 3)
+}
+EQEOF
+cat > "$eqdir/gc_eq_top_test.vibe" <<'EQEOF'
+fn eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+test "top-level eq shadow" {
+  assert(eq(1, 2) == 3)
+}
+EQEOF
+cat > "$eqdir/gc_not_test.vibe" <<'EQEOF'
+test "local not shadow" {
+  let not = (a: Int) -> Int { a + 41 }
+  assert(not(1) == 42)
+}
+EQEOF
+cat > "$eqdir/gc_builtin_eq_test.vibe" <<'EQEOF'
+test "builtin eq still answers" {
+  assert(eq(7, 7))
+  assert(not(eq(1, 2)))
+}
+EQEOF
+for probe in gc_eq_local gc_eq_top gc_not gc_builtin_eq; do
+  VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh "$eqdir/${probe}_test.vibe" >"$eqdir/$probe.log" 2>&1 || true
+  if ! grep -qF '1 passed, 0 failed' "$eqdir/$probe.log"; then
+    echo "[compiler-gate] FAIL: gc probe $probe did not pass (#2309)" >&2
+    cat "$eqdir/$probe.log" >&2
+    exit 1
+  fi
+done
+rm -rf "$eqdir"
+echo "[compiler-gate] a binding named eq wins on Int and Double, local and top-level, linear and gc; another module's eq does not; the builtin still answers unshadowed ok (#2309)"
+
+# 112/112. `vibe check` answers about a `.vpkg` contract (#2280).
+# A contract is the package boundary and the public API surface (ADR-0070),
+# and it was the one file `vibe check` could not answer for: it read the raw
+# bytes as statement grammar and reported `expected { but got fn` on
+# lib/@vibe/random/index.vpkg -- a committed contract the build consumes on
+# every run. That message is not merely unhelpful, it asserts something untrue
+# about the file, which is the failure mode this repo ranks first.
+echo "[compiler-gate] 112/112 vibe check answers about a .vpkg contract (#2280)"
+vpdir="_build/_gate_vpkg_check"
+rm -rf "$vpdir"; mkdir -p "$vpdir"
+# A real tree package, not a synthetic one: the point is that `check` agrees
+# with the loader about files the build already consumes.
+for contract in lib/@vibe/random/index.vpkg; do
+  rm -f "$vpdir/out" "$vpdir/out.diag"
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"     "$contract" "$vpdir/out" main >"$vpdir/stdout" 2>&1; then
+    echo "[compiler-gate] FAIL: vibe check rejected the working contract $contract (#2280)" >&2
+    cat "$vpdir/out.diag" 2>/dev/null >&2 || true
+    cat "$vpdir/stdout" >&2
+    exit 1
+  fi
+  if grep -q 'expected { but got' "$vpdir/out.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe check still reads $contract as statement grammar (#2280)" >&2
+    cat "$vpdir/out.diag" >&2
+    exit 1
+  fi
+done
+# It must still be able to REJECT, and reject for the RIGHT reason. Exit-nonzero
+# alone is not evidence here: the pre-fix compiler ALSO exits nonzero on every
+# contract, with the parse error this section exists to remove -- so a bare
+# "it failed" assertion passes on the broken build and proves nothing. Assert
+# the diagnostic names the unimplemented declaration and is NOT the parse error.
+#
+# A synthetic package rather than a copy of a real one: copying drags in that
+# package's header (generated_hash, deps) and its tests, so a failure would not
+# distinguish "the contract violation was caught" from "the copy was malformed".
+mkdir -p "$vpdir/pkg"
+cat > "$vpdir/pkg/index.vpkg" <<'VPEOF'
+name = @gate/vpkgcheck
+version = 0.0.1
+description =
+  #|gate-only package for #2280
+deps = {}
+
+generated_hash =
+
+fn implemented(x: Int) -> Int
+VPEOF
+cat > "$vpdir/pkg/impl.vibe" <<'VPEOF'
+export fn implemented(x: Int) -> Int {
+  x + 1
+}
+VPEOF
+# Green first: the synthetic package must check clean, or the red case below
+# would be measuring a broken fixture instead of the contract rule.
+rm -f "$vpdir/ok.out" "$vpdir/ok.out.diag"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$vpdir/pkg/index.vpkg" "$vpdir/ok.out" main >"$vpdir/ok.stdout" 2>&1; then
+  echo "[compiler-gate] FAIL: vibe check rejected a well-formed synthetic contract (#2280)" >&2
+  cat "$vpdir/ok.out.diag" 2>/dev/null >&2 || true
+  cat "$vpdir/ok.stdout" >&2
+  exit 1
+fi
+# Now declare a name no sibling implements.
+printf 'fn no_such_implementation_exists(x: Int) -> Int\n' >> "$vpdir/pkg/index.vpkg"
+rm -f "$vpdir/bad.out" "$vpdir/bad.out.diag"
+if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$vpdir/pkg/index.vpkg" "$vpdir/bad.out" main >"$vpdir/bad.stdout" 2>&1; then
+  echo "[compiler-gate] FAIL: vibe check accepted a contract declaring an unimplemented name (#2280)" >&2
+  exit 1
+fi
+bad_report="$(cat "$vpdir/bad.out.diag" "$vpdir/bad.stdout" 2>/dev/null || true)"
+if ! printf '%s\n' "$bad_report" | grep -qF 'no_such_implementation_exists'; then
+  echo "[compiler-gate] FAIL: the rejection does not name the unimplemented declaration -- it may be failing for the pre-#2280 parse reason instead" >&2
+  printf '%s\n' "$bad_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$bad_report" | grep -qF 'expected { but got'; then
+  echo "[compiler-gate] FAIL: the rejection IS the pre-#2280 parse error, not a contract violation" >&2
+  printf '%s\n' "$bad_report" >&2
+  exit 1
+fi
+rm -rf "$vpdir"
+echo "[compiler-gate] vibe check reads a contract as a contract, and still rejects a real violation ok (#2280)"
+
+# 113/113. An inherited unstable import is reported as inherited, and the
+# physical one keeps its own line (#2289).
+# Ingestion PREPENDS a directory's shared `index.vpkg` imports, so a sibling
+# that also spells its own import has two `SImport`s for one package: synthetic
+# first, physical second. The offset scan only sees the physical file, so
+# walking in statement order let the synthetic one consume the physical one's
+# offset -- the reader was told to delete their own `import` line, and deleting
+# it revealed a second error for the contract import nobody had mentioned.
+#
+# The second half is the reason only one of them was ever visible: the adapter
+# emitted `Array::get(warns, 0)` and dropped the rest.
+echo "[compiler-gate] 113/113 an inherited unstable import is named as inherited, and every import is reported (#2289)"
+ihdir="_build/_gate_inherited_unstable"
+rm -rf "$ihdir"; mkdir -p "$ihdir/pkg"
+# `env -u VIBE_UNSTABLE` on EVERY probe here, for the reason section 108 states
+# at its own call sites: this lane exports VIBE_UNSTABLE=1 lane-wide (line 20),
+# and under that grant the gate stands down and reports nothing. Measured -- the
+# first version of this section passed by hand and reported 0 in CI, which is a
+# gate that cannot fail rather than a gate that passes (#2252).
+cat > "$ihdir/pkg/index.vpkg" <<'IHEOF'
+name = @gate/inheritedunstable
+version = 0.0.1
+description =
+  #|gate-only package for #2289
+deps = {}
+
+generated_hash =
+
+import @vibe/concurrent { TaskGroup }
+
+fn work() -> Int
+IHEOF
+cat > "$ihdir/pkg/impl.vibe" <<'IHEOF'
+import @vibe/concurrent { TaskGroup }
+
+export fn work() -> Int {
+  7
+}
+IHEOF
+rm -f "$ihdir/out" "$ihdir/out.diag"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ihdir/pkg/impl.vibe" "$ihdir/out" main >"$ihdir/out.stdout" 2>&1 || true
+ih_report="$(cat "$ihdir/out.diag" 2>/dev/null || true)"
+# EXACTLY two reports: the inherited one and the physical one, one line each.
+#
+# Both bounds matter. Fewer than two is the adapter dropping all but the first,
+# which is what made the misassignment invisible. MORE than two is the dedupe
+# failing: the loader ingests a module several times per compile and records a
+# candidate each time, so printing every report without dedupe made one file's
+# single import read as three.
+ih_n="$(printf '%s\n' "$ih_report" | grep -c 'VIBE_UNSTABLE=1' || true)"
+if [ "$ih_n" != "2" ]; then
+  echo "[compiler-gate] FAIL: reported $ih_n unstable imports, want exactly 2 (inherited + physical) (#2289)" >&2
+  printf '%s\n' "$ih_report" >&2
+  echo "--- compile output ---" >&2
+  cat "$ihdir/out.stdout" >&2 || true
+  exit 1
+fi
+# Exactly one of the two calls itself inherited. The NOTE is the discriminator,
+# not the position: an absent offset falls back to line 1 by design ("a miss
+# costs a position, never a verdict"), so both lines read `line 1:1` here and
+# testing the position would be testing nothing.
+ih_inherited="$(printf '%s\n' "$ih_report" | grep -c 'inherits' || true)"
+if [ "$ih_inherited" != "1" ]; then
+  echo "[compiler-gate] FAIL: $ih_inherited of the reports call the import inherited, want exactly 1 (#2289)" >&2
+  printf '%s\n' "$ih_report" >&2
+  exit 1
+fi
+# ...and the other one names the physical import's own line rather than
+# inheriting the fallback -- this is the half that regresses if the synthetic
+# occurrence goes back to consuming the cursor.
+if ! printf '%s\n' "$ih_report" | grep -v 'inherits' | grep -qF 'line 1:1'; then
+  echo "[compiler-gate] FAIL: the physical import lost its own position (#2289)" >&2
+  printf '%s\n' "$ih_report" >&2
+  exit 1
+fi
+# The flood the Codex review on #2312 named: ingestion prepends the shared
+# import to EVERY sibling, so a package with N members reported one `import`
+# line N times. Measured on this 3-member package before the per-directory
+# dedupe: ten reports. An inherited import is one edit -- the directory's
+# index.vpkg -- so it must be reported once no matter how many members inherit
+# it, while the contract's own physical import keeps its own line.
+mkdir -p "$ihdir/flood"
+cat > "$ihdir/flood/index.vpkg" <<'IHEOF'
+name = @gate/inheritedflood
+version = 0.0.1
+description =
+  #|gate-only package for #2289
+deps = {}
+
+generated_hash =
+
+import @vibe/concurrent { TaskGroup }
+
+fn a() -> Int
+fn b() -> Int
+fn c() -> Int
+IHEOF
+for member in a b c; do
+  printf 'export fn %s() -> Int {\n  1\n}\n' "$member" > "$ihdir/flood/$member.vibe"
+done
+rm -f "$ihdir/flood.out" "$ihdir/flood.out.diag"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ihdir/flood/index.vpkg" "$ihdir/flood.out" main >/dev/null 2>&1 || true
+flood_report="$(cat "$ihdir/flood.out.diag" 2>/dev/null || true)"
+flood_inherited="$(printf '%s\n' "$flood_report" | grep -c 'inherits' || true)"
+if [ "$flood_inherited" != "1" ]; then
+  echo "[compiler-gate] FAIL: $flood_inherited inherited reports for one shared import across 3 members, want 1 (#2289)" >&2
+  printf '%s\n' "$flood_report" >&2
+  exit 1
+fi
+flood_own="$(printf '%s\n' "$flood_report" | grep 'VIBE_UNSTABLE=1' | grep -vc 'inherits' || true)"
+if [ "$flood_own" != "1" ]; then
+  echo "[compiler-gate] FAIL: $flood_own reports for the contract's own import line, want 1 (#2289)" >&2
+  printf '%s\n' "$flood_report" >&2
+  exit 1
+fi
+# The contract's own import is at line 9 of that .vpkg -- the edit point.
+if ! printf '%s\n' "$flood_report" | grep -v 'inherits' | grep -qF 'index.vpkg: line 9:'; then
+  echo "[compiler-gate] FAIL: the contract's own import is not reported at its own line (#2289)" >&2
+  printf '%s\n' "$flood_report" >&2
+  exit 1
+fi
+
+# A file that ONLY inherits keeps the behaviour it already had.
+cat > "$ihdir/pkg/impl.vibe" <<'IHEOF'
+export fn work() -> Int {
+  7
+}
+IHEOF
+rm -f "$ihdir/only.out" "$ihdir/only.out.diag"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ihdir/pkg/impl.vibe" "$ihdir/only.out" main >/dev/null 2>&1 || true
+if ! grep -qF 'inherits' "$ihdir/only.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a file that only inherits the import no longer says so (#2289)" >&2
+  cat "$ihdir/only.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$ihdir"
+echo "[compiler-gate] inherited and physical unstable imports are each reported, each in its own words ok (#2289)"
