@@ -399,6 +399,56 @@ test "alias dependencies resolve across nested scope boundaries" {
   }
 }
 
+test "nested type heads are known before outer alias validation" {
+  let checked = check_program_with_env_result([
+    STypeAlias(false, "Pair", array_empty(), TyApp("StringMap", [
+      TyName("Int"),
+      TyName("String")
+    ])),
+    SModule(false, "Nested", [
+      STypeAlias(false, "StringMap", ["A", "B"], TyTuple([
+        TyName("A"),
+        TyName("B")
+      ]))
+    ])
+  ], EnvEmpty)
+  match env_lookup(checked.final_env, "Pair") {
+    Some(CtTuple(items)) => assert(Array::length(items) == 2),
+    _ => assert(false)
+  }
+}
+
+test "nested type heads are known before outer payload validation" {
+  let _ = check_program_with_env_result([
+    SStruct(false, "Box", [
+      ("value", TyApp("StringMap", [TyName("Int"), TyName("String")]))
+    ], array_empty(), array_empty(), array_empty()),
+    SSuberror(false, "Problem", [
+      ("Problem", [TyApp("StringMap", [TyName("Int"), TyName("String")])])
+    ]),
+    SEnum(false, "Choice", array_empty(), [
+      ("Pick", [TyApp("StringMap", [TyName("Int"), TyName("String")])])
+    ], array_empty()),
+    SEffectDef(false, "Ask", array_empty(), [
+      ("Get", [TyApp("StringMap", [TyName("Int"), TyName("String")])], TyName("Int"))
+    ]),
+    SModule(false, "Nested", [
+      STypeAlias(false, "StringMap", ["A", "B"], TyTuple([
+        TyName("A"),
+        TyName("B")
+      ]))
+    ])
+  ], EnvEmpty)
+}
+
+test "completed alias diagnostics precede later use diagnostics" {
+  let message = handle {
+    let _ = checked_test_env("type Bad = Map[Key, Int]\ntype Key = Int\nfn f(m: Bad) -> Int { 0 }")
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "the body of type alias `Bad`"))
+}
+
 test "nested sibling aliases revalidate earlier alias map keys" {
   let message = handle {
     let _ = check_program_with_env_result([

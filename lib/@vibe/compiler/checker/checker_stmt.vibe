@@ -79,6 +79,7 @@ import ./checker.vibe {
   report_formal_applications,
   report_map_key_types,
   report_unknown_type_names,
+  report_unknown_type_names_deferred_validation,
   trait_erased_type_param_env,
   typed_occurrence_capture_begin_statement,
   typed_occurrence_capture_end_statement
@@ -1754,8 +1755,9 @@ fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> I
   next
 }
 
-fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> (TypeEnv, Subst, Int) {
+fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
+  let completed_decl_error_insert_at = Array::length(errors)
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
   let retained_positions = match capture {
@@ -2172,7 +2174,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           while ti < Array::length(vtypes) {
             // #2125: an unknown name in a payload otherwise becomes a wildcard
             // `CtNamed` -- same hole as the annotation sites.
-            report_unknown_type_names(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
+            report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
             // #2268: formals are the enum's OWN params -- never the merged
             // report shadow, whose deferred cross-package names are types.
             report_formal_applications(Array::get(vtypes, ti), params, String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
@@ -2318,7 +2320,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let mut ti = 0
           while ti < Array::length(vtypes) {
             let payload_type = Array::get(vtypes, ti)
-            report_map_key_types(payload_type, defs, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
             Array::push(resolved_vtypes, resolve_type_expr(payload_type, defs))
             ti = ti + 1
           }
@@ -2374,7 +2375,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           // `collect_trait_dict_erasures` establishes.
           let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
           let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
-          report_unknown_type_names(ftype_expr, defs, report_shadow, env, array_empty(), String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
+          report_unknown_type_names_deferred_validation(ftype_expr, defs, report_shadow, env, array_empty(), String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
           // #2268: formals are the struct's OWN tparams -- never
           // `report_shadow`, whose deferred cross-package names (`Map` in a
           // `.vpkg`-derived struct) are types, not formals; and not
@@ -2517,7 +2518,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SModule(_, _, body) => {
         // `statement_path` is None in ordinary checking, so nested modules
         // recurse without allocating retained path state.
-        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture, false)
+        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture, false, false)
         Array::push(checked_modules, (body, env))
         // Preserve the historical checker flow when this opt-in observation is
         // absent. The root observation alone needs nested substitutions to
@@ -2632,11 +2633,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // the comment above relies on is only true while no import alias
             // has claimed the formal's name.
             let op_param = Array::get(opparams, pi)
-            report_map_key_types(op_param, defs, eparams, fapp_decl_label(ename, opname), errors)
             Array::push(rp, resolve_type_expr_shadowed(op_param, defs, eparams))
             pi = pi + 1
           }
-          report_map_key_types(opret, defs, eparams, fapp_decl_label(ename, opname), errors)
           Array::push(resolved_ops, (opname, rp, resolve_type_expr_shadowed(opret, defs, eparams)))
           oi = oi + 1
         }
@@ -2707,7 +2706,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
       cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
       cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
-      check_completed_decl_map_keys(stmts, defs, errors)
     } else {
       match stmt {
         // A nested module shares `defs` with this statement list. Its type
@@ -2722,7 +2720,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
             cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
             cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
-            check_completed_decl_map_keys(visible_types, defs, errors)
             // Rechecking every module seen so far also covers the current
             // module: its own value phase may have consumed an alias declared
             // by an earlier sibling before this module completed that alias's
@@ -2736,7 +2733,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
               let recheck_errors = array_empty()
               let recheck_tytab = array_empty()
               let recheck_c = next_type_def_binder_id(recheck_binders, cur_c)
-              let _ = check_stmts_with_binders(module_body, 0, module_env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, recheck_tytab, None, None, None, false)
+              let _ = check_stmts_with_binders(module_body, 0, module_env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, recheck_tytab, None, None, None, false, false)
               push_unique_error_strings(recheck_errors, errors)
               module_i = module_i + 1
             }
@@ -2748,6 +2745,20 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       }
     }
     idx = idx + 1
+  }
+  if validate_completed_decls {
+    let visible_types = array_empty()
+    collect_visible_type_stmts(stmts, Array::length(stmts), visible_types)
+    let visible_defs_end = Array::length(defs)
+    refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end)
+    refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
+    cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
+    cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+    let completed_decl_errors = array_empty()
+    check_completed_decl_map_keys(visible_types, defs, completed_decl_errors)
+    insert_unique_error_strings(completed_decl_errors, errors, completed_decl_error_insert_at)
+  } else {
+    ()
   }
   (cur_env, cur_s, cur_c)
 }
@@ -3591,7 +3602,7 @@ export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[
   // #1455: this compatibility entry point is handed a caller-owned `defs`
   // that never contains seeded imported enums, so every declaration in it is
   // local and the #1078 scan starts at 0.
-  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, 0, s, c, errors, tytab, None, None, None, false)
+  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, 0, s, c, errors, tytab, None, None, None, false, true)
 }
 
 /// Run the production whole-program check and retain every successful output
@@ -3870,6 +3881,17 @@ fn push_unique_error_strings(found: Array[String], errors: Array[String]) -> Uni
       Array::push(errors, message)
     }
     i = i + 1
+  }
+}
+
+fn insert_unique_error_strings(found: Array[String], errors: Array[String], at: Int) -> Unit {
+  if Array::length(found) == 0 {
+    ()
+  } else {
+    let suffix = Array::slice(errors, at, Array::length(errors))
+    Array::truncate(errors, at)
+    push_unique_error_strings(found, errors)
+    push_unique_error_strings(suffix, errors)
   }
 }
 
@@ -4520,7 +4542,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
       None => None
     }
   }
-  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false)
+  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   // #1858: a bounded generic whose body calls `T::m` but whose signature has
   // no witness-carrying parameter would sail through checking and ICE in
@@ -4961,7 +4983,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
           None => None
         }
       }
-      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected)
+      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, true)
       // Selected import projection carries trait definitions and impls into
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.
