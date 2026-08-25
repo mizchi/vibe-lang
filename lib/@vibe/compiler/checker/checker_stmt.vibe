@@ -4244,116 +4244,120 @@ fn substituted_type_node_count(ty: Type, params: Array[String], arg_counts: Arra
   }
 }
 
-fn type_expr_arg_node_counts(args: Array[TypeExpr], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Array[Int] {
-  let counts = array_empty()
+fn type_expr_arg_expansion_stats(args: Array[TypeExpr], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Array[(Int, Int)] {
+  let stats = array_empty()
   let mut i = 0
   while i < Array::length(args) {
-    Array::push(counts, type_expr_expansion_node_count(Array::get(args, i), defs, shadow, capped_aliases, limit))
+    Array::push(stats, type_expr_expansion_stats(Array::get(args, i), defs, shadow, capped_aliases, limit))
     i = i + 1
   }
-  counts
+  stats
 }
 
-fn type_arg_node_count_sum(arg_counts: Array[Int], limit: Int) -> Int {
-  let mut total = 0
+fn type_expr_result_sizes(stats: Array[(Int, Int)]) -> Array[Int] {
+  let sizes = array_empty()
   let mut i = 0
-  while i < Array::length(arg_counts) && total <= limit {
-    total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
+  while i < Array::length(stats) {
+    Array::push(sizes, Array::get(stats, i).0)
     i = i + 1
   }
-  total
+  sizes
 }
 
-fn named_type_expr_node_count(name: String, arg_counts: Array[Int], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
-  if string_array_contains_exact(shadow, name) {
-    let mut total = 1
-    let mut i = 0
-    while i < Array::length(arg_counts) && total <= limit {
-      total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
-      i = i + 1
+/// Combines eagerly evaluated children. Previously resolved child results stay
+/// live while the next child's transient allocation is evaluated.
+fn type_expr_children_expansion_stats(child_stats: Array[(Int, Int)], root_size: Int, limit: Int) -> (Int, Int) {
+  let mut result_sum = 0
+  let mut peak = 0
+  let mut i = 0
+  while i < Array::length(child_stats) && result_sum <= limit {
+    let child = Array::get(child_stats, i)
+    let child_peak = capped_type_node_add(result_sum, child.1, limit)
+    if child_peak > peak {
+      peak = child_peak
+    } else {
+      ()
     }
-    total
+    result_sum = capped_type_node_add(result_sum, child.0, limit)
+    i = i + 1
+  }
+  let result_size = capped_type_node_add(root_size, result_sum, limit)
+  if result_size > peak {
+    peak = result_size
+  } else {
+    ()
+  }
+  (result_size, peak)
+}
+
+fn named_type_expr_expansion_stats(name: String, arg_stats: Array[(Int, Int)], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> (Int, Int) {
+  let arg_counts = type_expr_result_sizes(arg_stats)
+  let args = type_expr_children_expansion_stats(arg_stats, 0, limit)
+  if string_array_contains_exact(shadow, name) {
+    type_expr_children_expansion_stats(arg_stats, 1, limit)
   } else {
     let idx = typedef_index_of_from(defs, name, 0)
     if idx >= 0 && int_array_contains(capped_aliases, idx) {
-      limit + 1
+      (limit + 1, limit + 1)
     } else if idx >= 0 {
       match Array::get(defs, idx) {
         TDAlias(_, params, body) => {
           // `resolve_type_expr_core_shadowed` eagerly materializes every
           // argument before substituting the alias body, even when a formal is
-          // unused. The argument trees and cloned result coexist during that
-          // call, so cap their combined peak rather than only the result tree.
-          capped_type_node_add(type_arg_node_count_sum(arg_counts, limit), substituted_type_node_count(body, params, arg_counts, limit), limit)
-        },
-        _ => {
-          let mut total = 1
-          let mut i = 0
-          while i < Array::length(arg_counts) && total <= limit {
-            total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
-            i = i + 1
+          // unused. Direct argument results and the cloned result coexist, but
+          // a nested argument's transient peak does not remain live afterward.
+          let result_size = substituted_type_node_count(body, params, arg_counts, limit)
+          let own_peak = capped_type_node_add(args.0, result_size, limit)
+          let peak = if args.1 > own_peak {
+            args.1
+          } else {
+            own_peak
           }
-          total
-        }
+          (result_size, peak)
+        },
+        _ => type_expr_children_expansion_stats(arg_stats, 1, limit)
       }
     } else {
-      let mut total = 1
-      let mut i = 0
-      while i < Array::length(arg_counts) && total <= limit {
-        total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
-        i = i + 1
-      }
-      total
+      type_expr_children_expansion_stats(arg_stats, 1, limit)
     }
   }
 }
 
-/// Preflights the exact resolved tree size with saturation. This must run
+/// Preflights resolved tree size and transient allocation peak with saturation.
+/// The first tuple field is the retained result size; the second is the peak.
+/// This must run
 /// before `resolve_type_expr_shadowed`: measuring the returned tree would
 /// already have paid the exponential allocation this guard exists to avoid.
-fn type_expr_expansion_node_count(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
+fn type_expr_expansion_stats(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> (Int, Int) {
   match te {
-    TyUnit => 1,
+    TyUnit => (1, 1),
     TyName(name) => match resolve_builtin(name) {
-      Some(_) => 1,
-      None => named_type_expr_node_count(name, array_empty(), defs, shadow, capped_aliases, limit)
+      Some(_) => (1, 1),
+      None => named_type_expr_expansion_stats(name, array_empty(), defs, shadow, capped_aliases, limit)
     },
     TyApp(name, args) => {
-      let arg_counts = type_expr_arg_node_counts(args, defs, shadow, capped_aliases, limit)
-      if name == "Array" && Array::length(arg_counts) == 1 {
-        capped_type_node_add(1, Array::get(arg_counts, 0), limit)
-      } else if name == "Option" && Array::length(arg_counts) == 1 {
-        capped_type_node_add(1, Array::get(arg_counts, 0), limit)
-      } else if name == "StringMap" && Array::length(arg_counts) == 1 && !string_array_contains_exact(shadow, name) && typedef_index_of_from(defs, name, 0) < 0 {
-        capped_type_node_add(2, Array::get(arg_counts, 0), limit)
+      let arg_stats = type_expr_arg_expansion_stats(args, defs, shadow, capped_aliases, limit)
+      if name == "Array" && Array::length(arg_stats) == 1 {
+        type_expr_children_expansion_stats(arg_stats, 1, limit)
+      } else if name == "Option" && Array::length(arg_stats) == 1 {
+        type_expr_children_expansion_stats(arg_stats, 1, limit)
+      } else if name == "StringMap" && Array::length(arg_stats) == 1 && !string_array_contains_exact(shadow, name) && typedef_index_of_from(defs, name, 0) < 0 {
+        type_expr_children_expansion_stats(arg_stats, 2, limit)
       } else {
-        named_type_expr_node_count(name, arg_counts, defs, shadow, capped_aliases, limit)
+        named_type_expr_expansion_stats(name, arg_stats, defs, shadow, capped_aliases, limit)
       }
     },
-    TyTuple(elems) => {
-      let mut total = 1
-      let mut i = 0
-      while i < Array::length(elems) && total <= limit {
-        total = capped_type_node_add(total, type_expr_expansion_node_count(Array::get(elems, i), defs, shadow, capped_aliases, limit), limit)
-        i = i + 1
-      }
-      total
-    },
+    TyTuple(elems) => type_expr_children_expansion_stats(type_expr_arg_expansion_stats(elems, defs, shadow, capped_aliases, limit), 1, limit),
     TyFn(fn_params, ret, _) => {
-      let mut total = 1
-      let mut i = 0
-      while i < Array::length(fn_params) && total <= limit {
-        total = capped_type_node_add(total, type_expr_expansion_node_count(Array::get(fn_params, i), defs, shadow, capped_aliases, limit), limit)
-        i = i + 1
-      }
-      if total <= limit {
-        total = capped_type_node_add(total, type_expr_expansion_node_count(ret, defs, shadow, capped_aliases, limit), limit)
-      } else {
-        ()
-      }
-      total
+      let children = type_expr_arg_expansion_stats(fn_params, defs, shadow, capped_aliases, limit)
+      Array::push(children, type_expr_expansion_stats(ret, defs, shadow, capped_aliases, limit))
+      type_expr_children_expansion_stats(children, 1, limit)
     }
   }
+}
+
+fn type_expr_expansion_node_count(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
+  type_expr_expansion_stats(te, defs, shadow, capped_aliases, limit).1
 }
 
 fn report_alias_expansion_limit(name: String, errors: Array[String]) -> Unit {
