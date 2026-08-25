@@ -8390,7 +8390,7 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
 /// a `Map` arm. It is admitted here for the same reason `Array` is: there is
 /// now a generated comparator that descends into it.
 fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Bool {
-  match t {
+  match eq_expand_alias_ty(t) {
     TyName(n) => if str_array_contains(tparams, n) {
       // The owner's own type parameter is resolved by the concrete specialized
       // comparator, so it is not a declaration-level failure.
@@ -8847,7 +8847,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   // seed_var_types / collect_fn_eq_return_shape), so today this subsumes the
   // Array-arm re-spelling; at generation time the scope stack is empty and
   // this is the identity.
-  let fty = subst_scope_formals_ty(fty0)
+  let fty = eq_expand_alias_ty(subst_scope_formals_ty(fty0))
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
       ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
@@ -9712,9 +9712,7 @@ fn ty_mentions_name_in(t: TypeExpr, names: Array[String]) -> Bool {
 /// (`shape_key`'s: Name / `(s1,..)` / `[s]` / "" unknown). Only shapes this
 /// pass can compare are produced; anything else collapses to "" (unknown).
 fn ty_to_eq_shape(t: TypeExpr) -> String {
-  // #2281: classify the alias body, not the alias head. `type AL[V] = Array[V]`
-  // used as `AL[Int]` is `TyApp("AL", ...)` and matched no structural arm, so
-  // `==` stayed raw identity. Expand first; a non-alias is a no-op.
+  // #2281: classify the alias body so AL[Int] is Array, not TyApp("AL", ...)
   match eq_expand_alias_ty(t) {
     TyName(n) => n,
     TyUnit => "{u}",
