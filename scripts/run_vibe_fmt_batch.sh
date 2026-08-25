@@ -27,7 +27,16 @@ case "$mode" in
   *) echo "run_vibe_fmt_batch.sh: mode must be check or write, got: $mode" >&2; exit 2 ;;
 esac
 
-batch_wasm_rel="$(bash "$ROOT_DIR/scripts/ensure_vibe_fmt_batch.sh")"
+# `|| exit 2` -- NOT a bare assignment. Under `set -e` a failed formatter
+# build killed this script with exit 1 and nothing on stderr, and the caller
+# reads this script through a process substitution whose status it never
+# sees, so the batch simply produced no report lines and the lint reported
+# "checked 0 file(s)" and exited 0 (#2271).
+batch_wasm_rel="$(bash "$ROOT_DIR/scripts/ensure_vibe_fmt_batch.sh")" || {
+  echo "run_vibe_fmt_batch.sh: could not build the batch formatter -- see the compile diagnostics above" >&2
+  echo "  no file was checked or rewritten; this is not a formatting verdict" >&2
+  exit 2
+}
 
 work="$ROOT_DIR/_build/vibe_fmt_batch"
 mkdir -p "$work"

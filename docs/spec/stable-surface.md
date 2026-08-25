@@ -34,8 +34,37 @@ Trait bound compatibility follows the lock in [decisions.md](decisions.md):
 **tighter bounds = Major / looser bounds = Minor**.
 
 The **unstable surface (§6)** is outside this guarantee. Those parts can break
-within a Minor. They are reached only through `@build.unstable`, an explicit
-flag, or an ADR still marked `proposed`.
+within a Minor.
+
+**How the unstable surface is marked.** By a mechanism the compiler enforces,
+never by an ADR's status — status is bookkeeping a reader never sees, and a
+surface marked only that way compiles clean with no marker of any kind.
+
+What is enforced today, measured 2026-08-24:
+
+| surface | how it is gated |
+| --- | --- |
+| wasm-gc backend | opt-in env var (`VIBE_BACKEND=gc` and friends) |
+| `perform?` | the checker rejects it, naming the edit that fixes it |
+| SIMD | the package does not resolve |
+| **ADR-0068 concurrency** | **`import @vibe/concurrent` is rejected by `vibe check` AND by `vibe build`; `VIBE_UNSTABLE=1` allows it** |
+
+An **error**, not a warning. `vibe check` exits non-zero and `vibe build`
+emits no wasm; the diagnostic names the environment variable that opts in.
+Both verbs answer the same way on purpose — a build that accepts what the
+check rejects is the "two verbs, two answers" defect #1567 fixed for
+check/diagnostics, and it is worse here because the accepting verb is the one
+that ships.
+
+The gate reads the entry file's **parsed** imports, so whitespace does not
+cross it (`import\t@vibe/concurrent` is the same as `import @vibe/concurrent`),
+and it looks at the entry only: a dependency's own imports are its author's
+choice. Harnesses inside this repository that compile in-tree sources against
+the surface deliberately (the book's concurrency chapter, the unit-test
+batch) grant the opt-in themselves; the boundary is pinned by
+`tests/gates/late/run.sh` section 108.
+
+The rest of §6 is still a reading obligation rather than an enforced boundary.
 
 ---
 
@@ -256,12 +285,19 @@ The following is still under construction or its design is not settled. It is
 **outside** the SemVer guarantee and can break within a Minor. Use it knowing
 that.
 
-- **Async / structured concurrency / WASI 0.3** (ADR-0012, ADR-0068,
-  `proposed`): the `{Async}` effect, `Future[T]`, `Stream[T]`, `Task[T]`,
-  `for await`. Today's codegen is an eager prototype; the public semantics are
-  defined in the [structured concurrency spec](../concurrency.md). JSPI/Worker,
-  the WASI Component Model, and shared-everything threads are interchangeable
-  lowerings — the stable surface is tied to none of them.
+- **Structured concurrency / WASI 0.3** (ADR-0068, `proposed`): `Nursery[r]`,
+  `Task[r,T]`, `Sender`/`Receiver`, `TaskGroup::run` / `spawn` /
+  `spawn_suspend`, and the `Send` eligibility rule. Today's codegen is an eager
+  prototype; the public semantics are defined in the
+  [structured concurrency spec](../concurrency.md). JSPI/Worker, the WASI
+  Component Model, and shared-everything threads are interchangeable lowerings
+  — the stable surface is tied to none of them.
+
+  **The `Async` effect ROW ELEMENT is not in this bullet.** ADR-0012 is
+  `accepted`, and `Async` already appears in shipped builtin signatures a user
+  can reach (`StdinStream::next(StdinStream) -> Int with Async`), where `vibe
+  check` enforces it like any other row element. The unsettled part is the
+  concurrency model built on top of it, not the vocabulary.
 - **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
   of non-tail-resumptive handlers, capability effects.
 - **Capability authorization surface** (ADR-0088, `proposed`): the two-clause

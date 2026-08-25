@@ -76,26 +76,120 @@ else
 fi
 
 if [ "$stale" = "1" ]; then
+  # Build to a PROCESS-UNIQUE path and publish by rename, never in place.
+  #
+  # A failed rebuild must not leave the previous artifact answering -- that is
+  # the stale-reuse the staleness rules above exist to prevent (#2271) -- but
+  # deleting it up front to achieve that opened a worse window: callers run
+  # concurrently (scripts/vibe_md.sh spawns one worker per document), two
+  # workers can both see "stale", and the slower one's `rm` then lands after
+  # the faster one has finished compiling or has already started running the
+  # wasm. The first caller is handed a path to a deleted or half-written file,
+  # which surfaces as an intermittent formatter or docs-gate failure (#2277
+  # review). Compiling to `$$`-suffixed paths and `mv`-ing on success gives
+  # both properties without ever unlinking a file another process may be
+  # running: a success replaces the artifact atomically for everyone else, and
+  # a failure retracts only the manifest, which is enough to force a rebuild.
+  build_wasm_rel="$wasm_rel.$$.tmp"
+  build_diag_rel="$build_wasm_rel.diag"
+  build_deps_rel="$deps_rel.$$.tmp"
+  # The compiler writes `<out>.funcmap` beside the wasm and the runner reads it
+  # to symbolize traps, so it has to travel WITH the wasm -- publishing one and
+  # leaving the other names the wrong functions in every later stack trace.
+  build_funcmap_rel="$build_wasm_rel.funcmap"
+  rm -f "$ROOT_DIR/$build_wasm_rel" "$ROOT_DIR/$build_diag_rel" \
+        "$ROOT_DIR/$build_deps_rel" "$ROOT_DIR/$build_funcmap_rel"
+  trap 'rm -f "$ROOT_DIR/$build_wasm_rel" "$ROOT_DIR/$build_diag_rel" "$ROOT_DIR/$build_deps_rel" "$ROOT_DIR/$build_funcmap_rel"' EXIT
+  # `|| compile_rc=$?` is load-bearing: as a bare command under `set -e` a
+  # non-zero runner abandoned the script HERE, one line above the check that
+  # was written to explain the failure, so the message below never printed
+  # and the cause stayed in the .diag sidecar that nothing reads (#2271).
+  compile_rc=0
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main "$seed" "$entry_src" "$wasm_rel" main >&2
-  [ -s "$ROOT_DIR/$wasm_rel" ] || { echo "ensure_entry_wasm.sh: failed to compile $entry_src" >&2; exit 1; }
+    --invoke cli_main "$seed" "$entry_src" "$build_wasm_rel" main >&2 || compile_rc=$?
+  if [ "$compile_rc" != "0" ] || [ ! -s "$ROOT_DIR/$build_wasm_rel" ]; then
+    echo "ensure_entry_wasm.sh: failed to compile $entry_src -> $wasm_rel" >&2
+    if [ -s "$ROOT_DIR/$build_diag_rel" ]; then
+      # awk, not `sed s/^/  /`: the compiler writes the sidecar with NO
+      # trailing newline, so sed ran the hint below onto the same line.
+      awk '{ printf "  %s\n", $0 }' "$ROOT_DIR/$build_diag_rel" >&2
+    else
+      echo "  the compiler wrote no diagnostics (runner exit $compile_rc)" >&2
+    fi
+    # The overwhelmingly common cause on a fresh checkout: the untracked
+    # generated artifacts are not there yet, so the compiler package's own
+    # contract has declarations with no implementation.
+    echo "  if that names a generated artifact (lib/@vibe/compiler/cache/, *_bundle.vibe), run: bash scripts/ensure_generated.sh" >&2
+    # Nothing published, so nothing to undo -- but whatever an earlier run left
+    # behind must not go on answering. Drop the MANIFEST rather than the wasm:
+    # the staleness rules read it first, so its absence forces a rebuild, and a
+    # concurrent caller that is running the previous artifact this instant keeps
+    # the bytes it was handed. This process failing says nothing about those.
+    rm -f "$ROOT_DIR/$deps_rel"
+    exit 1
+  fi
   # Capture the closure the compiler just resolved. The plan mode also
   # writes one `.N.src` sidecar per module; keep them in a scratch dir so
   # only the manifest survives. Best-effort: on failure no manifest is
   # written and the next run rebuilds again rather than reusing stale.
   plan_dir="$(mktemp -d "$ROOT_DIR/_build/ensure_entry_plan.XXXXXX")"
   plan_rel="${plan_dir#"$ROOT_DIR"/}/plan.tsv"
+  captured=0
   if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_MODULE_PLAN=1 \
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
       --invoke cli_main "$seed" "$entry_src" "$plan_rel" "__no_entry__" >&2 \
       && [ -s "$ROOT_DIR/$plan_rel" ]; then
-    awk -F'\t' '$1 == "module" { print $4 }' "$ROOT_DIR/$plan_rel" > "$ROOT_DIR/$deps_rel"
+    awk -F'\t' '$1 == "module" { print $4 }' "$ROOT_DIR/$plan_rel" > "$ROOT_DIR/$build_deps_rel"
+    captured=1
   else
-    rm -f "$ROOT_DIR/$deps_rel"
     echo "ensure_entry_wasm.sh: could not capture the dependency closure for $entry_src; the artifact will rebuild every run until it can" >&2
   fi
   rm -rf "$plan_dir"
+
+  # Publish. The manifest goes away FIRST: between the two renames a concurrent
+  # reader would otherwise pair the new wasm with the old closure and call it
+  # fresh, where an absent manifest just makes it rebuild. Both renames are
+  # within one directory, so each is atomic for everyone else.
+  rm -f "$ROOT_DIR/$deps_rel"
+  build_inode="$(ls -i "$ROOT_DIR/$build_wasm_rel" 2>/dev/null | awk '{ print $1 }')"
+  mv -f "$ROOT_DIR/$build_wasm_rel" "$ROOT_DIR/$wasm_rel"
+  # Each rename is atomic, but the three of them are not one transaction: two
+  # builders that both saw "stale" can interleave and pair one's wasm with the
+  # other's funcmap or manifest (#2277 review). `mv` within a directory is
+  # rename(2), so the published file keeps our inode -- a DIFFERENT one means
+  # someone published over us between the rename and here.
+  #
+  # The response is fail-closed rather than a lock: drop the manifest and
+  # publish none of our sidecars, so the winner's tuple stays whole and the next
+  # run rebuilds. A lock would also have to recover from a killed holder, and
+  # stale-lock stealing is a larger hazard than the one it removes here.
+  published_inode="$(ls -i "$ROOT_DIR/$wasm_rel" 2>/dev/null | awk '{ print $1 }')"
+  if [ -n "$build_inode" ] && [ -n "$published_inode" ] && [ "$published_inode" != "$build_inode" ]; then
+    rm -f "$ROOT_DIR/$deps_rel"
+    echo "ensure_entry_wasm.sh: another build published $wasm_rel first; leaving its artifact whole and rebuilding next run" >&2
+  else
+    if [ -s "$ROOT_DIR/$build_funcmap_rel" ]; then
+      mv -f "$ROOT_DIR/$build_funcmap_rel" "$ROOT_DIR/$wasm_rel.funcmap"
+    else
+      rm -f "$ROOT_DIR/$wasm_rel.funcmap"
+    fi
+    if [ "$captured" = "1" ]; then
+      mv -f "$ROOT_DIR/$build_deps_rel" "$ROOT_DIR/$deps_rel"
+    fi
+    # Re-check AFTER the sidecars: the first comparison only catches a winner
+    # that landed before it, and a builder can still replace the wasm between
+    # that check and these renames, leaving its wasm beside our sidecars (#2277
+    # review). Dropping the manifest is what matters -- it is the first
+    # staleness test, so the next run rebuilds the whole tuple. A funcmap can
+    # stay mismatched until then, which costs symbol names in a trace, not
+    # correctness.
+    final_inode="$(ls -i "$ROOT_DIR/$wasm_rel" 2>/dev/null | awk '{ print $1 }')"
+    if [ -n "$final_inode" ] && [ "$final_inode" != "$build_inode" ]; then
+      rm -f "$ROOT_DIR/$deps_rel"
+      echo "ensure_entry_wasm.sh: $wasm_rel was replaced while its sidecars were published; rebuilding next run" >&2
+    fi
+  fi
 fi
 
 echo "$wasm_rel"

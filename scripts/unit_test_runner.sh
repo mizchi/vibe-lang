@@ -368,7 +368,10 @@ run_one_untraced() {
     attempt=$((attempt + 1))
     local out; out="$(mktemp -t vibe-unit-XXXXXX.wasm)"
     rm -f "$out" "$out.diag"
-    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    # VIBE_UNSTABLE: matches what scripts/unit_batch_compile.mjs grants its
+    # daemons, so the one-shot fallback and the batch path compile the same
+    # files the same way. See that file for why it is granted wholesale.
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_UNSTABLE=1 \
       timeout 300 bash "$RUNNER" --invoke cli_main "$S2" "$f" "$out" __no_entry__ >/dev/null 2>&1 || true
     if [ -s "$out" ]; then
       # timeout: a miscompiled test that loops forever must fail the FILE,

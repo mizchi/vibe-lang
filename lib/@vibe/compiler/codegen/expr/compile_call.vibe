@@ -3012,17 +3012,25 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // write into a region that no longer exists.
       throw("internal: `resume` reached codegen -- its handle was neither migrated (evidence dict) nor CPS-transformed (suspend class), and the replay engine was removed (ADR-0076 追記34 V2)")
     }
-    else if fname == "assert" {
-      // #1095: no `!prefer_bound_call` guard here (assert_true / assert_eq
-      // below never had one). Inside a lambda, capture analysis lists the
+    else if fname == "assert" && fn_idx_in_list < 0 {
+      // #1095: `prefer_bound_call` is the WRONG guard here (assert_true /
+      // assert_eq below had none either). Inside a lambda, capture analysis
+      // lists the
       // free name `assert` as a capture; the creation site cannot resolve it
       // and stores 0, so the "bound call" dispatched call_indirect through a
       // ZERO closure — table slot 0, i.e. an arbitrary user function. Before
       // #1107 Phase 4 that slot always happened to be populated, silently
       // NO-OPing every assert in a closure (concurrent_test's asserts never
       // actually asserted); with the minimized funcref table it surfaced as
-      // "null function" traps. Builtin statement asserts cannot be shadowed
-      // meaningfully, so always compile the builtin form.
+      // "null function" traps.
+      //
+      // #2283: the half of `prefer_bound_call` that is wrong is
+      // `local_idx_hint` -- the capture artifact. A name in the FUNCTION TABLE
+      // is a real top-level definition the reader wrote, and it must win, so
+      // these three arms test `fn_idx_in_list` alone. Without that the checker
+      // typed the call against the user's function while codegen emitted the
+      // builtin assert: `fn assert_eq(a: Int, b: Int) -> String` compiled clean
+      // and then trapped, with no diagnostic anywhere naming the conflict.
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
@@ -3032,7 +3040,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_const(buf, 0)
       nl
     }
-    else if fname == "assert_true" {
+    else if fname == "assert_true" && fn_idx_in_list < 0 {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
@@ -3042,7 +3050,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_const(buf, 0)
       nl
     }
-    else if fname == "assert_eq" {
+    else if fname == "assert_eq" && fn_idx_in_list < 0 {
       // Fallback only. The shipped path rewrites `assert_eq` in
       // desugar_trait_dicts (expected/actual on stderr, then trap). This
       // arm stays for lanes that skip that pass (compile_module): still

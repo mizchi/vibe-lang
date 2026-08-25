@@ -110,12 +110,15 @@ import ./cli_support.vibe {
   check_deprecated_warnings_from_source_groups,
   check_linked_file_source_groups,
   check_redundant_import_warnings_from_source_groups,
+  check_unstable_surface_warnings_from_path,
+  check_unstable_surface_warnings_from_source_groups,
   strip_executable_wasm_env,
+  unstable_surface_diagnostics,
   verify_culprit_off_marker_fs_fail_closed
 }
 
 import @vibe/lsp {
-  lsp_diagnostics_json_string, lsp_main
+  lsp_diagnostics_json_string, lsp_diagnostics_json_string_with, lsp_main
 }
 
 import @vibe/compiler/checker {
@@ -443,6 +446,13 @@ fn adapter_split_nonempty_lines(text: String) -> Array[String] {
 
 /// #2149: does `s` end with `suffix`? Used only to spot a `.vpkg` path, whose
 /// header is not vibe syntax and so can never be parse-checked as a whole file.
+/// An empty warning list. A named function rather than a bare `[]` so the
+/// `if` arms agree on the element type without an annotation (#2248).
+fn adapter_no_warnings() -> Array[String] {
+  let out: Array[String] = []
+  out
+}
+
 fn adapter_path_has_suffix(s: String, suffix: String) -> Bool {
   let n = String::length(s)
   let m = String::length(suffix)
@@ -745,6 +755,23 @@ fn adapter_emit_wit(input_path: String, output_path: String) -> Int with Fs + En
 /// the WIT world sidecar.
 fn adapter_serve_component(input_path: String, output_path: String) -> Int with Fs + Env {
   handle {
+    // ADR-0068 gate, BEFORE any compile work -- the same gate the FS-compile
+    // branch applies, for the same reason. `vibe serve` reaches this function
+    // through its own `VIBE_SERVE_COMPONENT` branch, which returns before that
+    // one, so without this a handler importing `@vibe/concurrent` produced a
+    // DEPLOYABLE component while `vibe check` rejected the identical file
+    // (#2277 review). An artifact-producing verb that accepts what the check
+    // verb refuses is the worst direction for that disagreement to run.
+    let serve_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_path(input_path)
+    }
+    if Array::length(serve_unstable) > 0 {
+      return emit_compile_diag(output_path, Array::get(serve_unstable, 0))
+    } else {
+      ()
+    }
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     validate_serve_handler(entry_stmts)
     // No command entry: the component surface is `handler`. `__no_entry__`
@@ -1256,6 +1283,42 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         StringBuilder::push(out_text, "\n")
         rwi = rwi + 1
       }
+      // Unstable-surface warnings (ADR-0068). `docs/spec/stable-surface.md`
+      // section 6 used to claim this surface "is reached only through
+      // `@build.unstable`, an explicit flag, or an ADR still marked
+      // `proposed`" -- and `@build.unstable` appeared NOWHERE else in the
+      // tree, there was no such flag, and an ADR's status is bookkeeping a
+      // reader never sees. `TaskGroup::run` compiled with `vibe check` clean
+      // and no marker of any kind. This is the missing half.
+      //
+      // An ERROR, not a warning, and the escalation is deliberate: the surface
+      // has no external users yet. Measured -- exactly 14 files carry a
+      // column-1 `import @vibe/concurrent`, all of them in this repository
+      // (13 fixtures + 1 eval probe), and NONE under lib/, so the bootstrap
+      // chain never touches it. Refusing now costs 14 opt-ins; refusing after
+      // someone depends on it costs them a rewrite.
+      //
+      // The FS-compile branch carries the same gate, because a build that
+      // accepts what the check rejects is worse than either answer alone.
+      //
+      // `VIBE_UNSTABLE=1` opts in, read in EXPRESSION position like the
+      // other observation-only knobs: `check_selector_precedence.sh` derives
+      // the adapter's BRANCH order from statement-position `if Env::get(..)`,
+      // and a selector that picks no verb must not enter that order (it would
+      // then take a position in every arm's derived clear list). Read HERE and
+      // not in cli_support so the warning collectors stay pure functions of
+      // (path, sources) -- the same reason every other selector is an adapter
+      // concern.
+      let unstable_warns = if Env::get("VIBE_UNSTABLE") == "1" {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_source_groups(input_path, checked_source_groups)
+      }
+      if Array::length(unstable_warns) > 0 {
+        return emit_compile_diag(output_path, Array::get(unstable_warns, 0))
+      } else {
+        ()
+      }
       StringBuilder::push(out_text, "ok\n")
       Fs::write_file(output_path, StringBuilder::freeze(out_text))
       // Publish this successful-check observation strictly after the final
@@ -1277,6 +1340,22 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // Request validation and stale-sidecar deletion happened before every
       // CLI early return above. This branch now only consumes the validated
       // request while preserving the ordinary compile-path selection below.
+      //
+      // ADR-0068 gate, BEFORE any compile work. `vibe check` and this branch
+      // must agree: a build that accepts what the check rejects is the same
+      // "two verbs, two answers" defect #1567 fixed for check/diagnostics, and
+      // it is worse here because the accepting verb is the one that ships.
+      // `VIBE_UNSTABLE=1` opts in.
+      let fs_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_path(input_path)
+      }
+      if Array::length(fs_unstable) > 0 {
+        return emit_compile_diag(output_path, Array::get(fs_unstable, 0))
+      } else {
+        ()
+      }
       let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
       // debugger trace (DAP P1 groundwork): `vibe run --trace` sets VIBE_DEBUG=1
       // so the user file (and its imports) is compiled with function-call
@@ -1696,10 +1775,33 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // diagnostic shape shared by the editor protocol and the CLI.
   if Env::get("VIBE_DIAGNOSTICS") == "1" {
     let src = Fs::read_file(input_path)
+    // ADR-0068 opt-in, in the buffer lane too. This is the mode `vibe check
+    // --single-file` and the editor use, and it does not resolve imports -- so
+    // an UNUSED `import @vibe/concurrent` analyzed clean here while `vibe check`
+    // and `vibe build` both rejected the same buffer (#2277 review). The gate is
+    // a property of the declaration, not of the imported names being reached, so
+    // it belongs in every lane that reads the file. Scanned on the buffer's own
+    // text: this lane exists for unsaved buffers, and ingestion would answer
+    // about the file on disk instead.
+    let unstable_diags = if Env::get("VIBE_UNSTABLE") == "1" {
+      adapter_no_warnings()
+    } else {
+      handle {
+        unstable_surface_diagnostics(input_path, src)
+      } with { Exception::Throw(_) => adapter_no_warnings() }
+    }
     if Env::get("VIBE_DIAGNOSTICS_JSON") == "1" {
-      Fs::write_bytes(output_path, adapter_string_to_bytes(lsp_diagnostics_json_string(src)))
+      // The JSON form is what the editor consumes; dropping the opt-in
+      // diagnostic here would make the LSP the one surface that still accepts
+      // the unstable import (#2277 review).
+      Fs::write_bytes(output_path, adapter_string_to_bytes(lsp_diagnostics_json_string_with(src, unstable_diags)))
     } else {
       let diags = collect_all_diagnostics(src)
+      let mut ui = 0
+      while ui < Array::length(unstable_diags) {
+        Array::push(diags, Array::get(unstable_diags, ui))
+        ui = ui + 1
+      }
       Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_lines(diags))))
     }
     return 0
@@ -1774,6 +1876,25 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     return adapter_serve_component(input_path, output_path)
   }
   let source = Fs::read_file(input_path)
+  // ADR-0068 gate for the SINGLE-SOURCE lane. `VIBE_TEST_BACKEND=gc` and
+  // `VIBE_BENCH_BACKEND=gc` reach compilation through here -- `runtime/vibe`
+  // clears `VIBE_FS_COMPILE` and selects the backend -- so this lane compiled
+  // and RAN a file with an unstable import while every check form rejected the
+  // same declaration (#2277 review). Measured: `vibe test` said the file was
+  // refused, `VIBE_TEST_BACKEND=gc vibe test` said `1 passed`.
+  //
+  // The entry's own bytes, with no ingestion: this lane resolves no imports, so
+  // there is no ingested text to differ from them.
+  let bare_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+    adapter_no_warnings()
+  } else {
+    unstable_surface_diagnostics(input_path, source)
+  }
+  if Array::length(bare_unstable) > 0 {
+    return emit_compile_diag(output_path, Array::get(bare_unstable, 0))
+  } else {
+    ()
+  }
   profile_memory_mark(mark_memory)
   // #594 Stage 1b: emit-module-source mode. VIBE_EMIT_MODULE_SOURCE=1 reuses the
   // same (input, output, entry) interface but, instead of compiling, writes the

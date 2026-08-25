@@ -286,7 +286,18 @@ async function main() {
     `[unit-batch] ${totalMisses} of ${listed.length} files to compile (${nHits} cached) with ${JOBS} daemons`,
   );
 
-  const daemons = Array.from({ length: JOBS }, (_, i) => new Daemon(`c${i}`, { VIBE_FS_COMPILE: "1" }));
+  // VIBE_UNSTABLE: ADR-0068's `@vibe/concurrent` needs the opt-in to compile
+  // at all, and a handful of in-tree fixtures deliberately test that surface
+  // (fixtures/async_boundary_user_sleep_test.vibe). It is granted for the
+  // whole daemon, not per file, because a daemon compiles many files in one
+  // long-lived process and its env is fixed at spawn. That is acceptable
+  // here: the boundary exists for a USER's build, these are the repository's
+  // own tests, and the boundary itself is pinned by the compiler gate
+  // (tests/gates/late/run.sh section 108) rather than by this harness.
+  const daemons = Array.from(
+    { length: JOBS },
+    (_, i) => new Daemon(`c${i}`, { VIBE_FS_COMPILE: "1", VIBE_UNSTABLE: "1" }),
+  );
   const planDaemon = new Daemon("plan", { VIBE_MODULE_PLAN: "1" });
 
   // Weight >= HEAVY_MS marks the compiler-closure class: their compiles

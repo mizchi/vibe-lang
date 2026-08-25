@@ -768,6 +768,33 @@ export fn lsp_diagnostics_json_string(source: String) -> String {
   Json::stringify(lsp_diagnostics_safe(source))
 }
 
+/// #2277: the ADR-0068 opt-in diagnostic is produced by the ADAPTER, not by
+/// `collect_all_diagnostics` -- it is a property of the import declaration
+/// rather than of single-file analysis -- so the JSON form has to be handed it
+/// or `vibe check --single-file --json` answers `[]` where the text form
+/// reports the error. Same diagnostic shape either way: the extra lines are the
+/// same `line L:C: message` strings every other consumer produces, mapped
+/// through the same parser.
+///
+/// The extra lines are appended even when `collect_all_diagnostics` throws: an
+/// internal failure in single-file analysis is not a reason to drop a verdict
+/// the caller already computed.
+export fn lsp_diagnostics_json_string_with(source: String, extra: Array[String]) -> String {
+  let msgs = handle {
+    collect_all_diagnostics(source)
+  } with { Exception::Throw(_) => array_empty() }
+  let mut i = 0
+  while i < Array::length(extra) {
+    Array::push(msgs, Array::get(extra, i))
+    i = i + 1
+  }
+  Json::stringify(handle {
+    JArr(for msg in msgs {
+      lsp_parse_diag_line(source, msg)
+    })
+  } with { Exception::Throw(_) => JArr([]) })
+}
+
 //# Completion / signature help / workspace-symbol (parity slice 2).
 //# Deliberately built on the SAME single-file compiler primitives as the
 //# rest of this server (symbol_spans / type_at_source), not on a ported

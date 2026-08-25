@@ -8,6 +8,12 @@
 #   bash scripts/vibe_fmt.sh --stdout <file.vibe> # print formatted result, no write
 #
 # Paths must live under the repo root (the wasm preopen dir).
+#
+# Exit codes: 0 formatted / already formatted; 1 the FILE is at fault
+# (--check found a diff, or the formatter declined to rewrite it); 2 THIS
+# SCRIPT could not answer (bad usage, or the formatter would not build).
+# 1 and 2 must stay distinct -- a caller that cannot tell them apart
+# retries an unformattable file forever (#2271).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,7 +52,17 @@ case "$src" in
 esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_fmt.sh: not found: $src_rel" >&2; exit 2; }
 
-entry_wasm_rel="$(bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh")"
+# `|| exit 2` -- NOT the bare assignment this used to be. Under `set -e` a
+# failed formatter build killed this script with exit 1 and nothing on
+# stderr, which is byte-for-byte what `--check` means by "not formatted": a
+# caller applied, saw no change, checked again, and looped forever over a
+# file that was never the problem (#2271). "Could not answer" gets its own
+# code, the same 2 the usage errors above use.
+entry_wasm_rel="$(bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh")" || {
+  echo "vibe_fmt.sh: could not build the formatter itself -- see the compile diagnostics above" >&2
+  echo "  $src_rel was NOT checked or rewritten; this says nothing about that file" >&2
+  exit 2
+}
 
 # The formatter's output path is PER PROCESS. It used to be the fixed
 # `_build/vibe_fmt/out.vibe`, which two concurrent `vibe_fmt.sh` runs would
