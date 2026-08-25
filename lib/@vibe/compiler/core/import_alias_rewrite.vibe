@@ -696,26 +696,29 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   }
 }
 
+fn collect_item_aliases(items: Array[ImportItem], aliases: Array[(String, String)]) -> Unit {
+  let mut j = 0
+  while j < Array::length(items) {
+    let item = Array::get(items, j)
+    let original = item.name
+    let alias_opt = item.alias
+    match alias_opt {
+      Some(alias) => if alias != original {
+        Array::push(aliases, (alias, original))
+      },
+      None => ()
+    }
+    j = j + 1
+  }
+}
+
 export fn collect_import_aliases(stmts: Array[Stmt]) -> Array[(String, String)] {
   let aliases = empty_aliases()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(_, items) => {
-        let mut j = 0
-        while j < Array::length(items) {
-          let item = Array::get(items, j)
-          let original = item.name
-          let alias_opt = item.alias
-          match alias_opt {
-            Some(alias) => if alias != original {
-              Array::push(aliases, (alias, original))
-            },
-            None => ()
-          }
-          j = j + 1
-        }
-      },
+      SImport(_, items) => collect_item_aliases(items, aliases),
+      SReExport(_, items) => collect_item_aliases(items, aliases),
       _ => ()
     }
     i = i + 1
@@ -847,6 +850,7 @@ export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
   let rec stmt_has_import_deep: (Stmt) -> Bool = (stmt) -> {
     match stmt {
       SImport(_, _) => true,
+      SReExport(_, _) => true,
       SModule(_, _, inner_stmts) => stmts_have_import_deep(inner_stmts),
       _ => false
     }
