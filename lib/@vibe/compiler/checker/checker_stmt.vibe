@@ -3770,6 +3770,22 @@ fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]
   }
 }
 
+/// Rechecks alias bodies after the complete type-definition table exists.
+/// Declaration-time validation remains necessary for nested scopes, but a
+/// forward alias head is still unresolved there. Without this final pass an
+/// unused `type Bad = Map[Key, V]` silently escaped validation when `Key` was
+/// declared later as a non-String key type.
+fn check_completed_alias_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, te) => report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
   // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
   // to impl free functions before checking, so `X::method` in an impl body
@@ -3840,6 +3856,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
     }
   }
   let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false)
+  check_completed_alias_map_keys(expanded_stmts, empty_defs, frozen_errors)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   // #1858: a bounded generic whose body calls `T::m` but whose signature has
   // no witness-carrying parameter would sail through checking and ICE in
@@ -4281,6 +4298,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
         }
       }
       let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected)
+      check_completed_alias_map_keys(expanded_stmts, empty_defs, frozen_errors)
       // Selected import projection carries trait definitions and impls into
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.
