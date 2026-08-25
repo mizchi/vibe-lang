@@ -6355,13 +6355,22 @@ fn interp_take_repl(r: Option[Expr]) -> Expr {
 /// cannot arise there either -- this arm is the backstop for the lanes that do
 /// not stamp at all.
 fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
-  if user_assert_eq_bound() {
-    false
-  } else {
-    match callee {
-      EIdent(n, _) => (n == "assert_eq" && Array::length(args) == 2) || (n == assert_eq_located_callee && Array::length(args) == 3),
-      _ => false
-    }
+  match callee {
+    EIdent(n, _) => if n == "assert_eq" {
+      // The BARE spelling is the only one a user binding competes with, so it
+      // is the only one the suppression applies to.
+      Array::length(args) == 2 && !user_assert_eq_bound()
+    } else {
+      // The stamped marker is ALWAYS consumed. It cannot come from source (`#`
+      // is not an identifier character), so it exists only because the stamp
+      // put it there -- and the stamp is per MODULE while the flag above is
+      // per merged program. Suppressing it too meant one dependency binding
+      // `assert_eq` locally left ANOTHER module's already-stamped calls
+      // unlowered, and `#assert_eq_at` then reached codegen as an unresolved
+      // function, breaking an otherwise valid multi-file build (#2277 review).
+      n == assert_eq_located_callee && Array::length(args) == 3
+    },
+    _ => false
   }
 }
 
