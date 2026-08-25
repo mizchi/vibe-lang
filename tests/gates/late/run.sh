@@ -8027,6 +8027,65 @@ if ! grep -q '"start":{"line":9' "$vpbufdir/eof.out" 2>/dev/null; then
   grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
   exit 1
 fi
+# ...and an error that merely CONTAINS the word eof is not an end-of-input
+# error. `#eof` is an unsupported directive, and the parser says so:
+# `unsupported # directive in a contract file: eof (only #deprecated is
+# allowed)`. A marker of `" eof"` matched that, classified it as end-of-input,
+# and anchored it at the contract's LAST token -- on the valid declaration two
+# lines below (Codex review on #2315). The declaration after it is well-formed
+# on purpose, so a mislocation has somewhere wrong to land.
+python3 - "$vpbufdir/directive.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "#eof\n"
+    "fn a(x: Int) -> Int\n"
+    "fn b(y: Int) -> Int\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/directive.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/directive.out" 2>/dev/null || true
+if ! grep -q '"severity":1' "$vpbufdir/directive.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the unsupported #eof directive published no error (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/directive.out" >&2 || true
+  exit 1
+fi
+# Line 8 (0-based) is `#eof`; lines 9 and 10 are the well-formed declarations.
+if grep -qE '"start":\{"line":(9|10)' "$vpbufdir/directive.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the #eof directive error is anchored on a well-formed declaration -- it was misclassified as end-of-input (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/directive.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"start":{"line":8' "$vpbufdir/directive.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the #eof directive error is not anchored on the directive (expected line 8, 0-based) (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/directive.out" >&2 || true
+  exit 1
+fi
 # ...and reading a contract as a contract must not COST the ADR-0068 opt-in.
 # This is the trap the rest of this section sets up: the `vibe diagnostics`
 # buffer lane used to compute the unstable set with a SECOND scan over the RAW

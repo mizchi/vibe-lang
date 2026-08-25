@@ -5469,12 +5469,26 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
 /// verb that answers the cross-file half (`contract violation: contract
 /// declaration 'x' has no implementation`, #2280) -- reporting a subset here
 /// is honest; inventing the rest from one buffer is not.
-/// Does `msg` report hitting end of input? `tk_name(TEof)` is "eof", and every
-/// parser message that names the offending token renders it through that, so
-/// the marker is `" eof"` -- with the leading space, so a declaration named
-/// e.g. `read_eof` in some other message cannot be mistaken for one.
+/// Does `msg` report hitting end of input?
+///
+/// The two spellings the parsers actually produce, and only those:
+///
+///   - `expected <what> but got eof` (parser_base, via `tk_name(TEof)`);
+///   - `unexpected eof in block` (parser_expr_dispatch).
+///
+/// The first version tested for `" eof"`, which is too loose (Codex review on
+/// #2315). A contract carrying an unsupported directive named `#eof` throws
+/// `unsupported # directive in a contract file: eof (only #deprecated is
+/// allowed)` -- that contains `" eof"`, so it was classified as end-of-input
+/// and anchored at the contract's LAST token, pointing at unrelated valid
+/// declarations. Neither marker below can be produced by a directive name,
+/// because a name is a single token and cannot contain a space.
+///
+/// Classifying it correctly also fixes where it lands: as a non-eof message it
+/// goes to the prefix search, which is sound for it, and anchors on the `#eof`
+/// directive itself.
 fn contract_msg_mentions_eof(msg: String) -> Bool {
-  unstable_index_of_str(msg, " eof") >= 0
+  unstable_index_of_str(msg, "but got eof") >= 0 || unstable_index_of_str(msg, "unexpected eof") >= 0
 }
 
 /// Byte offset of the last token that is not `TEof`, or -1.
