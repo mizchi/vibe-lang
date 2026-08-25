@@ -40,6 +40,7 @@ import @vibe/compiler/core {
   env_lookup_flat,
   env_selectable_type_defs,
   env_type_defs,
+  env_value_binding_with_origin,
   expr_children,
   find_enum_typedef,
   find_typedef,
@@ -2673,7 +2674,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     // yet. A type-only list validates after its final declaration.
     if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
       refresh_completed_alias_defs(stmts, defs, preclaim_from)
-      cur_env = publish_completed_alias_defs(stmts, defs, preclaim_from, cur_env)
+      cur_env = refresh_completed_alias_env(cur_env, defs, preclaim_from, array_empty(), local_alias_def_count(defs, preclaim_from))
       check_completed_alias_map_keys(stmts, defs, errors)
     } else {
       ()
@@ -3869,37 +3870,104 @@ fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: 
   }
 }
 
-/// Republishes refreshed aliases above their declaration-time environment
-/// entries, so downstream modules and value lookup observe the same bodies as
-/// annotation resolution through `defs`.
-fn publish_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, env: TypeEnv) -> TypeEnv {
-  let taken = array_empty()
-  let mut current = env
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STypeAlias(exported, name, params, _) => {
-        let idx = completed_alias_index(defs, name, from, taken)
-        if idx >= 0 {
-          match Array::get(defs, idx) {
-            TDAlias(_, _, body) => {
-              current = EnvTypeDefs([TDAlias(name, params, body)], if exported {
-                [name]
-              } else {
-                array_empty()
-              }, env_bind(current, name, body))
-            },
-            _ => ()
-          }
-        } else {
-          ()
-        }
+fn local_alias_def_count(defs: Array[TypeDef], from: Int) -> Int {
+  let mut count = 0
+  let mut i = from
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDAlias(_, _, _) => {
+        count = count + 1
       },
       _ => ()
     }
     i = i + 1
   }
-  current
+  count
+}
+
+/// The environment chain is newest-first, while `defs` is declaration order.
+/// Find the newest unclaimed local alias so replacing an `EnvTypeDefs` node
+/// preserves duplicate-name and cross-kind shadowing exactly.
+fn completed_alias_index_reverse(defs: Array[TypeDef], name: String, from: Int, taken: Array[Int]) -> Int {
+  let mut i = Array::length(defs) - 1
+  let mut found = 0 - 1
+  while i >= from && found < 0 {
+    let matches = match Array::get(defs, i) {
+      TDAlias(n, _, _) => n == name,
+      _ => false
+    }
+    if matches && !int_array_contains(taken, i) {
+      found = i
+    } else {
+      i = i - 1
+    }
+  }
+  if found >= 0 {
+    Array::push(taken, found)
+  } else {
+    ()
+  }
+  found
+}
+
+/// `STypeAlias` places its value binding directly below its `EnvTypeDefs`
+/// node, except that `env_bind` may retain a leading lookup cache. Update that
+/// one binding without searching into an older declaration of the same name.
+fn refresh_alias_env_binding(env: TypeEnv, name: String, body: Type) -> TypeEnv {
+  match env {
+    EnvBind(bound_name, binding, rest) => if bound_name == name {
+      EnvBind(bound_name, env_value_binding_with_origin(body, binding.origin), rest)
+    } else {
+      env
+    },
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_alias_env_binding(rest, name, body)),
+    _ => env
+  }
+}
+
+/// Replaces local alias payloads in their existing environment nodes. Reusing
+/// the chain topology matters: prepending fresh nodes would move every alias
+/// above later struct/enum/trait declarations and change name shadowing. Once
+/// all local aliases are claimed, the imported/outer tail is shared unchanged.
+fn refresh_completed_alias_env(env: TypeEnv, defs: Array[TypeDef], from: Int, taken: Array[Int], local_count: Int) -> TypeEnv {
+  if Array::length(taken) >= local_count {
+    env
+  } else match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_alias_env(rest, defs, from, taken, local_count), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
+    EnvTypeDefs(node_defs, selectable, rest) => {
+      let refreshed = array_empty()
+      let mut refreshed_rest = rest
+      let mut i = 0
+      while i < Array::length(node_defs) {
+        match Array::get(node_defs, i) {
+          TDAlias(name, params, old_body) => {
+            let idx = completed_alias_index_reverse(defs, name, from, taken)
+            if idx >= 0 {
+              match Array::get(defs, idx) {
+                TDAlias(_, _, body) => {
+                  Array::push(refreshed, TDAlias(name, params, body))
+                  refreshed_rest = refresh_alias_env_binding(refreshed_rest, name, body)
+                },
+                _ => Array::push(refreshed, TDAlias(name, params, old_body))
+              }
+            } else {
+              Array::push(refreshed, TDAlias(name, params, old_body))
+            }
+          },
+          other => Array::push(refreshed, other)
+        }
+        i = i + 1
+      }
+      EnvTypeDefs(refreshed, selectable, refresh_completed_alias_env(refreshed_rest, defs, from, taken, local_count))
+    },
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
+    EnvFlat(bindings) => EnvFlat(bindings),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_completed_alias_env(rest, defs, from, taken, local_count))
+  }
 }
 
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
