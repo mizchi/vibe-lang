@@ -5,7 +5,7 @@ import ../compiler {
   unstable_closure_reset,
   check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
   compile_release_file_mode_uncached, compile_release_file_mode_uncached_profiled,
-  write_linked_debug_build, strip_executable_wasm_env,
+  write_linked_debug_build, write_linked_debug_build_checked, strip_executable_wasm_env,
   serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler,
   wit_from_program,
   lex, parse_program
@@ -331,23 +331,6 @@ fn compile_release_file_mode_for_cli_profiled(input_path: String, entry_name: St
   }
   reject_unstable_closure()
   result
-}
-
-/// `write_linked_debug_build` emits the entry wasm AND its linked library
-/// files, so a closure check after it returns rejects the build and leaves a
-/// runnable artifact behind. Walk the closure BEFORE it runs: `check_linked_file`
-/// collects the source groups -- which ingests every module -- and emits
-/// nothing. Only on the un-opted-in path; with the opt-in the verdict is a
-/// no-op and this would be a wasted typecheck.
-fn reject_unstable_before_debug_build(input_path: String) -> Unit with Exception + Fs + Env {
-  reject_unstable_entry(input_path)
-  if unstable_opt_in_granted() {
-    ()
-  } else {
-    unstable_closure_reset()
-    let _ = check_linked_file(input_path)
-    reject_unstable_closure()
-  }
 }
 
 fn input_file_exists(input_path: String) -> Bool with Fs {
@@ -775,8 +758,12 @@ export fn selfhost_cli_build_args(args: Array[String]) -> Int with Exception + F
     // `check_linked_file` collects the source groups (which ingests every
     // module) without emitting anything. Only on the un-opted-in path, since
     // with the opt-in the verdict is a no-op.
-    reject_unstable_before_debug_build(input_path)
-    write_linked_debug_build(input_path, output_path, entry_name)
+    // #2305: the GATED builder -- it checks the closure its own compile
+    // ingested, so the verdict covers exactly the bytes it is about to write.
+    // The earlier preflight authorized one filesystem snapshot and let the
+    // builder emit a second (Codex review), and paid for a second traversal.
+    reject_unstable_entry(input_path)
+    write_linked_debug_build_checked(input_path, output_path, entry_name, unstable_opt_in_granted())
     0
   } else {
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
@@ -1070,8 +1057,12 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
     }
   }
   else if mode == "debug" {
-    reject_unstable_before_debug_build(input_path)
-    write_linked_debug_build(input_path, output_path, entry_name)
+    // #2305: the GATED builder -- it checks the closure its own compile
+    // ingested, so the verdict covers exactly the bytes it is about to write.
+    // The earlier preflight authorized one filesystem snapshot and let the
+    // builder emit a second (Codex review), and paid for a second traversal.
+    reject_unstable_entry(input_path)
+    write_linked_debug_build_checked(input_path, output_path, entry_name, unstable_opt_in_granted())
     0
   }
   else if mode == "check" {

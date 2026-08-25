@@ -1136,8 +1136,44 @@ export fn strip_executable_wasm_env(wasm: Bytes, entry_name: String) -> Bytes wi
   }
 }
 
+/// #2305 (Codex review, round 3): the ADR-0068 boundary for the DEBUG lane,
+/// gating the snapshot this function itself compiled.
+///
+/// The CLI's first attempt ran `check_linked_file` as a preflight and then
+/// called the plain builder. That authorized one filesystem snapshot and
+/// emitted a second: a dependency edited in between -- an editor save racing
+/// `build --debug` -- could introduce an unstable import the preflight never
+/// saw. It also paid for a whole extra typecheck traversal.
+///
+/// Checking here removes both. `build_linked_debug_entry` is what ingests the
+/// closure, so the record this consults describes exactly the bytes about to
+/// be written, and nothing is written until it passes. A rejected build wastes
+/// the compile, which is the same trade the release lane already makes.
+///
+/// `allow_unstable` is the caller's, read at the edge; this function has no
+/// Env effect.
+export fn write_linked_debug_build_checked(input_path: String, output_path: String, entry_name: String, allow_unstable: Bool) -> Unit with Exception + Fs {
+  unstable_closure_reset()
+  let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
+  if allow_unstable {
+    ()
+  } else {
+    let diags = check_unstable_surface_warnings_from_closure()
+    if Array::length(diags) > 0 {
+      throw(String::join(diags, "\n"))
+    } else {
+      ()
+    }
+  }
+  write_linked_debug_outputs(output_path, entry_bytes, linked_dep_specs)
+}
+
 export fn write_linked_debug_build(input_path: String, output_path: String, entry_name: String) -> Unit with Exception + Fs {
   let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
+  write_linked_debug_outputs(output_path, entry_bytes, linked_dep_specs)
+}
+
+fn write_linked_debug_outputs(output_path: String, entry_bytes: Bytes, linked_dep_specs: Array[(String, String)]) -> Unit with Exception + Fs {
   Fs::write_bytes(output_path, entry_bytes)
   let output_dir = linked_output_dir(output_path)
   let mut i = 0
