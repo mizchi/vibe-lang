@@ -7149,6 +7149,11 @@ echo "[compiler-gate] vibe check reads a contract as a contract, and still rejec
 echo "[compiler-gate] 113/113 an inherited unstable import is named as inherited, and every import is reported (#2289)"
 ihdir="_build/_gate_inherited_unstable"
 rm -rf "$ihdir"; mkdir -p "$ihdir/pkg"
+# `env -u VIBE_UNSTABLE` on EVERY probe here, for the reason section 108 states
+# at its own call sites: this lane exports VIBE_UNSTABLE=1 lane-wide (line 20),
+# and under that grant the gate stands down and reports nothing. Measured -- the
+# first version of this section passed by hand and reported 0 in CI, which is a
+# gate that cannot fail rather than a gate that passes (#2252).
 cat > "$ihdir/pkg/index.vpkg" <<'IHEOF'
 name = @gate/inheritedunstable
 version = 0.0.1
@@ -7170,9 +7175,9 @@ export fn work() -> Int {
 }
 IHEOF
 rm -f "$ihdir/out" "$ihdir/out.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$ihdir/pkg/impl.vibe" "$ihdir/out" main >/dev/null 2>&1 || true
+  "$ihdir/pkg/impl.vibe" "$ihdir/out" main >"$ihdir/out.stdout" 2>&1 || true
 ih_report="$(cat "$ihdir/out.diag" 2>/dev/null || true)"
 # EXACTLY two reports: the inherited one and the physical one, one line each.
 #
@@ -7185,6 +7190,8 @@ ih_n="$(printf '%s\n' "$ih_report" | grep -c 'VIBE_UNSTABLE=1' || true)"
 if [ "$ih_n" != "2" ]; then
   echo "[compiler-gate] FAIL: reported $ih_n unstable imports, want exactly 2 (inherited + physical) (#2289)" >&2
   printf '%s\n' "$ih_report" >&2
+  echo "--- compile output ---" >&2
+  cat "$ihdir/out.stdout" >&2 || true
   exit 1
 fi
 # Exactly one of the two calls itself inherited. The NOTE is the discriminator,
@@ -7231,7 +7238,7 @@ for member in a b c; do
   printf 'export fn %s() -> Int {\n  1\n}\n' "$member" > "$ihdir/flood/$member.vibe"
 done
 rm -f "$ihdir/flood.out" "$ihdir/flood.out.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ihdir/flood/index.vpkg" "$ihdir/flood.out" main >/dev/null 2>&1 || true
 flood_report="$(cat "$ihdir/flood.out.diag" 2>/dev/null || true)"
@@ -7261,7 +7268,7 @@ export fn work() -> Int {
 }
 IHEOF
 rm -f "$ihdir/only.out" "$ihdir/only.out.diag"
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ihdir/pkg/impl.vibe" "$ihdir/only.out" main >/dev/null 2>&1 || true
 if ! grep -qF 'inherits' "$ihdir/only.out.diag" 2>/dev/null; then
