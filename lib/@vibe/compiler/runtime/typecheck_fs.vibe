@@ -5469,11 +5469,76 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
 /// verb that answers the cross-file half (`contract violation: contract
 /// declaration 'x' has no implementation`, #2280) -- reporting a subset here
 /// is honest; inventing the rest from one buffer is not.
+/// The recovering lexer's errors, each located and deduped.
+///
+/// Shared by the program branch and the contract branch of
+/// `collect_all_diagnostics_on` (#2314 review): a contract lexes with exactly
+/// the same rules as a program, so a second copy of this would be a second
+/// answer to one question.
+///
+/// #997 review (Codex): a handful of lexer throw sites (the `\(expr)`
+/// interpolation-removal message, and #997's own scientific-notation /
+/// incomplete-exponent messages) embed their OWN precise `line L:C: ` prefix
+/// directly in the message, because `lex_err_offsets` always records the START
+/// offset of the enclosing `lex_one_token` call -- wrong for a throw raised
+/// partway through a multi-char token (at the `e`/`E`, not the token's first
+/// digit). Blindly prepending the generic outer `loc` on top of an
+/// already-self-located message produced a doubled/conflicting location
+/// (`line 1:9: line 1:18: ...`, confirmed empirically via `vibe diagnostics`
+/// on `123456789e10`). Skip the outer prefix for messages that already start
+/// with "line " -- they're self-located and the outer offset would only be
+/// redundant or wrong.
+///
+/// This also collapses a separate pre-existing duplication: a
+/// non-quote-delimited lex error (anything but a broken string/char literal)
+/// resumes ONE character past the failure and retries, so a multi-digit
+/// scientific-notation literal re-throws the SAME underlying error once per
+/// remaining digit (9 identical reports for `123456789e10`) -- previously each
+/// got a DIFFERENT (wrong) outer offset, defeating the exact-string dedup
+/// below. With the outer prefix suppressed, all 9 become byte-identical and
+/// collapse to the single correctly-located report.
+fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs: Array[String]) -> Array[String] with Exception {
+  let located = array_empty()
+  let mut i = 0
+  while i < Array::length(lex_err_msgs) {
+    let msg = Array::get(lex_err_msgs, i)
+    let entry = if String::starts_with(msg, "line ") {
+      msg
+    } else {
+      let off = Array::get(lex_err_offsets, i)
+      let (line, col) = offset_to_line_col(source, off)
+      let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+      String::concat(loc, msg)
+    }
+    Array::push(located, entry)
+    i = i + 1
+  }
+  dedupe_diagnostics(located)
+}
+
 fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
+    // A contract LEXES like a program, so it gets the recovering lexer and
+    // every lex error, the same as the branch below (#2314 review). Only the
+    // GRAMMAR above the tokens differs.
+    let (ctokens, _cstarts, _cends, clex_offs, clex_msgs) = lex_with_offsets_recovering(source)
+    if Array::length(clex_msgs) > 0 {
+      return located_lex_errors(source, clex_offs, clex_msgs)
+    } else {
+      ()
+    }
+    // `parse_contract_program` throws on the first error -- there is no
+    // recovering contract parser, so a contract with two broken declarations
+    // reports one. That is NOT a loss from this change: the authoritative
+    // import lane (`vibe check`, the verb #2280 fixed) reports one too --
+    // measured, `expected type but got fn` for a contract with two of them,
+    // and unlocated at that. What the recovering STATEMENT parser used to
+    // report here was several errors that were each false about the file,
+    // which is the bug this section exists to remove. Multi-error recovery
+    // for contract grammar is a real improvement, and it belongs in both
+    // lanes at once rather than only in this one.
     return handle {
-      let (tokens, _starts, _ends) = lex_with_offsets(source)
-      let (_, _, _stmts) = parse_contract_program(tokens)
+      let (_, _, _stmts) = parse_contract_program(ctokens)
       array_empty()
     } with { Exception::Throw(msg) => [locate_type_error(source, msg)] }
   } else {
@@ -5506,22 +5571,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // offset, defeating `dedupe_diagnostics`'s exact-string dedup below.
     // With the outer prefix suppressed, all 9 become byte-identical and
     // collapse to the single correctly-located report.
-    let located = array_empty()
-    let mut i = 0
-    while i < Array::length(lex_err_msgs) {
-      let msg = Array::get(lex_err_msgs, i)
-      let entry = if String::starts_with(msg, "line ") {
-        msg
-      } else {
-        let off = Array::get(lex_err_offsets, i)
-        let (line, col) = offset_to_line_col(source, off)
-        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-        String::concat(loc, msg)
-      }
-      Array::push(located, entry)
-      i = i + 1
-    }
-    dedupe_diagnostics(located)
+    located_lex_errors(source, lex_err_offsets, lex_err_msgs)
   } else {
     let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
     if Array::length(parse_diags) > 0 {

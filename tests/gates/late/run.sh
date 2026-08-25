@@ -7953,6 +7953,53 @@ if ! grep -q '"severity":1' "$vpbufdir/bad.out" 2>/dev/null; then
   grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
   exit 1
 fi
+# ...and a contract lexes like a program: EVERY lex error, not just the first.
+# The contract branch reaches for `parse_contract_program`, which throws, and
+# the first version reached for the throwing lexer to match it. But a contract
+# lexes with exactly the same rules as a program, and the `.vibe` lane reports
+# both errors in `let p = ` + backtick twice -- so a contract reporting one was
+# a gap, not a property of contract grammar (#2314 review).
+python3 - "$vpbufdir/lex.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "fn a(x: Int) -> `\n"
+    "fn b(y: Int) -> `\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/lex.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/lex.out" 2>/dev/null || true
+lex_count="$(grep -o '"severity":1' "$vpbufdir/lex.out" 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$lex_count" -lt 2 ]; then
+  echo "[compiler-gate] FAIL: a .vpkg buffer with two lex errors published $lex_count -- the contract branch lexes without recovery (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/lex.out" >&2 || true
+  exit 1
+fi
 # ...and an ordinary `.vibe` buffer is untouched: it still type-checks, so a
 # real type error must survive. Routing every buffer through the contract
 # branch would pass everything above and silently stop checking programs.
