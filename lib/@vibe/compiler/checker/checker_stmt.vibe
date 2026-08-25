@@ -56,7 +56,8 @@ import @vibe/compiler/core {
   trait_is_marker,
   type_constructor_name,
   type_implements_trait,
-  type_to_string
+  type_to_string,
+  types_equal
 }
 
 import ./checker.vibe {
@@ -2671,6 +2672,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     // statement list, while no value/signature use-site diagnostic has run
     // yet. A type-only list validates after its final declaration.
     if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
+      refresh_completed_alias_defs(stmts, defs, preclaim_from)
+      cur_env = publish_completed_alias_defs(stmts, defs, preclaim_from, cur_env)
       check_completed_alias_map_keys(stmts, defs, errors)
     } else {
       ()
@@ -3802,6 +3805,101 @@ fn check_completed_alias_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], erro
     }
     i = i + 1
   }
+}
+
+/// Finds the next local alias slot for one source declaration. Type names may
+/// repeat, so each scan carries `taken` and preserves first-match order.
+fn completed_alias_index(defs: Array[TypeDef], name: String, from: Int, taken: Array[Int]) -> Int {
+  let mut i = from
+  let mut found = 0 - 1
+  while i < Array::length(defs) && found < 0 {
+    let matches = match Array::get(defs, i) {
+      TDAlias(n, _, _) => n == name,
+      _ => false
+    }
+    if matches && !int_array_contains(taken, i) {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  if found >= 0 {
+    Array::push(taken, found)
+  } else {
+    ()
+  }
+  found
+}
+
+/// Re-resolves stored alias bodies against the completed declaration table.
+/// More than one round is required for a forward chain whose intermediate
+/// alias was itself stored unresolved. The declaration count bounds the
+/// fixpoint; cycles retain their previous stable nominal shape.
+fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int) -> Unit {
+  let mut round = 0
+  let mut changed = true
+  while changed && round <= Array::length(stmts) {
+    changed = false
+    let taken = array_empty()
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        STypeAlias(_, name, params, te) => {
+          let idx = completed_alias_index(defs, name, from, taken)
+          if idx >= 0 {
+            let resolved = resolve_type_expr_shadowed(te, defs, params)
+            match Array::get(defs, idx) {
+              TDAlias(_, _, old_body) => if !types_equal(old_body, resolved) {
+                Array::set(defs, idx, TDAlias(name, params, resolved))
+                changed = true
+              } else {
+                ()
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    round = round + 1
+  }
+}
+
+/// Republishes refreshed aliases above their declaration-time environment
+/// entries, so downstream modules and value lookup observe the same bodies as
+/// annotation resolution through `defs`.
+fn publish_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, env: TypeEnv) -> TypeEnv {
+  let taken = array_empty()
+  let mut current = env
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(exported, name, params, _) => {
+        let idx = completed_alias_index(defs, name, from, taken)
+        if idx >= 0 {
+          match Array::get(defs, idx) {
+            TDAlias(_, _, body) => {
+              current = EnvTypeDefs([TDAlias(name, params, body)], if exported {
+                [name]
+              } else {
+                array_empty()
+              }, env_bind(current, name, body))
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  current
 }
 
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
