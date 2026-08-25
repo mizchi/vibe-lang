@@ -414,6 +414,40 @@ fn map_key_alias_chain_contains(seen: Array[String], name: String) -> Bool {
   found
 }
 
+/// Clone alias arguments for map-key inspection, replacing a caller formal
+/// with an inference marker before substitution. The marker preserves its
+/// "not concrete here" meaning without letting a same-spelled global alias
+/// capture it after the alias body is expanded.
+fn map_key_alias_args(args: Array[Type], caller_shadow: Array[String]) -> Array[Type] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    match arg {
+      CtNamed(name, targs) => if Array::length(targs) == 0 && string_array_has(caller_shadow, name) {
+        Array::push(out, CtVar(0))
+      } else {
+        Array::push(out, resolve_type_alias_params(arg, array_empty(), array_empty()))
+      },
+      _ => Array::push(out, resolve_type_alias_params(arg, array_empty(), array_empty()))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Alias parameters with no supplied argument remain formals in the expanded
+/// body. Supplied caller formals have already become CtVar markers above.
+fn map_key_unbound_alias_params(params: Array[String], argument_count: Int) -> Array[String] {
+  let out = array_empty()
+  let mut i = argument_count
+  while i < Array::length(params) {
+    Array::push(out, Array::get(params, i))
+    i = i + 1
+  }
+  out
+}
+
 fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String]) -> Bool {
   match k {
     CtString => true,
@@ -458,22 +492,12 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[Str
         // Not declared: a FORWARD reference, a typo, or a formal bound
         // somewhere this walk cannot see. Either way not this check's answer.
         None => true,
-        // Declared as an alias: judge its BODY. Reading the already-resolved
-        // body needs no substitution -- and must not use one, since
-        // `resolve_type_alias_params` corrupts the heap (#2279). The alias's
-        // OWN parameters become the shadow for that body, so a body that
-        // mentions them is judged as a formal rather than as whatever
-        // top-level type happens to share the spelling.
-        //
-        // KNOWN GAP (#2282, Codex round 8 on #2276): that acceptance lets a
-        // FORWARDING alias through. `type Key[T] = T` used as
-        // `Map[Key[T], Int]` under `M[Int]` has the concrete key `Int`, but
-        // seeing that means carrying `M`'s argument through `Key`'s binder --
-        // two levels of substitution, which is exactly what #2279 makes
-        // unsafe. The consequence is a MISSED EARLY diagnostic, not a wrong
-        // answer: the annotation is accepted and the first `Map::` operation
-        // still rejects the key, which is where every map key was caught
-        // before this check existed.
+        // Declared as an alias: apply its arguments and judge the resulting
+        // owned tree. #2279 made `resolve_type_alias_params` clone every node,
+        // so forwarding aliases can now carry a concrete key through multiple
+        // binders without corrupting the RC heap (#2282). Caller formals are
+        // marked before substitution so a same-spelled global alias cannot
+        // capture them.
         //
         // The chain is followed to its END, however long. It used to stop
         // at a DEPTH CAP of four hops and answer "supported" beyond it, so
@@ -490,7 +514,9 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[Str
             true
           } else {
             Array::push(seen, kname)
-            map_key_type_is_supported_at(abody, defs, aparams, seen)
+            let alias_args = map_key_alias_args(kargs, shadow)
+            let applied = resolve_type_alias_params(abody, aparams, alias_args)
+            map_key_type_is_supported_at(applied, defs, map_key_unbound_alias_params(aparams, Array::length(alias_args)), seen)
           },
           // A declared struct or enum. `kargs` is not consulted: the nullary
           // form used to be accepted before `find_typedef` was reached at
@@ -507,100 +533,12 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[Str
   }
 }
 
-/// The actual argument bound to alias parameter `name`, plus whether a
-/// substitution occurred. The distinction preserves the CALLER's binders for
-/// a substituted argument while keeping the alias's binders for its own body.
-fn alias_arg_for_param(name: String, params: Array[String], args: Array[Type]) -> (Type, Bool) {
-  let mut i = 0
-  let mut found = CtNamed(name, array_empty())
-  let mut substituted = false
-  while i < Array::length(params) {
-    if Array::get(params, i) == name && i < Array::length(args) {
-      found = Array::get(args, i)
-      substituted = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  (found, substituted)
-}
-
 /// `collect_unsupported_map_keys` over an alias BODY that is being applied to
-/// `args`, without materializing the substituted type.
-///
-/// The obvious spelling -- `collect_unsupported_map_keys(
-/// resolve_type_alias_params(body, params, args), ...)` -- corrupts the heap
-/// (#2279). That function returns `Array::get(args, idx)` directly for a
-/// parameter, so the tree it hands back SHARES subterms with `args` without
-/// owning them; walking that tree drops borrowed nodes and a later, unrelated
-/// allocation traps with `memory access out of bounds at __rt_rc_alloc`.
-/// Measured: calling it and DISCARDING the result is clean, and consuming the
-/// result is what traps, which is what identifies the aliasing rather than the
-/// substitution as the fault.
-///
-/// Only a KEY that is a bare parameter name needs the mapping: every other
-/// unsupported key is unsupported whatever the parameter stands for, so no
-/// substituted node is ever needed.
+/// `args`. #2279 guarantees that the substituted result owns its full tree.
 fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: Array[String], args: Array[Type], caller_shadow: Array[String], out: Array[Type]) -> Unit {
-  match t {
-    CtNamed(head, targs) => {
-      if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
-        let k0 = Array::get(targs, 0)
-        let (k, substituted) = match k0 {
-          CtNamed(kn, kargs) => if Array::length(kargs) == 0 {
-            alias_arg_for_param(kn, params, args)
-          } else {
-            (k0, false)
-          },
-          _ => (k0, false)
-        }
-        let key_shadow = if substituted {
-          caller_shadow
-        } else {
-          params
-        }
-        if map_key_type_is_supported(k, defs, key_shadow) {
-          ()
-        } else {
-          Array::push(out, k)
-        }
-      } else {
-        ()
-      }
-      let mut i = 0
-      while i < Array::length(targs) {
-        collect_unsupported_map_keys_applied(Array::get(targs, i), defs, params, args, caller_shadow, out)
-        i = i + 1
-      }
-    },
-    CtArray(e) => collect_unsupported_map_keys_applied(e, defs, params, args, caller_shadow, out),
-    CtOption(e) => collect_unsupported_map_keys_applied(e, defs, params, args, caller_shadow, out),
-    CtTuple(items) => {
-      let mut i = 0
-      while i < Array::length(items) {
-        collect_unsupported_map_keys_applied(Array::get(items, i), defs, params, args, caller_shadow, out)
-        i = i + 1
-      }
-    },
-    CtFn(fparams, ret, _) => {
-      let mut i = 0
-      while i < Array::length(fparams) {
-        collect_unsupported_map_keys_applied(Array::get(fparams, i), defs, params, args, caller_shadow, out)
-        i = i + 1
-      }
-      collect_unsupported_map_keys_applied(ret, defs, params, args, caller_shadow, out)
-    },
-    CtRecord(fields) => {
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, ft) = Array::get(fields, i)
-        collect_unsupported_map_keys_applied(ft, defs, params, args, caller_shadow, out)
-        i = i + 1
-      }
-    },
-    _ => ()
-  }
+  let alias_args = map_key_alias_args(args, caller_shadow)
+  let applied = resolve_type_alias_params(t, params, alias_args)
+  collect_unsupported_map_keys(applied, defs, map_key_unbound_alias_params(params, Array::length(alias_args)), out)
 }
 
 /// `seen` is the alias names already expanded on this walk, for the same
@@ -627,7 +565,9 @@ fn collect_unsupported_map_keys_at(t: Type, defs: Array[TypeDef], shadow: Array[
           Some(td) => match td {
             TDAlias(_, aparams, abody) => {
               Array::push(seen, head)
-              collect_unsupported_map_keys_at(abody, defs, aparams, seen, out)
+              let alias_args = map_key_alias_args(targs, shadow)
+              let applied = resolve_type_alias_params(abody, aparams, alias_args)
+              collect_unsupported_map_keys_at(applied, defs, map_key_unbound_alias_params(aparams, Array::length(alias_args)), seen, out)
             },
             _ => ()
           },
