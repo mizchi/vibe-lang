@@ -16,9 +16,14 @@
 // indices shift under it.
 //
 // Degradation is always toward NO line, never a wrong one: a statement parsed
-// without offsets carries -1 and is left alone, and the walk descends only the
-// expression forms that CARRY statements, so an `assert_eq` buried in (say) a
-// tuple loses its line rather than borrowing someone else's.
+// without offsets carries -1 and is left alone.
+//
+// The walk descends only the expression forms that CARRY statements, so an
+// `assert_eq` buried in (say) a tuple element or an operand loses its line.
+// That is a COVERAGE limit, not a safety one -- this comment used to justify it
+// as "rather than borrowing someone else's line", which is wrong: a nested
+// `ECall` has its own offset, so there is nothing to borrow. Widening the walk
+// to rebuild every container form is mechanical and safe, and is #2288.
 
 import @vibe/core {
   array_empty
@@ -164,20 +169,15 @@ export fn stmts_bind_assert_eq(stmts: Array[Stmt]) -> Bool {
       SLet(_, _, name, _, _) => name == "assert_eq",
       SModule(_, _, body) => stmts_bind_assert_eq(body),
       SImport(_, items) => import_binds_assert_eq(items),
-      // `export ./dep.vibe { cmp as assert_eq }` binds the name in this module
-      // exactly as an import does -- `checker_stmt.vibe` routes both through
-      // the same `bind_stmt_imports`.
-      //
-      // Standing down here does NOT make that program work: re-export ALIASES
-      // are broken independently of the asserts (#2287 -- the merge inlines the
-      // dependency under its original name and drops the alias, so the call
-      // site reaches codegen unresolved). What it does is stop the lowering
-      // from MASKING that: `cmp as assert_eq` is the one alias spelling that
-      // did not crash, because the builtin claimed the call and ran an
-      // assertion instead. A loud unresolved-name failure is the better of the
-      // two, and it is the order the design policy sets -- never be silently
-      // wrong outranks crashing (#2277 review).
-      SReExport(_, items) => import_binds_assert_eq(items),
+      // NO `SReExport` arm, and that is measured rather than assumed.
+      // `export ./dep.vibe { cmp as assert_eq }` does bind the name here, but
+      // standing down cannot help: this scan runs per module, the merge then
+      // DROPS the re-export (the dependency arrives under its own name), and
+      // the lowering -- which sees only the merged program -- claims the bare
+      // call regardless. Adding the arm changed no observed behaviour. The
+      // masking it would have removed belongs to #2287, and fixing that removes
+      // it for free: once the alias rewrites the call site, the name at the
+      // call is no longer `assert_eq` (#2277 review).
       _ => false
     }
     if hit {

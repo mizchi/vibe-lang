@@ -150,6 +150,9 @@ publishes_by_rename() {
   grep -q 'build_inode=' "$1" || return 1
   grep -q 'published_inode=' "$1" || return 1
   grep -qE '\[ "\$published_inode" != "\$build_inode" \]' "$1" || return 1
+  # ...and again after the sidecars, since the first check only catches a winner
+  # that landed before it.
+  grep -qE '\[ "\$final_inode" != "\$build_inode" \]' "$1" || return 1
   return 0
 }
 publishes_by_rename scripts/ensure_entry_wasm.sh \

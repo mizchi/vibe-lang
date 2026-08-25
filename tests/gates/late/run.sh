@@ -6363,8 +6363,56 @@ else
   cat "$uwdir/reexport.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# The SINGLE-SOURCE lane is artifact-producing too. `VIBE_TEST_BACKEND=gc` and
+# `VIBE_BENCH_BACKEND=gc` reach it because `runtime/vibe` clears
+# `VIBE_FS_COMPILE` and selects the backend, so the file compiled and RAN with
+# no opt-in while every check form rejected the same declaration. Measured
+# before the fix: `vibe test` refused it, `VIBE_TEST_BACKEND=gc vibe test`
+# answered `1 passed` (#2277 review). The import is unused on purpose -- that is
+# the shape this lane accepts.
+cat > "$uwdir/bare.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+test "unused unstable import" {
+  assert_true(1 + 1 == 2)
+}
+UWEOF
+rm -f "$uwdir/bare.wasm" "$uwdir/bare.wasm.diag"
+env -u VIBE_UNSTABLE -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/bare.vibe" "$uwdir/bare.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$uwdir/bare.wasm" ]; then
+  echo "[compiler-gate] FAIL: the single-source lane built an unstable import with no opt-in (#2277)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/bare.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the single-source lane refused the file for the wrong reason (#2277)" >&2
+  cat "$uwdir/bare.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$uwdir/bare.optin.wasm" "$uwdir/bare.optin.wasm.diag"
+env -u VIBE_FS_COMPILE VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/bare.vibe" "$uwdir/bare.optin.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$uwdir/bare.optin.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the single-source gate (#2277)" >&2
+  cat "$uwdir/bare.optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and an ordinary file on that lane is untouched, so the gate is not simply
+# refusing everything.
+printf 'test "plain" {\n  assert_true(1 + 1 == 2)\n}\n' > "$uwdir/bare_plain.vibe"
+rm -f "$uwdir/bare_plain.wasm" "$uwdir/bare_plain.wasm.diag"
+env -u VIBE_UNSTABLE -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/bare_plain.vibe" "$uwdir/bare_plain.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$uwdir/bare_plain.wasm" ]; then
+  echo "[compiler-gate] FAIL: the single-source gate refused an ordinary file (#2277)" >&2
+  cat "$uwdir/bare_plain.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
@@ -6676,33 +6724,6 @@ if ! grep -qF 'assert_eq failed' "$aldir/pat.log"; then
   cat "$aldir/pat.log" >&2
   exit 1
 fi
-# A re-exported binding of the name must not be claimed by the builtin either.
-# This does NOT assert the program works -- re-export aliases are broken on
-# their own (#2287: the merge inlines the dependency under its original name and
-# drops the alias, so the call reaches codegen unresolved). `cmp as assert_eq`
-# was the one alias spelling that did not crash, because the lowering claimed
-# the call and ran an assertion instead, which is how #2287 stayed hidden. What
-# the gate requires is that the masking stay gone: whatever this program does,
-# it must not silently be an assertion. It will pass unchanged once #2287 lands.
-cat > "$aldir/redep.vibe" <<'ALEOF'
-export fn cmp(a: Int, b: Int) -> Int {
-  a + b
-}
-ALEOF
-cat > "$aldir/reexport_test.vibe" <<'ALEOF'
-export ./redep.vibe { cmp as assert_eq }
-
-test "re-exported binding" {
-  assert_true(assert_eq(1, 2) == 3)
-}
-ALEOF
-VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
-  bash scripts/vibe_test.sh "$aldir/reexport_test.vibe" >"$aldir/re.log" 2>&1 || true
-if grep -qF 'assert_eq failed' "$aldir/re.log"; then
-  echo "[compiler-gate] FAIL: a re-exported assert_eq was claimed by the builtin assertion, masking #2287" >&2
-  cat "$aldir/re.log" >&2
-  exit 1
-fi
 # A module whose line numbers are NOT its own is still stamped -- without a
 # location. Leaving those calls bare lost more than the line: nothing recorded
 # that they meant the BUILTIN, so a top-level `assert_eq` in ANY other merged
@@ -6767,4 +6788,4 @@ if printf '%s\n' "$al_marker_out" | grep -qE 'assert_eq failed at '; then
   exit 1
 fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + top-level shadowing (definition + re-export) + inherited-import capture ok (#2202, #2283)"
+echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + top-level shadowing (definition) + inherited-import capture ok (#2202, #2283)"

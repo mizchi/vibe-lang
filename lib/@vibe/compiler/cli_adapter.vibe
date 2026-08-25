@@ -1876,6 +1876,25 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     return adapter_serve_component(input_path, output_path)
   }
   let source = Fs::read_file(input_path)
+  // ADR-0068 gate for the SINGLE-SOURCE lane. `VIBE_TEST_BACKEND=gc` and
+  // `VIBE_BENCH_BACKEND=gc` reach compilation through here -- `runtime/vibe`
+  // clears `VIBE_FS_COMPILE` and selects the backend -- so this lane compiled
+  // and RAN a file with an unstable import while every check form rejected the
+  // same declaration (#2277 review). Measured: `vibe test` said the file was
+  // refused, `VIBE_TEST_BACKEND=gc vibe test` said `1 passed`.
+  //
+  // The entry's own bytes, with no ingestion: this lane resolves no imports, so
+  // there is no ingested text to differ from them.
+  let bare_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+    adapter_no_warnings()
+  } else {
+    unstable_surface_diagnostics(input_path, source)
+  }
+  if Array::length(bare_unstable) > 0 {
+    return emit_compile_diag(output_path, Array::get(bare_unstable, 0))
+  } else {
+    ()
+  }
   profile_memory_mark(mark_memory)
   // #594 Stage 1b: emit-module-source mode. VIBE_EMIT_MODULE_SOURCE=1 reuses the
   // same (input, output, entry) interface but, instead of compiling, writes the

@@ -177,6 +177,18 @@ if [ "$stale" = "1" ]; then
     if [ "$captured" = "1" ]; then
       mv -f "$ROOT_DIR/$build_deps_rel" "$ROOT_DIR/$deps_rel"
     fi
+    # Re-check AFTER the sidecars: the first comparison only catches a winner
+    # that landed before it, and a builder can still replace the wasm between
+    # that check and these renames, leaving its wasm beside our sidecars (#2277
+    # review). Dropping the manifest is what matters -- it is the first
+    # staleness test, so the next run rebuilds the whole tuple. A funcmap can
+    # stay mismatched until then, which costs symbol names in a trace, not
+    # correctness.
+    final_inode="$(ls -i "$ROOT_DIR/$wasm_rel" 2>/dev/null | awk '{ print $1 }')"
+    if [ -n "$final_inode" ] && [ "$final_inode" != "$build_inode" ]; then
+      rm -f "$ROOT_DIR/$deps_rel"
+      echo "ensure_entry_wasm.sh: $wasm_rel was replaced while its sidecars were published; rebuilding next run" >&2
+    fi
   fi
 fi
 
