@@ -58,7 +58,12 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  collect_unknown_type_names, collect_unknown_type_names_regionwise, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  collect_unknown_type_names,
+  collect_unknown_type_names_regionwise,
+  is_wellknown_nominal_head,
+  resolve_type_expr,
+  resolve_type_expr_shadowed,
+  subst_type_params
 }
 
 import ./checker_spawnable.vibe {
@@ -398,9 +403,10 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], depth: Int) -> Bo
     CtString => true,
     CtVar(_) => true,
     CtUnknown => true,
-    // A nominal head with NO arguments is a formal or an opaque name this
-    // pass cannot judge, and one with arguments is judged by whether it
-    // RESOLVES (Codex round 6 on #2276).
+    // A compiler-owned nominal is concrete even without a TypeDef, and none
+    // has a builtin Map key implementation. Other heads with NO arguments are
+    // formals or opaque names this pass cannot judge; applied heads are judged
+    // by whether they resolve (Codex rounds 6 and 12 on #2276).
     //
     // An unresolved applied head is a FORWARD reference, not a bad key:
     // `type M[T] = Map[Key[T], Int]` above `type Key[T] = String` sees the
@@ -412,7 +418,9 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], depth: Int) -> Bo
     // way. A head that does not resolve at all is the unknown-type check's
     // answer, not this one; a head that DOES resolve while still carrying
     // arguments is a declared generic struct or enum, and stays rejected.
-    CtNamed(kname, kargs) => if Array::length(kargs) == 0 {
+    CtNamed(kname, kargs) => if is_wellknown_nominal_head(kname) {
+      false
+    } else if Array::length(kargs) == 0 {
       true
     } else {
       match find_typedef(defs, kname) {
