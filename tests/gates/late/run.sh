@@ -7375,3 +7375,99 @@ if ! grep -qF 'inherits' "$ihdir/only.out.diag" 2>/dev/null; then
 fi
 rm -rf "$ihdir"
 echo "[compiler-gate] inherited and physical unstable imports are each reported, each in its own words ok (#2289)"
+
+# 114/114. The ADR-0068 gate exists in the SPLIT CLI, and its cached lane
+#          cannot be used to get around it (#2305).
+# Gate 108 covers the boundary on the shipped adapter, but it drives stage2
+# through VIBE_CLI_WASM, so it cannot see lib/@vibe/cli/ by construction --
+# stage2 is compiled from the flat adapter source and contains none of it.
+# Measured before this landed, on a stage1 CLI core built from the tree:
+# `check` returned 0 with no diagnostic both when the ENTRY imports
+# @vibe/concurrent and when a SIBLING does, while the adapter refuses both.
+#
+# The cached lane is the sharp half. `compile_file_fs_mode_cached` returns on
+# a persistent-artifact hit before it loads anything, so the closure record is
+# empty and the gate answers "clean" -- build once WITH the opt-in, drop it,
+# and the artifact came out anyway. That is why the warm case below is not
+# redundant with the cold one: a port that only passes the cold case is
+# silently permissive, which is worse than no gate.
+echo "[compiler-gate] 114/114 the ADR-0068 gate exists in the split CLI, cold and warm (#2305)"
+sc_cli="${VIBE_SPLIT_CLI_WASM:-_build/bench/selfhost_cli_core/index_stage1.wasm}"
+if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
+  # Built by scripts/build_cli_core.sh, which is not part of this lane's
+  # inputs. Skipping is the honest answer -- but say so, because a silent skip
+  # is indistinguishable from a pass.
+  echo "[compiler-gate] 114/114 SKIP: no split CLI core at $sc_cli (build it with scripts/build_cli_core.sh) (#2305)"
+else
+  case "$sc_cli" in /*) sc_abs="$sc_cli" ;; *) sc_abs="$ROOT_DIR/$sc_cli" ;; esac
+  scdir="_build/_gate_split_cli_unstable"
+  rm -rf "$scdir"; mkdir -p "$scdir"
+  cat > "$scdir/worker.vibe" <<'SCEOF'
+import @vibe/concurrent { TaskGroup }
+
+export fn work() -> Int {
+  7
+}
+SCEOF
+  cat > "$scdir/main.vibex" <<'SCEOF'
+import ./worker.vibe { work }
+
+fn main() -> Unit with Stdout {
+  println(Int::to_string(work()))
+}
+SCEOF
+  sc_run() {
+    env -u VIBE_UNSTABLE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+      build "$scdir/main.vibex" -o "$scdir/b.wasm" 2>&1 || true
+  }
+  # 1. cold, no opt-in: refused, and it must name the SIBLING that spells the
+  #    import -- the entry pre-check alone cannot see that file.
+  rm -f "$scdir/b.wasm"
+  sc_cold="$(sc_run)"
+  if [ -s "$scdir/b.wasm" ]; then
+    echo "[compiler-gate] FAIL: the split CLI built an unstable dependency with no opt-in (#2305)" >&2
+    printf '%s\n' "$sc_cold" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$sc_cold" | grep -qF 'worker.vibe'; then
+    echo "[compiler-gate] FAIL: the split CLI's rejection does not name the sibling that imports it (#2305)" >&2
+    printf '%s\n' "$sc_cold" >&2
+    exit 1
+  fi
+  # 2. WITH the opt-in it builds, and warms whatever cache the lane keeps.
+  rm -f "$scdir/b.wasm"
+  sc_optin="$(env VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+    build "$scdir/main.vibex" -o "$scdir/b.wasm" 2>&1 || true)"
+  if [ ! -s "$scdir/b.wasm" ]; then
+    echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the split CLI build (#2305)" >&2
+    printf '%s\n' "$sc_optin" >&2
+    exit 1
+  fi
+  # 3. warm, opt-in removed: still refused. This is the case a naive port
+  #    passes cold and fails here.
+  rm -f "$scdir/b.wasm"
+  sc_warm="$(sc_run)"
+  if [ -s "$scdir/b.wasm" ]; then
+    echo "[compiler-gate] FAIL: a warm artifact cache let the split CLI skip the ADR-0068 gate (#2305)" >&2
+    printf '%s\n' "$sc_warm" >&2
+    exit 1
+  fi
+  # 4. ...and a program with no unstable import still builds, cold and warm,
+  #    so the guard is not simply refusing everything.
+  printf 'fn main() -> Unit with Stdout {\n  println("ok")\n}\n' > "$scdir/clean.vibex"
+  for round in cold warm; do
+    rm -f "$scdir/c.wasm"
+    sc_clean="$(env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+      build "$scdir/clean.vibex" -o "$scdir/c.wasm" 2>&1 || true)"
+    if [ ! -s "$scdir/c.wasm" ]; then
+      echo "[compiler-gate] FAIL: the split CLI stopped building a clean program ($round) (#2305)" >&2
+      printf '%s\n' "$sc_clean" >&2
+      exit 1
+    fi
+  done
+  rm -rf "$scdir"
+  echo "[compiler-gate] the split CLI refuses an unstable dependency cold AND warm, and still builds clean programs ok (#2305)"
+fi
