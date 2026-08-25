@@ -137,20 +137,41 @@ test "parse_program: legacy @zero_alloc remains accepted during migration" {
   assert(Array::length(stmts) == 2)
 }
 
-test "generated re-export boundaries survive print and reparse" {
-  let source = "export { __vibe_reexport_boundary__, assert_eq, inspect }"
+test "an ordinary export named like the old boundary sentinel stays an export" {
+  let source = "export { __vibe_reexport_boundary__, assert_eq }"
   let stmts = parse_program(lex(source))
   match Array::get(stmts, 0) {
-    SReExportLocalBlockers(names) => {
+    SExport(names) => {
       inspect(Array::length(names), "2")
-      inspect(Array::get(names, 0), "assert_eq")
-      inspect(Array::get(names, 1), "inspect")
+      inspect(Array::get(names, 0), "__vibe_reexport_boundary__")
+      inspect(Array::get(names, 1), "assert_eq")
     },
     _ => assert(false)
   }
   inspect(print_program(stmts), source)
-  match Array::get(parse_program(lex("export { __vibe_reexport_boundary__ }")), 0) {
-    SReExportLocalBlockers(names) => inspect(Array::length(names), "0"),
+}
+
+test "generated re-export source boundaries survive print and reparse" {
+  let source = "//#reexport_source_boundary\nexport { assert_eq, inspect }\nexport { inspect }"
+  let stmts = parse_program(lex(source))
+  inspect(Array::length(stmts), "1")
+  match Array::get(stmts, 0) {
+    SReExportSourceBoundary(local_names, surface_only_names) => {
+      inspect(Array::length(local_names), "2")
+      inspect(Array::get(local_names, 0), "assert_eq")
+      inspect(Array::get(local_names, 1), "inspect")
+      inspect(Array::length(surface_only_names), "1")
+      inspect(Array::get(surface_only_names, 0), "inspect")
+    },
+    _ => assert(false)
+  }
+  inspect(print_program(stmts), source)
+  let empty_source = "//#reexport_source_boundary\nexport {  }\nexport {  }"
+  match Array::get(parse_program(lex(empty_source)), 0) {
+    SReExportSourceBoundary(local_names, surface_only_names) => {
+      inspect(Array::length(local_names), "0")
+      inspect(Array::length(surface_only_names), "0")
+    },
     _ => assert(false)
   }
 }

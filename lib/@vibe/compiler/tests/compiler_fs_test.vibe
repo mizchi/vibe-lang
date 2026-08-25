@@ -170,6 +170,9 @@ test "same-source imported assert_eq is not lowered as the builtin through FS me
   let bytes = compile_file_wasi_only(main_path, "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "false")
+  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  assert_wasm_magic(merged_bytes)
+  inspect(bytes_contains_ascii(merged_bytes, "assert_eq failed"), content = "false")
 }
 
 test "same-source import aliased as assert_eq is not lowered as the builtin through FS merge" {
@@ -275,24 +278,30 @@ test "same-source ordinary re-export alias remains unknown through FS merge" {
   inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: forwarded"), content = "true")
 }
 
-test "same-source plain assert_eq re-export remains unknown through FS merge" {
+test "same-source plain assert_eq re-export remains callable through FS merge" {
   let base_dir = "/tmp/vibe_compiler_reexport_plain_assert_eq_blocker"
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, string_to_bytes("export fn assert_eq(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
-  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: assert_eq"), content = "true")
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "false")
+  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  assert_wasm_magic(merged_bytes)
+  inspect(bytes_contains_ascii(merged_bytes, "assert_eq failed"), content = "false")
 }
 
-test "same-source plain inspect re-export remains unknown through FS merge" {
+test "same-source plain inspect re-export remains callable through FS merge" {
   let base_dir = "/tmp/vibe_compiler_reexport_plain_inspect_blocker"
   let dep_path = String::concat(base_dir, "/dep.vibe")
   let main_path = String::concat(base_dir, "/main.vibe")
   Fs::mkdir_p(base_dir)
   Fs::write_bytes(dep_path, string_to_bytes("export fn inspect(a: Int, _expected: String) -> Int { a + 1 }\n"))
   Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(1, \"ignored\") }\n"))
-  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: inspect"), content = "true")
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
 }
 
 test "compile_file_wasi_only: simple file produces valid WASM" {

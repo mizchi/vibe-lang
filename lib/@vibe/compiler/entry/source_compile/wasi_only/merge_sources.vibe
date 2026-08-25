@@ -185,8 +185,9 @@ fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], 
   }
 }
 
-fn reexport_local_blockers(stmts: Array[Stmt]) -> Array[String] {
-  let out = array_empty()
+fn reexport_source_boundary(stmts: Array[Stmt]) -> (Array[String], Array[String]) {
+  let locals = array_empty()
+  let surface_only = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -198,10 +199,18 @@ fn reexport_local_blockers(stmts: Array[Stmt]) -> Array[String] {
             Some(alias) => alias,
             None => item.name
           }
-          if string_array_contains_local(out, local) {
+          if string_array_contains_local(locals, local) {
             ()
           } else {
-            Array::push(out, local)
+            Array::push(locals, local)
+          }
+          match item.alias {
+            Some(alias) => if string_array_contains_local(surface_only, alias) {
+              ()
+            } else {
+              Array::push(surface_only, alias)
+            },
+            None => ()
           }
           j = j + 1
         }
@@ -210,7 +219,7 @@ fn reexport_local_blockers(stmts: Array[Stmt]) -> Array[String] {
     }
     i = i + 1
   }
-  out
+  (locals, surface_only)
 }
 
 fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Exception + Fs {
@@ -220,10 +229,11 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     let path = Array::get(file_paths, fi)
     let stmts = Array::get(file_stmts, fi)
     let namespaced_stmts = transformed_file_stmts(entry_path, path, stmts, plan)
-    // Imports and re-exports disappear from the executable merged AST. Keep a
-    // source-boundary marker so every re-export remains publication-only
-    // for this unit without blocking builtins in the next unit (#2287).
-    Array::push(merged, SReExportLocalBlockers(reexport_local_blockers(stmts)))
+    // Imports and re-exports disappear from the executable merged AST. Keep
+    // each source's locally visible names separate from aliased surface-only
+    // names, without blocking builtins in the next unit (#2287).
+    let (reexport_locals, reexport_surface_only) = reexport_source_boundary(stmts)
+    Array::push(merged, SReExportSourceBoundary(reexport_locals, reexport_surface_only))
     if stmts_have_import_deep(stmts) {
       let import_renames = collect_import_value_renames(plan, path, stmts)
       let skipped_locals = collect_import_alias_collision_locals(stmts)
