@@ -307,9 +307,12 @@ it was refused (`` no impl `Eq` for `Array[Int]` ``). An UNBOUNDED formal
 (`fn f[T](x: Array[T], y: Array[T]) { x == y }`) has no witness either way;
 measured (2026-08-24), it never answers by identity — a comparison it cannot
 resolve structurally traps at run time, and a length/element difference
-answers `false`. Give the trait a method and the impl
-resolves through the witness dictionary instead, in either spelling
-(`impl M for Array[Int]` or `impl [T] M for Array[T]`). See #1503.
+answers `false`. Give the trait a method and use a generic impl
+(`impl [T] M for Array[T]`) so it resolves through the witness dictionary.
+A concrete generic target such as `impl M for Array[Int]` is rejected because
+the impl AST cannot retain its type arguments; accepting it would silently
+widen the impl to every `Array[T]` (#2262). Specialization for one generic
+instantiation is not supported. See #1503.
 
 ### Effects
 

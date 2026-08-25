@@ -828,33 +828,34 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 // T 型の引数 (または Array[T] 引数) を witness carrier にすること。
 ```
 
-### marker trait の impl は container には効かない (#1503)
+### Marker-trait impls do not satisfy bounds for containers (#1503)
 
-**メソッドを持たない trait (marker trait) の impl は、`Array` / `Bytes` の
-ような container に対して bound として使えない。** 宣言自体は通るが、
-その型を bound 付きの関数へ渡すと拒否される:
+**An impl of a trait with no methods (a marker trait) cannot satisfy a bound
+for a container such as `Array` or `Bytes`.** The declaration itself is
+accepted, but passing that type to a bounded function is rejected:
 
 ```vibe skip
-trait Eq                      // メソッド無し = marker trait
-impl [T: Eq] Eq for Array[T]  // 宣言は通る
+trait Eq                      // No methods: this is a marker trait
+impl [T: Eq] Eq for Array[T]  // The declaration is accepted
 
 fn keep[T: Eq](x: T) -> T { x }
-let bad = keep([1, 2, 3])     // reject される
+let bad = keep([1, 2, 3])     // Rejected
 ```
 
-理由は marker trait の**ディスパッチ先**にある。marker trait は builtin の
-`==` / `<` に落ちる。`==` が配列を構造的に比較できるのは**要素型が静的に
-分かるとき**だけ (下の「`Array` の `==`」参照) で、`keep[T: Eq]` の中の `T` は
-消去済み — 要素型は無い。つまりこの impl を認めると `==` は参照等価に落ちて
-黙って間違った答えを返す。診断がその旨を述べる。
+The reason is the marker trait's **dispatch target**. Marker traits lower to
+the builtin `==` / `<`. Array `==` can compare structurally only when the
+element type is statically known (see "`Array` equality" below), while the `T`
+inside `keep[T: Eq]` is erased and carries no element type. Honouring this impl
+would therefore let `==` fall back to reference equality and silently answer
+incorrectly. The diagnostic explains this restriction.
 
-> このゲートは ADR-0097 (`==` を全文脈で構造的等価に統一) の完了時に**解除
-> される** — 根拠そのものが無くなるため。それまでは上の規則が有効。
+> This gate will be removed when ADR-0097 makes `==` structural in every
+> context, because its justification will then be gone. Until that work is
+> complete, the rule above remains in force.
 
-container に対して効かせたいなら **trait にメソッドを持たせる** —
-メソッドがあれば witness dictionary 経由でディスパッチするので、
-concrete (`impl M for Array[Int]`) でも generic (`impl [T] M for Array[T]`)
-でも解決する:
+To use a trait bound with a container, **give the trait a method**. A
+method-bearing trait dispatches through a witness dictionary, so a generic
+impl such as `impl [T] M for Array[T]` can be resolved:
 
 ```vibe
 trait Measured {
@@ -897,13 +898,11 @@ the same diagnostic, naming the declaration (`` in the signature of
 `Functor::fmap` ``). A trait or effect may still DECLARE type parameters and
 use them unapplied (`trait Iter[A] { nth(Self, Int) -> Option[A] }`).
 
-> #1503 以前は、**concrete な impl (`impl M for Array[Int]`) が method-bearing
-> trait でも解決しなかった**。パーサが `for` の後ろの `[Int]` を捨てるため、
-> 環境には `Array` という頭だけが残る。今は generic 版と同じく**コンストラクタで
-> 照合する**ので両方の綴りが同じ挙動になる。裏を返すと、
-> `impl M for Array[Int]` は今のところ `Array[String]` にも効く
-> (パーサが型引数を保持していないため) — 特定の instantiation だけに
-> 絞る書き方はまだ無い。
+> A concrete generic impl target such as `impl M for Array[Int]` is rejected
+> (#2262). The impl AST cannot retain the `[Int]` argument; accepting it would
+> silently widen the impl to `Array[String]` and every other instantiation.
+> Write the honest generic form, `impl [T] M for Array[T]`. Impl specialization
+> for one generic instantiation is not supported yet.
 
 ## Collections
 
