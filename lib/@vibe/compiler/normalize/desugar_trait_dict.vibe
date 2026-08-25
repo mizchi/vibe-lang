@@ -6370,43 +6370,90 @@ fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
 /// cell above: whether THIS program binds `assert_eq` itself.
 ///
 /// The unit is the program this pass was handed, which in the FS lane is every
-/// module merged together -- so one module defining `assert_eq` stands the
+/// module merged together -- so one module binding `assert_eq` stands the
 /// lowering down for all of them. Coarse, and deliberately so: the merged
 /// program is what this pass sees, and a per-module answer here would be
 /// invented.
-let dtd_user_assert_eq = [0]
+///
+/// COMPUTED LAZILY (#2285). The scan now descends into every expression, and
+/// paying for a whole-program AST walk on every compile is not free -- an
+/// earlier round of this work measured a 1.1% self-compile heap regression
+/// from one extra traversal and blew the KPI ceiling. Nothing asks this
+/// question unless the program actually spells `assert_eq(a, b)`, because
+/// `is_assert_eq_call` tests the name and the arity first, so a program with
+/// no such call never runs the walk at all -- which is every file in the
+/// compiler's own closure.
+///
+/// Slot 0 is the answer: -1 not computed yet, 0 no, 1 yes.
+let dtd_user_assert_eq = [-1]
+
+/// The program to answer that question from, held until something asks. One
+/// element or none; `Array::truncate` on reset is what makes a torn run
+/// (a throw mid-rewrite) unable to leave a previous program behind.
+let dtd_user_assert_eq_program: Array[Array[Stmt]] = array_empty()
 
 fn user_assert_eq_reset(stmts: Array[Stmt]) -> Unit {
-  Array::set(dtd_user_assert_eq, 0, if stmts_define_assert_eq(stmts) {
-    1
-  } else {
-    0
-  })
+  Array::set(dtd_user_assert_eq, 0, -1)
+  Array::truncate(dtd_user_assert_eq_program, 0)
+  Array::push(dtd_user_assert_eq_program, stmts)
 }
 
 fn user_assert_eq_bound() -> Bool {
-  Array::get(dtd_user_assert_eq, 0) == 1
+  let cached = Array::get(dtd_user_assert_eq, 0)
+  if cached >= 0 {
+    cached == 1
+  } else if Array::length(dtd_user_assert_eq_program) == 0 {
+    // Nothing handed us a program. Answer "not bound", which is the shipped
+    // lowering -- the same thing a caller that never reset would have got.
+    false
+  } else {
+    let answer = stmts_define_assert_eq(Array::get(dtd_user_assert_eq_program, 0))
+    Array::set(dtd_user_assert_eq, 0, if answer {
+      1
+    } else {
+      0
+    })
+    answer
+  }
 }
 
-/// Whether this program DEFINES `assert_eq` at the top level -- a
-/// statement-level definition, or an import that lands under that name.
+/// Whether this program BINDS `assert_eq` anywhere -- a top-level definition,
+/// an import that lands under that name, or a local binder at any depth: a
+/// `let`, a `for` binder, a function or lambda parameter, a `match` or
+/// `handle` pattern.
 ///
-/// Top-level only, and that boundary is not arbitrary: it is exactly what the
-/// codegen guard can honor. `compile_call.vibe` decides by `fn_idx_in_list`
-/// (the function table) and deliberately ignores `local_idx_hint`, because a
-/// lambda's captured free name appears there with an unresolved slot -- the
-/// #1095 trap. Suppressing the lowering for a LOCAL binding only moves the
-/// failure: the pass stands down, codegen's own `assert_eq` arm still claims
-/// the call, and the program traps with no message at all. Measured on
+/// The local half is #2285, and it could not be turned on until codegen could
+/// honor a local. Standing the lowering down is only half the answer: codegen
+/// has its own `assert_eq` arm, and while that arm tested `fn_idx_in_list`
+/// alone it claimed the call regardless, so suppressing here only traded the
+/// builtin's message for a bare `unreachable`. Measured on
 /// `match make_cmp() { assert_eq => assert_eq(1, 2) }`: the builtin assertion
-/// before, a bare `unreachable` after. Worse, not better -- so the local and
-/// pattern-bound cases keep their pre-existing behaviour (#2285).
+/// before, a trap with no message after. Both halves now hold -- the three
+/// assert arms in `compile_call.vibe` test `!prefer_bound_call`, and
+/// `assert_eq`/`assert_true` are registered in `is_inlined_scalar_builtin` so
+/// a free use inside a lambda is no longer recorded as the #1095 capture
+/// artifact that made `local_idx_hint` unreadable.
+///
+/// UNSCOPED, like the top-level half: one binder anywhere stands the lowering
+/// down for the whole merged program, even for call sites the binder does not
+/// reach. A scoped answer would have to thread a binder set through
+/// `rewrite_expr`, which carries nine parameters already. The coarseness errs
+/// in the safe direction -- standing down loses the expected/actual message,
+/// it never runs the wrong function -- and it costs nothing today: no file
+/// under `lib/`, `fixtures/`, or `examples/` binds the name locally.
 fn stmts_define_assert_eq(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
     let hit = match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => name == "assert_eq",
+      SLet(_, _, name, _, value) => name == "assert_eq" || expr_binds_assert_eq(value),
+      SLetMut(name, _, value) => name == "assert_eq" || expr_binds_assert_eq(value),
+      SLetPat(pat, value) => pat_binds_assert_eq(pat) || expr_binds_assert_eq(value),
+      SExpr(e) => expr_binds_assert_eq(e),
+      STest(_, e) => expr_binds_assert_eq(e),
+      SBench(_, e) => expr_binds_assert_eq(e),
+      SExample(_, e) => expr_binds_assert_eq(e),
+      SFnDecl(_, name, e, _, _) => name == "assert_eq" || expr_binds_assert_eq(e),
       // NO `SModule` recursion. A module member declares `M::assert_eq`, not
       // the bare prelude name, so recursing would stand the lowering down for
       // an unrelated top-level `assert_eq(a, b)` -- and the function table
@@ -6439,6 +6486,127 @@ fn import_binds_assert_eq(items: Array[ImportItem]) -> Bool {
       None => item.name
     }
     if local == "assert_eq" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// A pattern that binds the bare name. `PBind` is the binder; every other
+/// arm is a container to look through. A `PCtor` name is a constructor, not a
+/// binder, so only its sub-patterns are asked.
+fn pat_binds_assert_eq(p: Pat) -> Bool {
+  match p {
+    PBind(name) => name == "assert_eq",
+    PCtor(_, subs) => pats_bind_assert_eq(subs),
+    PTuple(subs) => pats_bind_assert_eq(subs),
+    POr(a, b) => pat_binds_assert_eq(a) || pat_binds_assert_eq(b),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, sub) = Array::get(fields, i)
+        if pat_binds_assert_eq(sub) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn pats_bind_assert_eq(ps: Array[Pat]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ps) && !found {
+    if pat_binds_assert_eq(Array::get(ps, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Every binding form an expression can carry, then the children.
+///
+/// The recursion goes through `expr_children` on purpose: it is the AST edge's
+/// exhaustive structural traversal, so a new `Expr` variant fails to compile
+/// there rather than silently going unvisited here. Only the arms that BIND
+/// are spelled out below; everything else falls through to the walk.
+fn expr_binds_assert_eq(e: Expr) -> Bool {
+  let here = match e {
+    ELet(name, _, _, _) => name == "assert_eq",
+    ELetRec(name, _, _) => name == "assert_eq",
+    ELetMut(name, _, _, _) => name == "assert_eq",
+    EForIn(value_name, key_name, _, _) => value_name == "assert_eq" || match key_name {
+      Some(k) => k == "assert_eq",
+      None => false
+    },
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pname, _) = Array::get(params, i)
+        if pname == "assert_eq" {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pname, _) = Array::get(params, i)
+        if pname == "assert_eq" {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(_, arms) => arms_bind_assert_eq(arms),
+    EHandle(_, arms) => arms_bind_assert_eq(arms),
+    _ => false
+  }
+  if here {
+    true
+  } else {
+    let kids = expr_children(e)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(kids) && !found {
+      if expr_binds_assert_eq(Array::get(kids, i)) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+fn arms_bind_assert_eq(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) && !found {
+    let (pat, _) = Array::get(arms, i)
+    if pat_binds_assert_eq(pat) {
       found = true
     } else {
       ()

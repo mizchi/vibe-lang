@@ -24,18 +24,21 @@
 # is_inlined_scalar_builtin / is_inlined_simd_builtin, or to the allowlist with
 # a measured reason.
 #
-# Why only the `!prefer_bound_call`-GUARDED dispatches (Codex review on #1369
-# asked about `assert_true` / `assert_eq`, which have no guard): an UNGUARDED
-# branch is immune to this bug by construction. `prefer_bound_call` is
+# Why only the `!prefer_bound_call`-GUARDED dispatches: an UNGUARDED branch is
+# immune to this bug by construction. `prefer_bound_call` is
 # `fn_idx_in_list >= 0 || local_idx_hint >= 0` (compile_call.vibe), so a
 # wrongly-captured name sets it -- and that is precisely what makes a GUARDED
 # branch fall through to the call_indirect. An unguarded branch lowers inline
-# either way, so the bad capture cannot reach a call_indirect. Measured: a
-# lambda calling `assert_true(true)` / `assert_eq(1, 1)` runs correctly on the
-# current compiler even though neither name is registered below. This is also
-# what #1095 actually fixed for `assert` -- it removed that branch's guard.
-# Consequence: adding a `!prefer_bound_call` guard to an existing branch makes
-# that name newly in-scope here, which is the case this scan exists to catch.
+# either way, so the bad capture cannot reach a call_indirect. Consequence:
+# adding a `!prefer_bound_call` guard to an existing branch makes that name
+# newly in-scope here, which is the case this scan exists to catch.
+#
+# That is exactly what #2285 did to `assert_true` / `assert_eq`. They were
+# unguarded, and therefore out of scope here, until a LOCAL binding of the
+# name had to be honored -- which means reading `local_idx_hint`, which means
+# the capture artifact must not exist. Both names were registered in
+# is_inlined_scalar_builtin in the same change that added their guards; had
+# only the guard landed, this scan would have failed on the next run.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

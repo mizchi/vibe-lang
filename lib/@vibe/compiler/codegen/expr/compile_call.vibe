@@ -3012,7 +3012,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // write into a region that no longer exists.
       throw("internal: `resume` reached codegen -- its handle was neither migrated (evidence dict) nor CPS-transformed (suspend class), and the replay engine was removed (ADR-0076 追記34 V2)")
     }
-    else if fname == "assert" && fn_idx_in_list < 0 {
+    else if !prefer_bound_call && fname == "assert" {
       // #1095: `prefer_bound_call` is the WRONG guard here (assert_true /
       // assert_eq below had none either). Inside a lambda, capture analysis
       // lists the
@@ -3024,13 +3024,22 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // actually asserted); with the minimized funcref table it surfaced as
       // "null function" traps.
       //
-      // #2283: the half of `prefer_bound_call` that is wrong is
-      // `local_idx_hint` -- the capture artifact. A name in the FUNCTION TABLE
-      // is a real top-level definition the reader wrote, and it must win, so
-      // these three arms test `fn_idx_in_list` alone. Without that the checker
-      // typed the call against the user's function while codegen emitted the
-      // builtin assert: `fn assert_eq(a: Int, b: Int) -> String` compiled clean
-      // and then trapped, with no diagnostic anywhere naming the conflict.
+      // #2283: a name in the FUNCTION TABLE is a real top-level definition the
+      // reader wrote, and it must win. Without that guard the checker typed the
+      // call against the user's function while codegen emitted the builtin
+      // assert: `fn assert_eq(a: Int, b: Int) -> String` compiled clean and then
+      // trapped, with no diagnostic anywhere naming the conflict.
+      //
+      // #2285: these three arms now test the WHOLE of `prefer_bound_call`, so a
+      // LOCAL binding wins too -- `let assert_eq = ...`, a parameter, a
+      // pattern. Reading `local_idx_hint` is only sound because `assert`,
+      // `assert_true` and `assert_eq` are all registered in
+      // `is_inlined_scalar_builtin` (common_analysis.vibe): a free use inside a
+      // lambda is skipped by the capture scan, so a hit among the closure's
+      // locals can no longer be the capture artifact this comment used to
+      // describe. Registration and guard are one change -- adding the guard
+      // without it reinstates #1095 exactly, which is what
+      // scripts/check_inline_builtin_capture.sh exists to catch.
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
@@ -3040,7 +3049,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_const(buf, 0)
       nl
     }
-    else if fname == "assert_true" && fn_idx_in_list < 0 {
+    else if !prefer_bound_call && fname == "assert_true" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
@@ -3050,7 +3059,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_const(buf, 0)
       nl
     }
-    else if fname == "assert_eq" && fn_idx_in_list < 0 {
+    else if !prefer_bound_call && fname == "assert_eq" {
       // Fallback only. The shipped path rewrites `assert_eq` in
       // desugar_trait_dicts (expected/actual on stderr, then trap). This
       // arm stays for lanes that skip that pass (compile_module): still
