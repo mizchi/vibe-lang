@@ -695,9 +695,45 @@ fn import_item_is_typeish(item: ImportItem) -> Bool {
       ImportEffect => false,
       ImportTrait => false
     },
-    // Only the unwritten kind needs the name-case heuristic.
-    None => str_starts_upper(item.name)
+    // UNWRITTEN kind: unknowable here, so fail CLOSED and assume a type.
+    //
+    // This deliberately reverses the name-case heuristic added for Codex
+    // round 9. Round 11 showed the heuristic is unsound at its root: this
+    // repository REQUIRES effect operations to be CamelCase
+    // (`Log::Emit`, CLAUDE.md), so an upper-case source name is not evidence
+    // of a type at all, and no refinement of "does it look like a type" can
+    // become correct.
+    //
+    // With the guess gone the choice is which way to be wrong, and the design
+    // policy settles it: a value import named `StringMap` now fails LOUDLY
+    // with "no WIT mapping" (the round 9 complaint, reinstated on purpose),
+    // rather than an imported TYPE being published with the builtin's ABI,
+    // which is silently wrong. Writing the kind
+    // (`import ./d.vibe { helper as StringMap }` -> no kind;
+    // `{ struct Box as StringMap }` -> `ImportStruct`) is what makes the
+    // answer exact, and the arm above honours it.
+    None => true
   }
+}
+
+/// Whether any of `items` binds `needle` as a TYPE.
+fn import_items_bind_type(items: Array[ImportItem], needle: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    let bound = match item.alias {
+      Some(a) => a,
+      None => item.name
+    }
+    if bound == needle && import_item_is_typeish(item) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
@@ -733,21 +769,20 @@ fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
       // the projection published `list<tuple<string, V>>` for a user's own
       // type -- an ABI that does not match the function's representation,
       // and silently so.
-      SImport(_, items) => {
-        let mut ii = 0
-        while ii < Array::length(items) {
-          let item = Array::get(items, ii)
-          let bound = match item.alias {
-            Some(a) => a,
-            None => item.name
-          }
-          if bound == needle && import_item_is_typeish(item) {
-            found = true
-          } else {
-            ()
-          }
-          ii = ii + 1
-        }
+      SImport(_, items) => if import_items_bind_type(items, needle) {
+        found = true
+      } else {
+        ()
+      },
+      // #2276 (Codex round 11): a re-export binds the name in the entry too --
+      // `export ./dep.vibe { struct Box as StringMap }` makes `StringMap` a
+      // source-owned type exactly as the import form does. Handling only
+      // `SImport` published the nominal parameter with the builtin's ABI,
+      // which is the silent-wrong direction.
+      SReExport(_, items) => if import_items_bind_type(items, needle) {
+        found = true
+      } else {
+        ()
       },
       _ => ()
     }

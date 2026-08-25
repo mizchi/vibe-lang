@@ -152,12 +152,18 @@ test "wit_from_program: a String-keyed Map still projects" {
   assert(String::contains(wit, "list<tuple<string, s64>>"))
 }
 
-test "wit_from_program: a VALUE import named StringMap does not shadow the builtin" {
-  // #2276 (Codex round 9): the WIT CLI never resolves imports, so
-  // `{ Box as StringMap }` and `{ helper as StringMap }` both parse with
-  // `kind: None` and only the dependency knows which is a type. Treating every
-  // bound name as a type made this valid program fail with `no WIT mapping`
-  // -- measured, it did. The SOURCE name's case separates them.
+test "wit_from_program: an UNKINDED import named StringMap fails closed" {
+  // #2276 (Codex rounds 9 and 11). Round 9 made this case NOT shadow, by
+  // guessing from the source name's case. Round 11 showed the guess is
+  // unsound at its root: this repository REQUIRES effect operations to be
+  // CamelCase (`Log::Emit`), so an upper-case source name is not evidence of
+  // a type and no refinement of the guess can become correct.
+  //
+  // With the guess gone the choice is which way to be wrong, and the design
+  // policy settles it: this now fails LOUDLY rather than publishing an
+  // imported TYPE with the builtin's ABI, which would be silently wrong.
+  // Writing the kind is what makes the answer exact -- see the two tests
+  // below.
   let stmts = [
     SImport("./dep.vibe", [
       ImportItem::{ kind: None, name: "helper", alias: Some("StringMap") }
@@ -166,8 +172,34 @@ test "wit_from_program: a VALUE import named StringMap does not shadow the built
       "m"
     ]))
   ]
-  let wit = wit_from_program(stmts, stmts, "valimport")
-  assert(String::contains(wit, "list<tuple<string, s64>>"))
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "unkinded")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a RE-EXPORTED StringMap type shadows the builtin" {
+  // #2276 (Codex round 11): `export ./dep.vibe { struct Box as StringMap }`
+  // binds the name in the entry exactly as the import form does. Handling
+  // only `SImport` published the nominal parameter with the builtin's ABI.
+  let stmts = [
+    SReExport("./dep.vibe", [
+      ImportItem::{
+        kind: Some(ImportStruct),
+        name: "Box",
+        alias: Some("StringMap")
+      }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "reexport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
 }
 
 test "wit_from_program: a TRAIT import named StringMap does not shadow the builtin" {
