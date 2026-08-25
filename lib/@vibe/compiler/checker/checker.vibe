@@ -438,12 +438,20 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[Str
     // arm: `resolve_type_expr` expands it first, so `type Future[T] = String`
     // used as `Map[Future[Int], String]` arrives here as `CtString` and is
     // still accepted (measured, pinned by `map_shadowed_wellknown_key_ok`).
-    CtNamed(kname, kargs) => if is_wellknown_nominal_head(kname) {
-      false
-    } else if string_array_has(shadow, kname) {
-      // A type FORMAL in scope. Judging it would mean judging every future
+    //
+    // The SHADOW is consulted FIRST, before compiler ownership. A type formal
+    // may be spelled with a compiler-owned name -- `fn f[Future, V](m:
+    // Map[Future, V])` -- and `resolve_type_expr_shadowed` correctly keeps it
+    // as the rigid `CtNamed("Future", [])`. Testing ownership by NAME ahead of
+    // the binder read that formal as the builtin and rejected a function the
+    // contract explicitly permits (Codex round 15 on #2276, measured; the
+    // order was wrong when round 14 introduced this arm).
+    CtNamed(kname, kargs) => if string_array_has(shadow, kname) {
+      // A type FORMAL in scope. Judging it would mean judging every
       // instantiation, which is not this check's question.
       true
+    } else if is_wellknown_nominal_head(kname) {
+      false
     } else {
       match find_typedef(defs, kname) {
         // Not declared: a FORWARD reference, a typo, or a formal bound
