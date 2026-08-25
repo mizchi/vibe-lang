@@ -800,6 +800,54 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
   errors
 }
 
+/// A contract import that states WHERE a foreign type name comes from, as
+/// opposed to the implementation-file wiring `import ./impl.vibe {}`. Package
+/// rooted (`@scope/pkg`) and naming at least one item.
+export fn contract_is_provenance_import(raw_path: String, items: Array[ImportItem]) -> Bool {
+  String::starts_with(raw_path, "@") && Array::length(items) > 0
+}
+
+/// The type names a contract declares WITHOUT defining -- everything it may
+/// legitimately mention in a transparent struct/enum that its own types module
+/// cannot resolve (#2164). Two spellings, because they state two different
+/// facts:
+///
+///   - `import @scope/pkg { TypeEnv }` -- ANOTHER package owns the name. The
+///     contract says which, so the reference is traceable.
+///   - `opaque type MutSet` -- a sibling implementation of THIS package owns
+///     it. There is deliberately no import: the materialized types module
+///     importing its own package's impl is the `types -> impl` cycle the
+///     module exists to avoid, so existence is all a contract can state here.
+///
+/// Anything a contract references and does NOT declare this way is a typo, and
+/// stops being exempted from checking -- which is the whole point of the pair.
+export fn contract_declared_foreign_names(opaques: Array[(String, Int)], stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut oi = 0
+  while oi < Array::length(opaques) {
+    let (oname, _) = Array::get(opaques, oi)
+    Array::push(out, oname)
+    oi = oi + 1
+  }
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, items) => if contract_is_provenance_import(raw_path, items) {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(out, Array::get(items, j).name)
+          j = j + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Classify a contract's non-declaration statements: implementation-file
 /// imports (`import ./impl.vibe {}`) and transparent type definitions
 /// (struct / enum / type alias — the definition IS the contract, so it lives
@@ -811,7 +859,16 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(raws, raw_path),
+      // A `@scope/pkg { Name }` import is PROVENANCE for a foreign type name
+      // (#2164), not implementation-file wiring. Only a relative path names an
+      // implementation of this package, so package-rooted imports stay out of
+      // `raws` -- treating one as an impl file would try to load another
+      // package as this contract's implementation.
+      SImport(raw_path, items) => if contract_is_provenance_import(raw_path, items) {
+        ()
+      } else {
+        Array::push(raws, raw_path)
+      },
       SStruct(_, name, fields, derives, mut_names, tparams) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names, tparams)),
       SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
       STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
@@ -898,7 +955,7 @@ export let vpkg_types_module_marker: String = "// vibe: vpkg contract types modu
 /// #2162: a module-wide `declared` let `struct Box[Counter]`'s binder hide
 /// `struct Holder`'s reference to the contract-`opaque` `Counter`, dropping
 /// it from the sentinel and rejecting a valid contract).
-fn ctm_deferred_type_names(tds: Array[Stmt]) -> (Array[String], Array[String]) {
+fn ctm_deferred_type_names(tds: Array[Stmt], declared_foreign: Array[String]) -> (Array[String], Array[String]) {
   let declared = array_empty()
   let referenced = array_empty()
   let mut i = 0
@@ -980,10 +1037,20 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> (Array[String], Array[String]) {
       Some(_) => true,
       None => n == "Array" || n == "Option"
     }
+    // #2164: only a name the contract DECLARED as foreign is exempted -- an
+    // `import @scope/pkg { N }` or an `opaque type N`. Before this, every
+    // referenced-but-undeclared head was deferred, which is why a typo inside
+    // a contract's transparent type kept its pre-enforcement wildcard
+    // behavior: it was textually indistinguishable from a legitimate foreign
+    // reference, because the contract had no way to say which it was. It has
+    // one now, so an undeclared name falls out of the sentinel and the checker
+    // reports it like every other position.
     if is_builtin || ctm_str_list_has(declared, n) || ctm_str_list_has(out, n) {
       ()
-    } else {
+    } else if ctm_str_list_has(declared_foreign, n) {
       Array::push(out, n)
+    } else {
+      ()
     }
     ri = ri + 1
   }
@@ -1050,10 +1117,10 @@ export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names
 /// names at field/payload positions without any process-lifetime registry.
 /// `uniq` keeps the binding name collision-free when several contracts'
 /// modules meet in one merge.
-export fn contract_types_module_text(tds: Array[Stmt], uniq: String) -> String {
+export fn contract_types_module_text(tds: Array[Stmt], uniq: String, declared_foreign: Array[String]) -> String {
   let lines = array_empty()
   Array::push(lines, vpkg_types_module_marker)
-  let (decl_names, deferred) = ctm_deferred_type_names(tds)
+  let (decl_names, deferred) = ctm_deferred_type_names(tds, declared_foreign)
   if Array::length(deferred) == 0 {
     ()
   } else {
