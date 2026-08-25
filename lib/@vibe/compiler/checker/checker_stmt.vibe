@@ -198,6 +198,83 @@ enum CheckerStatementCapture {
   StatementDirectExpressionReturns
 }
 
+struct CheckerObservationCheckpoint {
+  tytab_len: Int;
+  statement_entries_len: Int;
+  role_entries_len: Int;
+  role_provenance_len: Int;
+  role_direct_len: Int;
+  role_statement_path: Array[Int];
+  role_frame_paths_len: Int;
+  role_frame_next_len: Int;
+  role_frame_expected_len: Int;
+  role_frame_direct_len: Int;
+  role_frame_depth: Int;
+  role_complete: Bool
+}
+
+fn checker_observation_checkpoint(capture: Option[CheckerStatementCapture], role_capture: Option[TypedOccurrenceRoleLaneCapture], tytab: Array[(Int, Type)]) -> CheckerObservationCheckpoint {
+  let statement_entries_len = match capture {
+    Some(StatementTypedOccurrences(entries)) => Array::length(entries),
+    Some(StatementRootTypes(entries)) => Array::length(entries),
+    _ => 0
+  }
+  match role_capture {
+    Some(role) => CheckerObservationCheckpoint::{
+      tytab_len: Array::length(tytab),
+      statement_entries_len: statement_entries_len,
+      role_entries_len: Array::length(role.entries),
+      role_provenance_len: Array::length(role.provenance_entries),
+      role_direct_len: Array::length(role.direct_entries),
+      role_statement_path: Array::slice(role.statement_path, 0, Array::length(role.statement_path)),
+      role_frame_paths_len: Array::length(role.frame_paths),
+      role_frame_next_len: Array::length(role.frame_next_children),
+      role_frame_expected_len: Array::length(role.frame_expected_children),
+      role_frame_direct_len: Array::length(role.frame_direct_recorded),
+      role_frame_depth: role.frame_depth,
+      role_complete: role.complete
+    },
+    None => CheckerObservationCheckpoint::{
+      tytab_len: Array::length(tytab),
+      statement_entries_len: statement_entries_len,
+      role_entries_len: 0,
+      role_provenance_len: 0,
+      role_direct_len: 0,
+      role_statement_path: array_empty(),
+      role_frame_paths_len: 0,
+      role_frame_next_len: 0,
+      role_frame_expected_len: 0,
+      role_frame_direct_len: 0,
+      role_frame_depth: 0,
+      role_complete: true
+    }
+  }
+}
+
+fn restore_checker_observation(checkpoint: CheckerObservationCheckpoint, capture: Option[CheckerStatementCapture], role_capture: Option[TypedOccurrenceRoleLaneCapture], tytab: Array[(Int, Type)]) -> Unit {
+  Array::truncate(tytab, checkpoint.tytab_len)
+  match capture {
+    Some(StatementTypedOccurrences(entries)) => Array::truncate(entries, checkpoint.statement_entries_len),
+    Some(StatementRootTypes(entries)) => Array::truncate(entries, checkpoint.statement_entries_len),
+    _ => ()
+  }
+  match role_capture {
+    Some(role) => {
+      Array::truncate(role.entries, checkpoint.role_entries_len)
+      Array::truncate(role.provenance_entries, checkpoint.role_provenance_len)
+      Array::truncate(role.direct_entries, checkpoint.role_direct_len)
+      role.statement_path = Array::slice(checkpoint.role_statement_path, 0, Array::length(checkpoint.role_statement_path))
+      Array::truncate(role.frame_paths, checkpoint.role_frame_paths_len)
+      Array::truncate(role.frame_next_children, checkpoint.role_frame_next_len)
+      Array::truncate(role.frame_expected_children, checkpoint.role_frame_expected_len)
+      Array::truncate(role.frame_direct_recorded, checkpoint.role_frame_direct_len)
+      role.frame_depth = checkpoint.role_frame_depth
+      role.complete = checkpoint.role_complete
+    },
+    None => ()
+  }
+}
+
 /// Successful-check-only direct root types for retained expression-bearing
 /// statements. Entries retain `(statement_path, closed_statement_kind, raw_type)`;
 /// canonical consumers apply `checked_program.final_subst` after checking.
@@ -1758,13 +1835,7 @@ fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> I
 fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   let completed_decl_error_insert_at = Array::length(errors)
-  let retaining_observation = match capture {
-    Some(_) => true,
-    None => match role_lane_capture {
-      Some(_) => true,
-      None => false
-    }
-  }
+  let observation_checkpoint = checker_observation_checkpoint(capture, role_lane_capture, tytab)
   // Retained coordinates exist solely for the opt-in observation. Keep the
   // ordinary checker path free of its position-map allocation.
   let retained_positions = match capture {
@@ -2753,9 +2824,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       let recheck_defs = Array::slice(defs, 0, Array::length(defs))
       let recheck_binders = Array::slice(type_def_binders, 0, Array::length(type_def_binders))
       let recheck_errors = array_empty()
-      let recheck_tytab = array_empty()
       let recheck_c = next_type_def_binder_id(recheck_binders, c)
-      let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(stmts, 0, env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, recheck_tytab, None, None, None, imports_already_projected, false)
+      restore_checker_observation(observation_checkpoint, capture, role_lane_capture, tytab)
+      let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(stmts, 0, env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, false)
       // First-pass statement diagnostics may have judged a compiler-owned
       // spelling before a nested declaration claimed it. Replace that whole
       // lane with the completed declaration diagnostics plus the completed
@@ -2764,17 +2835,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       Array::truncate(errors, completed_decl_error_insert_at)
       push_unique_error_strings(completed_decl_errors, errors)
       push_unique_error_strings(recheck_errors, errors)
-      if retaining_observation {
-        // Captured type tables were produced by the first pass and must stay
-        // paired with that pass's substitution ids. The recheck still adds
-        // diagnostics, but replacing only the final substitution would make
-        // the observation internally inconsistent.
-        ()
-      } else {
-        cur_env = rechecked_env
-        cur_s = rechecked_s
-        cur_c = rechecked_c
-      }
+      cur_env = rechecked_env
+      cur_s = rechecked_s
+      cur_c = rechecked_c
     } else {
       insert_unique_error_strings(completed_decl_errors, errors, completed_decl_error_insert_at)
     }
@@ -4068,30 +4131,28 @@ fn collect_visible_type_stmts(stmts: Array[Stmt], to: Int, out: Array[Stmt]) -> 
   }
 }
 
-fn recursive_alias_names(stmts: Array[Stmt]) -> Array[String] {
-  let names = array_empty()
+fn recursive_alias_flags(stmts: Array[Stmt]) -> Array[Bool] {
+  let flags = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STypeAlias(_, name, params, body) => if !string_array_contains_exact(names, name) && alias_decl_is_recursive(stmts, name, params, body) {
-        Array::push(names, name)
-      } else {
-        ()
-      },
-      _ => ()
+      STypeAlias(_, name, params, body) => Array::push(flags, alias_decl_is_recursive(stmts, name, params, body)),
+      _ => Array::push(flags, false)
     }
     i = i + 1
   }
-  names
+  flags
 }
 
 /// Re-resolves acyclic aliases from their source expressions until every
 /// dependency edge has had a chance to observe the completed body. Recursive
-/// aliases are skipped, so the alias-count bound cannot exponentially expand a
-/// cycle; acyclic zig-zag chains need at most one round per local alias.
+/// declarations are skipped by statement identity, so a recursive alias in one
+/// scope cannot freeze an acyclic same-name alias in another; the alias-count
+/// bound cannot exponentially expand a cycle, and acyclic zig-zag chains need
+/// at most one round per local alias.
 fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, to: Int) -> Unit {
   let rounds = local_alias_def_count(defs, from, to)
-  let recursive = recursive_alias_names(stmts)
+  let recursive = recursive_alias_flags(stmts)
   let mut round = 0
   while round < rounds {
     let taken = array_empty()
@@ -4100,7 +4161,7 @@ fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: 
       match Array::get(stmts, i) {
         STypeAlias(_, name, params, te) => {
           let idx = completed_alias_index_reverse(defs, name, from, to, taken)
-          if idx >= 0 && !string_array_contains_exact(recursive, name) {
+          if idx >= 0 && !Array::get(recursive, i) {
             Array::set(defs, idx, TDAlias(name, params, resolve_type_expr_shadowed(te, defs, params)))
           } else {
             ()

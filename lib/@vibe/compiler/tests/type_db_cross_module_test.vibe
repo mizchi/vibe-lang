@@ -27,7 +27,10 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/checker {
-  check_program_typed_occurrence_statement_observation, check_program_with_env_result, check_program_with_projected_import_env_result
+  check_program_statement_root_type_observation,
+  check_program_typed_occurrence_statement_observation,
+  check_program_with_env_result,
+  check_program_with_projected_import_env_result
 }
 
 import @vibe/compiler/runtime {
@@ -359,6 +362,21 @@ test "recursive alias refresh does not grow with unrelated statements" {
   }
 }
 
+test "recursive aliases do not freeze same-name acyclic declarations" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "A", array_empty(), TyName("B")),
+      SModule(false, "Nested", [
+        STypeAlias(false, "A", array_empty(), TyName("A")),
+        STypeAlias(false, "B", array_empty(), TyName("Int"))
+      ]),
+      SLet(false, false, "bad", Some(TyName("A")), EString("x"))
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "binding type mismatch for bad"))
+}
+
 test "acyclic aliases resolve when dependencies zig-zag across source order" {
   let source = "type C = D\ntype A = B\ntype B = C\ntype D = Int\nlet bad: A = \"x\""
   let message = handle {
@@ -602,6 +620,30 @@ test "nested aliases rebuild earlier outer binding types" {
     ""
   } with { Exception::Throw(error) => error }
   assert(String::contains(message, "binding type mismatch for bad"))
+}
+
+test "completed aliases rebuild retained root type observations" {
+  match check_program_statement_root_type_observation([
+    STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+    SLet(false, false, "make", None, EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Alias")), None, EInt(1))),
+    SModule(false, "Nested", [
+      STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+    ])
+  ]) {
+    Some(observation) => {
+      assert(Array::length(observation.entries) == 1)
+      let (_, _, root_type) = Array::get(observation.entries, 0)
+      match root_type {
+        CtFn(_, CtInt, _) => (),
+        _ => assert(false)
+      }
+      match env_lookup(observation.checked_program.final_env, "make") {
+        Some(CtFn(_, CtInt, _)) => (),
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
 }
 
 test "nested sibling aliases revalidate earlier suberror map keys" {
