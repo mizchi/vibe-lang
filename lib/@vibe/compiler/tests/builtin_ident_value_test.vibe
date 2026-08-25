@@ -18,7 +18,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, parse_program_located
+  lex, lex_with_offsets, parse_program, parse_program_located
 }
 
 //# Functions
@@ -27,6 +27,13 @@ fn first_check_error(source: String) -> String {
   handle {
     let (tokens, starts, _) = lex_with_offsets(source)
     let _ = check_program(parse_program_located(tokens, starts, source))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn first_check_error_unlocated(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
     ""
   } with { Exception::Throw(msg) => msg }
 }
@@ -43,6 +50,14 @@ test "#2274: Map::get as a bare value is a checker error, not a silent pass" {
   assert(String::contains(msg, "not a value"))
   assert(String::contains(msg, "call it"))
   assert(String::contains(msg, "wrap it"))
+}
+
+test "#2274: unlocated parse still rejects Map::get as a value" {
+  // FS compile uses parse_program(lex(source)), so every ident_off is -1.
+  // The rejection must not be gated on ident_off >= 0.
+  let msg = first_check_error_unlocated(value_ident_program("Map::get"))
+  assert(String::contains(msg, "Map::get"))
+  assert(String::contains(msg, "not a value"))
 }
 
 test "#2274: Map::set as a bare value is the same class of error" {
@@ -76,6 +91,7 @@ test "#2274: the diagnostic names the call form, not an ICE" {
 
 test "#2274: None as a value is still a constructor" {
   inspect(first_check_error(value_ident_program("None")), content = "")
+  inspect(first_check_error_unlocated(value_ident_program("None")), content = "")
 }
 
 test "#2274: String::length remains a first-class value" {
