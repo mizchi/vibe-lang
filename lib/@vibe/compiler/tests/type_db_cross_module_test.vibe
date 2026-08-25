@@ -18,6 +18,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  __to_string,
   env_cache,
   env_lookup,
   env_lookup_binding,
@@ -26,7 +27,10 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/checker {
-  check_program_with_env_result, check_program_with_projected_import_env_result
+  check_program_statement_root_type_observation,
+  check_program_typed_occurrence_statement_observation,
+  check_program_with_env_result,
+  check_program_with_projected_import_env_result
 }
 
 import @vibe/compiler/runtime {
@@ -309,6 +313,465 @@ fn typecheck_db_pair_error(dep_src: String, main_src: String) -> String with Exc
     let _ = db_typecheck(db, "mem/main.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
+}
+
+test "forward alias bodies stay resolved across module projection" {
+  let dep_source = "export type Pair = StringMap[Int, String]\ntype StringMap[A, B] = (A, B)"
+  let pair_binding_is_resolved = match env_lookup(checked_test_env(dep_source), "Pair") {
+    Some(CtTuple(items)) => Array::length(items) == 2,
+    _ => false
+  }
+  assert(pair_binding_is_resolved)
+  let main_source = "import ./dep.vibe { type Pair }\nlet bad: Pair = 1"
+  let message = typecheck_db_pair_error(dep_source, main_source)
+  assert(String::contains(message, "binding type mismatch for bad"))
+}
+
+test "alias snapshots in exported struct fields stay resolved across module projection" {
+  let dep_source = "type Pair = StringMap[Int, String]\nexport struct Box { value: Pair }\ntype StringMap[A, B] = (A, B)"
+  let main_source = "import ./dep.vibe { struct Box }\nlet bad = Box::{ value: 1 }"
+  let message = typecheck_db_pair_error(dep_source, main_source)
+  assert(String::contains(message, "field type mismatch for value"))
+}
+
+fn tuple_type_depth(ty: Type) -> Int {
+  match ty {
+    CtTuple(items) => {
+      let mut depth = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        let item_depth = tuple_type_depth(Array::get(items, i))
+        if item_depth > depth {
+          depth = item_depth
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      depth + 1
+    },
+    _ => 0
+  }
+}
+
+test "recursive alias refresh does not grow with unrelated statements" {
+  let source = "export type A = (B, B)\ntype B = A\nlet pad0 = 0\nlet pad1 = 1\nlet pad2 = 2\nlet pad3 = 3\nlet pad4 = 4\nlet pad5 = 5"
+  match env_lookup(checked_test_env(source), "A") {
+    Some(body) => assert(tuple_type_depth(body) <= 3),
+    None => assert(false)
+  }
+}
+
+test "recursive aliases do not freeze same-name acyclic declarations" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "A", array_empty(), TyName("B")),
+      SModule(false, "Nested", [
+        STypeAlias(false, "A", array_empty(), TyName("A")),
+        STypeAlias(false, "B", array_empty(), TyName("Int"))
+      ]),
+      SLet(false, false, "bad", Some(TyName("A")), EString("x"))
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "binding type mismatch for bad"))
+}
+
+test "acyclic aliases resolve when dependencies zig-zag across source order" {
+  let source = "type C = D\ntype A = B\ntype B = C\ntype D = Int\nlet bad: A = \"x\""
+  let message = handle {
+    let _ = checked_test_env(source)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "binding type mismatch for bad"))
+}
+
+test "outer aliases are revalidated after nested module type declarations" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "M", array_empty(), TyApp("Map", [
+        TyName("Key"),
+        TyName("Int")
+      ])),
+      SModule(false, "Nested", [
+        STypeAlias(false, "Key", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "the builtin map is String-keyed"))
+}
+
+test "alias dependencies resolve across nested scope boundaries" {
+  let checked = check_program_with_env_result([
+    STypeAlias(false, "A", array_empty(), TyName("B")),
+    STypeAlias(false, "C", array_empty(), TyName("D")),
+    SModule(false, "Nested", [
+      STypeAlias(false, "B", array_empty(), TyName("C")),
+      STypeAlias(false, "D", array_empty(), TyName("Int"))
+    ])
+  ], EnvEmpty)
+  match env_lookup(checked.final_env, "A") {
+    Some(CtInt) => (),
+    _ => assert(false)
+  }
+}
+
+test "nested type heads are known before outer alias validation" {
+  let checked = check_program_with_env_result([
+    STypeAlias(false, "Pair", array_empty(), TyApp("StringMap", [
+      TyName("Int"),
+      TyName("String")
+    ])),
+    SModule(false, "Nested", [
+      STypeAlias(false, "StringMap", ["A", "B"], TyTuple([
+        TyName("A"),
+        TyName("B")
+      ]))
+    ])
+  ], EnvEmpty)
+  match env_lookup(checked.final_env, "Pair") {
+    Some(CtTuple(items)) => assert(Array::length(items) == 2),
+    _ => assert(false)
+  }
+}
+
+test "nested type heads are known before outer payload validation" {
+  let _ = check_program_with_env_result([
+    SStruct(false, "Box", [
+      ("value", TyApp("StringMap", [TyName("Int"), TyName("String")]))
+    ], array_empty(), array_empty(), array_empty()),
+    SSuberror(false, "Problem", [
+      ("Problem", [TyApp("StringMap", [TyName("Int"), TyName("String")])])
+    ]),
+    SEnum(false, "Choice", array_empty(), [
+      ("Pick", [TyApp("StringMap", [TyName("Int"), TyName("String")])])
+    ], array_empty()),
+    SEffectDef(false, "Ask", array_empty(), [
+      ("Get", [TyApp("StringMap", [TyName("Int"), TyName("String")])], TyName("Int"))
+    ]),
+    SModule(false, "Nested", [
+      STypeAlias(false, "StringMap", ["A", "B"], TyTuple([
+        TyName("A"),
+        TyName("B")
+      ]))
+    ])
+  ], EnvEmpty)
+}
+
+test "nested type heads replace stale outer unknown-name diagnostics" {
+  let checked = check_program_with_env_result([
+    SStruct(false, "Box", [("value", TyName("Pair"))], array_empty(), array_empty(), array_empty()),
+    SEnum(false, "Choice", array_empty(), [("Pick", [TyName("Pair")])], array_empty()),
+    SModule(false, "Nested", [
+      STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+    ])
+  ], EnvEmpty)
+  let mut saw_box = false
+  let mut i = 0
+  while i < Array::length(checked.type_defs) {
+    match Array::get(checked.type_defs, i) {
+      TDStruct("Box", fields, _, _) => if Array::length(fields) == 1 {
+        let (field_name, field_type) = Array::get(fields, 0)
+        saw_box = field_name == "value" && field_type == CtInt
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  assert(saw_box)
+}
+
+test "completed root recheck replaces stale module diagnostics" {
+  let _ = check_program_with_env_result([
+    SModule(false, "First", [
+      SLet(false, false, "good", Some(TyApp("StringMap", [
+        TyName("Int"),
+        TyName("String")
+      ])), ETuple([EInt(1), EString("x")]))
+    ]),
+    SModule(false, "Second", [
+      STypeAlias(false, "StringMap", ["A", "B"], TyTuple([
+        TyName("A"),
+        TyName("B")
+      ]))
+    ])
+  ], EnvEmpty)
+}
+
+test "suberror refresh locates its marker across same-name types" {
+  match check_program_typed_occurrence_statement_observation([
+    SSuberror(false, "X", [("X", [TyName("Pair")])]),
+    SStruct(false, "X", [("value", TyName("String"))], array_empty(), array_empty(), array_empty()),
+    SModule(false, "Nested", [
+      STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+    ]),
+    SLet(false, false, "probe", None, EInt(0))
+  ]) {
+    Some(observation) => match env_lookup(observation.checked_program.final_env, "X") {
+      Some(CtFn(params, CtStruct("X"), _)) => if Array::length(params) == 1 {
+        assert(Array::get(params, 0) == CtString)
+      } else {
+        assert(false)
+      },
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "completed alias diagnostics precede later use diagnostics" {
+  let message = handle {
+    let _ = checked_test_env("type Bad = Map[Key, Int]\ntype Key = Int\nfn f(m: Bad) -> Int { 0 }")
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "the body of type alias `Bad`"))
+}
+
+test "nested sibling aliases revalidate earlier alias map keys" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      SModule(false, "First", [
+        STypeAlias(false, "M", array_empty(), TyApp("Map", [
+          TyName("Key"),
+          TyName("Int")
+        ]))
+      ]),
+      SModule(false, "Second", [
+        STypeAlias(false, "Key", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "the builtin map is String-keyed"))
+}
+
+test "nested sibling aliases refresh earlier struct payloads" {
+  let checked = check_program_with_env_result([
+    SModule(false, "First", [
+      STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+      SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty())
+    ]),
+    SModule(false, "Second", [
+      STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+    ])
+  ], EnvEmpty)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(checked.type_defs) {
+    match Array::get(checked.type_defs, i) {
+      TDStruct("Box", fields, _, _) => if Array::length(fields) == 1 {
+        let (field_name, field_type) = Array::get(fields, 0)
+        found = field_name == "value" && field_type == CtInt
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  assert(found)
+}
+
+test "nested sibling aliases recheck earlier constructor uses" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      SModule(false, "First", [
+        STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+        SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty()),
+        SLet(false, false, "bad", None, ECall(EIdent("Box", -1), [EString("x")], -1))
+      ]),
+      SModule(false, "Second", [
+        STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "expected Int, got String"))
+}
+
+test "nested aliases recheck earlier outer constructor uses" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+      SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty()),
+      SLet(false, false, "bad", None, ECall(EIdent("Box", -1), [EString("x")], -1)),
+      SModule(false, "Second", [
+        STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "expected Int, got String"))
+}
+
+test "nested aliases rebuild earlier outer binding types" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+      SLet(false, false, "value", Some(TyName("Alias")), EInt(1)),
+      SModule(false, "Second", [
+        STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+      ]),
+      SLet(false, false, "bad", Some(TyName("String")), EIdent("value", -1))
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "binding type mismatch for bad"))
+}
+
+test "completed aliases rebuild retained root type observations" {
+  match check_program_statement_root_type_observation([
+    STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+    SLet(false, false, "make", None, EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Alias")), None, EInt(1))),
+    SModule(false, "Nested", [
+      STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+    ])
+  ]) {
+    Some(observation) => {
+      assert(Array::length(observation.entries) == 1)
+      let (_, _, root_type) = Array::get(observation.entries, 0)
+      match root_type {
+        CtFn(_, CtInt, _) => (),
+        _ => assert(false)
+      }
+      match env_lookup(observation.checked_program.final_env, "make") {
+        Some(CtFn(_, CtInt, _)) => (),
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "completed rechecks preserve pre-partition statement paths" {
+  match check_program_statement_root_type_observation([
+    SLet(false, false, "make", None, EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Alias")), None, EInt(1))),
+    STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+    SModule(false, "Nested", [
+      STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+    ])
+  ]) {
+    Some(observation) => {
+      assert(Array::length(observation.entries) == 1)
+      let (path, _, root_type) = Array::get(observation.entries, 0)
+      assert(Array::length(path) == 1)
+      assert(Array::get(path, 0) == 0)
+      match root_type {
+        CtFn(_, CtInt, _) => (),
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "nested sibling aliases revalidate earlier suberror map keys" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      SModule(false, "First", [
+        SSuberror(false, "Bad", [
+          ("Bad", [TyApp("Map", [TyName("Key"), TyName("Int")])])
+        ])
+      ]),
+      SModule(false, "Second", [
+        STypeAlias(false, "Key", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "the builtin map is String-keyed"))
+}
+
+test "recursive-alias reachability memoizes shared diamond suffixes" {
+  let stmts = array_empty()
+  let mut i = 0
+  while i < 16 {
+    let suffix = __to_string(i)
+    let next_suffix = __to_string(i + 1)
+    let body = TyTuple([
+      TyName(String::concat("A", next_suffix)),
+      TyName(String::concat("B", next_suffix))
+    ])
+    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    i = i + 1
+  }
+  Array::push(stmts, STypeAlias(false, "A16", array_empty(), TyName("Int")))
+  Array::push(stmts, STypeAlias(false, "B16", array_empty(), TyName("Int")))
+  let checked = check_program_with_env_result(stmts, EnvEmpty)
+  match env_lookup(checked.final_env, "A0") {
+    Some(_) => (),
+    None => assert(false)
+  }
+}
+
+test "acyclic alias DAGs reject exponential expansion" {
+  let stmts = array_empty()
+  let mut i = 0
+  while i < 30 {
+    let suffix = __to_string(i)
+    let next_suffix = __to_string(i + 1)
+    let body = TyTuple([
+      TyName(String::concat("A", next_suffix)),
+      TyName(String::concat("B", next_suffix))
+    ])
+    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    i = i + 1
+  }
+  Array::push(stmts, STypeAlias(false, "A30", array_empty(), TyName("Int")))
+  Array::push(stmts, STypeAlias(false, "B30", array_empty(), TyName("Int")))
+  let message = handle {
+    let _ = check_program_with_env_result(stmts, EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "type alias expansion exceeds"))
+  assert(String::contains(message, "replace the shared alias DAG with a nominal struct or enum"))
+}
+
+test "dependency-first alias DAGs reject expansion before refresh" {
+  let stmts = [
+    STypeAlias(false, "A30", array_empty(), TyName("Int")),
+    STypeAlias(false, "B30", array_empty(), TyName("Int"))
+  ]
+  let mut i = 30
+  while i > 0 {
+    let suffix = __to_string(i - 1)
+    let current_suffix = __to_string(i)
+    let body = TyTuple([
+      TyName(String::concat("A", current_suffix)),
+      TyName(String::concat("B", current_suffix))
+    ])
+    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    i = i - 1
+  }
+  let message = handle {
+    let _ = check_program_with_env_result(stmts, EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "type alias expansion exceeds"))
+}
+
+test "unused eager alias arguments still count toward expansion" {
+  let mut nested = TyName("Int")
+  let mut i = 0
+  while i < 30 {
+    nested = TyApp("Dup", [nested])
+    i = i + 1
+  }
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "Root", array_empty(), TyApp("Ignore", [nested])),
+      STypeAlias(false, "Ignore", ["T"], TyName("Int")),
+      STypeAlias(false, "Dup", ["T"], TyTuple([TyName("T"), TyName("T")]))
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "type alias expansion exceeds"))
 }
 
 fn projected_checked_env(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
@@ -1223,6 +1686,15 @@ test "db_typecheck_fs: imported generic alias enum and struct aliases retain for
 test "db_typecheck_fs: a local typedef shadows imported declaration authority" {
   let err = typedef_surface_pair_error("/tmp/vibe_local_typedef_shadow", "export type Label = Int\n", "import ./dep.vibe { Label }\ntype Label = String\nexport fn use_label(value: Label) -> String { value }\n")
   assert(err == "")
+}
+
+test "#2292: a local suberror shadows imported declaration authority" {
+  let err = typedef_surface_pair_error("/tmp/vibe_local_suberror_shadow", "export type Label = Int\n", "import ./dep.vibe { Label }\nsuberror Label(String)\nexport fn make_label() -> Label { Label(\"local\") }\n")
+  assert(err == "")
+  let reverse_err = typedef_surface_pair_error("/tmp/vibe_local_suberror_shadow_reverse", "export type Label = Int\n", "suberror Label(String)\nimport ./dep.vibe { Label }\nexport fn make_label() -> Label { Label(\"local\") }\n")
+  assert(reverse_err == "")
+  let alias_err = typedef_surface_pair_error("/tmp/vibe_local_suberror_shadow_alias_control", "export type Label = Int\n", "import ./dep.vibe { Label as ImportedLabel }\nsuberror Label(String)\nexport let imported: ImportedLabel = 1\nexport fn make_label() -> Label { Label(\"local\") }\n")
+  assert(alias_err == "")
 }
 
 test "db_typecheck_fs: selected effects and effectsets retain operation authority" {

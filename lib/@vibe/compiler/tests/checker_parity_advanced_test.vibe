@@ -22,6 +22,32 @@ test "parity: generic struct decl (#492)" {
   assert(check_source_ok("struct Box[T] { v: T }\nlet get = (b: Box[Int]) -> Int { b.v }\nlet _adr69 = () -> { get(Box::{ v: 42 }) }"))
 }
 
+test "completed aliases refresh struct field contracts" {
+  let prefix = "type Pair = StringMap[Int, String]\nstruct Box { value: Pair }\ntype StringMap[A, B] = (A, B)\n"
+  assert(check_source_err(String::concat(prefix, "let bad = Box::{ value: 1 }")))
+  assert(check_source_err(String::concat(prefix, "let good = Box::{ value: (1, \"x\") }\nlet bad: Int = good.value")))
+}
+
+test "completed aliases refresh enum payload contracts" {
+  let source = "type Pair = StringMap[Int, String]\nenum Choice { Pick(Pair) }\ntype StringMap[A, B] = (A, B)\nlet bad = Pick(1)"
+  assert(check_source_err(source))
+}
+
+test "completed aliases refresh effect operation contracts" {
+  let source = "type Pair = StringMap[Int, String]\neffect Log { Emit(Pair) -> Unit }\ntype StringMap[A, B] = (A, B)\nfn bad() -> Unit with Log { perform Log::Emit(1) }"
+  assert(check_source_err(source))
+}
+
+test "completed aliases refresh suberror constructor contracts" {
+  let source = "type Pair = StringMap[Int, String]\nsuberror Oops(Pair)\ntype StringMap[A, B] = (A, B)\nlet bad = Oops(1)"
+  assert(check_source_err(source))
+}
+
+test "suberror refresh preserves a later same-named struct constructor" {
+  let source = "type Pair = StringMap[Int, String]\nsuberror Old { Box(Pair) }\nstruct Box { value: String }\ntype StringMap[A, B] = (A, B)\nlet good = Box(\"x\")"
+  assert(check_source_ok(source))
+}
+
 test "parity: Float unified with Double (#492)" {
   // This compiler has no distinct 32-bit float: `Float` resolves to Double, so
   // a `Float` value compares with a `0.0f` literal (also Double). Used by
