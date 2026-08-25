@@ -1,10 +1,9 @@
 # Binary Size Regression Bench
 
 `bench/binary_size/` is a small, fixed set of standalone programs used to
-track wasm output size over time, independent of the product bundle-size
-monitor in `bench/bundle_size/` (which tracks `examples/` + importer use
-cases) and the compiler-fixture monitor in `bench/compiler_size/` (which
-tracks the *compiler's own* codegen size).
+track wasm output size over time. The old product/compiler bundle-size
+monitors (`bench/bundle_size/`, `bench/compiler_size/`) were removed in
+#2150; this directory is the live size bench.
 
 Modeled on the benchmark set documented in
 [almide](https://github.com/almide/almide)'s `docs/BENCHMARKS.md`
@@ -50,8 +49,7 @@ this script to keep it dependency-free).
 
 ## Golden Rule
 
-There is no automated budget/ratchet gate for this bench yet (unlike
-`bench/bundle_size` and `bench/compiler_size`) — it is a manual/CI-optional
-regression signal for now. `docs/BENCHMARKS.md` holds the last recorded
-snapshot with its measurement date; re-run and update both together when
-investigating a size change.
+There is no automated budget/ratchet gate for this bench yet — it is a
+manual/CI-optional regression signal. `docs/BENCHMARKS.md` holds the last
+recorded snapshot with its measurement date; re-run and update both together
+when investigating a size change.

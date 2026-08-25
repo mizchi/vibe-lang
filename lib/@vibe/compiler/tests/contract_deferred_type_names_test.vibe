@@ -1,0 +1,56 @@
+//# Imports
+
+// #2164 first slice: `ctm_deferred_type_names` treated `Map` / `MutMap` as
+// unknown because `resolve_builtin` answers for builtin *values*, not type
+// names. Every contract that mentioned `Map` then exempted its transparent
+// types from unknown-name checking. Compiler-owned type heads belong in the
+// same predicate the checker already uses (`compiler_owned_type_arity`).
+
+import @vibe/compiler/contract {
+  contract_types_module_text, vpkg_deferred_type_names_prefix
+}
+
+import @vibe/compiler/core {
+  Stmt, TypeExpr
+}
+
+//# Functions
+
+fn map_headers_field() -> (String, TypeExpr) {
+  ("headers", TyApp("Map", [TyName("String"), TyName("String")]))
+}
+
+//# Tests
+
+test "2164: Map in a contract type is not a deferred name" {
+  let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
+  let text = contract_types_module_text(defs, "t")
+  assert(!String::contains(text, vpkg_deferred_type_names_prefix))
+}
+
+test "2164: MutMap in a contract type is not a deferred name" {
+  let defs = [
+    SStruct(true, "HashMap", [
+      ("inner", TyApp("MutMap", [TyName("String"), TyName("Int"), TyName("r")]))
+    ], [], [], ["r"])
+  ]
+  let text = contract_types_module_text(defs, "t")
+  assert(!String::contains(text, vpkg_deferred_type_names_prefix))
+}
+
+test "2164: a typo next to Map is deferred, Map is not" {
+  let defs = [
+    SStruct(true, "HttpRequest", [map_headers_field(), ("x", TyName("Intt"))], [
+    ], [], [])
+  ]
+  let text = contract_types_module_text(defs, "t")
+  assert(String::contains(text, vpkg_deferred_type_names_prefix))
+  assert(String::contains(text, "HttpRequest : Intt"))
+  assert(!String::contains(text, "HttpRequest : Map"))
+}
+
+test "2164: a cross-package name is still deferred" {
+  let defs = [SStruct(true, "ModuleJob", [("env", TyName("TypeEnv"))], [], [], [])]
+  let text = contract_types_module_text(defs, "t")
+  assert(String::contains(text, "ModuleJob : TypeEnv"))
+}

@@ -319,4 +319,38 @@ if [ "$after_mtime" -le "$before_mtime" ]; then
   exit 1
 fi
 
+# #2271: a multiline closure in a non-final argument used to fail the parse
+# guard forever -- apply was a no-op, `--check` stayed rc 1. The shape must
+# format to a fixpoint through the real vibe_fmt.sh path.
+closure_nf="$work/closure_nonfinal.vibe"
+cat >"$closure_nf" <<'VIBE'
+fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  ()
+}
+
+fn caller(shadow: Array[String], out: Array[String]) -> Unit {
+  collect_by((head) -> {
+    let mut pi = 0
+    let mut found = false
+    while pi < Array::length(shadow) {
+      if Array::get(shadow, pi) == head {
+        found = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    found
+  }, out)
+}
+VIBE
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$closure_nf" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter declined a multiline closure in a non-final argument (#2271)" >&2
+  exit 1
+fi
+if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$closure_nf" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: #2271 is not a --check fixpoint" >&2
+  exit 1
+fi
+
 echo "vibe_fmt_parse_guard_test: ok"

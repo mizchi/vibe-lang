@@ -26,6 +26,17 @@ source is already **GitHub Actions**. This replaces the old playground
 artifact at that URL; the playground still lives in `playground/`
 (an ordinary vite app: `cd playground && pnpm install && pnpm dev`).
 
+## URL stability
+
+Chapter HTML filenames are derived from the chapter basename
+(`02_a_small_program.vibe.md` → `02_a_small_program.html`). Before 1.0 those
+URLs are **unstable**: a renumber or rename is a break, not a redirect. The
+pre-renumbering names (PR #2156) were only a few days old and internally
+inconsistent, so this tree does not ship compatibility stubs for them.
+Permanent aliases can be considered at the 1.0 freeze if the published tree
+has had time to be linked. Until then, do not add generated redirects for
+old basenames.
+
 ## Layout
 
 | Path | Role |

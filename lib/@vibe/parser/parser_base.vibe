@@ -1803,6 +1803,58 @@ fn is_lambda_start(tokens: Array[Token], pos: Int) -> Bool {
   is_lambda_start_impl(tokens, pos, 0, 0, false)
 }
 
+/// `(n) { ... }` with no colon and no `->` is the no-arrow lambda shape, but
+/// `is_lambda_start` only accepts that brace when a colon is present so
+/// `(cond) {` after `if`/`while`/`match` stays a parenthesized condition.
+/// When the parens are an untyped ident list and `{` follows, the reader
+/// meant a lambda whose parameter needs a type (#2127). `None` when the
+/// previous token owns the brace: a control keyword, or a prefix/infix
+/// operator (`if !(n) {`, `if true && (n) {`). `=` is not skipped -- that
+/// is `let f = (n) {`.
+fn untyped_brace_lambda_param(tokens: Array[Token], paren_pos: Int) -> Option[(String, Int)] {
+  let brace_owned_by_enclosing = if paren_pos <= 0 {
+    false
+  } else {
+    match peek(tokens, paren_pos - 1) {
+      TIf => true,
+      TWhile => true,
+      TMatch => true,
+      THandle => true,
+      TIn => true,
+      TNot => true,
+      tok => is_non_pipe_infix(tok)
+    }
+  }
+  if brace_owned_by_enclosing {
+    None
+  } else {
+    untyped_brace_lambda_param_scan(tokens, paren_pos + 1)
+  }
+}
+
+fn untyped_brace_lambda_param_scan(tokens: Array[Token], pos: Int) -> Option[(String, Int)] {
+  match peek(tokens, pos) {
+    TIdent(name) => untyped_brace_lambda_param_rest(tokens, pos + 1, name),
+    _ => None
+  }
+}
+
+fn untyped_brace_lambda_param_rest(tokens: Array[Token], pos: Int, first: String) -> Option[(String, Int)] {
+  match peek(tokens, pos) {
+    TTilde => untyped_brace_lambda_param_rest(tokens, pos + 1, first),
+    TQuestion => untyped_brace_lambda_param_rest(tokens, pos + 1, first),
+    TComma => match peek(tokens, pos + 1) {
+      TIdent(_) => untyped_brace_lambda_param_rest(tokens, pos + 2, first),
+      _ => None
+    },
+    TRParen => match peek(tokens, pos + 1) {
+      TLBrace => Some((first, pos + 1)),
+      _ => None
+    },
+    _ => None
+  }
+}
+
 fn parse_ctor_types_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int) with Exception {
   match peek(tokens, pos) {
     TComma => {
@@ -2034,13 +2086,22 @@ export fn parse_effect_stmt_with_binder_context(tokens: Array[Token], pos: Int, 
             }
             let arrow_pos = expect_tk(tokens, after_op_params, "->")
             let (ret_type, after_ret) = parse_type_impl(tokens, arrow_pos, 0)
+            // #2264: `Op(n: Int) -> Int with Fs` — parse_type_impl does not
+            // consume `with` after a non-function return type, so the next
+            // loop iteration used to throw "expected effect operation name
+            // or '}'" with no token index (file-only 1:1). An operation
+            // cannot carry a row; handlers and effectful payload types can.
+            match peek(tokens, after_ret) {
+              TWith => throw("an effect operation cannot declare its own effect row -- effects are carried by the handler that interprets it (put the row on the handling function), or take an effectful function as the operation's parameter at #\{after_ret}"),
+              _ => ()
+            }
             ArrayBuilder::push(ops_b, (op_name, params, ret_type))
             p = match peek(tokens, after_ret) {
               TSemicolon => after_ret + 1,
               _ => after_ret
             }
           },
-          _ => throw("expected effect operation name or '}'")
+          _ => throw("expected effect operation name or '}' at #\{p}")
         }
       }
       (SEffectDef(exported, name, type_params, ArrayBuilder::freeze(ops_b)), p)
@@ -2203,5 +2264,6 @@ export {
   reject_retired_effect_label,
   skip_derive,
   skip_semi,
-  tk_name
+  tk_name,
+  untyped_brace_lambda_param
 }

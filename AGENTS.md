@@ -124,11 +124,16 @@ open a "translate everything" PR. The unit of migration is whatever a reader
 consumes on its own:
 
 - **A short document** — translate the whole file when you edit it for another
-  reason. Half in each language is worse than either.
-- **A large living document** (this file, `docs/adr.md`, `docs/cheatsheet.md`) —
-  migrate a section at a time as sections are revised, and write **new** sections
-  and new `docs/adr.md` rows in English from the start. Each is read on its own,
-  so it does not inherit the surrounding language.
+  reason. Half in each language is worse than either. A short document is read
+  start to finish, so half-and-half is worse than either language.
+- **A large living document** (this file, `docs/adr.md`, `docs/cheatsheet.md`,
+  `CONTRIBUTION.md`) — migrate a section at a time as sections are revised, and
+  write **new** sections and new `docs/adr.md` rows in English from the start.
+  Each is read on its own, so it does not inherit the surrounding language.
+  Size is not the test: a living document is **revised section by section and
+  read section by section**. `docs/adr.md` is 192 lines and living because each
+  ADR is entered alone; `CONTRIBUTION.md` is the same shape even though it is
+  longer than `docs/adr.md`.
 
 ### Bilingual documents: `-ja` is the translation, not the original
 
@@ -801,7 +806,7 @@ Three related rules, all learned the same way:
 ## Before Commit
 
 ```bash
-pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + operation gates
+pkf run release-check  # fmt + info + check + test + vibe-normalize + operation gates
 ```
 
 ## 生成物 (ビルド時生成、非 tracked)

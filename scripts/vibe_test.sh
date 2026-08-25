@@ -246,11 +246,12 @@ export -f vt_count_tests
 #     `<out>.funcmap` sidecar the FS compile already writes, same as `vibe run`).
 # Lines are indented so they can never collide with the `ok`/`FAIL` per-file
 # lines that coverage_suite.sh & friends parse.
-#   $1 = stderr capture file, $2 = funcmap path (may be missing), $3 = source basename
+#   $1 = stderr capture file, $2 = funcmap path (may be missing),
+#   $3 = source basename, $4 = source path (optional; maps assert_eq at off=N)
 vt_fail_detail() {
-  local errf="$1" fm="$2" base="$3"
+  local errf="$1" fm="$2" base="$3" srcfile="${4:-}"
   [ -s "$errf" ] || return 0
-  awk -v base="$base" -v fmfile="$fm" '
+  awk -v base="$base" -v fmfile="$fm" -v srcfile="$srcfile" '
     function hexval(c) {
       if (c >= "0" && c <= "9") return c + 0
       if (c >= "A" && c <= "F") return index("ABCDEF", c) + 9
@@ -287,6 +288,22 @@ vt_fail_detail() {
         }
         close(fmfile)
       }
+      src = ""
+      if (srcfile != "") {
+        while ((getline l < srcfile) > 0) src = src l "\n"
+        close(srcfile)
+      }
+    }
+    function byte_to_line(off,    i, line, n, ch) {
+      line = 1
+      n = length(src)
+      i = 0
+      while (i < off && i < n) {
+        ch = substr(src, i + 1, 1)
+        if (ch == "\n") line++
+        i++
+      }
+      return line
     }
     # First __test_<name> stack frame = the failing test. Quoted names
     # keep spaces and Unicode in the wasm name section; some frames
@@ -319,6 +336,17 @@ vt_fail_detail() {
       ablk = 1
       ndiag++
       diags[ndiag] = "       " $0
+    }
+    # #2202: compiler-baked byte offset of the assert_eq call. Convert to a
+    # 1-based source line so two asserts in one test are distinguishable.
+    $0 ~ /^  at off=/ {
+      __blk = 1
+      off = $0
+      sub(/^  at off=/, "", off)
+      ndiag++
+      if (off + 0 >= 0 && src != "") diags[ndiag] = "       at line " byte_to_line(off + 0)
+      else if (off + 0 >= 0) diags[ndiag] = "       " $0
+      else ndiag--
     }
     $0 ~ /^  expected:/ {
       __blk = 1
@@ -526,7 +554,7 @@ PY
     # interleave inside the block; detail lines are indented, so downstream
     # `^(ok|FAIL) <file>` parsers (coverage_suite.sh) are unaffected.
     local detail
-    detail="$(vt_fail_detail "$run_err" "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")")"
+    detail="$(vt_fail_detail "$run_err" "$ROOT_DIR/$out_rel.funcmap" "$(basename "$src_rel")" "$ROOT_DIR/$src_rel")"
     if [ -n "$detail" ]; then
       printf 'FAIL %s\n%s\n' "$src_rel" "$detail"
     else

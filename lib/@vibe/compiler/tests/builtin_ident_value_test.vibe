@@ -1,0 +1,114 @@
+//# Imports
+
+// #2274: a builtin `Recv::name` used as a bare value used to split into two
+// failures. `Map::new` was `unknown name` at the checker; `Map::get` /
+// `Map::set` passed the checker silently and then ICE'd in codegen with
+// "reached code generation unresolved". The checker's `lookup_builtin` ident
+// arm was answering "yes, this name exists" for operations that are not
+// first-class values.
+//
+// Rejection is the close: a call-only builtin ident is a checker error that
+// names the call form and the wrap form. First-class func-table builtins
+// (`String::length`) stay values. `Map::new` stays `unknown name` -- it is
+// a parser-only call desugar, not a registry value -- but it is still a
+// checker error, so the two spellings agree about whether the shape is one.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, parse_program, parse_program_located
+}
+
+//# Functions
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let (tokens, starts, _) = lex_with_offsets(source)
+    let _ = check_program(parse_program_located(tokens, starts, source))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn first_check_error_unlocated(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn value_ident_program(name: String) -> String {
+  String::concat(String::concat("fn main() -> Unit {\n  let g = ", name), "\n  ()\n}\n")
+}
+
+//# Reported
+
+test "#2274: Map::get as a bare value is a checker error, not a silent pass" {
+  let msg = first_check_error(value_ident_program("Map::get"))
+  assert(String::contains(msg, "Map::get"))
+  assert(String::contains(msg, "not a value"))
+  assert(String::contains(msg, "call it"))
+  assert(String::contains(msg, "wrap it"))
+}
+
+test "#2274: unlocated parse still rejects Map::get as a value" {
+  // FS compile uses parse_program(lex(source)), so every ident_off is -1.
+  // The rejection must not be gated on ident_off >= 0.
+  let msg = first_check_error_unlocated(value_ident_program("Map::get"))
+  assert(String::contains(msg, "Map::get"))
+  assert(String::contains(msg, "not a value"))
+}
+
+test "#2274: Map::set as a bare value is the same class of error" {
+  let msg = first_check_error(value_ident_program("Map::set"))
+  assert(String::contains(msg, "Map::set"))
+  assert(String::contains(msg, "not a value"))
+}
+
+test "#2274: Map::delete as a bare value is the same class of error" {
+  let msg = first_check_error(value_ident_program("Map::delete"))
+  assert(String::contains(msg, "Map::delete"))
+  assert(String::contains(msg, "not a value"))
+}
+
+test "#2274: Map::new as a bare value is still a checker error" {
+  // Parser-only call desugar: `Map::new()` becomes EMap, so the ident has
+  // no builtin row. The important half is that it does not pass the checker.
+  let msg = first_check_error(value_ident_program("Map::new"))
+  assert(msg != "")
+  assert(String::contains(msg, "Map::new"))
+}
+
+test "#2274: the diagnostic names the call form, not an ICE" {
+  let msg = first_check_error(value_ident_program("Map::get"))
+  assert(!String::contains(msg, "internal compiler error"))
+  assert(!String::contains(msg, "reached code generation"))
+  assert(String::contains(msg, "Map::get("))
+}
+
+//# Not reported
+
+test "#2274: None as a value is still a constructor" {
+  inspect(first_check_error(value_ident_program("None")), content = "")
+  inspect(first_check_error_unlocated(value_ident_program("None")), content = "")
+}
+
+test "#2274: String::length remains a first-class value" {
+  inspect(first_check_error(value_ident_program("String::length")), content = "")
+}
+
+test "#2274: Array::length remains a first-class value" {
+  inspect(first_check_error(value_ident_program("Array::length")), content = "")
+}
+
+test "#2274: StringBuilder::new() as a call still type-checks" {
+  let src = "fn main() -> Unit {\n  let sb = StringBuilder::new()\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+  inspect(first_check_error_unlocated(src), content = "")
+}
+
+test "#2274: Map::get as a call still type-checks" {
+  let src = "fn main() -> Unit {\n  let m = Map::new()\n  let _ = Map::get(m, \"k\")\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}

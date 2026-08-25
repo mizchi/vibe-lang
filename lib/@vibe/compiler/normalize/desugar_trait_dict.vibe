@@ -7,6 +7,7 @@ import @vibe/compiler/core {
   Stmt,
   TypeEnv,
   TypeExpr,
+  __to_string,
   expr_children,
   is_exception_effect_name,
   is_exception_throw_operation,
@@ -1491,6 +1492,13 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // UFCS dispatch to that struct's methods, which would read the wrong
     // slots. Shape matching remains only for a NAMED literal whose name the
     // merged defs no longer contain (merge-layer private-struct rename).
+    // #2266: `-999999` is EUnaryOp("-", EInt), not EInt. Without this arm the
+    // expected side of `assert_eq(s, -999999)` rendered `<unprintable>`.
+    EUnaryOp(op, inner) => if op == "-" || op == "+" {
+      infer_arg_type_name(inner, struct_sets, var_types, fn_returns)
+    } else {
+      None
+    },
     ERecord(rn, fields, _) => if String::length(rn) == 0 {
       None
     } else if struct_set_has(struct_sets, rn) {
@@ -6379,7 +6387,7 @@ fn assert_eq_render(arg: Expr, gens: Array[(String, Array[(String, String, Int)]
   }
 }
 
-fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn lower_assert_eq(args: Array[Expr], call_off: Int, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let a2 = rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   let b2 = rewrite_expr(Array::get(args, 1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   let an = dinsp_fresh_name("__assert_eq_actual", a2, b2)
@@ -6399,7 +6407,9 @@ fn lower_assert_eq(args: Array[Expr], gens: Array[(String, Array[(String, String
   // block, so the block text alone cannot identify the abort. The
   // condensers hide the line; in a plain `vibe run` it reads as ordinary
   // diagnostic prose rather than harness protocol.
-  let msg = assert_eq_concat(EString("assert_eq failed\n  expected: "), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\nassert failed: aborting")))))
+  // #2202: bake the call's source offset so `vibe test` can print a line
+  // number. The condenser maps `at off=N` using the source file.
+  let msg = assert_eq_concat(EString(String::concat("assert_eq failed\n  at off=", String::concat(__to_string(call_off), "\n  expected: "))), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   "), assert_eq_concat(actual_s, EString("\nassert failed: aborting")))))
   // stdout, not Stderr::write_stream: the gc lane only reserves host
   // imports when the source already used one, and flipping that on a
   // SIMD-only file shifts every generated-body index (gc-gate
@@ -6537,7 +6547,7 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
         // #1392: the interpolation of a value this pass can render.
         interp_take_repl(interp_repl)
       } else if is_assert_eq_call(callee, args) {
-        lower_assert_eq(args, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        lower_assert_eq(args, off, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       } else if !exn_kind_suppressed() && is_exception_kind_read(callee, args) {
         // #1374: `__exn_kind()` is a checker-only intrinsic (typed
         // `() -> String` in checker/builtins_misc.vibe, no wasm body) -- it

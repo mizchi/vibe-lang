@@ -1,0 +1,37 @@
+// #2261: `type-at` on a dot-call receiver used to report the call result.
+// `call_site_offset` keys `b.get()` at the `(`, so the receiver, a later
+// use of the same binding, and the function name keep their own types.
+
+import ./type_at.vibe {
+  type_at_source
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn hover_src() -> String {
+  "struct FloatBox { get: () -> Double }\nfn mk_box() -> FloatBox { FloatBox::{ get: () -> { 2.5 } } }\nfn main() -> Int {\n  let b = mk_box()\n  let v = b.get()\n  let w = b\n  0\n}\n"
+}
+
+test "#2261: the hover snippet typechecks" {
+  inspect(first_check_error(hover_src()), content = "ok")
+}
+
+test "#2261: receiver, later use, and mk_box all keep their types" {
+  let src = hover_src()
+  inspect(type_at_source(src, 5, 11), content = "FloatBox")
+  inspect(type_at_source(src, 6, 11), content = "FloatBox")
+  inspect(type_at_source(src, 2, 4), content = "() -> FloatBox")
+}

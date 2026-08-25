@@ -467,31 +467,39 @@ fn callee_roots_at_call(e: Expr) -> Bool {
 /// while `f()`, `(f)()` and `h.f()` did not (#2231).
 ///
 /// The historical answer is kept wherever it is unambiguous, so no existing
-/// diagnostic position moves: only a callee that roots at a call is given a
-/// different offset -- the field name for a dot-call, the `(` otherwise.
+/// diagnostic position moves: a callee that roots at a call, or a plain
+/// `b.get()` EDot, is keyed at the `(` -- otherwise the call result and the
+/// receiver share the receiver's offset and `type-at` on `b` reports Double
+/// (#2261). Named callees (`f()`) still keep the callee start (#1514).
 fn call_site_offset(callee: Expr, lparen_off: Int) -> Int {
-  if callee_roots_at_call(callee) {
-    // The `(` that opens the argument list, which belongs to no other node.
-    //
-    // Using the dot's FIELD-NAME offset here was wrong in a way the #2231
-    // symptom could not show: `type_at.vibe` identifies the `get` token of
-    // `mk_box().get()` by that same offset, and the type table is last-wins,
-    // so hovering `get` reported the call's result (`Double`) instead of the
-    // field's own type (`() -> Double`). Trading one collision for another
-    // is not a fix -- named callees avoid this via `CalleeHit`, and the `EDot`
-    // path has no such escape (#2248 review).
-    //
-    // A negative `lparen_off` stays negative: that is the unlocated parse
-    // entry point, where every offset is -1 and the call is simply not
-    // recorded. Falling back to the callee's offset there would restore the
-    // collision this function exists to remove.
-    lparen_off
-  } else {
-    let own = callee_offset(callee)
-    if own >= 0 {
-      own
-    } else {
+  match callee {
+    // #2261: `b.get()` is an EDot that does not root at a call, so the
+    // callee-start offset is `b`. Last-wins in the type table then reports
+    // the call result on the receiver. The `(` belongs to no other node.
+    EDot(_, _, _, _) => lparen_off,
+    _ => if callee_roots_at_call(callee) {
+      // The `(` that opens the argument list, which belongs to no other node.
+      //
+      // Using the dot's FIELD-NAME offset here was wrong in a way the #2231
+      // symptom could not show: `type_at.vibe` identifies the `get` token of
+      // `mk_box().get()` by that same offset, and the type table is last-wins,
+      // so hovering `get` reported the call's result (`Double`) instead of the
+      // field's own type (`() -> Double`). Trading one collision for another
+      // is not a fix -- named callees avoid this via `CalleeHit`, and the `EDot`
+      // path has no such escape (#2248 review).
+      //
+      // A negative `lparen_off` stays negative: that is the unlocated parse
+      // entry point, where every offset is -1 and the call is simply not
+      // recorded. Falling back to the callee's offset there would restore the
+      // collision this function exists to remove.
       lparen_off
+    } else {
+      let own = callee_offset(callee)
+      if own >= 0 {
+        own
+      } else {
+        lparen_off
+      }
     }
   }
 }

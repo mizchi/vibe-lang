@@ -68,8 +68,14 @@ expect 0 "a heading plus bare names all resolve"
 doc '- **String**: `length`, `no_such_builtin_here`'
 expect 1 "a frozen name that does not resolve" "no_such_builtin_here"
 
+# 2b. #2275: a real receiver, a real member, and still not a value. Before
+#     the probe observed this population, `Map::get` was certified from
+#     checker silence. The gate must FAIL the name, not report ok.
+doc '- **Map**: `get`'
+expect 1 "a real member that is not a value fails" "Map::get"
+
 # 3. Already-qualified names are read as-is.
-doc '- **conv**: `Int::to_string`, `Double::to_int`'
+doc '- **conv**: `Int::to_double`, `Double::to_int`'
 expect 0 "qualified names are read directly"
 
 # 4. `Foo::a/b/c` expands.
