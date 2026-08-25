@@ -2685,7 +2685,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // the type-phase boundary, so refresh and validate the OUTER range
         // again after the recursive check returns.
         SModule(_, _, _) => {
-          refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end)
+          let visible_aliases = array_empty()
+          collect_visible_alias_stmts(stmts, idx + 1, visible_aliases)
+          refresh_completed_alias_defs(visible_aliases, defs, preclaim_from, Array::length(defs))
           refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
           cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
           check_completed_alias_map_keys(stmts, defs, errors)
@@ -3881,9 +3883,8 @@ fn alias_type_expr_reaches(stmts: Array[Stmt], te: TypeExpr, shadow: Array[Strin
     } else {
       match alias_decl_body(stmts, name) {
         Some((params, body)) => {
-          let next_seen = Array::slice(seen, 0, Array::length(seen))
-          Array::push(next_seen, name)
-          if alias_type_expr_reaches(stmts, body, params, target, next_seen) {
+          Array::push(seen, name)
+          if alias_type_expr_reaches(stmts, body, params, target, seen) {
             reaches = true
           } else {
             ()
@@ -3901,12 +3902,49 @@ fn alias_decl_is_recursive(stmts: Array[Stmt], name: String, params: Array[Strin
   alias_type_expr_reaches(stmts, body, params, name, array_empty())
 }
 
+fn collect_visible_alias_stmts(stmts: Array[Stmt], to: Int, out: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < to {
+    match Array::get(stmts, i) {
+      STypeAlias(exported, name, params, body) => Array::push(out, STypeAlias(exported, name, params, body)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < to {
+    match Array::get(stmts, i) {
+      SModule(_, _, body) => collect_visible_alias_stmts(body, Array::length(body), out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn recursive_alias_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, body) => if !string_array_contains_exact(names, name) && alias_decl_is_recursive(stmts, name, params, body) {
+        Array::push(names, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
 /// Re-resolves acyclic aliases from their source expressions until every
 /// dependency edge has had a chance to observe the completed body. Recursive
 /// aliases are skipped, so the alias-count bound cannot exponentially expand a
 /// cycle; acyclic zig-zag chains need at most one round per local alias.
 fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, to: Int) -> Unit {
   let rounds = local_alias_def_count(defs, from, to)
+  let recursive = recursive_alias_names(stmts)
   let mut round = 0
   while round < rounds {
     let taken = array_empty()
@@ -3915,7 +3953,7 @@ fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: 
       match Array::get(stmts, i) {
         STypeAlias(_, name, params, te) => {
           let idx = completed_alias_index_reverse(defs, name, from, to, taken)
-          if idx >= 0 && !alias_decl_is_recursive(stmts, name, params, te) {
+          if idx >= 0 && !string_array_contains_exact(recursive, name) {
             Array::set(defs, idx, TDAlias(name, params, resolve_type_expr_shadowed(te, defs, params)))
           } else {
             ()

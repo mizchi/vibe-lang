@@ -18,6 +18,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  __to_string,
   env_cache,
   env_lookup,
   env_lookup_binding,
@@ -381,6 +382,44 @@ test "outer aliases are revalidated after nested module type declarations" {
     ""
   } with { Exception::Throw(error) => error }
   assert(String::contains(message, "the builtin map is String-keyed"))
+}
+
+test "alias dependencies resolve across nested scope boundaries" {
+  let checked = check_program_with_env_result([
+    STypeAlias(false, "A", array_empty(), TyName("B")),
+    STypeAlias(false, "C", array_empty(), TyName("D")),
+    SModule(false, "Nested", [
+      STypeAlias(false, "B", array_empty(), TyName("C")),
+      STypeAlias(false, "D", array_empty(), TyName("Int"))
+    ])
+  ], EnvEmpty)
+  match env_lookup(checked.final_env, "A") {
+    Some(CtInt) => (),
+    _ => assert(false)
+  }
+}
+
+test "recursive-alias reachability memoizes shared diamond suffixes" {
+  let stmts = array_empty()
+  let mut i = 0
+  while i < 16 {
+    let suffix = __to_string(i)
+    let next_suffix = __to_string(i + 1)
+    let body = TyTuple([
+      TyName(String::concat("A", next_suffix)),
+      TyName(String::concat("B", next_suffix))
+    ])
+    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    i = i + 1
+  }
+  Array::push(stmts, STypeAlias(false, "A16", array_empty(), TyName("Int")))
+  Array::push(stmts, STypeAlias(false, "B16", array_empty(), TyName("Int")))
+  let checked = check_program_with_env_result(stmts, EnvEmpty)
+  match env_lookup(checked.final_env, "A0") {
+    Some(_) => (),
+    None => assert(false)
+  }
 }
 
 fn projected_checked_env(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
