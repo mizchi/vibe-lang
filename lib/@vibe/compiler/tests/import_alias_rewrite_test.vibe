@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  append_import_alias_rewritten_non_import_stmts
+  append_import_alias_rewritten_non_import_stmts, build_export_rename_plan, collect_import_value_renames, namespace_exported_name
 }
 
 import @vibe/compiler/syntax {
@@ -27,4 +27,27 @@ test "imported type aliases rewrite fn annotations but not type formals" {
   assert(String::contains(printed, "StdinStream"))
   assert(!String::contains(printed, "(stream: S)"))
   assert(String::contains(printed, "(value: S)"))
+}
+
+test "later plain re-export wins over an earlier import reference rename" {
+  let a_path = "/virtual/a.vibe"
+  let b_path = "/virtual/b.vibe"
+  let facade_path = "/virtual/facade.vibe"
+  let main_path = "/virtual/main.vibe"
+  let a_stmts = parse_program(lex("export fn foo() -> Int { 1 }"))
+  let b_stmts = parse_program(lex("export fn foo() -> Int { 2 }"))
+  let facade_stmts = parse_program(lex("import ./a.vibe { foo }\nexport ./b.vibe { foo }\nexport fn bar() -> Int { foo() }"))
+  let main_stmts = parse_program(lex("import ./facade.vibe { bar }\nexport fn answer() -> Int { bar() }"))
+  let paths = [a_path, b_path, facade_path, main_path]
+  let plan = build_export_rename_plan(paths, [
+    a_stmts,
+    b_stmts,
+    facade_stmts,
+    main_stmts
+  ], main_path)
+  let renames = collect_import_value_renames(plan, facade_path, facade_stmts)
+  assert(Array::length(renames) == 1)
+  let (local, target) = Array::get(renames, 0)
+  assert(local == "foo")
+  assert(target == namespace_exported_name(b_path, "foo"))
 }
