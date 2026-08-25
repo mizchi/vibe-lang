@@ -152,6 +152,24 @@ test "wit_from_program: a String-keyed Map still projects" {
   assert(String::contains(wit, "list<tuple<string, s64>>"))
 }
 
+test "wit_from_program: a VALUE import named StringMap does not shadow the builtin" {
+  // #2276 (Codex round 9): the WIT CLI never resolves imports, so
+  // `{ Box as StringMap }` and `{ helper as StringMap }` both parse with
+  // `kind: None` and only the dependency knows which is a type. Treating every
+  // bound name as a type made this valid program fail with `no WIT mapping`
+  // -- measured, it did. The SOURCE name's case separates them.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: None, name: "helper", alias: Some("StringMap") }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "valimport")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
 test "wit_from_program: undeclared capability effect renders as comment" {
   let stats_ann = TyFn([TyName("Int")], TyName("Int"), Some("Fs"))
   let stmts = [

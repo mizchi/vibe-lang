@@ -1,7 +1,14 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, effect_row_emitted_text, has_standard_host_provider, is_entry_runtime_managed_effect, is_exception_effect_name
+  Expr,
+  ImportItem,
+  Stmt,
+  TypeExpr,
+  effect_row_emitted_text,
+  has_standard_host_provider,
+  is_entry_runtime_managed_effect,
+  is_exception_effect_name
 }
 
 import @vibe/compiler/checker {
@@ -656,6 +663,29 @@ fn wit_resolve_effect_names_into(label: String, es_names: Array[String], es_memb
   }
 }
 
+/// Whether an import item plausibly binds a TYPE.
+///
+/// The WIT CLI parses only the entry file and never resolves imports, so this
+/// cannot be answered exactly: `{ Box as StringMap }` and
+/// `{ helper as StringMap }` both parse with `kind: None`, and only the
+/// dependency knows which is a type. Two signals are available -- an explicit
+/// `kind` (`import ./d.vibe { struct Box as StringMap }`), and the case of the
+/// SOURCE name, since a value is lower-case and a type is not.
+///
+/// #2276 (Codex rounds 5 and 9) pulled this in both directions. Treating every
+/// bound name as a type published a wrong ABI for an imported type; treating
+/// none as a type made a value import named `StringMap` fail an otherwise
+/// valid program with `no WIT mapping` -- measured, it did. The source-name
+/// case separates the two cases that actually occur, and where it is wrong it
+/// is wrong in the LOUD direction: an unconventional lower-case type name
+/// gives a "no WIT mapping" error rather than a silently mismatched ABI.
+fn import_item_is_typeish(item: ImportItem) -> Bool {
+  match item.kind {
+    Some(_) => true,
+    None => str_starts_upper(item.name)
+  }
+}
+
 fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -697,7 +727,7 @@ fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
             Some(a) => a,
             None => item.name
           }
-          if bound == needle {
+          if bound == needle && import_item_is_typeish(item) {
             found = true
           } else {
             ()
