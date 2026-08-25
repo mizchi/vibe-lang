@@ -14110,6 +14110,14 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       },
       _ => false
     }
+  } else if mode == 6 {
+    match expr {
+      ECall(callee, args, _) => match callee {
+        EIdent(n, _) => n == name && Array::length(args) == 2,
+        _ => false
+      },
+      _ => false
+    }
   } else if mode == 1 {
     match expr {
       ELet(n, _, _, _) => n == "inspect",
@@ -14536,6 +14544,65 @@ fn dinsp_stmt_uses(stmt: Stmt) -> Bool {
     SFnDecl(_, _, body, _, _) => dinsp_uses(body),
     SModule(_, _, body) => dinsp_stmts_use(body),
     _ => false
+  }
+}
+
+fn stmt_uses_two_arg_call(stmt: Stmt, name: String) -> Bool {
+  match stmt {
+    SModule(_, _, body) => range_uses_two_arg_call(body, 0, Array::length(body), name),
+    _ => {
+      let body = match stmt {
+        SLet(_, _, _, _, expr) => Some(expr),
+        SLetMut(_, _, expr) => Some(expr),
+        SLetPat(_, expr) => Some(expr),
+        STest(_, expr) => Some(expr),
+        SBench(_, expr) => Some(expr),
+        SExample(_, expr) => Some(expr),
+        SExpr(expr) => Some(expr),
+        SFnDecl(_, _, expr, _, _) => Some(expr),
+        _ => None
+      }
+      match body {
+        Some(expr) => dinsp_scan(expr, 6, name),
+        None => false
+      }
+    }
+  }
+}
+
+fn range_uses_two_arg_call(stmts: Array[Stmt], start: Int, end: Int, name: String) -> Bool {
+  let mut i = start
+  let mut found = false
+  while !found && i < end {
+    found = stmt_uses_two_arg_call(Array::get(stmts, i), name)
+    i = i + 1
+  }
+  found
+}
+
+/// Reject a surface-only re-export alias whose spelling would be reclassified
+/// as a compiler builtin after source-boundary metadata is removed. A real
+/// same-source binding survives serialization and remains authoritative.
+export fn validate_serializable_reexport_special_calls(stmts: Array[Stmt]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExportSourceBoundary(_, surface_only_names) => {
+        let start = i + 1
+        let end = merged_source_range_end(stmts, start)
+        if reexport_blockers_bind_assert_eq(surface_only_names) && !stmts_range_define_assert_eq(stmts, start, end) && range_uses_two_arg_call(stmts, start, end, "assert_eq") {
+          throw("unknown name: assert_eq")
+        } else if dinsp_blocker_names_inspect(surface_only_names) && !dinsp_range_binds_inspect(stmts, start, end) && range_uses_two_arg_call(stmts, start, end, "inspect") {
+          throw("unknown name: inspect")
+        } else {
+          ()
+        }
+        i = end
+      },
+      _ => {
+        i = i + 1
+      }
+    }
   }
 }
 

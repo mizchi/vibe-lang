@@ -12,6 +12,10 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl
 }
 
+import @vibe/compiler/normalize {
+  desugar_inspect_calls, validate_serializable_reexport_special_calls
+}
+
 import @vibe/compiler/syntax {
   lex, parse_program, print_program
 }
@@ -566,7 +570,13 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
   let plan = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged)
   let driver_source = ingest_source_text_fs(driver_path, Fs::read_file(driver_path))
   let driver_stmts = parse_program(lex(driver_source))
+  // The driver is a separate source unit from the compiler entry that precedes
+  // it, so source-scoped builtin classification must start a fresh range.
+  Array::push(merged, SReExportSourceBoundary(array_empty(), array_empty()))
   append_coverage_driver_stmts(entry_path, driver_path, driver_stmts, file_paths, file_stmts, plan, merged)
+  validate_serializable_reexport_special_calls(merged)
+  desugar_inspect_calls(merged)
+  expand_interp_stmts(merged)
   print_program(merged)
 }
 
@@ -586,6 +596,12 @@ export fn merged_program_source_fs(entry_path: String) -> String with Exception 
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
+  // Complete source-scoped special-call rewrites while the in-memory boundary
+  // metadata still exists. The printed program needs no sentinel syntax and
+  // can be reparsed as ordinary user source without a lexer/parser exception.
+  validate_serializable_reexport_special_calls(stmts)
+  desugar_inspect_calls(stmts)
+  expand_interp_stmts(stmts)
   print_program(stmts)
 }
 
