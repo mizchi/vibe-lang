@@ -2676,6 +2676,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       local_defs_end = Array::length(defs)
       refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end)
       refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
+      cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
       cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
       check_completed_alias_map_keys(stmts, defs, errors)
     } else {
@@ -2689,6 +2690,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           collect_visible_alias_stmts(stmts, idx + 1, visible_aliases)
           refresh_completed_alias_defs(visible_aliases, defs, preclaim_from, Array::length(defs))
           refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
+          cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
           cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
           check_completed_alias_map_keys(stmts, defs, errors)
         },
@@ -4041,6 +4043,70 @@ fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef], type
     }
     i = i + 1
   }
+}
+
+fn replace_first_env_binding(env: TypeEnv, wanted: String, ty: Type, replaced: Array[Bool]) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => if !Array::get(replaced, 0) && name == wanted {
+      Array::set(replaced, 0, true)
+      EnvBind(name, env_value_binding_with_origin(ty, binding.origin), rest)
+    } else {
+      EnvBind(name, binding, replace_first_env_binding(rest, wanted, ty, replaced))
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, replace_first_env_binding(rest, wanted, ty, replaced), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvFlat(bindings) => EnvFlat(bindings),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, replace_first_env_binding(rest, wanted, ty, replaced))
+  }
+}
+
+fn refresh_completed_suberror_env(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], from: Int, to: Int) -> TypeEnv {
+  let taken = array_empty()
+  let mut refreshed = env
+  let mut i = Array::length(stmts) - 1
+  while i >= 0 {
+    match Array::get(stmts, i) {
+      SSuberror(_, name, _) => {
+        let idx = completed_type_def_index_reverse(defs, TDEnum(name, array_empty(), array_empty()), from, to, taken)
+        if idx >= 0 {
+          match Array::get(defs, idx) {
+            TDEnum(_, _, variants) => {
+              let mut vi = Array::length(variants) - 1
+              while vi >= 0 {
+                let (variant_name, payloads) = Array::get(variants, vi)
+                let ctor_ty = if Array::length(payloads) == 0 {
+                  CtEnum(name)
+                } else {
+                  CtFn(payloads, CtEnum(name), constructor_dependency_row(Array::length(payloads)))
+                }
+                refreshed = replace_first_env_binding(refreshed, variant_name, ctor_ty, [
+                  false
+                ])
+                if Array::length(payloads) > 0 {
+                  refreshed = replace_first_env_binding(refreshed, fn_return_env_name(variant_name), CtEnum(name), [
+                    false
+                  ])
+                } else {
+                  ()
+                }
+                vi = vi - 1
+              }
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i - 1
+  }
+  refreshed
 }
 
 fn local_alias_def_count(defs: Array[TypeDef], from: Int, to: Int) -> Int {
