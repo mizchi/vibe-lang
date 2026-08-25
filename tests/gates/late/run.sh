@@ -6444,8 +6444,76 @@ if ! grep -qF 'line 3:1: set VIBE_UNSTABLE=1' "$uwdir/twice.out" 2>/dev/null; th
   cat "$uwdir/twice.out" 2>/dev/null >&2 || true
   exit 1
 fi
+# The import may sit in a SIBLING, and that is the normal shape of a project --
+# `main.vibe` calling `./worker.vibe` with the concurrency in the worker. The
+# entry-only scan missed exactly that: measured before the fix, this two-file
+# program BUILT an artifact and checked clean with no opt-in (#2284).
+#
+# The diagnostic must name the file that actually spells the import, not the
+# entry -- otherwise the reader is sent to a file with nothing wrong in it.
+mkdir -p "$uwdir/sib"
+cat > "$uwdir/sib/worker.vibe" <<'UWEOF'
+import @vibe/concurrent {
+  TaskGroup
+}
+
+export fn run_all() -> Int with Exception {
+  TaskGroup::run((n) -> {
+    0
+  })
+}
+UWEOF
+cat > "$uwdir/sib/main.vibe" <<'UWEOF'
+import ./worker.vibe {
+  run_all
+}
+
+fn main() -> Int with Exception {
+  run_all()
+}
+UWEOF
+uw_build "$uwdir/sib/main.vibe" "$uwdir/sib/main.wasm"
+if [ -s "$uwdir/sib/main.wasm" ]; then
+  echo "[compiler-gate] FAIL: a sibling file carried the unstable import past the gate (#2284)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/sib/main.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the sibling import was refused for the wrong reason (#2284)" >&2
+  cat "$uwdir/sib/main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF 'worker.vibe' "$uwdir/sib/main.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the diagnostic named the entry, not the file that spells the import (#2284)" >&2
+  cat "$uwdir/sib/main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+uw_build "$uwdir/sib/main.vibe" "$uwdir/sib/optin.wasm" VIBE_UNSTABLE=1
+if [ ! -s "$uwdir/sib/optin.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the sibling case build (#2284)" >&2
+  cat "$uwdir/sib/optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# `vibe check` must agree -- the whole point is that the two verbs answer alike.
+uw_sib_out="$(uw_check "$uwdir/sib/main.vibe" || true)"
+if ! printf '%s\n' "$uw_sib_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+  echo "[compiler-gate] FAIL: vibe check accepted a sibling-carried unstable import (#2284)" >&2
+  printf '%s\n' "$uw_sib_out" >&2
+  exit 1
+fi
+# ...and an ordinary two-file program is untouched, or the closure scan is
+# simply refusing everything with a dependency.
+mkdir -p "$uwdir/plain2"
+printf 'export fn helper() -> Int {\n  7\n}\n' > "$uwdir/plain2/dep.vibe"
+printf 'import ./dep.vibe {\n  helper\n}\n\nfn main() -> Int {\n  helper()\n}\n' > "$uwdir/plain2/main.vibe"
+uw_build "$uwdir/plain2/main.vibe" "$uwdir/plain2/main.wasm"
+if [ ! -s "$uwdir/plain2/main.wasm" ]; then
+  echo "[compiler-gate] FAIL: the closure scan refused an ordinary two-file program (#2284)" >&2
+  cat "$uwdir/plain2/main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + closure + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
