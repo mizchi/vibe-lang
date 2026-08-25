@@ -1609,12 +1609,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         nl_c
       }
     }
-    else if fname == "eq" && Array::length(args) == 2 && ctx.enable_rc && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) {
+    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && ctx.enable_rc && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) {
       // #745: under RC floats are BOXED — the scalar i64.eq below would
       // compare box pointers, so `eq(0.0125, 0.0125)` returned false. Take
       // the same unbox + f64.eq path the `==` binop uses. Non-RC floats are
       // raw f64 bits in an i64, where bitwise i64.eq matches the existing
       // `==` behavior, so this branch is RC-only.
+      //
+      // #2309: `local_idx_hint < 0` for the same reason as the scalar arm
+      // below -- and this arm had NO guard at all, so it was the sharper of
+      // the two: `let eq = (a: Double, b: Double) -> Double { a + b }` then
+      // `eq(1.5, 2.5)` printed `0` under RC, which is the production lane.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       emit_unbox_float(buf)
       emit_f64_reinterpret_i64(buf)
@@ -1628,7 +1633,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_shl(buf)
       nl
     }
-    else if fname == "eq" && Array::length(args) == 2 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
+    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) {
       // Direct i64.eq for `eq(a, b)` when it is the builtin and at least one
       // operand is provably scalar. This sidesteps the bound `eq`'s string
       // fallback, which reads OOB on Int values resembling fat-pointers (#705):
@@ -1640,6 +1645,26 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // is required -- prefer_bound_call is a global cross-file name match, not
       // scoped to the calling file (see #711), so dropping it regressed
       // leb128_test.vibe. Root fix tracked in #711.
+      //
+      // #2309: but that disjunct let the builtin beat a LEXICAL binding too,
+      // and there it is simply wrong: `let eq = (a: Int, b: Int) -> Int { a + b }`
+      // then `eq(1, 2)` compiled to `i64.eq` and printed `0`. No diagnostic,
+      // no trap -- the checker had already typed the call against the user's
+      // `eq` and agreed it was an `Int`.
+      //
+      // `local_idx_hint < 0` splits the two readings of `prefer_bound_call`
+      // apart. `fn_idx_in_list` is the over-broad half #711 is about (a name
+      // match against the whole program's function table, not the calling
+      // file), and it is still consulted exactly as before -- leb128_test.vibe
+      // keeps taking the inline path. `local_idx_hint` is a lexical binding in
+      // THIS closure's local names, which is unambiguous, so it wins.
+      //
+      // Reading `local_idx_hint` at all is only sound for a name the capture
+      // scan cannot invent (#1095, and see the `assert` arms below). `eq` is
+      // in the LINEAR and gc func tables unconditionally
+      // (core/builtin_registry.vibe), so `collect_free_vars_expr_sc`'s
+      // `fn_names` guard skips it and no lambda records a phantom capture for
+      // it. That is why it needs no `is_inlined_scalar_builtin` registration.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       emit_i64_eq(buf)

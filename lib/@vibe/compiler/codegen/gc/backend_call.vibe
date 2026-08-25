@@ -558,6 +558,53 @@ fn gc_frozen_conversion_copy(value: Expr, tmp: String) -> Expr {
   ], -1), -1)
 }
 
+/// #2300: is `name` something the READER wrote -- a lexical binding in this
+/// closure, or a top-level definition -- rather than a generated builtin?
+///
+/// The gc lane's `assert` / `assert_true` / `assert_eq` arms below used to
+/// claim the call unconditionally, so a program that defined its own
+/// `assert_eq` trapped `unreachable` where the linear lane ran the user's
+/// function (#2283/#2285 fixed linear; this is the other half).
+///
+/// Porting linear's guard verbatim does not work and was measured breaking
+/// the lane outright (`expected 1 elements on the stack for fallthru, found
+/// 3`). Linear tests `fn_idx_in_list < 0`, which is meaningful there because
+/// `assert*` are NOT in its func table -- `core/builtin_registry.vibe` gives
+/// those three rows `in_linear_table = false, in_gc_table = true`. Here the
+/// index is >= 0 for every call, shadowed or not, so the guard fired always
+/// and the arms stopped emitting their result.
+///
+/// The distinction the guard wants is user-vs-generated, and the table
+/// already encodes it positionally: `func_offset = 1 + hbo + num_generated`
+/// and user function `j` lives at `j + func_offset` (backend_body.vibe). An
+/// index below `func_offset` is an import or a generated builtin; one at or
+/// above it is the reader's. That is the same `idx >= ctx.func_offset` test
+/// backend_expr.vibe already uses to tell the two apart.
+///
+/// This reads the FIRST entry named `name`, and when a user shadows a builtin
+/// the table holds both. Two invariants make that unambiguous here, and a
+/// change to either turns this guard silently permissive:
+///
+///   - user functions occupy the PREFIX of `ft.names` (backend_body.vibe
+///     builds `fn_names_list` from the program, then appends `builtin_defs`);
+///   - the gc lane's two `FuncTable` literals set `names_sorted:
+///     array_empty()`, so `func_table_index_of` takes its linear first-match
+///     branch rather than the `bsearch_leftmost` one, whose answer among
+///     duplicates would depend on the sort's stability.
+///
+/// Give the gc table a sorted index and this needs rewriting as an explicit
+/// scan of `ft.names[0 .. num_user_funcs)`.
+fn gc_name_is_user_defined(ctx: CompileCtxGc, local_names: Array[String], name: String) -> Bool with Exception {
+  if find_local_slot(local_names, name) >= 0 {
+    true
+  } else if ctx.func_offset > 0 && func_table_index_of(ctx.func_table, name) >= 0 {
+    let (idx, _, _) = resolve_func(ctx.func_table, name)
+    idx >= ctx.func_offset
+  } else {
+    false
+  }
+}
+
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   match callee {
     EIdent(source_name, _) => {
@@ -3023,8 +3070,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 0)
         nl
       }
-      else if fname == "assert" || fname == "assert_true" {
+      else if (fname == "assert" || fname == "assert_true") && !gc_name_is_user_defined(ctx, local_names, fname) {
         // Trap (unreachable) on a false condition, like the linear backend.
+        // #2300: ...unless the reader defined the name, in which case the
+        // call below compiles it as the ordinary function it is.
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_i64_eqz(buf)
         emit_if_void(buf)
@@ -3033,9 +3082,12 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 0)
         nl
       }
-      else if fname == "assert_eq" {
+      else if fname == "assert_eq" && !gc_name_is_user_defined(ctx, local_names, fname) {
         // Fallback only. The shipped path rewrites `assert_eq` in
-        // desugar_trait_dicts. Keep parity with the linear fallback:
+        // desugar_trait_dicts -- and when THAT pass stands down for a user's
+        // own `assert_eq` (#2283/#2285), this arm must stand down with it,
+        // which is what the guard above does (#2300).
+        // Keep parity with the linear fallback:
         // synthesized `==` uses the backend's value-aware equality path.
         let nl = ce(buf, EBinOp("==", Array::get(args, 0), Array::get(args, 1)), local_names, next_local, ld)
         emit_i64_eqz(buf)

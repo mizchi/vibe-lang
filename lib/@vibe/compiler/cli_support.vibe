@@ -392,7 +392,27 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
   // made `vibe check` report a parse error for a file the build compiles.
   // extract_require_pins blanks to spaces (byte length preserved), so every
   // diagnostic offset below stays exact.
-  let (_, entry_source) = extract_require_pins(Fs::read_file(input_path))
+  //
+  // #2280: a CONTRACT (`.vpkg`) is not statement grammar -- it is a list of
+  // bodyless declarations, and every compile lane reads it through
+  // `ingest_source_text_fs`, which replaces it with the generated facade
+  // before anything parses it. This lane read the raw bytes and so answered
+  // `expected { but got fn` about `lib/@vibe/random/index.vpkg`, a committed
+  // contract the build consumes on every run: a diagnostic that asserts
+  // something untrue about the file. Ingest contracts here too, so `check`
+  // answers about the package the contract describes.
+  //
+  // Contracts ONLY. `ingest_source_text_fs`'s other branch
+  // (`apply_vpkg_directory_shared_imports_fs`) can PREPEND import lines to an
+  // ordinary `.vibe` file, which would shift every offset below and mislocate
+  // the diagnostics this pre-parse exists to locate exactly.
+  let raw_entry_source = Fs::read_file(input_path)
+  let entry_source = if is_contract_ext(input_path) {
+    ingest_source_text_fs(input_path, raw_entry_source)
+  } else {
+    let (_, pin_blanked) = extract_require_pins(raw_entry_source)
+    pin_blanked
+  }
   let (tokens, starts, _ends) = lex_with_offsets(entry_source)
   ingestion_pipeline_telemetry_add(14, 1)
   let (entry_stmts, parse_diags) = parse_program_recovering(tokens, starts, entry_source)
@@ -810,10 +830,111 @@ fn unstable_line_of_offset(source: String, off: Int) -> Int {
 /// here would be a branch nothing can reach, which reads as coverage without
 /// being any. Gate 108 pins the boundary from the outside instead, so the day
 /// that syntax lands the gate fails rather than passing silently (#2277 review).
-fn unstable_decl_diagnostic(path: String, source: String, tokens: Array[Token], starts: Array[Int], out: Array[String], cursor: Array[Int]) -> Unit {
+//# #2289: telling an INHERITED unstable import from one written in the file.
+//#
+//# Ingestion prepends a directory's shared `index.vpkg` imports, so when a
+//# sibling ALSO spells its own import of the same package the ingested
+//# statement list holds two `SImport`s and the physical file holds one. The
+//# offset cursor only ever sees the physical file, so walking in statement
+//# order let the synthetic import -- which is first -- consume the physical
+//# one's offset. The reader was told to delete their own `import` line, and
+//# deleting it revealed a second error for the contract import that had never
+//# been mentioned. A diagnostic has to name the edit that fixes it.
+//#
+//# Order cannot decide this, but COUNT can: the synthetic prefix always comes
+//# first and physical declarations always come last, so of `N` occurrences the
+//# first `N - P` are inherited and the remaining `P` take the physical offsets
+//# in order, exactly as the cursor does today. The three helpers below compute
+//# that deficit; `unstable_decl_diagnostic` spends it.
+
+/// Index of `pkg` in the parallel `(pkgs, deficits)` arrays, or -1.
+fn unstable_pkg_slot(pkgs: Array[String], pkg: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(pkgs) {
+    if Array::get(pkgs, i) == pkg {
+      found = i
+      i = Array::length(pkgs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Distinct unstable package paths imported anywhere in `stmts`, `module`
+/// bodies included -- the same shapes `unstable_stmt_diagnostics` visits, so
+/// the two walks cannot disagree about what counts as an import.
+fn unstable_collect_pkgs(stmts: Array[Stmt], pkgs: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, _) => if unstable_package_note(path) != "" && unstable_pkg_slot(pkgs, path) < 0 {
+        Array::push(pkgs, path)
+      } else {
+        ()
+      },
+      SModule(_, _, body) => unstable_collect_pkgs(body, pkgs),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Occurrences of `pkg` in the INGESTED statements (synthetic + physical).
+fn unstable_count_pkg_stmts(stmts: Array[Stmt], pkg: String) -> Int {
+  let mut i = 0
+  let mut n = 0
+  while i < Array::length(stmts) {
+    let add = match Array::get(stmts, i) {
+      SImport(path, _) => if path == pkg {
+        1
+      } else {
+        0
+      },
+      SModule(_, _, body) => unstable_count_pkg_stmts(body, pkg),
+      _ => 0
+    }
+    n = n + add
+    i = i + 1
+  }
+  n
+}
+
+/// Occurrences of `pkg` in the PHYSICAL file's tokens.
+///
+/// Driven by `unstable_import_offset` over a private cursor rather than by a
+/// second copy of its `TImport` / `TIdent(pkg)` test. A copy would be a
+/// proxy: the count decides which occurrences are inherited, and if the two
+/// matchers ever disagreed about a spelling -- `import\t@vibe/concurrent` is
+/// exactly the shape that broke an earlier version of this scan -- the
+/// deficit would be off by one and a physical import would be reported as
+/// inherited, silently. Sharing the matcher makes that impossible instead of
+/// unlikely.
+fn unstable_count_pkg_tokens(tokens: Array[Token], starts: Array[Int], pkg: String) -> Int {
+  let probe = [0]
+  let mut count = 0
+  while unstable_import_offset(tokens, starts, pkg, probe) >= 0 {
+    count = count + 1
+  }
+  count
+}
+
+fn unstable_decl_diagnostic(path: String, source: String, tokens: Array[Token], starts: Array[Int], out: Array[String], cursor: Array[Int], pkgs: Array[String], deficits: Array[Int]) -> Unit {
   let note = unstable_package_note(path)
   if note != "" {
-    let off = unstable_import_offset(tokens, starts, path, cursor)
+    // #2289: spend the inherited occurrences first. Each one reports with no
+    // location, which is what makes the `where_note` below say the import is
+    // inherited instead of pointing at a line the reader would find their own
+    // import on.
+    let slot = unstable_pkg_slot(pkgs, path)
+    let inherited = slot >= 0 && Array::get(deficits, slot) > 0
+    let off = if inherited {
+      Array::set(deficits, slot, Array::get(deficits, slot) - 1)
+      0 - 1
+    } else {
+      unstable_import_offset(tokens, starts, path, cursor)
+    }
     let where_note = if off < 0 {
       String::concat("this file inherits `", String::concat(path, "` from its directory's index.vpkg (it is not written here). "))
     } else {
@@ -832,13 +953,13 @@ fn unstable_decl_diagnostic(path: String, source: String, tokens: Array[Token], 
   }
 }
 
-fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[Token], starts: Array[Int], out: Array[String], cursor: Array[Int]) -> Unit {
+fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[Token], starts: Array[Int], out: Array[String], cursor: Array[Int], pkgs: Array[String], deficits: Array[Int]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(path, _) => unstable_decl_diagnostic(path, source, tokens, starts, out, cursor),
+      SImport(path, _) => unstable_decl_diagnostic(path, source, tokens, starts, out, cursor, pkgs, deficits),
       // An import nested in a `module` block is still this file's dependency.
-      SModule(_, _, body) => unstable_stmt_diagnostics(body, source, tokens, starts, out, cursor),
+      SModule(_, _, body) => unstable_stmt_diagnostics(body, source, tokens, starts, out, cursor, pkgs, deficits),
       _ => ()
     }
     i = i + 1
@@ -880,9 +1001,28 @@ export fn unstable_surface_diagnostics_located(input_path: String, detected: Str
   let out = array_empty()
   let (tokens, starts, _ends) = lex_with_offsets(located)
   match checked_warning_stmts(input_path, detected) {
-    Some(stmts) => unstable_stmt_diagnostics(stmts, located, tokens, starts, out, [
-      0
-    ]),
+    Some(stmts) => {
+      // #2289: count before walking. The deficit per package is
+      // (imports in the INGESTED statements) - (imports in the PHYSICAL
+      // tokens); the walk below spends it on the leading occurrences, which
+      // are the synthetic ones ingestion prepended.
+      let pkgs: Array[String] = array_empty()
+      let deficits: Array[Int] = array_empty()
+      unstable_collect_pkgs(stmts, pkgs)
+      let mut pi = 0
+      while pi < Array::length(pkgs) {
+        let pkg = Array::get(pkgs, pi)
+        let declared = unstable_count_pkg_stmts(stmts, pkg)
+        let physical = unstable_count_pkg_tokens(tokens, starts, pkg)
+        Array::push(deficits, if declared > physical {
+          declared - physical
+        } else {
+          0
+        })
+        pi = pi + 1
+      }
+      unstable_stmt_diagnostics(stmts, located, tokens, starts, out, [0], pkgs, deficits)
+    },
     None => ()
   }
   out
