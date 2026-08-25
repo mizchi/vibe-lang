@@ -734,6 +734,24 @@ test "dependency-first alias DAGs reject expansion before refresh" {
   assert(String::contains(message, "type alias expansion exceeds"))
 }
 
+test "unused eager alias arguments still count toward expansion" {
+  let mut nested = TyName("Int")
+  let mut i = 0
+  while i < 30 {
+    nested = TyApp("Dup", [nested])
+    i = i + 1
+  }
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "Root", array_empty(), TyApp("Ignore", [nested])),
+      STypeAlias(false, "Ignore", ["T"], TyName("Int")),
+      STypeAlias(false, "Dup", ["T"], TyTuple([TyName("T"), TyName("T")]))
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "type alias expansion exceeds"))
+}
+
 fn projected_checked_env(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
   let import_env = projected_import_env_for_test(source, path, deps, full_cache)
   check_program_with_projected_import_env_result(parse_program_with_path(path, source), import_env).final_env

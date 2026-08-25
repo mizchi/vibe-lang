@@ -2820,7 +2820,16 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
     cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
     cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
-    check_completed_decl_map_keys(visible_types, defs, completed_decl_errors)
+    // Map-key validation eagerly resolves alias arguments. Once alias
+    // expansion has already been rejected, replaying those same expressions
+    // here can perform the forbidden allocation while only collecting a
+    // secondary diagnostic. Preserve the actionable expansion error and stop
+    // this completed-declaration diagnostic lane from re-expanding it.
+    if errors_contain_alias_expansion_limit(completed_decl_errors) {
+      ()
+    } else {
+      check_completed_decl_map_keys(visible_types, defs, completed_decl_errors)
+    }
     if nested_defs_extended {
       // The first pass is required to discover the complete shared definition
       // graph. Re-run the root list against a copy of that graph so every value
@@ -4245,6 +4254,16 @@ fn type_expr_arg_node_counts(args: Array[TypeExpr], defs: Array[TypeDef], shadow
   counts
 }
 
+fn type_arg_node_count_sum(arg_counts: Array[Int], limit: Int) -> Int {
+  let mut total = 0
+  let mut i = 0
+  while i < Array::length(arg_counts) && total <= limit {
+    total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
+    i = i + 1
+  }
+  total
+}
+
 fn named_type_expr_node_count(name: String, arg_counts: Array[Int], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
   if string_array_contains_exact(shadow, name) {
     let mut total = 1
@@ -4260,7 +4279,13 @@ fn named_type_expr_node_count(name: String, arg_counts: Array[Int], defs: Array[
       limit + 1
     } else if idx >= 0 {
       match Array::get(defs, idx) {
-        TDAlias(_, params, body) => substituted_type_node_count(body, params, arg_counts, limit),
+        TDAlias(_, params, body) => {
+          // `resolve_type_expr_core_shadowed` eagerly materializes every
+          // argument before substituting the alias body, even when a formal is
+          // unused. The argument trees and cloned result coexist during that
+          // call, so cap their combined peak rather than only the result tree.
+          capped_type_node_add(type_arg_node_count_sum(arg_counts, limit), substituted_type_node_count(body, params, arg_counts, limit), limit)
+        },
         _ => {
           let mut total = 1
           let mut i = 0
@@ -4338,6 +4363,19 @@ fn report_alias_expansion_limit(name: String, errors: Array[String]) -> Unit {
   } else {
     Array::push(errors, message)
   }
+}
+
+fn errors_contain_alias_expansion_limit(errors: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(errors) && !found {
+    if String::starts_with(Array::get(errors, i), "type alias expansion exceeds ") {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 /// Re-resolves acyclic aliases from their source expressions until every
