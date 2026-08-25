@@ -221,6 +221,25 @@ test "wit_from_program: a GENERIC BINDER named StringMap shadows the builtin" {
   assert(String::contains(message, "no WIT mapping"))
 }
 
+test "wit_from_program: an UNAPPLIED StringMap binder does not shadow the builtin" {
+  // #2276 (Codex round 16): `fn id[StringMap](x: StringMap) -> StringMap` is a
+  // VALID program -- #2268 rejects an APPLIED formal, not a declared one -- so
+  // its binder must not disable the builtin projection for an unrelated export
+  // in the same file. Round 14 tested the binder alone and broke exactly this.
+  let id_params = array_empty()
+  Array::push(id_params, ("x", Some(TyName("StringMap"))))
+  let id_fn = EFn(["StringMap"], array_empty(), id_params, Some(TyName("StringMap")), None, EUnit)
+  let read_params = array_empty()
+  Array::push(read_params, ("m", Some(TyApp("StringMap", [TyName("Int")]))))
+  let read_fn = EFn(no_strings(), array_empty(), read_params, Some(TyName("Int")), None, EUnit)
+  let stmts = [
+    SLet(false, false, "id", Some(TyFn([TyName("StringMap")], TyName("StringMap"), None)), id_fn),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), read_fn)
+  ]
+  let wit = wit_from_program(stmts, stmts, "unapplied")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
 test "wit_from_program: a TRAIT import named StringMap does not shadow the builtin" {
   // #2276 (Codex round 10): a trait lives in the trait environment, not in
   // `defs`, so `import ./dep.vibe { trait StringMap }` leaves the checker

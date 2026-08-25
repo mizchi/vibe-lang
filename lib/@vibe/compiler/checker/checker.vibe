@@ -594,7 +594,10 @@ fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: A
   }
 }
 
-fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], shadow: Array[String], out: Array[Type]) -> Unit {
+/// `seen` is the alias names already expanded on this walk, for the same
+/// reason `map_key_type_is_supported_at` carries one: a cyclic alias chain
+/// compiles, so following alias heads needs its own termination.
+fn collect_unsupported_map_keys_at(t: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String], out: Array[Type]) -> Unit {
   match t {
     CtNamed(head, targs) => {
       if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
@@ -604,42 +607,63 @@ fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], shadow: Array[Str
         } else {
           Array::push(out, k)
         }
+      } else if !string_array_has(shadow, head) && !map_key_alias_chain_contains(seen, head) {
+        // An ALIAS head is followed into its body (Codex round 16 on #2276).
+        // A name recorded before its target was declared stays an unresolved
+        // `CtNamed`, so the map can sit one hop further in than this walk used
+        // to look: `type Outer = Inner` above `type Inner = Map[Key, Int]`
+        // above `type Key = Int` was accepted, because `Outer`'s body is the
+        // bare `Inner` and nothing expanded it. Measured before the fix.
+        match find_typedef(defs, head) {
+          Some(td) => match td {
+            TDAlias(_, aparams, abody) => {
+              Array::push(seen, head)
+              collect_unsupported_map_keys_at(abody, defs, aparams, seen, out)
+            },
+            _ => ()
+          },
+          None => ()
+        }
       } else {
         ()
       }
       let mut i = 0
       while i < Array::length(targs) {
-        collect_unsupported_map_keys(Array::get(targs, i), defs, shadow, out)
+        collect_unsupported_map_keys_at(Array::get(targs, i), defs, shadow, seen, out)
         i = i + 1
       }
     },
-    CtArray(e) => collect_unsupported_map_keys(e, defs, shadow, out),
-    CtOption(e) => collect_unsupported_map_keys(e, defs, shadow, out),
+    CtArray(e) => collect_unsupported_map_keys_at(e, defs, shadow, seen, out),
+    CtOption(e) => collect_unsupported_map_keys_at(e, defs, shadow, seen, out),
     CtTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_unsupported_map_keys(Array::get(items, i), defs, shadow, out)
+        collect_unsupported_map_keys_at(Array::get(items, i), defs, shadow, seen, out)
         i = i + 1
       }
     },
     CtFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        collect_unsupported_map_keys(Array::get(params, i), defs, shadow, out)
+        collect_unsupported_map_keys_at(Array::get(params, i), defs, shadow, seen, out)
         i = i + 1
       }
-      collect_unsupported_map_keys(ret, defs, shadow, out)
+      collect_unsupported_map_keys_at(ret, defs, shadow, seen, out)
     },
     CtRecord(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, ft) = Array::get(fields, i)
-        collect_unsupported_map_keys(ft, defs, shadow, out)
+        collect_unsupported_map_keys_at(ft, defs, shadow, seen, out)
         i = i + 1
       }
     },
     _ => ()
   }
+}
+
+fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], shadow: Array[String], out: Array[Type]) -> Unit {
+  collect_unsupported_map_keys_at(t, defs, shadow, array_empty(), out)
 }
 
 /// The declared arity of a compiler-known structural head, or -1 when `name`

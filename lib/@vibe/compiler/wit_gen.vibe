@@ -736,16 +736,16 @@ fn import_items_bind_type(items: Array[ImportItem], needle: String) -> Bool {
   found
 }
 
-/// Whether a function literal binds `needle` as one of its own type
-/// parameters. Only the statement's own binder list is read -- a nested
-/// lambda's binders are not in scope for the exported signature.
-fn expr_binds_type_param(body: Expr, needle: String) -> Bool {
-  match body {
-    EFn(tparams, _, _, _, _, _) => {
+/// Whether a type annotation APPLIES `needle` to arguments anywhere inside it.
+fn type_expr_applies(ty: TypeExpr, needle: String) -> Bool {
+  match ty {
+    TyApp(head, args) => if head == needle {
+      true
+    } else {
       let mut i = 0
       let mut found = false
-      while i < Array::length(tparams) {
-        if Array::get(tparams, i) == needle {
+      while i < Array::length(args) {
+        if type_expr_applies(Array::get(args, i), needle) {
           found = true
         } else {
           ()
@@ -753,6 +753,86 @@ fn expr_binds_type_param(body: Expr, needle: String) -> Bool {
         i = i + 1
       }
       found
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = type_expr_applies(ret, needle)
+      while i < Array::length(params) {
+        if type_expr_applies(Array::get(params, i), needle) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) {
+        if type_expr_applies(Array::get(items, i), needle) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Whether this statement's own function literal binds `needle` as a type
+/// parameter AND applies it to arguments in its own signature -- the shape
+/// `export fn f[StringMap](m: StringMap[Int])`, which the checker rejects
+/// (#2268) but neither `--wit` path ever asks the checker about.
+///
+/// The application is what makes this ownership. Round 14 tested the binder
+/// ALONE and claimed a file carrying one "never compiles"; that was wrong,
+/// and Codex round 16 measured it: `fn id[StringMap](x: StringMap) ->
+/// StringMap` is a perfectly valid program, because #2268 rejects an APPLIED
+/// formal, not a declared one. Treating its binder as ownership failed
+/// `--wit` with `no WIT mapping` for an unrelated export in the same file.
+///
+/// Only the statement's own binders are read -- a nested lambda's are not in
+/// scope for the exported signature.
+fn expr_binds_applied_type_param(body: Expr, needle: String) -> Bool {
+  match body {
+    EFn(tparams, _, params, ret, _, _) => {
+      let mut i = 0
+      let mut binds = false
+      while i < Array::length(tparams) {
+        if Array::get(tparams, i) == needle {
+          binds = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if binds {
+        let mut applied = match ret {
+          Some(rt) => type_expr_applies(rt, needle),
+          None => false
+        }
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => if type_expr_applies(t, needle) {
+              applied = true
+            } else {
+              ()
+            },
+            None => ()
+          }
+          pi = pi + 1
+        }
+        applied
+      } else {
+        false
+      }
     },
     _ => false
   }
@@ -806,20 +886,22 @@ fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
       } else {
         ()
       },
-      // #2276 (Codex round 14): a function's own TYPE BINDER owns the name
-      // inside its signature -- `export fn f[StringMap](m: StringMap[Int])`
-      // makes `StringMap` the formal, not the builtin. The checker rejects
-      // that program (a type parameter cannot take arguments, #2268), but
-      // neither `--wit` path runs the checker, so without this arm the
+      // #2276 (Codex round 14, narrowed by round 16): a function that binds
+      // the name AND applies it owns the spelling inside its signature --
+      // `export fn f[StringMap](m: StringMap[Int])` makes `StringMap` the
+      // formal, not the builtin. The checker rejects that program (#2268),
+      // but neither `--wit` path runs the checker, so without this arm the
       // projection published the builtin's `list<tuple<string, V>>` ABI for a
       // program that does not compile.
       //
-      // The flag is program-wide rather than per-signature, so a binder in
-      // ONE function disables the builtin projection for the whole file.
-      // That over-reach cannot cost a valid program anything: a file that
-      // binds `StringMap` as a type parameter is rejected by the checker
-      // before it can be built, and failing to project is the loud direction.
-      SLet(_, _, _, _, body) => if expr_binds_type_param(body, needle) {
+      // The flag is program-wide rather than per-signature, so one such
+      // statement disables the builtin projection for the whole file. That
+      // over-reach costs no VALID program anything, because the applied
+      // formal is what #2268 rejects -- which is why the test is the
+      // application and not the binder. Round 14 tested the binder alone and
+      // justified it with the same sentence; the sentence was false there,
+      // since `fn id[StringMap](x: StringMap)` compiles fine.
+      SLet(_, _, _, _, body) => if expr_binds_applied_type_param(body, needle) {
         found = true
       } else {
         ()
