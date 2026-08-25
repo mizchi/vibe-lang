@@ -6339,11 +6339,90 @@ fn interp_take_repl(r: Option[Expr]) -> Expr {
 /// what the checker sees (effect-free); this pass rewrites it after check so
 /// a failure can print both sides without adding Stderr/Exception to the
 /// source row.
+/// A program that DEFINES `assert_eq` itself gets its own function, not this
+/// lowering. Measured before the guard: `fn assert_eq(a: Int, b: Int) -> Int {
+/// a + b }` plus `assert_eq(1, 2)` compiled clean and trapped with `assert_eq
+/// failed` instead of returning 3, with no diagnostic naming the conflict
+/// anywhere (#2283).
 fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
   match callee {
-    EIdent(n, _) => n == "assert_eq" && Array::length(args) == 2,
+    EIdent(n, _) => n == "assert_eq" && Array::length(args) == 2 && !user_assert_eq_bound(),
     _ => false
   }
+}
+
+/// Pass state, reset at every `desugar_trait_dicts` entry like the exn-kind
+/// cell above: whether THIS program binds `assert_eq` itself.
+///
+/// The unit is the program this pass was handed, which in the FS lane is every
+/// module merged together -- so one module defining `assert_eq` stands the
+/// lowering down for all of them. Coarse, and deliberately so: the merged
+/// program is what this pass sees, and a per-module answer here would be
+/// invented.
+let dtd_user_assert_eq = [0]
+
+fn user_assert_eq_reset(stmts: Array[Stmt]) -> Unit {
+  Array::set(dtd_user_assert_eq, 0, if stmts_define_assert_eq(stmts) {
+    1
+  } else {
+    0
+  })
+}
+
+fn user_assert_eq_bound() -> Bool {
+  Array::get(dtd_user_assert_eq, 0) == 1
+}
+
+/// Whether this program DEFINES `assert_eq` at the top level -- a
+/// statement-level definition, or an import that lands under that name.
+///
+/// Top-level only, and that boundary is not arbitrary: it is exactly what the
+/// codegen guard can honor. `compile_call.vibe` decides by `fn_idx_in_list`
+/// (the function table) and deliberately ignores `local_idx_hint`, because a
+/// lambda's captured free name appears there with an unresolved slot -- the
+/// #1095 trap. Suppressing the lowering for a LOCAL binding only moves the
+/// failure: the pass stands down, codegen's own `assert_eq` arm still claims
+/// the call, and the program traps with no message at all. Measured on
+/// `match make_cmp() { assert_eq => assert_eq(1, 2) }`: the builtin assertion
+/// before, a bare `unreachable` after. Worse, not better -- so the local and
+/// pattern-bound cases keep their pre-existing behaviour (#2285).
+fn stmts_define_assert_eq(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    let hit = match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => name == "assert_eq",
+      SModule(_, _, body) => stmts_define_assert_eq(body),
+      SImport(_, items) => import_binds_assert_eq(items),
+      _ => false
+    }
+    if hit {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn import_binds_assert_eq(items: Array[ImportItem]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    let local = match item.alias {
+      Some(a) => a,
+      None => item.name
+    }
+    if local == "assert_eq" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn assert_eq_concat(a: Expr, b: Expr) -> Expr {
@@ -14876,6 +14955,9 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // #2141: a throw mid-rewrite leaves frames on the lexical binder stack;
   // reset so a later run on another program cannot see them.
   scope_formals_reset()
+  // #2283: same discipline -- whether the assert lowering must stand down for
+  // THIS program, because the program defines the name itself.
+  user_assert_eq_reset(stmts)
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)

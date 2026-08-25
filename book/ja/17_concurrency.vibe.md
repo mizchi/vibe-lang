@@ -11,6 +11,20 @@ vibe でスレッドを spawn することはありません。`TaskGroup` を�
 
 パッケージは `@vibe/concurrent`。
 
+**この章は本書で唯一の unstable な面です。** ここに出てくるものはすべて
+ADR-0068 で、状態はまだ `proposed` です — `Nursery`、`Task`、
+`Sender`/`Receiver`、`TaskGroup::run` / `spawn` / `spawn_suspend`、および
+コンパイラの `Send` 判定。SemVer の約束の外側にあり、Minor リリースの中で
+変わりえます ([stable surface](../../docs/spec/stable-surface.md) §6)。決めて
+あることは組み立てるに足りますが、決まっていないのは `Send`/region の検査と、
+どの backend が動かすかです (現行のスケジューラは cooperative
+run-to-completion のプロトタイプ)。
+
+`Async` effect 自体はこのバケツに入りません。ADR-0012 は accepted で、row 上の
+`with Async` は他の effect と同じだけ安定しています — `StdinStream::next` の
+ように出荷済み builtin の署名にも現れます。不安定なのはその上に建つ並行
+モデルであって、語彙ではありません。
+
 ## spawn して join する
 
 ```vibe run

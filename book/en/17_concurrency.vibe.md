@@ -11,6 +11,20 @@ checkable.
 
 The package is `@vibe/concurrent`.
 
+**This chapter is the one unstable surface in the book.** Everything here is
+ADR-0068, which is still `proposed`: `Nursery`, `Task`, `Sender`/`Receiver`,
+`TaskGroup::run` / `spawn` / `spawn_suspend`, and the compiler's `Send` rule.
+It is outside the SemVer promise and can change within a Minor release — see
+[the stable surface](../../docs/spec/stable-surface.md) §6. What it decides is
+settled enough to build on; what is not settled is the `Send`/region checking
+and which backend runs it (today's scheduler is a cooperative
+run-to-completion prototype).
+
+The `Async` effect itself is NOT in that bucket. ADR-0012 is accepted, and
+`with Async` on a row is as stable as any other effect — it appears in shipped
+builtin signatures like `StdinStream::next`. The unstable part is the
+concurrency model built on top of it, not the vocabulary.
+
 ## Spawning and joining
 
 ```vibe run

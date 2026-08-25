@@ -34,8 +34,37 @@ Trait bound compatibility follows the lock in [decisions.md](decisions.md):
 **tighter bounds = Major / looser bounds = Minor**.
 
 The **unstable surface (§6)** is outside this guarantee. Those parts can break
-within a Minor. They are reached only through `@build.unstable`, an explicit
-flag, or an ADR still marked `proposed`.
+within a Minor.
+
+**How the unstable surface is marked.** By a mechanism the compiler enforces,
+never by an ADR's status — status is bookkeeping a reader never sees, and a
+surface marked only that way compiles clean with no marker of any kind.
+
+What is enforced today, measured 2026-08-24:
+
+| surface | how it is gated |
+| --- | --- |
+| wasm-gc backend | opt-in env var (`VIBE_BACKEND=gc` and friends) |
+| `perform?` | the checker rejects it, naming the edit that fixes it |
+| SIMD | the package does not resolve |
+| **ADR-0068 concurrency** | **`import @vibe/concurrent` is rejected by `vibe check` AND by `vibe build`; `VIBE_UNSTABLE=1` allows it** |
+
+An **error**, not a warning. `vibe check` exits non-zero and `vibe build`
+emits no wasm; the diagnostic names the environment variable that opts in.
+Both verbs answer the same way on purpose — a build that accepts what the
+check rejects is the "two verbs, two answers" defect #1567 fixed for
+check/diagnostics, and it is worse here because the accepting verb is the one
+that ships.
+
+The gate reads the entry file's **parsed** imports, so whitespace does not
+cross it (`import\t@vibe/concurrent` is the same as `import @vibe/concurrent`),
+and it looks at the entry only: a dependency's own imports are its author's
+choice. Harnesses inside this repository that compile in-tree sources against
+the surface deliberately (the book's concurrency chapter, the unit-test
+batch) grant the opt-in themselves; the boundary is pinned by
+`tests/gates/late/run.sh` section 108.
+
+The rest of §6 is still a reading obligation rather than an enforced boundary.
 
 ---
 
@@ -54,8 +83,7 @@ of each item is [spec/syntax.md](syntax.md) and the
   `Char` (an `Int` alias), `Bool`, `Unit`.
 - Literals: integers (decimal / `0x` hex), floats (`1.5f` / `3.14`), strings
   (interpolation `\{expr}`), chars `'A'`, `true`/`false`, `()`.
-- Composite types: tuples `(A, B)`, `Array[T]`, `StringMap[V]` (the builtin
-  map; `Map[K, V]`'s generality is not frozen — see §3), record, struct,
+- Composite types: tuples `(A, B)`, `Array[T]`, `Map[K, V]`, record, struct,
   enum, function types `(A) -> B`, effectful `(A) -> B with E`, generics `[T]`,
   trait bounds `[T: A + B]`, and the `Option[T]` sugar `T?` (ADR-0046).
 - **Equality (`==`) — the fail-closed contract** (ADR-0097 as shipped; measured
@@ -160,35 +188,16 @@ The stable symbols listed under "Key Builtins" in the
   functions in `@vibe/builtin`, reached by
   `import @vibe/builtin { String::replace }`, and are not in the builtin
   registry.
-- **Array**: `length`, `get`, `slice`, `concat`, plus `ArrayBuilder::new/push/freeze`.
-  `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse` cannot be frozen as
-  first-class values (call-only operations: `Array::map(xs, f)`, not
-  `let g = Array::map`; #2275).
-- **StringMap** — the String-keyed builtin map. Its type is spelled
-  `StringMap[V]`; the operations keep the `Map::` qualifier, so the spelling
-  is the type's, not a second operation family. Neither needs an import.
-  `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`, `Map::size`, `Map::new`, and `Map::from_pairs` cannot be frozen as first-class values -- they are call-only builtin operations (`Map::get(m, k)`, not `let g = Map::get`; #2274 / #2275).
-  **`Map[K, V]`'s generality is deliberately NOT frozen** (#2263): the builtin
-  is String-keyed today, and an annotation naming a concrete non-String key is
-  rejected where it is written. The name `Map` is reserved for the generic
-  type; completing it turns a rejection into an answer, which is a compatible
-  change. A key that is a type parameter is unaffected — generic code over
-  `Map[K, V]` keeps compiling.
-  **Another key type is already available today**: `MutMap[K, V]` from
-  `@vibe/core` is the generic open-addressing map, and it is what the
-  rejection points at (`MutMap::new_int()` / `new_string()`, or
-  `MutMap::new(hash_fn, eq_fn)` for any other key). It is a library type, so
-  it is frozen by §3's `@vibe/core` entry rather than by the builtin surface.
-- **Int64Array**: `make`, `get`, `set`, `length` cannot be frozen as
-  first-class values (call-only; #2275).
-- **Conversions**: `Int::to_double`, `Double::to_int`.
-  `Int::to_string` cannot be frozen as a first-class value (call-only; #2275).
+- **Array**: `length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`,
+  `all`, `reverse`, `concat`, plus `ArrayBuilder::new/push/freeze`.
+- **Map**: `get`, `has_key`, `keys`, `values`, `set`, `size`.
+- **Int64Array**: `make`, `get`, `set`, `length` (for 32-bit word workloads).
+- **Conversions**: `Int::to_string`, `Int::to_double`, `Double::to_int`.
 - **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
   **combinator layer (`Iterator::map` and friends) is not frozen** — it is
   retired by ADR-0099's two-layer split and has zero rows in the registry
-  (measured: `Iterator::` 0 hits). Eager iteration is the call forms
-  `Array::map` / `Array::filter` / `Array::fold` (cannot be frozen as
-  first-class values; see Array above).
+  (measured: `Iterator::` 0 hits). Eager iteration is
+  `Array::map` / `Array::filter` / `Array::fold`.
 - **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), and the
   `let*` railway bind. `Result::and_then` **cannot be frozen** — `Result` was
   removed from the language in #1324, and `Result::` has zero registry rows.
@@ -256,12 +265,19 @@ The following is still under construction or its design is not settled. It is
 **outside** the SemVer guarantee and can break within a Minor. Use it knowing
 that.
 
-- **Async / structured concurrency / WASI 0.3** (ADR-0012, ADR-0068,
-  `proposed`): the `{Async}` effect, `Future[T]`, `Stream[T]`, `Task[T]`,
-  `for await`. Today's codegen is an eager prototype; the public semantics are
-  defined in the [structured concurrency spec](../concurrency.md). JSPI/Worker,
-  the WASI Component Model, and shared-everything threads are interchangeable
-  lowerings — the stable surface is tied to none of them.
+- **Structured concurrency / WASI 0.3** (ADR-0068, `proposed`): `Nursery[r]`,
+  `Task[r,T]`, `Sender`/`Receiver`, `TaskGroup::run` / `spawn` /
+  `spawn_suspend`, and the `Send` eligibility rule. Today's codegen is an eager
+  prototype; the public semantics are defined in the
+  [structured concurrency spec](../concurrency.md). JSPI/Worker, the WASI
+  Component Model, and shared-everything threads are interchangeable lowerings
+  — the stable surface is tied to none of them.
+
+  **The `Async` effect ROW ELEMENT is not in this bullet.** ADR-0012 is
+  `accepted`, and `Async` already appears in shipped builtin signatures a user
+  can reach (`StdinStream::next(StdinStream) -> Int with Async`), where `vibe
+  check` enforces it like any other row element. The unsettled part is the
+  concurrency model built on top of it, not the vocabulary.
 - **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
   of non-tail-resumptive handlers, capability effects.
 - **Capability authorization surface** (ADR-0088, `proposed`): the two-clause

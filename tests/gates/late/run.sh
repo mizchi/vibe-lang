@@ -6045,3 +6045,567 @@ if ! cmp -s "$fmtdir/expected.vibe" "$fmtdir/out.vibe"; then
 fi
 rm -rf "$fmtdir"
 echo "[compiler-gate] vibe fmt ok (#2149)"
+
+# 108/108. The ADR-0068 concurrency surface is opt-in (#2248).
+#      docs/spec/stable-surface.md said the unstable surface "is reached only
+#      through `@build.unstable`, an explicit flag, or an ADR still marked
+#      `proposed`" -- and `@build.unstable` appeared nowhere else in the tree,
+#      there was no such flag, and `TaskGroup::run` checked clean with no
+#      marker of any kind.
+#
+#      BOTH verbs, because a build that accepts what the check rejects is the
+#      "two verbs, two answers" defect #1567 fixed for check/diagnostics, and
+#      it is worse here: the accepting verb is the one that ships. And three
+#      directions each, since any one alone is satisfiable by the wrong thing
+#      -- silence would also pass if the gate were deleted, rejection would
+#      also pass if the opt-in did nothing, and both would pass if it rejected
+#      every file.
+echo "[compiler-gate] 108/108 the ADR-0068 concurrency surface is opt-in, in check AND build (#2248)"
+uwdir="_build/_gate_unstable_warn"
+rm -rf "$uwdir"; mkdir -p "$uwdir"
+cat > "$uwdir/uses.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int with Exception {
+  TaskGroup::run((n) -> {
+    let _t = TaskGroup::spawn(n, () -> { 7 })
+    0
+  })
+}
+UWEOF
+cat > "$uwdir/plain.vibe" <<'UWEOF'
+fn main() -> Int { 1 + 1 }
+UWEOF
+# `env -u VIBE_UNSTABLE`: the no-opt-in cases must not inherit the opt-in.
+# Measured -- with VIBE_UNSTABLE=1 in the ambient environment this section
+# reported "did not reject" and would have passed vacuously had the assertion
+# been the other way round. Same defect #2252 found in five self-tests: a
+# check that measures the machine, not the property.
+uw_check() { env -u VIBE_UNSTABLE VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$1" 2>&1; }
+uw_build() { # <src> <out> [extra env assignments...]
+  local src="$1" out="$2"; shift 2
+  rm -f "$out" "$out.diag"
+  env -u VIBE_UNSTABLE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$src" "$out" main >/dev/null 2>&1 || true
+}
+
+# check: rejected, opt-in accepted, unrelated file untouched.
+#
+# Captured into a variable, not piped: this gate runs under `set -o pipefail`,
+# and `uw_check` exits 1 on the rejection it is asserting, so `uw_check | grep`
+# fails even when grep MATCHES. Measured -- the first version reported "vibe
+# check accepted @vibe/concurrent" while the rejection it was looking for was
+# printed one line above it in the same log.
+uw_uses_out="$(uw_check "$uwdir/uses.vibe" || true)"
+if ! printf '%s\n' "$uw_uses_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+  echo "[compiler-gate] FAIL: vibe check accepted @vibe/concurrent with no opt-in (#2248)" >&2
+  printf '%s\n' "$uw_uses_out" >&2
+  exit 1
+fi
+if ! VIBE_UNSTABLE=1 VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" VIBE_CLI_WASM="$stage2_wasm" \
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/runtime/vibe" check "$uwdir/uses.vibe" >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let vibe check through (#2248)" >&2
+  exit 1
+fi
+uw_plain_out="$(uw_check "$uwdir/plain.vibe" || true)"
+if printf '%s\n' "$uw_plain_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent was rejected anyway (#2248)" >&2
+  printf '%s\n' "$uw_plain_out" >&2
+  exit 1
+fi
+
+# build: the same three, through the FS-compile lane.
+uw_build "$uwdir/uses.vibe" "$uwdir/uses.wasm"
+if [ -s "$uwdir/uses.wasm" ]; then
+  echo "[compiler-gate] FAIL: vibe build accepted @vibe/concurrent with no opt-in -- the build accepts what the check rejects (#2248)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/uses.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the build rejection did not name the opt-in (#2248)" >&2
+  cat "$uwdir/uses.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+uw_build "$uwdir/uses.vibe" "$uwdir/uses_optin.wasm" VIBE_UNSTABLE=1
+if [ ! -s "$uwdir/uses_optin.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the build through (#2248)" >&2
+  cat "$uwdir/uses_optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+uw_build "$uwdir/plain.vibe" "$uwdir/plain.wasm"
+if [ ! -s "$uwdir/plain.wasm" ]; then
+  echo "[compiler-gate] FAIL: a file not importing @vibe/concurrent failed to build (#2248)" >&2
+  cat "$uwdir/plain.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# Whitespace must not cross the boundary (#2277 review). The first version of
+# the scan matched `String::starts_with(line, "import ")` and sliced a fixed 7
+# bytes, so a tab skipped the check outright and two spaces yielded an empty
+# package name. Both spellings are valid source the lexer accepts, so both were
+# a silent bypass; the gate now reads the PARSED import instead. Written with
+# printf rather than a heredoc so the tab survives being read back.
+printf 'import\t@vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/tab.vibe"
+printf 'import  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/spaces.vibe"
+for uw_odd in tab spaces; do
+  uw_odd_out="$(uw_check "$uwdir/$uw_odd.vibe" || true)"
+  if ! printf '%s\n' "$uw_odd_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+    echo "[compiler-gate] FAIL: '$uw_odd' whitespace spelling of the import bypassed the check gate (#2277)" >&2
+    printf '%s\n' "$uw_odd_out" >&2
+    exit 1
+  fi
+  uw_build "$uwdir/$uw_odd.vibe" "$uwdir/$uw_odd.wasm"
+  if [ -s "$uwdir/$uw_odd.wasm" ]; then
+    echo "[compiler-gate] FAIL: '$uw_odd' whitespace spelling of the import bypassed the build gate (#2277)" >&2
+    exit 1
+  fi
+done
+
+# The reported line must be the OFFENDING import, not the first line that
+# mentions the package. `import @vibe/core { .. } // @vibe/concurrent` is a
+# stable import carrying the name in a comment; naming it told the reader to
+# delete a line that was not the problem, which is worse than no line at all
+# (#2277 review). The offending import is on line 3 here.
+cat > "$uwdir/comment.vibe" <<'UWEOF'
+import @vibe/core { array_empty } // @vibe/concurrent
+
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int with Exception {
+  TaskGroup::run((n) -> { 0 })
+}
+UWEOF
+uw_build "$uwdir/comment.vibe" "$uwdir/comment.wasm"
+if ! grep -qF 'line 3:' "$uwdir/comment.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the opt-in diagnostic named the wrong import line (#2277)" >&2
+  cat "$uwdir/comment.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# A PINNED `require` header must not silence the gate. The build ingests before
+# it parses, and ingestion blanks that header; a scan that read the raw bytes
+# instead met the `#` in `#pkg:sha1:...`, the lexer refused it ("unknown #
+# directive"), the parse yielded nothing, and the gate went silent while the
+# build compiled the unstable import. Measured: unpinned produced the
+# diagnostic, pinned produced none (#2277 review).
+#
+# The pin here is deliberately bogus, so the build fails either way -- what is
+# asserted is WHICH diagnostic comes out. A pin error means the gate never
+# spoke.
+cat > "$uwdir/pinned.vibe" <<'UWEOF'
+require @vibe/concurrent 0.0.1 = #pkg:sha1:0123456789abcdef0123456789abcdef01234567
+
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int with Exception {
+  TaskGroup::run((n) -> { 0 })
+}
+UWEOF
+uw_build "$uwdir/pinned.vibe" "$uwdir/pinned.wasm"
+if [ -s "$uwdir/pinned.wasm" ]; then
+  echo "[compiler-gate] FAIL: a pinned-require entry built against @vibe/concurrent with no opt-in (#2277)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/pinned.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a pinned require header silenced the opt-in gate (#2277)" >&2
+  cat "$uwdir/pinned.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# The path may be on the NEXT line. `import\n  @vibe/concurrent { .. }` is valid
+# source; a same-line search missed it and fell back to line 1, naming an
+# unrelated declaration. The location comes from the lexer now, so this and the
+# comment case above are the same rule rather than two patches (#2277 review).
+# The import here starts on line 5.
+printf 'fn helper() -> Int {\n  1\n}\n\nimport\n  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/multiline.vibe"
+uw_build "$uwdir/multiline.vibe" "$uwdir/multiline.wasm"
+if ! grep -qF 'line 5:' "$uwdir/multiline.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a multiline import declaration got the wrong line (#2277)" >&2
+  cat "$uwdir/multiline.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# The BUFFER lane must agree too. `vibe check --single-file` (VIBE_DIAGNOSTICS)
+# does not resolve imports, so an UNUSED `import @vibe/concurrent` analyzed
+# clean there while both other verbs rejected the same file -- an editor showing
+# nothing is the third answer to the same question (#2277 review). Unused on
+# purpose: that is the shape that slipped through.
+cat > "$uwdir/buffer.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+fn main() -> Int {
+  1
+}
+UWEOF
+rm -f "$uwdir/buffer.out"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$uwdir/buffer.vibe" "$uwdir/buffer.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the single-file diagnostics lane accepted an unstable import (#2277)" >&2
+  cat "$uwdir/buffer.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$uwdir/buffer.optin.out"
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$uwdir/buffer.vibe" "$uwdir/buffer.optin.out" __no_entry__ >/dev/null 2>&1 || true
+if grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.optin.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the single-file diagnostic (#2277)" >&2
+  cat "$uwdir/buffer.optin.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and the JSON form of that same buffer lane, which is what the editor
+# actually consumes. It serialized only `collect_all_diagnostics`, so it
+# answered `[]` while the text form reported the error -- the LSP would have
+# been the one surface still accepting the unstable import (#2277 review).
+rm -f "$uwdir/buffer.json"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 VIBE_DIAGNOSTICS_JSON=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/buffer.vibe" "$uwdir/buffer.json" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.json" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the single-file JSON lane dropped the unstable diagnostic (#2277)" >&2
+  cat "$uwdir/buffer.json" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The JSON form must carry the COLUMN, not just the message. `lsp_parse_diag_line`
+# accepts exactly `line L:C:`; a readable `line L:col C:` made it fall back to
+# column 1, so the editor put the cursor at character 0 while the text form
+# named the real column (#2277 review). The import is indented so the two
+# answers can differ at all.
+printf '  import @vibe/concurrent { TaskGroup }\n\nfn main() -> Int {\n  1\n}\n' > "$uwdir/indented.vibe"
+rm -f "$uwdir/indented.out" "$uwdir/indented.json"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/indented.vibe" "$uwdir/indented.out" __no_entry__ >/dev/null 2>&1 || true
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 VIBE_DIAGNOSTICS_JSON=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/indented.vibe" "$uwdir/indented.json" __no_entry__ >/dev/null 2>&1 || true
+# Two lanes, one column: byte column 3 in the text form is UTF-16 character 2 in
+# the JSON form. Before the fix the JSON said 0 for this file while the text
+# form said 3, because `line L:col C:` is not a spelling `lsp_parse_diag_line`
+# can read -- it parsed "col 3" as a number, failed, and fell back to column 1.
+if ! grep -qF 'line 1:3: set VIBE_UNSTABLE=1' "$uwdir/indented.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the text diagnostic lost the column of an indented unstable import (#2277)" >&2
+  cat "$uwdir/indented.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF '"character":2' "$uwdir/indented.json" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the JSON diagnostic lost the column the text form reported (#2277)" >&2
+  cat "$uwdir/indented.json" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# `vibe serve` is an ARTIFACT-producing verb with its own branch, taken before
+# the FS-compile gate, so the same handler that `vibe check` rejects used to
+# yield a deployable component with no opt-in (#2277 review). The handler shape
+# is the four-parameter String one `validate_serve_handler` requires; the
+# control below proves the file is otherwise servable.
+cat > "$uwdir/serve.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+export fn handler(method: String, url: String, headers: String, body: String) -> String {
+  "ok"
+}
+UWEOF
+rm -f "$uwdir/serve.component.wasm" "$uwdir/serve.component.wasm.diag"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/serve.vibe" "$uwdir/serve.component.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$uwdir/serve.component.wasm" ]; then
+  echo "[compiler-gate] FAIL: vibe serve emitted a component for an unstable import with no opt-in (#2277)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/serve.component.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe serve refused the handler for the wrong reason (#2277)" >&2
+  cat "$uwdir/serve.component.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$uwdir/serve.optin.wasm" "$uwdir/serve.optin.wasm.diag"
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/serve.vibe" "$uwdir/serve.optin.wasm" __no_entry__ >/dev/null 2>&1 || true
+if grep -qF 'VIBE_UNSTABLE=1' "$uwdir/serve.optin.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the serve gate (#2277)" >&2
+  cat "$uwdir/serve.optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# `export @pkg { .. }` would depend on the package exactly as an import does and
+# then PUBLISH its surface onward. Measured: it does not parse, so nothing
+# crosses the boundary through it -- but that is a fact about the PARSER, not
+# about this gate, and it is the kind of fact that changes without anyone
+# revisiting the gate (#2277 review).
+cat > "$uwdir/reexport.vibe" <<'UWEOF'
+export @vibe/concurrent { TaskGroup }
+
+fn main() -> Int {
+  1
+}
+UWEOF
+uw_build "$uwdir/reexport.vibe" "$uwdir/reexport.wasm"
+if [ -s "$uwdir/reexport.wasm" ]; then
+  echo "[compiler-gate] FAIL: a re-export of the unstable package built with no opt-in (#2277)" >&2
+  exit 1
+fi
+# TWO acceptable refusals, and the check has to distinguish them or it passes
+# for a reason it never verified. Today the form does not parse at all -- the
+# parser builds `SReExport` for `TDot`/`TDotDot` paths only and answers a
+# package path with "unexpected token in export" -- so the gate is not what
+# stops it. If that syntax ever lands, this arm stops matching and the
+# diagnostic must be the opt-in one instead; anything else fails here.
+if grep -qF 'unexpected token in export' "$uwdir/reexport.wasm.diag" 2>/dev/null; then
+  :
+elif grep -qF 'VIBE_UNSTABLE=1' "$uwdir/reexport.wasm.diag" 2>/dev/null; then
+  :
+else
+  echo "[compiler-gate] FAIL: a package re-export was refused for an unrelated reason -- if it now parses, gate it (#2277)" >&2
+  cat "$uwdir/reexport.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# The SINGLE-SOURCE lane is artifact-producing too. `VIBE_TEST_BACKEND=gc` and
+# `VIBE_BENCH_BACKEND=gc` reach it because `runtime/vibe` clears
+# `VIBE_FS_COMPILE` and selects the backend, so the file compiled and RAN with
+# no opt-in while every check form rejected the same declaration. Measured
+# before the fix: `vibe test` refused it, `VIBE_TEST_BACKEND=gc vibe test`
+# answered `1 passed` (#2277 review). The import is unused on purpose -- that is
+# the shape this lane accepts.
+cat > "$uwdir/bare.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+test "unused unstable import" {
+  assert_true(1 + 1 == 2)
+}
+UWEOF
+rm -f "$uwdir/bare.wasm" "$uwdir/bare.wasm.diag"
+env -u VIBE_UNSTABLE -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/bare.vibe" "$uwdir/bare.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$uwdir/bare.wasm" ]; then
+  echo "[compiler-gate] FAIL: the single-source lane built an unstable import with no opt-in (#2277)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/bare.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the single-source lane refused the file for the wrong reason (#2277)" >&2
+  cat "$uwdir/bare.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$uwdir/bare.optin.wasm" "$uwdir/bare.optin.wasm.diag"
+env -u VIBE_FS_COMPILE VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/bare.vibe" "$uwdir/bare.optin.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$uwdir/bare.optin.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the single-source gate (#2277)" >&2
+  cat "$uwdir/bare.optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and an ordinary file on that lane is untouched, so the gate is not simply
+# refusing everything.
+printf 'test "plain" {\n  assert_true(1 + 1 == 2)\n}\n' > "$uwdir/bare_plain.vibe"
+rm -f "$uwdir/bare_plain.wasm" "$uwdir/bare_plain.wasm.diag"
+env -u VIBE_UNSTABLE -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_TEST=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/bare_plain.vibe" "$uwdir/bare_plain.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$uwdir/bare_plain.wasm" ]; then
+  echo "[compiler-gate] FAIL: the single-source gate refused an ordinary file (#2277)" >&2
+  cat "$uwdir/bare_plain.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# TWO imports of the same package must be located independently. The offset scan
+# restarted from token zero for each `SImport`, so both diagnostics carried the
+# FIRST declaration's coordinates -- and the second one then names a line whose
+# text the reader would find nothing wrong with (#2277 review).
+cat > "$uwdir/twice.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+import @vibe/concurrent { Nursery }
+
+fn main() -> Int {
+  1
+}
+UWEOF
+rm -f "$uwdir/twice.out"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/twice.vibe" "$uwdir/twice.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -qF 'line 1:1: set VIBE_UNSTABLE=1' "$uwdir/twice.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the first of two unstable imports was not reported at line 1 (#2277)" >&2
+  cat "$uwdir/twice.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF 'line 3:1: set VIBE_UNSTABLE=1' "$uwdir/twice.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the SECOND unstable import was reported at the first one's line (#2277)" >&2
+  cat "$uwdir/twice.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$uwdir"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+fmtdir="_build/_gate_vibe_fmt"
+rm -rf "$fmtdir"; mkdir -p "$fmtdir"
+printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fmtdir/messy.vibe" "$fmtdir/out.vibe" >"$fmtdir/run.log" 2>&1 || true
+if [ ! -s "$fmtdir/out.vibe" ]; then
+  echo "[compiler-gate] FAIL: VIBE_FMT produced no output -- vibe fmt is not wired into the compiler (#2149)" >&2
+  cat "$fmtdir/run.log" >&2 || true
+  exit 1
+fi
+cat > "$fmtdir/expected.vibe" <<'FMTEXP'
+let add = (a: Int, b: Int) -> Int {
+  a + b
+}
+FMTEXP
+if ! cmp -s "$fmtdir/expected.vibe" "$fmtdir/out.vibe"; then
+  echo "[compiler-gate] FAIL: VIBE_FMT did not produce the canonical layout (#2149)" >&2
+  diff -u "$fmtdir/expected.vibe" "$fmtdir/out.vibe" >&2 || true
+  exit 1
+fi
+rm -rf "$fmtdir"
+echo "[compiler-gate] vibe fmt ok (#2149)"
+
+# 109/109. A multiline closure literal in a NON-FINAL argument slot formats to
+# a fixpoint (#2271). Reported as permanently unformattable -- apply changed
+# nothing, --check kept reporting a diff. The construct was never the problem:
+# the formatter ENTRY had failed to compile (a fresh checkout has none of the
+# untracked generated artifacts), and `vibe fmt` spelled "I could not build
+# myself" with the same exit 1 it uses for "this file is not formatted", so a
+# caller looped forever. Fixed in scripts/ensure_entry_wasm.sh (the failure is
+# loud) and scripts/vibe_fmt.sh (it exits 2), pinned there by
+# scripts/ensure_entry_wasm_test.sh. This section pins the other half of the
+# report -- that the SHAPE formats, on the stage2 lane -- so the issue's claim
+# is a regression test in both directions.
+echo "[compiler-gate] 109/109 a multiline closure in a non-final argument slot formats to a fixpoint (#2271)"
+nfdir="_build/_gate_nonfinal_closure"
+rm -rf "$nfdir"; mkdir -p "$nfdir"
+cat > "$nfdir/in.vibe" <<'NFIN'
+fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  ()
+}
+fn caller(shadow: Array[String], out: Array[String]) -> Unit {
+  collect_by((head) -> {
+      let mut found = false
+      if Array::length(shadow) > 0 {
+    found = true
+      } else {
+        ()
+      }
+      found
+  }, out)
+}
+NFIN
+cat > "$nfdir/expected.vibe" <<'NFEXP'
+fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  ()
+}
+fn caller(shadow: Array[String], out: Array[String]) -> Unit {
+  collect_by((head) -> {
+    let mut found = false
+    if Array::length(shadow) > 0 {
+      found = true
+    } else {
+      ()
+    }
+    found
+  }, out)
+}
+NFEXP
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$nfdir/in.vibe" "$nfdir/out.vibe" >"$nfdir/run.log" 2>&1 || true
+if [ ! -s "$nfdir/out.vibe" ]; then
+  echo "[compiler-gate] FAIL: the formatter produced nothing for a non-final closure argument (#2271)" >&2
+  cat "$nfdir/run.log" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$nfdir/expected.vibe" "$nfdir/out.vibe"; then
+  echo "[compiler-gate] FAIL: non-final closure argument not formatted as expected (#2271)" >&2
+  diff -u "$nfdir/expected.vibe" "$nfdir/out.vibe" >&2 || true
+  exit 1
+fi
+# The fixpoint is the half the issue said was unreachable: formatting the
+# formatted form again must change nothing, or `pkf run fmt` and CI's
+# vibe-fmt-check disagree about the file forever.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$nfdir/expected.vibe" "$nfdir/again.vibe" >"$nfdir/again.log" 2>&1 || true
+if ! cmp -s "$nfdir/expected.vibe" "$nfdir/again.vibe"; then
+  echo "[compiler-gate] FAIL: the formatted non-final closure is not a fixpoint (#2271)" >&2
+  diff -u "$nfdir/expected.vibe" "$nfdir/again.vibe" >&2 || true
+  exit 1
+fi
+rm -rf "$nfdir"
+echo "[compiler-gate] non-final closure argument fixpoint ok (#2271)"
+
+
+# 110/110. A user's own `assert_eq` is the function that runs (#2283).
+# Measured on a stage2 predating this guard: `fn assert_eq(a: Int, b: Int) ->
+# Int { a + b }` plus `assert_eq(1, 2)` compiled clean and TRAPPED with
+# `assert_eq failed` instead of returning 3, with no diagnostic naming the
+# conflict. Two layers had to give -- the lowering, which claimed every arity-2
+# `assert_eq` by name, and codegen, which had no shadowing guard at all on
+# these three spellings (#1095 removed `prefer_bound_call`, and the half of it
+# that was wrong is `local_idx_hint`, not `fn_idx_in_list`).
+echo "[compiler-gate] 110/110 a user's own assert_eq is the function that runs (#2283)"
+asdir="_build/_gate_assert_shadow"
+rm -rf "$asdir"; mkdir -p "$asdir"
+cat > "$asdir/shadow.vibe" <<'ASEOF'
+fn assert_eq(a: Int, b: Int) -> String {
+  Int::to_string(a + b)
+}
+
+fn main() -> Unit with Stdout {
+  println(assert_eq(1, 2))
+}
+ASEOF
+rm -f "$asdir/shadow.wasm" "$asdir/shadow.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asdir/shadow.vibe" "$asdir/shadow.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asdir/shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: a program defining its own assert_eq did not compile (#2283)" >&2
+  cat "$asdir/shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+as_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/shadow.wasm" 2>&1 || true)"
+if ! printf '%s\n' "$as_out" | grep -qx '3'; then
+  echo "[compiler-gate] FAIL: the user's own assert_eq was not the function that ran (#2283)" >&2
+  printf '%s\n' "$as_out" >&2
+  exit 1
+fi
+# The FS lane too. `assert_true` is the oracle so the check does not depend on
+# captured stdout: if the builtin claimed the call, `assert_eq(1, 2)` traps
+# before `assert_true` ever sees a value.
+cat > "$asdir/shadow_test.vibe" <<'ASEOF'
+fn assert_eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+test "own assert_eq" {
+  assert_true(assert_eq(1, 2) == 3)
+}
+ASEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$asdir/shadow_test.vibe" >"$asdir/shadow.log" 2>&1 || true
+if grep -qF 'assert_eq failed' "$asdir/shadow.log"; then
+  echo "[compiler-gate] FAIL: the FS lane replaced the user's assert_eq with the builtin assertion (#2283)" >&2
+  cat "$asdir/shadow.log" >&2
+  exit 1
+fi
+if ! grep -qF '1 passed, 0 failed' "$asdir/shadow.log"; then
+  echo "[compiler-gate] FAIL: the user's own assert_eq did not run in the FS lane (#2283)" >&2
+  cat "$asdir/shadow.log" >&2
+  exit 1
+fi
+# ...and the BUILTIN still works where nothing shadows it, or the guard has
+# simply turned the feature off.
+cat > "$asdir/builtin_test.vibe" <<'ASEOF'
+test "builtin assert still fires" {
+  assert_eq(1, 2)
+}
+ASEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$asdir/builtin_test.vibe" >"$asdir/builtin.log" 2>&1 || true
+if ! grep -qF 'assert_eq failed' "$asdir/builtin.log"; then
+  echo "[compiler-gate] FAIL: the builtin assert_eq stopped reporting failures (#2283)" >&2
+  cat "$asdir/builtin.log" >&2
+  exit 1
+fi
+rm -rf "$asdir"
+echo "[compiler-gate] user-defined assert_eq wins; builtin still fires ok (#2283)"
