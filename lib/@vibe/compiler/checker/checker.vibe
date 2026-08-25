@@ -6138,9 +6138,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // silently broke selfhost (`None` is not in the linear func table).
           // Qualified call-only ops (`Map::get`) are the #2274 hole. Do not
           // exempt ident_off < 0: the FS compile lane still parses unlocated,
-          // so every user ident is -1. Compiler-generated callees
-          // (`StringBuilder::new`) are ECall(EIdent, args) and are typed by
-          // the ECall arm, not this value-ident arm.
+          // so every user ident is -1. Call sites of those names are typed
+          // by the ECall fallback, which looks up the builtin without this
+          // rejection.
           if ident_off >= 0 {
             tab_identifier_ty(tytab, ident_off, t, capture, lane)
           } else {
@@ -7617,7 +7617,31 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               match recv_method {
                 Some(rm) => rm,
                 None => {
-                  let (ct, s1, c1) = check_expr_capture(EIdent(name, -1), env, defs, s, c, errors, tytab, capture, lane)
+                  // Call position: look up the callee type without going through
+                  // the value-ident arm. That arm rejects call-only builtins
+                  // (`StringBuilder::new`, `Map::size`); an ECall of those is
+                  // the form they allow. Unknown names still go through EIdent
+                  // so the diagnostic uses the real callee offset.
+                  let lookup_name = railway_ident_lookup_name(name)
+                  let (ct, s1, c1) = match env_lookup(env, lookup_name) {
+                    Some(t) => {
+                      let (ti, nc, new_bounds) = instantiate(t, c)
+                      let mut sbound = s
+                      let mut bi = 0
+                      while bi < Array::length(new_bounds) {
+                        let (vid, bounds) = Array::get(new_bounds, bi)
+                        if Array::length(bounds) != 0 {
+                          sbound = subst_add_bound(sbound, vid, bounds)
+                        }
+                        bi = bi + 1
+                      }
+                      (ti, sbound, nc)
+                    },
+                    None => match lookup_builtin(lookup_name) {
+                      Some(t) => (t, s, c),
+                      None => check_expr_capture(EIdent(name, callee_off), env, defs, s, c, errors, tytab, capture, lane)
+                    }
+                  }
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
