@@ -506,20 +506,23 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[Str
   }
 }
 
-/// The actual argument bound to alias parameter `name`, or the rigid name
-/// itself when it is not one of `params`.
-fn alias_arg_for_param(name: String, params: Array[String], args: Array[Type]) -> Type {
+/// The actual argument bound to alias parameter `name`, plus whether a
+/// substitution occurred. The distinction preserves the CALLER's binders for
+/// a substituted argument while keeping the alias's binders for its own body.
+fn alias_arg_for_param(name: String, params: Array[String], args: Array[Type]) -> (Type, Bool) {
   let mut i = 0
   let mut found = CtNamed(name, array_empty())
+  let mut substituted = false
   while i < Array::length(params) {
     if Array::get(params, i) == name && i < Array::length(args) {
       found = Array::get(args, i)
+      substituted = true
     } else {
       ()
     }
     i = i + 1
   }
-  found
+  (found, substituted)
 }
 
 /// `collect_unsupported_map_keys` over an alias BODY that is being applied to
@@ -538,20 +541,25 @@ fn alias_arg_for_param(name: String, params: Array[String], args: Array[Type]) -
 /// Only a KEY that is a bare parameter name needs the mapping: every other
 /// unsupported key is unsupported whatever the parameter stands for, so no
 /// substituted node is ever needed.
-fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: Array[String], args: Array[Type], out: Array[Type]) -> Unit {
+fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: Array[String], args: Array[Type], caller_shadow: Array[String], out: Array[Type]) -> Unit {
   match t {
     CtNamed(head, targs) => {
       if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
         let k0 = Array::get(targs, 0)
-        let k = match k0 {
+        let (k, substituted) = match k0 {
           CtNamed(kn, kargs) => if Array::length(kargs) == 0 {
             alias_arg_for_param(kn, params, args)
           } else {
-            k0
+            (k0, false)
           },
-          _ => k0
+          _ => (k0, false)
         }
-        if map_key_type_is_supported(k, defs, params) {
+        let key_shadow = if substituted {
+          caller_shadow
+        } else {
+          params
+        }
+        if map_key_type_is_supported(k, defs, key_shadow) {
           ()
         } else {
           Array::push(out, k)
@@ -561,32 +569,32 @@ fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: A
       }
       let mut i = 0
       while i < Array::length(targs) {
-        collect_unsupported_map_keys_applied(Array::get(targs, i), defs, params, args, out)
+        collect_unsupported_map_keys_applied(Array::get(targs, i), defs, params, args, caller_shadow, out)
         i = i + 1
       }
     },
-    CtArray(e) => collect_unsupported_map_keys_applied(e, defs, params, args, out),
-    CtOption(e) => collect_unsupported_map_keys_applied(e, defs, params, args, out),
+    CtArray(e) => collect_unsupported_map_keys_applied(e, defs, params, args, caller_shadow, out),
+    CtOption(e) => collect_unsupported_map_keys_applied(e, defs, params, args, caller_shadow, out),
     CtTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_unsupported_map_keys_applied(Array::get(items, i), defs, params, args, out)
+        collect_unsupported_map_keys_applied(Array::get(items, i), defs, params, args, caller_shadow, out)
         i = i + 1
       }
     },
     CtFn(fparams, ret, _) => {
       let mut i = 0
       while i < Array::length(fparams) {
-        collect_unsupported_map_keys_applied(Array::get(fparams, i), defs, params, args, out)
+        collect_unsupported_map_keys_applied(Array::get(fparams, i), defs, params, args, caller_shadow, out)
         i = i + 1
       }
-      collect_unsupported_map_keys_applied(ret, defs, params, args, out)
+      collect_unsupported_map_keys_applied(ret, defs, params, args, caller_shadow, out)
     },
     CtRecord(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, ft) = Array::get(fields, i)
-        collect_unsupported_map_keys_applied(ft, defs, params, args, out)
+        collect_unsupported_map_keys_applied(ft, defs, params, args, caller_shadow, out)
         i = i + 1
       }
     },
@@ -742,7 +750,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
               let resolved_args = for arg in args {
                 resolve_type_expr_shadowed(arg, defs, shadow)
               }
-              collect_unsupported_map_keys_applied(body, defs, params, resolved_args, out)
+              collect_unsupported_map_keys_applied(body, defs, params, resolved_args, shadow, out)
             },
             _ => ()
           },
