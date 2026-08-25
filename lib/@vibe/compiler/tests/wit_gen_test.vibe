@@ -124,6 +124,34 @@ test "wit_from_program: an IMPORTED StringMap is not the builtin projection" {
   assert(String::contains(message, "no WIT mapping"))
 }
 
+test "wit_from_program: a non-String Map key has no WIT mapping" {
+  // #2276 (Codex): both WIT CLI paths parse the entry and call
+  // `wit_from_program` WITHOUT running the checker, so an unrestricted `Map`
+  // arm published `list<tuple<s64, string>>` for an annotation ordinary
+  // compilation now rejects -- an interface for a program that does not
+  // compile. Measured before the fix: it emitted exactly that.
+  let stmts = [
+    SLet(true, false, "f", Some(TyFn([
+      TyApp("Map", [TyName("Int"), TyName("String")])
+    ], TyName("Int"), None)), efn_of_string_params(["m"]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "badkey")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a String-keyed Map still projects" {
+  let stmts = [
+    SLet(true, false, "f", Some(TyFn([
+      TyApp("Map", [TyName("String"), TyName("Int")])
+    ], TyName("Int"), None)), efn_of_string_params(["m"]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "goodkey")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
 test "wit_from_program: undeclared capability effect renders as comment" {
   let stats_ann = TyFn([TyName("Int")], TyName("Int"), Some("Fs"))
   let stmts = [

@@ -96,6 +96,27 @@ fn wit_is_unit_type(ty: TypeExpr) -> Bool {
   }
 }
 
+/// A `Map` key the WIT projection can represent. The builtin map is
+/// String-keyed; a type PARAMETER is accepted because a generic signature is
+/// projected per instantiation, not here.
+fn map_key_is_string(k: TypeExpr) -> Bool {
+  match k {
+    TyName(n) => n == "String" || !str_starts_upper(n),
+    _ => false
+  }
+}
+
+/// Whether `n` starts with an upper-case letter -- a concrete type name rather
+/// than a lower-case type parameter.
+fn str_starts_upper(n: String) -> Bool {
+  if String::length(n) == 0 {
+    false
+  } else {
+    let c = String::byte_at(n, 0)
+    c >= 65 && c <= 90
+  }
+}
+
 fn wit_type_text_with_shadow(ty: TypeExpr, string_map_shadowed: Bool) -> String with Exception {
   match ty {
     TyName(name) => {
@@ -135,7 +156,16 @@ fn wit_type_text_with_shadow(ty: TypeExpr, string_map_shadowed: Bool) -> String 
         "option<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}>"
       } else if head == "Result" && Array::length(args) == 2 {
         "result<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}, \{wit_type_text_with_shadow(Array::get(args, 1), string_map_shadowed)}>"
-      } else if head == "Map" && Array::length(args) == 2 {
+      } else if head == "Map" && Array::length(args) == 2 && map_key_is_string(Array::get(args, 0)) {
+        // #2276 (Codex): the KEY must be `String`. The builtin map is
+        // String-keyed and the checker now rejects any other concrete key, but
+        // both WIT CLI paths parse the entry and call `wit_from_program`
+        // WITHOUT running the checker -- so an unrestricted arm here published
+        // `list<tuple<s64, string>>` for `Map[Int, String]`, an interface for a
+        // program that no longer compiles. Measured before this: it emitted
+        // exactly that. Falling through instead reports "no WIT mapping",
+        // which is what the boundary should say about a type the language
+        // cannot represent.
         "list<tuple<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}, \{wit_type_text_with_shadow(Array::get(args, 1), string_map_shadowed)}>>"
       } else if head == "StringMap" && Array::length(args) == 1 && !string_map_shadowed {
         "list<tuple<string, \{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}>>"
