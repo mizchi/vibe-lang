@@ -49,11 +49,14 @@ adapter, launcher, mode, enforced = sys.argv[1], sys.argv[2], sys.argv[3], sys.a
 # read inside a branch, not a branch of its own.
 # Names that appear only in EXPRESSION position and do not pick a branch: they
 # modify observation inside whichever branch was already selected, and a caller
-# sets them deliberately (both are documented user-facing knobs). Clearing them
+# sets them deliberately (documented user-facing knobs). Clearing them
 # would break that, so they are excluded BY NAME -- and the check below fails on
 # any expression-position selector not accounted for here, so a new one cannot
 # be silently dropped the way VIBE_COVERAGE was (#2246 review).
-OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS"}
+# VIBE_UNSTABLE is the ADR-0068 opt-in, read inside already-selected branches
+# (`vibe check` / `vibe build` / `vibe serve`); it must not enter
+# VIBE_SELECTOR_ORDER or selector_clears_before would strip it.
+OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS", "VIBE_UNSTABLE"}
 
 # The order is SOURCE ORDER, and a selector counts wherever it is tested --
 # `let bytes = if Env::get("VIBE_COVERAGE") == "1" { .. } else if
