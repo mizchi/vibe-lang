@@ -152,14 +152,31 @@ if [ "$stale" = "1" ]; then
   # fresh, where an absent manifest just makes it rebuild. Both renames are
   # within one directory, so each is atomic for everyone else.
   rm -f "$ROOT_DIR/$deps_rel"
+  build_inode="$(ls -i "$ROOT_DIR/$build_wasm_rel" 2>/dev/null | awk '{ print $1 }')"
   mv -f "$ROOT_DIR/$build_wasm_rel" "$ROOT_DIR/$wasm_rel"
-  if [ -s "$ROOT_DIR/$build_funcmap_rel" ]; then
-    mv -f "$ROOT_DIR/$build_funcmap_rel" "$ROOT_DIR/$wasm_rel.funcmap"
+  # Each rename is atomic, but the three of them are not one transaction: two
+  # builders that both saw "stale" can interleave and pair one's wasm with the
+  # other's funcmap or manifest (#2277 review). `mv` within a directory is
+  # rename(2), so the published file keeps our inode -- a DIFFERENT one means
+  # someone published over us between the rename and here.
+  #
+  # The response is fail-closed rather than a lock: drop the manifest and
+  # publish none of our sidecars, so the winner's tuple stays whole and the next
+  # run rebuilds. A lock would also have to recover from a killed holder, and
+  # stale-lock stealing is a larger hazard than the one it removes here.
+  published_inode="$(ls -i "$ROOT_DIR/$wasm_rel" 2>/dev/null | awk '{ print $1 }')"
+  if [ -n "$build_inode" ] && [ -n "$published_inode" ] && [ "$published_inode" != "$build_inode" ]; then
+    rm -f "$ROOT_DIR/$deps_rel"
+    echo "ensure_entry_wasm.sh: another build published $wasm_rel first; leaving its artifact whole and rebuilding next run" >&2
   else
-    rm -f "$ROOT_DIR/$wasm_rel.funcmap"
-  fi
-  if [ "$captured" = "1" ]; then
-    mv -f "$ROOT_DIR/$build_deps_rel" "$ROOT_DIR/$deps_rel"
+    if [ -s "$ROOT_DIR/$build_funcmap_rel" ]; then
+      mv -f "$ROOT_DIR/$build_funcmap_rel" "$ROOT_DIR/$wasm_rel.funcmap"
+    else
+      rm -f "$ROOT_DIR/$wasm_rel.funcmap"
+    fi
+    if [ "$captured" = "1" ]; then
+      mv -f "$ROOT_DIR/$build_deps_rel" "$ROOT_DIR/$deps_rel"
+    fi
   fi
 fi
 

@@ -156,6 +156,20 @@ export fn stmts_bind_assert_eq(stmts: Array[Stmt]) -> Bool {
       SLet(_, _, name, _, _) => name == "assert_eq",
       SModule(_, _, body) => stmts_bind_assert_eq(body),
       SImport(_, items) => import_binds_assert_eq(items),
+      // `export ./dep.vibe { cmp as assert_eq }` binds the name in this module
+      // exactly as an import does -- `checker_stmt.vibe` routes both through
+      // the same `bind_stmt_imports`.
+      //
+      // Standing down here does NOT make that program work: re-export ALIASES
+      // are broken independently of the asserts (#2287 -- the merge inlines the
+      // dependency under its original name and drops the alias, so the call
+      // site reaches codegen unresolved). What it does is stop the lowering
+      // from MASKING that: `cmp as assert_eq` is the one alias spelling that
+      // did not crash, because the builtin claimed the call and ran an
+      // assertion instead. A loud unresolved-name failure is the better of the
+      // two, and it is the order the design policy sets -- never be silently
+      // wrong outranks crashing (#2277 review).
+      SReExport(_, items) => import_binds_assert_eq(items),
       _ => false
     }
     if hit {

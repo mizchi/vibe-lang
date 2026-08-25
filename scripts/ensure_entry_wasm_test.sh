@@ -143,17 +143,33 @@ publishes_by_rename() {
   grep -qE 'build_wasm_rel="\$wasm_rel\.\$\$' "$1" || return 1
   grep -qE -- '--invoke cli_main "\$seed" "\$entry_src" "\$build_wasm_rel"' "$1" || return 1
   grep -qE '^\s*mv -f "\$ROOT_DIR/\$build_wasm_rel" "\$ROOT_DIR/\$wasm_rel"$' "$1" || return 1
+  # ...and it must notice when someone published over it between that rename and
+  # the sidecars, since the three renames are not one transaction. The inode is
+  # the only evidence available without a lock: `mv` in-directory is rename(2),
+  # so the published file keeps ours unless it was replaced.
+  grep -q 'build_inode=' "$1" || return 1
+  grep -q 'published_inode=' "$1" || return 1
+  grep -qE '\[ "\$published_inode" != "\$build_inode" \]' "$1" || return 1
   return 0
 }
 publishes_by_rename scripts/ensure_entry_wasm.sh \
   || fail "the rebuild does not compile to a per-process path and publish it by rename"
 
-# Red-test rule 6: point the compile back at the shared path and it must fail.
+# Red-test rule 6 twice: once against the compile target, once against the
+# interleave check. A mutation that matches nothing proves nothing, so each
+# `sed` is verified to have actually removed the line it targets.
 mkdir -p "$WORK/mut6"
 sed 's|"\$entry_src" "\$build_wasm_rel" main|"$entry_src" "$wasm_rel" main|' \
   scripts/ensure_entry_wasm.sh > "$WORK/mut6/ensure_entry_wasm.sh"
 if publishes_by_rename "$WORK/mut6/ensure_entry_wasm.sh"; then
   fail "rule 6 accepts a rebuild that compiles straight to the published path"
+fi
+grep -v 'published_inode=' scripts/ensure_entry_wasm.sh > "$WORK/mut6/no_inode.sh"
+if ! grep -q 'build_inode=' "$WORK/mut6/no_inode.sh"; then
+  fail "red-test mutation removed more than the line it targeted"
+fi
+if publishes_by_rename "$WORK/mut6/no_inode.sh"; then
+  fail "rule 6 accepts a publish that cannot notice an interleaved winner"
 fi
 
 # Red-test rule 4 against a mutated copy: a checker that cannot fail is not a
@@ -167,4 +183,4 @@ if assert_handles "$WORK/mut/scripts/vibe_fmt.sh" "ensure_vibe_fmt_entry.sh"; th
   fail "rule 4 accepts the bare assignment it exists to reject"
 fi
 
-echo "[ensure-entry-wasm-test] ok (loud failure + diagnostic + stale retraction + success path + caller exit-code handling + batch count reconciliation + atomic publish, red-tested)"
+echo "[ensure-entry-wasm-test] ok (loud failure + diagnostic + stale retraction + success path + caller exit-code handling + batch count reconciliation + atomic publish + interleave detection, red-tested)"

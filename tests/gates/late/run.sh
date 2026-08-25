@@ -6676,5 +6676,32 @@ if ! grep -qF 'assert_eq failed' "$aldir/pat.log"; then
   cat "$aldir/pat.log" >&2
   exit 1
 fi
+# A re-exported binding of the name must not be claimed by the builtin either.
+# This does NOT assert the program works -- re-export aliases are broken on
+# their own (#2287: the merge inlines the dependency under its original name and
+# drops the alias, so the call reaches codegen unresolved). `cmp as assert_eq`
+# was the one alias spelling that did not crash, because the lowering claimed
+# the call and ran an assertion instead, which is how #2287 stayed hidden. What
+# the gate requires is that the masking stay gone: whatever this program does,
+# it must not silently be an assertion. It will pass unchanged once #2287 lands.
+cat > "$aldir/redep.vibe" <<'ALEOF'
+export fn cmp(a: Int, b: Int) -> Int {
+  a + b
+}
+ALEOF
+cat > "$aldir/reexport_test.vibe" <<'ALEOF'
+export ./redep.vibe { cmp as assert_eq }
+
+test "re-exported binding" {
+  assert_true(assert_eq(1, 2) == 3)
+}
+ALEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$aldir/reexport_test.vibe" >"$aldir/re.log" 2>&1 || true
+if grep -qF 'assert_eq failed' "$aldir/re.log"; then
+  echo "[compiler-gate] FAIL: a re-exported assert_eq was claimed by the builtin assertion, masking #2287" >&2
+  cat "$aldir/re.log" >&2
+  exit 1
+fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + top-level shadowing ok (#2202, #2283)"
+echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + top-level shadowing (definition + re-export) ok (#2202, #2283)"
