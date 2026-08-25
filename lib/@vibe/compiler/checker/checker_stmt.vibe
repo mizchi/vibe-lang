@@ -33,6 +33,7 @@ import @vibe/compiler/core {
   TypeExpr,
   __to_string,
   collect_subst_bounds_pairs,
+  compiler_owned_type_arity,
   env_bind,
   env_cache,
   env_flat_bindings,
@@ -87,7 +88,7 @@ import ./checked_expression_structure_core.vibe {
 }
 
 import ./checker_resolve.vibe {
-  compiler_owned_type_arity, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
 }
 
 import @vibe/compiler/normalize {
@@ -654,24 +655,29 @@ fn resource_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]
 /// reference resolves to the last one, silently.
 ///
 /// `_` is skipped: `let _ = ...` is a discard, not a name.
+fn duplicate_value_decl_note(seen: Array[String], dname: String, errors: Array[String]) -> Unit {
+  if dname == "_" {
+    ()
+  } else if es_string_array_contains(seen, dname) {
+    Array::push(errors, String::concat("duplicate declaration: ", dname))
+  } else {
+    Array::push(seen, dname)
+  }
+}
+
 fn duplicate_value_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
   let seen = array_empty()
   let mut i = from_idx
   while i < Array::length(stmts) {
-    let dname = match Array::get(stmts, i) {
-      SLet(_, _, n, _, _) => n,
-      SLetMut(n, _, _) => n,
-      SExternLet(n, _) => n,
-      _ => "_"
-    }
-    if dname != "_" {
-      if es_string_array_contains(seen, dname) {
-        Array::push(errors, String::concat("duplicate declaration: ", dname))
-      } else {
-        Array::push(seen, dname)
-      }
-    } else {
-      ()
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => duplicate_value_decl_note(seen, n, errors),
+      SLetMut(n, _, _) => duplicate_value_decl_note(seen, n, errors),
+      SExternLet(n, _) => duplicate_value_decl_note(seen, n, errors),
+      // Import/import last-win (#2127) is leftover: a same-block duplicate
+      // (`emit_arith_wrap_int` twice) and PascalCase type heads across a
+      // contract import are not the last-win hole, and mixing SImport into
+      // this set broke the compiler self-check. Track only value lets here.
+      _ => ()
     }
     i = i + 1
   }

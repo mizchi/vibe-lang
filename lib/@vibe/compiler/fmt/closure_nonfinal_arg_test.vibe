@@ -1,0 +1,31 @@
+//# #2271: a multiline closure literal in a non-final argument slot.
+//
+// The formatter's rewrite of this shape used to fail the entry parse guard:
+// apply left the file byte-identical, `--check` stayed rc 1 forever, and
+// `--stdout` was empty. The compiler parses the input; only the formatted
+// rendering was unparsable. Pin a fixpoint.
+
+import ./format.vibe {
+  format_script
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn parses(src: String) -> Bool {
+  handle {
+    let _ = parse_program(lex(src))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+test "#2271: multiline closure in a non-final argument reaches a fixpoint" {
+  let src = "fn collect_by(is_formal: (String) -> Bool, out: Array[String]) -> Unit {\n  ()\n}\n\nfn caller(shadow: Array[String], out: Array[String]) -> Unit {\n  collect_by((head) -> {\n    let mut pi = 0\n    let mut found = false\n    while pi < Array::length(shadow) {\n      if Array::get(shadow, pi) == head {\n        found = true\n      } else {\n        ()\n      }\n      pi = pi + 1\n    }\n    found\n  }, out)\n}\n"
+  assert(parses(src))
+  let once = format_script(src)
+  assert(parses(once))
+  assert(format_script(once) == once)
+  assert(String::contains(once, "collect_by"))
+  assert(String::contains(once, "-> {"))
+}

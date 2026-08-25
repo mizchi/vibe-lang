@@ -285,7 +285,13 @@ fn parse_import_path_tail(tokens: Array[Token], bp: Int, path: String, context: 
 
 fn parse_import_stmt(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
-    TIdent(name) => if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
+    TIdent(name) => if name == "symbol" || name == "version" {
+      // #2127: `import symbol@...` / `import version@...` are retired
+      // specs. Without this, `symbol@fixture/missing` is absorbed as path
+      // `symbol` plus an `@alias`, and `{ value }` is then parsed as a
+      // top-level record ("move it into fn main") — an edit that cannot help.
+      throw("`import \{name}@...` is not a valid import spec -- use `import @scope/pkg { names }` or `import ./path.vibe { names }` at #\{pos}")
+    } else if String::length(name) > 1 && String::char_code_at(name, 0) == '@' {
       parse_import_path_tail(tokens, pos + 1, name, context)
     } else {
       let (path, bp) = collect_import_path(tokens, pos, "")

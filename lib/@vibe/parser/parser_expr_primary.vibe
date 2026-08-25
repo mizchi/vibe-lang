@@ -17,7 +17,8 @@ import ./parser_base.vibe {
   parse_param_list_with_binder_context,
   parse_type_impl,
   peek,
-  tk_name
+  tk_name,
+  untyped_brace_lambda_param
 }
 
 import ./token.vibe {
@@ -437,6 +438,13 @@ fn parse_break_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
 /// (it cannot import the predicate -- @vibe/parser must not depend on the
 /// compiler package).
 fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  // #2265: `throw` is call-form. The statement form (`throw NotFound("x")`,
+  // `throw 42`) is what MoonBit/Rust/JS readers write first; `expected ( but
+  // got ident` does not name the repair.
+  match peek(tokens, pos + 1) {
+    TLParen => (),
+    _ => throw("`throw` is called like a function: throw(NotFound(\"x\")) -- it is sugar for perform Exception::Throw(...) at #\{pos + 1}")
+  }
   let open_pos = expect_tk(tokens, pos + 1, "(")
   let (expr, next_pos) = parse_recur(tokens, open_pos, 0, context)
   let close_pos = expect_tk(tokens, next_pos, ")")
@@ -891,7 +899,10 @@ fn parse_paren_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
   if is_lambda_start(tokens, pos + 1) {
     parse_paren_lambda_primary(tokens, starts, pos, parse_recur, context)
   } else {
-    parse_paren_tuple_primary(tokens, starts, pos, parse_recur, context)
+    match untyped_brace_lambda_param(tokens, pos) {
+      Some((pname, brace_at)) => throw("lambda parameter `\{pname}` needs a type -- annotate it as `(\{pname}: T)` or insert `->` after the parameter list at #\{brace_at}"),
+      None => parse_paren_tuple_primary(tokens, starts, pos, parse_recur, context)
+    }
   }
 }
 

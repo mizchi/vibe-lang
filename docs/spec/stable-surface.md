@@ -160,16 +160,14 @@ The stable symbols listed under "Key Builtins" in the
   functions in `@vibe/builtin`, reached by
   `import @vibe/builtin { String::replace }`, and are not in the builtin
   registry.
-- **Array**: `length`, `get`, `slice`, `map`, `filter`, `fold`, `find`, `any`,
-  `all`, `reverse`, `concat`, plus `ArrayBuilder::new/push/freeze`.
+- **Array**: `length`, `get`, `slice`, `concat`, plus `ArrayBuilder::new/push/freeze`.
+  `map`, `filter`, `fold`, `find`, `any`, `all`, `reverse` cannot be frozen as
+  first-class values (call-only operations: `Array::map(xs, f)`, not
+  `let g = Array::map`; #2275).
 - **StringMap** — the String-keyed builtin map. Its type is spelled
   `StringMap[V]`; the operations keep the `Map::` qualifier, so the spelling
   is the type's, not a second operation family. Neither needs an import.
-  `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`,
-  `Map::size`.
-  `Map::new` and `Map::from_pairs` **cannot be frozen** by this list until
-  #2274 lands: both constructors are real and in daily use, but they are not
-  first-class values, so this document's gate cannot probe them.
+  `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`, `Map::size`, `Map::new`, and `Map::from_pairs` cannot be frozen as first-class values -- they are call-only builtin operations (`Map::get(m, k)`, not `let g = Map::get`; #2274 / #2275).
   **`Map[K, V]`'s generality is deliberately NOT frozen** (#2263): the builtin
   is String-keyed today, and an annotation naming a concrete non-String key is
   rejected where it is written. The name `Map` is reserved for the generic
@@ -181,13 +179,16 @@ The stable symbols listed under "Key Builtins" in the
   rejection points at (`MutMap::new_int()` / `new_string()`, or
   `MutMap::new(hash_fn, eq_fn)` for any other key). It is a library type, so
   it is frozen by §3's `@vibe/core` entry rather than by the builtin surface.
-- **Int64Array**: `make`, `get`, `set`, `length` (for 32-bit word workloads).
-- **Conversions**: `Int::to_string`, `Int::to_double`, `Double::to_int`.
+- **Int64Array**: `make`, `get`, `set`, `length` cannot be frozen as
+  first-class values (call-only; #2275).
+- **Conversions**: `Int::to_double`, `Double::to_int`.
+  `Int::to_string` cannot be frozen as a first-class value (call-only; #2275).
 - **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
   **combinator layer (`Iterator::map` and friends) is not frozen** — it is
   retired by ADR-0099's two-layer split and has zero rows in the registry
-  (measured: `Iterator::` 0 hits). Eager iteration is
-  `Array::map` / `Array::filter` / `Array::fold`.
+  (measured: `Iterator::` 0 hits). Eager iteration is the call forms
+  `Array::map` / `Array::filter` / `Array::fold` (cannot be frozen as
+  first-class values; see Array above).
 - **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), and the
   `let*` railway bind. `Result::and_then` **cannot be frozen** — `Result` was
   removed from the language in #1324, and `Result::` has zero registry rows.
