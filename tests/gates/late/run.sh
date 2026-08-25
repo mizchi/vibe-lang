@@ -6499,5 +6499,60 @@ if ! grep -qF 'after_assign_test.vibe:9' "$aldir/assign.log"; then
   cat "$aldir/assign.log" >&2
   exit 1
 fi
+# A program that binds `assert_eq` ITSELF must get its own function, in both
+# lanes. The lowering claimed every arity-2 `assert_eq` by name alone, so a
+# user's definition was accepted and then ignored: the call trapped with
+# `assert_eq failed` instead of returning, with no diagnostic naming the
+# conflict anywhere (#2283). Measured on a compiler predating #2202, so this is
+# not a stamping regression -- but the stamp would have rewritten the same call,
+# which is why both the stamp and the lowering stand down together.
+cat > "$aldir/shadow.vibe" <<'ALEOF'
+fn assert_eq(a: Int, b: Int) -> String {
+  Int::to_string(a + b)
+}
+
+fn main() -> Unit with Stdout {
+  println(assert_eq(1, 2))
+}
+ALEOF
+rm -f "$aldir/shadow.wasm" "$aldir/shadow.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm"   "$aldir/shadow.vibe" "$aldir/shadow.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$aldir/shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: a program defining its own assert_eq did not compile (#2283)" >&2
+  cat "$aldir/shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+al_shadow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$aldir/shadow.wasm" 2>&1 || true)"
+if ! printf '%s\n' "$al_shadow_out" | grep -qx '3'; then
+  echo "[compiler-gate] FAIL: the user's own assert_eq was not the function that ran (#2283)" >&2
+  printf '%s\n' "$al_shadow_out" >&2
+  exit 1
+fi
+# The FS lane too, through the stamp. `assert_true` is the oracle here so the
+# check does not depend on captured stdout: if the builtin claimed the call,
+# `assert_eq(1, 2)` traps before `assert_true` ever sees a value. Measured on
+# the pre-fix compiler, this exact file reports `assert_eq failed / expected: 2
+# / actual: 1`.
+cat > "$aldir/shadow_test.vibe" <<'ALEOF'
+fn assert_eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+test "own assert_eq" {
+  assert_true(assert_eq(1, 2) == 3)
+}
+ALEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$aldir/shadow_test.vibe" >"$aldir/shadow.log" 2>&1 || true
+if grep -qF 'assert_eq failed' "$aldir/shadow.log"; then
+  echo "[compiler-gate] FAIL: the FS lane replaced the user's assert_eq with the builtin assertion (#2283)" >&2
+  cat "$aldir/shadow.log" >&2
+  exit 1
+fi
+if ! grep -qF '1 passed, 0 failed' "$aldir/shadow.log"; then
+  echo "[compiler-gate] FAIL: the user's own assert_eq did not run in the FS lane (#2283)" >&2
+  cat "$aldir/shadow.log" >&2
+  exit 1
+fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker rejection ok (#2202)"
+echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + user-shadowing ok (#2202, #2283)"

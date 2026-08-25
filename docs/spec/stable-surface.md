@@ -36,12 +36,9 @@ Trait bound compatibility follows the lock in [decisions.md](decisions.md):
 The **unstable surface (§6)** is outside this guarantee. Those parts can break
 within a Minor.
 
-**How the unstable surface is marked.** This document used to claim those
-parts "are reached only through `@build.unstable`, an explicit flag, or an ADR
-still marked `proposed`". None of that was true: `@build.unstable` appeared
-nowhere else in the tree, there was no such flag, and an ADR's status is
-bookkeeping a reader never sees. `TaskGroup::run` compiled with `vibe check`
-clean and no marker of any kind.
+**How the unstable surface is marked.** By a mechanism the compiler enforces,
+never by an ADR's status — status is bookkeeping a reader never sees, and a
+surface marked only that way compiles clean with no marker of any kind.
 
 What is enforced today, measured 2026-08-24:
 
@@ -280,10 +277,7 @@ that.
   `accepted`, and `Async` already appears in shipped builtin signatures a user
   can reach (`StdinStream::next(StdinStream) -> Int with Async`), where `vibe
   check` enforces it like any other row element. The unsettled part is the
-  concurrency model built on top of it, not the vocabulary. This bullet used to
-  name ADR-0012 alongside ADR-0068 and mark both `proposed`, which was wrong
-  about ADR-0012's status and put a shipped, checked surface on the unstable
-  list. It also listed `for await`, retired in #1350.
+  concurrency model built on top of it, not the vocabulary.
 - **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
   of non-tail-resumptive handlers, capability effects.
 - **Capability authorization surface** (ADR-0088, `proposed`): the two-clause

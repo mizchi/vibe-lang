@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   namespace_rename_original,
   namespace_rename_originals_reset,
   sort_perm_by_names,
+  stmts_bind_assert_eq,
   str_lt,
   trait_method_sig_binders_deep
 }
@@ -6345,11 +6346,46 @@ fn interp_take_repl(r: Option[Expr]) -> Expr {
 /// so that call compiled and reported `assert_eq failed at user` instead of
 /// the arity error. Measured, and exactly the silent-wrong the guard was meant
 /// to prevent (Codex review on #2277).
+/// A program that binds `assert_eq` itself gets NEITHER form. The lowering runs
+/// before `check_program` in the single-file lane, so it used to replace the
+/// reader's own function with assertion behavior and nothing downstream could
+/// notice: `fn assert_eq(a: Int, b: Int) -> Int { a + b }` plus `assert_eq(1, 2)`
+/// compiled clean and trapped with `assert_eq failed` instead of returning 3
+/// (#2283). The stamp is suppressed for the same modules, so the located form
+/// cannot arise there either -- this arm is the backstop for the lanes that do
+/// not stamp at all.
 fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
-  match callee {
-    EIdent(n, _) => (n == "assert_eq" && Array::length(args) == 2) || (n == assert_eq_located_callee && Array::length(args) == 3),
-    _ => false
+  if user_assert_eq_bound() {
+    false
+  } else {
+    match callee {
+      EIdent(n, _) => (n == "assert_eq" && Array::length(args) == 2) || (n == assert_eq_located_callee && Array::length(args) == 3),
+      _ => false
+    }
   }
+}
+
+/// Pass state, reset at every `desugar_trait_dicts` entry like the exn-kind
+/// cell above: whether THIS program binds `assert_eq` itself.
+///
+/// The unit is the program this pass was handed, which in the FS lane is every
+/// module merged together -- so one module defining `assert_eq` stands the
+/// lowering down for all of them. Coarse, and deliberately so: a merged offset
+/// cannot say which module it came from, so a per-module answer here would be
+/// invented. The stamp upstream IS per module (it still has each module's own
+/// text), and it is the half that decides what a failure prints.
+let dtd_user_assert_eq = [0]
+
+fn user_assert_eq_reset(stmts: Array[Stmt]) -> Unit {
+  Array::set(dtd_user_assert_eq, 0, if stmts_bind_assert_eq(stmts) {
+    1
+  } else {
+    0
+  })
+}
+
+fn user_assert_eq_bound() -> Bool {
+  Array::get(dtd_user_assert_eq, 0) == 1
 }
 
 /// The stamped location, or "" when the call was never stamped -- a lane that
@@ -14867,6 +14903,9 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // #2141: a throw mid-rewrite leaves frames on the lexical binder stack;
   // reset so a later run on another program cannot see them.
   scope_formals_reset()
+  // #2283: same discipline -- whether the assert lowering must stand down for
+  // THIS program, because the program binds the name itself.
+  user_assert_eq_reset(stmts)
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)
