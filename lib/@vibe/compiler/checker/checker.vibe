@@ -30,6 +30,7 @@ import @vibe/compiler/core {
   registry_builtin_arity,
   registry_builtin_param_type,
   resolve_builtin,
+  resolve_type_alias_params,
   subst_add_bound,
   subst_apply,
   subst_bounds_for,
@@ -58,7 +59,12 @@ import ./checker_pattern.vibe {
 }
 
 import ./checker_resolve.vibe {
-  collect_unknown_type_names, collect_unknown_type_names_regionwise, resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+  collect_unknown_type_names,
+  collect_unknown_type_names_regionwise,
+  is_wellknown_nominal_head,
+  resolve_type_expr,
+  resolve_type_expr_shadowed,
+  subst_type_params
 }
 
 import ./checker_spawnable.vibe {
@@ -378,7 +384,422 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
   }
 }
 
+/// #2263: the builtin map is String-keyed -- `Map[K, V]`'s generality is not
+/// implemented, and the name is reserved for it. An annotation spelling a
+/// concrete non-String key resolved fine and then had every op reject its key
+/// argument, so the type promised something no operation delivered. Report it
+/// where the annotation is introduced instead.
+///
+/// Walks the RESOLVED type, not the `TypeExpr`: an alias body
+/// (`type M = Map[Int, String]`) has to be caught at the USE, and resolution
+/// is what expands it. A key that is a type formal, an inference variable,
+/// `CtUnknown`, or an unresolved nominal head is ACCEPTED -- generic code is
+/// unaffected, and a typo is the unknown-type check's answer, not this one.
+fn map_key_type_is_supported(k: Type, defs: Array[TypeDef], shadow: Array[String]) -> Bool {
+  map_key_type_is_supported_at(k, defs, shadow, array_empty())
+}
+
+/// Whether this alias name has already been expanded on the current chain.
+fn map_key_alias_chain_contains(seen: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(seen) {
+    if Array::get(seen, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String]) -> Bool {
+  match k {
+    CtString => true,
+    CtVar(_) => true,
+    CtUnknown => true,
+    // A compiler-owned nominal is concrete even without a TypeDef, and none
+    // has a builtin Map key implementation. Other heads with NO arguments are
+    // formals or opaque names this pass cannot judge; applied heads are judged
+    // by whether they resolve (Codex rounds 6 and 12 on #2276).
+    //
+    // An unresolved applied head is a FORWARD reference, not a bad key:
+    // `type M[T] = Map[Key[T], Int]` above `type Key[T] = String` sees the
+    // key as `CtNamed("Key", [T])` because `Key` is not declared yet, and it
+    // ultimately resolves to `String`. Rejecting every applied `CtNamed` made
+    // that valid program depend on DECLARATION ORDER -- measured, the same
+    // two declarations were accepted with `Key` first and rejected with `Key`
+    // second, while the identical shape under `Array` was accepted either
+    // way. A head that does not resolve at all is the unknown-type check's
+    // answer, not this one; a head that DOES resolve while still carrying
+    // arguments is a declared generic struct or enum, and stays rejected.
+    //
+    // A user DECLARATION of a compiler-owned name never reaches that first
+    // arm: `resolve_type_expr` expands it first, so `type Future[T] = String`
+    // used as `Map[Future[Int], String]` arrives here as `CtString` and is
+    // still accepted (measured, pinned by `map_shadowed_wellknown_key_ok`).
+    //
+    // The SHADOW is consulted FIRST, before compiler ownership. A type formal
+    // may be spelled with a compiler-owned name -- `fn f[Future, V](m:
+    // Map[Future, V])` -- and `resolve_type_expr_shadowed` correctly keeps it
+    // as the rigid `CtNamed("Future", [])`. Testing ownership by NAME ahead of
+    // the binder read that formal as the builtin and rejected a function the
+    // contract explicitly permits (Codex round 15 on #2276, measured; the
+    // order was wrong when round 14 introduced this arm).
+    CtNamed(kname, kargs) => if string_array_has(shadow, kname) {
+      // A type FORMAL in scope. Judging it would mean judging every
+      // instantiation, which is not this check's question.
+      true
+    } else if is_wellknown_nominal_head(kname) {
+      false
+    } else {
+      match find_typedef(defs, kname) {
+        // Not declared: a FORWARD reference, a typo, or a formal bound
+        // somewhere this walk cannot see. Either way not this check's answer.
+        None => true,
+        // Declared as an alias: judge its BODY. Reading the already-resolved
+        // body needs no substitution -- and must not use one, since
+        // `resolve_type_alias_params` corrupts the heap (#2279). The alias's
+        // OWN parameters become the shadow for that body, so a body that
+        // mentions them is judged as a formal rather than as whatever
+        // top-level type happens to share the spelling.
+        //
+        // KNOWN GAP (#2282, Codex round 8 on #2276): that acceptance lets a
+        // FORWARDING alias through. `type Key[T] = T` used as
+        // `Map[Key[T], Int]` under `M[Int]` has the concrete key `Int`, but
+        // seeing that means carrying `M`'s argument through `Key`'s binder --
+        // two levels of substitution, which is exactly what #2279 makes
+        // unsafe. The consequence is a MISSED EARLY diagnostic, not a wrong
+        // answer: the annotation is accepted and the first `Map::` operation
+        // still rejects the key, which is where every map key was caught
+        // before this check existed.
+        //
+        // The chain is followed to its END, however long. It used to stop
+        // at a DEPTH CAP of four hops and answer "supported" beyond it, so
+        // a seven-hop chain ending in `Int` was accepted (Codex round 13 on
+        // #2276, measured). The cap was load-bearing, not decoration: a
+        // CYCLIC alias chain -- `type A[T] = B[T]` with `type B[T] = A[T]`
+        // -- compiles today, so this walk has to terminate on its own.
+        // Remembering the names already expanded terminates on exactly the
+        // cycle and on nothing else.
+        Some(td) => match td {
+          TDAlias(_, aparams, abody) => if map_key_alias_chain_contains(seen, kname) {
+            // An alias that expands to itself has no key type to judge, and
+            // the diagnostic for the cycle belongs to whatever rejects it.
+            true
+          } else {
+            Array::push(seen, kname)
+            map_key_type_is_supported_at(abody, defs, aparams, seen)
+          },
+          // A declared struct or enum. `kargs` is not consulted: the nullary
+          // form used to be accepted before `find_typedef` was reached at
+          // all, which made a FORWARD-declared key order-dependent --
+          // measured, `type Bad = Map[Key, Int]` was rejected with `type Key
+          // = Int` above it and accepted with it below (Codex round 14 on
+          // #2276). A declared struct is not a key implementation at either
+          // arity.
+          _ => false
+        }
+      }
+    },
+    _ => false
+  }
+}
+
+/// The actual argument bound to alias parameter `name`, plus whether a
+/// substitution occurred. The distinction preserves the CALLER's binders for
+/// a substituted argument while keeping the alias's binders for its own body.
+fn alias_arg_for_param(name: String, params: Array[String], args: Array[Type]) -> (Type, Bool) {
+  let mut i = 0
+  let mut found = CtNamed(name, array_empty())
+  let mut substituted = false
+  while i < Array::length(params) {
+    if Array::get(params, i) == name && i < Array::length(args) {
+      found = Array::get(args, i)
+      substituted = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (found, substituted)
+}
+
+/// `collect_unsupported_map_keys` over an alias BODY that is being applied to
+/// `args`, without materializing the substituted type.
+///
+/// The obvious spelling -- `collect_unsupported_map_keys(
+/// resolve_type_alias_params(body, params, args), ...)` -- corrupts the heap
+/// (#2279). That function returns `Array::get(args, idx)` directly for a
+/// parameter, so the tree it hands back SHARES subterms with `args` without
+/// owning them; walking that tree drops borrowed nodes and a later, unrelated
+/// allocation traps with `memory access out of bounds at __rt_rc_alloc`.
+/// Measured: calling it and DISCARDING the result is clean, and consuming the
+/// result is what traps, which is what identifies the aliasing rather than the
+/// substitution as the fault.
+///
+/// Only a KEY that is a bare parameter name needs the mapping: every other
+/// unsupported key is unsupported whatever the parameter stands for, so no
+/// substituted node is ever needed.
+fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: Array[String], args: Array[Type], caller_shadow: Array[String], out: Array[Type]) -> Unit {
+  match t {
+    CtNamed(head, targs) => {
+      if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
+        let k0 = Array::get(targs, 0)
+        let (k, substituted) = match k0 {
+          CtNamed(kn, kargs) => if Array::length(kargs) == 0 {
+            alias_arg_for_param(kn, params, args)
+          } else {
+            (k0, false)
+          },
+          _ => (k0, false)
+        }
+        let key_shadow = if substituted {
+          caller_shadow
+        } else {
+          params
+        }
+        if map_key_type_is_supported(k, defs, key_shadow) {
+          ()
+        } else {
+          Array::push(out, k)
+        }
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(targs) {
+        collect_unsupported_map_keys_applied(Array::get(targs, i), defs, params, args, caller_shadow, out)
+        i = i + 1
+      }
+    },
+    CtArray(e) => collect_unsupported_map_keys_applied(e, defs, params, args, caller_shadow, out),
+    CtOption(e) => collect_unsupported_map_keys_applied(e, defs, params, args, caller_shadow, out),
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_unsupported_map_keys_applied(Array::get(items, i), defs, params, args, caller_shadow, out)
+        i = i + 1
+      }
+    },
+    CtFn(fparams, ret, _) => {
+      let mut i = 0
+      while i < Array::length(fparams) {
+        collect_unsupported_map_keys_applied(Array::get(fparams, i), defs, params, args, caller_shadow, out)
+        i = i + 1
+      }
+      collect_unsupported_map_keys_applied(ret, defs, params, args, caller_shadow, out)
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, ft) = Array::get(fields, i)
+        collect_unsupported_map_keys_applied(ft, defs, params, args, caller_shadow, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// `seen` is the alias names already expanded on this walk, for the same
+/// reason `map_key_type_is_supported_at` carries one: a cyclic alias chain
+/// compiles, so following alias heads needs its own termination.
+fn collect_unsupported_map_keys_at(t: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String], out: Array[Type]) -> Unit {
+  match t {
+    CtNamed(head, targs) => {
+      if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
+        let k = Array::get(targs, 0)
+        if map_key_type_is_supported(k, defs, shadow) {
+          ()
+        } else {
+          Array::push(out, k)
+        }
+      } else if !string_array_has(shadow, head) && !map_key_alias_chain_contains(seen, head) {
+        // An ALIAS head is followed into its body (Codex round 16 on #2276).
+        // A name recorded before its target was declared stays an unresolved
+        // `CtNamed`, so the map can sit one hop further in than this walk used
+        // to look: `type Outer = Inner` above `type Inner = Map[Key, Int]`
+        // above `type Key = Int` was accepted, because `Outer`'s body is the
+        // bare `Inner` and nothing expanded it. Measured before the fix.
+        match find_typedef(defs, head) {
+          Some(td) => match td {
+            TDAlias(_, aparams, abody) => {
+              Array::push(seen, head)
+              collect_unsupported_map_keys_at(abody, defs, aparams, seen, out)
+            },
+            _ => ()
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(targs) {
+        collect_unsupported_map_keys_at(Array::get(targs, i), defs, shadow, seen, out)
+        i = i + 1
+      }
+    },
+    CtArray(e) => collect_unsupported_map_keys_at(e, defs, shadow, seen, out),
+    CtOption(e) => collect_unsupported_map_keys_at(e, defs, shadow, seen, out),
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_unsupported_map_keys_at(Array::get(items, i), defs, shadow, seen, out)
+        i = i + 1
+      }
+    },
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_unsupported_map_keys_at(Array::get(params, i), defs, shadow, seen, out)
+        i = i + 1
+      }
+      collect_unsupported_map_keys_at(ret, defs, shadow, seen, out)
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, ft) = Array::get(fields, i)
+        collect_unsupported_map_keys_at(ft, defs, shadow, seen, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], shadow: Array[String], out: Array[Type]) -> Unit {
+  collect_unsupported_map_keys_at(t, defs, shadow, array_empty(), out)
+}
+
+/// The declared arity of a compiler-known structural head, or -1 when `name`
+/// is not one. `ty_head_is_structural` exempts these heads from the
+/// unknown-name sweep, and `resolve_type_expr_core_shadowed` requires the
+/// EXACT arity and otherwise falls through to an unresolved `CtNamed` --
+/// which `check_assignable` tolerates like a wildcard. Between the two, a
+/// wrong-arity application was reported by nobody and turned the slot off.
+///
+/// Measured on the head before this (Codex round 1 on #2276):
+/// `fn f(m: Array[Int, String]) -> Int { m }` compiled clean and returned a
+/// non-`Int` as `Int`, and `Option[Int, String]` did the same. The
+/// `StringMap` instance was closed by excluding it from the exemption, which
+/// made it loud but named it "unknown type `StringMap`" -- a type the
+/// compiler knows. All three are one defect, so one rule answers for them,
+/// and it names the arity.
+///
+/// A BARE `Array` was already loud, so only the APPLICATION is a hole.
+fn structural_head_arity(name: String) -> Int {
+  if name == "Array" || name == "Option" || name == "StringMap" {
+    1
+  } else {
+    0 - 1
+  }
+}
+
+/// The hint spells `Name[T]`, which is right because every head
+/// `structural_head_arity` recognizes has arity 1. A head added there with
+/// another arity must derive the hint from `want` instead.
+fn structural_arity_error(name: String, given: Int, want: Int, where_label: String) -> String {
+  String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", name), "` takes "), Int::to_string(want)), " type argument, but "), Int::to_string(given)), " were given in "), String::concat(where_label, String::concat(String::concat(" -- write `", name), "[T]` with a single element type")))
+}
+
+/// Walks the annotation WITHOUT resolving it. Resolution allocates, and this
+/// runs at every one of `report_unknown_type_names`'s ~84 sites, so the whole
+/// annotation is never re-resolved: only a `Map` head's KEY argument is
+/// (a one-node `TypeExpr` in every real spelling), and an alias is read from
+/// the already-resolved `Type` its `TypeDef` carries -- which is also what
+/// catches `type IntMap = Map[Int, String]` at the USE.
+///
+/// Two rules share the walk so an annotation is traversed once: `out`
+/// collects a `Map` head's unsupported KEY types, and `errors` takes a
+/// structural head applied to the wrong ARITY (`structural_head_arity`).
+fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], out: Array[Type], where_label: String, errors: Array[String]) -> Unit {
+  match te {
+    TyName(name) => if string_array_has(shadow, name) {
+      ()
+    } else {
+      match find_typedef(defs, name) {
+        Some(td) => match td {
+          TDAlias(_, aparams, body) => collect_unsupported_map_keys(body, defs, aparams, out),
+          _ => ()
+        },
+        None => ()
+      }
+    },
+    TyUnit => (),
+    TyApp(name, args) => {
+      let want = structural_head_arity(name)
+      if want >= 0 && Array::length(args) != want && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
+        Array::push(errors, structural_arity_error(name, Array::length(args), want, where_label))
+      } else {
+        ()
+      }
+      if name == "Map" && Array::length(args) == 2 && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
+        let k = resolve_type_expr_shadowed(Array::get(args, 0), defs, shadow)
+        if map_key_type_is_supported(k, defs, shadow) {
+          ()
+        } else {
+          Array::push(out, k)
+        }
+      } else if !string_array_has(shadow, name) {
+        match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDAlias(_, params, body) => {
+              let resolved_args = for arg in args {
+                resolve_type_expr_shadowed(arg, defs, shadow)
+              }
+              collect_unsupported_map_keys_applied(body, defs, params, resolved_args, shadow, out)
+            },
+            _ => ()
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        report_map_key_types_walk(Array::get(args, i), defs, shadow, out, where_label, errors)
+        i = i + 1
+      }
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        report_map_key_types_walk(Array::get(items, i), defs, shadow, out, where_label, errors)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        report_map_key_types_walk(Array::get(params, i), defs, shadow, out, where_label, errors)
+        i = i + 1
+      }
+      report_map_key_types_walk(ret, defs, shadow, out, where_label, errors)
+    }
+  }
+}
+
+/// Despite the name, this reports BOTH of the walk's rules -- the map-key
+/// one it is named for, and the wrong-arity one
+/// (`structural_head_arity`). The name is kept because it is called from
+/// ~90 sites across `checker_stmt.vibe`; renaming it is churn, not clarity.
+export fn report_map_key_types(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  let bad = array_empty()
+  report_map_key_types_walk(te, defs, shadow, bad, where_label, errors)
+  let mut i = 0
+  while i < Array::length(bad) {
+    Array::push(errors, String::concat(String::concat(String::concat(String::concat("the builtin map is String-keyed, so a `", type_to_string(Array::get(bad, i))), "` key has no implementation in "), where_label), " -- spell the String-keyed map `StringMap[V]`, or use `MutMap[K, V]` from `@vibe/core` for other keys (generic `Map` keys are #2263)"))
+    i = i + 1
+  }
+}
+
 export fn report_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, row_binders: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  report_map_key_types(te, defs, shadow, where_label, errors)
   // Which of the unresolved names are region-ish binders at all. Asked over
   // the name candidates first because the positional walk below takes a set,
   // and `#region_` skolem membership is an env question this file owns.

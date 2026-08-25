@@ -10,7 +10,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Stmt, TypeExpr
 }
 
 import @vibe/compiler/syntax {
@@ -57,6 +57,7 @@ test "wit_type_text: scalar and container mapping" {
   assert(wit_type_text(TyApp("Array", [TyName("Int")])) == "list<s64>")
   assert(wit_type_text(TyApp("Option", [TyName("String")])) == "option<string>")
   assert(wit_type_text(TyApp("Result", [TyName("Int"), TyName("String")])) == "result<s64, string>")
+  assert(wit_type_text(TyApp("StringMap", [TyName("Int")])) == "list<tuple<string, s64>>")
   assert(wit_type_text(TyTuple([TyName("Int"), TyName("Bool")])) == "tuple<s64, bool>")
 }
 
@@ -82,6 +83,269 @@ test "wit_from_program: effect import + exports, Error and Exception filtered" {
   // The interim Error/Exception aliases must never surface as imports.
   assert(!String::contains(wit, "import error"))
   assert(!String::contains(wit, "import exception"))
+}
+
+test "wit_from_program: source StringMap is not the builtin projection" {
+  let stmts = [
+    SStruct(false, "StringMap", [("value", TyName("T"))], array_empty(), array_empty(), [
+      "T"
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "shadowed")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: an IMPORTED StringMap is not the builtin projection" {
+  // #2276 (Codex): an import binds the name just as a declaration does --
+  // `import ./dep.vibe { Box as StringMap }` makes `StringMap` a source-owned
+  // nominal type. The WIT CLI parses only the entry file and never resolves
+  // imports, so the ownership scan is the only place this can be seen.
+  // Before the `SImport` arm the projection published
+  // `list<tuple<string, s64>>` for the user's own type -- an ABI that does not
+  // match the function's representation, and silently so.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: None, name: "Box", alias: Some("StringMap") }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "imported")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a non-String Map key has no WIT mapping" {
+  // #2276 (Codex): both WIT CLI paths parse the entry and call
+  // `wit_from_program` WITHOUT running the checker, so an unrestricted `Map`
+  // arm published `list<tuple<s64, string>>` for an annotation ordinary
+  // compilation now rejects -- an interface for a program that does not
+  // compile. Measured before the fix: it emitted exactly that.
+  let stmts = [
+    SLet(true, false, "f", Some(TyFn([
+      TyApp("Map", [TyName("Int"), TyName("String")])
+    ], TyName("Int"), None)), efn_of_string_params(["m"]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "badkey")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a String-keyed Map still projects" {
+  let stmts = [
+    SLet(true, false, "f", Some(TyFn([
+      TyApp("Map", [TyName("String"), TyName("Int")])
+    ], TyName("Int"), None)), efn_of_string_params(["m"]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "goodkey")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: an UNKINDED import named StringMap fails closed" {
+  // #2276 (Codex rounds 9 and 11). Round 9 made this case NOT shadow, by
+  // guessing from the source name's case. Round 11 showed the guess is
+  // unsound at its root: this repository REQUIRES effect operations to be
+  // CamelCase (`Log::Emit`), so an upper-case source name is not evidence of
+  // a type and no refinement of the guess can become correct.
+  //
+  // With the guess gone the choice is which way to be wrong, and the design
+  // policy settles it: this now fails LOUDLY rather than publishing an
+  // imported TYPE with the builtin's ABI, which would be silently wrong.
+  // Writing the kind is what makes the answer exact -- see the two tests
+  // below.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: None, name: "helper", alias: Some("StringMap") }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "unkinded")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a RE-EXPORTED StringMap type shadows the builtin" {
+  // #2276 (Codex round 11): `export ./dep.vibe { struct Box as StringMap }`
+  // binds the name in the entry exactly as the import form does. Handling
+  // only `SImport` published the nominal parameter with the builtin's ABI.
+  let stmts = [
+    SReExport("./dep.vibe", [
+      ImportItem::{
+        kind: Some(ImportStruct),
+        name: "Box",
+        alias: Some("StringMap")
+      }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "reexport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a GENERIC BINDER named StringMap shadows the builtin" {
+  // #2276 (Codex round 14): `export fn f[StringMap](m: StringMap[Int])` makes
+  // `StringMap` the function's own type parameter. The checker rejects that
+  // program (a type parameter cannot take arguments, #2268), but neither
+  // `--wit` path runs the checker, so the projection published the builtin
+  // ABI for a program that does not compile.
+  let params = array_empty()
+  Array::push(params, ("m", Some(TyApp("StringMap", [TyName("Int")]))))
+  let generic_fn = EFn(["StringMap"], array_empty(), params, Some(TyName("Int")), None, EUnit)
+  let stmts = [
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), generic_fn)
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "generic")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: an UNAPPLIED StringMap binder does not shadow the builtin" {
+  // #2276 (Codex round 16): `fn id[StringMap](x: StringMap) -> StringMap` is a
+  // VALID program -- #2268 rejects an APPLIED formal, not a declared one -- so
+  // its binder must not disable the builtin projection for an unrelated export
+  // in the same file. Round 14 tested the binder alone and broke exactly this.
+  let id_params = array_empty()
+  Array::push(id_params, ("x", Some(TyName("StringMap"))))
+  let id_fn = EFn(["StringMap"], array_empty(), id_params, Some(TyName("StringMap")), None, EUnit)
+  let read_params = array_empty()
+  Array::push(read_params, ("m", Some(TyApp("StringMap", [TyName("Int")]))))
+  let read_fn = EFn(no_strings(), array_empty(), read_params, Some(TyName("Int")), None, EUnit)
+  let stmts = [
+    SLet(false, false, "id", Some(TyFn([TyName("StringMap")], TyName("StringMap"), None)), id_fn),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), read_fn)
+  ]
+  let wit = wit_from_program(stmts, stmts, "unapplied")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: a LOCAL suberror named StringMap shadows the builtin" {
+  // #2276 (Codex round 20): a suberror claims a typedef slot as a `TDEnum`, so
+  // the annotation is source-owned and publishing the builtin ABI for it is
+  // silently wrong -- the same shape as rounds 18 and 19, one keyword further.
+  let stmts = [
+    SSuberror(false, "StringMap", array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "localsuberror")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a LOCAL effect named StringMap shadows the builtin" {
+  // #2276 (Codex round 19): the checker registers a local effect as a
+  // `TDEffect`, so the annotation is source-owned exactly as for the imported
+  // form fixed in round 18. Projecting the builtin ABI for it is silently
+  // wrong. The resolver half is pinned in `types_test.vibe`.
+  let stmts = [
+    SEffectDef(false, "StringMap", array_empty(), array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "localeffect")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a LOCAL effectset named StringMap shadows the builtin" {
+  // The neighbour round 19 did not name: an effectset lands in `defs` as
+  // `TDEffectSet` and resolves nominally too, so the same hole sat one
+  // declaration keyword away.
+  let stmts = [
+    SEffectSet(false, "StringMap", array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "localeffectset")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a TRAIT import named StringMap does not shadow the builtin" {
+  // #2276 (Codex round 10): a trait lives in the trait environment, not in
+  // `defs`, so `import ./dep.vibe { trait StringMap }` leaves the checker
+  // resolving `StringMap[V]` to the builtin. Treating every written `kind` as
+  // type-like failed this valid program with `no WIT mapping` -- measured, it
+  // did. Only ImportType / ImportStruct / ImportEnum own a type spelling.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: Some(ImportTrait), name: "StringMap", alias: None }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "traitimport")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: an EFFECT import named StringMap shadows the builtin" {
+  // #2276 (Codex round 18): imported effects are stored in the checker's
+  // TypeDef environment, unlike traits, so they own this nominal spelling.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{
+        kind: Some(ImportEffect),
+        name: "Box",
+        alias: Some("StringMap")
+      }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "effectimport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a STRUCT import named StringMap does shadow the builtin" {
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: Some(ImportStruct), name: "StringMap", alias: None }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "structimport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
 }
 
 test "wit_from_program: undeclared capability effect renders as comment" {

@@ -1478,7 +1478,7 @@ export fn env_lookup_flat(bindings: Array[(String, Type)], name: String) -> Opti
 /// builtin *values* (and a handful of scalar type names); this answers for
 /// the remaining type heads.
 export fn compiler_owned_type_arity(name: String) -> Option[Int] {
-  if name == "Array" || name == "Option" || name == "Future" || name == "Task" || name == "ArrayBuilder" || name == "FrozenArray" || name == "FixedArray" || name == "MutBytes" {
+  if name == "Array" || name == "Option" || name == "Future" || name == "Task" || name == "ArrayBuilder" || name == "FrozenArray" || name == "FixedArray" || name == "MutBytes" || name == "StringMap" {
     Some(1)
   } else if name == "Map" || name == "MapBuilder" || name == "Attempt" || name == "TaskGroup" || name == "MutList" {
     Some(2)
@@ -1544,8 +1544,8 @@ export fn resolve_builtin(name: String) -> Option[Type] {
 
 /// True when `name` is a compiler-owned type head: either a `resolve_builtin`
 /// scalar or a `compiler_owned_type_arity` nominal. Used by the contract
-/// types-module sentinel so `Map` / `MutMap` stop exempting every transparent
-/// field in the module (#2164).
+/// types-module sentinel so `StringMap` / `Map` / `MutMap` stop exempting
+/// every transparent field in the module (#2164).
 export fn is_builtin_type_name(name: String) -> Bool {
   match resolve_builtin(name) {
     Some(_) => true,
@@ -1684,6 +1684,23 @@ export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], sh
         CtArray(Array::get(ra, 0))
       } else if name == "Option" && Array::length(ra) == 1 {
         CtOption(Array::get(ra, 0))
+      } else if name == "StringMap" && Array::length(ra) == 1 && !type_expr_name_is_shadowed(shadow, name) {
+        // #2263: the concrete name for the builtin map, which is String-keyed
+        // (`Map[K, V]`'s generality is not implemented and the name is
+        // reserved for it). Resolved here rather than declared as a prelude
+        // alias because a prelude type is not in scope without an import
+        // (measured: a bare `Byte` parameter answers "unknown type"), and
+        // resolving it to the SAME type the ops take keeps every `Map::` op
+        // working on a `StringMap[V]` value with no second op family. A
+        // user declaration of the name still wins -- generic binders are
+        // covered by the shadow test above, and source declarations by defs.
+        match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDAlias(_, params, body) => resolve_type_alias_params(body, params, ra),
+            _ => CtNamed(name, ra)
+          },
+          None => CtNamed("Map", [CtString, Array::get(ra, 0)])
+        }
       } else if type_expr_name_is_shadowed(shadow, name) {
         CtNamed(name, ra)
       } else {
