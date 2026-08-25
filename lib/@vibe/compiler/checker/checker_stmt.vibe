@@ -2682,17 +2682,17 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     } else {
       match stmt {
         // A nested module shares `defs` with this statement list. Its type
-        // declarations can settle an outer alias that was still unresolved at
-        // the type-phase boundary, so refresh and validate the OUTER range
-        // again after the recursive check returns.
+        // declarations can settle aliases and payloads in any already-checked
+        // sibling scope, so refresh and validate the combined visible range.
         SModule(_, _, _) => {
-          let visible_aliases = array_empty()
-          collect_visible_alias_stmts(stmts, idx + 1, visible_aliases)
-          refresh_completed_alias_defs(visible_aliases, defs, preclaim_from, Array::length(defs))
-          refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
+          let visible_types = array_empty()
+          collect_visible_type_stmts(stmts, idx + 1, visible_types)
+          let visible_defs_end = Array::length(defs)
+          refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end)
+          refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
           cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
           cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
-          check_completed_alias_map_keys(stmts, defs, errors)
+          check_completed_alias_map_keys(visible_types, defs, errors)
         },
         _ => ()
       }
@@ -3904,19 +3904,21 @@ fn alias_decl_is_recursive(stmts: Array[Stmt], name: String, params: Array[Strin
   alias_type_expr_reaches(stmts, body, params, name, array_empty())
 }
 
-fn collect_visible_alias_stmts(stmts: Array[Stmt], to: Int, out: Array[Stmt]) -> Unit {
+fn collect_visible_type_stmts(stmts: Array[Stmt], to: Int, out: Array[Stmt]) -> Unit {
   let mut i = 0
   while i < to {
-    match Array::get(stmts, i) {
-      STypeAlias(exported, name, params, body) => Array::push(out, STypeAlias(exported, name, params, body)),
-      _ => ()
+    let stmt = Array::get(stmts, i)
+    if stmt_is_type_decl(stmt) {
+      Array::push(out, stmt)
+    } else {
+      ()
     }
     i = i + 1
   }
   i = 0
   while i < to {
     match Array::get(stmts, i) {
-      SModule(_, _, body) => collect_visible_alias_stmts(body, Array::length(body), out),
+      SModule(_, _, body) => collect_visible_type_stmts(body, Array::length(body), out),
       _ => ()
     }
     i = i + 1
