@@ -395,10 +395,25 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
 /// `CtUnknown`, or an unresolved nominal head is ACCEPTED -- generic code is
 /// unaffected, and a typo is the unknown-type check's answer, not this one.
 fn map_key_type_is_supported(k: Type, defs: Array[TypeDef]) -> Bool {
-  map_key_type_is_supported_at(k, defs, 0)
+  map_key_type_is_supported_at(k, defs, array_empty())
 }
 
-fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], depth: Int) -> Bool {
+/// Whether this alias name has already been expanded on the current chain.
+fn map_key_alias_chain_contains(seen: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(seen) {
+    if Array::get(seen, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], seen: Array[String]) -> Bool {
   match k {
     CtString => true,
     CtVar(_) => true,
@@ -449,10 +464,22 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], depth: Int) -> Bo
         // still rejects the key, which is where every map key was caught
         // before this check existed.
         Some(td) => match td {
-          TDAlias(_, _, abody) => if depth > 4 {
+          //
+          // The chain is followed to its END, however long. It used to stop
+          // at a DEPTH CAP of four hops and answer "supported" beyond it, so
+          // a seven-hop chain ending in `Int` was accepted (Codex round 13 on
+          // #2276, measured). The cap was load-bearing, not decoration: a
+          // CYCLIC alias chain -- `type A[T] = B[T]` with `type B[T] = A[T]`
+          // -- compiles today, so this walk has to terminate on its own.
+          // Remembering the names already expanded terminates on exactly the
+          // cycle and on nothing else.
+          TDAlias(_, _, abody) => if map_key_alias_chain_contains(seen, kname) {
+            // An alias that expands to itself has no key type to judge, and
+            // the diagnostic for the cycle belongs to whatever rejects it.
             true
           } else {
-            map_key_type_is_supported_at(abody, defs, depth + 1)
+            Array::push(seen, kname)
+            map_key_type_is_supported_at(abody, defs, seen)
           },
           // A declared struct or enum applied to arguments really is a key
           // with no implementation.
