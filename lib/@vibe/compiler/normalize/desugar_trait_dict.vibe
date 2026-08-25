@@ -6464,11 +6464,11 @@ fn stmts_define_assert_eq(stmts: Array[Stmt]) -> Bool {
       // removed", measured on the current tree. Left out rather than left
       // wrong, since the arm would be a latent defect the day modules return.
       SImport(_, items) => import_binds_assert_eq(items),
-      // A plain re-export can resolve to the dependency's merged definition;
-      // an aliased re-export is surface-only and the checker rejects a local
-      // use. In both cases builtin lowering must stand down instead of
-      // silently claiming the selected source spelling (#2287).
-      SReExport(_, items) => import_binds_assert_eq(items),
+      // Only a plain re-export can resolve to the dependency's merged
+      // `assert_eq` definition. An alias is publication-only and contributes
+      // no local/function-table binding, so it must not disable builtin
+      // lowering for unrelated modules in this merged program (#2287).
+      SReExport(_, items) => reexport_binds_assert_eq(items),
       _ => false
     }
     if hit {
@@ -6612,6 +6612,21 @@ fn arms_bind_assert_eq(arms: Array[(Pat, Expr)]) -> Bool {
   while i < Array::length(arms) && !found {
     let (pat, _) = Array::get(arms, i)
     if pat_binds_assert_eq(pat) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn reexport_binds_assert_eq(items: Array[ImportItem]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    if item.name == "assert_eq" && item.alias == None {
       found = true
     } else {
       ()
