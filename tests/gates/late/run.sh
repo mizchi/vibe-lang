@@ -7953,6 +7953,58 @@ if ! grep -q '"severity":1' "$vpbufdir/bad.out" 2>/dev/null; then
   grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
   exit 1
 fi
+# ...and reading a contract as a contract must not COST the ADR-0068 opt-in.
+# This is the trap the rest of this section sets up: the `vibe diagnostics`
+# buffer lane used to compute the unstable set with a SECOND scan over the RAW
+# buffer, which could not parse a `.vpkg` header and so returned nothing. That
+# was invisible while the base set was answering `expected { but got eof` about
+# the same file -- removing the false error would have left a contract that
+# imports `@vibe/concurrent` reporting NOTHING AT ALL, which is strictly worse
+# than the wrong parse error this section removes (#2314 review). Measured on
+# the pre-fix compiler: the LSP reported the opt-in for this contract and this
+# lane did not.
+cat > "$vpbufdir/unstable.vpkg" <<'VPBUFEOF'
+name = @gate/unstablecontract
+version = 0.0.1
+description =
+  #|gate-only package for #2314
+deps = {}
+
+generated_hash =
+
+import @vibe/concurrent { TaskGroup }
+
+fn implemented(x: Int) -> Int
+VPBUFEOF
+for form in text json; do
+  rm -f "$vpbufdir/u.$form.out"
+  if [ "$form" = json ]; then json_env=1; else json_env=0; fi
+  env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 \
+    VIBE_DIAGNOSTICS_JSON="$json_env" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$vpbufdir/unstable.vpkg" "$vpbufdir/u.$form.out" main >/dev/null 2>&1 || true
+  if ! grep -q 'VIBE_UNSTABLE=1' "$vpbufdir/u.$form.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $form diagnostics form dropped the ADR-0068 opt-in for a .vpkg buffer (#2314)" >&2
+    cat "$vpbufdir/u.$form.out" >&2 || true
+    exit 1
+  fi
+  if grep -q 'expected { but got' "$vpbufdir/u.$form.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $form diagnostics form still reads a .vpkg as statement grammar (#2314)" >&2
+    cat "$vpbufdir/u.$form.out" >&2 || true
+    exit 1
+  fi
+done
+# ...and the grant still suppresses it, or the assertion above would pass on a
+# lane that appends the diagnostic unconditionally.
+rm -f "$vpbufdir/u.granted.out"
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$vpbufdir/unstable.vpkg" "$vpbufdir/u.granted.out" main >/dev/null 2>&1 || true
+if grep -q 'VIBE_UNSTABLE=1' "$vpbufdir/u.granted.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not suppress the opt-in on the .vpkg buffer lane (#2314)" >&2
+  cat "$vpbufdir/u.granted.out" >&2 || true
+  exit 1
+fi
 # ...and a contract lexes like a program: EVERY lex error, not just the first.
 # The contract branch reaches for `parse_contract_program`, which throws, and
 # the first version reached for the throwing lexer to match it. But a contract
