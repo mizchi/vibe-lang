@@ -4066,6 +4066,46 @@ fn replace_first_env_binding(env: TypeEnv, wanted: String, ty: Type, replaced: A
   }
 }
 
+fn refresh_suberror_owned_bindings(env: TypeEnv, suberror_name: String, variants: Array[(String, Array[Type])]) -> TypeEnv {
+  let marker = String::concat(suberror_name, "::equals")
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => if name == marker {
+      let mut refreshed_rest = rest
+      let mut vi = Array::length(variants) - 1
+      while vi >= 0 {
+        let (variant_name, payloads) = Array::get(variants, vi)
+        let ctor_ty = if Array::length(payloads) == 0 {
+          CtEnum(suberror_name)
+        } else {
+          CtFn(payloads, CtEnum(suberror_name), constructor_dependency_row(Array::length(payloads)))
+        }
+        refreshed_rest = replace_first_env_binding(refreshed_rest, variant_name, ctor_ty, [
+          false
+        ])
+        if Array::length(payloads) > 0 {
+          refreshed_rest = replace_first_env_binding(refreshed_rest, fn_return_env_name(variant_name), CtEnum(suberror_name), [
+            false
+          ])
+        } else {
+          ()
+        }
+        vi = vi - 1
+      }
+      EnvBind(name, binding, refreshed_rest)
+    } else {
+      EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants))
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_suberror_owned_bindings(rest, suberror_name, variants), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
+    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
+    EnvFlat(bindings) => EnvFlat(bindings),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_suberror_owned_bindings(rest, suberror_name, variants))
+  }
+}
+
 fn refresh_completed_suberror_env(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], from: Int, to: Int) -> TypeEnv {
   let taken = array_empty()
   let mut refreshed = env
@@ -4077,26 +4117,7 @@ fn refresh_completed_suberror_env(stmts: Array[Stmt], env: TypeEnv, defs: Array[
         if idx >= 0 {
           match Array::get(defs, idx) {
             TDEnum(_, _, variants) => {
-              let mut vi = Array::length(variants) - 1
-              while vi >= 0 {
-                let (variant_name, payloads) = Array::get(variants, vi)
-                let ctor_ty = if Array::length(payloads) == 0 {
-                  CtEnum(name)
-                } else {
-                  CtFn(payloads, CtEnum(name), constructor_dependency_row(Array::length(payloads)))
-                }
-                refreshed = replace_first_env_binding(refreshed, variant_name, ctor_ty, [
-                  false
-                ])
-                if Array::length(payloads) > 0 {
-                  refreshed = replace_first_env_binding(refreshed, fn_return_env_name(variant_name), CtEnum(name), [
-                    false
-                  ])
-                } else {
-                  ()
-                }
-                vi = vi - 1
-              }
+              refreshed = refresh_suberror_owned_bindings(refreshed, name, variants)
             },
             _ => ()
           }
