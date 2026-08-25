@@ -300,10 +300,53 @@ fn compile_release_file_mode_for_cli(input_path: String, entry_name: String, mod
   // needs the verdict folded into the artifact fingerprint (so a no-opt-in
   // compile cannot hit an artifact built with it) -- a wider change than this,
   // and tracked on #2305.
-  if artifact_cache_disabled() || !unstable_opt_in_granted() {
+  //
+  // #2305 (Codex review): the gate lives HERE, not in each handler. Placing it
+  // per-handler is what let `compile-lite` and the positional low-level path
+  // ship ungated -- both call this helper and then write its bytes, and
+  // neither had a check. Every artifact-producing path in this dispatcher goes
+  // through this function, so gating it covers them by construction instead of
+  // by remembering.
+  reject_unstable_entry(input_path)
+  unstable_closure_reset()
+  let bytes = if artifact_cache_disabled() || !unstable_opt_in_granted() {
     compile_release_file_mode_uncached(input_path, entry_name, mode)
   } else {
     compile_release_file_mode(input_path, entry_name, mode)
+  }
+  reject_unstable_closure()
+  bytes
+}
+
+/// The profiled twin, gated identically. The profiled paths produce artifacts
+/// too, and gating only the plain helper left `compile-lite --profile` and the
+/// positional profiled path writing wasm with no opt-in.
+fn compile_release_file_mode_for_cli_profiled(input_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Exception + Fs + Env + Profiler {
+  reject_unstable_entry(input_path)
+  unstable_closure_reset()
+  let result = if artifact_cache_disabled() || !unstable_opt_in_granted() {
+    compile_release_file_mode_uncached_profiled(input_path, entry_name, mode)
+  } else {
+    compile_release_file_mode_profiled(input_path, entry_name, mode)
+  }
+  reject_unstable_closure()
+  result
+}
+
+/// `write_linked_debug_build` emits the entry wasm AND its linked library
+/// files, so a closure check after it returns rejects the build and leaves a
+/// runnable artifact behind. Walk the closure BEFORE it runs: `check_linked_file`
+/// collects the source groups -- which ingests every module -- and emits
+/// nothing. Only on the un-opted-in path; with the opt-in the verdict is a
+/// no-op and this would be a wasted typecheck.
+fn reject_unstable_before_debug_build(input_path: String) -> Unit with Exception + Fs + Env {
+  reject_unstable_entry(input_path)
+  if unstable_opt_in_granted() {
+    ()
+  } else {
+    unstable_closure_reset()
+    let _ = check_linked_file(input_path)
+    reject_unstable_closure()
   }
 }
 
@@ -460,11 +503,7 @@ export fn selfhost_cli_compile_lite_args(args: Array[String]) -> Int with Except
     }
   } else {
     let total_start = profiler_now_us()
-    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = if artifact_cache_disabled() {
-      compile_release_file_mode_uncached_profiled(input_path, entry_name, mode)
-    } else {
-      compile_release_file_mode_profiled(input_path, entry_name, mode)
-    }
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path, entry_name, mode)
     if in_memory {
       let total_us = elapsed_profile_us_since(total_start)
       write_optional_profile(profile_tsv_path, compile_lite_profile_tsv(load_us, type_us, bundle_us, parse_us, compile_us, 0, total_us))
@@ -657,10 +696,7 @@ export fn selfhost_cli_compile_args(args: Array[String]) -> Int with Exception +
   } else if !input_file_exists(input_path) {
     1
   } else {
-    reject_unstable_entry(input_path)
-    unstable_closure_reset()
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
-    reject_unstable_closure()
     write_executable_wasm(output_path, bytes, entry_name)
     0
   }
@@ -732,16 +768,18 @@ export fn selfhost_cli_build_args(args: Array[String]) -> Int with Exception + F
   if !input_file_exists(input_path) {
     1
   } else if mode == "debug" {
-    reject_unstable_entry(input_path)
-    unstable_closure_reset()
+    // #2305 (Codex review): `write_linked_debug_build` writes the entry wasm
+    // AND its linked library files, so checking the closure after it returns
+    // rejects the build while leaving a runnable artifact on disk. The closure
+    // is only known once something has walked it, so walk it FIRST:
+    // `check_linked_file` collects the source groups (which ingests every
+    // module) without emitting anything. Only on the un-opted-in path, since
+    // with the opt-in the verdict is a no-op.
+    reject_unstable_before_debug_build(input_path)
     write_linked_debug_build(input_path, output_path, entry_name)
-    reject_unstable_closure()
     0
   } else {
-    reject_unstable_entry(input_path)
-    unstable_closure_reset()
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
-    reject_unstable_closure()
     write_executable_wasm(output_path, bytes, entry_name)
     0
   }
@@ -834,14 +872,16 @@ export fn selfhost_cli_serve_args(args: Array[String]) -> Int with Exception + F
   if !input_file_exists(input_path) {
     1
   } else {
-    reject_unstable_entry(input_path)
-    unstable_closure_reset()
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     validate_serve_handler(entry_stmts)
     // No command entry: the component surface is `handler`; no-dce keeps every
     // export alive. `__no_entry__` is the explicit sentinel — any other unknown
     // entry name is a compile error since ADR-0069.
-    let core = compile_release_file_mode(input_path, "__no_entry__", "release")
+    // #2305 (Codex review): the GATED helper, not `compile_release_file_mode`.
+    // Calling the cached compile directly meant a warm artifact cache returned
+    // without ingesting, so the closure check below saw an empty record and
+    // serve wrote the component with no opt-in.
+    let core = compile_release_file_mode_for_cli(input_path, "__no_entry__", "release")
     // #1540 scope 4: two lanes, chosen by the handler's own signature. A
     // `body: HostStream` handler is async-lifted and takes the body as a
     // component `stream<u8>`, so it sees the first byte before the last one
@@ -853,7 +893,6 @@ export fn selfhost_cli_serve_args(args: Array[String]) -> Int with Exception + F
     } else {
       comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
     }
-    reject_unstable_closure()
     Fs::write_bytes(output_path, component)
     Fs::write_file(wit_output_path, wit_from_program(entry_stmts, entry_stmts, basename_without_vibe_suffix(input_path)))
     0
@@ -975,7 +1014,7 @@ export fn selfhost_cli_low_level_args_profiled(input_path: String, output_path: 
     1
   } else {
     let total_start = profiler_now_us()
-    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_uncached_profiled(input_path, entry_name, mode)
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path, entry_name, mode)
     let write_start = profiler_now_us()
     write_executable_wasm(output_path, bytes, entry_name)
     let write_us = elapsed_profile_us_since(write_start)
@@ -991,7 +1030,7 @@ fn low_level_compile_release_profiled(input_path: String, output_path: String, e
     selfhost_cli_low_level_args_profiled(input_path, output_path, entry_name, mode, profile_tsv_path, profile_callstack_path)
   } else {
     let total_start = profiler_now_us()
-    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_profiled(input_path, entry_name, mode)
+    let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path, entry_name, mode)
     let write_start = profiler_now_us()
     write_executable_wasm(output_path, bytes, entry_name)
     let write_us = elapsed_profile_us_since(write_start)
@@ -1031,6 +1070,7 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
     }
   }
   else if mode == "debug" {
+    reject_unstable_before_debug_build(input_path)
     write_linked_debug_build(input_path, output_path, entry_name)
     0
   }
