@@ -665,25 +665,33 @@ fn duplicate_value_decl_note(seen: Array[String], dname: String, errors: Array[S
 }
 
 fn duplicate_value_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
-  let seen = array_empty()
+  let seen_lets = array_empty()
+  let seen_imports = array_empty()
   let mut i = from_idx
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, n, _, _) => duplicate_value_decl_note(seen, n, errors),
-      SLetMut(n, _, _) => duplicate_value_decl_note(seen, n, errors),
-      SExternLet(n, _) => duplicate_value_decl_note(seen, n, errors),
+      SLet(_, _, n, _, _) => duplicate_value_decl_note(seen_lets, n, errors),
+      SLetMut(n, _, _) => duplicate_value_decl_note(seen_lets, n, errors),
+      SExternLet(n, _) => duplicate_value_decl_note(seen_lets, n, errors),
       // #2127: two imports binding the same local name used to silently
-      // last-win, so the fixture's call then failed with an arity mismatch
-      // of whichever builtin the alias happened to point at.
+      // last-win. Do not mix this set with SLet: a file that imports a
+      // name and also defines it (common_base's emit_i64_store) is not
+      // the last-win hole, and a merged program concatenates imports
+      // with the defining lets.
       SImport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
-          let bound = match item.alias {
-            Some(a) => a,
-            None => item.name
+          match item.kind {
+            Some(_) => (),
+            None => {
+              let bound = match item.alias {
+                Some(a) => a,
+                None => item.name
+              }
+              duplicate_value_decl_note(seen_imports, bound, errors)
+            }
           }
-          duplicate_value_decl_note(seen, bound, errors)
           j = j + 1
         }
       },
