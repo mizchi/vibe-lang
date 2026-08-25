@@ -49,6 +49,28 @@ test "declared StringMap shadows the builtin structural spelling" {
   assert(types_equal(resolved, CtNamed("StringMap", [CtInt])))
 }
 
+test "#2276 round 18: a TDEffect named StringMap also shadows the builtin" {
+  // `seed_imported_type_defs` puts an IMPORTED effect into `defs` as a
+  // `TDEffect`, and `resolve_type_expr_core_shadowed` consults `defs` before
+  // taking the builtin branch. So `import ./dep.vibe { effect Box as
+  // StringMap }` makes the annotation nominal in the checker, which the WIT
+  // scan has to agree with or it publishes the builtin ABI for another type.
+  let defs = [TDEffect("StringMap", array_empty(), array_empty())]
+  let resolved = resolve_type_expr_core_shadowed(TyApp("StringMap", [
+    TyName("Int")
+  ]), defs, array_empty())
+  assert(types_equal(resolved, CtNamed("StringMap", [CtInt])))
+}
+
+test "#2276 round 18: with no typedef the builtin spelling still resolves" {
+  // The control for the row above: nothing in `defs` owns the name, so
+  // `StringMap[Int]` is the builtin `Map[String, Int]`.
+  let resolved = resolve_type_expr_core_shadowed(TyApp("StringMap", [
+    TyName("Int")
+  ]), empty_defs(), array_empty())
+  assert(types_equal(resolved, CtNamed("Map", [CtString, CtInt])))
+}
+
 fn mut_escape_text(env: TypeEnv, name: String) -> String {
   match env_mut_escape(env, name) {
     Some(true) => "true",
