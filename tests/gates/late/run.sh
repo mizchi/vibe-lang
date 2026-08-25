@@ -7969,6 +7969,64 @@ if ! grep -q '"start":{"line":8' "$vpbufdir/bad.out" 2>/dev/null; then
   grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
   exit 1
 fi
+# ...and a contract whose EARLIER declaration is well-formed must not have the
+# error anchored on it. This is the shape that broke the first anchor (Codex
+# review on #2315): both the full token stream AND the prefix stopping right
+# after line 1's `->` throw `expected type but got eof`, so a smallest-matching-
+# prefix search walks BACKWARDS and publishes the error on line 1 -- pointing at
+# correct code, which is the worst way to be wrong. The eof case is now anchored
+# at the last real token instead of searched.
+python3 - "$vpbufdir/eof.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "fn a(x: Int) -> Int\n"
+    "fn b(x: Int) ->\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/eof.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/eof.out" 2>/dev/null || true
+if ! grep -q '"severity":1' "$vpbufdir/eof.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the two-declaration malformed .vpkg published no error (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
+  exit 1
+fi
+# Line 8 (0-based) is the WELL-FORMED `fn a`; line 9 is the malformed `fn b`.
+if grep -q '"start":{"line":8' "$vpbufdir/eof.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the error is anchored on the WELL-FORMED declaration -- the eof anchor searched backwards (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"start":{"line":9' "$vpbufdir/eof.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the error is not anchored on the malformed declaration (expected line 9, 0-based) (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
+  exit 1
+fi
 # ...and reading a contract as a contract must not COST the ADR-0068 opt-in.
 # This is the trap the rest of this section sets up: the `vibe diagnostics`
 # buffer lane used to compute the unstable set with a SECOND scan over the RAW
