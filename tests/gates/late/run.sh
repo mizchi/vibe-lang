@@ -7375,3 +7375,450 @@ if ! grep -qF 'inherits' "$ihdir/only.out.diag" 2>/dev/null; then
 fi
 rm -rf "$ihdir"
 echo "[compiler-gate] inherited and physical unstable imports are each reported, each in its own words ok (#2289)"
+
+# 114/114. The ADR-0068 gate exists in the SPLIT CLI, and its cached lane
+#          cannot be used to get around it (#2305).
+# Gate 108 covers the boundary on the shipped adapter, but it drives stage2
+# through VIBE_CLI_WASM, so it cannot see lib/@vibe/cli/ by construction --
+# stage2 is compiled from the flat adapter source and contains none of it.
+# Measured before this landed, on a stage1 CLI core built from the tree:
+# `check` returned 0 with no diagnostic both when the ENTRY imports
+# @vibe/concurrent and when a SIBLING does, while the adapter refuses both.
+#
+# The cached lane is the sharp half. `compile_file_fs_mode_cached` returns on
+# a persistent-artifact hit before it loads anything, so the closure record is
+# empty and the gate answers "clean" -- build once WITH the opt-in, drop it,
+# and the artifact came out anyway. That is why the warm case below is not
+# redundant with the cold one: a port that only passes the cold case is
+# silently permissive, which is worse than no gate.
+echo "[compiler-gate] 114/114 the ADR-0068 gate exists in the split CLI, cold and warm (#2305)"
+sc_cli="${VIBE_SPLIT_CLI_WASM:-_build/bench/selfhost_cli_core/index_stage1.wasm}"
+if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
+  # BUILD it rather than skip (Codex review on #2313). The first version of
+  # this section skipped when no split CLI core was present -- and `ci.yml`
+  # never builds one, so the required late shard took the skip branch every
+  # time and this regression tested nothing where it mattered. A skip branch
+  # with an honest message is still a skip branch if it is the only one CI
+  # ever reaches.
+  #
+  # The lane already has a stage2, which is all `build_cli_core.sh` needs as a
+  # base compiler, so the gate can supply its own input: one compile of
+  # lib/@vibe/cli/main.vibex, not a bootstrap.
+  echo "[compiler-gate] 114/114 building the split CLI core (no artifact at $sc_cli) (#2305)"
+  sc_built="_build/_gate_split_cli_core"
+  rm -rf "$sc_built"
+  if ! VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" \
+       VIBE_CLI_CORE_STAGE_TIMEOUT_SEC="${VIBE_CLI_CORE_STAGE_TIMEOUT_SEC:-1500}" \
+       VIBE_CLI_CORE_OUT_DIR="$sc_built" \
+       bash scripts/build_cli_core.sh >"$sc_built.log" 2>&1; then
+    echo "[compiler-gate] FAIL: could not build the split CLI core for the #2305 gate" >&2
+    tail -20 "$sc_built.log" >&2 || true
+    exit 1
+  fi
+  sc_cli="$sc_built/index_stage1.wasm"
+  if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
+    echo "[compiler-gate] FAIL: split CLI core build produced no artifact for the #2305 gate" >&2
+    exit 1
+  fi
+fi
+if true; then
+  case "$sc_cli" in /*) sc_abs="$sc_cli" ;; *) sc_abs="$ROOT_DIR/$sc_cli" ;; esac
+  scdir="_build/_gate_split_cli_unstable"
+  rm -rf "$scdir"; mkdir -p "$scdir"
+  cat > "$scdir/worker.vibe" <<'SCEOF'
+import @vibe/concurrent { TaskGroup }
+
+export fn work() -> Int {
+  7
+}
+SCEOF
+  cat > "$scdir/main.vibex" <<'SCEOF'
+import ./worker.vibe { work }
+
+fn main() -> Unit with Stdout {
+  println(Int::to_string(work()))
+}
+SCEOF
+  sc_run() {
+    env -u VIBE_UNSTABLE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+      build "$scdir/main.vibex" -o "$scdir/b.wasm" 2>&1 || true
+  }
+  # 1. cold, no opt-in: refused, and it must name the SIBLING that spells the
+  #    import -- the entry pre-check alone cannot see that file.
+  rm -f "$scdir/b.wasm"
+  sc_cold="$(sc_run)"
+  if [ -s "$scdir/b.wasm" ]; then
+    echo "[compiler-gate] FAIL: the split CLI built an unstable dependency with no opt-in (#2305)" >&2
+    printf '%s\n' "$sc_cold" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$sc_cold" | grep -qF 'worker.vibe'; then
+    echo "[compiler-gate] FAIL: the split CLI's rejection does not name the sibling that imports it (#2305)" >&2
+    printf '%s\n' "$sc_cold" >&2
+    exit 1
+  fi
+  # 2. WITH the opt-in it builds, and warms whatever cache the lane keeps.
+  rm -f "$scdir/b.wasm"
+  sc_optin="$(env VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+    build "$scdir/main.vibex" -o "$scdir/b.wasm" 2>&1 || true)"
+  if [ ! -s "$scdir/b.wasm" ]; then
+    echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the split CLI build (#2305)" >&2
+    printf '%s\n' "$sc_optin" >&2
+    exit 1
+  fi
+  # 3. warm, opt-in removed: still refused. This is the case a naive port
+  #    passes cold and fails here.
+  rm -f "$scdir/b.wasm"
+  sc_warm="$(sc_run)"
+  if [ -s "$scdir/b.wasm" ]; then
+    echo "[compiler-gate] FAIL: a warm artifact cache let the split CLI skip the ADR-0068 gate (#2305)" >&2
+    printf '%s\n' "$sc_warm" >&2
+    exit 1
+  fi
+  # 4. ...and a program with no unstable import still builds, cold and warm,
+  #    so the guard is not simply refusing everything.
+  printf 'fn main() -> Unit with Stdout {\n  println("ok")\n}\n' > "$scdir/clean.vibex"
+  for round in cold warm; do
+    rm -f "$scdir/c.wasm"
+    sc_clean="$(env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+      build "$scdir/clean.vibex" -o "$scdir/c.wasm" 2>&1 || true)"
+    if [ ! -s "$scdir/c.wasm" ]; then
+      echo "[compiler-gate] FAIL: the split CLI stopped building a clean program ($round) (#2305)" >&2
+      printf '%s\n' "$sc_clean" >&2
+      exit 1
+    fi
+  done
+  rm -rf "$scdir"
+  echo "[compiler-gate] the split CLI refuses an unstable dependency cold AND warm, and still builds clean programs ok (#2305)"
+fi
+
+# 115/115. `vibe lsp` publishDiagnostics carries the ADR-0068 opt-in (#2297).
+# Section 108 covers the boundary on `vibe check --single-file`, in both its
+# text and its `--json` form -- but the JSON form only reports it because the
+# ADAPTER splices the verdict in, so 108 says nothing about the live server.
+# Measured before this landed: publishDiagnostics on a buffer whose only
+# content is `import @vibe/concurrent` delivered the unused-import warning and
+# no opt-in error at all, while the two check forms reported both.
+#
+# Both directions, because a fix that always appends the diagnostic would pass
+# the first assertion and break the opt-in.
+echo "[compiler-gate] 115/115 vibe lsp publishDiagnostics reports the ADR-0068 opt-in (#2297)"
+lspudir="_build/_gate_lsp_unstable"
+rm -rf "$lspudir"; mkdir -p "$lspudir"
+python3 - "$lspudir/input.bin" <<'PYEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = 'import @vibe/concurrent { TaskGroup }\n\nexport let main = () -> Int { 0 }\n'
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate_unstable.vibe", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+PYEOF
+# `env -u VIBE_UNSTABLE` for the same reason section 108 and 113 do it: this
+# lane grants the opt-in lane-wide (run.sh:20), and under that grant the gate
+# stands down and this section would assert nothing.
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$lspudir/input.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$lspudir/plain.bin" 2>"$lspudir/plain.err" || true
+if ! grep -q 'publishDiagnostics' "$lspudir/plain.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe lsp published no diagnostics at all (#2297)" >&2
+  head -c 400 "$lspudir/plain.bin" >&2 || true
+  cat "$lspudir/plain.err" >&2 || true
+  exit 1
+fi
+if ! grep -q 'VIBE_UNSTABLE=1' "$lspudir/plain.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: publishDiagnostics omits the ADR-0068 opt-in that every check form reports (#2297)" >&2
+  grep -o '"method":"textDocument/publishDiagnostics".\{0,300\}' "$lspudir/plain.bin" >&2 || true
+  exit 1
+fi
+# ...and the opt-in suppresses it, while diagnostics keep flowing.
+VIBE_UNSTABLE=1 VIBE_STDIN_BYTES="$(cat "$lspudir/input.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$lspudir/optin.bin" 2>/dev/null || true
+if ! grep -q 'publishDiagnostics' "$lspudir/optin.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe lsp stopped publishing diagnostics under VIBE_UNSTABLE=1 (#2297)" >&2
+  exit 1
+fi
+if grep -q 'VIBE_UNSTABLE=1' "$lspudir/optin.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not suppress the opt-in diagnostic in the LSP (#2297)" >&2
+  exit 1
+fi
+# ...and the scan must never COST diagnostics. `collect_all_diagnostics` uses
+# the recovering lexer and reports a lex error; the unstable scan uses
+# `lex_with_offsets`, which THROWS on one. The first version let that throw
+# escape, and `lsp_diagnostics_safe_with_unstable` turns a throw into `[]` --
+# so a buffer with any syntax error published as CLEAN. That is strictly worse
+# than the missing warning this section exists for, and it is invisible unless
+# something asserts on a file that does not lex.
+python3 - "$lspudir/lex.bin" <<'PYEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+# A lexer error and no unstable import at all: the scan still runs (no grant),
+# so this is the shape that regressed.
+src = 'let x = `\nexport let main = () -> Int { 0 }\n'
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate_lex.vibe", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+PYEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$lspudir/lex.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$lspudir/lex.out" 2>/dev/null || true
+if grep -q '"diagnostics":\[\]' "$lspudir/lex.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a buffer with a lexer error published NO diagnostics -- the unstable scan swallowed them (#2297)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$lspudir/lex.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"severity":1' "$lspudir/lex.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the lexer error is not published as an error severity (#2297)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$lspudir/lex.out" >&2 || true
+  exit 1
+fi
+# ...and the scan must read the buffer with the grammar the buffer HAS. The
+# first version passed `("", source, source)` -- no path, raw text -- which was
+# documented as safe because "a buffer is never a `.vpkg` facade". Both halves
+# were wrong, and each silently drops the diagnostic this section is about:
+#
+#   - an editor DOES open `index.vpkg`. With an empty path the scan parses the
+#     contract with the statement grammar, the header fails, the scan returns
+#     `None`, and no opt-in error is reported for a contract that imports
+#     `@vibe/concurrent`;
+#   - a buffer may open with a `require ... = #pkg:sha1:` head. The base lane
+#     blanks that before parsing (#2227); the scan reparsed the RAW source,
+#     where the directive is a parse error -- `None` again.
+#
+# Both probes were measured against a stage2 built before the fix: each
+# published its OTHER diagnostic and no opt-in error, so this pair fails on the
+# pre-fix compiler rather than merely passing on the fixed one.
+for probe in vpkg pin; do
+  python3 - "$lspudir/$probe.bin" "$probe" <<'LSPGRAMMAREOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+VPKG = (
+    "name = @gate/lspvpkg\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2297\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "import @vibe/concurrent { TaskGroup }\n"
+    "\n"
+    "fn implemented(x: Int) -> Int\n"
+)
+PIN = (
+    "require @gate/dep 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n"
+    "\n"
+    "import @vibe/concurrent { TaskGroup }\n"
+    "\n"
+    "export let main = () -> Int { 0 }\n"
+)
+kind = sys.argv[2]
+src, uri = (VPKG, "file:///gate/index.vpkg") if kind == "vpkg" else (PIN, "file:///gate/pin.vibe")
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": uri, "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+LSPGRAMMAREOF
+  env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$lspudir/$probe.bin")" \
+    VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    > "$lspudir/$probe.out" 2>/dev/null || true
+  if ! grep -q 'publishDiagnostics' "$lspudir/$probe.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe lsp published nothing for the $probe buffer (#2297)" >&2
+    exit 1
+  fi
+  if ! grep -q 'VIBE_UNSTABLE=1' "$lspudir/$probe.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $probe buffer's unstable import got no opt-in diagnostic -- the scan read it with the wrong grammar (#2297)" >&2
+    grep -o '"diagnostics":\[[^]]*\]' "$lspudir/$probe.out" >&2 || true
+    exit 1
+  fi
+done
+# NOT asserted here: the `.vpkg` buffer ALSO publishes `expected { but got eof`,
+# because the base `collect_all_diagnostics` still reads a contract as
+# statements. That is the LSP half of #2280 -- it predates #2297 (measured on a
+# stage2 built from the commit before it) and is tracked as #2314. Asserting a
+# clean answer here would fail for a reason this section does not own.
+rm -rf "$lspudir"
+echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, the opt-in suppresses it, a lex error still reports, and .vpkg/pin-head buffers are read with their own grammar ok (#2297)"
+
+# 116/116. A diagnostic on a trait method names the TRAIT, not the synthesized
+#          witness struct (#2286).
+# `vibe check` and `vibe test` always reported `the signature of `Store::lookup``;
+# the full COMPILE lane reported ``field `lookup` of struct `StoreDict``, a
+# declaration the author never wrote. Not a duplicate to drop -- measured, the
+# compile lane emits exactly one diagnostic and that was it, so suppressing it
+# would have lost a real type error.
+#
+# The second case is the one that killed the previous attempt (#2276): a
+# program may legitimately declare its own `StoreDict`, and relabelling on the
+# `+ "Dict"` name convention reports a real user struct as a trait signature.
+echo "[compiler-gate] 116/116 a trait-method diagnostic names the trait, not the synthesized dict struct (#2286)"
+tdlabdir="_build/_gate_trait_dict_label"
+rm -rf "$tdlabdir"; mkdir -p "$tdlabdir"
+cat > "$tdlabdir/trait.vibe" <<'TDEOF'
+trait Store {
+  lookup(Self, Map[Int, String]) -> String
+}
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/t.wasm" "$tdlabdir/t.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/trait.vibe" "$tdlabdir/t.wasm" main >/dev/null 2>&1 || true
+td_report="$(cat "$tdlabdir/t.wasm.diag" 2>/dev/null || true)"
+if [ -z "$td_report" ]; then
+  echo "[compiler-gate] FAIL: the bad Map key in a trait method produced no diagnostic at all (#2286)" >&2
+  exit 1
+fi
+if printf '%s\n' "$td_report" | grep -qF 'StoreDict'; then
+  echo "[compiler-gate] FAIL: the compile lane still names the synthesized StoreDict (#2286)" >&2
+  printf '%s\n' "$td_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$td_report" | grep -qF 'Store::lookup'; then
+  echo "[compiler-gate] FAIL: the diagnostic does not name the trait method the author wrote (#2286)" >&2
+  printf '%s\n' "$td_report" >&2
+  exit 1
+fi
+# The red case: a HAND-WRITTEN struct with the conventional name must still be
+# described as what it is. This is what a name-convention fix gets wrong.
+cat > "$tdlabdir/handwritten.vibe" <<'TDEOF'
+struct StoreDict { lookup: Map[Int, String] }
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/h.wasm" "$tdlabdir/h.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/handwritten.vibe" "$tdlabdir/h.wasm" main >/dev/null 2>&1 || true
+hw_report="$(cat "$tdlabdir/h.wasm.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$hw_report" | grep -qF 'of struct `StoreDict`'; then
+  echo "[compiler-gate] FAIL: a hand-written StoreDict lost its field label -- the fix is reading the name convention, not the desugar's record (#2286)" >&2
+  printf '%s\n' "$hw_report" >&2
+  exit 1
+fi
+# ...and `vibe check` keeps the answer it always had, so the two verbs agree.
+rm -f "$tdlabdir/chk.out" "$tdlabdir/chk.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/trait.vibe" "$tdlabdir/chk.out" main >/dev/null 2>&1 || true
+if ! grep -qF 'Store::lookup' "$tdlabdir/chk.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe check no longer names the trait method (#2286)" >&2
+  cat "$tdlabdir/chk.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and an INHERITED method names the trait that declares it. `flatten_traits`
+# copies a supertrait's signatures into the child, so `ChildDict` carries fields
+# `Child` never declared. Keying the provenance record by struct alone reported
+# ``the signature of `Child::lookup` `` -- a declaration that exists nowhere in
+# the source (Codex review on #2313).
+#
+# The child is declared FIRST on purpose. With `Base` first the walk stops on
+# `BaseDict` and the label is right by accident, which is exactly how the bug
+# stayed invisible; measured both orders on the pre-fix compiler, and only this
+# one exposes it.
+cat > "$tdlabdir/inherit.vibe" <<'TDEOF'
+trait Child: Base {
+  own(Self, Int) -> Int
+}
+
+trait Base {
+  lookup(Self, Map[Double, String]) -> String
+}
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/i.wasm" "$tdlabdir/i.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/inherit.vibe" "$tdlabdir/i.wasm" main >/dev/null 2>&1 || true
+inh_report="$(cat "$tdlabdir/i.wasm.diag" 2>/dev/null || true)"
+if [ -z "$inh_report" ]; then
+  echo "[compiler-gate] FAIL: the bad Map key in an inherited trait method produced no diagnostic at all (#2286)" >&2
+  exit 1
+fi
+if printf '%s\n' "$inh_report" | grep -qF 'Child::lookup'; then
+  echo "[compiler-gate] FAIL: an inherited method is labelled with the CHILD trait, which does not declare it (#2286)" >&2
+  printf '%s\n' "$inh_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$inh_report" | grep -qF 'Base::lookup'; then
+  echo "[compiler-gate] FAIL: the inherited method is not attributed to the trait that declares it (#2286)" >&2
+  printf '%s\n' "$inh_report" >&2
+  exit 1
+fi
+# The child's OWN method must still be attributed to the child, or the fix
+# could pass the assertion above by always naming a supertrait.
+cat > "$tdlabdir/ownmethod.vibe" <<'TDEOF'
+trait Child: Base {
+  own(Self, Map[Double, String]) -> String
+}
+
+trait Base {
+  lookup(Self, Int) -> Int
+}
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/o.wasm" "$tdlabdir/o.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/ownmethod.vibe" "$tdlabdir/o.wasm" main >/dev/null 2>&1 || true
+own_report="$(cat "$tdlabdir/o.wasm.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$own_report" | grep -qF 'Child::own'; then
+  echo "[compiler-gate] FAIL: a trait's OWN method is no longer attributed to it (#2286)" >&2
+  printf '%s\n' "$own_report" >&2
+  exit 1
+fi
+rm -rf "$tdlabdir"
+echo "[compiler-gate] trait-method diagnostics name the DECLARING trait, inherited or own; a hand-written dict struct keeps its own label ok (#2286)"

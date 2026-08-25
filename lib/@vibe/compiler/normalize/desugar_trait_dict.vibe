@@ -285,6 +285,60 @@ fn dict_struct_name(trait_name: String) -> String {
   String::concat(trait_name, "Dict")
 }
 
+/// #2286: which dict structs THIS program's desugar actually synthesized, and
+/// for which trait. `(struct name, trait name)`.
+///
+/// A diagnostic on a dict field used to name the synthesized struct -- ``field
+/// `lookup` of struct `StoreDict` `` -- which is a declaration the author never
+/// wrote and cannot act on. The trait label exists (`fapp_decl_label`) and is
+/// what `vibe check` reports, but the whole-program lane re-checks the desugar
+/// output as ordinary source, and by then the trait statement is gone: the
+/// compile lane emits exactly ONE diagnostic and it is the struct-shaped one.
+/// So this is not a duplicate to suppress -- suppressing it would lose the
+/// error -- it is a label that has to be recoverable.
+///
+/// Recorded at the synthesis site rather than inferred from the name. That
+/// distinction is the whole point: `collect_trait_dict_erasures` identifies
+/// dict structs by the `+ "Dict"` convention, and a program may legitimately
+/// declare its own struct with that name (`unknown_type_name_enforced_test`
+/// does). Relabelling on the convention reports a real user struct as a trait
+/// signature, which is what killed the attempt in #2276.
+///
+/// The synthesis site is already guarded by `struct_decl_exists`, so a
+/// hand-written `StoreDict` means no struct is synthesized and nothing is
+/// recorded -- the user's declaration keeps the field label by construction,
+/// not by a name test.
+/// Keyed by FIELD, not by struct. `flatten_traits` copies a supertrait's
+/// methods into the child's dict, so `ChildDict` holds fields `Child` does not
+/// declare. Recording only the dict's owner reported ``the signature of
+/// `Child::lookup` `` for a method only `Base` declares -- a name the reader
+/// cannot find anywhere in their source, and order-dependent on top: with
+/// `Base` declared first the walk stops on `BaseDict` and the label happened
+/// to be right (Codex review on #2313, measured both orders).
+let dtd_synth_dict_fields: Array[(String, String, String)] = array_empty()
+
+fn dtd_synth_dict_reset() -> Unit {
+  Array::truncate(dtd_synth_dict_fields, 0)
+}
+
+/// The trait that DECLARES `field_name` in the synthesized dict struct
+/// `struct_name`, or "" when `struct_name` is not one this program's desugar
+/// produced (or has no such field).
+export fn synthesized_dict_field_trait(struct_name: String, field_name: String) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(dtd_synth_dict_fields) {
+    let (sname, fname, tname) = Array::get(dtd_synth_dict_fields, i)
+    if sname == struct_name && fname == field_name {
+      found = tname
+      i = Array::length(dtd_synth_dict_fields)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 /// The hidden dict parameter name for `[T: Tr]`, e.g. `__dict_Measurable_T`.
 fn dict_param_name(trait_name: String, tparam: String) -> String {
   String::concat("__dict_", String::concat(trait_name, String::concat("_", tparam)))
@@ -978,11 +1032,15 @@ fn lookup_supers(supers_map: Array[(String, Array[String])], name: String) -> Ar
 /// (compile_expr_tail4.vibe), not by the object's static type — so a shared
 /// field name must sit at a consistent index across structs. (Single supertrait
 /// chains only; multiple-supertrait ordering is a deferred slice.)
-fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])], acc_names: Array[String], out: Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit {
+/// `owners` records `(method name, the trait that DECLARES it)` in lockstep
+/// with `out`. A flattened list copies a supertrait's methods into the child,
+/// so the dict struct's owner is not the declaring trait of every field --
+/// see `synthesized_dict_field_trait` (#2286, Codex review on #2313).
+fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])], acc_names: Array[String], out: Array[(String, Array[TypeExpr], TypeExpr)], owners: Array[(String, String)]) -> Unit {
   let supers = lookup_supers(supers_map, tname)
   let mut s = 0
   while s < Array::length(supers) {
-    flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out)
+    flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out, owners)
     s = s + 1
   }
   match lookup_trait_sigs(traits_raw, tname) {
@@ -995,6 +1053,7 @@ fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Array[(Stri
         } else {
           Array::push(acc_names, mname)
           Array::push(out, (mname, params, ret))
+          Array::push(owners, (mname, tname))
         }
         i = i + 1
       }
@@ -1013,11 +1072,41 @@ fn flatten_traits(traits_raw: Array[(String, Array[(String, Array[TypeExpr], Typ
     let (tname, _) = Array::get(traits_raw, i)
     let acc_names = empty_str_array()
     let flat = array_empty()
-    flatten_trait_sigs_into(tname, traits_raw, supers_map, acc_names, flat)
+    flatten_trait_sigs_into(tname, traits_raw, supers_map, acc_names, flat, array_empty())
     Array::push(out, (tname, flat))
     i = i + 1
   }
   out
+}
+
+/// First `value` for `key`, or `fallback`. `owners` is built in lockstep with
+/// the flattened sigs, so a miss means the two went out of step -- falling back
+/// to the dict's own trait keeps the label a real trait name either way.
+fn lookup_str_pair(pairs: Array[(String, String)], key: String, fallback: String) -> String {
+  let mut i = 0
+  let mut found = fallback
+  while i < Array::length(pairs) {
+    let (k, v) = Array::get(pairs, i)
+    if k == key {
+      found = v
+      i = Array::length(pairs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Which trait DECLARES each method of `tname`'s flattened set.
+///
+/// Not a second implementation of the flattening rule: it runs
+/// `flatten_trait_sigs_into`, the same recursion `flatten_traits` runs, and
+/// reads the owner list it fills. A mirror of the rule would drift the first
+/// time an override or a diamond changed which declaration wins.
+fn flatten_trait_owners(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])]) -> Array[(String, String)] {
+  let owners = array_empty()
+  flatten_trait_sigs_into(tname, traits_raw, supers_map, empty_str_array(), array_empty(), owners)
+  owners
 }
 
 fn lookup_trait_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], name: String) -> Option[Array[(String, Array[TypeExpr], TypeExpr)]] {
@@ -15175,6 +15264,10 @@ fn dtpw_inline_trivial_wrappers(stmts: Array[Stmt]) -> Unit {
 /// the same stmts after) finds the bounds already stripped (so no function is
 /// re-threaded) and skips dict structs that already exist.
 export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
+  // #2286: the record describes THIS program. The unit-test batch compiles
+  // many files in one long-lived daemon, so a table left standing would
+  // relabel a later program's struct after an earlier program's trait.
+  dtd_synth_dict_reset()
   // #790: lower array-literal spreads first, so no downstream pass or codegen
   // ever sees a raw ESpread.
   desugar_array_spread(stmts)
@@ -15308,6 +15401,18 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
       if struct_decl_exists(stmts, dict_struct_name(trait_name)) {
         ()
       } else {
+        // #2286: record the provenance at the ONE point a dict struct is
+        // actually synthesized -- one row per field, carrying the trait that
+        // DECLARES it, which for an inherited method is a supertrait rather
+        // than `trait_name`.
+        let dict_name = dict_struct_name(trait_name)
+        let owners = flatten_trait_owners(trait_name, traits_raw, supers_map)
+        let mut si = 0
+        while si < Array::length(sigs) {
+          let (mname, _mparams, _mret) = Array::get(sigs, si)
+          Array::push(dtd_synth_dict_fields, (dict_name, mname, lookup_str_pair(owners, mname, trait_name)))
+          si = si + 1
+        }
         Array::push(stmts, make_dict_struct_stmt(trait_name, sigs))
       }
       ti = ti + 1

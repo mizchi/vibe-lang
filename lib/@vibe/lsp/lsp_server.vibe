@@ -71,7 +71,7 @@
 //# Imports
 
 import @vibe/compiler/runtime {
-  binding_occurrences, collect_all_diagnostics, doc_at_source, symbol_spans, type_at_source
+  binding_occurrences, collect_all_diagnostics, collect_all_diagnostics_with_unstable_for_path, doc_at_source, symbol_spans, type_at_source
 }
 
 import @vibe/parser {
@@ -729,7 +729,36 @@ fn lsp_handle_document_symbol(source: String) -> Json with Exception {
 }
 
 fn lsp_handle_diagnostics(source: String) -> Json with Exception {
-  let diags = collect_all_diagnostics(source)
+  lsp_handle_diagnostics_with_unstable(source, true)
+}
+
+/// #2297: the ADR-0068 opt-in for this server run.
+///
+/// A cell rather than a parameter threaded through `lsp_run_with_handler`:
+/// that function has nine call sites and carries the request shape, while this
+/// value is constant for the whole process. Authority is settled in the
+/// earliest phase and does not change during a run (ADR-0075/0084/0088), so a
+/// per-request parameter would be encoding a variability that does not exist.
+/// Written once by `lsp_main` from the value its caller read at the edge.
+let lsp_unstable_cell: Array[Bool] = [false]
+
+fn lsp_unstable_opt_in() -> Bool {
+  Array::get(lsp_unstable_cell, 0)
+}
+
+/// #2297: `publishDiagnostics` was the one surface that did not report the
+/// ADR-0068 opt-in -- it calls this and nothing else, while the adapter spliced
+/// the verdict into the two `vibe check --single-file` forms. Taking it from
+/// `collect_all_diagnostics_with_unstable` means all three read one answer.
+fn lsp_handle_diagnostics_with_unstable(source: String, allow_unstable: Bool) -> Json with Exception {
+  lsp_handle_diagnostics_for_path("", source, allow_unstable)
+}
+
+/// #2297: the document path matters -- an `index.vpkg` buffer has to be read
+/// with the contract grammar, or the scan parses its header as statements,
+/// fails, and reports nothing (Codex review on #2313).
+fn lsp_handle_diagnostics_for_path(input_path: String, source: String, allow_unstable: Bool) -> Json with Exception {
+  let diags = collect_all_diagnostics_with_unstable_for_path(input_path, source, allow_unstable)
   JArr(for msg in diags {
     lsp_parse_diag_line(source, msg)
   })
@@ -754,6 +783,30 @@ export fn lsp_diagnostics_safe(source: String) -> Json {
   handle {
     lsp_handle_diagnostics(source)
   } with { Exception::Throw(_) => JArr([]) }
+}
+
+export fn lsp_diagnostics_safe_with_unstable(source: String, allow_unstable: Bool) -> Json {
+  handle {
+    lsp_handle_diagnostics_with_unstable(source, allow_unstable)
+  } with { Exception::Throw(_) => JArr([]) }
+}
+
+export fn lsp_diagnostics_safe_for_path(input_path: String, source: String, allow_unstable: Bool) -> Json {
+  handle {
+    lsp_handle_diagnostics_for_path(input_path, source, allow_unstable)
+  } with { Exception::Throw(_) => JArr([]) }
+}
+
+/// `file:///a/b.vibe` -> `/a/b.vibe`. Only the extension is load-bearing here
+/// (`is_contract_ext`), but a real path costs nothing and keeps any later
+/// path-dependent check honest.
+fn lsp_uri_to_path(uri: String) -> String {
+  let prefix = "file://"
+  if String::starts_with(uri, prefix) {
+    uri[String::length(prefix): String::length(uri)]
+  } else {
+    uri
+  }
 }
 
 /// #820 sub-item 1: `vibe diagnostics --json` reuses this SAME LSP diagnostic
@@ -1194,7 +1247,7 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
   }); Lsp::Rename(u2, l2, c2, nn) => resume({
     let src = lsp_doc_text(docs, u2)
     lsp_handle_rename(src, u2, l2, lsp_pos_to_byte_col(src, l2, c2), nn)
-  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs, u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe(lsp_doc_text(docs, u2))); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs, u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
+  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs, u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe_for_path(lsp_uri_to_path(u2), lsp_doc_text(docs, u2), lsp_unstable_opt_in())); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs, u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs, u2)
     lsp_handle_signature_help(src, l2, lsp_pos_to_byte_col(src, l2, c2))
   }); Lsp::WorkspaceSymbol(q) => resume(lsp_handle_workspace_symbol(q, docs)) }
@@ -1445,7 +1498,11 @@ fn lsp_step(docs: Map[String, String]) -> (Map[String, String], Bool) with Stdin
   }
 }
 
-export fn lsp_main() -> Int with Stdin + Stdout {
+/// `allow_unstable` is read by the CALLER (cli_adapter), once, at server start:
+/// this function has no Env effect, and authority is settled in the earliest
+/// phase rather than re-read per request (ADR-0075/0084/0088).
+export fn lsp_main(allow_unstable: Bool) -> Int with Stdin + Stdout {
+  Array::set(lsp_unstable_cell, 0, allow_unstable)
   let mut docs = Map::new()
   let mut running = true
   while running {

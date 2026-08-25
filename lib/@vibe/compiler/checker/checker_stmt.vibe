@@ -100,6 +100,7 @@ import @vibe/compiler/normalize {
   desugar_railway_binds,
   erase_railway_origin_markers,
   inject_trait_method_generics,
+  synthesized_dict_field_trait,
   unresolved_mut_labeled_calls
 }
 
@@ -2450,14 +2451,14 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           // `collect_trait_dict_erasures` establishes.
           let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
           let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
-          report_unknown_type_names_deferred_validation(ftype_expr, defs, report_shadow, env, array_empty(), String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
+          report_unknown_type_names_deferred_validation(ftype_expr, defs, report_shadow, env, array_empty(), struct_field_decl_label(name, fname), errors)
           // #2268: formals are the struct's OWN tparams -- never
           // `report_shadow`, whose deferred cross-package names (`Map` in a
           // `.vpkg`-derived struct) are types, not formals; and not
           // `dict_erased`, so a synthesized `<Trait>Dict` witness struct
           // keeps today's accept-but-undispatchable behavior for a trait
           // spelling its own formal applied.
-          report_formal_applications(ftype_expr, tparams, String::concat(String::concat(String::concat("field `", fname), "` of struct `"), String::concat(name, "`")), errors)
+          report_formal_applications(ftype_expr, tparams, struct_field_decl_label(name, fname), errors)
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
@@ -3894,6 +3895,35 @@ fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors
   }
 }
 
+/// #2286: the label for a struct FIELD diagnostic.
+///
+/// Normally ``field `f` of struct `S` ``. But when `S` is a witness struct the
+/// trait-dict desugar synthesized, that names a declaration the author never
+/// wrote and cannot act on -- and in the whole-program lane it is the only
+/// diagnostic emitted, because the trait statement is gone by the time this
+/// walk runs. So it carries the trait's label instead, the same
+/// ``the signature of `Store::lookup` `` that `vibe check` reports, and the
+/// two lanes stop disagreeing about the same file.
+///
+/// `synthesized_dict_field_trait` answers from what the desugar RECORDED, not
+/// from the `+ "Dict"` name convention. A hand-written `StoreDict` is never
+/// synthesized (the desugar's `struct_decl_exists` guard skips it), so it is
+/// absent from the record and keeps the field label -- by construction rather
+/// than by a name test, which is what #2276's attempt got wrong.
+///
+/// Keyed by (struct, FIELD): `flatten_traits` copies a supertrait's methods
+/// into the child's dict, so `ChildDict` carries fields only `Base` declares.
+/// Keying by struct alone reported ``the signature of `Child::lookup` `` for
+/// one of those -- a declaration that does not exist (Codex review on #2313).
+fn struct_field_decl_label(struct_name: String, field_name: String) -> String {
+  let owning_trait = synthesized_dict_field_trait(struct_name, field_name)
+  if owning_trait == "" {
+    String::concat(String::concat(String::concat("field `", field_name), "` of struct `"), String::concat(struct_name, "`"))
+  } else {
+    fapp_decl_label(owning_trait, field_name)
+  }
+}
+
 fn fapp_decl_label(owner: String, member: String) -> String {
   String::concat(String::concat(String::concat("the signature of `", owner), String::concat("::", member)), "`")
 }
@@ -4012,7 +4042,7 @@ fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], error
         let mut fi = 0
         while fi < Array::length(fields) {
           let (field_name, field_type) = Array::get(fields, fi)
-          report_map_key_types(field_type, defs, params, String::concat(String::concat(String::concat("field `", field_name), "` of struct `"), String::concat(name, "`")), found)
+          report_map_key_types(field_type, defs, params, struct_field_decl_label(name, field_name), found)
           fi = fi + 1
         }
       },
