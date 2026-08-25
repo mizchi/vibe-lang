@@ -1,6 +1,8 @@
 //# Imports
 
 import ../compiler {
+  check_unstable_surface_warnings_from_closure, check_unstable_surface_warnings_from_path,
+  unstable_closure_reset,
   check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
   compile_release_file_mode_uncached, compile_release_file_mode_uncached_profiled,
   write_linked_debug_build, strip_executable_wasm_env,
@@ -278,7 +280,27 @@ fn artifact_cache_disabled() -> Bool with Env {
 }
 
 fn compile_release_file_mode_for_cli(input_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs + Env {
-  if artifact_cache_disabled() {
+  // #2305: without the ADR-0068 opt-in, take the UNCACHED lane.
+  //
+  // `compile_file_fs_mode_cached` returns on a persistent-artifact hit before
+  // it loads anything, so `ingest_source_text_fs` -- which is what populates
+  // the closure record -- never runs. `reject_unstable_closure()` then asks an
+  // empty record and answers "clean". Measured on this CLI before this line:
+  // build with VIBE_UNSTABLE=1 to warm the cache, drop the opt-in, and the
+  // artifact is produced anyway. Silently permissive, which is worse than no
+  // gate at all.
+  //
+  // Uncached is PARITY, not a regression: the shipped adapter's VIBE_FS_COMPILE
+  // lane uses the uncached `compile_file_fs_mode`, which is precisely why it
+  // has no such hole. The artifact cache on this path is something the split
+  // CLI added, and it is what opened it.
+  //
+  // Only the un-opted-in path pays. With the opt-in the gate is a no-op, so
+  // the cache is safe and is still used. Getting the cache back for everyone
+  // needs the verdict folded into the artifact fingerprint (so a no-opt-in
+  // compile cannot hit an artifact built with it) -- a wider change than this,
+  // and tracked on #2305.
+  if artifact_cache_disabled() || !unstable_opt_in_granted() {
     compile_release_file_mode_uncached(input_path, entry_name, mode)
   } else {
     compile_release_file_mode(input_path, entry_name, mode)
@@ -575,6 +597,59 @@ export fn parse_compile_args(args: Array[String]) -> (String, String, String, St
   }
 }
 
+//# ADR-0068 opt-in gate (#2305)
+
+/// The split CLI had no ADR-0068 boundary at all. Measured on a stage1 CLI
+/// core built from this tree: `check` on a program whose sibling imports
+/// `@vibe/concurrent` returned 0 with no diagnostic, and so did `check` on an
+/// entry that imports it directly -- while the shipped adapter refuses both
+/// and names the file that spells the import. Both halves were missing, not
+/// just the closure one.
+///
+/// Same two-lane shape as `cli_adapter.vibe`, and for its reasons:
+///
+///   - the ENTRY pre-check rejects this file's own import before any compile
+///     work, which keeps the common rejection fast;
+///   - the CLOSURE check is the complete one -- a sibling carrying the import
+///     is invisible until the loader has walked it -- so it runs after the
+///     compile and before the artifact is written. A rejected build wastes
+///     the compile, which is the right trade against a second full traversal
+///     on every build.
+///
+/// Reported by `throw`, the way every other error in this dispatcher is: the
+/// entry wrapper renders it as `error: <msg>` with a non-zero exit.
+fn unstable_opt_in_granted() -> Bool with Env {
+  Env::get("VIBE_UNSTABLE") == "1"
+}
+
+fn reject_unstable_entry(input_path: String) -> Unit with Exception + Fs + Env {
+  if unstable_opt_in_granted() {
+    ()
+  } else {
+    let diags = check_unstable_surface_warnings_from_path(input_path)
+    if Array::length(diags) > 0 {
+      throw(String::join(diags, "\n"))
+    } else {
+      ()
+    }
+  }
+}
+
+/// Call `unstable_closure_reset()` before the compile that populates the
+/// record, or this reports a PREVIOUS compile's dependency against this one.
+fn reject_unstable_closure() -> Unit with Exception + Fs + Env {
+  if unstable_opt_in_granted() {
+    ()
+  } else {
+    let diags = check_unstable_surface_warnings_from_closure()
+    if Array::length(diags) > 0 {
+      throw(String::join(diags, "\n"))
+    } else {
+      ()
+    }
+  }
+}
+
 export fn selfhost_cli_compile_args(args: Array[String]) -> Int with Exception + Fs + Env {
   let (input_path, output_path, entry_name, mode) = parse_compile_args(args)
   if mode == "wit" {
@@ -582,7 +657,10 @@ export fn selfhost_cli_compile_args(args: Array[String]) -> Int with Exception +
   } else if !input_file_exists(input_path) {
     1
   } else {
+    reject_unstable_entry(input_path)
+    unstable_closure_reset()
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
+    reject_unstable_closure()
     write_executable_wasm(output_path, bytes, entry_name)
     0
   }
@@ -654,10 +732,16 @@ export fn selfhost_cli_build_args(args: Array[String]) -> Int with Exception + F
   if !input_file_exists(input_path) {
     1
   } else if mode == "debug" {
+    reject_unstable_entry(input_path)
+    unstable_closure_reset()
     write_linked_debug_build(input_path, output_path, entry_name)
+    reject_unstable_closure()
     0
   } else {
+    reject_unstable_entry(input_path)
+    unstable_closure_reset()
     let bytes = compile_release_file_mode_for_cli(input_path, entry_name, mode)
+    reject_unstable_closure()
     write_executable_wasm(output_path, bytes, entry_name)
     0
   }
@@ -750,6 +834,8 @@ export fn selfhost_cli_serve_args(args: Array[String]) -> Int with Exception + F
   if !input_file_exists(input_path) {
     1
   } else {
+    reject_unstable_entry(input_path)
+    unstable_closure_reset()
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     validate_serve_handler(entry_stmts)
     // No command entry: the component surface is `handler`; no-dce keeps every
@@ -767,6 +853,7 @@ export fn selfhost_cli_serve_args(args: Array[String]) -> Int with Exception + F
     } else {
       comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
     }
+    reject_unstable_closure()
     Fs::write_bytes(output_path, component)
     Fs::write_file(wit_output_path, wit_from_program(entry_stmts, entry_stmts, basename_without_vibe_suffix(input_path)))
     0
@@ -855,11 +942,17 @@ export fn parse_check_args(args: Array[String]) -> Array[String] with Exception 
   paths
 }
 
-export fn selfhost_cli_check_args(args: Array[String]) -> Int with Exception + Fs {
+export fn selfhost_cli_check_args(args: Array[String]) -> Int with Exception + Fs + Env {
   let (paths, profile_tsv_path, profile_callstack_path) = parse_check_args_with_profile(args)
   let mut i = 0
   while i < Array::length(paths) {
+    // #2305: per path, and BOTH lanes. `check_linked_file` goes through
+    // collect_source_groups_fs, which ingests the whole closure, so the
+    // closure record is populated by the time the second check runs.
+    reject_unstable_entry(Array::get(paths, i))
+    unstable_closure_reset()
     let _ = check_linked_file(Array::get(paths, i))
+    reject_unstable_closure()
     i = i + 1
   }
   write_optional_profile(profile_tsv_path, check_profile_tsv_zero())
