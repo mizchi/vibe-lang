@@ -763,7 +763,8 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     // DEPLOYABLE component while `vibe check` rejected the identical file
     // (#2277 review). An artifact-producing verb that accepts what the check
     // verb refuses is the worst direction for that disagreement to run.
-    let serve_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+    let serve_opt_in = Env::get("VIBE_UNSTABLE") == "1"
+    let serve_unstable = if serve_opt_in {
       adapter_no_warnings()
     } else {
       check_unstable_surface_warnings_from_path(input_path)
@@ -773,12 +774,34 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     } else {
       ()
     }
+    // #2284: the entry check above cannot see a MODULE the handler imports, and
+    // the closure is only known once the loader has walked it -- so reset here
+    // and re-ask below, before the component is written. `vibe serve` needs its
+    // own copy of that discipline because it returns before the FS-compile
+    // branch that carries the other one (#2302 review).
+    unstable_closure_reset()
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     validate_serve_handler(entry_stmts)
     // No command entry: the component surface is `handler`. `__no_entry__`
     // is the explicit sentinel — any other unknown entry name is a compile
     // error since ADR-0069.
     let core = compile_file_fs_mode(input_path, "__no_entry__", "no-dce")
+    // The complete answer, from the closure that compile actually loaded, and
+    // BEFORE the component is emitted. Placement matters: emitting first let
+    // the handler-purity check speak instead -- an unstable dependency drags
+    // in `vibe.sleep`, so the reader was told the handler is impure rather
+    // than that the dependency needs an opt-in. The gate has to win over the
+    // diagnostics that are downstream consequences of it (#2302 review).
+    let serve_closure_unstable = if serve_opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_closure()
+    }
+    if Array::length(serve_closure_unstable) > 0 {
+      return emit_compile_diag(output_path, Array::get(serve_closure_unstable, 0))
+    } else {
+      ()
+    }
     // #1540 scope 4: a `body: HostStream` handler goes down the stream lane
     // (async lift + a component `stream<u8>` param) so it can read the body
     // as it arrives; everything else keeps the sync lift and the collected
