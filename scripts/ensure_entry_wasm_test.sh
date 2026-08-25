@@ -41,10 +41,15 @@ grep -q "ensure_generated.sh" "$WORK/bad.err" \
   || fail "stderr does not point at the usual cause on a fresh checkout"
 [ ! -e "$WORK/bad.wasm" ] || fail "a failed compile left an artifact behind"
 
-# --- 2. a failed REBUILD removes the previous artifact ---
+# --- 2. a failed REBUILD retracts the previous build's verdict ---
 # Otherwise the caller keeps answering from a formatter built before the edit,
 # which is the stale-reuse ensure_entry_wasm.sh's staleness rules exist to
 # prevent. The bogus wasm stands in for a good build from an earlier run.
+#
+# What must go is the MANIFEST, not the wasm: an absent manifest is the first
+# staleness test, so the next run rebuilds, while the bytes stay put for a
+# concurrent caller that is running them right now (#2277 review). The check is
+# therefore behavioural -- ask again and it must still refuse to call it fresh.
 printf 'stale artifact\n' > "$WORK/stale.wasm"
 printf '%s\n' "$WORK_REL/stale.vibe" > "$WORK/stale.wasm.deps"
 printf 'fn g( -> Int {\n' > "$WORK/stale.vibe"
@@ -56,7 +61,11 @@ rc=0
 bash scripts/ensure_entry_wasm.sh "$WORK_REL/stale.vibe" "$WORK_REL/stale.wasm" \
   >/dev/null 2>"$WORK/stale.err" || rc=$?
 [ "$rc" = "1" ] || fail "failed rebuild exited $rc, want 1"
-[ ! -e "$WORK/stale.wasm" ] || fail "failed rebuild left the previous artifact in place"
+[ ! -e "$WORK/stale.wasm.deps" ] || fail "failed rebuild kept the manifest, so the next run would reuse the old artifact"
+rc=0
+bash scripts/ensure_entry_wasm.sh "$WORK_REL/stale.vibe" "$WORK_REL/stale.wasm" \
+  >/dev/null 2>/dev/null || rc=$?
+[ "$rc" = "1" ] || fail "the run after a failed rebuild answered $rc -- it reused the stale artifact"
 
 # --- 3. the success path still works, and still prints the path ---
 printf 'fn main() -> Int {\n  0\n}\n' > "$WORK/good.vibe"
@@ -64,6 +73,12 @@ out="$(bash scripts/ensure_entry_wasm.sh "$WORK_REL/good.vibe" "$WORK_REL/good.w
 [ "$out" = "$WORK_REL/good.wasm" ] || fail "success printed '$out', want '$WORK_REL/good.wasm'"
 [ -s "$WORK/good.wasm" ] || fail "success produced no wasm"
 [ -s "$WORK/good.wasm.deps" ] || fail "success captured no dependency closure"
+# The funcmap sidecar has to be published with the wasm, and nothing named for
+# the temporary build path may survive -- a leaked `.tmp` sidecar is a stale
+# symbol table sitting next to a fresh artifact.
+[ -s "$WORK/good.wasm.funcmap" ] || fail "success left the funcmap sidecar unpublished"
+leftover="$(find "$WORK" -name '*.tmp*' -print -quit)"
+[ -z "$leftover" ] || fail "the build left a temporary artifact behind: $leftover"
 
 # --- 4. the callers must not swallow that exit code in a bare assignment ---
 # `var="$(bash .../ensure_...)"` under `set -e` dies with exit 1 and nothing on
@@ -117,6 +132,30 @@ if reconciles "$WORK/mut5/vibe_fmt_apply.sh"; then
   fail "rule 5 accepts a caller with no count reconciliation"
 fi
 
+# --- 6. the rebuild must never write over the published artifact in place ---
+# Callers run concurrently (scripts/vibe_md.sh spawns one worker per document),
+# so two of them can both see "stale" at once. Compiling straight to the shared
+# path hands the other worker a half-written wasm, and deleting it first hands
+# it a missing one; both surface as an intermittent gate failure with no signal
+# in it (#2277 review). Lexical, like rules 4-5: what it pins is that the
+# compile target is a per-process path and that the publish is a rename.
+publishes_by_rename() {
+  grep -qE 'build_wasm_rel="\$wasm_rel\.\$\$' "$1" || return 1
+  grep -qE -- '--invoke cli_main "\$seed" "\$entry_src" "\$build_wasm_rel"' "$1" || return 1
+  grep -qE '^\s*mv -f "\$ROOT_DIR/\$build_wasm_rel" "\$ROOT_DIR/\$wasm_rel"$' "$1" || return 1
+  return 0
+}
+publishes_by_rename scripts/ensure_entry_wasm.sh \
+  || fail "the rebuild does not compile to a per-process path and publish it by rename"
+
+# Red-test rule 6: point the compile back at the shared path and it must fail.
+mkdir -p "$WORK/mut6"
+sed 's|"\$entry_src" "\$build_wasm_rel" main|"$entry_src" "$wasm_rel" main|' \
+  scripts/ensure_entry_wasm.sh > "$WORK/mut6/ensure_entry_wasm.sh"
+if publishes_by_rename "$WORK/mut6/ensure_entry_wasm.sh"; then
+  fail "rule 6 accepts a rebuild that compiles straight to the published path"
+fi
+
 # Red-test rule 4 against a mutated copy: a checker that cannot fail is not a
 # check. Restoring the bare form must be rejected.
 mkdir -p "$WORK/mut/scripts"
@@ -128,4 +167,4 @@ if assert_handles "$WORK/mut/scripts/vibe_fmt.sh" "ensure_vibe_fmt_entry.sh"; th
   fail "rule 4 accepts the bare assignment it exists to reject"
 fi
 
-echo "[ensure-entry-wasm-test] ok (loud failure + diagnostic + stale removal + success path + caller exit-code handling + batch count reconciliation, red-tested)"
+echo "[ensure-entry-wasm-test] ok (loud failure + diagnostic + stale retraction + success path + caller exit-code handling + batch count reconciliation + atomic publish, red-tested)"
