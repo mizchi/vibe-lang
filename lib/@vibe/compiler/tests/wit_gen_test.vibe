@@ -240,6 +240,41 @@ test "wit_from_program: an UNAPPLIED StringMap binder does not shadow the builti
   assert(String::contains(wit, "list<tuple<string, s64>>"))
 }
 
+test "wit_from_program: a LOCAL effect named StringMap shadows the builtin" {
+  // #2276 (Codex round 19): the checker registers a local effect as a
+  // `TDEffect`, so the annotation is source-owned exactly as for the imported
+  // form fixed in round 18. Projecting the builtin ABI for it is silently
+  // wrong. The resolver half is pinned in `types_test.vibe`.
+  let stmts = [
+    SEffectDef(false, "StringMap", array_empty(), array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "localeffect")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
+test "wit_from_program: a LOCAL effectset named StringMap shadows the builtin" {
+  // The neighbour round 19 did not name: an effectset lands in `defs` as
+  // `TDEffectSet` and resolves nominally too, so the same hole sat one
+  // declaration keyword away.
+  let stmts = [
+    SEffectSet(false, "StringMap", array_empty()),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "localeffectset")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
 test "wit_from_program: a TRAIT import named StringMap does not shadow the builtin" {
   // #2276 (Codex round 10): a trait lives in the trait environment, not in
   // `defs`, so `import ./dep.vibe { trait StringMap }` leaves the checker
