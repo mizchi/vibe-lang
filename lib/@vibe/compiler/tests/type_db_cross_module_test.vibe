@@ -511,6 +511,36 @@ test "nested sibling aliases recheck earlier constructor uses" {
   assert(String::contains(message, "expected Int, got String"))
 }
 
+test "nested aliases recheck earlier outer constructor uses" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+      SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty()),
+      SLet(false, false, "bad", None, ECall(EIdent("Box", -1), [EString("x")], -1)),
+      SModule(false, "Second", [
+        STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "expected Int, got String"))
+}
+
+test "nested aliases rebuild earlier outer binding types" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+      SLet(false, false, "value", Some(TyName("Alias")), EInt(1)),
+      SModule(false, "Second", [
+        STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+      ]),
+      SLet(false, false, "bad", Some(TyName("String")), EIdent("value", -1))
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "binding type mismatch for bad"))
+}
+
 test "nested sibling aliases revalidate earlier suberror map keys" {
   let message = handle {
     let _ = check_program_with_env_result([
