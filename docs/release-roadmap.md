@@ -49,6 +49,8 @@ someone else's first hour, not about compiler internals:
    compiler (`pkf run check-freeze-surface`).
 5. **Editor integration** — `vibe lsp` plus the query primitives
    (`vibe check` / `symbols` / `type-at` / `binding-at` / `deps` / `grep`).
+6. **Apache License 2.0.** The `0.1.0` tag is the first release usable by
+   anyone but the author; it does not ship under MIT.
 
 ### What 0.2.0 holds
 
