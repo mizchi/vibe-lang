@@ -6691,7 +6691,7 @@ echo "[compiler-gate] non-final closure argument fixpoint ok (#2271)"
 # `assert_eq` by name, and codegen, which had no shadowing guard at all on
 # these three spellings (#1095 removed `prefer_bound_call`, and the half of it
 # that was wrong is `local_idx_hint`, not `fn_idx_in_list`).
-echo "[compiler-gate] 110/110 a user's own assert_eq is the function that runs (#2283)"
+echo "[compiler-gate] 110/110 a user's own assert_eq is the function that runs, top-level or local (#2283, #2285)"
 asdir="_build/_gate_assert_shadow"
 rm -rf "$asdir"; mkdir -p "$asdir"
 cat > "$asdir/shadow.vibe" <<'ASEOF'
@@ -6756,5 +6756,103 @@ if ! grep -qF 'assert_eq failed' "$asdir/builtin.log"; then
   cat "$asdir/builtin.log" >&2
   exit 1
 fi
+# ...and a LOCAL binding wins too (#2285). Three binder shapes, all measured
+# broken on a stage2 from `b1d42642`: the pattern-bound one reported `assert_eq
+# failed / expected: 2 / actual: 1`, and the `let` and parameter shapes did not
+# even compile ("expected Int, got ()") because the lowering had already
+# rewritten the call before the checker could read the binding.
+#
+# Two layers again, and they only work together: the desugar scan stands down
+# for a local binder, and codegen's three assert arms read the whole of
+# `prefer_bound_call`. Standing down ALONE is measurably worse -- it trades the
+# builtin's message for a bare `unreachable` -- which is why the local case
+# stayed broken until both landed.
+cat > "$asdir/local.vibe" <<'ASEOF'
+fn make_cmp() -> (Int, Int) -> Int {
+  (a, b) -> { a + b }
+}
+
+fn use_param(assert_eq: (Int, Int) -> Int) -> Int {
+  assert_eq(1, 2)
+}
+
+fn main() -> Unit with Stdout {
+  match make_cmp() {
+    assert_eq => println(Int::to_string(assert_eq(1, 2)))
+  }
+  let assert_eq = (a: Int, b: Int) -> Int { a + b }
+  println(Int::to_string(assert_eq(1, 2)))
+  println(Int::to_string(use_param(make_cmp())))
+  let assert_true = (a: Int) -> Int { a + 41 }
+  println(Int::to_string(assert_true(1)))
+}
+ASEOF
+rm -f "$asdir/local.wasm" "$asdir/local.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asdir/local.vibe" "$asdir/local.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asdir/local.wasm" ]; then
+  echo "[compiler-gate] FAIL: a program binding assert_eq locally did not compile (#2285)" >&2
+  cat "$asdir/local.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+local_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/local.wasm" 2>&1 || true)"
+if [ "$(printf '%s\n' "$local_out" | grep -c '^3$')" != "3" ] || \
+   ! printf '%s\n' "$local_out" | grep -qx '42'; then
+  echo "[compiler-gate] FAIL: a local binding of assert_eq/assert_true was claimed by the builtin (#2285)" >&2
+  echo "  want three lines of '3' (pattern, let, parameter) and one '42' (assert_true), got:" >&2
+  printf '%s\n' "$local_out" >&2
+  exit 1
+fi
+# The same shape through the FS/test lane, which is where #2285 was reported.
+cat > "$asdir/local_test.vibe" <<'ASEOF'
+fn make_cmp() -> (Int, Int) -> Int {
+  (a, b) -> { a + b }
+}
+
+test "pattern-bound assert_eq" {
+  match make_cmp() {
+    assert_eq => assert_true(assert_eq(1, 2) == 3)
+  }
+}
+ASEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$asdir/local_test.vibe" >"$asdir/local.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/local.log"; then
+  echo "[compiler-gate] FAIL: a pattern-bound assert_eq did not run in the FS lane (#2285)" >&2
+  cat "$asdir/local.log" >&2
+  exit 1
+fi
+# Reading `local_idx_hint` is only sound while the capture scan skips these
+# names. Drop them from is_inlined_scalar_builtin and a lambda calling a bare
+# assert captures a slot holding nothing, so the call lowers to a
+# `call_indirect` of a nonexistent closure -- #1095, exactly. That regression is
+# silent in every other case, so it gets its own probe.
+cat > "$asdir/lambda.vibe" <<'ASEOF'
+fn main() -> Unit with Stdout {
+  let f = () -> Unit { assert_eq(1, 1) }
+  f()
+  let g = () -> Unit { assert_true(1 == 1) }
+  g()
+  let h = () -> Unit { assert(true) }
+  h()
+  println("ok")
+}
+ASEOF
+rm -f "$asdir/lambda.wasm" "$asdir/lambda.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$asdir/lambda.vibe" "$asdir/lambda.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$asdir/lambda.wasm" ]; then
+  echo "[compiler-gate] FAIL: a lambda calling a bare assert did not compile (#1095 guard, #2285)" >&2
+  cat "$asdir/lambda.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lambda_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$asdir/lambda.wasm" 2>&1 || true)"
+if ! printf '%s\n' "$lambda_out" | grep -qx 'ok'; then
+  echo "[compiler-gate] FAIL: a bare assert inside a lambda no longer runs -- #1095 is back (#2285)" >&2
+  printf '%s\n' "$lambda_out" >&2
+  exit 1
+fi
 rm -rf "$asdir"
-echo "[compiler-gate] user-defined assert_eq wins; builtin still fires ok (#2283)"
+echo "[compiler-gate] user-defined assert_eq wins (top-level and local); builtin still fires; no #1095 capture regression ok (#2283, #2285)"
