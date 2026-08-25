@@ -23,7 +23,7 @@
 # Usage: bash scripts/check_freeze_surface.sh
 #   FREEZE_DOC        override the document (default docs/spec/stable-surface.md)
 #   FREEZE_CHEATSHEET override the index document (default docs/cheatsheet.md)
-#   FREEZE_STAGE2     compiler wasm (default: newest generation, then seed)
+#   FREEZE_STAGE2     compiler wasm (default: VIBE_STAGE2_WASM, then newest generation, then seed)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,6 +52,12 @@ CHEATSHEET="${FREEZE_CHEATSHEET:-docs/cheatsheet.md}"
 if [ -n "${FREEZE_STAGE2:-}" ]; then
   CLI="$FREEZE_STAGE2"
   [ -f "$CLI" ] || { echo "check-freeze-surface: FREEZE_STAGE2 does not exist: $CLI" >&2; exit 1; }
+elif [ -n "${VIBE_STAGE2_WASM:-}" ]; then
+  # CI shards put stage2 here, not under _build/selfhost/generations/.
+  # Falling through to seed would calibrate Map::get against a compiler
+  # that does not contain this checkout's checker (#2274 / #2275).
+  CLI="$VIBE_STAGE2_WASM"
+  [ -f "$CLI" ] || { echo "check-freeze-surface: VIBE_STAGE2_WASM does not exist: $CLI" >&2; exit 1; }
 else
   CLI="$(ls -t "$ROOT_DIR"/_build/selfhost/generations/*/stage2.wasm 2>/dev/null | head -1 || true)"
   [ -n "$CLI" ] && [ -f "$CLI" ] || CLI="$ROOT_DIR/bootstrap/seed/compiler.wasm"
