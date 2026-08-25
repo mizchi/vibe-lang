@@ -79,7 +79,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 }
 
 import @vibe/compiler/contract {
-  extract_require_pins, parse_contract_program
+  classify_contract_stmts, extract_require_pins, parse_contract_program
 }
 
 import @vibe/compiler/loader {
@@ -5698,8 +5698,16 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // which is the bug this section exists to remove. Multi-error recovery
     // for contract grammar is a real improvement, and it belongs in both
     // lanes at once rather than only in this one.
+    // Parsing is not the whole contract grammar: `parse_contract_program`
+    // accepts statements a contract may not CONTAIN, and the loader rejects
+    // those separately via `classify_contract_stmts` (#729). Discarding the
+    // statements reported `export let x: Int = "s"` as clean here while the
+    // build refused it (Codex review on #2315) -- and the statement-grammar
+    // branch this replaces did catch it, through `check_program`. So run the
+    // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (_, _, _stmts) = parse_contract_program(ctokens)
+      let (_, _, cstmts) = parse_contract_program(ctokens)
+      let (_raws, _type_defs) = classify_contract_stmts(cstmts)
       array_empty()
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {

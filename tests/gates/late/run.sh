@@ -8027,6 +8027,56 @@ if ! grep -q '"start":{"line":9' "$vpbufdir/eof.out" 2>/dev/null; then
   grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
   exit 1
 fi
+# ...and parsing is not the whole contract grammar. `parse_contract_program`
+# ACCEPTS statements a contract may not contain; the loader rejects those
+# separately with `classify_contract_stmts` (#729). Discarding the parsed
+# statements reported this buffer as clean while the build refused it -- and
+# the statement-grammar branch being replaced DID catch it, through
+# `check_program` (Codex review on #2315).
+python3 - "$vpbufdir/forbidden.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "export let x: Int = \"s\"\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/forbidden.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/forbidden.out" 2>/dev/null || true
+if grep -q '"diagnostics":\[\]' "$vpbufdir/forbidden.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a contract containing a forbidden statement published as CLEAN -- the parsed statements are not classified (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/forbidden.out" >&2 || true
+  exit 1
+fi
+if ! grep -q 'unsupported statement in a contract file' "$vpbufdir/forbidden.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the forbidden contract statement is not rejected for the loader's reason (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/forbidden.out" >&2 || true
+  exit 1
+fi
 # ...and an error that merely CONTAINS the word eof is not an end-of-input
 # error. `#eof` is an unsupported directive, and the parser says so:
 # `unsupported # directive in a contract file: eof (only #deprecated is
