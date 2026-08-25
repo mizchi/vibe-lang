@@ -307,18 +307,18 @@ test "provenance survives repeated env_cache" {
   }
 }
 
-test "re-export surface bindings stay out of local lookup and caches" {
+test "re-export surface bindings block older locals and survive caches" {
   let local = env_bind(EnvEmpty, "forwarded", CtInt)
   let surface = env_bind_with_origin(local, "forwarded", CtString, BindingOriginReExportSurface("/dep.vibe", "source_value"))
-  match env_lookup(surface, "forwarded") {
-    Some(ty) => inspect(type_to_string(ty), "Int"),
-    None => assert(false)
-  }
+  inspect(match env_lookup(surface, "forwarded") {
+    None => "blocked",
+    Some(_) => "visible"
+  }, "blocked")
   let cached = env_cache(surface)
-  match env_lookup(cached, "forwarded") {
-    Some(ty) => inspect(type_to_string(ty), "Int"),
-    None => assert(false)
-  }
+  inspect(match env_lookup(cached, "forwarded") {
+    None => "blocked",
+    Some(_) => "visible"
+  }, "blocked")
   let surface_only = env_bind_with_origin(EnvEmpty, "forwarded", CtString, BindingOriginReExportSurface("/dep.vibe", "source_value"))
   inspect(match env_lookup(surface_only, "forwarded") {
     None => "absent",
@@ -328,6 +328,11 @@ test "re-export surface bindings stay out of local lookup and caches" {
     None => "absent",
     Some(_) => "visible"
   }, "absent")
+  let newer_local = env_bind(surface_only, "forwarded", CtInt)
+  match env_lookup(env_cache(newer_local), "forwarded") {
+    Some(ty) => inspect(type_to_string(ty), "Int"),
+    None => assert(false)
+  }
   let flat_surface = EnvFlat([
     ("forwarded", EnvValueBinding::{
       ty: CtString,
@@ -336,7 +341,7 @@ test "re-export surface bindings stay out of local lookup and caches" {
     ("local", env_value_binding(CtInt))
   ])
   match env_cache(flat_surface) {
-    EnvCached(names, _, _) => inspect(Array::length(names), "1"),
+    EnvCached(names, _, _) => inspect(Array::length(names), "2"),
     _ => assert(false)
   }
 }

@@ -353,16 +353,12 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           done = true
         },
         EnvBind(n, binding, rest) => match binding.origin {
-          BindingOriginReExportSurface(module_name, _) => if module_name == "" {
-            // The empty module name marks an FS-merge source-boundary blocker,
-            // not a published dependency surface. Retain it in the index so a
-            // same-named definition from an earlier source cannot leak through.
+          BindingOriginReExportSurface(_, _) => {
+            // Surface-only entries are lookup barriers, not local values. They
+            // still belong in the acceleration index so an older same-named
+            // real binding cannot win before the authoritative chain is read.
             ArrayBuilder::push(names, n)
             ArrayBuilder::push(types, binding)
-            cur = rest
-          } else {
-            // Surface-only names stay in the authoritative chain for
-            // publication, but must not enter the local lookup index.
             cur = rest
           },
           _ => {
@@ -390,18 +386,8 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           let mut j = 0
           while j < Array::length(bindings) {
             let (n, binding) = Array::get(bindings, j)
-            match binding.origin {
-              BindingOriginReExportSurface(module_name, _) => if module_name == "" {
-                ArrayBuilder::push(names, n)
-                ArrayBuilder::push(types, binding)
-              } else {
-                ()
-              },
-              _ => {
-                ArrayBuilder::push(names, n)
-                ArrayBuilder::push(types, binding)
-              }
-            }
+            ArrayBuilder::push(names, n)
+            ArrayBuilder::push(types, binding)
             j = j + 1
           }
           done = true
@@ -637,12 +623,12 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
       },
       EnvBind(n, binding, rest) => if String::equals(n, name) {
         match binding.origin {
-          BindingOriginReExportSurface(module_name, _) => if module_name == "" {
-            // A source-boundary blocker is authoritative: do not reveal a
-            // same-named binding flattened from an earlier source.
+          BindingOriginReExportSurface(_, _) => {
+            // A surface-only binding is authoritative at its position in the
+            // chain. A later real binding is already nearer the head; when the
+            // surface entry itself is reached, do not reveal an older plain
+            // import or re-export with the same spelling.
             done = true
-          } else {
-            cur = rest
           },
           _ => {
             result = Some(binding)
@@ -673,10 +659,8 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
           let (n, binding) = Array::get(bindings, j)
           if String::equals(n, name) {
             match binding.origin {
-              BindingOriginReExportSurface(module_name, _) => if module_name == "" {
+              BindingOriginReExportSurface(_, _) => {
                 done = true
-              } else {
-                j = j + 1
               },
               _ => {
                 result = Some(binding)
@@ -696,13 +680,8 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
         if slot >= 0 {
           let binding = Array::get(types_sorted, slot)
           match binding.origin {
-            BindingOriginReExportSurface(module_name, _) => if module_name == "" {
+            BindingOriginReExportSurface(_, _) => {
               done = true
-            } else {
-              // Old/injected caches may still contain this origin. Fall back
-              // to the authoritative chain, which skips it and can reveal a
-              // real same-named local binding underneath.
-              cur = rest
             },
             _ => {
               result = Some(binding)
