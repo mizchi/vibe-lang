@@ -7561,3 +7561,77 @@ if grep -q 'VIBE_UNSTABLE=1' "$lspudir/optin.bin" 2>/dev/null; then
 fi
 rm -rf "$lspudir"
 echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, and the opt-in suppresses it ok (#2297)"
+
+# 116/116. A diagnostic on a trait method names the TRAIT, not the synthesized
+#          witness struct (#2286).
+# `vibe check` and `vibe test` always reported `the signature of `Store::lookup``;
+# the full COMPILE lane reported ``field `lookup` of struct `StoreDict``, a
+# declaration the author never wrote. Not a duplicate to drop -- measured, the
+# compile lane emits exactly one diagnostic and that was it, so suppressing it
+# would have lost a real type error.
+#
+# The second case is the one that killed the previous attempt (#2276): a
+# program may legitimately declare its own `StoreDict`, and relabelling on the
+# `+ "Dict"` name convention reports a real user struct as a trait signature.
+echo "[compiler-gate] 116/116 a trait-method diagnostic names the trait, not the synthesized dict struct (#2286)"
+tdlabdir="_build/_gate_trait_dict_label"
+rm -rf "$tdlabdir"; mkdir -p "$tdlabdir"
+cat > "$tdlabdir/trait.vibe" <<'TDEOF'
+trait Store {
+  lookup(Self, Map[Int, String]) -> String
+}
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/t.wasm" "$tdlabdir/t.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/trait.vibe" "$tdlabdir/t.wasm" main >/dev/null 2>&1 || true
+td_report="$(cat "$tdlabdir/t.wasm.diag" 2>/dev/null || true)"
+if [ -z "$td_report" ]; then
+  echo "[compiler-gate] FAIL: the bad Map key in a trait method produced no diagnostic at all (#2286)" >&2
+  exit 1
+fi
+if printf '%s\n' "$td_report" | grep -qF 'StoreDict'; then
+  echo "[compiler-gate] FAIL: the compile lane still names the synthesized StoreDict (#2286)" >&2
+  printf '%s\n' "$td_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$td_report" | grep -qF 'Store::lookup'; then
+  echo "[compiler-gate] FAIL: the diagnostic does not name the trait method the author wrote (#2286)" >&2
+  printf '%s\n' "$td_report" >&2
+  exit 1
+fi
+# The red case: a HAND-WRITTEN struct with the conventional name must still be
+# described as what it is. This is what a name-convention fix gets wrong.
+cat > "$tdlabdir/handwritten.vibe" <<'TDEOF'
+struct StoreDict { lookup: Map[Int, String] }
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/h.wasm" "$tdlabdir/h.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/handwritten.vibe" "$tdlabdir/h.wasm" main >/dev/null 2>&1 || true
+hw_report="$(cat "$tdlabdir/h.wasm.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$hw_report" | grep -qF 'of struct `StoreDict`'; then
+  echo "[compiler-gate] FAIL: a hand-written StoreDict lost its field label -- the fix is reading the name convention, not the desugar's record (#2286)" >&2
+  printf '%s\n' "$hw_report" >&2
+  exit 1
+fi
+# ...and `vibe check` keeps the answer it always had, so the two verbs agree.
+rm -f "$tdlabdir/chk.out" "$tdlabdir/chk.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/trait.vibe" "$tdlabdir/chk.out" main >/dev/null 2>&1 || true
+if ! grep -qF 'Store::lookup' "$tdlabdir/chk.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe check no longer names the trait method (#2286)" >&2
+  cat "$tdlabdir/chk.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$tdlabdir"
+echo "[compiler-gate] trait-method diagnostics name the trait; a hand-written dict struct keeps its own label ok (#2286)"
