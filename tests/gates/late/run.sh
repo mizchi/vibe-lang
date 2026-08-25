@@ -6411,8 +6411,35 @@ if [ ! -s "$uwdir/bare_plain.wasm" ]; then
   cat "$uwdir/bare_plain.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# TWO imports of the same package must be located independently. The offset scan
+# restarted from token zero for each `SImport`, so both diagnostics carried the
+# FIRST declaration's coordinates -- and the second one then names a line whose
+# text the reader would find nothing wrong with (#2277 review).
+cat > "$uwdir/twice.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+import @vibe/concurrent { Nursery }
+
+fn main() -> Int {
+  1
+}
+UWEOF
+rm -f "$uwdir/twice.out"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/twice.vibe" "$uwdir/twice.out" __no_entry__ >/dev/null 2>&1 || true
+if ! grep -qF 'line 1:1: set VIBE_UNSTABLE=1' "$uwdir/twice.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the first of two unstable imports was not reported at line 1 (#2277)" >&2
+  cat "$uwdir/twice.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF 'line 3:1: set VIBE_UNSTABLE=1' "$uwdir/twice.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the SECOND unstable import was reported at the first one's line (#2277)" >&2
+  cat "$uwdir/twice.out" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
