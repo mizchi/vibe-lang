@@ -67,7 +67,10 @@ export enum TypeDef {
 /// Persistent/public TypeEnv transport intentionally drops this payload.
 export enum BindingOrigin {
   BindingOriginUnavailable;
-  BindingOriginModuleExport(String, String)
+  BindingOriginModuleExport(String, String);
+  /// A re-export contributes to this module's published surface, but the
+  /// re-export statement does not introduce a local binder (#2287).
+  BindingOriginReExportSurface(String, String)
 }
 
 export struct EnvValueBinding {
@@ -349,10 +352,17 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvEmpty => {
           done = true
         },
-        EnvBind(n, binding, rest) => {
-          ArrayBuilder::push(names, n)
-          ArrayBuilder::push(types, binding)
-          cur = rest
+        EnvBind(n, binding, rest) => match binding.origin {
+          BindingOriginReExportSurface(_, _) => {
+            // Surface-only names stay in the authoritative chain for
+            // publication, but must not enter the local lookup index.
+            cur = rest
+          },
+          _ => {
+            ArrayBuilder::push(names, n)
+            ArrayBuilder::push(types, binding)
+            cur = rest
+          }
         },
         EnvTraitDef(_, _, _, _, rest, _, _) => {
           cur = rest
@@ -373,8 +383,13 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           let mut j = 0
           while j < Array::length(bindings) {
             let (n, binding) = Array::get(bindings, j)
-            ArrayBuilder::push(names, n)
-            ArrayBuilder::push(types, binding)
+            match binding.origin {
+              BindingOriginReExportSurface(_, _) => (),
+              _ => {
+                ArrayBuilder::push(names, n)
+                ArrayBuilder::push(types, binding)
+              }
+            }
             j = j + 1
           }
           done = true
@@ -465,6 +480,80 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
   }
 }
 
+/// Whether `name` is present only to publish an aliased re-export. This is
+/// deliberately separate from `env_lookup`: the alias is not a local value,
+/// but its spelling must still block a same-named builtin from silently
+/// claiming the source call (#2287).
+export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
+  let mut cur = env
+  let mut found = false
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, binding, rest) => {
+        if String::equals(n, name) {
+          match binding.origin {
+            BindingOriginReExportSurface(_, _) => {
+              found = true
+              done = true
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        if !done {
+          cur = rest
+        } else {
+          ()
+        }
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) && !found {
+          let (n, binding) = Array::get(bindings, i)
+          if String::equals(n, name) {
+            match binding.origin {
+              BindingOriginReExportSurface(_, _) => {
+                found = true
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        // The authoritative chain retains surface-only entries even though
+        // the acceleration arrays intentionally omit them.
+        cur = rest
+      }
+    }
+  }
+  found
+}
+
 export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
   let mut cur = env
   let mut result = None
@@ -475,8 +564,15 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
         done = true
       },
       EnvBind(n, binding, rest) => if String::equals(n, name) {
-        result = Some(binding)
-        done = true
+        match binding.origin {
+          BindingOriginReExportSurface(_, _) => {
+            cur = rest
+          },
+          _ => {
+            result = Some(binding)
+            done = true
+          }
+        }
       } else {
         cur = rest
       },
@@ -500,8 +596,15 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
         while j < Array::length(bindings) && !done {
           let (n, binding) = Array::get(bindings, j)
           if String::equals(n, name) {
-            result = Some(binding)
-            done = true
+            match binding.origin {
+              BindingOriginReExportSurface(_, _) => {
+                j = j + 1
+              },
+              _ => {
+                result = Some(binding)
+                done = true
+              }
+            }
           } else {
             j = j + 1
           }
@@ -513,8 +616,19 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
       EnvCached(names_sorted, types_sorted, rest) => {
         let slot = bsearch_leftmost(names_sorted, name)
         if slot >= 0 {
-          result = Some(Array::get(types_sorted, slot))
-          done = true
+          let binding = Array::get(types_sorted, slot)
+          match binding.origin {
+            BindingOriginReExportSurface(_, _) => {
+              // Old/injected caches may still contain this origin. Fall back
+              // to the authoritative chain, which skips it and can reveal a
+              // real same-named local binding underneath.
+              cur = rest
+            },
+            _ => {
+              result = Some(binding)
+              done = true
+            }
+          }
         } else {
           cur = rest
         }

@@ -307,6 +307,40 @@ test "provenance survives repeated env_cache" {
   }
 }
 
+test "re-export surface bindings stay out of local lookup and caches" {
+  let local = env_bind(EnvEmpty, "forwarded", CtInt)
+  let surface = env_bind_with_origin(local, "forwarded", CtString, BindingOriginReExportSurface("/dep.vibe", "source_value"))
+  match env_lookup(surface, "forwarded") {
+    Some(ty) => inspect(type_to_string(ty), "Int"),
+    None => assert(false)
+  }
+  let cached = env_cache(surface)
+  match env_lookup(cached, "forwarded") {
+    Some(ty) => inspect(type_to_string(ty), "Int"),
+    None => assert(false)
+  }
+  let surface_only = env_bind_with_origin(EnvEmpty, "forwarded", CtString, BindingOriginReExportSurface("/dep.vibe", "source_value"))
+  inspect(match env_lookup(surface_only, "forwarded") {
+    None => "absent",
+    Some(_) => "visible"
+  }, "absent")
+  inspect(match env_lookup(env_cache(surface_only), "forwarded") {
+    None => "absent",
+    Some(_) => "visible"
+  }, "absent")
+  let flat_surface = EnvFlat([
+    ("forwarded", EnvValueBinding::{
+      ty: CtString,
+      origin: BindingOriginReExportSurface("/dep.vibe", "source_value")
+    }),
+    ("local", env_value_binding(CtInt))
+  ])
+  match env_cache(flat_surface) {
+    EnvCached(names, _, _) => inspect(Array::length(names), "1"),
+    _ => assert(false)
+  }
+}
+
 test "cache-only indexes remain fail-closed for mutable facts" {
   let cache_only = EnvCached(["x"], [env_value_binding(CtInt)], EnvEmpty)
   inspect(mut_escape_text(cache_only, "x"), "none")

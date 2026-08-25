@@ -255,7 +255,15 @@ fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String
 /// coincidence) but "unknown name: Json::string" for the other 8 of the
 /// 11 documented accessors. The bundle-merge lane resolves these by name
 /// against the merged unit and never had the gap; only this FS lane did.
-fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)]) -> TypeEnv {
+fn selected_module_binding_origin(resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
+  if reexport_surface_only {
+    BindingOriginReExportSurface(resolved, source_name)
+  } else {
+    BindingOriginModuleExport(resolved, source_name)
+  }
+}
+
+fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
   let qual_prefix = String::concat(enum_name, "::")
   let mut out = acc
   // #1908: the dep's flat bindings can carry a name twice — the authoritative
@@ -278,7 +286,7 @@ fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings
         ()
       } else {
         Array::push(seen, candidate_name)
-        out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), BindingOriginModuleExport(resolved, candidate_name))
+        out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(resolved, candidate_name, reexport_surface_only))
       }
     }
     i = i + 1
@@ -1094,7 +1102,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
   out
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)]) -> TypeEnv {
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -1148,6 +1156,11 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         Some(a) => a,
         None => name
       }
+      // A plain re-export's original name is also present in the merged
+      // program and remains locally resolvable for compatibility. Only an
+      // alias is surface-only: the merge emits no binding under that spelling
+      // and the parser records no local binder for it (#2287).
+      let surface_only_item = reexport_surface_only && alias != None
       let imported_ty = env_lookup_flat(dep_bindings, name)
       let ty = match imported_ty {
         Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
@@ -1164,13 +1177,13 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         }
       }
       let with_name = match imported_ty {
-        Some(_) => env_bind_with_origin(nacc, bound_name, ty, BindingOriginModuleExport(resolved, name)),
+        Some(_) => env_bind_with_origin(nacc, bound_name, ty, selected_module_binding_origin(resolved, name, surface_only_item)),
         None => env_bind(nacc, bound_name, ty)
       }
       let with_companions = match ty {
-        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, resolved, dep_bindings, enum_name, trait_mappings),
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, resolved, dep_bindings, enum_name, trait_mappings, surface_only_item),
         _ => if starts_with_upper(name) {
-          bind_enum_constructor_companions(with_name, resolved, dep_bindings, name, trait_mappings)
+          bind_enum_constructor_companions(with_name, resolved, dep_bindings, name, trait_mappings, surface_only_item)
         } else {
           with_name
         }
@@ -1211,11 +1224,11 @@ fn build_import_env_collecting(stmts: Array[Stmt], base_dir: String, cache: Arra
       let next = match Array::get(stmts, i) {
         SImport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims)
+          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims, false)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims)
+          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims, true)
         },
         _ => acc
       }
