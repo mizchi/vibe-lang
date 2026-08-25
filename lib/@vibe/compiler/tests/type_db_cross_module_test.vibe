@@ -686,6 +686,54 @@ test "recursive-alias reachability memoizes shared diamond suffixes" {
   }
 }
 
+test "acyclic alias DAGs reject exponential expansion" {
+  let stmts = array_empty()
+  let mut i = 0
+  while i < 30 {
+    let suffix = __to_string(i)
+    let next_suffix = __to_string(i + 1)
+    let body = TyTuple([
+      TyName(String::concat("A", next_suffix)),
+      TyName(String::concat("B", next_suffix))
+    ])
+    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    i = i + 1
+  }
+  Array::push(stmts, STypeAlias(false, "A30", array_empty(), TyName("Int")))
+  Array::push(stmts, STypeAlias(false, "B30", array_empty(), TyName("Int")))
+  let message = handle {
+    let _ = check_program_with_env_result(stmts, EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "type alias expansion exceeds"))
+  assert(String::contains(message, "replace the shared alias DAG with a nominal struct or enum"))
+}
+
+test "dependency-first alias DAGs reject expansion before refresh" {
+  let stmts = [
+    STypeAlias(false, "A30", array_empty(), TyName("Int")),
+    STypeAlias(false, "B30", array_empty(), TyName("Int"))
+  ]
+  let mut i = 30
+  while i > 0 {
+    let suffix = __to_string(i - 1)
+    let current_suffix = __to_string(i)
+    let body = TyTuple([
+      TyName(String::concat("A", current_suffix)),
+      TyName(String::concat("B", current_suffix))
+    ])
+    Array::push(stmts, STypeAlias(false, String::concat("A", suffix), array_empty(), body))
+    Array::push(stmts, STypeAlias(false, String::concat("B", suffix), array_empty(), body))
+    i = i - 1
+  }
+  let message = handle {
+    let _ = check_program_with_env_result(stmts, EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "type alias expansion exceeds"))
+}
+
 fn projected_checked_env(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
   let import_env = projected_import_env_for_test(source, path, deps, full_cache)
   check_program_with_projected_import_env_result(parse_program_with_path(path, source), import_env).final_env

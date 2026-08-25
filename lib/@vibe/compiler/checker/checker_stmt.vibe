@@ -2539,8 +2539,15 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // #2290: map-key and builtin-arity validation is deferred to
         // check_completed_decl_map_keys. At this point a later alias is not
         // in `defs`, so judging ownership here made valid programs depend on
-        // declaration order. Resolution still records the body as before.
-        let t = resolve_type_expr_shadowed(te, defs, params)
+        // declaration order. Preflight before resolving too: dependency-first
+        // alias declarations can already carry a completed exponential DAG at
+        // this initial registration point, before the completion refresh runs.
+        let t = if type_expr_expansion_node_count(te, defs, params, array_empty(), alias_expansion_node_limit()) > alias_expansion_node_limit() {
+          report_alias_expansion_limit(name, errors)
+          CtNamed(name, array_empty())
+        } else {
+          resolve_type_expr_shadowed(te, defs, params)
+        }
         // Record the alias (with its formal params) so an applied use
         // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
         Array::push(defs, TDAlias(name, params, t))
@@ -2776,7 +2783,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     // yet. A type-only list validates after its final declaration.
     if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
       local_defs_end = Array::length(defs)
-      refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end)
+      refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end, errors)
       refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
       cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
       cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
@@ -2791,7 +2798,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let visible_defs_end = Array::length(defs)
           if visible_defs_end > defs_before_stmt {
             nested_defs_extended = true
-            refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end)
+            refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end, errors)
             refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
             cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
             cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
@@ -2808,11 +2815,11 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     let visible_types = array_empty()
     collect_visible_type_stmts(stmts, Array::length(stmts), visible_types)
     let visible_defs_end = Array::length(defs)
-    refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end)
+    let completed_decl_errors = array_empty()
+    refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end, completed_decl_errors)
     refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
     cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
     cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
-    let completed_decl_errors = array_empty()
     check_completed_decl_map_keys(visible_types, defs, completed_decl_errors)
     if nested_defs_extended {
       // The first pass is required to discover the complete shared definition
@@ -4144,15 +4151,207 @@ fn recursive_alias_flags(stmts: Array[Stmt]) -> Array[Bool] {
   flags
 }
 
+fn alias_expansion_node_limit() -> Int {
+  262144
+}
+
+fn capped_type_node_add(total: Int, extra: Int, limit: Int) -> Int {
+  if total > limit || extra > limit || total > limit - extra {
+    limit + 1
+  } else {
+    total + extra
+  }
+}
+
+fn type_param_index(params: Array[String], name: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(params) && found < 0 {
+    if Array::get(params, i) == name {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Counts the tree that `resolve_type_alias_params` would materialize without
+/// allocating it. Counts saturate above `limit`, including duplicated formal
+/// arguments, so a generic alias cannot hide the same exponential shape.
+fn substituted_type_node_count(ty: Type, params: Array[String], arg_counts: Array[Int], limit: Int) -> Int {
+  match ty {
+    CtNamed(name, args) => {
+      let param_idx = type_param_index(params, name)
+      if param_idx >= 0 && param_idx < Array::length(arg_counts) {
+        Array::get(arg_counts, param_idx)
+      } else {
+        let mut total = 1
+        let mut i = 0
+        while i < Array::length(args) && total <= limit {
+          total = capped_type_node_add(total, substituted_type_node_count(Array::get(args, i), params, arg_counts, limit), limit)
+          i = i + 1
+        }
+        total
+      }
+    },
+    CtArray(elem) => capped_type_node_add(1, substituted_type_node_count(elem, params, arg_counts, limit), limit),
+    CtOption(elem) => capped_type_node_add(1, substituted_type_node_count(elem, params, arg_counts, limit), limit),
+    CtTuple(elems) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(elems) && total <= limit {
+        total = capped_type_node_add(total, substituted_type_node_count(Array::get(elems, i), params, arg_counts, limit), limit)
+        i = i + 1
+      }
+      total
+    },
+    CtFn(fn_params, ret, _) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(fn_params) && total <= limit {
+        total = capped_type_node_add(total, substituted_type_node_count(Array::get(fn_params, i), params, arg_counts, limit), limit)
+        i = i + 1
+      }
+      if total <= limit {
+        total = capped_type_node_add(total, substituted_type_node_count(ret, params, arg_counts, limit), limit)
+      } else {
+        ()
+      }
+      total
+    },
+    CtForAll(_, _, body) => capped_type_node_add(1, substituted_type_node_count(body, array_empty(), array_empty(), limit), limit),
+    CtRecord(fields) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(fields) && total <= limit {
+        let (_, field_type) = Array::get(fields, i)
+        total = capped_type_node_add(total, substituted_type_node_count(field_type, array_empty(), array_empty(), limit), limit)
+        i = i + 1
+      }
+      total
+    },
+    _ => 1
+  }
+}
+
+fn type_expr_arg_node_counts(args: Array[TypeExpr], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Array[Int] {
+  let counts = array_empty()
+  let mut i = 0
+  while i < Array::length(args) {
+    Array::push(counts, type_expr_expansion_node_count(Array::get(args, i), defs, shadow, capped_aliases, limit))
+    i = i + 1
+  }
+  counts
+}
+
+fn named_type_expr_node_count(name: String, arg_counts: Array[Int], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
+  if string_array_contains_exact(shadow, name) {
+    let mut total = 1
+    let mut i = 0
+    while i < Array::length(arg_counts) && total <= limit {
+      total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
+      i = i + 1
+    }
+    total
+  } else {
+    let idx = typedef_index_of_from(defs, name, 0)
+    if idx >= 0 && int_array_contains(capped_aliases, idx) {
+      limit + 1
+    } else if idx >= 0 {
+      match Array::get(defs, idx) {
+        TDAlias(_, params, body) => substituted_type_node_count(body, params, arg_counts, limit),
+        _ => {
+          let mut total = 1
+          let mut i = 0
+          while i < Array::length(arg_counts) && total <= limit {
+            total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
+            i = i + 1
+          }
+          total
+        }
+      }
+    } else {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(arg_counts) && total <= limit {
+        total = capped_type_node_add(total, Array::get(arg_counts, i), limit)
+        i = i + 1
+      }
+      total
+    }
+  }
+}
+
+/// Preflights the exact resolved tree size with saturation. This must run
+/// before `resolve_type_expr_shadowed`: measuring the returned tree would
+/// already have paid the exponential allocation this guard exists to avoid.
+fn type_expr_expansion_node_count(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
+  match te {
+    TyUnit => 1,
+    TyName(name) => match resolve_builtin(name) {
+      Some(_) => 1,
+      None => named_type_expr_node_count(name, array_empty(), defs, shadow, capped_aliases, limit)
+    },
+    TyApp(name, args) => {
+      let arg_counts = type_expr_arg_node_counts(args, defs, shadow, capped_aliases, limit)
+      if name == "Array" && Array::length(arg_counts) == 1 {
+        capped_type_node_add(1, Array::get(arg_counts, 0), limit)
+      } else if name == "Option" && Array::length(arg_counts) == 1 {
+        capped_type_node_add(1, Array::get(arg_counts, 0), limit)
+      } else if name == "StringMap" && Array::length(arg_counts) == 1 && !string_array_contains_exact(shadow, name) && typedef_index_of_from(defs, name, 0) < 0 {
+        capped_type_node_add(2, Array::get(arg_counts, 0), limit)
+      } else {
+        named_type_expr_node_count(name, arg_counts, defs, shadow, capped_aliases, limit)
+      }
+    },
+    TyTuple(elems) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(elems) && total <= limit {
+        total = capped_type_node_add(total, type_expr_expansion_node_count(Array::get(elems, i), defs, shadow, capped_aliases, limit), limit)
+        i = i + 1
+      }
+      total
+    },
+    TyFn(fn_params, ret, _) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(fn_params) && total <= limit {
+        total = capped_type_node_add(total, type_expr_expansion_node_count(Array::get(fn_params, i), defs, shadow, capped_aliases, limit), limit)
+        i = i + 1
+      }
+      if total <= limit {
+        total = capped_type_node_add(total, type_expr_expansion_node_count(ret, defs, shadow, capped_aliases, limit), limit)
+      } else {
+        ()
+      }
+      total
+    }
+  }
+}
+
+fn report_alias_expansion_limit(name: String, errors: Array[String]) -> Unit {
+  let message = String::concat(String::concat(String::concat("type alias expansion exceeds ", __to_string(alias_expansion_node_limit())), String::concat(" nodes for `", name)), "`; replace the shared alias DAG with a nominal struct or enum")
+  if string_array_contains_exact(errors, message) {
+    ()
+  } else {
+    Array::push(errors, message)
+  }
+}
+
 /// Re-resolves acyclic aliases from their source expressions until every
 /// dependency edge has had a chance to observe the completed body. Recursive
 /// declarations are skipped by statement identity, so a recursive alias in one
 /// scope cannot freeze an acyclic same-name alias in another; the alias-count
-/// bound cannot exponentially expand a cycle, and acyclic zig-zag chains need
-/// at most one round per local alias.
-fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, to: Int) -> Unit {
+/// bound cannot exponentially expand a cycle. Acyclic DAGs are preflighted
+/// against a node limit before allocation, then rejected with an actionable
+/// diagnostic instead of exhausting memory.
+fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, to: Int, errors: Array[String]) -> Unit {
   let rounds = local_alias_def_count(defs, from, to)
   let recursive = recursive_alias_flags(stmts)
+  let capped_aliases = array_empty()
+  let limit = alias_expansion_node_limit()
   let mut round = 0
   while round < rounds {
     let taken = array_empty()
@@ -4161,8 +4360,13 @@ fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: 
       match Array::get(stmts, i) {
         STypeAlias(_, name, params, te) => {
           let idx = completed_alias_index_reverse(defs, name, from, to, taken)
-          if idx >= 0 && !Array::get(recursive, i) {
-            Array::set(defs, idx, TDAlias(name, params, resolve_type_expr_shadowed(te, defs, params)))
+          if idx >= 0 && !Array::get(recursive, i) && !int_array_contains(capped_aliases, idx) {
+            if type_expr_expansion_node_count(te, defs, params, capped_aliases, limit) > limit {
+              Array::push(capped_aliases, idx)
+              report_alias_expansion_limit(name, errors)
+            } else {
+              Array::set(defs, idx, TDAlias(name, params, resolve_type_expr_shadowed(te, defs, params)))
+            }
           } else {
             ()
           }
