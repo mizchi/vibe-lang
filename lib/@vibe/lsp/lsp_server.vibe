@@ -71,7 +71,7 @@
 //# Imports
 
 import @vibe/compiler/runtime {
-  binding_occurrences, collect_all_diagnostics, collect_all_diagnostics_with_unstable, doc_at_source, symbol_spans, type_at_source
+  binding_occurrences, collect_all_diagnostics, collect_all_diagnostics_with_unstable_for_path, doc_at_source, symbol_spans, type_at_source
 }
 
 import @vibe/parser {
@@ -751,7 +751,14 @@ fn lsp_unstable_opt_in() -> Bool {
 /// the verdict into the two `vibe check --single-file` forms. Taking it from
 /// `collect_all_diagnostics_with_unstable` means all three read one answer.
 fn lsp_handle_diagnostics_with_unstable(source: String, allow_unstable: Bool) -> Json with Exception {
-  let diags = collect_all_diagnostics_with_unstable(source, allow_unstable)
+  lsp_handle_diagnostics_for_path("", source, allow_unstable)
+}
+
+/// #2297: the document path matters -- an `index.vpkg` buffer has to be read
+/// with the contract grammar, or the scan parses its header as statements,
+/// fails, and reports nothing (Codex review on #2313).
+fn lsp_handle_diagnostics_for_path(input_path: String, source: String, allow_unstable: Bool) -> Json with Exception {
+  let diags = collect_all_diagnostics_with_unstable_for_path(input_path, source, allow_unstable)
   JArr(for msg in diags {
     lsp_parse_diag_line(source, msg)
   })
@@ -782,6 +789,24 @@ export fn lsp_diagnostics_safe_with_unstable(source: String, allow_unstable: Boo
   handle {
     lsp_handle_diagnostics_with_unstable(source, allow_unstable)
   } with { Exception::Throw(_) => JArr([]) }
+}
+
+export fn lsp_diagnostics_safe_for_path(input_path: String, source: String, allow_unstable: Bool) -> Json {
+  handle {
+    lsp_handle_diagnostics_for_path(input_path, source, allow_unstable)
+  } with { Exception::Throw(_) => JArr([]) }
+}
+
+/// `file:///a/b.vibe` -> `/a/b.vibe`. Only the extension is load-bearing here
+/// (`is_contract_ext`), but a real path costs nothing and keeps any later
+/// path-dependent check honest.
+fn lsp_uri_to_path(uri: String) -> String {
+  let prefix = "file://"
+  if String::starts_with(uri, prefix) {
+    uri[String::length(prefix): String::length(uri)]
+  } else {
+    uri
+  }
 }
 
 /// #820 sub-item 1: `vibe diagnostics --json` reuses this SAME LSP diagnostic
@@ -1222,7 +1247,7 @@ fn lsp_run_with_handler(op: Int, uri: String, l: Int, c: Int, new_name: String, 
   }); Lsp::Rename(u2, l2, c2, nn) => resume({
     let src = lsp_doc_text(docs, u2)
     lsp_handle_rename(src, u2, l2, lsp_pos_to_byte_col(src, l2, c2), nn)
-  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs, u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe_with_unstable(lsp_doc_text(docs, u2), lsp_unstable_opt_in())); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs, u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
+  }); Lsp::DocumentSymbol(u2) => resume(lsp_document_symbol_safe(lsp_doc_text(docs, u2))); Lsp::Diagnostics(u2) => resume(lsp_diagnostics_safe_for_path(lsp_uri_to_path(u2), lsp_doc_text(docs, u2), lsp_unstable_opt_in())); Lsp::Completion(u2, _, _) => resume(lsp_completion_safe(lsp_doc_text(docs, u2))); Lsp::SignatureHelp(u2, l2, c2) => resume({
     let src = lsp_doc_text(docs, u2)
     lsp_handle_signature_help(src, l2, lsp_pos_to_byte_col(src, l2, c2))
   }); Lsp::WorkspaceSymbol(q) => resume(lsp_handle_workspace_symbol(q, docs)) }

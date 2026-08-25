@@ -5331,9 +5331,33 @@ fn header_prefix_throws(lines: Array[String], k: Int, pin_err: String) -> Bool {
 /// not change during a run (ADR-0075/0084/0088), so re-reading it per didOpen
 /// would be the odd choice.
 ///
-/// The empty `input_path` is deliberate: a buffer is never a `.vpkg` facade, so
-/// the contract branch of the scan is not the one a single-file caller wants.
+/// This arity keeps the path unknown, which costs the `.vpkg` contract grammar
+/// (see `collect_all_diagnostics_with_unstable_for_path` below). A caller that
+/// HAS a path should pass it.
 export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: Bool) -> Array[String] with Exception {
+  collect_all_diagnostics_with_unstable_for_path("", source, allow_unstable)
+}
+
+/// #2297, with `input_path` so the scan reads the buffer with the grammar it
+/// actually has (Codex review on #2313).
+///
+/// The first version passed `""` and the raw source, documented as safe on the
+/// grounds that a buffer is never a `.vpkg` facade. Both halves of that were
+/// wrong:
+///
+///   - an editor DOES open `index.vpkg`. With an empty path
+///     `checked_warning_stmts` takes its `parse_program_recovering` branch
+///     instead of `parse_contract_program`, the contract header fails to
+///     parse, the scan returns `None`, and a contract importing
+///     `@vibe/concurrent` gets no opt-in warning at all.
+///   - a buffer may carry a leading `require ... = #pkg:sha1:` head.
+///     `collect_all_diagnostics` blanks it before parsing (#2227); scanning
+///     the RAW text reaches the parser with the directive intact, which is a
+///     parse error, so the scan returns `None` and drops the diagnostic.
+///
+/// `extract_require_pins` blanks to spaces and preserves byte length, so the
+/// positions this scan reports stay exact.
+export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, source: String, allow_unstable: Bool) -> Array[String] with Exception {
   let msgs = collect_all_diagnostics(source)
   if allow_unstable {
     msgs
@@ -5351,7 +5375,8 @@ export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: 
     // degrading this half to "no unstable diagnostics" loses nothing, while
     // the lexer's own diagnostics -- the ones the reader needs first -- survive.
     let extra = handle {
-      unstable_import_diagnostics("", source, source)
+      let (_pins, pin_blanked) = extract_require_pins(source)
+      unstable_import_diagnostics(input_path, pin_blanked, pin_blanked)
     } with { Exception::Throw(_) => array_empty() }
     let mut i = 0
     while i < Array::length(extra) {
