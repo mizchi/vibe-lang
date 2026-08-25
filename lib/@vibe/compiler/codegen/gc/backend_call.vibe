@@ -3023,12 +3023,18 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 0)
         nl
       }
-      else if (fname == "assert" || fname == "assert_true") && func_table_index_of(ctx.func_table, fname) < 0 {
+      else if fname == "assert" || fname == "assert_true" {
         // Trap (unreachable) on a false condition, like the linear backend.
-        // #2283: and, like the linear backend, stand down when the program
-        // defines a function of that name. The test is the FUNCTION TABLE, not
-        // `source_is_bound` -- a local of the same name is the #1095 capture
-        // artifact, which is what these arms deliberately ignore.
+        //
+        // #2283: NO shadowing guard here, unlike the linear arms. This lane
+        // already refuses the shadow one step earlier -- these three spellings
+        // are direct-ABI names (backend_direct_abi_names.vibe) and
+        // `backend_body.vibe` rejects a user declaration of any of them, which
+        // is a diagnostic rather than the silent substitution #2283 is about.
+        // Adding a `func_table_index_of` guard here was measured to break
+        // fixtures/gc_backend_smoke_test.vibe outright ("expected 1 elements on
+        // the stack for fallthru, found 3"): on this lane the direct-ABI names
+        // are IN the func table, so the guard fired for every ordinary call.
         let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
         emit_i64_eqz(buf)
         emit_if_void(buf)
@@ -3037,7 +3043,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         emit_i64_const(buf, 0)
         nl
       }
-      else if fname == "assert_eq" && func_table_index_of(ctx.func_table, fname) < 0 {
+      else if fname == "assert_eq" {
         // Fallback only. The shipped path rewrites `assert_eq` in
         // desugar_trait_dicts. Keep parity with the linear fallback:
         // synthesized `==` uses the backend's value-aware equality path.

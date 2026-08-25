@@ -6269,8 +6269,70 @@ if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/buffer.json" 2>/dev/null; then
   cat "$uwdir/buffer.json" 2>/dev/null >&2 || true
   exit 1
 fi
+# The JSON form must carry the COLUMN, not just the message. `lsp_parse_diag_line`
+# accepts exactly `line L:C:`; a readable `line L:col C:` made it fall back to
+# column 1, so the editor put the cursor at character 0 while the text form
+# named the real column (#2277 review). The import is indented so the two
+# answers can differ at all.
+printf '  import @vibe/concurrent { TaskGroup }\n\nfn main() -> Int {\n  1\n}\n' > "$uwdir/indented.vibe"
+rm -f "$uwdir/indented.out" "$uwdir/indented.json"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/indented.vibe" "$uwdir/indented.out" __no_entry__ >/dev/null 2>&1 || true
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_DIAGNOSTICS=1 VIBE_DIAGNOSTICS_JSON=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/indented.vibe" "$uwdir/indented.json" __no_entry__ >/dev/null 2>&1 || true
+# Two lanes, one column: byte column 3 in the text form is UTF-16 character 2 in
+# the JSON form. Before the fix the JSON said 0 for this file while the text
+# form said 3, because `line L:col C:` is not a spelling `lsp_parse_diag_line`
+# can read -- it parsed "col 3" as a number, failed, and fell back to column 1.
+if ! grep -qF 'line 1:3: set VIBE_UNSTABLE=1' "$uwdir/indented.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the text diagnostic lost the column of an indented unstable import (#2277)" >&2
+  cat "$uwdir/indented.out" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF '"character":2' "$uwdir/indented.json" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the JSON diagnostic lost the column the text form reported (#2277)" >&2
+  cat "$uwdir/indented.json" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# `vibe serve` is an ARTIFACT-producing verb with its own branch, taken before
+# the FS-compile gate, so the same handler that `vibe check` rejects used to
+# yield a deployable component with no opt-in (#2277 review). The handler shape
+# is the four-parameter String one `validate_serve_handler` requires; the
+# control below proves the file is otherwise servable.
+cat > "$uwdir/serve.vibe" <<'UWEOF'
+import @vibe/concurrent { TaskGroup }
+
+export fn handler(method: String, url: String, headers: String, body: String) -> String {
+  "ok"
+}
+UWEOF
+rm -f "$uwdir/serve.component.wasm" "$uwdir/serve.component.wasm.diag"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/serve.vibe" "$uwdir/serve.component.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$uwdir/serve.component.wasm" ]; then
+  echo "[compiler-gate] FAIL: vibe serve emitted a component for an unstable import with no opt-in (#2277)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/serve.component.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe serve refused the handler for the wrong reason (#2277)" >&2
+  cat "$uwdir/serve.component.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -f "$uwdir/serve.optin.wasm" "$uwdir/serve.optin.wasm.diag"
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/serve.vibe" "$uwdir/serve.optin.wasm" __no_entry__ >/dev/null 2>&1 || true
+if grep -qF 'VIBE_UNSTABLE=1' "$uwdir/serve.optin.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the serve gate (#2277)" >&2
+  cat "$uwdir/serve.optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + buffer(text+json) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"

@@ -755,6 +755,23 @@ fn adapter_emit_wit(input_path: String, output_path: String) -> Int with Fs + En
 /// the WIT world sidecar.
 fn adapter_serve_component(input_path: String, output_path: String) -> Int with Fs + Env {
   handle {
+    // ADR-0068 gate, BEFORE any compile work -- the same gate the FS-compile
+    // branch applies, for the same reason. `vibe serve` reaches this function
+    // through its own `VIBE_SERVE_COMPONENT` branch, which returns before that
+    // one, so without this a handler importing `@vibe/concurrent` produced a
+    // DEPLOYABLE component while `vibe check` rejected the identical file
+    // (#2277 review). An artifact-producing verb that accepts what the check
+    // verb refuses is the worst direction for that disagreement to run.
+    let serve_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_path(input_path)
+    }
+    if Array::length(serve_unstable) > 0 {
+      return emit_compile_diag(output_path, Array::get(serve_unstable, 0))
+    } else {
+      ()
+    }
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     validate_serve_handler(entry_stmts)
     // No command entry: the component surface is `handler`. `__no_entry__`
