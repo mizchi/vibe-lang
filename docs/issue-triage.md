@@ -61,10 +61,7 @@ edits.** Merge or land that PR first, then take the leftover.
 | occupied files | PR | what it is holding |
 |---|---|---|
 | `checker/checker_stmt.vibe` | [#2294](https://github.com/mizchi/vibe-lang/pull/2294) | #2290 / #2292. After merge: #2293 |
-| `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_adapter.vibe`, `cli_support.vibe`, `lsp/lsp_server.vibe`, fmt scripts | [#2296](https://github.com/mizchi/vibe-lang/pull/2296) | #2283, ADR-0068 opt-in, `vibe fmt` self-blame. CI is red (freeze-surface `Map::*` + `VIBE_UNSTABLE` selector). After merge: **P0 #2281**, then #2284 / #2285 / #2297 / #2280 |
-
-Independent of both PRs: Apache-2.0 relicense (this file's companion change),
-#2287 (re-export alias merge).
+| `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_adapter.vibe`, `cli_support.vibe`, `lsp/lsp_server.vibe`, `entry/source_compile/wasi_only/merge_sources.vibe`, fmt scripts | [#2296](https://github.com/mizchi/vibe-lang/pull/2296) | #2283, ADR-0068 opt-in, `vibe fmt` self-blame. CI is red (freeze-surface `Map::*` + `VIBE_UNSTABLE` selector). After merge: **P0 #2281**, then #2284 / #2285 / #2287 / #2297 / #2280 |
 
 ### P0 — silently wrong (1)
 
@@ -78,7 +75,7 @@ Independent of both PRs: Apache-2.0 relicense (this file's companion change),
 |---|---|---|
 | #2283 | in #2296 | a user-defined `assert_eq/2` is claimed by the builtin lowering |
 | #2284 | after #2296 | ADR-0068 opt-in scans only the entry; a sibling import bypasses it |
-| #2287 | free | `export ./dep.vibe { cmp as compare }` dies at codegen |
+| #2287 | after #2296 (`merge_sources.vibe`) | `export ./dep.vibe { cmp as compare }` dies at codegen |
 | #2280 | after #2296 (`cli_adapter`) | `vibe check` cannot parse a `.vpkg` |
 | #2293 | after #2294 | two imports binding the same local name still last-win |
 | #2164 | after #2294 if it touches checker type names | contract transparent types have no provenance for typos |
@@ -129,8 +126,7 @@ serially. Running across lanes is free.**
 | lane | file area | issues | notes |
 |---|---|---|---|
 | **A. checker type-env** | `checker/checker_stmt.vibe` | #2294, then #2293 / #2164 | serialize on `checker_stmt` |
-| **B. eq-shape / call / cli** | `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_*.vibe` | #2296, then **#2281**, then #2284 / #2285 / #2297 / #2280 | P0 #2281 lives in `ty_to_eq_shape`; do not fork this file while #2296 is open |
-| **C. re-export merge** | `core/import_alias_rewrite.vibe`, merge | #2287 | independent of A and B |
+| **B. eq-shape / call / cli / merge** | `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_*.vibe`, `merge_sources.vibe` | #2296, then **#2281**, then #2284 / #2285 / #2287 / #2297 / #2280 | P0 #2281 lives in `ty_to_eq_shape`; do not fork these files while #2296 is open |
 | **D. incremental/cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960 | |
 | **F. runtime/host** | `runtime/viberun`, abort provenance | #2199 (rides #1987) | |
 
