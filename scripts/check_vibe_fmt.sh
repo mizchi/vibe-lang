@@ -95,6 +95,17 @@ while IFS=$'\t' read -r status rel_path message; do
   fi
 done < <(printf '%s\n' "${files[@]}" | bash scripts/run_vibe_fmt_batch.sh check "$JOBS")
 
+# A process substitution's exit status is not this script's, so a batch that
+# died -- the formatter would not build, a shard produced no report -- fed
+# the loop zero lines and every count below stayed 0: "checked 0 file(s)",
+# exit 0, a green that inspected nothing (#2271, same family as the silent
+# rc-1 loop it fixes). Every file handed to the batch must come back.
+if [ "$checked" -ne "${#files[@]}" ]; then
+  echo "vibe-fmt lint: the batch reported on $checked of ${#files[@]} file(s); the rest were never checked" >&2
+  echo "  this is NOT a formatting verdict -- see the batch's diagnostics above" >&2
+  exit 2
+fi
+
 if [ "${#errors[@]}" -gt 0 ]; then
   echo "vibe-fmt lint: ${#errors[@]} file(s) errored while checking (not merely unformatted):" >&2
   printf '  %s\n' "${errors[@]}" >&2
