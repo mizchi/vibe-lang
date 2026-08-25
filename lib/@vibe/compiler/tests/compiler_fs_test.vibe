@@ -288,6 +288,36 @@ test "same-source inspect re-export alias value remains unknown before serializa
   inspect(String::contains(merged_source_error(main_path), "unknown name: inspect"), content = "true")
 }
 
+test "same-source builtin-named re-export alias remains unknown before serialization" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_println_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn emit(message: String) -> Unit { () }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { emit as println }\nexport fn answer() -> Unit with Stdout { println(\"x\") }\n"))
+  inspect(String::contains(merged_source_error(main_path), "unknown name: println"), content = "true")
+}
+
+test "nested alias shadow does not hide an unbound re-export alias reference" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_lexical_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { cmp as assert_eq }\nexport fn shadow(assert_eq: (Int, Int) -> Int) -> Int { assert_eq(1, 2) }\nexport fn answer() -> Int { let f = assert_eq; f(1, 2) }\n"))
+  inspect(String::contains(merged_source_error(main_path), "unknown name: assert_eq"), content = "true")
+}
+
+test "lexically shadowed re-export alias reference remains valid" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_lexical_shadow"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn emit(message: String) -> Unit { () }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { emit as println }\nexport fn answer() -> Unit { let println = (_message: String) -> (); println(\"x\") }\n"))
+  inspect(merged_source_error(main_path), content = "")
+}
+
 test "same-source ordinary re-export alias remains unknown through FS merge" {
   let base_dir = "/tmp/vibe_compiler_reexport_alias_value_blocker"
   let dep_path = String::concat(base_dir, "/dep.vibe")
@@ -296,6 +326,7 @@ test "same-source ordinary re-export alias remains unknown through FS merge" {
   Fs::write_bytes(dep_path, string_to_bytes("export fn source_value() -> Int { 7 }\n"))
   Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { source_value as forwarded }\nexport fn answer() -> Int { forwarded() }\n"))
   inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: forwarded"), content = "true")
+  inspect(String::contains(merged_source_error(main_path), "unknown name: forwarded"), content = "true")
 }
 
 test "same-source plain assert_eq re-export remains callable through FS merge" {
