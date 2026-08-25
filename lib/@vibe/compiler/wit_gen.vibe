@@ -889,15 +889,17 @@ fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
       } else {
         ()
       },
-      // An effectset lands in `defs` as `TDEffectSet` and resolves the same
-      // nominal way (`core/types.vibe`, the arm next to `TDEffect`). Round 19
-      // named only `SEffectDef`; leaving this one out would have left the
-      // identical hole one declaration keyword away, so both are pinned.
-      SEffectSet(_, name, _) => if name == needle {
-        found = true
-      } else {
-        ()
-      },
+      // A LOCAL effectset is deliberately NOT here, correcting round 19.
+      // `TDEffectSet` reaches `defs` only through `seed_imported_type_defs`;
+      // no local declaration pushes one, so the checker resolves a locally
+      // declared `effectset StringMap`'s `StringMap[Int]` as the BUILTIN map.
+      // Measured on the equality lowering, which asks the same ownership
+      // question: `effect StringMap[T]` emits 1174 bytes (nominal) while
+      // `effectset StringMap = { Stdout }` emits 4413 -- the generated map
+      // comparator, i.e. the builtin. Claiming ownership here made `--wit`
+      // answer `no WIT mapping` for a program the checker accepts, which is
+      // round 9's complaint in a new spot. An IMPORTED effectset still
+      // shadows: it carries no `ImportKind`, so the unkinded arm fails closed.
       SModule(_, _, body) => if wit_stmts_declare_type(body, needle) {
         found = true
       } else {
