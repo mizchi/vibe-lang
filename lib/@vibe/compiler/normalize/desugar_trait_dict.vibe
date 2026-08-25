@@ -6370,7 +6370,7 @@ fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
 /// cell above: whether THIS program binds `assert_eq` itself.
 ///
 /// For an ordinary source array this is program-wide. The FS merge inserts an
-/// `SReExportAliasBlockers` marker before each source unit; the final rewrite
+/// `SReExportLocalBlockers` marker before each source unit; the final rewrite
 /// loop resets the cached answer and active range at every marker, so a
 /// dependency's blocker cannot suppress an unrelated entry builtin (#2287).
 ///
@@ -6453,7 +6453,7 @@ fn user_assert_eq_bound() -> Bool {
 /// UNSCOPED within one source unit: one binder anywhere in that unit stands
 /// the lowering down even for call sites the binder does not reach. A scoped
 /// answer would have to thread a binder set through `rewrite_expr`, which
-/// carries nine parameters already. `SReExportAliasBlockers` still separates
+/// carries nine parameters already. `SReExportLocalBlockers` still separates
 /// FS-merged units, so this conservative answer does not leak across modules.
 fn stmts_define_assert_eq(stmts: Array[Stmt]) -> Bool {
   stmts_range_define_assert_eq(stmts, 0, Array::length(stmts))
@@ -6628,7 +6628,7 @@ fn stmt_binds_assert_eq(stmt: Stmt) -> Bool {
     // bare prelude name; see the #2296 review measurement above.
     SImport(_, items) => import_binds_assert_eq(items),
     // Direct/single-source checking still sees the original re-export. The FS
-    // merge carries aliases separately in SReExportAliasBlockers (#2287).
+    // merge carries re-export locals separately in SReExportLocalBlockers (#2287).
     SReExport(_, items) => import_binds_assert_eq(items),
     _ => false
   }
@@ -6656,7 +6656,7 @@ fn reexport_blockers_bind_assert_eq(names: Array[String]) -> Bool {
 
 fn merged_source_range_end(stmts: Array[Stmt], start: Int) -> Int {
   let mut end = start
-  while end < Array::length(stmts) && !(Array::get(stmts, end) is SReExportAliasBlockers(_)) {
+  while end < Array::length(stmts) && !(Array::get(stmts, end) is SReExportLocalBlockers(_)) {
     end = end + 1
   }
   end
@@ -14610,11 +14610,11 @@ fn dinsp_rewrite_range(stmts: Array[Stmt], start: Int, end: Int) -> Bool {
   changed
 }
 
-fn dinsp_has_reexport_alias_boundaries(stmts: Array[Stmt]) -> Bool {
+fn dinsp_has_reexport_local_boundaries(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(stmts) {
-    found = Array::get(stmts, i) is SReExportAliasBlockers(_)
+    found = Array::get(stmts, i) is SReExportLocalBlockers(_)
     i = i + 1
   }
   found
@@ -14625,10 +14625,10 @@ fn dinsp_rewrite_merged_source_ranges(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SReExportAliasBlockers(names) => {
+      SReExportLocalBlockers(names) => {
         let start = i + 1
         let mut end = start
-        while end < Array::length(stmts) && !(Array::get(stmts, end) is SReExportAliasBlockers(_)) {
+        while end < Array::length(stmts) && !(Array::get(stmts, end) is SReExportLocalBlockers(_)) {
           end = end + 1
         }
         if !dinsp_blocker_names_inspect(names) && !dinsp_range_binds_inspect(stmts, start, end) {
@@ -14701,7 +14701,7 @@ fn dinsp_mentions_binder(expr: Expr) -> Bool {
 /// see dinsp_uses for why that guard is load-bearing rather than cosmetic.
 export fn desugar_inspect_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
   let mut changed = false
-  if dinsp_has_reexport_alias_boundaries(stmts) {
+  if dinsp_has_reexport_local_boundaries(stmts) {
     changed = dinsp_rewrite_merged_source_ranges(stmts)
   } else if dinsp_binds_inspect(stmts) {
     ()
@@ -15408,7 +15408,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SReExportAliasBlockers(names) => user_assert_eq_set_merged_source(stmts, i + 1, names),
+      SReExportLocalBlockers(names) => user_assert_eq_set_merged_source(stmts, i + 1, names),
       stmt => Array::set(stmts, i, rewrite_stmt(stmt, gens, traits, struct_sets, fn_returns, toplevel_vars))
     }
     i = i + 1

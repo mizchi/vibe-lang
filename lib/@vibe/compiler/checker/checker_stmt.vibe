@@ -41,7 +41,7 @@ import @vibe/compiler/core {
   env_selectable_type_defs,
   env_type_defs,
   env_value_binding_with_origin,
-  env_with_reexport_alias_blockers,
+  env_with_reexport_local_blockers,
   expr_children,
   find_enum_typedef,
   find_typedef,
@@ -1783,6 +1783,33 @@ fn reorder_type_decls_first(stmts: Array[Stmt], start: Int) -> Array[Stmt] {
   out
 }
 
+/// Re-hoist the value declarations owned by one FS-merged source after its
+/// re-export lookup barriers. The ordinary list-wide hoist sits below those
+/// barriers, so without this pass a legitimate same-source declaration named
+/// like a re-export would be hidden together with dependency definitions.
+fn hoisted_binding_type(annotation: Option[TypeExpr], defs: Array[TypeDef]) -> Type {
+  match annotation {
+    Some(type_expr) => resolve_type_expr(type_expr, defs),
+    None => CtUnknown
+  }
+}
+
+fn hoist_merged_source_values(stmts: Array[Stmt], start: Int, env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  let mut out = env
+  let mut i = start
+  while i < Array::length(stmts) && !(Array::get(stmts, i) is SReExportLocalBlockers(_)) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, annotation, _) => {
+        let ty = hoisted_binding_type(annotation, defs)
+        out = env_bind(out, name, ty)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Map the stable type-declaration schedule back to the retained statement
 /// coordinates. `checked_stmts` stays in source/post-desugar order even though
 /// declaration checking is scheduled type-first.
@@ -1881,10 +1908,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   while hoist_i < Array::length(stmts) {
     match Array::get(stmts, hoist_i) {
       SLet(_, _, hname, hann, _) => {
-        let ht = match hann {
-          Some(hte) => resolve_type_expr(hte, defs),
-          None => CtUnknown
-        }
+        let ht = hoisted_binding_type(hann, defs)
         cur_env = env_bind(cur_env, hname, ht)
       },
       _ => ()
@@ -2620,7 +2644,10 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       } else {
         (bind_stmt_imports(env, names), s, c)
       },
-      SReExportAliasBlockers(names) => (env_with_reexport_alias_blockers(env, names), s, c),
+      SReExportLocalBlockers(names) => {
+        let blocked = env_with_reexport_local_blockers(env, names)
+        (hoist_merged_source_values(stmts, idx + 1, blocked, defs), s, c)
+      },
       SAliasDecl(_, _) => (env, s, c)
       ,
       STrait(_, name, supers, methods, method_gens, tparams) => {

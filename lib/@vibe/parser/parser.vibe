@@ -728,9 +728,8 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
 // compiler understands it (docs/selfhost-bootstrap.md bump procedure).
 
 /// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`,
-/// `zero_alloc`, or `deprecated` (#1262 ADR-0101 migration marker; optional `("message")`
-/// argument). Returns (directive_kind, flag_name, next_pos) — for
-/// `deprecated` the middle slot carries the optional message (empty if none).
+/// `zero_alloc`, or `deprecated` (#1262 ADR-0101 migration marker; optional
+/// `("message")` argument). Returns (directive_kind, payload, next_pos).
 fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(dname) => {
@@ -852,6 +851,22 @@ fn zero_alloc_marker_ident(mode: String) -> String {
   }
 }
 
+fn lower_reexport_boundary_markers(stmts: Array[Stmt]) -> Array[Stmt] {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(names) => if Array::length(names) > 0 && Array::get(names, 0) == "__vibe_reexport_boundary__" {
+        Array::set(stmts, i, SReExportLocalBlockers(Array::slice(names, 1, Array::length(names))))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  stmts
+}
+
 /// Program parser that KEEPS `fn` declarations as SFnDecl (see
 /// parse_stmt_preserving) — used by the printer/normalize round-trip so
 /// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
@@ -910,7 +925,7 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
       }
     }
   }
-  ArrayBuilder::freeze(b)
+  lower_reexport_boundary_markers(ArrayBuilder::freeze(b))
 }
 
 /// #1455 step 3: fold the qualified-variant-pattern log this parse produced
@@ -1110,7 +1125,7 @@ fn parse_program_located_with_context_impl(tokens: Array[Token], starts: Array[I
       }
     }
   }
-  (attach_qualified_pattern_refs(expand_top_level_pattern_lets_with_binder_context(ArrayBuilder::freeze(b), context)), pos)
+  (attach_qualified_pattern_refs(lower_reexport_boundary_markers(expand_top_level_pattern_lets_with_binder_context(ArrayBuilder::freeze(b), context))), pos)
 }
 
 /// True when `t` is a resynchronization point for `parse_program_recovering`:
@@ -1307,7 +1322,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
       }
     }
   }
-  (attach_qualified_pattern_refs(expand_top_level_pattern_lets(ArrayBuilder::freeze(b))), ArrayBuilder::freeze(diags))
+  (attach_qualified_pattern_refs(lower_reexport_boundary_markers(expand_top_level_pattern_lets(ArrayBuilder::freeze(b)))), ArrayBuilder::freeze(diags))
 }
 
 /// Like `parse_program`, but also returns per top-level statement its source
@@ -1380,7 +1395,7 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
   } else {
     ()
   }
-  (ArrayBuilder::freeze(b), ArrayBuilder::freeze(span_start), ArrayBuilder::freeze(span_end))
+  (lower_reexport_boundary_markers(ArrayBuilder::freeze(b)), ArrayBuilder::freeze(span_start), ArrayBuilder::freeze(span_end))
 }
 
 //# Misc

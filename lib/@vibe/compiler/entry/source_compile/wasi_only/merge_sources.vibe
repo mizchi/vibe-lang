@@ -185,7 +185,7 @@ fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], 
   }
 }
 
-fn reexport_alias_blockers(stmts: Array[Stmt]) -> Array[String] {
+fn reexport_local_blockers(stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -193,13 +193,15 @@ fn reexport_alias_blockers(stmts: Array[Stmt]) -> Array[String] {
       SReExport(_, items) => {
         let mut j = 0
         while j < Array::length(items) {
-          match Array::get(items, j).alias {
-            Some(alias) => if string_array_contains_local(out, alias) {
-              ()
-            } else {
-              Array::push(out, alias)
-            },
-            None => ()
+          let item = Array::get(items, j)
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if string_array_contains_local(out, local) {
+            ()
+          } else {
+            Array::push(out, local)
           }
           j = j + 1
         }
@@ -219,9 +221,9 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     let stmts = Array::get(file_stmts, fi)
     let namespaced_stmts = transformed_file_stmts(entry_path, path, stmts, plan)
     // Imports and re-exports disappear from the executable merged AST. Keep a
-    // source-boundary marker so an aliased re-export remains publication-only
+    // source-boundary marker so every re-export remains publication-only
     // for this unit without blocking builtins in the next unit (#2287).
-    Array::push(merged, SReExportAliasBlockers(reexport_alias_blockers(stmts)))
+    Array::push(merged, SReExportLocalBlockers(reexport_local_blockers(stmts)))
     if stmts_have_import_deep(stmts) {
       let import_renames = collect_import_value_renames(plan, path, stmts)
       let skipped_locals = collect_import_alias_collision_locals(stmts)

@@ -856,7 +856,20 @@ export fn print_stmt(s: Stmt) -> String {
       String::concat("export ", String::concat(path, String::concat(" { ", String::concat(join(parts, ", "), " }"))))
     },
     SAliasDecl(alias_name, source_path) => String::concat("import ", String::concat(source_path, String::concat(" @", alias_name))),
-    SReExportAliasBlockers(_) => "",
+    // FS flattening removes import syntax but must retain each source's
+    // publication-only re-export boundary across print -> reparse (#2287).
+    // This uses only the seed-era `export { ... }` grammar: the current parser
+    // recognizes the reserved first name and restores the marker, while an old
+    // bootstrap seed safely treats it as the same inert export-list statement.
+    SReExportLocalBlockers(names) => {
+      let payload = Array::slice(["__vibe_reexport_boundary__"], 0, 1)
+      let mut i = 0
+      while i < Array::length(names) {
+        Array::push(payload, Array::get(names, i))
+        i = i + 1
+      }
+      String::concat("export { ", String::concat(join(payload, ", "), " }"))
+    },
     // #1455 step 3: parser bookkeeping, not source. Printing it would put a
     // node with no surface syntax into `vibe normalize` output and break the
     // print -> reparse round trip.

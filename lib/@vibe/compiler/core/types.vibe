@@ -353,7 +353,14 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           done = true
         },
         EnvBind(n, binding, rest) => match binding.origin {
-          BindingOriginReExportSurface(_, _) => {
+          BindingOriginReExportSurface(module_name, _) => if module_name == "" {
+            // The empty module name marks an FS-merge source-boundary blocker,
+            // not a published dependency surface. Retain it in the index so a
+            // same-named definition from an earlier source cannot leak through.
+            ArrayBuilder::push(names, n)
+            ArrayBuilder::push(types, binding)
+            cur = rest
+          } else {
             // Surface-only names stay in the authoritative chain for
             // publication, but must not enter the local lookup index.
             cur = rest
@@ -384,7 +391,12 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           while j < Array::length(bindings) {
             let (n, binding) = Array::get(bindings, j)
             match binding.origin {
-              BindingOriginReExportSurface(_, _) => (),
+              BindingOriginReExportSurface(module_name, _) => if module_name == "" {
+                ArrayBuilder::push(names, n)
+                ArrayBuilder::push(types, binding)
+              } else {
+                ()
+              },
               _ => {
                 ArrayBuilder::push(names, n)
                 ArrayBuilder::push(types, binding)
@@ -599,10 +611,11 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
   }
 }
 
-/// Replace the transient aliased-re-export blockers for the next source unit
-/// in an FS-merged program. These names participate in builtin exclusion but
-/// remain absent from ordinary local lookup (#2287).
-export fn env_with_reexport_alias_blockers(env: TypeEnv, names: Array[String]) -> TypeEnv {
+/// Replace the transient re-export blockers for the next source unit in an
+/// FS-merged program. The empty origin path is a lookup barrier: it keeps a
+/// same-named definition flattened from an earlier source out of local scope
+/// while still participating in builtin exclusion (#2287).
+export fn env_with_reexport_local_blockers(env: TypeEnv, names: Array[String]) -> TypeEnv {
   let mut out = env_without_reexport_surface_bindings(env)
   let mut i = 0
   while i < Array::length(names) {
@@ -624,7 +637,11 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
       },
       EnvBind(n, binding, rest) => if String::equals(n, name) {
         match binding.origin {
-          BindingOriginReExportSurface(_, _) => {
+          BindingOriginReExportSurface(module_name, _) => if module_name == "" {
+            // A source-boundary blocker is authoritative: do not reveal a
+            // same-named binding flattened from an earlier source.
+            done = true
+          } else {
             cur = rest
           },
           _ => {
@@ -656,7 +673,9 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
           let (n, binding) = Array::get(bindings, j)
           if String::equals(n, name) {
             match binding.origin {
-              BindingOriginReExportSurface(_, _) => {
+              BindingOriginReExportSurface(module_name, _) => if module_name == "" {
+                done = true
+              } else {
                 j = j + 1
               },
               _ => {
@@ -677,7 +696,9 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
         if slot >= 0 {
           let binding = Array::get(types_sorted, slot)
           match binding.origin {
-            BindingOriginReExportSurface(_, _) => {
+            BindingOriginReExportSurface(module_name, _) => if module_name == "" {
+              done = true
+            } else {
               // Old/injected caches may still contain this origin. Fall back
               // to the authoritative chain, which skips it and can reveal a
               // real same-named local binding underneath.
