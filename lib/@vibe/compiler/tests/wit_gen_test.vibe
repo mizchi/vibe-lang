@@ -10,7 +10,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Stmt, TypeExpr
 }
 
 import @vibe/compiler/syntax {
@@ -168,6 +168,40 @@ test "wit_from_program: a VALUE import named StringMap does not shadow the built
   ]
   let wit = wit_from_program(stmts, stmts, "valimport")
   assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: a TRAIT import named StringMap does not shadow the builtin" {
+  // #2276 (Codex round 10): a trait lives in the trait environment, not in
+  // `defs`, so `import ./dep.vibe { trait StringMap }` leaves the checker
+  // resolving `StringMap[V]` to the builtin. Treating every written `kind` as
+  // type-like failed this valid program with `no WIT mapping` -- measured, it
+  // did. Only ImportType / ImportStruct / ImportEnum own a type spelling.
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: Some(ImportTrait), name: "StringMap", alias: None }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let wit = wit_from_program(stmts, stmts, "traitimport")
+  assert(String::contains(wit, "list<tuple<string, s64>>"))
+}
+
+test "wit_from_program: a STRUCT import named StringMap does shadow the builtin" {
+  let stmts = [
+    SImport("./dep.vibe", [
+      ImportItem::{ kind: Some(ImportStruct), name: "StringMap", alias: None }
+    ]),
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), efn_of_string_params([
+      "m"
+    ]))
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "structimport")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
 }
 
 test "wit_from_program: undeclared capability effect renders as comment" {

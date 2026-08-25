@@ -3,6 +3,7 @@
 import @vibe/compiler/core {
   Expr,
   ImportItem,
+  ImportKind,
   Stmt,
   TypeExpr,
   effect_row_emitted_text,
@@ -681,7 +682,20 @@ fn wit_resolve_effect_names_into(label: String, es_names: Array[String], es_memb
 /// gives a "no WIT mapping" error rather than a silently mismatched ABI.
 fn import_item_is_typeish(item: ImportItem) -> Bool {
   match item.kind {
-    Some(_) => true,
+    // EXACT when the kind is written: only these three own a type spelling.
+    // An effect and a trait live in their own environments, so
+    // `import ./d.vibe { trait StringMap }` leaves the checker resolving
+    // `StringMap[V]` to the builtin -- and treating every `Some` as type-like
+    // failed that valid program with `no WIT mapping` (Codex round 10;
+    // measured, it did).
+    Some(k) => match k {
+      ImportType => true,
+      ImportStruct => true,
+      ImportEnum => true,
+      ImportEffect => false,
+      ImportTrait => false
+    },
+    // Only the unwritten kind needs the name-case heuristic.
     None => str_starts_upper(item.name)
   }
 }
