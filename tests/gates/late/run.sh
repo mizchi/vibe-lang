@@ -7174,28 +7174,32 @@ VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$ihdir/pkg/impl.vibe" "$ihdir/out" main >/dev/null 2>&1 || true
 ih_report="$(cat "$ihdir/out.diag" 2>/dev/null || true)"
-# BOTH must appear. One line each, so counting them is the assertion.
+# EXACTLY two reports: the inherited one and the physical one, one line each.
+#
+# Both bounds matter. Fewer than two is the adapter dropping all but the first,
+# which is what made the misassignment invisible. MORE than two is the dedupe
+# failing: the loader ingests a module several times per compile and records a
+# candidate each time, so printing every report without dedupe made one file's
+# single import read as three.
 ih_n="$(printf '%s\n' "$ih_report" | grep -c 'VIBE_UNSTABLE=1' || true)"
 if [ "$ih_n" != "2" ]; then
-  echo "[compiler-gate] FAIL: reported $ih_n unstable imports, want 2 (inherited + physical) -- the adapter is dropping all but the first (#2289)" >&2
+  echo "[compiler-gate] FAIL: reported $ih_n unstable imports, want exactly 2 (inherited + physical) (#2289)" >&2
   printf '%s\n' "$ih_report" >&2
   exit 1
 fi
-# Exactly one says "inherits", and it is NOT the one carrying the physical line.
+# Exactly one of the two calls itself inherited. The NOTE is the discriminator,
+# not the position: an absent offset falls back to line 1 by design ("a miss
+# costs a position, never a verdict"), so both lines read `line 1:1` here and
+# testing the position would be testing nothing.
 ih_inherited="$(printf '%s\n' "$ih_report" | grep -c 'inherits' || true)"
 if [ "$ih_inherited" != "1" ]; then
   echo "[compiler-gate] FAIL: $ih_inherited of the reports call the import inherited, want exactly 1 (#2289)" >&2
   printf '%s\n' "$ih_report" >&2
   exit 1
 fi
-if printf '%s\n' "$ih_report" | grep 'inherits' | grep -qv 'line 1:1'; then
-  : # the inherited report must not claim the physical import's position
-else
-  echo "[compiler-gate] FAIL: the inherited report consumed the physical import's line -- deleting that line would only reveal the other error (#2289)" >&2
-  printf '%s\n' "$ih_report" >&2
-  exit 1
-fi
-# ...and the physical one must still name line 1, where it actually is.
+# ...and the other one names the physical import's own line rather than
+# inheriting the fallback -- this is the half that regresses if the synthetic
+# occurrence goes back to consuming the cursor.
 if ! printf '%s\n' "$ih_report" | grep -v 'inherits' | grep -qF 'line 1:1'; then
   echo "[compiler-gate] FAIL: the physical import lost its own position (#2289)" >&2
   printf '%s\n' "$ih_report" >&2

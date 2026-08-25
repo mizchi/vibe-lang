@@ -847,14 +847,15 @@ fn unstable_line_of_offset(source: String, off: Int) -> Int {
 //# in order, exactly as the cursor does today. The three helpers below compute
 //# that deficit; `unstable_decl_diagnostic` spends it.
 
-/// Index of `pkg` in the parallel `(pkgs, deficits)` arrays, or -1.
-fn unstable_pkg_slot(pkgs: Array[String], pkg: String) -> Int {
+/// Index of `needle` in `hay`, or -1. Used for the parallel
+/// `(pkgs, deficits)` arrays and for the report dedupe below.
+fn unstable_index_of_str(hay: Array[String], needle: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
-  while i < Array::length(pkgs) {
-    if Array::get(pkgs, i) == pkg {
+  while i < Array::length(hay) {
+    if Array::get(hay, i) == needle {
       found = i
-      i = Array::length(pkgs)
+      i = Array::length(hay)
     } else {
       i = i + 1
     }
@@ -869,7 +870,7 @@ fn unstable_collect_pkgs(stmts: Array[Stmt], pkgs: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(path, _) => if unstable_package_note(path) != "" && unstable_pkg_slot(pkgs, path) < 0 {
+      SImport(path, _) => if unstable_package_note(path) != "" && unstable_index_of_str(pkgs, path) < 0 {
         Array::push(pkgs, path)
       } else {
         ()
@@ -927,7 +928,7 @@ fn unstable_decl_diagnostic(path: String, source: String, tokens: Array[Token], 
     // location, which is what makes the `where_note` below say the import is
     // inherited instead of pointing at a line the reader would find their own
     // import on.
-    let slot = unstable_pkg_slot(pkgs, path)
+    let slot = unstable_index_of_str(pkgs, path)
     let inherited = slot >= 0 && Array::get(deficits, slot) > 0
     let off = if inherited {
       Array::set(deficits, slot, Array::get(deficits, slot) - 1)
@@ -1074,7 +1075,22 @@ export fn check_unstable_surface_warnings_from_closure() -> Array[String] with E
     } with { Exception::Throw(_) => array_empty() }
     let mut j = 0
     while j < Array::length(diags) {
-      Array::push(out, String::concat(path, String::concat(": ", Array::get(diags, j))))
+      let report = String::concat(path, String::concat(": ", Array::get(diags, j)))
+      // #2289: DEDUPE. The loader ingests a module more than once per compile
+      // (header cache, source-group collection), and every ingestion records a
+      // candidate, so the same verdict arrives several times. That was
+      // invisible while the adapter printed only the first report; printing
+      // them all made one file's single import read as three.
+      //
+      // By exact text, not by path: a file with two genuinely different
+      // reports -- the inherited one and the physical one -- must keep both,
+      // and those differ in their note and their position. Two reports that
+      // are character-for-character identical are the same import seen twice.
+      if unstable_index_of_str(out, report) < 0 {
+        Array::push(out, report)
+      } else {
+        ()
+      }
       j = j + 1
     }
     i = i + 1
