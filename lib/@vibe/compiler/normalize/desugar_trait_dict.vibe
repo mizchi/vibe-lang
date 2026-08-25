@@ -6464,11 +6464,10 @@ fn stmts_define_assert_eq(stmts: Array[Stmt]) -> Bool {
       // removed", measured on the current tree. Left out rather than left
       // wrong, since the arm would be a latent defect the day modules return.
       SImport(_, items) => import_binds_assert_eq(items),
-      // Only a plain re-export can resolve to the dependency's merged
-      // `assert_eq` definition. An alias is publication-only and contributes
-      // no local/function-table binding, so it must not disable builtin
-      // lowering for unrelated modules in this merged program (#2287).
-      SReExport(_, items) => plain_reexport_binds(items, "assert_eq"),
+      // This scan runs on one source unit before the linked merge. An alias
+      // targeting `assert_eq` must preserve the local name-resolution blocker;
+      // unrelated modules run their own scan and keep builtin lowering (#2287).
+      SReExport(_, items) => import_binds_assert_eq(items),
       _ => false
     }
     if hit {
@@ -14556,7 +14555,10 @@ fn dinsp_import_binds(items: Array[ImportItem]) -> Bool {
 fn dinsp_stmt_binds(stmt: Stmt) -> Bool {
   match stmt {
     SImport(_, items) => dinsp_import_binds(items),
-    SReExport(_, items) => plain_reexport_binds(items, "inspect"),
+    // `inspect` is desugared before checking, per source unit. Preserve an
+    // alias target as a local blocker so name resolution can reject it; an
+    // unrelated module is processed independently and keeps its builtin.
+    SReExport(_, items) => dinsp_import_binds(items),
     SLet(_, _, name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
     SLetMut(name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
     SLetPat(pat, body) => dinsp_pat_binds(pat, "inspect") || dinsp_mentions_binder(body),

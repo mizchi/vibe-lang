@@ -141,6 +141,20 @@ test "collect_linked_compile_inputs: resolves an aliased re-export the entry imp
   assert(func_name == "bar")
 }
 
+test "re-export aliases in a dependency do not suppress entry builtins" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_builtin_scope"
+  let inner_path = String::concat(base_dir, "/inner.vibe")
+  let facade_path = String::concat(base_dir, "/facade.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(inner_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\nexport fn view(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(facade_path, string_to_bytes("export ./inner.vibe { cmp as assert_eq, view as inspect }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert, inspect as forwarded_inspect }\nexport let answer: () -> Int with Stdout = () -> {\n  let _ = forwarded_assert(1, 2)\n  let _ = forwarded_inspect(1, 2)\n  inspect(1, \"1\")\n  assert_eq(1, 2)\n  0\n}\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  assert(bytes_contains_ascii(bytes, "assert_eq failed"))
+}
+
 test "compile_file_wasi_only: simple file produces valid WASM" {
   let base_dir = "/tmp/vibe_compiler_wasi_only"
   let main_path = String::concat(base_dir, "/main.vibe")
