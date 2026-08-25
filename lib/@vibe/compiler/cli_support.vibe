@@ -751,6 +751,36 @@ fn unstable_import_offset(tokens: Array[Token], starts: Array[Int], pkg: String)
 
 /// 1-based line of a byte offset. Offset -1 (the token scan found nothing)
 /// falls back to line 1: a miss costs a position, never a verdict.
+/// 1-based BYTE column of an offset (ADR-0108: columns are bytes). An
+/// indented import -- inside an `SModule` block, say -- starts past the line
+/// start, and reporting a hardcoded column 1 pointed the text form, and every
+/// editor consuming the JSON/LSP form, at the indentation instead of the
+/// `import` token (#2277 review). Offset -1 (nothing found) is column 1, which
+/// pairs with the line-1 fallback.
+fn unstable_col_of_offset(source: String, off: Int) -> Int {
+  if off < 0 {
+    1
+  } else {
+    let n = String::length(source)
+    let limit = if off < n {
+      off
+    } else {
+      n
+    }
+    let mut start = 0
+    let mut i = 0
+    while i < limit {
+      if String::byte_at(source, i) == 10 {
+        start = i + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    limit - start + 1
+  }
+}
+
 fn unstable_line_of_offset(source: String, off: Int) -> Int {
   let n = String::length(source)
   let mut line = 1
@@ -780,7 +810,8 @@ fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[T
             ""
           }
           let line = unstable_line_of_offset(source, off)
-          Array::push(out, String::concat("line ", String::concat(Int::to_string(line), String::concat(":col 1: ", String::concat(where_note, note)))))
+          let col = unstable_col_of_offset(source, off)
+          Array::push(out, String::concat("line ", String::concat(Int::to_string(line), String::concat(":col ", String::concat(Int::to_string(col), String::concat(": ", String::concat(where_note, note)))))))
         } else {
           ()
         }
