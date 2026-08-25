@@ -394,8 +394,8 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
 /// is what expands it. A key that is a type formal, an inference variable,
 /// `CtUnknown`, or an unresolved nominal head is ACCEPTED -- generic code is
 /// unaffected, and a typo is the unknown-type check's answer, not this one.
-fn map_key_type_is_supported(k: Type, defs: Array[TypeDef]) -> Bool {
-  map_key_type_is_supported_at(k, defs, array_empty())
+fn map_key_type_is_supported(k: Type, defs: Array[TypeDef], shadow: Array[String]) -> Bool {
+  map_key_type_is_supported_at(k, defs, shadow, array_empty())
 }
 
 /// Whether this alias name has already been expanded on the current chain.
@@ -413,7 +413,7 @@ fn map_key_alias_chain_contains(seen: Array[String], name: String) -> Bool {
   found
 }
 
-fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], seen: Array[String]) -> Bool {
+fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String]) -> Bool {
   match k {
     CtString => true,
     CtVar(_) => true,
@@ -440,19 +440,21 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], seen: Array[Strin
     // still accepted (measured, pinned by `map_shadowed_wellknown_key_ok`).
     CtNamed(kname, kargs) => if is_wellknown_nominal_head(kname) {
       false
-    } else if Array::length(kargs) == 0 {
+    } else if string_array_has(shadow, kname) {
+      // A type FORMAL in scope. Judging it would mean judging every future
+      // instantiation, which is not this check's question.
       true
     } else {
       match find_typedef(defs, kname) {
-        // Not declared (yet): a FORWARD reference or a typo. Either way not
-        // this check's answer.
+        // Not declared: a FORWARD reference, a typo, or a formal bound
+        // somewhere this walk cannot see. Either way not this check's answer.
         None => true,
         // Declared as an alias: judge its BODY. Reading the already-resolved
         // body needs no substitution -- and must not use one, since
-        // `resolve_type_alias_params` corrupts the heap (#2279). A body that
-        // still mentions the alias's own parameters leaves them as rigid
-        // zero-argument names, which the first arm accepts, exactly as an
-        // unbound formal is accepted anywhere else.
+        // `resolve_type_alias_params` corrupts the heap (#2279). The alias's
+        // OWN parameters become the shadow for that body, so a body that
+        // mentions them is judged as a formal rather than as whatever
+        // top-level type happens to share the spelling.
         //
         // KNOWN GAP (#2282, Codex round 8 on #2276): that acceptance lets a
         // FORWARDING alias through. `type Key[T] = T` used as
@@ -463,26 +465,31 @@ fn map_key_type_is_supported_at(k: Type, defs: Array[TypeDef], seen: Array[Strin
         // answer: the annotation is accepted and the first `Map::` operation
         // still rejects the key, which is where every map key was caught
         // before this check existed.
+        //
+        // The chain is followed to its END, however long. It used to stop
+        // at a DEPTH CAP of four hops and answer "supported" beyond it, so
+        // a seven-hop chain ending in `Int` was accepted (Codex round 13 on
+        // #2276, measured). The cap was load-bearing, not decoration: a
+        // CYCLIC alias chain -- `type A[T] = B[T]` with `type B[T] = A[T]`
+        // -- compiles today, so this walk has to terminate on its own.
+        // Remembering the names already expanded terminates on exactly the
+        // cycle and on nothing else.
         Some(td) => match td {
-          //
-          // The chain is followed to its END, however long. It used to stop
-          // at a DEPTH CAP of four hops and answer "supported" beyond it, so
-          // a seven-hop chain ending in `Int` was accepted (Codex round 13 on
-          // #2276, measured). The cap was load-bearing, not decoration: a
-          // CYCLIC alias chain -- `type A[T] = B[T]` with `type B[T] = A[T]`
-          // -- compiles today, so this walk has to terminate on its own.
-          // Remembering the names already expanded terminates on exactly the
-          // cycle and on nothing else.
-          TDAlias(_, _, abody) => if map_key_alias_chain_contains(seen, kname) {
+          TDAlias(_, aparams, abody) => if map_key_alias_chain_contains(seen, kname) {
             // An alias that expands to itself has no key type to judge, and
             // the diagnostic for the cycle belongs to whatever rejects it.
             true
           } else {
             Array::push(seen, kname)
-            map_key_type_is_supported_at(abody, defs, seen)
+            map_key_type_is_supported_at(abody, defs, aparams, seen)
           },
-          // A declared struct or enum applied to arguments really is a key
-          // with no implementation.
+          // A declared struct or enum. `kargs` is not consulted: the nullary
+          // form used to be accepted before `find_typedef` was reached at
+          // all, which made a FORWARD-declared key order-dependent --
+          // measured, `type Bad = Map[Key, Int]` was rejected with `type Key
+          // = Int` above it and accepted with it below (Codex round 14 on
+          // #2276). A declared struct is not a key implementation at either
+          // arity.
           _ => false
         }
       }
@@ -536,7 +543,7 @@ fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: A
           },
           _ => k0
         }
-        if map_key_type_is_supported(k, defs) {
+        if map_key_type_is_supported(k, defs, params) {
           ()
         } else {
           Array::push(out, k)
@@ -579,12 +586,12 @@ fn collect_unsupported_map_keys_applied(t: Type, defs: Array[TypeDef], params: A
   }
 }
 
-fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], out: Array[Type]) -> Unit {
+fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], shadow: Array[String], out: Array[Type]) -> Unit {
   match t {
     CtNamed(head, targs) => {
       if head == "Map" && Array::length(targs) == 2 && find_typedef(defs, head) is None {
         let k = Array::get(targs, 0)
-        if map_key_type_is_supported(k, defs) {
+        if map_key_type_is_supported(k, defs, shadow) {
           ()
         } else {
           Array::push(out, k)
@@ -594,32 +601,32 @@ fn collect_unsupported_map_keys(t: Type, defs: Array[TypeDef], out: Array[Type])
       }
       let mut i = 0
       while i < Array::length(targs) {
-        collect_unsupported_map_keys(Array::get(targs, i), defs, out)
+        collect_unsupported_map_keys(Array::get(targs, i), defs, shadow, out)
         i = i + 1
       }
     },
-    CtArray(e) => collect_unsupported_map_keys(e, defs, out),
-    CtOption(e) => collect_unsupported_map_keys(e, defs, out),
+    CtArray(e) => collect_unsupported_map_keys(e, defs, shadow, out),
+    CtOption(e) => collect_unsupported_map_keys(e, defs, shadow, out),
     CtTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_unsupported_map_keys(Array::get(items, i), defs, out)
+        collect_unsupported_map_keys(Array::get(items, i), defs, shadow, out)
         i = i + 1
       }
     },
     CtFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        collect_unsupported_map_keys(Array::get(params, i), defs, out)
+        collect_unsupported_map_keys(Array::get(params, i), defs, shadow, out)
         i = i + 1
       }
-      collect_unsupported_map_keys(ret, defs, out)
+      collect_unsupported_map_keys(ret, defs, shadow, out)
     },
     CtRecord(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, ft) = Array::get(fields, i)
-        collect_unsupported_map_keys(ft, defs, out)
+        collect_unsupported_map_keys(ft, defs, shadow, out)
         i = i + 1
       }
     },
@@ -675,7 +682,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
     } else {
       match find_typedef(defs, name) {
         Some(td) => match td {
-          TDAlias(_, _, body) => collect_unsupported_map_keys(body, defs, out),
+          TDAlias(_, aparams, body) => collect_unsupported_map_keys(body, defs, aparams, out),
           _ => ()
         },
         None => ()
@@ -691,7 +698,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
       }
       if name == "Map" && Array::length(args) == 2 && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
         let k = resolve_type_expr_shadowed(Array::get(args, 0), defs, shadow)
-        if map_key_type_is_supported(k, defs) {
+        if map_key_type_is_supported(k, defs, shadow) {
           ()
         } else {
           Array::push(out, k)

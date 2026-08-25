@@ -736,6 +736,28 @@ fn import_items_bind_type(items: Array[ImportItem], needle: String) -> Bool {
   found
 }
 
+/// Whether a function literal binds `needle` as one of its own type
+/// parameters. Only the statement's own binder list is read -- a nested
+/// lambda's binders are not in scope for the exported signature.
+fn expr_binds_type_param(body: Expr, needle: String) -> Bool {
+  match body {
+    EFn(tparams, _, _, _, _, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(tparams) {
+        if Array::get(tparams, i) == needle {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
 fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -780,6 +802,24 @@ fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
       // `SImport` published the nominal parameter with the builtin's ABI,
       // which is the silent-wrong direction.
       SReExport(_, items) => if import_items_bind_type(items, needle) {
+        found = true
+      } else {
+        ()
+      },
+      // #2276 (Codex round 14): a function's own TYPE BINDER owns the name
+      // inside its signature -- `export fn f[StringMap](m: StringMap[Int])`
+      // makes `StringMap` the formal, not the builtin. The checker rejects
+      // that program (a type parameter cannot take arguments, #2268), but
+      // neither `--wit` path runs the checker, so without this arm the
+      // projection published the builtin's `list<tuple<string, V>>` ABI for a
+      // program that does not compile.
+      //
+      // The flag is program-wide rather than per-signature, so a binder in
+      // ONE function disables the builtin projection for the whole file.
+      // That over-reach cannot cost a valid program anything: a file that
+      // binds `StringMap` as a type parameter is rejected by the checker
+      // before it can be built, and failing to project is the loud direction.
+      SLet(_, _, _, _, body) => if expr_binds_type_param(body, needle) {
         found = true
       } else {
         ()

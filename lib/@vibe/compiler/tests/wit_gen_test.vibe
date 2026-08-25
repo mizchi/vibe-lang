@@ -202,6 +202,25 @@ test "wit_from_program: a RE-EXPORTED StringMap type shadows the builtin" {
   assert(String::contains(message, "no WIT mapping"))
 }
 
+test "wit_from_program: a GENERIC BINDER named StringMap shadows the builtin" {
+  // #2276 (Codex round 14): `export fn f[StringMap](m: StringMap[Int])` makes
+  // `StringMap` the function's own type parameter. The checker rejects that
+  // program (a type parameter cannot take arguments, #2268), but neither
+  // `--wit` path runs the checker, so the projection published the builtin
+  // ABI for a program that does not compile.
+  let params = array_empty()
+  Array::push(params, ("m", Some(TyApp("StringMap", [TyName("Int")]))))
+  let generic_fn = EFn(["StringMap"], array_empty(), params, Some(TyName("Int")), None, EUnit)
+  let stmts = [
+    SLet(true, false, "read", Some(TyFn([TyApp("StringMap", [TyName("Int")])], TyName("Int"), None)), generic_fn)
+  ]
+  let message = handle {
+    let _ = wit_from_program(stmts, stmts, "generic")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(message, "no WIT mapping"))
+}
+
 test "wit_from_program: a TRAIT import named StringMap does not shadow the builtin" {
   // #2276 (Codex round 10): a trait lives in the trait environment, not in
   // `defs`, so `import ./dep.vibe { trait StringMap }` leaves the checker
