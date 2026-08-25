@@ -31,8 +31,9 @@ but not yet implemented** (do not confuse them with today's behavior):
 structural `==` in every context (ADR-0097, #1526 — **measured 2026-08-19,
 no silent reference equality is left**. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
-`Array[Struct]`, through a function's return value, and empty-literal bindings
-are all structural, and a difference in length or in elements is `false`.
+`Array[Struct]`, through a function's return value, empty-literal bindings,
+and through a parameterized type alias (`type AL[V] = Array[V]` as `AL[Int]`,
+#2281) are all structural, and a difference in length or in elements is `false`.
 **An unannotated `let xs = []` is structural when the pushed value describes
 itself** (#2157, narrowed by #2192): the element type comes from the
 `Array::push(xs, v)` calls in the binding's own scope, and `v` is read from its

@@ -32,6 +32,31 @@ enum Boxed {
   BoxedPoint(Point)
 } derive (Eq)
 
+// #2281: a parameterized alias wrapping a structural container used to keep
+// the alias head (`TyApp("AL", ...)`), so `==` fell back to identity.
+type AL[V] = Array[V]
+type SM[V] = StringMap[V]
+type A2 = Array[Int]
+type SM2 = StringMap[Int]
+
+struct AliasHolder {
+  xs: AL[Int]
+} derive (Eq)
+
+struct AliasHolderA2 {
+  xs: A2
+} derive (Eq)
+
+enum AliasBox {
+  Wrap(AL[Int])
+} derive (Eq)
+
+type FnInt = (Int) -> Int
+
+struct Cell[FnInt] {
+  value: FnInt
+} derive (Eq)
+
 fn make_array() -> Array[Int] {
   [1, 2]
 }
@@ -648,4 +673,124 @@ test "a declared name containing an underscore does not collide with an applicat
   let s2 = eq_ctx_named(5)
   assert(s1 == s2)
   assert(s1 != eq_ctx_named(9))
+}
+
+fn eq_ctx_al(xs: Array[Int]) -> AL[Int] {
+  xs
+}
+
+fn eq_ctx_sm(a: Int, b: Int) -> SM[Int] {
+  Map::from_pairs([("a", a), ("b", b)])
+}
+
+fn eq_ctx_a2(xs: Array[Int]) -> A2 {
+  xs
+}
+
+fn eq_ctx_same_a2(left: A2, right: A2) -> Bool {
+  left == right
+}
+
+fn eq_ctx_same_sm2(left: SM2, right: SM2) -> Bool {
+  left == right
+}
+
+fn eq_ctx_equality_snapshot(value: Bool) -> String {
+  if value {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+test "a parameterized alias around Array compares structurally" {
+  // #2281: `type AL[V] = Array[V]` used as `AL[Int]` must not identity-compare.
+  inspect(eq_ctx_equality_snapshot(eq_ctx_al([1, 2, 3]) == eq_ctx_al([1, 2, 3])), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_al([1, 2, 3]) != eq_ctx_al([1, 2, 9])), "true")
+}
+
+test "a parameterized alias around StringMap compares structurally" {
+  inspect(eq_ctx_equality_snapshot(eq_ctx_sm(1, 2) == eq_ctx_sm(1, 2)), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_sm(1, 2) != eq_ctx_sm(1, 9)), "true")
+}
+
+test "a non-parameterized alias around Array compares structurally" {
+  inspect(eq_ctx_equality_snapshot(eq_ctx_a2([1, 2]) == eq_ctx_a2([1, 2])), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_a2([1, 2]) != eq_ctx_a2([1, 9])), "true")
+}
+
+test "non-parameterized structural aliases on parameters compare structurally" {
+  inspect(eq_ctx_equality_snapshot(eq_ctx_same_a2([1, 2], [1, 2])), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_same_a2([1, 2], [1, 9])), "false")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_same_sm2(eq_ctx_string_map(1, 2), eq_ctx_string_map(1, 2))), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_same_sm2(eq_ctx_string_map(1, 2), eq_ctx_string_map(1, 9))), "false")
+}
+
+fn eq_ctx_holder(xs: Array[Int]) -> AliasHolder {
+  AliasHolder::{
+    xs: xs
+  }
+}
+
+fn eq_ctx_holder_a2(xs: Array[Int]) -> AliasHolderA2 {
+  AliasHolderA2::{
+    xs: xs
+  }
+}
+
+fn eq_ctx_wrap(xs: Array[Int]) -> AliasBox {
+  AliasBox::Wrap(xs)
+}
+
+test "a struct field of a parameterized Array alias compares structurally" {
+  inspect(eq_ctx_equality_snapshot(eq_ctx_holder([1, 2, 3]) == eq_ctx_holder([
+    1,
+    2,
+    3
+  ])), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_holder([1, 2, 3]) != eq_ctx_holder([
+    1,
+    2,
+    9
+  ])), "true")
+}
+
+test "a struct field of a non-parameterized Array alias compares structurally" {
+  inspect(eq_ctx_equality_snapshot(eq_ctx_holder_a2([1, 2]) == eq_ctx_holder_a2([
+    1,
+    2
+  ])), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_holder_a2([1, 2]) != eq_ctx_holder_a2([
+    1,
+    9
+  ])), "true")
+}
+
+test "an enum payload of a parameterized Array alias compares structurally" {
+  inspect(eq_ctx_equality_snapshot(eq_ctx_wrap([1, 2, 3]) == eq_ctx_wrap([
+    1,
+    2,
+    3
+  ])), "true")
+  inspect(eq_ctx_equality_snapshot(eq_ctx_wrap([1, 2, 3]) != eq_ctx_wrap([
+    1,
+    2,
+    9
+  ])), "true")
+}
+
+test "a generic parameter is not an incomparable alias of the same spelling" {
+  let xs = []
+  let ys = []
+  Array::push(xs, Cell[Int]::{
+    value: 1
+  })
+  Array::push(ys, Cell[Int]::{
+    value: 1
+  })
+  inspect(eq_ctx_equality_snapshot(xs == ys), "true")
+  Array::push(ys, Cell[Int]::{
+    value: 2
+  })
+  inspect(eq_ctx_equality_snapshot(xs != ys), "true")
 }
