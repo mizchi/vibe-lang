@@ -61,13 +61,14 @@ edits.** Merge or land that PR first, then take the leftover.
 | occupied files | PR | what it is holding |
 |---|---|---|
 | `checker/checker_stmt.vibe` | [#2294](https://github.com/mizchi/vibe-lang/pull/2294) | #2290 / #2292. After merge: #2293 |
-| `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_adapter.vibe`, `cli_support.vibe`, `lsp/lsp_server.vibe`, `entry/source_compile/wasi_only/merge_sources.vibe`, fmt scripts | [#2296](https://github.com/mizchi/vibe-lang/pull/2296) | #2283, ADR-0068 opt-in, `vibe fmt` self-blame. CI is red (freeze-surface `Map::*` + `VIBE_UNSTABLE` selector). After merge: **P0 #2281**, then #2284 / #2285 / #2287 / #2297 / #2280 |
+| `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_adapter.vibe`, `cli_support.vibe`, `lsp/lsp_server.vibe`, `entry/source_compile/wasi_only/merge_sources.vibe`, fmt scripts | [#2296](https://github.com/mizchi/vibe-lang/pull/2296) | #2283, ADR-0068 opt-in, `vibe fmt` self-blame. After merge: #2284 / #2285 / #2287 / #2297 / #2280 |
+| `ty_to_eq_shape` in `desugar_trait_dict.vibe` | [#2299](https://github.com/mizchi/vibe-lang/pull/2299) | P0 #2281. Does not conflict with #2296 (different region of the same file) |
 
 ### P0 — silently wrong (1)
 
 | # | wait for | what |
 |---|---|---|
-| #2281 | #2296 (`desugar_trait_dict.vibe`) | a parameterized alias wrapping a structural container (`type AL[V] = Array[V]`) loses structural `==` and answers by identity |
+| #2281 | in [#2299](https://github.com/mizchi/vibe-lang/pull/2299) | a parameterized alias wrapping a structural container (`type AL[V] = Array[V]`) loses structural `==` and answers by identity |
 
 ### P1 — crashes, or cannot be written (7)
 
@@ -126,7 +127,7 @@ serially. Running across lanes is free.**
 | lane | file area | issues | notes |
 |---|---|---|---|
 | **A. checker type-env** | `checker/checker_stmt.vibe` | #2294, then #2293 / #2164 | serialize on `checker_stmt` |
-| **B. eq-shape / call / cli / merge** | `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_*.vibe`, `merge_sources.vibe` | #2296, then **#2281**, then #2284 / #2285 / #2287 / #2297 / #2280 | P0 #2281 lives in `ty_to_eq_shape`; do not fork these files while #2296 is open |
+| **B. eq-shape / call / cli / merge** | `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_*.vibe`, `merge_sources.vibe` | #2299 (#2281, `ty_to_eq_shape`) and #2296 (assert_eq / opt-in / merge). Then #2284 / #2285 / #2287 / #2297 / #2280 | same file, different regions; merge-tree is clean |
 | **D. incremental/cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960 | |
 | **F. runtime/host** | `runtime/viberun`, abort provenance | #2199 (rides #1987) | |
 
