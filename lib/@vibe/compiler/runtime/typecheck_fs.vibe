@@ -5358,7 +5358,7 @@ export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: 
 /// `extract_require_pins` blanks to spaces and preserves byte length, so the
 /// positions this scan reports stay exact.
 export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, source: String, allow_unstable: Bool) -> Array[String] with Exception {
-  let msgs = collect_all_diagnostics(source)
+  let msgs = collect_all_diagnostics_for_path(input_path, source)
   if allow_unstable {
     msgs
   } else {
@@ -5387,7 +5387,13 @@ export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, sou
   }
 }
 
+/// #2314: no path, so a `.vpkg` buffer is read as statements. Callers that
+/// HAVE a path should use `collect_all_diagnostics_for_path`.
 export fn collect_all_diagnostics(source: String) -> Array[String] with Exception {
+  collect_all_diagnostics_for_path("", source)
+}
+
+export fn collect_all_diagnostics_for_path(input_path: String, source: String) -> Array[String] with Exception {
   // #2227, round 3 of the book-review eval: a leading `require @scope/name
   // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
   // ingestion blanks before parsing -- but this single-file lane parsed the
@@ -5447,10 +5453,32 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Exceptio
   } else {
     ()
   }
-  collect_all_diagnostics_on(pin_blanked)
+  collect_all_diagnostics_on(input_path, pin_blanked)
 }
 
-fn collect_all_diagnostics_on(source: String) -> Array[String] with Exception {
+/// #2314, the LSP half of #2280: a `.vpkg` is a list of BODYLESS declarations,
+/// not statement grammar. Reading it with `parse_program_recovering` answered
+/// `expected { but got eof` about `lib/@vibe/random/index.vpkg` and about every
+/// other contract the build consumes -- a diagnostic that asserts something
+/// untrue about the file, which this repo ranks above crashing.
+///
+/// A contract stops at its own grammar. It does NOT go on to `check_program` /
+/// `expand_interp_stmts` / the unused-import walk: those read a program, and a
+/// contract is a declaration surface whose implementations live in sibling
+/// files this lane cannot see. `vibe check` WITHOUT `--single-file` is the
+/// verb that answers the cross-file half (`contract violation: contract
+/// declaration 'x' has no implementation`, #2280) -- reporting a subset here
+/// is honest; inventing the rest from one buffer is not.
+fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
+  if is_contract_ext(input_path) {
+    return handle {
+      let (tokens, _starts, _ends) = lex_with_offsets(source)
+      let (_, _, _stmts) = parse_contract_program(tokens)
+      array_empty()
+    } with { Exception::Throw(msg) => [locate_type_error(source, msg)] }
+  } else {
+    ()
+  }
   let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(source)
   if Array::length(lex_err_msgs) > 0 {
     // Report ONLY the lexer errors: the recovered token stream has holes, so
