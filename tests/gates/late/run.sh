@@ -7205,6 +7205,55 @@ if ! printf '%s\n' "$ih_report" | grep -v 'inherits' | grep -qF 'line 1:1'; then
   printf '%s\n' "$ih_report" >&2
   exit 1
 fi
+# The flood the Codex review on #2312 named: ingestion prepends the shared
+# import to EVERY sibling, so a package with N members reported one `import`
+# line N times. Measured on this 3-member package before the per-directory
+# dedupe: ten reports. An inherited import is one edit -- the directory's
+# index.vpkg -- so it must be reported once no matter how many members inherit
+# it, while the contract's own physical import keeps its own line.
+mkdir -p "$ihdir/flood"
+cat > "$ihdir/flood/index.vpkg" <<'IHEOF'
+name = @gate/inheritedflood
+version = 0.0.1
+description =
+  #|gate-only package for #2289
+deps = {}
+
+generated_hash =
+
+import @vibe/concurrent { TaskGroup }
+
+fn a() -> Int
+fn b() -> Int
+fn c() -> Int
+IHEOF
+for member in a b c; do
+  printf 'export fn %s() -> Int {\n  1\n}\n' "$member" > "$ihdir/flood/$member.vibe"
+done
+rm -f "$ihdir/flood.out" "$ihdir/flood.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$ihdir/flood/index.vpkg" "$ihdir/flood.out" main >/dev/null 2>&1 || true
+flood_report="$(cat "$ihdir/flood.out.diag" 2>/dev/null || true)"
+flood_inherited="$(printf '%s\n' "$flood_report" | grep -c 'inherits' || true)"
+if [ "$flood_inherited" != "1" ]; then
+  echo "[compiler-gate] FAIL: $flood_inherited inherited reports for one shared import across 3 members, want 1 (#2289)" >&2
+  printf '%s\n' "$flood_report" >&2
+  exit 1
+fi
+flood_own="$(printf '%s\n' "$flood_report" | grep 'VIBE_UNSTABLE=1' | grep -vc 'inherits' || true)"
+if [ "$flood_own" != "1" ]; then
+  echo "[compiler-gate] FAIL: $flood_own reports for the contract's own import line, want 1 (#2289)" >&2
+  printf '%s\n' "$flood_report" >&2
+  exit 1
+fi
+# The contract's own import is at line 9 of that .vpkg -- the edit point.
+if ! printf '%s\n' "$flood_report" | grep -v 'inherits' | grep -qF 'index.vpkg: line 9:'; then
+  echo "[compiler-gate] FAIL: the contract's own import is not reported at its own line (#2289)" >&2
+  printf '%s\n' "$flood_report" >&2
+  exit 1
+fi
+
 # A file that ONLY inherits keeps the behaviour it already had.
 cat > "$ihdir/pkg/impl.vibe" <<'IHEOF'
 export fn work() -> Int {

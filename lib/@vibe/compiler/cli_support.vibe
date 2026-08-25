@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Stmt, is_contract_ext, unstable_package_note
+  Stmt, dir_of_path, is_contract_ext, unstable_package_note
 }
 
 import @vibe/compiler/checker {
@@ -847,6 +847,13 @@ fn unstable_line_of_offset(source: String, off: Int) -> Int {
 //# in order, exactly as the cursor does today. The three helpers below compute
 //# that deficit; `unstable_decl_diagnostic` spends it.
 
+/// Prefix of the note an INHERITED import carries. Shared between the note
+/// itself and the dedupe below so the two cannot drift: keying the dedupe off a
+/// separately typed substring would silently stop collapsing the day this
+/// wording changed, and the failure mode there is a diagnostic flood rather
+/// than an error, so nothing would catch it.
+let unstable_inherited_marker: String = "this file inherits `"
+
 /// Index of `needle` in `hay`, or -1. Used for the parallel
 /// `(pkgs, deficits)` arrays and for the report dedupe below.
 fn unstable_index_of_str(hay: Array[String], needle: String) -> Int {
@@ -937,7 +944,7 @@ fn unstable_decl_diagnostic(path: String, source: String, tokens: Array[Token], 
       unstable_import_offset(tokens, starts, path, cursor)
     }
     let where_note = if off < 0 {
-      String::concat("this file inherits `", String::concat(path, "` from its directory's index.vpkg (it is not written here). "))
+      String::concat(unstable_inherited_marker, String::concat(path, "` from its directory's index.vpkg (it is not written here). "))
     } else {
       ""
     }
@@ -1063,6 +1070,7 @@ export fn unstable_surface_diagnostics_located(input_path: String, detected: Str
 /// `VIBE_UNSTABLE=1` stays the escape hatch either way.
 export fn check_unstable_surface_warnings_from_closure() -> Array[String] with Exception + Fs {
   let out = array_empty()
+  let seen: Array[String] = array_empty()
   let candidates = unstable_candidates()
   let mut i = 0
   while i < Array::length(candidates) {
@@ -1075,18 +1083,31 @@ export fn check_unstable_surface_warnings_from_closure() -> Array[String] with E
     } with { Exception::Throw(_) => array_empty() }
     let mut j = 0
     while j < Array::length(diags) {
-      let report = String::concat(path, String::concat(": ", Array::get(diags, j)))
-      // #2289: DEDUPE. The loader ingests a module more than once per compile
-      // (header cache, source-group collection), and every ingestion records a
-      // candidate, so the same verdict arrives several times. That was
-      // invisible while the adapter printed only the first report; printing
-      // them all made one file's single import read as three.
+      let diag = Array::get(diags, j)
+      let report = String::concat(path, String::concat(": ", diag))
+      // #2289: DEDUPE, on two axes, because printing every report (rather than
+      // just the first) exposed two different floods.
       //
-      // By exact text, not by path: a file with two genuinely different
-      // reports -- the inherited one and the physical one -- must keep both,
-      // and those differ in their note and their position. Two reports that
-      // are character-for-character identical are the same import seen twice.
-      if unstable_index_of_str(out, report) < 0 {
+      // 1. The loader ingests a module more than once per compile (header
+      //    cache, source-group collection) and records a candidate each time,
+      //    so one file's single import arrived three times.
+      // 2. An INHERITED import is one edit -- the directory's index.vpkg --
+      //    but ingestion prepends it to every sibling, so a package with N
+      //    members reported it N times. Measured on a 3-member package: ten
+      //    reports for one `import` line.
+      //
+      // So an inherited report keys by (DIRECTORY, diagnostic): the file
+      // differs per sibling, the edit does not. Everything else keys by
+      // (file, diagnostic), which keeps two siblings that each physically
+      // spell the import reporting separately, and keeps a file's own
+      // inherited and physical reports distinct -- they differ in the note.
+      let key = if String::index_of(diag, unstable_inherited_marker) >= 0 {
+        String::concat("inherited\n", String::concat(dir_of_path(path), String::concat("\n", diag)))
+      } else {
+        String::concat("own\n", report)
+      }
+      if unstable_index_of_str(seen, key) < 0 {
+        Array::push(seen, key)
         Array::push(out, report)
       } else {
         ()
