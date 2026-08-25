@@ -7753,5 +7753,72 @@ if ! grep -qF 'Store::lookup' "$tdlabdir/chk.out.diag" 2>/dev/null; then
   cat "$tdlabdir/chk.out.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# ...and an INHERITED method names the trait that declares it. `flatten_traits`
+# copies a supertrait's signatures into the child, so `ChildDict` carries fields
+# `Child` never declared. Keying the provenance record by struct alone reported
+# ``the signature of `Child::lookup` `` -- a declaration that exists nowhere in
+# the source (Codex review on #2313).
+#
+# The child is declared FIRST on purpose. With `Base` first the walk stops on
+# `BaseDict` and the label is right by accident, which is exactly how the bug
+# stayed invisible; measured both orders on the pre-fix compiler, and only this
+# one exposes it.
+cat > "$tdlabdir/inherit.vibe" <<'TDEOF'
+trait Child: Base {
+  own(Self, Int) -> Int
+}
+
+trait Base {
+  lookup(Self, Map[Double, String]) -> String
+}
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/i.wasm" "$tdlabdir/i.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/inherit.vibe" "$tdlabdir/i.wasm" main >/dev/null 2>&1 || true
+inh_report="$(cat "$tdlabdir/i.wasm.diag" 2>/dev/null || true)"
+if [ -z "$inh_report" ]; then
+  echo "[compiler-gate] FAIL: the bad Map key in an inherited trait method produced no diagnostic at all (#2286)" >&2
+  exit 1
+fi
+if printf '%s\n' "$inh_report" | grep -qF 'Child::lookup'; then
+  echo "[compiler-gate] FAIL: an inherited method is labelled with the CHILD trait, which does not declare it (#2286)" >&2
+  printf '%s\n' "$inh_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$inh_report" | grep -qF 'Base::lookup'; then
+  echo "[compiler-gate] FAIL: the inherited method is not attributed to the trait that declares it (#2286)" >&2
+  printf '%s\n' "$inh_report" >&2
+  exit 1
+fi
+# The child's OWN method must still be attributed to the child, or the fix
+# could pass the assertion above by always naming a supertrait.
+cat > "$tdlabdir/ownmethod.vibe" <<'TDEOF'
+trait Child: Base {
+  own(Self, Map[Double, String]) -> String
+}
+
+trait Base {
+  lookup(Self, Int) -> Int
+}
+
+fn main() -> Int {
+  0
+}
+TDEOF
+rm -f "$tdlabdir/o.wasm" "$tdlabdir/o.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tdlabdir/ownmethod.vibe" "$tdlabdir/o.wasm" main >/dev/null 2>&1 || true
+own_report="$(cat "$tdlabdir/o.wasm.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$own_report" | grep -qF 'Child::own'; then
+  echo "[compiler-gate] FAIL: a trait's OWN method is no longer attributed to it (#2286)" >&2
+  printf '%s\n' "$own_report" >&2
+  exit 1
+fi
 rm -rf "$tdlabdir"
-echo "[compiler-gate] trait-method diagnostics name the trait; a hand-written dict struct keeps its own label ok (#2286)"
+echo "[compiler-gate] trait-method diagnostics name the DECLARING trait, inherited or own; a hand-written dict struct keeps its own label ok (#2286)"
