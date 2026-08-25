@@ -7602,8 +7602,85 @@ if ! grep -q '"severity":1' "$lspudir/lex.out" 2>/dev/null; then
   grep -o '"diagnostics":\[[^]]*\]' "$lspudir/lex.out" >&2 || true
   exit 1
 fi
+# ...and the scan must read the buffer with the grammar the buffer HAS. The
+# first version passed `("", source, source)` -- no path, raw text -- which was
+# documented as safe because "a buffer is never a `.vpkg` facade". Both halves
+# were wrong, and each silently drops the diagnostic this section is about:
+#
+#   - an editor DOES open `index.vpkg`. With an empty path the scan parses the
+#     contract with the statement grammar, the header fails, the scan returns
+#     `None`, and no opt-in error is reported for a contract that imports
+#     `@vibe/concurrent`;
+#   - a buffer may open with a `require ... = #pkg:sha1:` head. The base lane
+#     blanks that before parsing (#2227); the scan reparsed the RAW source,
+#     where the directive is a parse error -- `None` again.
+#
+# Both probes were measured against a stage2 built before the fix: each
+# published its OTHER diagnostic and no opt-in error, so this pair fails on the
+# pre-fix compiler rather than merely passing on the fixed one.
+for probe in vpkg pin; do
+  python3 - "$lspudir/$probe.bin" "$probe" <<'LSPGRAMMAREOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+VPKG = (
+    "name = @gate/lspvpkg\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2297\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "import @vibe/concurrent { TaskGroup }\n"
+    "\n"
+    "fn implemented(x: Int) -> Int\n"
+)
+PIN = (
+    "require @gate/dep 1.0.0 = #pkg:sha1:0000000000000000000000000000000000000000\n"
+    "\n"
+    "import @vibe/concurrent { TaskGroup }\n"
+    "\n"
+    "export let main = () -> Int { 0 }\n"
+)
+kind = sys.argv[2]
+src, uri = (VPKG, "file:///gate/index.vpkg") if kind == "vpkg" else (PIN, "file:///gate/pin.vibe")
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": uri, "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+LSPGRAMMAREOF
+  env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$lspudir/$probe.bin")" \
+    VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    > "$lspudir/$probe.out" 2>/dev/null || true
+  if ! grep -q 'publishDiagnostics' "$lspudir/$probe.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: vibe lsp published nothing for the $probe buffer (#2297)" >&2
+    exit 1
+  fi
+  if ! grep -q 'VIBE_UNSTABLE=1' "$lspudir/$probe.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $probe buffer's unstable import got no opt-in diagnostic -- the scan read it with the wrong grammar (#2297)" >&2
+    grep -o '"diagnostics":\[[^]]*\]' "$lspudir/$probe.out" >&2 || true
+    exit 1
+  fi
+done
+# NOT asserted here: the `.vpkg` buffer ALSO publishes `expected { but got eof`,
+# because the base `collect_all_diagnostics` still reads a contract as
+# statements. That is the LSP half of #2280 -- it predates #2297 (measured on a
+# stage2 built from the commit before it) and is tracked as #2314. Asserting a
+# clean answer here would fail for a reason this section does not own.
 rm -rf "$lspudir"
-echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, the opt-in suppresses it, and a lex error still reports ok (#2297)"
+echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, the opt-in suppresses it, a lex error still reports, and .vpkg/pin-head buffers are read with their own grammar ok (#2297)"
 
 # 116/116. A diagnostic on a trait method names the TRAIT, not the synthesized
 #          witness struct (#2286).
