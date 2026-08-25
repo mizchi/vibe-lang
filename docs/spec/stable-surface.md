@@ -167,10 +167,7 @@ The stable symbols listed under "Key Builtins" in the
 - **StringMap** — the String-keyed builtin map. Its type is spelled
   `StringMap[V]`; the operations keep the `Map::` qualifier, so the spelling
   is the type's, not a second operation family. Neither needs an import.
-  `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`,
-  `Map::size`, `Map::new`, and `Map::from_pairs` cannot be frozen as
-  first-class values -- they are call-only builtin operations
-  (`Map::get(m, k)`, not `let g = Map::get`; #2274 / #2275).
+  `Map::get`, `Map::has_key`, `Map::keys`, `Map::values`, `Map::set`, `Map::size`, `Map::new`, and `Map::from_pairs` cannot be frozen as first-class values -- they are call-only builtin operations (`Map::get(m, k)`, not `let g = Map::get`; #2274 / #2275).
   **`Map[K, V]`'s generality is deliberately NOT frozen** (#2263): the builtin
   is String-keyed today, and an annotation naming a concrete non-String key is
   rejected where it is written. The name `Map` is reserved for the generic
