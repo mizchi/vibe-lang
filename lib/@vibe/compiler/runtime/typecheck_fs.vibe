@@ -5469,6 +5469,72 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
 /// verb that answers the cross-file half (`contract violation: contract
 /// declaration 'x' has no implementation`, #2280) -- reporting a subset here
 /// is honest; inventing the rest from one buffer is not.
+/// Does the first `k` tokens throw exactly `msg` from the contract parser?
+///
+/// `peek` answers `TEof` past the end of the array, so a plain truncation is a
+/// well-formed token prefix -- no sentinel to append.
+fn contract_prefix_throws(tokens: Array[Token], k: Int, msg: String) -> Bool with Exception {
+  let head = array_empty()
+  let mut i = 0
+  while i < k {
+    Array::push(head, Array::get(tokens, i))
+    i = i + 1
+  }
+  handle {
+    let (_, _, _stmts) = parse_contract_program(head)
+    false
+  } with { Exception::Throw(m) => m == msg }
+}
+
+/// Byte offset of the token the contract parser stopped at, or -1.
+///
+/// `parse_contract_program` throws an UNLOCATED message, and
+/// `locate_type_error`'s heuristics key on message prefixes the contract
+/// grammar never produces ("unknown name: ", "function arity mismatch for ",
+/// ...). Without this the JSON and live-LSP forms render the synthetic 0:0
+/// range instead of pointing at the malformed declaration (#2314 review) --
+/// the reader is told a contract is broken and not told where.
+///
+/// Same shape as `header_prefix_throws` above, and for the same reason: ask
+/// the PARSER where it stopped rather than mirroring its grammar. Two earlier
+/// attempts in this file at recovering a position by reading the MESSAGE
+/// drifted from the grammar each time (#2253 rounds 3-4/6); a probe has no
+/// grammar mirror, so there is nothing to drift.
+///
+/// The predicate is monotone in k: once the prefix contains the offending
+/// token the parse stops there and every longer prefix throws the SAME
+/// message, while a shorter prefix runs out first and throws an eof-flavoured
+/// one that does not match. So binary search finds the boundary in O(log n)
+/// probes. Runs on the error path only.
+fn contract_parse_error_offset(tokens: Array[Token], starts: Array[Int], msg: String) -> Int with Exception {
+  let n = Array::length(tokens)
+  // The full-length prefix reproduces `msg` by construction; confirm it anyway
+  // so a violated assumption answers BARE rather than wrong.
+  if n <= 0 || !contract_prefix_throws(tokens, n, msg) {
+    return 0 - 1
+  } else {
+    ()
+  }
+  let mut lo = 0
+  let mut hi = n
+  while hi - lo > 1 {
+    let mid = (lo + hi) / 2
+    if contract_prefix_throws(tokens, mid, msg) {
+      hi = mid
+    } else {
+      lo = mid
+    }
+  }
+  // `hi` is the smallest throwing prefix length, so the offending token is at
+  // index hi - 1.
+  let idx = hi - 1
+  if idx >= 0 && idx < Array::length(starts) {
+    Array::get(starts, idx)
+  } else {
+    0 - 1
+  }
+}
+
 /// The recovering lexer's errors, each located and deduped.
 ///
 /// Shared by the program branch and the contract branch of
@@ -5516,12 +5582,32 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
   dedupe_diagnostics(located)
 }
 
+/// One located diagnostic for a contract parse failure.
+fn contract_parse_diagnostic(source: String, tokens: Array[Token], starts: Array[Int], msg: String) -> Array[String] with Exception {
+  if diag_already_located(msg) {
+    return [msg]
+  } else {
+    ()
+  }
+  let off = handle {
+    contract_parse_error_offset(tokens, starts, msg)
+  } with { Exception::Throw(_) => 0 - 1 }
+  if off >= 0 {
+    [String::concat(offset_line_col_prefix(source, off), msg)]
+  } else {
+    // Bare rather than wrong: `locate_type_error` will render this at the
+    // synthetic 0:0, which is what an unlocatable diagnostic already does
+    // everywhere else in this lane.
+    [locate_type_error(source, msg)]
+  }
+}
+
 fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
     // A contract LEXES like a program, so it gets the recovering lexer and
     // every lex error, the same as the branch below (#2314 review). Only the
     // GRAMMAR above the tokens differs.
-    let (ctokens, _cstarts, _cends, clex_offs, clex_msgs) = lex_with_offsets_recovering(source)
+    let (ctokens, cstarts, _cends, clex_offs, clex_msgs) = lex_with_offsets_recovering(source)
     if Array::length(clex_msgs) > 0 {
       return located_lex_errors(source, clex_offs, clex_msgs)
     } else {
@@ -5540,7 +5626,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     return handle {
       let (_, _, _stmts) = parse_contract_program(ctokens)
       array_empty()
-    } with { Exception::Throw(msg) => [locate_type_error(source, msg)] }
+    } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
     ()
   }

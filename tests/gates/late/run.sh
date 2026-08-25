@@ -7953,6 +7953,22 @@ if ! grep -q '"severity":1' "$vpbufdir/bad.out" 2>/dev/null; then
   grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
   exit 1
 fi
+# ...and it must POINT AT the declaration. `parse_contract_program` throws an
+# unlocated message, and `locate_type_error`'s heuristics key on message
+# prefixes the contract grammar never produces -- so without an anchor the
+# editor gets the synthetic 0:0 range and the reader is told a contract is
+# broken without being told where (#2314 review). The malformed `fn` is the
+# LAST line of the probe, so a 0:0 answer and a correct one are far apart.
+if grep -q '"start":{"line":0,"character":0}' "$vpbufdir/bad.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the malformed .vpkg declaration is published at the synthetic 0:0 range, not at the declaration (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"start":{"line":8' "$vpbufdir/bad.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the malformed .vpkg declaration is not anchored on its own line (expected line 8, 0-based) (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
+  exit 1
+fi
 # ...and reading a contract as a contract must not COST the ADR-0068 opt-in.
 # This is the trap the rest of this section sets up: the `vibe diagnostics`
 # buffer lane used to compute the unstable set with a SECOND scan over the RAW
