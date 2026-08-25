@@ -34,6 +34,7 @@ import @vibe/compiler/core {
   resolve_import_path,
   resolve_import_path_candidates,
   resolve_import_path_probe,
+  text_mentions_unstable_package,
   vibe_env_flag,
   vpkg_path_in_dir
 }
@@ -1289,9 +1290,43 @@ fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> 
   }
 }
 
+/// #2284: every on-disk module of the resolved closure passes through
+/// `ingest_source_text_fs`, so this is the one place the WHOLE closure can be
+/// observed without a second traversal. The ADR-0068 gate used to read the
+/// entry file alone, which meant moving `import @vibe/concurrent` into a
+/// sibling bypassed it -- and `main.vibe` calling `./worker.vibe` is the
+/// normal shape of a project, so the boundary was missing for exactly the
+/// structure it most needed to cover.
+///
+/// Only a cheap substring test happens here; the VERDICT is the token scan's,
+/// in `cli_support.vibe`. Over-matching is fine and expected -- roughly ten
+/// compiler files merely MENTION the package in a comment -- because a
+/// candidate that carries no real `SImport` produces no diagnostic.
+///
+/// Reset per compilation by the adapter. That matters: the unit-test batch
+/// compiles many files in one long-lived daemon, so a record left standing
+/// would report a previous file's dependency against the next one.
+let unstable_candidate_cell: Array[(String, String)] = array_empty()
+
+export fn unstable_candidates_reset() -> Unit {
+  Array::truncate(unstable_candidate_cell, 0)
+}
+
+export fn unstable_candidates() -> Array[(String, String)] {
+  unstable_candidate_cell
+}
+
+fn record_unstable_candidate(path: String, ingested: String) -> Unit {
+  if text_mentions_unstable_package(ingested) {
+    Array::push(unstable_candidate_cell, (path, ingested))
+  } else {
+    ()
+  }
+}
+
 export fn ingest_source_text_fs(path: String, raw: String) -> String with Exception + Fs {
   let (_, pin_blanked) = extract_require_pins(raw)
-  if is_contract_ext(path) {
+  let ingested = if is_contract_ext(path) {
     if String::starts_with(pin_blanked, contract_facade_marker) {
       pin_blanked
     } else {
@@ -1300,6 +1335,8 @@ export fn ingest_source_text_fs(path: String, raw: String) -> String with Except
   } else {
     apply_vpkg_directory_shared_imports_fs(path, pin_blanked)
   }
+  record_unstable_candidate(path, ingested)
+  ingested
 }
 
 /// #740: manifest source loaders (manifest_sources.vibe) read RAW disk bytes;

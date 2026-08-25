@@ -6444,8 +6444,147 @@ if ! grep -qF 'line 3:1: set VIBE_UNSTABLE=1' "$uwdir/twice.out" 2>/dev/null; th
   cat "$uwdir/twice.out" 2>/dev/null >&2 || true
   exit 1
 fi
+# The import may sit in a SIBLING, and that is the normal shape of a project --
+# `main.vibe` calling `./worker.vibe` with the concurrency in the worker. The
+# entry-only scan missed exactly that: measured before the fix, this two-file
+# program BUILT an artifact and checked clean with no opt-in (#2284).
+#
+# The diagnostic must name the file that actually spells the import, not the
+# entry -- otherwise the reader is sent to a file with nothing wrong in it.
+mkdir -p "$uwdir/sib"
+cat > "$uwdir/sib/worker.vibe" <<'UWEOF'
+import @vibe/concurrent {
+  TaskGroup
+}
+
+export fn run_all() -> Int with Exception {
+  TaskGroup::run((n) -> {
+    0
+  })
+}
+UWEOF
+cat > "$uwdir/sib/main.vibe" <<'UWEOF'
+import ./worker.vibe {
+  run_all
+}
+
+fn main() -> Int with Exception {
+  run_all()
+}
+UWEOF
+uw_build "$uwdir/sib/main.vibe" "$uwdir/sib/main.wasm"
+if [ -s "$uwdir/sib/main.wasm" ]; then
+  echo "[compiler-gate] FAIL: a sibling file carried the unstable import past the gate (#2284)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/sib/main.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the sibling import was refused for the wrong reason (#2284)" >&2
+  cat "$uwdir/sib/main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF 'worker.vibe' "$uwdir/sib/main.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the diagnostic named the entry, not the file that spells the import (#2284)" >&2
+  cat "$uwdir/sib/main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+uw_build "$uwdir/sib/main.vibe" "$uwdir/sib/optin.wasm" VIBE_UNSTABLE=1
+if [ ! -s "$uwdir/sib/optin.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the sibling case build (#2284)" >&2
+  cat "$uwdir/sib/optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# `vibe check` must agree -- the whole point is that the two verbs answer alike.
+uw_sib_out="$(uw_check "$uwdir/sib/main.vibe" || true)"
+if ! printf '%s\n' "$uw_sib_out" | grep -qF 'VIBE_UNSTABLE=1'; then
+  echo "[compiler-gate] FAIL: vibe check accepted a sibling-carried unstable import (#2284)" >&2
+  printf '%s\n' "$uw_sib_out" >&2
+  exit 1
+fi
+# ...and an ordinary two-file program is untouched, or the closure scan is
+# simply refusing everything with a dependency.
+mkdir -p "$uwdir/plain2"
+printf 'export fn helper() -> Int {\n  7\n}\n' > "$uwdir/plain2/dep.vibe"
+printf 'import ./dep.vibe {\n  helper\n}\n\nfn main() -> Int {\n  helper()\n}\n' > "$uwdir/plain2/main.vibe"
+uw_build "$uwdir/plain2/main.vibe" "$uwdir/plain2/main.wasm"
+if [ ! -s "$uwdir/plain2/main.wasm" ]; then
+  echo "[compiler-gate] FAIL: the closure scan refused an ordinary two-file program (#2284)" >&2
+  cat "$uwdir/plain2/main.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+# `vibe serve` needs its own copy of the closure gate: it returns before the
+# FS-compile branch that carries the other one, so a handler whose DEPENDENCY
+# imports the package emitted a deployable component with no opt-in (#2302
+# review).
+#
+# Placement is asserted too, not just rejection. The gate runs before the
+# component is emitted, because an unstable dependency drags in `vibe.sleep`
+# and the handler-purity check would otherwise speak first -- telling the
+# reader their handler is impure rather than that the dependency needs an
+# opt-in. A gate must win over the diagnostics that are downstream of it.
+mkdir -p "$uwdir/srv"
+cat > "$uwdir/srv/dep.vibe" <<'UWEOF'
+import @vibe/concurrent {
+  TaskGroup
+}
+
+export fn helper() -> Int with Exception {
+  TaskGroup::run((n) -> {
+    0
+  })
+}
+UWEOF
+cat > "$uwdir/srv/h.vibe" <<'UWEOF'
+import ./dep.vibe {
+  helper
+}
+
+export fn handler(method: String, url: String, headers: String, body: String) -> String {
+  "ok"
+}
+UWEOF
+rm -f "$uwdir/srv/c.wasm" "$uwdir/srv/c.wasm.diag"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/srv/h.vibe" "$uwdir/srv/c.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$uwdir/srv/c.wasm" ]; then
+  echo "[compiler-gate] FAIL: vibe serve emitted a component whose dependency imports the unstable package (#2284)" >&2
+  exit 1
+fi
+if ! grep -qF 'VIBE_UNSTABLE=1' "$uwdir/srv/c.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe serve refused the handler for the wrong reason -- the gate must outrank the purity check (#2302)" >&2
+  cat "$uwdir/srv/c.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -qF 'dep.vibe' "$uwdir/srv/c.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the serve diagnostic named the handler, not the file that spells the import (#2284)" >&2
+  cat "$uwdir/srv/c.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# With the opt-in the gate stands down -- whatever happens next is not its say.
+rm -f "$uwdir/srv/optin.wasm" "$uwdir/srv/optin.wasm.diag"
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/srv/h.vibe" "$uwdir/srv/optin.wasm" __no_entry__ >/dev/null 2>&1 || true
+if grep -qF 'VIBE_UNSTABLE=1' "$uwdir/srv/optin.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not clear the serve closure gate (#2302)" >&2
+  cat "$uwdir/srv/optin.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and an ordinary handler is untouched.
+printf 'export fn handler(method: String, url: String, headers: String, body: String) -> String {\n  "ok"\n}\n' > "$uwdir/srv/plain.vibe"
+rm -f "$uwdir/srv/plain.wasm" "$uwdir/srv/plain.wasm.diag"
+env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_SERVE_COMPONENT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uwdir/srv/plain.vibe" "$uwdir/srv/plain.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$uwdir/srv/plain.wasm" ]; then
+  echo "[compiler-gate] FAIL: the serve closure gate refused an ordinary handler (#2302)" >&2
+  cat "$uwdir/srv/plain.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + single-source + closure + repeated-import + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"

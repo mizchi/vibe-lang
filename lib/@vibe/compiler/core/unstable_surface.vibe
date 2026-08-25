@@ -1,0 +1,38 @@
+//# The ADR-0068 unstable-surface rule, in one place (#2248, #2284)
+//
+// `@vibe/concurrent` is `proposed`: outside the SemVer promise and able to
+// change inside a Minor release, so importing it requires `VIBE_UNSTABLE=1`.
+//
+// Two passes need this rule and they sit on opposite sides of the import
+// graph, which is why it lives in core rather than beside either one:
+//
+//   - `loader.vibe` needs the NAME, as a cheap substring pre-filter while it
+//     ingests each module of the resolved closure (#2284). It cannot import
+//     `cli_support.vibe`, which is above it.
+//   - `cli_support.vibe` needs the NOTE, for the diagnostic it emits after the
+//     precise token scan confirms a real `SImport`.
+//
+// One spelling. The pre-filter deliberately over-matches -- a comment
+// mentioning the package counts -- because the verdict is the token scan's,
+// never the substring's.
+
+/// The package whose surface is opt-in. Subpaths count: `@vibe/concurrent/x`
+/// is the same surface.
+export let unstable_package_name: String = "@vibe/concurrent"
+
+/// The diagnostic for an import of that package, or "" for any other name.
+/// Leads with the edit that fixes it, per the CLI policy: set the variable, or
+/// drop the import.
+export fn unstable_package_note(name: String) -> String {
+  if name == unstable_package_name || String::starts_with(name, String::concat(unstable_package_name, "/")) {
+    "set VIBE_UNSTABLE=1 to build against `@vibe/concurrent`, or drop the import. It is ADR-0068, still proposed: outside the SemVer promise and able to change within a Minor release, so it is opt-in rather than silent (docs/spec/stable-surface.md section 6). The `Async` effect itself is stable and needs no opt-in -- only this package's concurrency model does."
+  } else {
+    ""
+  }
+}
+
+/// Whether a module's text could possibly carry such an import. Cheap and
+/// deliberately loose -- the caller confirms with a token scan.
+export fn text_mentions_unstable_package(text: String) -> Bool {
+  String::index_of(text, unstable_package_name) >= 0
+}

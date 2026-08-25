@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Stmt, is_contract_ext
+  Stmt, is_contract_ext, unstable_package_note
 }
 
 import @vibe/compiler/checker {
@@ -33,7 +33,7 @@ import @vibe/compiler/entry/compiler/file_compile {
 }
 
 import @vibe/compiler/loader {
-  collect_source_groups_fs, ingest_source_text_fs, ingestion_pipeline_telemetry_add
+  collect_source_groups_fs, ingest_source_text_fs, ingestion_pipeline_telemetry_add, unstable_candidates, unstable_candidates_reset
 }
 
 // #897: package-form import (wasi_only/ is now an index.vpkg boundary) --
@@ -708,13 +708,6 @@ fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stm
 /// NOT here -- ADR-0012 is accepted and `with Async` ships in builtin
 /// signatures a user can reach (`StdinStream::next`). The unstable part is
 /// the concurrency model built on top, not the row vocabulary.
-fn unstable_package_note(name: String) -> String {
-  if name == "@vibe/concurrent" || String::starts_with(name, "@vibe/concurrent/") {
-    "set VIBE_UNSTABLE=1 to build against `@vibe/concurrent`, or drop the import. It is ADR-0068, still proposed: outside the SemVer promise and able to change within a Minor release, so it is opt-in rather than silent (docs/spec/stable-surface.md section 6). The `Async` effect itself is stable and needs no opt-in -- only this package's concurrency model does."
-  } else {
-    ""
-  }
-}
 
 /// Byte offset of the `import` keyword that introduces `pkg`, or -1.
 ///
@@ -908,6 +901,54 @@ export fn unstable_surface_diagnostics_located(input_path: String, detected: Str
 /// produced the diagnostic, pinned produced none. That is the two-verbs-
 /// disagree defect this gate exists to prevent, reintroduced by reading the
 /// file a different way than the build reads it (#2277 review).
+/// The CLOSURE lane: every module the compile actually loaded, not just the
+/// entry (#2284).
+///
+/// The entry-only scan let a sibling carry the import -- `main.vibe` importing
+/// `./worker.vibe`, with the concurrency in `worker.vibe`, is the normal shape
+/// of a project, so the boundary was absent for exactly the structure it most
+/// needed to cover. Measured before this: that two-file program built an
+/// artifact and checked clean with no opt-in.
+///
+/// The loader records candidates as it ingests (`unstable_candidates`), so this
+/// costs no extra traversal -- the alternative, calling `collect_source_groups_fs`
+/// a second time, was measured as a 1.1% self-compile heap regression that put
+/// the selfcompile KPI over its ceiling.
+///
+/// Each candidate is confirmed by the same token scan the entry lane uses, so a
+/// module that merely MENTIONS the package in a comment yields nothing. The
+/// diagnostic names the file that actually spells the import, which is the edit
+/// point even when that file is a dependency the reader did not write --
+/// `VIBE_UNSTABLE=1` stays the escape hatch either way.
+export fn check_unstable_surface_warnings_from_closure() -> Array[String] with Exception + Fs {
+  let out = array_empty()
+  let candidates = unstable_candidates()
+  let mut i = 0
+  while i < Array::length(candidates) {
+    let (path, ingested) = Array::get(candidates, i)
+    let located = handle {
+      Fs::read_file(path)
+    } with { Exception::Throw(_) => ingested }
+    let diags = handle {
+      unstable_surface_diagnostics_located(path, ingested, located)
+    } with { Exception::Throw(_) => array_empty() }
+    let mut j = 0
+    while j < Array::length(diags) {
+      Array::push(out, String::concat(path, String::concat(": ", Array::get(diags, j))))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Clear the record before a compile. The unit-test batch compiles many files
+/// in one long-lived daemon, so a record left standing would report a previous
+/// file's dependency against the next one.
+export fn unstable_closure_reset() -> Unit {
+  unstable_candidates_reset()
+}
+
 export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array[String] with Exception + Fs {
   handle {
     unstable_surface_diagnostics_located(input_path, ingest_source_text_fs(input_path, Fs::read_file(input_path)), Fs::read_file(input_path))
@@ -915,32 +956,6 @@ export fn check_unstable_surface_warnings_from_path(input_path: String) -> Array
   // An unreadable or uningestable entry is the compile's error to report, in
   // its own words.
   Exception::Throw(_) => array_empty() }
-}
-
-/// The CHECK lane's entry point: reuses the snapshot the linked check already
-/// collected, so it costs a lookup rather than a second traversal.
-export fn check_unstable_surface_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
-  // NOT `checked_entry_source`: that deliberately hands back the PHYSICAL file
-  // when the loader prepended inherited `.vpkg` imports, which is right for
-  // ordinary warnings and wrong for this verdict -- an inherited
-  // `@vibe/concurrent` would be invisible here and rejected by the build. The
-  // verdict comes from the same ingestion the build uses; only the position
-  // comes from the file's own bytes.
-  //
-  // And the snapshot, not a fresh read. Re-reading the entry evaluated text the
-  // check never saw: a save landing between the linked check and this call
-  // could remove the import and be reported clean, or add one the check never
-  // validated (#2277 review).
-  let detected = match checked_entry_snapshot(input_path, source_groups) {
-    Some(snapshot) => snapshot,
-    // No unique snapshot means nothing here was checked for this path. The
-    // build lane still gates it; inventing a verdict from disk would answer
-    // about text this check never consumed.
-    None => return array_empty()
-  }
-  handle {
-    unstable_surface_diagnostics_located(input_path, detected, Fs::read_file(input_path))
-  } with { Exception::Throw(_) => array_empty() }
 }
 
 /// Redundant import warnings derived from the exact source snapshot consumed

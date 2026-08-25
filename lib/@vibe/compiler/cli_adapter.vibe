@@ -110,9 +110,10 @@ import ./cli_support.vibe {
   check_deprecated_warnings_from_source_groups,
   check_linked_file_source_groups,
   check_redundant_import_warnings_from_source_groups,
+  check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
-  check_unstable_surface_warnings_from_source_groups,
   strip_executable_wasm_env,
+  unstable_closure_reset,
   unstable_surface_diagnostics,
   verify_culprit_off_marker_fs_fail_closed
 }
@@ -762,7 +763,8 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     // DEPLOYABLE component while `vibe check` rejected the identical file
     // (#2277 review). An artifact-producing verb that accepts what the check
     // verb refuses is the worst direction for that disagreement to run.
-    let serve_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+    let serve_opt_in = Env::get("VIBE_UNSTABLE") == "1"
+    let serve_unstable = if serve_opt_in {
       adapter_no_warnings()
     } else {
       check_unstable_surface_warnings_from_path(input_path)
@@ -772,12 +774,34 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     } else {
       ()
     }
+    // #2284: the entry check above cannot see a MODULE the handler imports, and
+    // the closure is only known once the loader has walked it -- so reset here
+    // and re-ask below, before the component is written. `vibe serve` needs its
+    // own copy of that discipline because it returns before the FS-compile
+    // branch that carries the other one (#2302 review).
+    unstable_closure_reset()
     let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
     validate_serve_handler(entry_stmts)
     // No command entry: the component surface is `handler`. `__no_entry__`
     // is the explicit sentinel — any other unknown entry name is a compile
     // error since ADR-0069.
     let core = compile_file_fs_mode(input_path, "__no_entry__", "no-dce")
+    // The complete answer, from the closure that compile actually loaded, and
+    // BEFORE the component is emitted. Placement matters: emitting first let
+    // the handler-purity check speak instead -- an unstable dependency drags
+    // in `vibe.sleep`, so the reader was told the handler is impure rather
+    // than that the dependency needs an opt-in. The gate has to win over the
+    // diagnostics that are downstream consequences of it (#2302 review).
+    let serve_closure_unstable = if serve_opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_closure()
+    }
+    if Array::length(serve_closure_unstable) > 0 {
+      return emit_compile_diag(output_path, Array::get(serve_closure_unstable, 0))
+    } else {
+      ()
+    }
     // #1540 scope 4: a `body: HostStream` handler goes down the stream lane
     // (async lift + a component `stream<u8>` param) so it can read the body
     // as it arrives; everything else keeps the sync lift and the collected
@@ -1245,6 +1269,9 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // This has no cache behavior: it only makes the successful walk carry
       // a canonical public-interface observation into the requested sidecar.
       set_incremental_interface_trace_enabled(invalidation_trace_out != "")
+      // #2284: the closure record is filled by the loader during this call,
+      // and read by the gate below. Reset first so it describes THIS check.
+      unstable_closure_reset()
       let checked_source_groups = check_linked_file_source_groups(input_path)
       if telemetry_out != "" {
         Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
@@ -1312,7 +1339,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       let unstable_warns = if Env::get("VIBE_UNSTABLE") == "1" {
         adapter_no_warnings()
       } else {
-        check_unstable_surface_warnings_from_source_groups(input_path, checked_source_groups)
+        check_unstable_surface_warnings_from_closure()
       }
       if Array::length(unstable_warns) > 0 {
         return emit_compile_diag(output_path, Array::get(unstable_warns, 0))
@@ -1346,7 +1373,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // "two verbs, two answers" defect #1567 fixed for check/diagnostics, and
       // it is worse here because the accepting verb is the one that ships.
       // `VIBE_UNSTABLE=1` opts in.
-      let fs_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+      let unstable_opt_in = Env::get("VIBE_UNSTABLE") == "1"
+      // The entry's own import, rejected before any compile work is done. The
+      // closure check below is the complete one; this one keeps the common
+      // rejection fast.
+      let fs_unstable = if unstable_opt_in {
         adapter_no_warnings()
       } else {
         check_unstable_surface_warnings_from_path(input_path)
@@ -1356,6 +1387,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       } else {
         ()
       }
+      // #2284: the loader records every module of the resolved closure as it
+      // ingests it, so the complete answer is only available AFTER the compile
+      // has loaded them. Reset here so the record describes THIS compile --
+      // the unit-test batch runs many compiles in one daemon.
+      unstable_closure_reset()
       let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
       // debugger trace (DAP P1 groundwork): `vibe run --trace` sets VIBE_DEBUG=1
       // so the user file (and its imports) is compiled with function-call
@@ -1435,6 +1471,21 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         })
       } else {
         maybe_wrap_stdin_provider_core(core_bytes, entry_name)
+      }
+      // #2284: gate before the ARTIFACT, not before the compile. The entry
+      // pre-check above cannot see a sibling that carries the import, and the
+      // closure is only known once the loader has walked it. A rejected build
+      // wastes the compile, which is the right trade for not paying a second
+      // full traversal on every build.
+      let closure_unstable = if unstable_opt_in {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_closure()
+      }
+      if Array::length(closure_unstable) > 0 {
+        return emit_compile_diag(output_path, Array::get(closure_unstable, 0))
+      } else {
+        ()
       }
       Fs::write_bytes(output_path, out_bytes)
       // #1553: this observes the executable-strip + primary-output boundary.
