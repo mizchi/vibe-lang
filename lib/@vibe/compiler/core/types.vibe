@@ -1589,6 +1589,23 @@ export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], sh
         CtArray(Array::get(ra, 0))
       } else if name == "Option" && Array::length(ra) == 1 {
         CtOption(Array::get(ra, 0))
+      } else if name == "StringMap" && Array::length(ra) == 1 && !type_expr_name_is_shadowed(shadow, name) {
+        // #2263: the concrete name for the builtin map, which is String-keyed
+        // (`Map[K, V]`'s generality is not implemented and the name is
+        // reserved for it). Resolved here rather than declared as a prelude
+        // alias because a prelude type is not in scope without an import
+        // (measured: a bare `Byte` parameter answers "unknown type"), and
+        // resolving it to the SAME type the ops take keeps every `Map::` op
+        // working on a `StringMap[V]` value with no second op family. A
+        // user declaration of the name still wins -- generic binders are
+        // covered by the shadow test above, and source declarations by defs.
+        match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDAlias(_, params, body) => resolve_type_alias_params(body, params, ra),
+            _ => CtNamed(name, ra)
+          },
+          None => CtNamed("Map", [CtString, Array::get(ra, 0)])
+        }
       } else if type_expr_name_is_shadowed(shadow, name) {
         CtNamed(name, ra)
       } else {

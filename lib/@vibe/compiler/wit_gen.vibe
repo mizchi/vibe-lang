@@ -1,7 +1,15 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, effect_row_emitted_text, has_standard_host_provider, is_entry_runtime_managed_effect, is_exception_effect_name
+  Expr,
+  ImportItem,
+  ImportKind,
+  Stmt,
+  TypeExpr,
+  effect_row_emitted_text,
+  has_standard_host_provider,
+  is_entry_runtime_managed_effect,
+  is_exception_effect_name
 }
 
 import @vibe/compiler/checker {
@@ -96,8 +104,28 @@ fn wit_is_unit_type(ty: TypeExpr) -> Bool {
   }
 }
 
-/// vibe TypeExpr -> WIT type text. Throws on types with no WIT mapping.
-export fn wit_type_text(ty: TypeExpr) -> String with Exception {
+/// A `Map` key the WIT projection can represent. The builtin map is
+/// String-keyed; a type PARAMETER is accepted because a generic signature is
+/// projected per instantiation, not here.
+fn map_key_is_string(k: TypeExpr) -> Bool {
+  match k {
+    TyName(n) => n == "String" || !str_starts_upper(n),
+    _ => false
+  }
+}
+
+/// Whether `n` starts with an upper-case letter -- a concrete type name rather
+/// than a lower-case type parameter.
+fn str_starts_upper(n: String) -> Bool {
+  if String::length(n) == 0 {
+    false
+  } else {
+    let c = String::byte_at(n, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+fn wit_type_text_with_shadow(ty: TypeExpr, string_map_shadowed: Bool) -> String with Exception {
   match ty {
     TyName(name) => {
       if name == "Int" {
@@ -126,18 +154,29 @@ export fn wit_type_text(ty: TypeExpr) -> String with Exception {
         // hand a handler the request body.
         "stream<u8>"
       } else {
-        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, tuples, Future[T], ByteStream, HostStream)")
+        throw("wit: no WIT mapping for type '\{name}' (supported: Int, Double, Bool, String, Char, Bytes, Unit, Array, Option, Result, Map, StringMap, tuples, Future[T], ByteStream, HostStream)")
       }
     },
     TyApp(head, args) => {
       if head == "Array" && Array::length(args) == 1 {
-        "list<\{wit_type_text(Array::get(args, 0))}>"
+        "list<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}>"
       } else if head == "Option" && Array::length(args) == 1 {
-        "option<\{wit_type_text(Array::get(args, 0))}>"
+        "option<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}>"
       } else if head == "Result" && Array::length(args) == 2 {
-        "result<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>"
-      } else if head == "Map" && Array::length(args) == 2 {
-        "list<tuple<\{wit_type_text(Array::get(args, 0))}, \{wit_type_text(Array::get(args, 1))}>>"
+        "result<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}, \{wit_type_text_with_shadow(Array::get(args, 1), string_map_shadowed)}>"
+      } else if head == "Map" && Array::length(args) == 2 && map_key_is_string(Array::get(args, 0)) {
+        // #2276 (Codex): the KEY must be `String`. The builtin map is
+        // String-keyed and the checker now rejects any other concrete key, but
+        // both WIT CLI paths parse the entry and call `wit_from_program`
+        // WITHOUT running the checker -- so an unrestricted arm here published
+        // `list<tuple<s64, string>>` for `Map[Int, String]`, an interface for a
+        // program that no longer compiles. Measured before this: it emitted
+        // exactly that. Falling through instead reports "no WIT mapping",
+        // which is what the boundary should say about a type the language
+        // cannot represent.
+        "list<tuple<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}, \{wit_type_text_with_shadow(Array::get(args, 1), string_map_shadowed)}>>"
+      } else if head == "StringMap" && Array::length(args) == 1 && !string_map_shadowed {
+        "list<tuple<string, \{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}>>"
       } else if head == "Future" && Array::length(args) == 1 {
         // ADR-0089 Decision 5 (#1218): `Future[T]` projects to the P3
         // `future<T'>` payload type. Backed by a real lowering since step
@@ -151,7 +190,7 @@ export fn wit_type_text(ty: TypeExpr) -> String with Exception {
         // guest-produced stream value would declare an ABI the lowering
         // cannot implement (spec §3.3: a producer cannot enter the
         // component instance), so it stays a hard error here.
-        "future<\{wit_type_text(Array::get(args, 0))}>"
+        "future<\{wit_type_text_with_shadow(Array::get(args, 0), string_map_shadowed)}>"
       } else {
         throw("wit: no WIT mapping for type '\{head}[..]'")
       }
@@ -164,7 +203,7 @@ export fn wit_type_text(ty: TypeExpr) -> String with Exception {
         if i > 0 {
           StringBuilder::push(sb, ", ")
         }
-        StringBuilder::push(sb, wit_type_text(Array::get(items, i)))
+        StringBuilder::push(sb, wit_type_text_with_shadow(Array::get(items, i), string_map_shadowed))
         i = i + 1
       }
       StringBuilder::push(sb, ">")
@@ -175,10 +214,17 @@ export fn wit_type_text(ty: TypeExpr) -> String with Exception {
   }
 }
 
+/// vibe TypeExpr -> WIT type text. Throws on types with no WIT mapping.
+/// This low-level entry has no source declarations, so compiler-owned names
+/// are unshadowed. Whole-program generation uses the contextual helper above.
+export fn wit_type_text(ty: TypeExpr) -> String with Exception {
+  wit_type_text_with_shadow(ty, false)
+}
+
 /// `func(name: ty, ...) -> ret` text for a signature. Unit return omits `->`.
 /// `is_async` (ADR-0089 Decision 5, #1218) prefixes `async` -- the P3
 /// async-lifted function type an `with Async` export projects to.
-fn wit_func_text_of(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr, is_async: Bool) -> String with Exception {
+fn wit_func_text_of(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr, is_async: Bool, string_map_shadowed: Bool) -> String with Exception {
   let sb = StringBuilder::new()
   if is_async {
     StringBuilder::push(sb, "async ")
@@ -198,19 +244,19 @@ fn wit_func_text_of(param_names: Array[String], param_types: Array[TypeExpr], re
     }
     StringBuilder::push(sb, pname)
     StringBuilder::push(sb, ": ")
-    StringBuilder::push(sb, wit_type_text(Array::get(param_types, i)))
+    StringBuilder::push(sb, wit_type_text_with_shadow(Array::get(param_types, i), string_map_shadowed))
     i = i + 1
   }
   StringBuilder::push(sb, ")")
   if !wit_is_unit_type(ret) {
     StringBuilder::push(sb, " -> ")
-    StringBuilder::push(sb, wit_type_text(ret))
+    StringBuilder::push(sb, wit_type_text_with_shadow(ret, string_map_shadowed))
   }
   StringBuilder::freeze(sb)
 }
 
-fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr) -> String with Exception {
-  wit_func_text_of(param_names, param_types, ret, false)
+fn wit_func_text(param_names: Array[String], param_types: Array[TypeExpr], ret: TypeExpr, string_map_shadowed: Bool) -> String with Exception {
+  wit_func_text_of(param_names, param_types, ret, false, string_map_shadowed)
 }
 
 /// Split a parsed effect row ("A, B") into names. The parser joins the
@@ -618,7 +664,297 @@ fn wit_resolve_effect_names_into(label: String, es_names: Array[String], es_memb
   }
 }
 
+/// Whether an import item plausibly binds a TYPE.
+///
+/// The WIT CLI parses only the entry file and never resolves imports, so this
+/// cannot be answered exactly: `{ Box as StringMap }` and
+/// `{ helper as StringMap }` both parse with `kind: None`, and only the
+/// dependency knows which is a type. Two signals are available -- an explicit
+/// `kind` (`import ./d.vibe { struct Box as StringMap }`), and the case of the
+/// SOURCE name, since a value is lower-case and a type is not.
+///
+/// #2276 (Codex rounds 5 and 9) pulled this in both directions. Treating every
+/// bound name as a type published a wrong ABI for an imported type; treating
+/// none as a type made a value import named `StringMap` fail an otherwise
+/// valid program with `no WIT mapping` -- measured, it did. The source-name
+/// case separates the two cases that actually occur, and where it is wrong it
+/// is wrong in the LOUD direction: an unconventional lower-case type name
+/// gives a "no WIT mapping" error rather than a silently mismatched ABI.
+fn import_item_is_typeish(item: ImportItem) -> Bool {
+  match item.kind {
+    // EXACT when the kind is written. Structs, enums, aliases, and effects
+    // enter the checker's TypeDef environment; traits live only in the trait
+    // environment. Thus an imported effect owns the nominal spelling while
+    // `import ./d.vibe { trait StringMap }` leaves the builtin visible.
+    //
+    // The premise is pinned rather than argued: `types_test.vibe` measures the
+    // resolver both ways -- `TDEffect("StringMap", ...)` in `defs` gives
+    // `CtNamed("StringMap", [Int])`, an empty `defs` gives
+    // `CtNamed("Map", [String, Int])`. Round 10 had grouped effects with
+    // traits, and while that stood an imported effect type was published with
+    // the builtin map's ABI.
+    Some(k) => match k {
+      ImportType => true,
+      ImportStruct => true,
+      ImportEnum => true,
+      ImportEffect => true,
+      ImportTrait => false
+    },
+    // UNWRITTEN kind: unknowable here, so fail CLOSED and assume a type.
+    //
+    // This deliberately reverses the name-case heuristic added for Codex
+    // round 9. Round 11 showed the heuristic is unsound at its root: this
+    // repository REQUIRES effect operations to be CamelCase
+    // (`Log::Emit`, CLAUDE.md), so an upper-case source name is not evidence
+    // of a type at all, and no refinement of "does it look like a type" can
+    // become correct.
+    //
+    // With the guess gone the choice is which way to be wrong, and the design
+    // policy settles it: a value import named `StringMap` now fails LOUDLY
+    // with "no WIT mapping" (the round 9 complaint, reinstated on purpose),
+    // rather than an imported TYPE being published with the builtin's ABI,
+    // which is silently wrong. Writing the kind
+    // (`import ./d.vibe { helper as StringMap }` -> no kind;
+    // `{ struct Box as StringMap }` -> `ImportStruct`) is what makes the
+    // answer exact, and the arm above honours it.
+    None => true
+  }
+}
+
+/// Whether any of `items` binds `needle` as a TYPE.
+fn import_items_bind_type(items: Array[ImportItem], needle: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    let bound = match item.alias {
+      Some(a) => a,
+      None => item.name
+    }
+    if bound == needle && import_item_is_typeish(item) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Whether a type annotation APPLIES `needle` to arguments anywhere inside it.
+fn type_expr_applies(ty: TypeExpr, needle: String) -> Bool {
+  match ty {
+    TyApp(head, args) => if head == needle {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if type_expr_applies(Array::get(args, i), needle) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = type_expr_applies(ret, needle)
+      while i < Array::length(params) {
+        if type_expr_applies(Array::get(params, i), needle) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) {
+        if type_expr_applies(Array::get(items, i), needle) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Whether this statement's own function literal binds `needle` as a type
+/// parameter AND applies it to arguments in its own signature -- the shape
+/// `export fn f[StringMap](m: StringMap[Int])`, which the checker rejects
+/// (#2268) but neither `--wit` path ever asks the checker about.
+///
+/// The application is what makes this ownership. Round 14 tested the binder
+/// ALONE and claimed a file carrying one "never compiles"; that was wrong,
+/// and Codex round 16 measured it: `fn id[StringMap](x: StringMap) ->
+/// StringMap` is a perfectly valid program, because #2268 rejects an APPLIED
+/// formal, not a declared one. Treating its binder as ownership failed
+/// `--wit` with `no WIT mapping` for an unrelated export in the same file.
+///
+/// Only the statement's own binders are read -- a nested lambda's are not in
+/// scope for the exported signature.
+fn expr_binds_applied_type_param(body: Expr, needle: String) -> Bool {
+  match body {
+    EFn(tparams, _, params, ret, _, _) => {
+      let mut i = 0
+      let mut binds = false
+      while i < Array::length(tparams) {
+        if Array::get(tparams, i) == needle {
+          binds = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if binds {
+        let mut applied = match ret {
+          Some(rt) => type_expr_applies(rt, needle),
+          None => false
+        }
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => if type_expr_applies(t, needle) {
+              applied = true
+            } else {
+              ()
+            },
+            None => ()
+          }
+          pi = pi + 1
+        }
+        applied
+      } else {
+        false
+      }
+    },
+    _ => false
+  }
+}
+
+fn wit_stmts_declare_type(stmts: Array[Stmt], needle: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => if name == needle {
+        found = true
+      } else {
+        ()
+      },
+      SEnum(_, name, _, _, _) => if name == needle {
+        found = true
+      } else {
+        ()
+      },
+      STypeAlias(_, name, _, _) => if name == needle {
+        found = true
+      } else {
+        ()
+      },
+      // #2276 (Codex round 19): a LOCAL effect declaration owns the spelling
+      // for the same reason an imported one does -- the checker registers it
+      // as a `TDEffect`, and `resolve_type_expr_core_shadowed` reaches `defs`
+      // before the builtin branch. Handling only the imported side left the
+      // local one publishing a nominal effect type with the builtin map's
+      // ABI, which is the silent-wrong direction.
+      // #2276 (Codex round 20): `suberror StringMap(Int)` claims a typedef
+      // slot as a `TDEnum` (`own_typedef_slot`, checker_stmt.vibe), so it owns
+      // the spelling exactly as a struct or enum does.
+      //
+      // With this arm the scan now matches the checker's own set. Verified
+      // against the two places a LOCAL declaration reaches `defs`:
+      // `own_typedef_slot` (SEnum, SSuberror, SStruct) and the direct
+      // `Array::push(defs, ...)` sites (STypeAlias, SEffectDef). `SEffectSet`
+      // is carried too -- a local one does not reach `defs`, only an imported
+      // one does, so that arm is deliberate over-reach in the LOUD direction.
+      SSuberror(_, name, _) => if name == needle {
+        found = true
+      } else {
+        ()
+      },
+      SEffectDef(_, name, _, _) => if name == needle {
+        found = true
+      } else {
+        ()
+      },
+      // An effectset lands in `defs` as `TDEffectSet` and resolves the same
+      // nominal way (`core/types.vibe`, the arm next to `TDEffect`). Round 19
+      // named only `SEffectDef`; leaving this one out would have left the
+      // identical hole one declaration keyword away, so both are pinned.
+      SEffectSet(_, name, _) => if name == needle {
+        found = true
+      } else {
+        ()
+      },
+      SModule(_, _, body) => if wit_stmts_declare_type(body, needle) {
+        found = true
+      } else {
+        ()
+      },
+      // #2276 (Codex): an IMPORT can bind the name too --
+      // `import ./dep.vibe { Box as StringMap }` makes `StringMap` a
+      // source-owned nominal type just as a local declaration does. The WIT
+      // CLI parses only the entry file and never resolves imports, so this
+      // scan is the only place that ownership can be seen; without this arm
+      // the projection published `list<tuple<string, V>>` for a user's own
+      // type -- an ABI that does not match the function's representation,
+      // and silently so.
+      SImport(_, items) => if import_items_bind_type(items, needle) {
+        found = true
+      } else {
+        ()
+      },
+      // #2276 (Codex round 11): a re-export binds the name in the entry too --
+      // `export ./dep.vibe { struct Box as StringMap }` makes `StringMap` a
+      // source-owned type exactly as the import form does. Handling only
+      // `SImport` published the nominal parameter with the builtin's ABI,
+      // which is the silent-wrong direction.
+      SReExport(_, items) => if import_items_bind_type(items, needle) {
+        found = true
+      } else {
+        ()
+      },
+      // #2276 (Codex round 14, narrowed by round 16): a function that binds
+      // the name AND applies it owns the spelling inside its signature --
+      // `export fn f[StringMap](m: StringMap[Int])` makes `StringMap` the
+      // formal, not the builtin. The checker rejects that program (#2268),
+      // but neither `--wit` path runs the checker, so without this arm the
+      // projection published the builtin's `list<tuple<string, V>>` ABI for a
+      // program that does not compile.
+      //
+      // The flag is program-wide rather than per-signature, so one such
+      // statement disables the builtin projection for the whole file. That
+      // over-reach costs no VALID program anything, because the applied
+      // formal is what #2268 rejects -- which is why the test is the
+      // application and not the binder. Round 14 tested the binder alone and
+      // justified it with the same sentence; the sentence was false there,
+      // since `fn id[StringMap](x: StringMap)` compiles fine.
+      SLet(_, _, _, _, body) => if expr_binds_applied_type_param(body, needle) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt], world_name: String) -> String with Exception {
+  let string_map_shadowed = wit_stmts_declare_type(export_stmts, "StringMap") || wit_stmts_declare_type(effect_stmts, "StringMap")
   let eff_names = array_empty()
   let eff_ops = array_empty()
   wit_collect_effect_defs(effect_stmts, eff_names, eff_ops)
@@ -715,7 +1051,7 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
         StringBuilder::push(sb, "    ")
         StringBuilder::push(sb, wit_kebab_ident(op_name))
         StringBuilder::push(sb, ": ")
-        StringBuilder::push(sb, wit_func_text(array_empty(), op_args, op_ret))
+        StringBuilder::push(sb, wit_func_text(array_empty(), op_args, op_ret, string_map_shadowed))
         StringBuilder::push(sb, ";\n")
         oi = oi + 1
       }
@@ -752,7 +1088,7 @@ export fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt],
     StringBuilder::push(sb, "  export ")
     StringBuilder::push(sb, wit_kebab_ident(ex_name))
     StringBuilder::push(sb, ": ")
-    StringBuilder::push(sb, wit_func_text_of(ex_param_names, ex_param_types, ex_ret, is_async))
+    StringBuilder::push(sb, wit_func_text_of(ex_param_names, ex_param_types, ex_ret, is_async, string_map_shadowed))
     StringBuilder::push(sb, ";\n")
     xo = xo + 1
   }

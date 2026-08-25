@@ -75,6 +75,7 @@ import ./checker.vibe {
   preserve_generic_instantiation,
   reject_resume_outside_handler,
   report_formal_applications,
+  report_map_key_types,
   report_unknown_type_names,
   trait_erased_type_param_env,
   typed_occurrence_capture_begin_statement,
@@ -2279,7 +2280,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let resolved_vtypes = array_empty()
           let mut ti = 0
           while ti < Array::length(vtypes) {
-            Array::push(resolved_vtypes, resolve_type_expr(Array::get(vtypes, ti), defs))
+            let payload_type = Array::get(vtypes, ti)
+            report_map_key_types(payload_type, defs, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
+            Array::push(resolved_vtypes, resolve_type_expr(payload_type, defs))
             ti = ti + 1
           }
           Array::push(resolved_variants, (vname, resolved_vtypes))
@@ -2421,6 +2424,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       STypeAlias(exported, name, params, te) => {
         // #1512: `params` shadow `defs` -- see resolve_type_expr_shadowed.
+        report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), errors)
         let t = resolve_type_expr_shadowed(te, defs, params)
         // Record the alias (with its formal params) so an applied use
         // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
@@ -2433,6 +2437,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }, env_bind(env, name, t)), s, c)
       },
       SExternLet(name, te) => {
+        report_map_key_types(te, defs, array_empty(), String::concat(String::concat("extern declaration `", name), "`"), errors)
         let t = resolve_type_expr(te, defs)
         let env1 = env_bind(env, name, t)
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
@@ -2496,6 +2501,38 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SAliasDecl(_, _) => (env, s, c)
       ,
       STrait(_, name, supers, methods, method_gens, tparams) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, mparams, mret) = Array::get(methods, mi)
+          let shadow = Array::slice(["Self"], 0, 1)
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(shadow, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gname, gtparams, _) = Array::get(method_gens, gi)
+            if gname == mname {
+              let mut gj = 0
+              while gj < Array::length(gtparams) {
+                Array::push(shadow, Array::get(gtparams, gj))
+                gj = gj + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          let where_label = fapp_decl_label(name, mname)
+          let mut pi = 0
+          while pi < Array::length(mparams) {
+            report_map_key_types(Array::get(mparams, pi), defs, shadow, where_label, errors)
+            pi = pi + 1
+          }
+          report_map_key_types(mret, defs, shadow, where_label, errors)
+          mi = mi + 1
+        }
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
       },
@@ -2554,9 +2591,12 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // #1512: `eparams` shadow `defs` -- the rigid-`CtNamed` convention
             // the comment above relies on is only true while no import alias
             // has claimed the formal's name.
-            Array::push(rp, resolve_type_expr_shadowed(Array::get(opparams, pi), defs, eparams))
+            let op_param = Array::get(opparams, pi)
+            report_map_key_types(op_param, defs, eparams, fapp_decl_label(ename, opname), errors)
+            Array::push(rp, resolve_type_expr_shadowed(op_param, defs, eparams))
             pi = pi + 1
           }
+          report_map_key_types(opret, defs, eparams, fapp_decl_label(ename, opname), errors)
           Array::push(resolved_ops, (opname, rp, resolve_type_expr_shadowed(opret, defs, eparams)))
           oi = oi + 1
         }
@@ -3730,6 +3770,22 @@ fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]
   }
 }
 
+/// Rechecks alias bodies after the complete type-definition table exists.
+/// Declaration-time validation remains necessary for nested scopes, but a
+/// forward alias head is still unresolved there. Without this final pass an
+/// unused `type Bad = Map[Key, V]` silently escaped validation when `Key` was
+/// declared later as a non-String key type.
+fn check_completed_alias_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, te) => report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
   // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
   // to impl free functions before checking, so `X::method` in an impl body
@@ -3800,6 +3856,7 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
     }
   }
   let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false)
+  check_completed_alias_map_keys(expanded_stmts, empty_defs, frozen_errors)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
   // #1858: a bounded generic whose body calls `T::m` but whose signature has
   // no witness-carrying parameter would sail through checking and ICE in
@@ -4241,6 +4298,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
         }
       }
       let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected)
+      check_completed_alias_map_keys(expanded_stmts, empty_defs, frozen_errors)
       // Selected import projection carries trait definitions and impls into
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.

@@ -76,7 +76,11 @@ export fn compiler_owned_type_arity(name: String) -> Option[Int] {
   }
 }
 
-fn is_wellknown_nominal_head(name: String) -> Bool {
+/// Exported for `checker.vibe`'s map-key rule (#2276 round 12): a
+/// compiler-owned nominal is a concrete key with no builtin `Map`
+/// implementation, and this is the exact enumeration rather than a guess at
+/// the name's shape.
+export fn is_wellknown_nominal_head(name: String) -> Bool {
   match compiler_owned_type_arity(name) {
     Some(_) => true,
     None => false
@@ -111,11 +115,22 @@ export fn collect_unknown_type_names(te: TypeExpr, defs: Array[TypeDef], shadow:
   collect_unknown_type_names_walk(te, defs, shadow, array_empty(), false, out)
 }
 
-/// `Array` and `Option` are structural heads that `resolve_type_expr_shadowed`
-/// special-cases before any lookup, so they are never unknown -- and their
-/// arguments are ELEMENT types, never a region slot.
+/// `Array`, `Option` and `StringMap` are structural heads that
+/// `resolve_type_expr_shadowed` special-cases before any lookup, so they are
+/// never unknown -- and their arguments are ELEMENT types, never a region
+/// slot.
 fn ty_head_is_structural(name: String) -> Bool {
-  name == "Array" || name == "Option"
+  // #2263: `StringMap` joins them -- `resolve_type_expr_core_shadowed`
+  // special-cases it to `Map[String, V]` before any lookup, exactly the way
+  // it special-cases these two, so it has no `TypeDef` for the sweep to find
+  // and would otherwise be reported as a typo.
+  //
+  // The exemption is by NAME, not by name-and-arity. A wrong-arity
+  // application of one of these is a real defect, but it is not an unknown
+  // NAME, and reporting it here says "unknown type `Array`" about a type the
+  // compiler knows perfectly well. `structural_head_arity` (checker.vibe)
+  // owns that case instead and names the arity.
+  name == "Array" || name == "Option" || name == "StringMap"
 }
 
 /// The argument index that is the REGION SLOT of an application of `head`

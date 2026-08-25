@@ -925,10 +925,15 @@ let nv = {                            // destructure also works in fn/block body
   (n, v)
 }
 
-// Map (#960: the `map { ... }` literal was removed; use the Map:: API)
+// Map (#960: the `map { ... }` literal was removed; use the Map:: API).
+// The builtin map is STRING-KEYED; its type is spelled `StringMap[V]`
+// (no import needed). `Map[K, V]` with a concrete non-String key is
+// rejected where it is written -- generic keys are #2263. For another
+// key type today, use `MutMap[K, V]` from `@vibe/core` (below).
 let m = Map::from_pairs([("key", 42)])
 let e = Map::new()                    // empty map
 let mv = m["key"]
+let sized: (StringMap[Int]) -> Int = (mm) -> { Map::size(mm) }
 
 // Builders (mutable construction)
 let arr2 = {
@@ -1748,9 +1753,13 @@ different, currently nonexistent function.
 `freeze(MapBuilder[String, V]) -> Map[String, V]` — String-keyed, like `Map`.
 A `for-in` comprehension desugars to these builder operations internally.
 
-**Map** — the builtin `Map` is **String-keyed**, not generic in its key.
-`Map::set(m, 7, 1)` is `argument type mismatch for Map::set: expected String,
-got Int`. For a generic key, use `MutMap[K, V]` from `@vibe/core`.
+**Map** — the builtin `Map` is **String-keyed**, not generic in its key, and
+its type is spelled **`StringMap[V]`** (no import needed; the operations keep
+the `Map::` qualifier). `Map::set(m, 7, 1)` is `argument type mismatch for
+Map::set: expected String, got Int`, and an ANNOTATION naming a concrete
+non-String key (`fn f(m: Map[Int, String])`) is rejected where it is written
+rather than at the first op (#2263). For a generic key, use `MutMap[K, V]`
+from `@vibe/core`.
 `get: (Map[String, V], String) -> V` (throws when absent),
 `set: (Map[String, V], String, V) -> Map[String, V]` (returns a new map),
 `has_key: (Map[String, V], String) -> Bool`,
