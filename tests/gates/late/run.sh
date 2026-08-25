@@ -7394,11 +7394,34 @@ echo "[compiler-gate] inherited and physical unstable imports are each reported,
 echo "[compiler-gate] 114/114 the ADR-0068 gate exists in the split CLI, cold and warm (#2305)"
 sc_cli="${VIBE_SPLIT_CLI_WASM:-_build/bench/selfhost_cli_core/index_stage1.wasm}"
 if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
-  # Built by scripts/build_cli_core.sh, which is not part of this lane's
-  # inputs. Skipping is the honest answer -- but say so, because a silent skip
-  # is indistinguishable from a pass.
-  echo "[compiler-gate] 114/114 SKIP: no split CLI core at $sc_cli (build it with scripts/build_cli_core.sh) (#2305)"
-else
+  # BUILD it rather than skip (Codex review on #2313). The first version of
+  # this section skipped when no split CLI core was present -- and `ci.yml`
+  # never builds one, so the required late shard took the skip branch every
+  # time and this regression tested nothing where it mattered. A skip branch
+  # with an honest message is still a skip branch if it is the only one CI
+  # ever reaches.
+  #
+  # The lane already has a stage2, which is all `build_cli_core.sh` needs as a
+  # base compiler, so the gate can supply its own input: one compile of
+  # lib/@vibe/cli/main.vibex, not a bootstrap.
+  echo "[compiler-gate] 114/114 building the split CLI core (no artifact at $sc_cli) (#2305)"
+  sc_built="_build/_gate_split_cli_core"
+  rm -rf "$sc_built"
+  if ! VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" \
+       VIBE_CLI_CORE_STAGE_TIMEOUT_SEC="${VIBE_CLI_CORE_STAGE_TIMEOUT_SEC:-1500}" \
+       VIBE_CLI_CORE_OUT_DIR="$sc_built" \
+       bash scripts/build_cli_core.sh >"$sc_built.log" 2>&1; then
+    echo "[compiler-gate] FAIL: could not build the split CLI core for the #2305 gate" >&2
+    tail -20 "$sc_built.log" >&2 || true
+    exit 1
+  fi
+  sc_cli="$sc_built/index_stage1.wasm"
+  if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
+    echo "[compiler-gate] FAIL: split CLI core build produced no artifact for the #2305 gate" >&2
+    exit 1
+  fi
+fi
+if true; then
   case "$sc_cli" in /*) sc_abs="$sc_cli" ;; *) sc_abs="$ROOT_DIR/$sc_cli" ;; esac
   scdir="_build/_gate_split_cli_unstable"
   rm -rf "$scdir"; mkdir -p "$scdir"
