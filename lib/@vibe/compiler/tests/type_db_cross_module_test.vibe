@@ -323,6 +323,50 @@ test "forward alias bodies stay resolved across module projection" {
   assert(String::contains(message, "binding type mismatch for bad"))
 }
 
+fn tuple_type_depth(ty: Type) -> Int {
+  match ty {
+    CtTuple(items) => {
+      let mut depth = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        let item_depth = tuple_type_depth(Array::get(items, i))
+        if item_depth > depth {
+          depth = item_depth
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      depth + 1
+    },
+    _ => 0
+  }
+}
+
+test "recursive alias refresh does not grow with unrelated statements" {
+  let source = "export type A = (B, B)\ntype B = A\nlet pad0 = 0\nlet pad1 = 1\nlet pad2 = 2\nlet pad3 = 3\nlet pad4 = 4\nlet pad5 = 5"
+  match env_lookup(checked_test_env(source), "A") {
+    Some(body) => assert(tuple_type_depth(body) <= 3),
+    None => assert(false)
+  }
+}
+
+test "outer aliases are revalidated after nested module type declarations" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      STypeAlias(false, "M", array_empty(), TyApp("Map", [
+        TyName("Key"),
+        TyName("Int")
+      ])),
+      SModule(false, "Nested", [
+        STypeAlias(false, "Key", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "the builtin map is String-keyed"))
+}
+
 fn projected_checked_env(source: String, path: String, deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> TypeEnv with Exception {
   let import_env = projected_import_env_for_test(source, path, deps, full_cache)
   check_program_with_projected_import_env_result(parse_program_with_path(path, source), import_env).final_env

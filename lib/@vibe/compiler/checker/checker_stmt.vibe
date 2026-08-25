@@ -57,8 +57,7 @@ import @vibe/compiler/core {
   trait_is_marker,
   type_constructor_name,
   type_implements_trait,
-  type_to_string,
-  types_equal
+  type_to_string
 }
 
 import ./checker.vibe {
@@ -1750,6 +1749,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   // #2125: see preclaim_local_type_defs.
   let preclaim_from = Array::length(defs)
   preclaim_local_type_defs(stmts, idx, defs, type_def_binders)
+  let mut local_defs_end = preclaim_from
   // #2125 (field enforcement): see collect_trait_dict_erasures. Computed from
   // the statement LIST because reorder_type_decls_first hoists a synthesized
   // `<Trait>Dict` struct above its trait declaration, so the env cannot
@@ -2673,11 +2673,23 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     // statement list, while no value/signature use-site diagnostic has run
     // yet. A type-only list validates after its final declaration.
     if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
-      refresh_completed_alias_defs(stmts, defs, preclaim_from)
-      cur_env = refresh_completed_alias_env(cur_env, defs, preclaim_from, array_empty(), local_alias_def_count(defs, preclaim_from))
+      local_defs_end = Array::length(defs)
+      refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end)
+      cur_env = refresh_completed_alias_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_alias_def_count(defs, preclaim_from, local_defs_end))
       check_completed_alias_map_keys(stmts, defs, errors)
     } else {
-      ()
+      match stmt {
+        // A nested module shares `defs` with this statement list. Its type
+        // declarations can settle an outer alias that was still unresolved at
+        // the type-phase boundary, so refresh and validate the OUTER range
+        // again after the recursive check returns.
+        SModule(_, _, _) => {
+          refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end)
+          cur_env = refresh_completed_alias_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_alias_def_count(defs, preclaim_from, local_defs_end))
+          check_completed_alias_map_keys(stmts, defs, errors)
+        },
+        _ => ()
+      }
     }
     idx = idx + 1
   }
@@ -3801,79 +3813,118 @@ fn check_completed_alias_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], erro
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      STypeAlias(_, name, params, te) => report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
+      STypeAlias(_, name, params, te) => {
+        let found = array_empty()
+        report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), found)
+        let mut fi = 0
+        while fi < Array::length(found) {
+          let message = Array::get(found, fi)
+          if string_array_contains_exact(errors, message) {
+            ()
+          } else {
+            Array::push(errors, message)
+          }
+          fi = fi + 1
+        }
+      },
       _ => ()
     }
     i = i + 1
   }
 }
 
-/// Finds the next local alias slot for one source declaration. Type names may
-/// repeat, so each scan carries `taken` and preserves first-match order.
-fn completed_alias_index(defs: Array[TypeDef], name: String, from: Int, taken: Array[Int]) -> Int {
-  let mut i = from
-  let mut found = 0 - 1
-  while i < Array::length(defs) && found < 0 {
-    let matches = match Array::get(defs, i) {
-      TDAlias(n, _, _) => n == name,
-      _ => false
-    }
-    if matches && !int_array_contains(taken, i) {
-      found = i
+fn string_array_contains_exact(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == wanted {
+      found = true
     } else {
       i = i + 1
     }
   }
-  if found >= 0 {
-    Array::push(taken, found)
-  } else {
-    ()
-  }
   found
 }
 
-/// Re-resolves stored alias bodies against the completed declaration table.
-/// More than one round is required for a forward chain whose intermediate
-/// alias was itself stored unresolved. The declaration count bounds the
-/// fixpoint; cycles retain their previous stable nominal shape.
-fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int) -> Unit {
-  let mut round = 0
-  let mut changed = true
-  while changed && round <= Array::length(stmts) {
-    changed = false
-    let taken = array_empty()
-    let mut i = 0
-    while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        STypeAlias(_, name, params, te) => {
-          let idx = completed_alias_index(defs, name, from, taken)
-          if idx >= 0 {
-            let resolved = resolve_type_expr_shadowed(te, defs, params)
-            match Array::get(defs, idx) {
-              TDAlias(_, _, old_body) => if !types_equal(old_body, resolved) {
-                Array::set(defs, idx, TDAlias(name, params, resolved))
-                changed = true
-              } else {
-                ()
-              },
-              _ => ()
-            }
+fn alias_decl_body(stmts: Array[Stmt], name: String) -> Option[(Array[String], TypeExpr)] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(stmts) && result is None {
+    match Array::get(stmts, i) {
+      STypeAlias(_, alias_name, params, body) => if alias_name == name {
+        result = Some((params, body))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn alias_type_expr_reaches(stmts: Array[Stmt], te: TypeExpr, shadow: Array[String], target: String, seen: Array[String]) -> Bool {
+  let refs = array_empty()
+  collect_texpr_ref_names(te, refs)
+  let mut i = 0
+  let mut reaches = false
+  while i < Array::length(refs) && !reaches {
+    let name = Array::get(refs, i)
+    if string_array_contains_exact(shadow, name) {
+      ()
+    } else if name == target {
+      reaches = true
+    } else if string_array_contains_exact(seen, name) {
+      ()
+    } else {
+      match alias_decl_body(stmts, name) {
+        Some((params, body)) => {
+          let next_seen = Array::slice(seen, 0, Array::length(seen))
+          Array::push(next_seen, name)
+          if alias_type_expr_reaches(stmts, body, params, target, next_seen) {
+            reaches = true
           } else {
             ()
           }
         },
-        _ => ()
+        None => ()
       }
-      i = i + 1
     }
-    round = round + 1
+    i = i + 1
+  }
+  reaches
+}
+
+fn alias_decl_is_recursive(stmts: Array[Stmt], name: String, params: Array[String], body: TypeExpr) -> Bool {
+  alias_type_expr_reaches(stmts, body, params, name, array_empty())
+}
+
+/// Re-resolves acyclic aliases once in reverse declaration order. Later alias
+/// bodies are therefore ready before earlier forward references consume them,
+/// without a statement-count fixpoint that exponentially expands cycles.
+fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, to: Int) -> Unit {
+  let taken = array_empty()
+  let mut i = Array::length(stmts) - 1
+  while i >= 0 {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, te) => {
+        let idx = completed_alias_index_reverse(defs, name, from, to, taken)
+        if idx >= 0 && !alias_decl_is_recursive(stmts, name, params, te) {
+          Array::set(defs, idx, TDAlias(name, params, resolve_type_expr_shadowed(te, defs, params)))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i - 1
   }
 }
 
-fn local_alias_def_count(defs: Array[TypeDef], from: Int) -> Int {
+fn local_alias_def_count(defs: Array[TypeDef], from: Int, to: Int) -> Int {
   let mut count = 0
   let mut i = from
-  while i < Array::length(defs) {
+  while i < to {
     match Array::get(defs, i) {
       TDAlias(_, _, _) => {
         count = count + 1
@@ -3888,8 +3939,8 @@ fn local_alias_def_count(defs: Array[TypeDef], from: Int) -> Int {
 /// The environment chain is newest-first, while `defs` is declaration order.
 /// Find the newest unclaimed local alias so replacing an `EnvTypeDefs` node
 /// preserves duplicate-name and cross-kind shadowing exactly.
-fn completed_alias_index_reverse(defs: Array[TypeDef], name: String, from: Int, taken: Array[Int]) -> Int {
-  let mut i = Array::length(defs) - 1
+fn completed_alias_index_reverse(defs: Array[TypeDef], name: String, from: Int, to: Int, taken: Array[Int]) -> Int {
+  let mut i = to - 1
   let mut found = 0 - 1
   while i >= from && found < 0 {
     let matches = match Array::get(defs, i) {
@@ -3929,15 +3980,15 @@ fn refresh_alias_env_binding(env: TypeEnv, name: String, body: Type) -> TypeEnv 
 /// the chain topology matters: prepending fresh nodes would move every alias
 /// above later struct/enum/trait declarations and change name shadowing. Once
 /// all local aliases are claimed, the imported/outer tail is shared unchanged.
-fn refresh_completed_alias_env(env: TypeEnv, defs: Array[TypeDef], from: Int, taken: Array[Int], local_count: Int) -> TypeEnv {
+fn refresh_completed_alias_env(env: TypeEnv, defs: Array[TypeDef], from: Int, to: Int, taken: Array[Int], local_count: Int) -> TypeEnv {
   if Array::length(taken) >= local_count {
     env
   } else match env {
     EnvEmpty => EnvEmpty,
-    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_alias_env(rest, defs, from, taken, local_count), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
+    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_alias_env(rest, defs, from, to, taken, local_count), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
     EnvTypeDefs(node_defs, selectable, rest) => {
       let refreshed = array_empty()
       let mut refreshed_rest = rest
@@ -3945,7 +3996,7 @@ fn refresh_completed_alias_env(env: TypeEnv, defs: Array[TypeDef], from: Int, ta
       while i < Array::length(node_defs) {
         match Array::get(node_defs, i) {
           TDAlias(name, params, old_body) => {
-            let idx = completed_alias_index_reverse(defs, name, from, taken)
+            let idx = completed_alias_index_reverse(defs, name, from, to, taken)
             if idx >= 0 {
               match Array::get(defs, idx) {
                 TDAlias(_, _, body) => {
@@ -3962,11 +4013,11 @@ fn refresh_completed_alias_env(env: TypeEnv, defs: Array[TypeDef], from: Int, ta
         }
         i = i + 1
       }
-      EnvTypeDefs(refreshed, selectable, refresh_completed_alias_env(refreshed_rest, defs, from, taken, local_count))
+      EnvTypeDefs(refreshed, selectable, refresh_completed_alias_env(refreshed_rest, defs, from, to, taken, local_count))
     },
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_alias_env(rest, defs, from, taken, local_count)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_completed_alias_env(rest, defs, from, taken, local_count))
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_completed_alias_env(rest, defs, from, to, taken, local_count))
   }
 }
 
