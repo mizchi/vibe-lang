@@ -1734,6 +1734,26 @@ fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
   out
 }
 
+fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> Int {
+  let mut next = floor
+  let mut i = 0
+  while i < Array::length(type_def_binders) {
+    let binders = Array::get(type_def_binders, i)
+    let mut j = 0
+    while j < Array::length(binders) {
+      let candidate = Array::get(binders, j) + 1
+      if candidate > next {
+        next = candidate
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  next
+}
+
 fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
   // Retained coordinates exist solely for the opt-in observation. Keep the
@@ -1761,6 +1781,13 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   let mut cur_env = env
   let mut cur_s = s
   let mut cur_c = c
+  // A sibling module can complete a type payload that an earlier module's
+  // value statements already consumed as an unresolved nominal wildcard.
+  // Retain each module's original outer environment so those value statements
+  // can be checked again after the shared `defs` table reaches that completion
+  // point. The recheck runs on copied definition tables and cannot alter the
+  // authoritative checker result.
+  let checked_modules: Array[(Array[Stmt], TypeEnv)] = array_empty()
   // #602: hoist top-level binding signatures so a `let` may reference another
   // top-level `let` defined later in the same statement list (a forward
   // reference). Without this, checking the earlier binding's body raised
@@ -1878,6 +1905,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     let s = cur_s
     let c = cur_c
     let stmt = Array::get(stmts, idx)
+    let defs_before_stmt = Array::length(defs)
     // Do not construct paths or read the legacy append boundary on the normal
     // checker path. The parent/current coordinate is observation-only.
     let statement_path = match capture {
@@ -2433,7 +2461,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       STypeAlias(exported, name, params, te) => {
         // #2290: map-key and builtin-arity validation is deferred to
-        // check_completed_alias_map_keys. At this point a later alias is not
+        // check_completed_decl_map_keys. At this point a later alias is not
         // in `defs`, so judging ownership here made valid programs depend on
         // declaration order. Resolution still records the body as before.
         let t = resolve_type_expr_shadowed(te, defs, params)
@@ -2490,6 +2518,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // `statement_path` is None in ordinary checking, so nested modules
         // recurse without allocating retained path state.
         let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture, false)
+        Array::push(checked_modules, (body, env))
         // Preserve the historical checker flow when this opt-in observation is
         // absent. The root observation alone needs nested substitutions to
         // canonicalize its nested raw types; module bindings remain lexical.
@@ -2678,7 +2707,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
       cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
       cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
-      check_completed_alias_map_keys(stmts, defs, errors)
+      check_completed_decl_map_keys(stmts, defs, errors)
     } else {
       match stmt {
         // A nested module shares `defs` with this statement list. Its type
@@ -2688,11 +2717,32 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let visible_types = array_empty()
           collect_visible_type_stmts(stmts, idx + 1, visible_types)
           let visible_defs_end = Array::length(defs)
-          refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end)
-          refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
-          cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
-          cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
-          check_completed_alias_map_keys(visible_types, defs, errors)
+          if visible_defs_end > defs_before_stmt {
+            refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end)
+            refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
+            cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
+            cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+            check_completed_decl_map_keys(visible_types, defs, errors)
+            // Rechecking every module seen so far also covers the current
+            // module: its own value phase may have consumed an alias declared
+            // by an earlier sibling before this module completed that alias's
+            // target. Use each module's saved source-order environment so
+            // later outer value bindings do not become visible retroactively.
+            let mut module_i = 0
+            while module_i < Array::length(checked_modules) {
+              let (module_body, module_env) = Array::get(checked_modules, module_i)
+              let recheck_defs = Array::slice(defs, 0, Array::length(defs))
+              let recheck_binders = Array::slice(type_def_binders, 0, Array::length(type_def_binders))
+              let recheck_errors = array_empty()
+              let recheck_tytab = array_empty()
+              let recheck_c = next_type_def_binder_id(recheck_binders, cur_c)
+              let _ = check_stmts_with_binders(module_body, 0, module_env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, recheck_tytab, None, None, None, false)
+              push_unique_error_strings(recheck_errors, errors)
+              module_i = module_i + 1
+            }
+          } else {
+            ()
+          }
         },
         _ => ()
       }
@@ -3810,31 +3860,81 @@ fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]
   }
 }
 
-/// Checks alias bodies after the current statement list's complete
-/// type-definition table exists. Each nested module invokes this from its own
-/// `check_stmts_with_binders` phase boundary, so this walk stays at one scope.
-/// Without the completed table, a later alias could be mistaken for a builtin;
-/// without the declaration-boundary check, an unused bad alias escaped.
-fn check_completed_alias_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+fn push_unique_error_strings(found: Array[String], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(found) {
+    let message = Array::get(found, i)
+    if string_array_contains_exact(errors, message) {
+      ()
+    } else {
+      Array::push(errors, message)
+    }
+    i = i + 1
+  }
+}
+
+/// Checks every declaration payload after the current statement list's
+/// complete type-definition table exists. Each nested module invokes this from
+/// its own phase boundary, and a sibling completion invokes it again over the
+/// combined visible declarations. Without the completed table, a later alias
+/// can leave a `Map` key looking nominal and defer a diagnostic forever.
+fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
+    let found = array_empty()
     match Array::get(stmts, i) {
       STypeAlias(_, name, params, te) => {
-        let found = array_empty()
         report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), found)
+      },
+      SStruct(_, name, fields, _, _, params) => {
         let mut fi = 0
-        while fi < Array::length(found) {
-          let message = Array::get(found, fi)
-          if string_array_contains_exact(errors, message) {
-            ()
-          } else {
-            Array::push(errors, message)
-          }
+        while fi < Array::length(fields) {
+          let (field_name, field_type) = Array::get(fields, fi)
+          report_map_key_types(field_type, defs, params, String::concat(String::concat(String::concat("field `", field_name), "` of struct `"), String::concat(name, "`")), found)
           fi = fi + 1
+        }
+      },
+      SEnum(_, name, params, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (variant_name, payloads) = Array::get(variants, vi)
+          let mut pi = 0
+          while pi < Array::length(payloads) {
+            report_map_key_types(Array::get(payloads, pi), defs, params, String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", variant_name)), "`"), found)
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, name, variants) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (variant_name, payloads) = Array::get(variants, vi)
+          let mut pi = 0
+          while pi < Array::length(payloads) {
+            report_map_key_types(Array::get(payloads, pi), defs, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", variant_name)), "`"), found)
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SEffectDef(_, name, params, ops) => {
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (op_name, op_params, op_ret) = Array::get(ops, oi)
+          let where_label = fapp_decl_label(name, op_name)
+          let mut pi = 0
+          while pi < Array::length(op_params) {
+            report_map_key_types(Array::get(op_params, pi), defs, params, where_label, found)
+            pi = pi + 1
+          }
+          report_map_key_types(op_ret, defs, params, where_label, found)
+          oi = oi + 1
         }
       },
       _ => ()
     }
+    push_unique_error_strings(found, errors)
     i = i + 1
   }
 }

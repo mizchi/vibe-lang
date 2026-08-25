@@ -444,6 +444,40 @@ test "nested sibling aliases refresh earlier struct payloads" {
   assert(found)
 }
 
+test "nested sibling aliases recheck earlier constructor uses" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      SModule(false, "First", [
+        STypeAlias(false, "Alias", array_empty(), TyName("Pair")),
+        SStruct(false, "Box", [("value", TyName("Alias"))], array_empty(), array_empty(), array_empty()),
+        SLet(false, false, "bad", None, ECall(EIdent("Box", -1), [EString("x")], -1))
+      ]),
+      SModule(false, "Second", [
+        STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "expected Int, got String"))
+}
+
+test "nested sibling aliases revalidate earlier suberror map keys" {
+  let message = handle {
+    let _ = check_program_with_env_result([
+      SModule(false, "First", [
+        SSuberror(false, "Bad", [
+          ("Bad", [TyApp("Map", [TyName("Key"), TyName("Int")])])
+        ])
+      ]),
+      SModule(false, "Second", [
+        STypeAlias(false, "Key", array_empty(), TyName("Int"))
+      ])
+    ], EnvEmpty)
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "the builtin map is String-keyed"))
+}
+
 test "recursive-alias reachability memoizes shared diamond suffixes" {
   let stmts = array_empty()
   let mut i = 0
