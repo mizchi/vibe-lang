@@ -2675,7 +2675,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
       local_defs_end = Array::length(defs)
       refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end)
-      cur_env = refresh_completed_alias_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_alias_def_count(defs, preclaim_from, local_defs_end))
+      refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
+      cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
       check_completed_alias_map_keys(stmts, defs, errors)
     } else {
       match stmt {
@@ -2685,7 +2686,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // again after the recursive check returns.
         SModule(_, _, _) => {
           refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end)
-          cur_env = refresh_completed_alias_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_alias_def_count(defs, preclaim_from, local_defs_end))
+          refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
+          cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
           check_completed_alias_map_keys(stmts, defs, errors)
         },
         _ => ()
@@ -3927,6 +3929,82 @@ fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: 
   }
 }
 
+/// Rebuilds declaration payloads that may have consumed an alias before that
+/// alias reached its completed body. Unlike alias definitions, enum payloads
+/// keep checker-local CtVar binder ids, so their original binder table is
+/// reused while resolving the source expressions again.
+fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef], type_def_binders: Array[Array[Int]], from: Int, to: Int) -> Unit {
+  let taken = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields, _, mut_fields, params) => {
+        let idx = completed_type_def_index(defs, TDStruct(name, array_empty(), mut_fields, params), from, to, taken)
+        if idx >= 0 {
+          let resolved = for field in fields {
+            let (field_name, field_type) = field
+            (field_name, resolve_type_expr_shadowed(field_type, defs, params))
+          }
+          Array::set(defs, idx, TDStruct(name, resolved, mut_fields, params))
+        } else {
+          ()
+        }
+      },
+      SEnum(_, name, params, variants, _) => {
+        let idx = completed_type_def_index(defs, TDEnum(name, params, array_empty()), from, to, taken)
+        if idx >= 0 {
+          let binder_types = if idx < Array::length(type_def_binders) {
+            for binder in Array::get(type_def_binders, idx) {
+              CtVar(binder)
+            }
+          } else {
+            array_empty()
+          }
+          let resolved = for variant in variants {
+            let (variant_name, payloads) = variant
+            (variant_name, for payload in payloads {
+              subst_type_params(resolve_type_expr_shadowed(payload, defs, params), params, binder_types)
+            })
+          }
+          Array::set(defs, idx, TDEnum(name, params, resolved))
+        } else {
+          ()
+        }
+      },
+      SSuberror(_, name, variants) => {
+        let idx = completed_type_def_index(defs, TDEnum(name, array_empty(), array_empty()), from, to, taken)
+        if idx >= 0 {
+          let resolved = for variant in variants {
+            let (variant_name, payloads) = variant
+            (variant_name, for payload in payloads {
+              resolve_type_expr(payload, defs)
+            })
+          }
+          Array::set(defs, idx, TDEnum(name, array_empty(), resolved))
+        } else {
+          ()
+        }
+      },
+      SEffectDef(_, name, params, ops) => {
+        let idx = completed_type_def_index(defs, TDEffect(name, array_empty(), params), from, to, taken)
+        if idx >= 0 {
+          let resolved = for op in ops {
+            let (op_name, op_params, ret) = op
+            (op_name, for param in op_params {
+              resolve_type_expr_shadowed(param, defs, params)
+            }, resolve_type_expr_shadowed(ret, defs, params))
+          }
+          Array::set(defs, idx, TDEffect(name, resolved, params))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn local_alias_def_count(defs: Array[TypeDef], from: Int, to: Int) -> Int {
   let mut count = 0
   let mut i = from
@@ -3967,9 +4045,113 @@ fn completed_alias_index_reverse(defs: Array[TypeDef], name: String, from: Int, 
   found
 }
 
-/// `STypeAlias` places its value binding directly below its `EnvTypeDefs`
-/// node, except that `env_bind` may retain a leading lookup cache. Update that
-/// one binding without searching into an older declaration of the same name.
+fn type_def_same_head(left: TypeDef, right: TypeDef) -> Bool {
+  match (left, right) {
+    (TDEnum(a, _, _), TDEnum(b, _, _)) => a == b,
+    (TDStruct(a, _, _, _), TDStruct(b, _, _, _)) => a == b,
+    (TDAlias(a, _, _), TDAlias(b, _, _)) => a == b,
+    (TDEffect(a, _, _), TDEffect(b, _, _)) => a == b,
+    (TDEffectSet(a, _), TDEffectSet(b, _)) => a == b,
+    _ => false
+  }
+}
+
+fn completed_type_def_index(defs: Array[TypeDef], probe: TypeDef, from: Int, to: Int, taken: Array[Int]) -> Int {
+  let mut i = from
+  let mut found = 0 - 1
+  while i < to && found < 0 {
+    if type_def_same_head(Array::get(defs, i), probe) && !int_array_contains(taken, i) {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  if found >= 0 {
+    Array::push(taken, found)
+  } else {
+    ()
+  }
+  found
+}
+
+fn completed_type_def_index_reverse(defs: Array[TypeDef], probe: TypeDef, from: Int, to: Int, taken: Array[Int]) -> Int {
+  let mut i = to - 1
+  let mut found = 0 - 1
+  while i >= from && found < 0 {
+    if type_def_same_head(Array::get(defs, i), probe) && !int_array_contains(taken, i) {
+      found = i
+    } else {
+      i = i - 1
+    }
+  }
+  if found >= 0 {
+    Array::push(taken, found)
+  } else {
+    ()
+  }
+  found
+}
+
+fn refresh_completed_type(ty: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String]) -> Type {
+  match ty {
+    CtNamed(name, args) => {
+      let refreshed_args = for arg in args {
+        refresh_completed_type(arg, defs, shadow, seen)
+      }
+      if string_array_contains_exact(shadow, name) || string_array_contains_exact(seen, name) {
+        CtNamed(name, refreshed_args)
+      } else match find_typedef(defs, name) {
+        Some(TDAlias(_, params, target)) => {
+          let next_seen = Array::slice(seen, 0, Array::length(seen))
+          Array::push(next_seen, name)
+          refresh_completed_type(subst_type_params(target, params, refreshed_args), defs, shadow, next_seen)
+        },
+        _ => CtNamed(name, refreshed_args)
+      }
+    },
+    CtTuple(items) => CtTuple(for item in items {
+      refresh_completed_type(item, defs, shadow, seen)
+    }),
+    CtArray(item) => CtArray(refresh_completed_type(item, defs, shadow, seen)),
+    CtOption(item) => CtOption(refresh_completed_type(item, defs, shadow, seen)),
+    CtFn(params, ret, row) => CtFn(for param in params {
+      refresh_completed_type(param, defs, shadow, seen)
+    }, refresh_completed_type(ret, defs, shadow, seen), row),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, refresh_completed_type(body, defs, shadow, seen)),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, field_ty) = field
+      (name, refresh_completed_type(field_ty, defs, shadow, seen))
+    }),
+    _ => ty
+  }
+}
+
+fn refresh_completed_env_type_def(node_def: TypeDef, completed_def: TypeDef, defs: Array[TypeDef]) -> TypeDef {
+  match node_def {
+    TDAlias(name, params, old_body) => match completed_def {
+      TDAlias(_, _, body) => TDAlias(name, params, body),
+      _ => TDAlias(name, params, old_body)
+    },
+    TDStruct(name, fields, mut_fields, params) => TDStruct(name, for field in fields {
+      let (field_name, field_ty) = field
+      (field_name, refresh_completed_type(field_ty, defs, params, array_empty()))
+    }, mut_fields, params),
+    TDEnum(name, params, variants) => TDEnum(name, params, for variant in variants {
+      let (variant_name, payloads) = variant
+      (variant_name, for payload in payloads {
+        refresh_completed_type(payload, defs, params, array_empty())
+      })
+    }),
+    TDEffect(name, ops, params) => TDEffect(name, for op in ops {
+      let (op_name, op_params, ret) = op
+      (op_name, for param in op_params {
+        refresh_completed_type(param, defs, params, array_empty())
+      }, refresh_completed_type(ret, defs, params, array_empty()))
+    }, params),
+    TDEffectSet(name, members) => TDEffectSet(name, members)
+  }
+}
+
 fn refresh_alias_env_binding(env: TypeEnv, name: String, body: Type) -> TypeEnv {
   match env {
     EnvBind(bound_name, binding, rest) => if bound_name == name {
@@ -3982,48 +4164,63 @@ fn refresh_alias_env_binding(env: TypeEnv, name: String, body: Type) -> TypeEnv 
   }
 }
 
-/// Replaces local alias payloads in their existing environment nodes. Reusing
-/// the chain topology matters: prepending fresh nodes would move every alias
-/// above later struct/enum/trait declarations and change name shadowing. Once
-/// all local aliases are claimed, the imported/outer tail is shared unchanged.
-fn refresh_completed_alias_env(env: TypeEnv, defs: Array[TypeDef], from: Int, to: Int, taken: Array[Int], local_count: Int) -> TypeEnv {
+fn refresh_type_env_prefix(env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  match env {
+    EnvBind(name, binding, rest) => EnvBind(name, env_value_binding_with_origin(refresh_completed_type(binding.ty, defs, array_empty(), array_empty()), binding.origin), refresh_type_env_prefix(rest, defs)),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, refresh_completed_type(target, defs, array_empty(), array_empty()), refresh_type_env_prefix(rest, defs)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, refresh_completed_type(target, defs, params, array_empty()), refresh_type_env_prefix(rest, defs)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_type_env_prefix(rest, defs)),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_type_env_prefix(rest, defs)),
+    _ => env
+  }
+}
+
+/// Refreshes the completed local declaration payloads and their companion
+/// value signatures without restacking the environment. The exact local type
+/// count provides the boundary that keeps imported and outer nodes untouched.
+fn refresh_completed_type_env(env: TypeEnv, defs: Array[TypeDef], from: Int, to: Int, taken: Array[Int], local_count: Int) -> TypeEnv {
   if Array::length(taken) >= local_count {
     env
   } else match env {
     EnvEmpty => EnvEmpty,
-    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_alias_env(rest, defs, from, to, taken, local_count), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
+    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_type_env(rest, defs, from, to, taken, local_count), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
     EnvTypeDefs(node_defs, selectable, rest) => {
       let refreshed = array_empty()
       let mut refreshed_rest = rest
+      let mut refresh_prefix = false
       let mut i = 0
       while i < Array::length(node_defs) {
-        match Array::get(node_defs, i) {
-          TDAlias(name, params, old_body) => {
-            let idx = completed_alias_index_reverse(defs, name, from, to, taken)
-            if idx >= 0 {
-              match Array::get(defs, idx) {
-                TDAlias(_, _, body) => {
-                  Array::push(refreshed, TDAlias(name, params, body))
-                  refreshed_rest = refresh_alias_env_binding(refreshed_rest, name, body)
-                },
-                _ => Array::push(refreshed, TDAlias(name, params, old_body))
-              }
-            } else {
-              Array::push(refreshed, TDAlias(name, params, old_body))
+        let node_def = Array::get(node_defs, i)
+        let idx = completed_type_def_index_reverse(defs, node_def, from, to, taken)
+        if idx >= 0 {
+          let completed_def = Array::get(defs, idx)
+          Array::push(refreshed, refresh_completed_env_type_def(node_def, completed_def, defs))
+          match completed_def {
+            TDAlias(name, _, body) => {
+              refreshed_rest = refresh_alias_env_binding(refreshed_rest, name, body)
+            },
+            _ => {
+              refresh_prefix = true
             }
-          },
-          other => Array::push(refreshed, other)
+          }
+        } else {
+          Array::push(refreshed, node_def)
         }
         i = i + 1
       }
-      EnvTypeDefs(refreshed, selectable, refresh_completed_alias_env(refreshed_rest, defs, from, to, taken, local_count))
+      let completed_rest = if refresh_prefix {
+        refresh_type_env_prefix(refreshed_rest, defs)
+      } else {
+        refreshed_rest
+      }
+      EnvTypeDefs(refreshed, selectable, refresh_completed_type_env(completed_rest, defs, from, to, taken, local_count))
     },
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_alias_env(rest, defs, from, to, taken, local_count)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_completed_alias_env(rest, defs, from, to, taken, local_count))
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_completed_type_env(rest, defs, from, to, taken, local_count))
   }
 }
 
