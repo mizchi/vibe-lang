@@ -6331,8 +6331,40 @@ if grep -qF 'VIBE_UNSTABLE=1' "$uwdir/serve.optin.wasm.diag" 2>/dev/null; then
   cat "$uwdir/serve.optin.wasm.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# `export @pkg { .. }` would depend on the package exactly as an import does and
+# then PUBLISH its surface onward. Measured: it does not parse, so nothing
+# crosses the boundary through it -- but that is a fact about the PARSER, not
+# about this gate, and it is the kind of fact that changes without anyone
+# revisiting the gate (#2277 review).
+cat > "$uwdir/reexport.vibe" <<'UWEOF'
+export @vibe/concurrent { TaskGroup }
+
+fn main() -> Int {
+  1
+}
+UWEOF
+uw_build "$uwdir/reexport.vibe" "$uwdir/reexport.wasm"
+if [ -s "$uwdir/reexport.wasm" ]; then
+  echo "[compiler-gate] FAIL: a re-export of the unstable package built with no opt-in (#2277)" >&2
+  exit 1
+fi
+# TWO acceptable refusals, and the check has to distinguish them or it passes
+# for a reason it never verified. Today the form does not parse at all -- the
+# parser builds `SReExport` for `TDot`/`TDotDot` paths only and answers a
+# package path with "unexpected token in export" -- so the gate is not what
+# stops it. If that syntax ever lands, this arm stops matching and the
+# diagnostic must be the opt-in one instead; anything else fails here.
+if grep -qF 'unexpected token in export' "$uwdir/reexport.wasm.diag" 2>/dev/null; then
+  :
+elif grep -qF 'VIBE_UNSTABLE=1' "$uwdir/reexport.wasm.diag" 2>/dev/null; then
+  :
+else
+  echo "[compiler-gate] FAIL: a package re-export was refused for an unrelated reason -- if it now parses, gate it (#2277)" >&2
+  cat "$uwdir/reexport.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
 rm -rf "$uwdir"
-echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
+echo "[compiler-gate] ADR-0068 opt-in gate: check + build + serve + package-re-export + buffer(text+json+column) + whitespace + comment + multiline + pinned-require ok (#2248, #2277)"
 fmtdir="_build/_gate_vibe_fmt"
 rm -rf "$fmtdir"; mkdir -p "$fmtdir"
 printf 'let   add=(a:Int,b:Int)->Int{a+b}\n' > "$fmtdir/messy.vibe"
@@ -6616,5 +6648,33 @@ if ! grep -qF '1 passed, 0 failed' "$aldir/shadow.log"; then
   cat "$aldir/shadow.log" >&2
   exit 1
 fi
+# A LOCAL binding of the name is deliberately NOT covered, and this pins the
+# boundary so the omission stays a decision rather than a gap someone rediscovers.
+# Suppressing the lowering for a local only moves the failure: the codegen guard
+# tests the function table and ignores locals (the #1095 capture trap), so the
+# pass stands down and codegen's own `assert_eq` arm claims the call anyway --
+# measured as a bare `unreachable` with no message, which is worse than the
+# builtin assertion it replaced. What the gate requires is that the failure stay
+# the LEGIBLE one until #1095 is answered (#2277 review, #2285).
+cat > "$aldir/pat_shadow_test.vibe" <<'ALEOF'
+fn make_cmp() -> (Int, Int) -> Int {
+  (a, b) -> {
+    a + b
+  }
+}
+
+test "pattern-bound assert_eq" {
+  match make_cmp() {
+    assert_eq => assert_true(assert_eq(1, 2) == 3)
+  }
+}
+ALEOF
+VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$aldir/pat_shadow_test.vibe" >"$aldir/pat.log" 2>&1 || true
+if ! grep -qF 'assert_eq failed' "$aldir/pat.log"; then
+  echo "[compiler-gate] FAIL: a pattern-bound assert_eq now fails without a message -- the local case must keep the legible failure (#2285)" >&2
+  cat "$aldir/pat.log" >&2
+  exit 1
+fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + user-shadowing ok (#2202, #2283)"
+echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + top-level shadowing ok (#2202, #2283)"

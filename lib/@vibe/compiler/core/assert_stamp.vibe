@@ -25,11 +25,7 @@ import @vibe/core {
 }
 
 import ./ast.vibe {
-  Expr, ImportItem, Pat, Stmt, TypeExpr
-}
-
-import ./expr_children.vibe {
-  expr_children
+  Expr, ImportItem, Pat, Stmt
 }
 
 /// The internal callee a stamped `assert_eq` is rewritten to. Read by the
@@ -137,77 +133,27 @@ fn stamp_assert_expr(e: Expr, path: String, source: String) -> Expr {
   }
 }
 
-/// Whether one expression node binds the name at ITS OWN level. Recursion is
-/// the caller's job; this answers only "does this node introduce the name".
-fn expr_node_binds(e: Expr, name: String) -> Bool {
-  match e {
-    ELet(n, _, _, _) => n == name,
-    ELetMut(n, _, _, _) => n == name,
-    ELetRec(n, _, _) => n == name,
-    EFn(_, _, params, _, _, _) => params_bind(params, name),
-    _ => false
-  }
-}
-
-fn params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(params) && !found {
-    let (p, _) = Array::get(params, i)
-    if p == name {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-/// The same question over a whole expression tree. `expr_children` supplies the
-/// structural recursion, so a new `Expr` variant cannot quietly fall out of this
-/// scan the way it would out of a hand-written match.
-fn expr_binds(e: Expr, name: String) -> Bool {
-  if expr_node_binds(e, name) {
-    true
-  } else {
-    let kids = expr_children(e)
-    let mut i = 0
-    let mut found = false
-    while i < Array::length(kids) && !found {
-      if expr_binds(Array::get(kids, i), name) {
-        found = true
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    found
-  }
-}
-
-/// Whether this module binds the name `assert_eq` itself -- a definition, an
-/// import that lands under that name, or a `let`/parameter inside any body.
-/// Such a module is left alone entirely: neither the stamp here nor the
-/// lowering that consumes it (normalize/desugar_trait_dict.vibe) touches a call
-/// the reader wrote, so their own function is the one that runs (#2283).
+/// Whether this module DEFINES `assert_eq` at the top level -- a statement-level
+/// definition, or an import that lands under that name.
 ///
-/// Whole-module rather than per-scope, deliberately. The lowering runs BEFORE
-/// `check_program` in the single-file lane, so a rewrite it makes is never
-/// reviewed by name resolution -- the only safe reading of "this file has its
-/// own assert_eq" is the conservative one. A module that binds the name locally
-/// and also wants the builtin elsewhere now gets an unknown-name error, which
-/// the reader can act on, instead of the silent substitution this replaces.
+/// Top-level only, and that boundary is not arbitrary: it is exactly what the
+/// codegen guard can honor. `compile_call.vibe` decides by `fn_idx_in_list` (the
+/// function table) and deliberately ignores `local_idx_hint`, because a lambda's
+/// captured free name appears there with an unresolved slot -- the #1095 trap.
+/// So suppressing the lowering for a LOCAL binding only moves the failure: the
+/// pass stands down, codegen's own `assert_eq` arm still claims the call, and
+/// the program traps with no message at all. Measured on
+/// `match make_cmp() { assert_eq => assert_eq(1, 2) }`: builtin assertion before,
+/// bare `unreachable` after. Worse, not better.
+///
+/// The local and pattern-bound cases therefore keep their pre-existing
+/// behaviour, and moving them needs the #1095 question answered first.
 export fn stmts_bind_assert_eq(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
     let hit = match Array::get(stmts, i) {
-      SLet(_, _, name, _, expr) => name == "assert_eq" || expr_binds(expr, "assert_eq"),
-      STest(_, expr) => expr_binds(expr, "assert_eq"),
-      SBench(_, expr) => expr_binds(expr, "assert_eq"),
-      SExample(_, expr) => expr_binds(expr, "assert_eq"),
-      SExpr(expr) => expr_binds(expr, "assert_eq"),
+      SLet(_, _, name, _, _) => name == "assert_eq",
       SModule(_, _, body) => stmts_bind_assert_eq(body),
       SImport(_, items) => import_binds_assert_eq(items),
       _ => false
