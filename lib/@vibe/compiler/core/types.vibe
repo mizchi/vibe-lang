@@ -554,6 +554,65 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
   found
 }
 
+fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => match binding.origin {
+      BindingOriginReExportSurface(_, _) => env_without_reexport_surface_bindings(rest),
+      _ => EnvBind(name, binding, env_without_reexport_surface_bindings(rest))
+    },
+    EnvTraitDef(name, supers, marker, methods, rest, params, method_gens) => EnvTraitDef(name, supers, marker, methods, env_without_reexport_surface_bindings(rest), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_without_reexport_surface_bindings(rest)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_without_reexport_surface_bindings(rest)),
+    EnvTypeDefs(defs, selectable, rest) => EnvTypeDefs(defs, selectable, env_without_reexport_surface_bindings(rest)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_without_reexport_surface_bindings(rest)),
+    EnvFlat(bindings) => {
+      let kept = array_empty()
+      let mut i = 0
+      while i < Array::length(bindings) {
+        let pair = Array::get(bindings, i)
+        match pair.1.origin {
+          BindingOriginReExportSurface(_, _) => (),
+          _ => Array::push(kept, pair)
+        }
+        i = i + 1
+      }
+      EnvFlat(kept)
+    },
+    EnvCached(names, bindings, rest) => {
+      let kept_names = array_empty()
+      let kept_bindings = array_empty()
+      let mut i = 0
+      while i < Array::length(names) {
+        let binding = Array::get(bindings, i)
+        match binding.origin {
+          BindingOriginReExportSurface(_, _) => (),
+          _ => {
+            Array::push(kept_names, Array::get(names, i))
+            Array::push(kept_bindings, binding)
+          }
+        }
+        i = i + 1
+      }
+      EnvCached(kept_names, kept_bindings, env_without_reexport_surface_bindings(rest))
+    }
+  }
+}
+
+/// Replace the transient aliased-re-export blockers for the next source unit
+/// in an FS-merged program. These names participate in builtin exclusion but
+/// remain absent from ordinary local lookup (#2287).
+export fn env_with_reexport_alias_blockers(env: TypeEnv, names: Array[String]) -> TypeEnv {
+  let mut out = env_without_reexport_surface_bindings(env)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    out = env_bind_with_origin(out, name, CtUnknown, BindingOriginReExportSurface("", name))
+    i = i + 1
+  }
+  out
+}
+
 export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
   let mut cur = env
   let mut result = None
