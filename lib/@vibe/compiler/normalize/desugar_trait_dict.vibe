@@ -7547,6 +7547,14 @@ fn is_marked_formal_name(n: String) -> Bool {
 /// with a declaration's own tparams at the derive-generation sites (where the
 /// declaration IS the scope).
 fn subst_formals_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  if Array::length(formals) == 0 {
+    ty
+  } else {
+    subst_formals_ty_body(ty, formals)
+  }
+}
+
+fn subst_formals_ty_body(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
   match ty {
     TyName(n) => if str_array_contains(formals, n) {
       TyName(mark_formal_name(n))
@@ -9098,8 +9106,60 @@ fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> Ty
   }
 }
 
+fn eq_alias_name_exists(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(dtd_eq_type_aliases) {
+    if Array::get(dtd_eq_type_aliases, i).0 == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn eq_ty_mentions_alias(ty: TypeExpr) -> Bool {
+  match ty {
+    TyName(name) => eq_alias_name_exists(name),
+    TyApp(head, args) => if eq_alias_name_exists(head) {
+      true
+    } else {
+      eq_tys_mention_alias(args)
+    },
+    TyFn(params, result, _) => if eq_tys_mention_alias(params) {
+      true
+    } else {
+      eq_ty_mentions_alias(result)
+    },
+    TyTuple(items) => eq_tys_mention_alias(items),
+    TyUnit => false
+  }
+}
+
+fn eq_tys_mention_alias(ts: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) {
+    if eq_ty_mentions_alias(Array::get(ts, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn eq_expand_alias_ty(ty: TypeExpr) -> TypeExpr {
-  eq_expand_alias_ty_seen(ty, array_empty())
+  if Array::length(dtd_eq_type_aliases) == 0 {
+    ty
+  } else if !eq_ty_mentions_alias(ty) {
+    ty
+  } else {
+    eq_expand_alias_ty_seen(ty, array_empty())
+  }
 }
 
 fn eq_expand_alias_ty_seen(ty: TypeExpr, seen: Array[String]) -> TypeExpr {
@@ -9725,7 +9785,11 @@ fn ty_mentions_name_in(t: TypeExpr, names: Array[String]) -> Bool {
 /// (`shape_key`'s: Name / `(s1,..)` / `[s]` / "" unknown). Only shapes this
 /// pass can compare are produced; anything else collapses to "" (unknown).
 fn ty_to_eq_shape(t: TypeExpr) -> String {
-  match eq_expand_alias_ty(subst_scope_formals_ty(t)) {
+  ty_to_eq_shape_expanded(eq_expand_alias_ty(subst_scope_formals_ty(t)))
+}
+
+fn ty_to_eq_shape_expanded(t: TypeExpr) -> String {
+  match t {
     TyName(n) => n,
     TyUnit => "{u}",
     TyTuple(ts) => if Array::length(ts) == 0 {
@@ -9734,7 +9798,7 @@ fn ty_to_eq_shape(t: TypeExpr) -> String {
       let mut acc = "("
       let mut i = 0
       while i < Array::length(ts) {
-        let sub = ty_to_eq_shape(Array::get(ts, i))
+        let sub = ty_to_eq_shape_expanded(Array::get(ts, i))
         acc = if i == 0 {
           String::concat(acc, sub)
         } else {
@@ -9745,24 +9809,24 @@ fn ty_to_eq_shape(t: TypeExpr) -> String {
       String::concat(acc, ")")
     },
     TyApp(n, args) => if n == "Array" && Array::length(args) == 1 {
-      String::concat("[", String::concat(ty_to_eq_shape(Array::get(args, 0)), "]"))
+      String::concat("[", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), "]"))
     } else if n == "Option" && Array::length(args) == 1 {
-      String::concat("{o:", String::concat(ty_to_eq_shape(Array::get(args, 0)), "}"))
+      String::concat("{o:", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), "}"))
     } else if n == "Result" && Array::length(args) == 2 {
-      String::concat("{r:", String::concat(ty_to_eq_shape(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape(Array::get(args, 1)), "}"))))
+      String::concat("{r:", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape_expanded(Array::get(args, 1)), "}"))))
     } else if builtin_string_map_applied(n, args) {
-      String::concat("{m:String,", String::concat(ty_to_eq_shape(Array::get(args, 0)), "}"))
+      String::concat("{m:String,", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), "}"))
     } else if n == "Map" && Array::length(args) == 2 {
       // #2218: a Map shape, so an ANNOTATED binding (`let m: Map[String, Int]`)
       // or a typed parameter reaches `eq_for_typed`'s Map arm the same way an
       // `Array[T]` one reaches its Array arm. Without this the type is known
       // and the answer still came from the raw `==`.
-      String::concat("{m:", String::concat(ty_to_eq_shape(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape(Array::get(args, 1)), "}"))))
+      String::concat("{m:", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape_expanded(Array::get(args, 1)), "}"))))
     } else if Array::length(args) > 0 {
       let mut acc = String::concat("{g:", n)
       let mut i = 0
       while i < Array::length(args) {
-        acc = String::concat(acc, String::concat(",", ty_to_eq_shape(Array::get(args, i))))
+        acc = String::concat(acc, String::concat(",", ty_to_eq_shape_expanded(Array::get(args, i))))
         i = i + 1
       }
       String::concat(acc, "}")
@@ -9854,7 +9918,11 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
 /// two original heads for one release too long and said something false about
 /// the third; it is spelled by intent now.
 fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
-  match eq_expand_alias_ty(subst_scope_formals_ty(t)) {
+  ty_needs_typed_eq_expanded(eq_expand_alias_ty(subst_scope_formals_ty(t)))
+}
+
+fn ty_needs_typed_eq_expanded(t: TypeExpr) -> Bool {
+  match t {
     TyName(n) => n == "Bytes",
     TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) {
       true
@@ -9862,7 +9930,7 @@ fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(args) {
-        if ty_needs_typed_eq(Array::get(args, i)) {
+        if ty_needs_typed_eq_expanded(Array::get(args, i)) {
           found = true
         } else {
           ()
@@ -9875,7 +9943,7 @@ fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
       let mut i = 0
       let mut found = false
       while i < Array::length(ts) {
-        if ty_needs_typed_eq(Array::get(ts, i)) {
+        if ty_needs_typed_eq_expanded(Array::get(ts, i)) {
           found = true
         } else {
           ()
