@@ -441,6 +441,31 @@ test "nested type heads are known before outer payload validation" {
   ], EnvEmpty)
 }
 
+test "nested type heads replace stale outer unknown-name diagnostics" {
+  let checked = check_program_with_env_result([
+    SStruct(false, "Box", [("value", TyName("Pair"))], array_empty(), array_empty(), array_empty()),
+    SEnum(false, "Choice", array_empty(), [("Pick", [TyName("Pair")])], array_empty()),
+    SModule(false, "Nested", [
+      STypeAlias(false, "Pair", array_empty(), TyName("Int"))
+    ])
+  ], EnvEmpty)
+  let mut saw_box = false
+  let mut i = 0
+  while i < Array::length(checked.type_defs) {
+    match Array::get(checked.type_defs, i) {
+      TDStruct("Box", fields, _, _) => if Array::length(fields) == 1 {
+        let (field_name, field_type) = Array::get(fields, 0)
+        saw_box = field_name == "value" && field_type == CtInt
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  assert(saw_box)
+}
+
 test "completed root recheck replaces stale module diagnostics" {
   let _ = check_program_with_env_result([
     SModule(false, "First", [
