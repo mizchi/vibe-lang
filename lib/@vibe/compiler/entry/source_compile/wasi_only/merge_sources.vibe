@@ -189,9 +189,10 @@ fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], 
   }
 }
 
-fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) -> (Array[String], Array[String]) {
+fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) -> (Array[String], Array[String], Array[String]) {
   let locals = array_empty()
   let surface_only = array_empty()
+  let retained_originals = array_empty()
   let decided = array_empty()
   // Re-export projection is last-binding-wins. Scan backwards so a later
   // plain re-export cancels an earlier publication-only alias blocker, while
@@ -218,15 +219,14 @@ fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) ->
             }
           }
           // Entry re-exports retain the dependency definition under its
-          // original ABI spelling. That implementation detail must not make
-          // the source name locally visible when the source published only an
-          // alias. Treat it as another publication-only name unless a later
-          // re-export already decided that spelling.
+          // original ABI spelling. Record that spelling for validation before
+          // import rewriting: a raw source reference is invalid, while a real
+          // imported alias may legitimately rewrite to the same retained name.
           match item.alias {
             Some(_) => if retain_entry_originals && !string_array_contains_local(decided, item.name) {
               Array::push(decided, item.name)
               Array::push(locals, item.name)
-              Array::push(surface_only, item.name)
+              Array::push(retained_originals, item.name)
             } else {
               ()
             },
@@ -239,7 +239,26 @@ fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) ->
     }
     i = i - 1
   }
-  (locals, surface_only)
+  (locals, surface_only, retained_originals)
+}
+
+/// Reject direct uses of an entry re-export's retained implementation name
+/// before import aliases are rewritten. The merged AST may contain that name
+/// afterward as the valid target of a real import, so it cannot remain a
+/// checker lookup blocker in the transformed source.
+fn validate_retained_entry_source_names(stmts: Array[Stmt], retained_originals: Array[String]) -> Unit with Exception {
+  if Array::length(retained_originals) > 0 {
+    let source_unit = empty_stmt_array()
+    Array::push(source_unit, SReExportSourceBoundary(array_empty(), retained_originals))
+    let mut i = 0
+    while i < Array::length(stmts) {
+      Array::push(source_unit, Array::get(stmts, i))
+      i = i + 1
+    }
+    validate_serializable_reexport_references(source_unit)
+  } else {
+    ()
+  }
 }
 
 fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Exception + Fs {
@@ -252,7 +271,8 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     // Imports and re-exports disappear from the executable merged AST. Keep
     // each source's locally visible names separate from aliased surface-only
     // names, without blocking builtins in the next unit (#2287).
-    let (reexport_locals, reexport_surface_only) = reexport_source_boundary(stmts, path == entry_path)
+    let (reexport_locals, reexport_surface_only, retained_originals) = reexport_source_boundary(stmts, path == entry_path)
+    validate_retained_entry_source_names(stmts, retained_originals)
     Array::push(merged, SReExportSourceBoundary(reexport_locals, reexport_surface_only))
     if stmts_have_import_deep(stmts) {
       let import_renames = collect_import_value_renames(plan, path, stmts)
