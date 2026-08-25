@@ -6392,7 +6392,15 @@ fn stmts_define_assert_eq(stmts: Array[Stmt]) -> Bool {
   while i < Array::length(stmts) && !found {
     let hit = match Array::get(stmts, i) {
       SLet(_, _, name, _, _) => name == "assert_eq",
-      SModule(_, _, body) => stmts_define_assert_eq(body),
+      // NO `SModule` recursion. A module member declares `M::assert_eq`, not
+      // the bare prelude name, so recursing would stand the lowering down for
+      // an unrelated top-level `assert_eq(a, b)` -- and the function table
+      // holds only the qualified definition, so codegen would then fall to a
+      // bare `unreachable`, losing the message and both operands (#2296
+      // review). Unreachable today either way: `module` blocks were removed in
+      // #728 and the parser answers this shape with "'module' blocks are
+      // removed", measured on the current tree. Left out rather than left
+      // wrong, since the arm would be a latent defect the day modules return.
       SImport(_, items) => import_binds_assert_eq(items),
       _ => false
     }

@@ -9,6 +9,16 @@ GATES_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 source "$GATES_LIB"
 gate_resolve_stage2
 
+# ADR-0068 (#2248): `@vibe/concurrent` needs `VIBE_UNSTABLE=1` to compile at
+# all, and a dozen fixtures in this lane exercise that surface deliberately
+# (region generativity, spawnable capture, the async boundary, the TaskGroup
+# sugar). Granted lane-wide rather than per call site: the boundary exists for
+# a USER's build, these are the repository's own fixtures, and the boundary
+# itself is pinned by section 108 -- which clears the variable with
+# `env -u VIBE_UNSTABLE` on every no-opt-in case precisely so it stays honest
+# under an ambient grant.
+export VIBE_UNSTABLE=1
+
 
 # 40. V128 SIMD intrinsics (#536): the first-class V128 type + 12 wasm-SIMD
 #     intrinsics (v128_load/store/splat/eq/le_u/ge_u/and/or/not/bitmask/
