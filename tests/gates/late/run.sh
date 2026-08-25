@@ -7494,3 +7494,70 @@ SCEOF
   rm -rf "$scdir"
   echo "[compiler-gate] the split CLI refuses an unstable dependency cold AND warm, and still builds clean programs ok (#2305)"
 fi
+
+# 115/115. `vibe lsp` publishDiagnostics carries the ADR-0068 opt-in (#2297).
+# Section 108 covers the boundary on `vibe check --single-file`, in both its
+# text and its `--json` form -- but the JSON form only reports it because the
+# ADAPTER splices the verdict in, so 108 says nothing about the live server.
+# Measured before this landed: publishDiagnostics on a buffer whose only
+# content is `import @vibe/concurrent` delivered the unused-import warning and
+# no opt-in error at all, while the two check forms reported both.
+#
+# Both directions, because a fix that always appends the diagnostic would pass
+# the first assertion and break the opt-in.
+echo "[compiler-gate] 115/115 vibe lsp publishDiagnostics reports the ADR-0068 opt-in (#2297)"
+lspudir="_build/_gate_lsp_unstable"
+rm -rf "$lspudir"; mkdir -p "$lspudir"
+python3 - "$lspudir/input.bin" <<'PYEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = 'import @vibe/concurrent { TaskGroup }\n\nexport let main = () -> Int { 0 }\n'
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate_unstable.vibe", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+PYEOF
+# `env -u VIBE_UNSTABLE` for the same reason section 108 and 113 do it: this
+# lane grants the opt-in lane-wide (run.sh:20), and under that grant the gate
+# stands down and this section would assert nothing.
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$lspudir/input.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$lspudir/plain.bin" 2>"$lspudir/plain.err" || true
+if ! grep -q 'publishDiagnostics' "$lspudir/plain.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe lsp published no diagnostics at all (#2297)" >&2
+  head -c 400 "$lspudir/plain.bin" >&2 || true
+  cat "$lspudir/plain.err" >&2 || true
+  exit 1
+fi
+if ! grep -q 'VIBE_UNSTABLE=1' "$lspudir/plain.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: publishDiagnostics omits the ADR-0068 opt-in that every check form reports (#2297)" >&2
+  grep -o '"method":"textDocument/publishDiagnostics".\{0,300\}' "$lspudir/plain.bin" >&2 || true
+  exit 1
+fi
+# ...and the opt-in suppresses it, while diagnostics keep flowing.
+VIBE_UNSTABLE=1 VIBE_STDIN_BYTES="$(cat "$lspudir/input.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$lspudir/optin.bin" 2>/dev/null || true
+if ! grep -q 'publishDiagnostics' "$lspudir/optin.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe lsp stopped publishing diagnostics under VIBE_UNSTABLE=1 (#2297)" >&2
+  exit 1
+fi
+if grep -q 'VIBE_UNSTABLE=1' "$lspudir/optin.bin" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not suppress the opt-in diagnostic in the LSP (#2297)" >&2
+  exit 1
+fi
+rm -rf "$lspudir"
+echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, and the opt-in suppresses it ok (#2297)"
