@@ -189,7 +189,7 @@ fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], 
   }
 }
 
-fn reexport_source_boundary(stmts: Array[Stmt]) -> (Array[String], Array[String]) {
+fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) -> (Array[String], Array[String]) {
   let locals = array_empty()
   let surface_only = array_empty()
   let decided = array_empty()
@@ -217,6 +217,21 @@ fn reexport_source_boundary(stmts: Array[Stmt]) -> (Array[String], Array[String]
               None => ()
             }
           }
+          // Entry re-exports retain the dependency definition under its
+          // original ABI spelling. That implementation detail must not make
+          // the source name locally visible when the source published only an
+          // alias. Treat it as another publication-only name unless a later
+          // re-export already decided that spelling.
+          match item.alias {
+            Some(_) => if retain_entry_originals && !string_array_contains_local(decided, item.name) {
+              Array::push(decided, item.name)
+              Array::push(locals, item.name)
+              Array::push(surface_only, item.name)
+            } else {
+              ()
+            },
+            None => ()
+          }
           j = j - 1
         }
       },
@@ -237,7 +252,7 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     // Imports and re-exports disappear from the executable merged AST. Keep
     // each source's locally visible names separate from aliased surface-only
     // names, without blocking builtins in the next unit (#2287).
-    let (reexport_locals, reexport_surface_only) = reexport_source_boundary(stmts)
+    let (reexport_locals, reexport_surface_only) = reexport_source_boundary(stmts, path == entry_path)
     Array::push(merged, SReExportSourceBoundary(reexport_locals, reexport_surface_only))
     if stmts_have_import_deep(stmts) {
       let import_renames = collect_import_value_renames(plan, path, stmts)
