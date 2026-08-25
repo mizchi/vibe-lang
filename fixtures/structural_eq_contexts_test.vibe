@@ -32,6 +32,12 @@ enum Boxed {
   BoxedPoint(Point)
 } derive (Eq)
 
+// #2281: a parameterized alias wrapping a structural container used to keep
+// the alias head (`TyApp("AL", ...)`), so `==` fell back to identity.
+type AL[V] = Array[V]
+type SM[V] = StringMap[V]
+type A2 = Array[Int]
+
 fn make_array() -> Array[Int] {
   [1, 2]
 }
@@ -648,4 +654,32 @@ test "a declared name containing an underscore does not collide with an applicat
   let s2 = eq_ctx_named(5)
   assert(s1 == s2)
   assert(s1 != eq_ctx_named(9))
+}
+
+fn eq_ctx_al(xs: Array[Int]) -> AL[Int] {
+  xs
+}
+
+fn eq_ctx_sm(a: Int, b: Int) -> SM[Int] {
+  Map::from_pairs([("a", a), ("b", b)])
+}
+
+fn eq_ctx_a2(xs: Array[Int]) -> A2 {
+  xs
+}
+
+test "a parameterized alias around Array compares structurally" {
+  // #2281: `type AL[V] = Array[V]` used as `AL[Int]` must not identity-compare.
+  assert(eq_ctx_al([1, 2, 3]) == eq_ctx_al([1, 2, 3]))
+  assert(eq_ctx_al([1, 2, 3]) != eq_ctx_al([1, 2, 9]))
+}
+
+test "a parameterized alias around StringMap compares structurally" {
+  assert(eq_ctx_sm(1, 2) == eq_ctx_sm(1, 2))
+  assert(eq_ctx_sm(1, 2) != eq_ctx_sm(1, 9))
+}
+
+test "a non-parameterized alias around Array compares structurally" {
+  assert(eq_ctx_a2([1, 2]) == eq_ctx_a2([1, 2]))
+  assert(eq_ctx_a2([1, 2]) != eq_ctx_a2([1, 9]))
 }

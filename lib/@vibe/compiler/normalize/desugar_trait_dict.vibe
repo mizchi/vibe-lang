@@ -9712,7 +9712,10 @@ fn ty_mentions_name_in(t: TypeExpr, names: Array[String]) -> Bool {
 /// (`shape_key`'s: Name / `(s1,..)` / `[s]` / "" unknown). Only shapes this
 /// pass can compare are produced; anything else collapses to "" (unknown).
 fn ty_to_eq_shape(t: TypeExpr) -> String {
-  match t {
+  // #2281: classify the alias body, not the alias head. `type AL[V] = Array[V]`
+  // used as `AL[Int]` is `TyApp("AL", ...)` and matched no structural arm, so
+  // `==` stayed raw identity. Expand first; a non-alias is a no-op.
+  match eq_expand_alias_ty(t) {
     TyName(n) => n,
     TyUnit => "{u}",
     TyTuple(ts) => if Array::length(ts) == 0 {
@@ -9841,7 +9844,7 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
 /// two original heads for one release too long and said something false about
 /// the third; it is spelled by intent now.
 fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
-  match t {
+  match eq_expand_alias_ty(t) {
     TyName(n) => n == "Bytes",
     TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) {
       true
