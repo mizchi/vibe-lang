@@ -39,6 +39,7 @@ import @vibe/compiler/core {
   rewrite_imported_value_stmt_to_local,
   source_has_assert_eq,
   stamp_assert_stmts,
+  stamp_assert_stmts_unlocated,
   stmts_have_import_deep
 }
 
@@ -228,14 +229,22 @@ fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Exce
   // reach a generated bundle and thus never reaches the committed seed, which
   // knows only the two-argument form.
   let stmts = parse_program_with_path(path, source)
-  // Only stamp when THIS text's line numbers are the FILE's. The loader
+  // Locate only when THIS text's line numbers are the FILE's. The loader
   // prepends a directory's inherited `.vpkg` imports, and replaces a contract
-  // with its generated facade -- both shift every line after them, so stamping
-  // that text would print the physical path beside a line the reader cannot
-  // find (#2277 review). No line beats a wrong line (#1445), which is the whole
-  // rule this stamping is built on.
-  if source_has_assert_eq(source) && !String::starts_with(source, vpkg_shared_import_marker) && !String::starts_with(source, contract_facade_marker) {
-    stamp_assert_stmts(stmts, path, source)
+  // with its generated facade -- both shift every line after them, so a
+  // location taken from that text would print the physical path beside a line
+  // the reader cannot find (#2277 review). No line beats a wrong line (#1445).
+  //
+  // But such a module is still STAMPED, without a location. Leaving its calls
+  // bare loses more than the line: nothing then records that they meant the
+  // BUILTIN, so another merged module's top-level `assert_eq` would capture
+  // them through the func table (#2277 review).
+  if source_has_assert_eq(source) {
+    if !String::starts_with(source, vpkg_shared_import_marker) && !String::starts_with(source, contract_facade_marker) {
+      stamp_assert_stmts(stmts, path, source)
+    } else {
+      stamp_assert_stmts_unlocated(stmts)
+    }
   } else {
     stmts
   }

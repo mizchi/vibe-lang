@@ -42,6 +42,7 @@ import @vibe/compiler/core {
   rewrite_imported_value_stmt_to_local,
   source_has_assert_eq,
   stamp_assert_stmts,
+  stamp_assert_stmts_unlocated,
   stmts_have_import_deep
 }
 
@@ -99,9 +100,16 @@ fn parse_module_stmts(path: String, source: String) -> Array[Stmt] with Exceptio
   // that text prints the physical path beside a line the reader cannot find.
   // No line beats a wrong line (#1445).
   let one_to_one = !String::starts_with(source, vpkg_shared_import_marker) && !String::starts_with(source, contract_facade_marker)
-  if assert_stamp_on() && one_to_one && source_has_assert_eq(source) {
-    let (tokens, starts, _ends) = lex_with_offsets(source)
-    stamp_assert_stmts(parse_program_located(tokens, starts, source), path, source)
+  if assert_stamp_on() && source_has_assert_eq(source) {
+    if one_to_one {
+      let (tokens, starts, _ends) = lex_with_offsets(source)
+      stamp_assert_stmts(parse_program_located(tokens, starts, source), path, source)
+    } else {
+      // Stamped without a location: the line numbers are not this file's, but
+      // the marker still has to record that these calls meant the builtin --
+      // see file_compile.vibe's copy of this decision.
+      stamp_assert_stmts_unlocated(parse_program(lex(source)))
+    }
   } else {
     parse_program(lex(source))
   }

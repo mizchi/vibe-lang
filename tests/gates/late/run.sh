@@ -6703,5 +6703,68 @@ if grep -qF 'assert_eq failed' "$aldir/re.log"; then
   cat "$aldir/re.log" >&2
   exit 1
 fi
+# A module whose line numbers are NOT its own is still stamped -- without a
+# location. Leaving those calls bare lost more than the line: nothing recorded
+# that they meant the BUILTIN, so a top-level `assert_eq` in ANY other merged
+# module suppressed the lowering program-wide and codegen's func-table dispatch
+# sent them to that unrelated function. Measured before the fix: `probe()`
+# returned 7 with no assertion and no diagnostic -- silently the wrong function
+# (#2277 review). The sibling below inherits `index.vpkg`'s shared import, which
+# is what makes its ingested text non-1:1.
+mkdir -p "$aldir/pkg"
+cat > "$aldir/pkg/index.vpkg" <<'ALEOF'
+name = @scratch/assertmarker
+version = 0.0.1
+description =
+  #|assert marker probe
+deps = {
+  @vibe/core : 0.2.0
+}
+
+generated_hash =
+
+import @vibe/core { array_empty }
+
+fn probe() -> Int
+ALEOF
+cat > "$aldir/pkg/main_impl.vibe" <<'ALEOF'
+export fn probe() -> Int {
+  let _unused = array_empty()
+  assert_eq(1, 2)
+  7
+}
+ALEOF
+cat > "$aldir/marker_use.vibe" <<'ALEOF'
+import ./pkg { probe }
+
+fn assert_eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+fn main() -> Int {
+  probe()
+}
+ALEOF
+rm -f "$aldir/marker.wasm" "$aldir/marker.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$aldir/marker_use.vibe" "$aldir/marker.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$aldir/marker.wasm" ]; then
+  echo "[compiler-gate] FAIL: the vpkg-inheriting assert probe did not compile (#2277 review)" >&2
+  cat "$aldir/marker.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+al_marker_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$aldir/marker.wasm" 2>&1 || true)"
+if ! printf '%s\n' "$al_marker_out" | grep -qF 'assert_eq failed'; then
+  echo "[compiler-gate] FAIL: an inherited-import module's builtin assert was captured by another module's assert_eq (#2277 review)" >&2
+  printf '%s\n' "$al_marker_out" >&2
+  exit 1
+fi
+# ...and unlocated, not with a line borrowed from the shifted text (#1445).
+if printf '%s\n' "$al_marker_out" | grep -qE 'assert_eq failed at '; then
+  echo "[compiler-gate] FAIL: a module whose lines are not its own reported a location anyway (#1445)" >&2
+  printf '%s\n' "$al_marker_out" >&2
+  exit 1
+fi
 rm -rf "$aldir"
-echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + top-level shadowing (definition + re-export) ok (#2202, #2283)"
+echo "[compiler-gate] assert_eq location + after-assignment + 3-arg + unspellable-marker + top-level shadowing (definition + re-export) + inherited-import capture ok (#2202, #2283)"

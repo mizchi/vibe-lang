@@ -67,8 +67,8 @@ fn assert_loc_string(path: String, source: String, off: Int) -> String {
   String::concat(path, String::concat(":", Int::to_string(line)))
 }
 
-fn is_two_arg_assert_eq(callee: Expr, args: Array[Expr], off: Int) -> Bool {
-  if off < 0 || Array::length(args) != 2 {
+fn is_two_arg_assert_eq(callee: Expr, args: Array[Expr], off: Int, locate: Bool) -> Bool {
+  if (off < 0 && locate) || Array::length(args) != 2 {
     false
   } else {
     match callee {
@@ -78,57 +78,65 @@ fn is_two_arg_assert_eq(callee: Expr, args: Array[Expr], off: Int) -> Bool {
   }
 }
 
-fn stamp_assert_exprs(exprs: Array[Expr], path: String, source: String) -> Array[Expr] {
+fn stamp_assert_exprs(exprs: Array[Expr], path: String, source: String, locate: Bool) -> Array[Expr] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(exprs) {
-    Array::push(out, stamp_assert_expr(Array::get(exprs, i), path, source))
+    Array::push(out, stamp_assert_expr(Array::get(exprs, i), path, source, locate))
     i = i + 1
   }
   out
 }
 
-fn stamp_assert_arms(arms: Array[(Pat, Expr)], path: String, source: String) -> Array[(Pat, Expr)] {
+fn stamp_assert_arms(arms: Array[(Pat, Expr)], path: String, source: String, locate: Bool) -> Array[(Pat, Expr)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(arms) {
     let (pat, body) = Array::get(arms, i)
-    Array::push(out, (pat, stamp_assert_expr(body, path, source)))
+    Array::push(out, (pat, stamp_assert_expr(body, path, source, locate)))
     i = i + 1
   }
   out
 }
 
-fn stamp_assert_expr(e: Expr, path: String, source: String) -> Expr {
+fn stamp_assert_expr(e: Expr, path: String, source: String, locate: Bool) -> Expr {
   match e {
     ECall(callee, args, off) => {
-      let stamped_args = stamp_assert_exprs(args, path, source)
-      if is_two_arg_assert_eq(callee, args, off) {
-        Array::push(stamped_args, EString(assert_loc_string(path, source, off)))
+      let stamped_args = stamp_assert_exprs(args, path, source, locate)
+      if is_two_arg_assert_eq(callee, args, off, locate) {
+        // An unlocated stamp still says "this call resolved to the BUILTIN in
+        // its own module", which is the fact the merge would otherwise lose.
+        // The empty string is the location the lowering already knows how to
+        // print without one.
+        Array::push(stamped_args, EString(if locate {
+          assert_loc_string(path, source, off)
+        } else {
+          ""
+        }))
         ECall(EIdent(assert_eq_located_callee, -1), stamped_args, off)
       } else {
-        ECall(stamp_assert_expr(callee, path, source), stamped_args, off)
+        ECall(stamp_assert_expr(callee, path, source, locate), stamped_args, off)
       }
     },
-    ESeq(a, b) => ESeq(stamp_assert_expr(a, path, source), stamp_assert_expr(b, path, source)),
-    EIf(c, t, f) => EIf(stamp_assert_expr(c, path, source), stamp_assert_expr(t, path, source), stamp_assert_expr(f, path, source)),
-    EWhile(c, b) => EWhile(stamp_assert_expr(c, path, source), stamp_assert_expr(b, path, source)),
-    EForIn(v, k, it, b) => EForIn(v, k, stamp_assert_expr(it, path, source), stamp_assert_expr(b, path, source)),
-    ELoop(inits, b) => ELoop(inits, stamp_assert_expr(b, path, source)),
-    ELet(n, v, b, off) => ELet(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source), off),
-    ELetMut(n, v, b, off) => ELetMut(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source), off),
-    ELetRec(n, v, b) => ELetRec(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source)),
+    ESeq(a, b) => ESeq(stamp_assert_expr(a, path, source, locate), stamp_assert_expr(b, path, source, locate)),
+    EIf(c, t, f) => EIf(stamp_assert_expr(c, path, source, locate), stamp_assert_expr(t, path, source, locate), stamp_assert_expr(f, path, source, locate)),
+    EWhile(c, b) => EWhile(stamp_assert_expr(c, path, source, locate), stamp_assert_expr(b, path, source, locate)),
+    EForIn(v, k, it, b) => EForIn(v, k, stamp_assert_expr(it, path, source, locate), stamp_assert_expr(b, path, source, locate)),
+    ELoop(inits, b) => ELoop(inits, stamp_assert_expr(b, path, source, locate)),
+    ELet(n, v, b, off) => ELet(n, stamp_assert_expr(v, path, source, locate), stamp_assert_expr(b, path, source, locate), off),
+    ELetMut(n, v, b, off) => ELetMut(n, stamp_assert_expr(v, path, source, locate), stamp_assert_expr(b, path, source, locate), off),
+    ELetRec(n, v, b) => ELetRec(n, stamp_assert_expr(v, path, source, locate), stamp_assert_expr(b, path, source, locate)),
     // `x = e` and `x += e` carry the REST OF THE BLOCK in their last field,
     // exactly like `ELet` -- they are not leaves. Treating them as leaves meant
     // every assert after a mutation in a test body silently lost its line,
     // which is a common shape and precisely the one #2202 is about
     // (#2277 review).
-    EAssign(n, v, b) => EAssign(n, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, stamp_assert_expr(v, path, source), stamp_assert_expr(b, path, source)),
-    EMatch(scrutinee, arms) => EMatch(stamp_assert_expr(scrutinee, path, source), stamp_assert_arms(arms, path, source)),
-    EHandle(body, arms) => EHandle(stamp_assert_expr(body, path, source), stamp_assert_arms(arms, path, source)),
-    EFn(gens, bounds, params, ret, row, body) => EFn(gens, bounds, params, ret, row, stamp_assert_expr(body, path, source)),
-    EReturn(inner) => EReturn(stamp_assert_expr(inner, path, source)),
+    EAssign(n, v, b) => EAssign(n, stamp_assert_expr(v, path, source, locate), stamp_assert_expr(b, path, source, locate)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, stamp_assert_expr(v, path, source, locate), stamp_assert_expr(b, path, source, locate)),
+    EMatch(scrutinee, arms) => EMatch(stamp_assert_expr(scrutinee, path, source, locate), stamp_assert_arms(arms, path, source, locate)),
+    EHandle(body, arms) => EHandle(stamp_assert_expr(body, path, source, locate), stamp_assert_arms(arms, path, source, locate)),
+    EFn(gens, bounds, params, ret, row, body) => EFn(gens, bounds, params, ret, row, stamp_assert_expr(body, path, source, locate)),
+    EReturn(inner) => EReturn(stamp_assert_expr(inner, path, source, locate)),
     _ => e
   }
 }
@@ -209,21 +217,40 @@ export fn stamp_assert_stmts(stmts: Array[Stmt], path: String, source: String) -
   if stmts_bind_assert_eq(stmts) {
     stmts
   } else {
-    stamp_assert_walk(stmts, path, source)
+    stamp_assert_walk(stmts, path, source, true)
   }
 }
 
-fn stamp_assert_walk(stmts: Array[Stmt], path: String, source: String) -> Array[Stmt] {
+/// The same rewrite with NO location, for text whose line numbers are not the
+/// file's (the loader prepends a directory's inherited `.vpkg` imports, and
+/// replaces a contract with its facade). Those modules used to be left alone
+/// entirely, which lost more than the line: a BARE `assert_eq` call carries no
+/// evidence that it meant the builtin, so if any OTHER merged module defines a
+/// top-level `assert_eq`, the program-wide suppression stands the lowering down
+/// and codegen's func-table dispatch sends this module's call to that unrelated
+/// function -- silently, with the checker still having typed it as the builtin
+/// (#2277 review). The marker preserves the per-module fact; the empty location
+/// is the one the lowering already prints without (#1445: no line beats a wrong
+/// line).
+export fn stamp_assert_stmts_unlocated(stmts: Array[Stmt]) -> Array[Stmt] {
+  if stmts_bind_assert_eq(stmts) {
+    stmts
+  } else {
+    stamp_assert_walk(stmts, "", "", false)
+  }
+}
+
+fn stamp_assert_walk(stmts: Array[Stmt], path: String, source: String, locate: Bool) -> Array[Stmt] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     let stamped = match Array::get(stmts, i) {
-      SLet(exp, is_rec, name, ann, expr) => SLet(exp, is_rec, name, ann, stamp_assert_expr(expr, path, source)),
-      STest(name, expr) => STest(name, stamp_assert_expr(expr, path, source)),
-      SBench(name, expr) => SBench(name, stamp_assert_expr(expr, path, source)),
-      SExample(name, expr) => SExample(name, stamp_assert_expr(expr, path, source)),
-      SExpr(expr) => SExpr(stamp_assert_expr(expr, path, source)),
-      SModule(exp, name, body) => SModule(exp, name, stamp_assert_walk(body, path, source)),
+      SLet(exp, is_rec, name, ann, expr) => SLet(exp, is_rec, name, ann, stamp_assert_expr(expr, path, source, locate)),
+      STest(name, expr) => STest(name, stamp_assert_expr(expr, path, source, locate)),
+      SBench(name, expr) => SBench(name, stamp_assert_expr(expr, path, source, locate)),
+      SExample(name, expr) => SExample(name, stamp_assert_expr(expr, path, source, locate)),
+      SExpr(expr) => SExpr(stamp_assert_expr(expr, path, source, locate)),
+      SModule(exp, name, body) => SModule(exp, name, stamp_assert_walk(body, path, source, locate)),
       other => other
     }
     Array::push(out, stamped)
