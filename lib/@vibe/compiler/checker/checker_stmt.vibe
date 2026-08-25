@@ -2743,7 +2743,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
     cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
     let completed_decl_errors = array_empty()
     check_completed_decl_map_keys(visible_types, defs, completed_decl_errors)
-    insert_unique_error_strings(completed_decl_errors, errors, completed_decl_error_insert_at)
     if nested_defs_extended {
       // The first pass is required to discover the complete shared definition
       // graph. Re-run the root list against a copy of that graph so every value
@@ -2757,6 +2756,13 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       let recheck_tytab = array_empty()
       let recheck_c = next_type_def_binder_id(recheck_binders, c)
       let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(stmts, 0, env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, recheck_tytab, None, None, None, imports_already_projected, false)
+      // First-pass statement diagnostics may have judged a compiler-owned
+      // spelling before a nested declaration claimed it. Replace that whole
+      // lane with the completed declaration diagnostics plus the completed
+      // second-pass statement diagnostics; incoming caller diagnostics stay
+      // ahead of this check's insertion boundary.
+      Array::truncate(errors, completed_decl_error_insert_at)
+      push_unique_error_strings(completed_decl_errors, errors)
       push_unique_error_strings(recheck_errors, errors)
       if retaining_observation {
         // Captured type tables were produced by the first pass and must stay
@@ -2770,7 +2776,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         cur_c = rechecked_c
       }
     } else {
-      ()
+      insert_unique_error_strings(completed_decl_errors, errors, completed_decl_error_insert_at)
     }
   } else {
     ()
@@ -4203,43 +4209,70 @@ fn replace_first_env_binding(env: TypeEnv, wanted: String, ty: Type, replaced: A
   }
 }
 
-fn refresh_suberror_owned_bindings(env: TypeEnv, suberror_name: String, variants: Array[(String, Array[Type])]) -> TypeEnv {
+fn stmt_owns_equals_marker(stmt: Stmt, type_name: String) -> Bool {
+  match stmt {
+    SEnum(_, name, _, _, _) => name == type_name,
+    SSuberror(_, name, _) => name == type_name,
+    SStruct(_, name, _, _, _, _) => name == type_name,
+    _ => false
+  }
+}
+
+fn later_equals_owner_count(stmts: Array[Stmt], after: Int, type_name: String) -> Int {
+  let mut count = 0
+  let mut i = after + 1
+  while i < Array::length(stmts) {
+    if stmt_owns_equals_marker(Array::get(stmts, i), type_name) {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn refresh_suberror_owned_bindings(env: TypeEnv, suberror_name: String, variants: Array[(String, Array[Type])], markers_to_skip: Int) -> TypeEnv {
   let marker = String::concat(suberror_name, "::equals")
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => if name == marker {
-      let mut refreshed_rest = rest
-      let mut vi = Array::length(variants) - 1
-      while vi >= 0 {
-        let (variant_name, payloads) = Array::get(variants, vi)
-        let ctor_ty = if Array::length(payloads) == 0 {
-          CtEnum(suberror_name)
-        } else {
-          CtFn(payloads, CtEnum(suberror_name), constructor_dependency_row(Array::length(payloads)))
-        }
-        refreshed_rest = replace_first_env_binding(refreshed_rest, variant_name, ctor_ty, [
-          false
-        ])
-        if Array::length(payloads) > 0 {
-          refreshed_rest = replace_first_env_binding(refreshed_rest, fn_return_env_name(variant_name), CtEnum(suberror_name), [
+      if markers_to_skip > 0 {
+        EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip - 1))
+      } else {
+        let mut refreshed_rest = rest
+        let mut vi = Array::length(variants) - 1
+        while vi >= 0 {
+          let (variant_name, payloads) = Array::get(variants, vi)
+          let ctor_ty = if Array::length(payloads) == 0 {
+            CtEnum(suberror_name)
+          } else {
+            CtFn(payloads, CtEnum(suberror_name), constructor_dependency_row(Array::length(payloads)))
+          }
+          refreshed_rest = replace_first_env_binding(refreshed_rest, variant_name, ctor_ty, [
             false
           ])
-        } else {
-          ()
+          if Array::length(payloads) > 0 {
+            refreshed_rest = replace_first_env_binding(refreshed_rest, fn_return_env_name(variant_name), CtEnum(suberror_name), [
+              false
+            ])
+          } else {
+            ()
+          }
+          vi = vi - 1
         }
-        vi = vi - 1
+        EnvBind(name, binding, refreshed_rest)
       }
-      EnvBind(name, binding, refreshed_rest)
     } else {
-      EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants))
+      EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip))
     },
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_suberror_owned_bindings(rest, suberror_name, variants), params, method_gens),
-    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
-    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
-    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
-    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_suberror_owned_bindings(rest, suberror_name, variants)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
     EnvFlat(bindings) => EnvFlat(bindings),
-    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_suberror_owned_bindings(rest, suberror_name, variants))
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip))
   }
 }
 
@@ -4254,7 +4287,7 @@ fn refresh_completed_suberror_env(stmts: Array[Stmt], env: TypeEnv, defs: Array[
         if idx >= 0 {
           match Array::get(defs, idx) {
             TDEnum(_, _, variants) => {
-              refreshed = refresh_suberror_owned_bindings(refreshed, name, variants)
+              refreshed = refresh_suberror_owned_bindings(refreshed, name, variants, later_equals_owner_count(stmts, i, name))
             },
             _ => ()
           }
