@@ -6903,6 +6903,41 @@ if grep -qF '1 passed, 0 failed' "$asdir/gc_builtin_fail.log"; then
   cat "$asdir/gc_builtin_fail.log" >&2
   exit 1
 fi
+# A LOCAL binding, not just a top-level one. The gc guard's first test is
+# `find_local_slot`, and that half has its own failure mode -- a lambda bound to
+# the name is what the Codex review on #2311 flagged, with the builtin returning
+# `0` where the reader's function returns 42. Red-tested: both of these fail on
+# a stage2 carrying #2309 but not #2300.
+cat > "$asdir/gc_local_test.vibe" <<'ASEOF'
+test "local assert_true shadow" {
+  let assert_true = (a: Int) -> Int { a + 41 }
+  assert(assert_true(1) == 42)
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$asdir/gc_local_test.vibe" >"$asdir/gc_local.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/gc_local.log"; then
+  echo "[compiler-gate] FAIL: a LOCAL assert_true binding is still hijacked on the gc lane (#2300)" >&2
+  cat "$asdir/gc_local.log" >&2
+  exit 1
+fi
+cat > "$asdir/gc_local_eq_test.vibe" <<'ASEOF'
+fn make_cmp() -> (Int, Int) -> Int {
+  (a, b) -> { a + b }
+}
+
+test "local assert_eq shadow" {
+  let assert_eq = make_cmp()
+  assert(assert_eq(1, 2) == 3)
+}
+ASEOF
+VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+  bash scripts/vibe_test.sh "$asdir/gc_local_eq_test.vibe" >"$asdir/gc_local_eq.log" 2>&1 || true
+if ! grep -qF '1 passed, 0 failed' "$asdir/gc_local_eq.log"; then
+  echo "[compiler-gate] FAIL: a LOCAL assert_eq binding is still hijacked on the gc lane (#2300)" >&2
+  cat "$asdir/gc_local_eq.log" >&2
+  exit 1
+fi
 # The gc guard reads the closure's local names, so it inherits the same #1095
 # hazard the linear one does: a bare assert inside a lambda must not be seen as
 # a binding. Probe it on this lane too rather than assuming linear's answer
