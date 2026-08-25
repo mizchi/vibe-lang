@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, ImportItem, Stmt, TypeExpr, lookup_registry_builtin, resolve_builtin
+  Expr, ImportItem, Stmt, TypeExpr, is_wellknown_nominal_head, lookup_registry_builtin, resolve_builtin
 }
 
 import @vibe/compiler/syntax {
@@ -965,7 +965,18 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> (Array[String], Array[String]) {
   let mut ri = 0
   while ri < Array::length(referenced) {
     let n = Array::get(referenced, ri)
-    let is_builtin = match resolve_builtin(n) {
+    // `resolve_builtin` answers for builtin VALUES, so alone this test was
+    // narrower than the language: every compiler-owned TYPE head with no value
+    // behind it -- `Map`, `MutMap`, `Future`, `TaskGroup`, ... -- fell through
+    // and got deferred, which exempted that contract's whole transparent type
+    // set from checking. Five contract types were exempt this way
+    // (`HttpRequest`, `HttpResponse`, `Request`, `Response`, `Handler`),
+    // reachable with no typo at all (#2164).
+    //
+    // `is_wellknown_nominal_head` is the checker's OWN list, moved into core so
+    // both ask one question. A second hand-maintained list here is what
+    // produced the hole.
+    let is_builtin = is_wellknown_nominal_head(n) || match resolve_builtin(n) {
       Some(_) => true,
       None => n == "Array" || n == "Option"
     }
