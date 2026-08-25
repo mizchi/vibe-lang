@@ -4251,7 +4251,22 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
     match ann {
-      Some(TyName(tn)) => Array::push(out, (pname, tn)),
+      Some(TyName(tn)) => {
+        Array::push(out, (pname, tn))
+        // A nullary alias can hide a structural parameter type just as a
+        // TyApp annotation can. Preserve a same-spelled in-scope formal before
+        // expanding through the global alias table.
+        if !ty_mentions_name_in(TyName(tn), tparams) {
+          let esh = ty_to_eq_shape(TyName(tn))
+          if shape_is_composite(esh) {
+            Array::push(out, (eq_shape_key(pname), esh))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
       // A generic struct annotation `x: LazyIter[T]` -> track the head name so
       // `for x in <param>` over a generic iterator type resolves (#636).
       // #1199 bug 1: for `x: Array[T]` specifically, ALSO record T under the
