@@ -1808,9 +1808,11 @@ fn is_lambda_start(tokens: Array[Token], pos: Int) -> Bool {
 /// `(cond) {` after `if`/`while`/`match` stays a parenthesized condition.
 /// When the parens are an untyped ident list and `{` follows, the reader
 /// meant a lambda whose parameter needs a type (#2127). `None` when the
-/// previous token is the control keyword that owns the brace.
+/// previous token owns the brace: a control keyword, or a prefix/infix
+/// operator (`if !(n) {`, `if true && (n) {`). `=` is not skipped -- that
+/// is `let f = (n) {`.
 fn untyped_brace_lambda_param(tokens: Array[Token], paren_pos: Int) -> Option[(String, Int)] {
-  let preceded_by_control = if paren_pos <= 0 {
+  let brace_owned_by_enclosing = if paren_pos <= 0 {
     false
   } else {
     match peek(tokens, paren_pos - 1) {
@@ -1819,10 +1821,11 @@ fn untyped_brace_lambda_param(tokens: Array[Token], paren_pos: Int) -> Option[(S
       TMatch => true,
       THandle => true,
       TIn => true,
-      _ => false
+      TNot => true,
+      tok => is_non_pipe_infix(tok)
     }
   }
-  if preceded_by_control {
+  if brace_owned_by_enclosing {
     None
   } else {
     untyped_brace_lambda_param_scan(tokens, paren_pos + 1)

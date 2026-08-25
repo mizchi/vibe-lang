@@ -1236,26 +1236,26 @@ let safe = handle { risky(0) } with { Exception::Throw(msg) => -1 }
 ```
 
 `throw` is call-form only: `throw(NotFound("x"))`, not statement-form
-`throw NotFound("x")` (#2265). `throw(x)` は `perform Exception::Throw(x)` と等価 (#640)。`Exception` は再開不能
-(non-resumable) — `Throw` arm の値がそのまま handle の結果になるため、
-arm 内の `resume(...)` は checker がエラーにする。
-Stage 2 (#640) で `throw(x)` は parse 時に `perform Exception::Throw(x)` へ脱糖され、
-両綴りはパイプライン全体で単一の内部表現になった（printer は `throw(x)` に
-再糖衣する）。`perform Exception::Throw(x)` は effect-row 上も `throw` と同じ扱いで、
-現在の関数が `with Exception` を宣言するか、囲む `handle .. with Exception` で
-放電する必要がある。`fn main with Exception` から escape した例外は runtime
-最外周で診断付きの異常終了へ変換される。
+`throw NotFound("x")` (#2265). `throw(x)` is `perform Exception::Throw(x)`
+(#640). `Exception` is non-resumable: the `Throw` arm's value is the
+handle's result, so `resume(...)` inside that arm is a checker error.
+Parse desugars `throw(x)` to `perform Exception::Throw(x)`; the printer
+re-sugars that shape back to `throw(x)`. Both spellings are the same
+effect-row demand: the function must declare `with Exception`, or an
+enclosing `handle .. with Exception` must discharge it. An exception
+that escapes `fn main with Exception` becomes a diagnosed abort at the
+runtime boundary.
 
-なお **effect の綴りとしての `Error` は退役した** (#1461, #1501)。`Error` が
-effect を名指す位置は2つあり、どちらも parse error になる:
+The effect spelling **`Error` is retired** (#1461, #1501). Either place
+that named an effect is a parse error:
 
 ```
-fn f() -> Int with Error { .. }              // row 項目        -> parse error
-handle { .. } with Error { Throw(_) => .. }  // handle する effect 名 -> parse error
+fn f() -> Int with Error { .. }              // row item        -> parse error
+handle { .. } with Error { Throw(_) => .. }  // handled effect  -> parse error
 ```
 
-どちらも `vibe fmt` が `Exception` へ書き換える (formatter は token 単位なので、
-パーサがもう受理しないソースも変換できる)。
+`vibe fmt` rewrites both to `Exception` (token-level, so it can convert
+sources the parser no longer accepts).
 
 一方 **`perform Error::Throw(x)` は今も通る** — operation 修飾子は row 項目では
 なく、runtime が dispatch する operation を名指しているだけで、そこに row を
