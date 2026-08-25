@@ -8390,7 +8390,20 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
 /// a `Map` arm. It is admitted here for the same reason `Array` is: there is
 /// now a generated comparator that descends into it.
 fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Bool {
-  match eq_expand_alias_ty(t) {
+  // A field written as the owner's own parameter is not the same-spelled
+  // alias, even when one exists in the program (#2281).
+  match t {
+    TyName(n) => if str_array_contains(tparams, n) {
+      true
+    } else {
+      eq_ty_field_is_content_comparable_expanded(eq_expand_alias_ty(t), tparams)
+    },
+    _ => eq_ty_field_is_content_comparable_expanded(eq_expand_alias_ty(t), tparams)
+  }
+}
+
+fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String]) -> Bool {
+  match t {
     TyName(n) => if str_array_contains(tparams, n) {
       // The owner's own type parameter is resolved by the concrete specialized
       // comparator, so it is not a declaration-level failure.
@@ -9712,8 +9725,7 @@ fn ty_mentions_name_in(t: TypeExpr, names: Array[String]) -> Bool {
 /// (`shape_key`'s: Name / `(s1,..)` / `[s]` / "" unknown). Only shapes this
 /// pass can compare are produced; anything else collapses to "" (unknown).
 fn ty_to_eq_shape(t: TypeExpr) -> String {
-  // #2281: classify the alias body so AL[Int] is Array, not TyApp("AL", ...)
-  match eq_expand_alias_ty(t) {
+  match eq_expand_alias_ty(subst_scope_formals_ty(t)) {
     TyName(n) => n,
     TyUnit => "{u}",
     TyTuple(ts) => if Array::length(ts) == 0 {
@@ -9842,7 +9854,7 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
 /// two original heads for one release too long and said something false about
 /// the third; it is spelled by intent now.
 fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
-  match eq_expand_alias_ty(t) {
+  match eq_expand_alias_ty(subst_scope_formals_ty(t)) {
     TyName(n) => n == "Bytes",
     TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) {
       true
