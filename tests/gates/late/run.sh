@@ -7046,8 +7046,105 @@ if [ "$(printf '%s
 ' "$builtin_out" >&2
   exit 1
 fi
+# A TOP-LEVEL definition, not just a lexical binding (Codex review on #2312).
+# `local_idx_hint` is -1 for this shape and `fn_idx_in_list` cannot decide it
+# either -- `eq` is in the linear func table unconditionally, so that index is
+# >= 0 for every call whether or not anyone defined one. Measured before the
+# fix: `0`.
+cat > "$eqdir/toplevel.vibe" <<'EQEOF'
+fn eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+fn main() -> Unit with Stdout {
+  println(Int::to_string(eq(1, 2)))
+}
+EQEOF
+rm -f "$eqdir/toplevel.wasm" "$eqdir/toplevel.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eqdir/toplevel.vibe" "$eqdir/toplevel.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$eqdir/toplevel.wasm" ]; then
+  echo "[compiler-gate] FAIL: the top-level eq probe did not compile (#2309)" >&2
+  cat "$eqdir/toplevel.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+top_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/toplevel.wasm" 2>&1 || true)"
+if ! printf '%s\n' "$top_out" | grep -qx '3'; then
+  echo "[compiler-gate] FAIL: a top-level fn eq is still replaced by the builtin -- want 3 (#2309)" >&2
+  printf '%s\n' "$top_out" >&2
+  exit 1
+fi
+# The guard asks whether THIS program defines the name, and a merged program
+# can contain someone else's top-level `eq` -- @vibe/semver exports one. If the
+# guard were a whole-program name match it would stand the builtin down for
+# every `eq` call in any program that imports semver, which is #711's mistake
+# in a new place. Merged top-level names are module-qualified, so it must not.
+cat > "$eqdir/withsemver.vibe" <<'EQEOF'
+import @vibe/semver { parse }
+
+fn main() -> Unit with Stdout {
+  let _ = parse("1.0.0")
+  println(if eq(7, 7) { "y" } else { "n" })
+  println(if eq(1, 2) { "y" } else { "n" })
+}
+EQEOF
+rm -f "$eqdir/withsemver.wasm" "$eqdir/withsemver.wasm.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FS_COMPILE=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eqdir/withsemver.vibe" "$eqdir/withsemver.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$eqdir/withsemver.wasm" ]; then
+  echo "[compiler-gate] FAIL: the semver+eq probe did not compile (#2309)" >&2
+  cat "$eqdir/withsemver.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+sem_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$eqdir/withsemver.wasm" 2>&1 || true)"
+if [ "$(printf '%s\n' "$sem_out" | tr -d '[:space:]')" != "yn" ]; then
+  echo "[compiler-gate] FAIL: another module's top-level eq stood the builtin down -- want y n (#2309, #711)" >&2
+  printf '%s\n' "$sem_out" >&2
+  exit 1
+fi
+# The gc lane, both shapes plus the builtin. Its `eq` and `not` arms were
+# unconditional, so a bound name of either kind lost to the builtin there while
+# linear honored it.
+cat > "$eqdir/gc_eq_local_test.vibe" <<'EQEOF'
+test "local eq shadow" {
+  let eq = (a: Int, b: Int) -> Int { a + b }
+  assert(eq(1, 2) == 3)
+}
+EQEOF
+cat > "$eqdir/gc_eq_top_test.vibe" <<'EQEOF'
+fn eq(a: Int, b: Int) -> Int {
+  a + b
+}
+
+test "top-level eq shadow" {
+  assert(eq(1, 2) == 3)
+}
+EQEOF
+cat > "$eqdir/gc_not_test.vibe" <<'EQEOF'
+test "local not shadow" {
+  let not = (a: Int) -> Int { a + 41 }
+  assert(not(1) == 42)
+}
+EQEOF
+cat > "$eqdir/gc_builtin_eq_test.vibe" <<'EQEOF'
+test "builtin eq still answers" {
+  assert(eq(7, 7))
+  assert(not(eq(1, 2)))
+}
+EQEOF
+for probe in gc_eq_local gc_eq_top gc_not gc_builtin_eq; do
+  VIBE_TEST_BACKEND=gc VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash scripts/vibe_test.sh "$eqdir/${probe}_test.vibe" >"$eqdir/$probe.log" 2>&1 || true
+  if ! grep -qF '1 passed, 0 failed' "$eqdir/$probe.log"; then
+    echo "[compiler-gate] FAIL: gc probe $probe did not pass (#2309)" >&2
+    cat "$eqdir/$probe.log" >&2
+    exit 1
+  fi
+done
 rm -rf "$eqdir"
-echo "[compiler-gate] a binding named eq wins on Int and Double; the builtin still answers unshadowed ok (#2309)"
+echo "[compiler-gate] a binding named eq wins on Int and Double, local and top-level, linear and gc; another module's eq does not; the builtin still answers unshadowed ok (#2309)"
 
 # 112/112. `vibe check` answers about a `.vpkg` contract (#2280).
 # A contract is the package boundary and the public API surface (ADR-0070),
