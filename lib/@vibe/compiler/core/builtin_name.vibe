@@ -1,9 +1,9 @@
 //# Functions
 
-/// #2125: nominal heads the compiler owns itself. They resolve to
-/// `CtNamed(name, args)` with no `TypeDef` behind them and no entry in
-/// `resolve_builtin`, so they are indistinguishable from a typo by lookup
-/// alone and have to be named.
+/// #2125: nominal heads the compiler owns itself, with the arity each takes.
+/// They resolve to `CtNamed(name, args)` with no `TypeDef` behind them and no
+/// entry in `resolve_builtin`, so they are indistinguishable from a typo by
+/// lookup alone and have to be named.
 ///
 /// This list is EMPIRICAL, not a design: it is what Red runs of
 /// `collect_unknown_type_names` over `lib/**` and `fixtures/**` reported as
@@ -12,26 +12,33 @@
 /// which is a loud failure, not a silent one -- `PromptText` joined the list
 /// that way (`declare PromptText::new(String) -> PromptText`,
 /// builtins/declarations.vibe, names a type `resolve_builtin` does not carry).
+///
+/// It lives in core rather than in the checker because the contract
+/// types-module sentinel needs the SAME answer (#2164). That sentinel used to
+/// ask `resolve_builtin` -- which answers for builtin VALUES -- plus a
+/// hardcoded `Array`/`Option`, a set narrower than the language, so every
+/// contract mentioning `Map` had its transparent types exempted from checking.
+/// Two hand-maintained lists that have to agree is exactly the shape that
+/// produced that hole; there is one list now.
+export fn compiler_owned_type_arity(name: String) -> Option[Int] {
+  if name == "Array" || name == "Option" || name == "Future" || name == "Task" || name == "ArrayBuilder" || name == "FrozenArray" || name == "FixedArray" || name == "MutBytes" {
+    Some(1)
+  } else if name == "Map" || name == "MapBuilder" || name == "Attempt" || name == "TaskGroup" || name == "MutList" {
+    Some(2)
+  } else if name == "TaskHandle" || name == "Sender" || name == "Receiver" || name == "MutMap" {
+    Some(3)
+  } else if name == "ByteStream" || name == "HostStream" || name == "StringBuilder" || name == "PromptText" {
+    Some(0)
+  } else {
+    None
+  }
+}
+
 export fn is_wellknown_nominal_head(name: String) -> Bool {
-  name == "Future"
-  || name == "ByteStream"
-  || name == "HostStream"
-  || name == "Task"
-  || name == "TaskHandle"
-  || name == "TaskGroup"
-  || name == "Sender"
-  || name == "Receiver"
-  || name == "Map"
-  || name == "MapBuilder"
-  || name == "MutList"
-  || name == "MutBytes"
-  || name == "MutMap"
-  || name == "ArrayBuilder"
-  || name == "StringBuilder"
-  || name == "FrozenArray"
-  || name == "FixedArray"
-  || name == "Attempt"
-  || name == "PromptText"
+  match compiler_owned_type_arity(name) {
+    Some(_) => true,
+    None => false
+  }
 }
 
 export fn canonical_builtin_name(name: String) -> String {
