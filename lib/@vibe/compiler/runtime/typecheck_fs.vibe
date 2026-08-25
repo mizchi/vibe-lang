@@ -5338,7 +5338,21 @@ export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: 
   if allow_unstable {
     msgs
   } else {
-    let extra = unstable_import_diagnostics("", source, source)
+    // The scan must never COST diagnostics. `collect_all_diagnostics` above
+    // uses the RECOVERING lexer and returns a lex error as a diagnostic;
+    // `unstable_import_diagnostics` uses `lex_with_offsets`, which throws on
+    // one. Letting that throw escape took the whole call down, and
+    // `lsp_diagnostics_safe_with_unstable` turns a throw into `[]` -- so a
+    // buffer with any syntax error published as CLEAN. Measured: an invalid
+    // character reported one error before this function existed and none
+    // after (Codex review on #2313).
+    //
+    // A file that does not lex has no import declarations worth scanning, so
+    // degrading this half to "no unstable diagnostics" loses nothing, while
+    // the lexer's own diagnostics -- the ones the reader needs first -- survive.
+    let extra = handle {
+      unstable_import_diagnostics("", source, source)
+    } with { Exception::Throw(_) => array_empty() }
     let mut i = 0
     while i < Array::length(extra) {
       Array::push(msgs, Array::get(extra, i))

@@ -7559,8 +7559,51 @@ if grep -q 'VIBE_UNSTABLE=1' "$lspudir/optin.bin" 2>/dev/null; then
   echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not suppress the opt-in diagnostic in the LSP (#2297)" >&2
   exit 1
 fi
+# ...and the scan must never COST diagnostics. `collect_all_diagnostics` uses
+# the recovering lexer and reports a lex error; the unstable scan uses
+# `lex_with_offsets`, which THROWS on one. The first version let that throw
+# escape, and `lsp_diagnostics_safe_with_unstable` turns a throw into `[]` --
+# so a buffer with any syntax error published as CLEAN. That is strictly worse
+# than the missing warning this section exists for, and it is invisible unless
+# something asserts on a file that does not lex.
+python3 - "$lspudir/lex.bin" <<'PYEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+# A lexer error and no unstable import at all: the scan still runs (no grant),
+# so this is the shape that regressed.
+src = 'let x = `\nexport let main = () -> Int { 0 }\n'
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate_lex.vibe", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+PYEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$lspudir/lex.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$lspudir/lex.out" 2>/dev/null || true
+if grep -q '"diagnostics":\[\]' "$lspudir/lex.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a buffer with a lexer error published NO diagnostics -- the unstable scan swallowed them (#2297)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$lspudir/lex.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"severity":1' "$lspudir/lex.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the lexer error is not published as an error severity (#2297)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$lspudir/lex.out" >&2 || true
+  exit 1
+fi
 rm -rf "$lspudir"
-echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, and the opt-in suppresses it ok (#2297)"
+echo "[compiler-gate] vibe lsp reports the ADR-0068 opt-in, the opt-in suppresses it, and a lex error still reports ok (#2297)"
 
 # 116/116. A diagnostic on a trait method names the TRAIT, not the synthesized
 #          witness struct (#2286).

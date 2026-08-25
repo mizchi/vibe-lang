@@ -1155,6 +1155,21 @@ export fn strip_executable_wasm_env(wasm: Bytes, entry_name: String) -> Bytes wi
 export fn write_linked_debug_build_checked(input_path: String, output_path: String, entry_name: String, allow_unstable: Bool) -> Unit with Exception + Fs {
   unstable_closure_reset()
   let (entry_bytes, linked_dep_specs) = build_linked_debug_entry(input_path, entry_name)
+  // STAGE every dependency before the verdict. `compile_debug_library` reads
+  // the dependency again, so compiling them after the check would authorize
+  // one snapshot and publish another -- a dependency that gains an
+  // `@vibe/concurrent` import in that window would be compiled and written
+  // unchecked (Codex review on #2313). Compiling first means the record the
+  // check consults covers every byte that will be published.
+  let output_dir = linked_output_dir(output_path)
+  let staged = array_empty()
+  let mut si = 0
+  while si < Array::length(linked_dep_specs) {
+    let (module_name, dep_path) = Array::get(linked_dep_specs, si)
+    let lib_output_path = String::concat(output_dir, String::concat("/", String::concat(module_name, ".wasm")))
+    Array::push(staged, (lib_output_path, compile_debug_library(dep_path)))
+    si = si + 1
+  }
   if allow_unstable {
     ()
   } else {
@@ -1165,7 +1180,13 @@ export fn write_linked_debug_build_checked(input_path: String, output_path: Stri
       ()
     }
   }
-  write_linked_debug_outputs(output_path, entry_bytes, linked_dep_specs)
+  Fs::write_bytes(output_path, entry_bytes)
+  let mut pi = 0
+  while pi < Array::length(staged) {
+    let (lib_output_path, lib_bytes) = Array::get(staged, pi)
+    Fs::write_bytes(lib_output_path, lib_bytes)
+    pi = pi + 1
+  }
 }
 
 export fn write_linked_debug_build(input_path: String, output_path: String, entry_name: String) -> Unit with Exception + Fs {
