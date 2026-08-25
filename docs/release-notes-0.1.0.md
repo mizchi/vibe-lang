@@ -126,6 +126,7 @@ the edit that fixes them rather than an internal pass name.
   SemVer stability for, and `pkf run check-freeze-surface` derives the symbol
   list from that document and probes each name against the compiler — a name it
   promises cannot quietly stop existing.
+- The project is licensed under Apache License 2.0.
 
 ## Known gaps
 
@@ -149,4 +150,5 @@ the edit that fixes them rather than an internal pass name.
 - [ ] `VIBE_VERSION` bumped from `0.1.0-dev` to `0.1.0`
       (`scripts/build_release_assets.sh` fails the build if it does not match
       the tag)
+- [ ] LICENSE is Apache-2.0 (not MIT)
 - [ ] `pkf run release-check` green on the tagged commit

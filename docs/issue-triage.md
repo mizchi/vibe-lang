@@ -1,7 +1,7 @@
 # Issue triage — deciding kind and priority mechanically
 
-Last updated: 2026-08-07 (after the first pass; four issues closed the same day
-by done-verification, and the parallel-lane section added).
+Last updated: 2026-08-25 (applied state rewritten against the open set;
+the 2026-08-07 P0/P1 lists are closed).
 
 So that "what do I do next" does not have to be re-derived every time, **each
 label means exactly one thing**. Every issue is labelled independently on three
@@ -53,48 +53,46 @@ the same shelf as a real bug.
 An `epic` is an index, so it is never itself the thing to work on (look at its
 sub-issues).
 
-## Applied state as of 2026-08-07
+## Applied state as of 2026-08-25
 
-### P0 — silently wrong (4)
+Open PRs occupy files. **Do not start a new branch on a file an open PR already
+edits.** Merge or land that PR first, then take the leftover.
 
-| # | blocker | what |
+| occupied files | PR | what it is holding |
 |---|---|---|
-| #1526 | | `==` gives three different answers for an Array (bare = reference / inside a struct or enum = structural / inside a tuple = reference). **The semantics are decided: unify on structural equality (ADR-0097)** — only the implementation is left |
-| #1527 | | a `Bool` returned from a function interpolates as `1` / `0` |
-| #1529 | | a bounded call `B::method(x)` breaks unless the struct the impl targets is first in the file |
-| #1533 | ✔ | importing a non-exported name passes the checker. A prerequisite for the import-mandatory phase of ADR-0096 (#1455) |
+| `checker/checker_stmt.vibe` | [#2294](https://github.com/mizchi/vibe-lang/pull/2294) | #2290 / #2292. After merge: #2293 |
+| `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_adapter.vibe`, `cli_support.vibe`, `lsp/lsp_server.vibe`, fmt scripts | [#2296](https://github.com/mizchi/vibe-lang/pull/2296) | #2283, ADR-0068 opt-in, `vibe fmt` self-blame. CI is red (freeze-surface `Map::*` + `VIBE_UNSTABLE` selector). After merge: **P0 #2281**, then #2284 / #2285 / #2297 / #2280 |
 
-(#1525, the local-enum miscompile, was resolved by the parser rejection in
-`ab031d2` and is closed.)
+Independent of both PRs: Apache-2.0 relicense (this file's companion change),
+#2287 (re-export alias merge).
+
+### P0 — silently wrong (1)
+
+| # | wait for | what |
+|---|---|---|
+| #2281 | #2296 (`desugar_trait_dict.vibe`) | a parameterized alias wrapping a structural container (`type AL[V] = Array[V]`) loses structural `==` and answers by identity |
 
 ### P1 — crashes, or cannot be written (7)
 
-| # | blocker | what |
+| # | wait for | what |
 |---|---|---|
-| #1536 | ✔ | see-through in the suspend CPS split. Row-free closure param flow, eager `Stream::next` retarget, and direct if-condition / match-scrutinee are done. Remaining: row-variable callee, residual literal-param flow, compound selection input |
-| #1511 | | `handle`'s eligibility constraint slips past the type checker. (c) the error text is done; (b) is the same mechanism as a slice of #1536 |
-| #1520 | | validating the builtin registry. Proposal 1 is done; remaining: a bulk tidy of 85 double declarations plus proposal 3's positive-example corpus |
-| #1508 | | a test / bench that runs `Http`. The row syntax is done; remaining: `Http::*` lowering on the test/bench path |
-| #1514 | | diagnostic positions come in three tiers (C is done, the rest is not) |
-| #1446 | | accepting an abortive effect in a guard's else as divergence |
-| #1553 | | 2.6 GiB guest heap on a cold cache. Decided: set no target figure yet; per-phase measurement plus a 3.5 GiB watch comes first |
-
-(#1500 optional arguments and #1503 trait-instance resolution are implemented
-and closed; #1547 finalizers was settled as "not now" and closed.)
+| #2283 | in #2296 | a user-defined `assert_eq/2` is claimed by the builtin lowering |
+| #2284 | after #2296 | ADR-0068 opt-in scans only the entry; a sibling import bypasses it |
+| #2287 | free | `export ./dep.vibe { cmp as compare }` dies at codegen |
+| #2280 | after #2296 (`cli_adapter`) | `vibe check` cannot parse a `.vpkg` |
+| #2293 | after #2294 | two imports binding the same local name still last-win |
+| #2164 | after #2294 if it touches checker type names | contract transparent types have no provenance for typos |
+| #2199 | rides #1987 | OOB abort names operation/index/length; source provenance and the `[crash debug]` dump remain |
 
 ### P2 carrying blocker (the entrance to a subtree)
 
 | # | what it is holding up |
 |---|---|
-| #1541 | wasm-gc Phase C (#1542) / Phase D (#1543) |
-| #1548 | incremental P0-3 (#1550) |
-| #1549 | incremental P0-3 (#1550) |
-| #1550 | incremental P3 codegen reuse (#1552) |
+| #1959 | persist semantic module / SCC reuse (#1960) |
 
 ### epics (indexes, not things to work on)
 
-#1230 async / #1238 formal / #1262 RC and region / #1331 wasm-gc /
-#1341 ADR-0089 D3 / #1379 incremental
+#2002 docs audience / #2001 scripts layer / #2269 HKT / #1379 incremental
 
 ## How to use sub-issues
 
@@ -130,11 +128,11 @@ serially. Running across lanes is free.**
 
 | lane | file area | issues | notes |
 |---|---|---|---|
-| **A. checker/parser** | `lib/@vibe/compiler/checker/`, `parser/` | #1533; the check-phase detection of #1536(c) + #1511(b); #1520 proposal 3 | |
-| **B. codegen (linear)** | `codegen/expr/compile_call.vibe`, `builtin_bodies/` | #1527, #1529, #1526 (ADR-0097 decided), #1538-1 | compile_call is a shared point, so serialize within the lane |
-| **C. wasm-gc** | `codegen/gc/` | #1541 → #1542 | ADR-0095 structurally guarantees no conflict with linear |
-| **D. incremental/cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1548 → #1549 → #1550 | |
-| **F. runtime/host** | `scripts/wasm_vibe_host_runner.js`, `runtime/viberun` | the measurement in #1553, #1540 | |
+| **A. checker type-env** | `checker/checker_stmt.vibe` | #2294, then #2293 / #2164 | serialize on `checker_stmt` |
+| **B. eq-shape / call / cli** | `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_*.vibe` | #2296, then **#2281**, then #2284 / #2285 / #2297 / #2280 | P0 #2281 lives in `ty_to_eq_shape`; do not fork this file while #2296 is open |
+| **C. re-export merge** | `core/import_alias_rewrite.vibe`, merge | #2287 | independent of A and B |
+| **D. incremental/cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960 | |
+| **F. runtime/host** | `runtime/viberun`, abort provenance | #2199 (rides #1987) | |
 
 Within a lane the order is blocker first, then by priority. An entry added to a
 gate script must always be **appended at the end** — inserting into the middle of
