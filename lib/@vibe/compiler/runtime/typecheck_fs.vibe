@@ -5668,7 +5668,15 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
   } else {
     ()
   }
-  collect_all_diagnostics_on(input_path, pin_blanked)
+  // #2317: the version directive is BLANKED out of `pin_blanked` (measured --
+  // `scan_package_header` blanks every directive it recognizes), so the
+  // effective-declaration filter has to be told it from the RAW source. Read
+  // it here, where that source is still in hand; a header the scanner itself
+  // rejects has already returned above, so this cannot throw a second time.
+  let pkg_version = handle {
+    extract_package_version(source)
+  } with { Exception::Throw(_) => "" }
+  collect_all_diagnostics_on(input_path, pin_blanked, pkg_version)
 }
 
 /// #2314, the LSP half of #2280: a `.vpkg` is a list of BODYLESS declarations,
@@ -6173,7 +6181,7 @@ fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Arra
   [locate_type_error(source, msg)]
 }
 
-fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
+fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
     // A contract LEXES like a program, so it gets the recovering lexer and
     // every lex error, the same as the branch below (#2314 review). Only the
@@ -6221,7 +6229,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
         // build drops (a legacy `let version: String` under a real `version`
         // directive), so the two lanes cannot disagree about which shapes
         // count. Measured: declared twice, that one IS accepted by the build.
-        let cdecls = contract_effective_decls(cdecls_raw, extract_package_version(source))
+        let cdecls = contract_effective_decls(cdecls_raw, pkg_version)
         let dup_at = contract_duplicate_decl_index(cdecls)
         if dup_at >= 0 {
           contract_duplicate_diagnostic(source, cstarts, cdecls, cdecls_raw, cdecl_at, dup_at)
