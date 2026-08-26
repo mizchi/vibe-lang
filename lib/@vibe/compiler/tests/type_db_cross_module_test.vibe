@@ -1001,26 +1001,41 @@ test "projected checker does not let builtin assert_eq claim a re-export alias" 
   inspect(String::contains(message, "unknown name: assert_eq"), "true")
 }
 
-test "projected checker root keeps path and source-order winners with cached payloads" {
+test "projected checker root keeps path with cached payloads" {
   let first_path = "workspace/first.vibe"
   let second_path = "workspace/second.vibe"
   let shared_source = "export let value = 1\nexport let other = 2"
   let first_env = env_cache(checked_test_env(shared_source))
   let second_env = env_cache(checked_test_env(shared_source))
-  let source = "import ./first.vibe { value as firstCopy, value as chosen, other as clash }\nimport ./second.vibe { value as secondCopy, value as chosen }\nimport ./first.vibe { value as clash }"
+  let source = "import ./first.vibe { value as firstCopy, other as otherCopy }\nimport ./second.vibe { value as secondCopy }"
   let checked = projected_checked_env(source, "workspace/main.vibe", [
     first_path,
-    second_path,
-    first_path
+    second_path
   ], [(first_path, first_env), (second_path, second_env)])
-  match (env_lookup(checked, "chosen"), env_lookup(checked, "clash")) {
-    (Some(CtInt), Some(CtInt)) => (),
+  match (env_lookup(checked, "firstCopy"), env_lookup(checked, "secondCopy"), env_lookup(checked, "otherCopy")) {
+    (Some(CtInt), Some(CtInt), Some(CtInt)) => (),
     _ => assert(false)
   }
   assert_module_origin(checked, "firstCopy", first_path, "value")
   assert_module_origin(checked, "secondCopy", second_path, "value")
-  assert_module_origin(checked, "chosen", second_path, "value")
-  assert_module_origin(checked, "clash", first_path, "value")
+  assert_module_origin(checked, "otherCopy", first_path, "other")
+}
+
+test "projected checker rejects two imports binding the same local" {
+  let first_path = "workspace/first.vibe"
+  let second_path = "workspace/second.vibe"
+  let shared_source = "export let value = 1"
+  let first_env = env_cache(checked_test_env(shared_source))
+  let second_env = env_cache(checked_test_env(shared_source))
+  let source = "import ./first.vibe { value as chosen }\nimport ./second.vibe { value as chosen }"
+  let message = handle {
+    let _ = projected_checked_env(source, "workspace/main.vibe", [
+      first_path,
+      second_path
+    ], [(first_path, first_env), (second_path, second_env)])
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(message, "duplicate declaration: chosen"))
 }
 
 test "projected checker root local hoist shadows imports while generic replay stays legacy" {
