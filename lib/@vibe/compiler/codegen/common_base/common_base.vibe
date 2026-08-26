@@ -2387,6 +2387,59 @@ export fn rc_shadow_reserve() -> Int {
   536870912
 }
 
+/// Sequence counter at the start of the byte table. Heap vptrs begin at
+/// `heap_start` (>= 64 KiB), so bytes 0..3 are unused as a mark.
+export fn rc_shadow_seq_addr() -> Int {
+  rc_shadow_base()
+}
+
+export fn emit_shadow_bump_seq(buf: Bytes) -> Unit {
+  emit_i32_const(buf, rc_shadow_seq_addr())
+  emit_i32_const(buf, rc_shadow_seq_addr())
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+/// Print `<prefix><current_seq>; freed at site <stored>\n` then trap.
+/// `uaf_abort_idx < 0` keeps the historical bare `unreachable`.
+export fn emit_shadow_uaf_trap(buf: Bytes, push_vptr: () -> Unit, uaf_abort_idx: Int, prefix_fat: Int) -> Unit {
+  if uaf_abort_idx < 0 {
+    bytebuf_push(buf, 0)
+  } else {
+    emit_i64_const(buf, prefix_fat)
+    emit_i32_const(buf, rc_shadow_seq_addr())
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_s(buf)
+    push_vptr()
+    emit_i32_const(buf, 4)
+    emit_i32_add(buf)
+    emit_i32_const(buf, rc_shadow_base())
+    emit_i32_add(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_s(buf)
+    emit_call(buf, uaf_abort_idx)
+  }
+}
+
+export fn emit_shadow_mark_freed(buf: Bytes, push_vptr: () -> Unit) -> Unit {
+  // vptrs are 8-aligned, so +4 sits between this mark byte and the next.
+  push_vptr()
+  emit_i32_const(buf, 4)
+  emit_i32_add(buf)
+  emit_i32_const(buf, rc_shadow_base())
+  emit_i32_add(buf)
+  emit_i32_const(buf, rc_shadow_seq_addr())
+  emit_i32_load(buf, 2, 0)
+  emit_i32_store(buf, 2, 0)
+  push_vptr()
+  emit_i32_const(buf, rc_shadow_base())
+  emit_i32_add(buf)
+  emit_i32_const(buf, 1)
+  emit_i32_store8(buf, 0, 0)
+}
+
 /// #720: the rc field is the LOW 24 BITS of the rc word (the class id lives in
 /// the high byte of the same word at vptr-1). A raw `store(load(addr)+1)` at
 /// rc == 0xFFFFFF carries into the class byte and wraps rc to 0 -- a couple of
@@ -2448,7 +2501,7 @@ export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_f
   if dup_fn_idx >= 0 {
     emit_rc_dup_tagtest_call(buf, local_idx, dup_fn_idx)
   } else {
-    emit_rc_dup_inline(buf, local_idx, rc_shadow)
+    emit_rc_dup_inline(buf, local_idx, rc_shadow, 0 - 1, 0)
   }
 }
 
@@ -2496,7 +2549,7 @@ fn emit_rc_dup_tagtest_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit
 /// The guard expanded in place. Kept as the single definition of what a dup
 /// MEANS: gen_rc_dup_body builds the out-of-line helper by calling this with
 /// local 0, so the two forms cannot drift apart.
-export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Unit {
+export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_abort_idx: Int, prefix_fat: Int) -> Unit {
   emit_local_get(buf, local_idx)
   emit_i64_const(buf, 1)
   emit_i64_and(buf)
@@ -2507,10 +2560,12 @@ export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Uni
   emit_i64_shr_s(buf)
   emit_i64_eqz(buf)
   emit_if_void(buf)
-  // #715 recurrence guard (VIBE_RC=shadow): trap via `unreachable` if the
-  // shadow byte at RC_SHADOW_BASE+vptr says this block was already freed --
-  // a dup-of-freed would otherwise increment the free-list NEXT link.
+  // #715 recurrence guard (VIBE_RC=shadow): trap if the shadow byte at
+  // RC_SHADOW_BASE+vptr says this block was already freed -- a dup-of-freed
+  // would otherwise increment the free-list NEXT link. #1987: the trap names
+  // the current seq and the freeing seq, not a bare unreachable.
   if rc_shadow {
+    emit_shadow_bump_seq(buf)
     emit_local_get(buf, local_idx)
     emit_i64_const(buf, -2)
     emit_i64_and(buf)
@@ -2519,7 +2574,12 @@ export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool) -> Uni
     emit_i32_add(buf)
     emit_i32_load8_u(buf, 0, 0)
     emit_if_void(buf)
-    bytebuf_push(buf, 0)
+    emit_shadow_uaf_trap(buf, () -> {
+      emit_local_get(buf, local_idx)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+    }, uaf_abort_idx, prefix_fat)
     emit_end(buf)
   } else {
     ()

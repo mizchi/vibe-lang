@@ -4181,6 +4181,25 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   if !array_contains_str(str_strs, "\n") {
     Array::push(str_strs, "\n")
   }
+  if rc_shadow {
+    if !array_contains_str(str_strs, "dup of freed value at site ") {
+      Array::push(str_strs, "dup of freed value at site ")
+    } else {
+      ()
+    }
+    if !array_contains_str(str_strs, "drop of freed value at site ") {
+      Array::push(str_strs, "drop of freed value at site ")
+    } else {
+      ()
+    }
+    if !array_contains_str(str_strs, "; freed at site ") {
+      Array::push(str_strs, "; freed at site ")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
   let src_str_base = Array::length(str_strs)
   let num_src_pairs = Array::length(srcs)
   let mut __src_i = 0
@@ -5152,11 +5171,23 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // number, which is order-independent.
   let print_i64_raw_idx = map_probe_index_idx + 1
   let oob_abort_idx = print_i64_raw_idx + 1
+  // #1987: shadow-only UAF abort reuses gen_oob_abort_body with a different
+  // middle fragment. Off when rc_shadow is false so a normal RC build stays
+  // byte-identical (ADR-0062).
+  let shadow_uaf_abort_idx = if rc_shadow {
+    oob_abort_idx + 1
+  } else {
+    0 - 1
+  }
   // ADR-0090 (#1262) region arena bodies. Registered LAST and only when the
   // module has a region, so a module without one is byte-identical to what it
   // was before the arena existed (and max_builtin_func_idx below follows).
   let region_arr_new_idx = if need_region_arena {
-    oob_abort_idx + 1
+    (if rc_shadow {
+      shadow_uaf_abort_idx
+    } else {
+      oob_abort_idx
+    }) + 1
   } else {
     -1
   }
@@ -5503,6 +5534,8 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // user-function call target in the module by the number of builtins added).
   let max_builtin_func_idx = if need_region_arena {
     region_bytes_new_idx
+  } else if rc_shadow {
+    shadow_uaf_abort_idx
   } else {
     oob_abort_idx
   }
@@ -5946,10 +5979,20 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   push_builtin(gen_bytes_slice_body(enable_rc, bytes_new_idx, bytes_get_idx, bytes_push_idx), 2, 1, 8)
   push_builtin(gen_bytes_from_array_body(enable_rc, arr_len_idx, arr_get_idx, bytes_new_idx, bytes_push_idx), 2, 1, 3)
   push_builtin(gen_bytes_to_array_body(enable_rc, arr_new_idx, arr_push_idx, bytes_len_idx, bytes_get_idx), 2, 1, 3)
+  let uaf_dup_fat = if rc_shadow {
+    oob_fat_of("dup of freed value at site ")
+  } else {
+    0
+  }
+  let uaf_drop_fat = if rc_shadow {
+    oob_fat_of("drop of freed value at site ")
+  } else {
+    0
+  }
   if enable_rc {
-    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base), 5, 1, 1)
+    push_builtin(gen_rc_drop_body(rc_drop_idx, rc_shadow, rc_bins_base, shadow_uaf_abort_idx, uaf_drop_fat), 5, 1, 1)
     push_builtin(gen_rc_alloc_body(rc_shadow, rc_bins_base), 5, 0, 3)
-    push_builtin(gen_rc_dup_body(rc_shadow), 0, 0, 1)
+    push_builtin(gen_rc_dup_body(rc_shadow, shadow_uaf_abort_idx, uaf_dup_fat), 0, 0, 1)
   } else {
     ()
   }
@@ -5972,6 +6015,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // oob_abort_idx slot order fixed above.
   push_builtin(gen_print_i64_raw_body(), 3, 1, 1)
   push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_mid_fat, oob_nl_fat), 0, 0, 7)
+  if rc_shadow {
+    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
+  } else {
+    ()
+  }
   // ADR-0090 (#1262): must stay LAST, in this order -- max_builtin_func_idx
   // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
   // builtin, and num_generated/func_offset are derived from it.
@@ -8578,6 +8626,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   Array::set(gen_sec_names, compact_fingerprint_hash_idx - num_imported_funcs, "__rt_compact_fingerprint_hash")
   Array::set(gen_sec_names, print_i64_raw_idx - num_imported_funcs, "__rt_print_i64_raw")
   Array::set(gen_sec_names, oob_abort_idx - num_imported_funcs, "__rt_oob_abort")
+  if rc_shadow {
+    Array::set(gen_sec_names, shadow_uaf_abort_idx - num_imported_funcs, "__rt_shadow_uaf_abort")
+  } else {
+    ()
+  }
   let name_sec_names = gen_sec_names
   let mut usn_i = 0
   while usn_i < num_user_funcs {
