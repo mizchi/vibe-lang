@@ -25,6 +25,7 @@ import @vibe/compiler/checker {
   detect_unbound_nonunit_returns,
   detect_unused_imports,
   import_item_kind_errors,
+  report_unknown_type_names_deferred_validation,
   typing_semantics_seed,
   validate_derives
 }
@@ -84,6 +85,8 @@ import @vibe/compiler/contract {
   contract_duplicate_decl_index,
   contract_effective_decl_indices,
   contract_effective_decls,
+  contract_type_provenance,
+  contract_types_item_names,
   contract_unsupported_stmt_index,
   extract_package_version,
   extract_require_pins,
@@ -5972,37 +5975,106 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
 /// #2317: the contract checks a single buffer CAN decide, beyond the grammar.
 ///
 /// `parse_contract_program` plus `classify_contract_stmts` answer "is this
-/// shaped like a contract". They do not answer everything the loader does, and
-/// three of those answers need nothing but the parsed statements -- so the
-/// buffer lane reported clean for contracts the build refuses. Measured, all
-/// on complete packages through `vibe check`:
+/// shaped like a contract". They do not answer everything the loader does, but
+/// derive names and type-head provenance need only the parsed contract. Before
+/// these checks the buffer lane reported clean for contracts the build refused:
 ///
 ///   struct P { x: Int } derive(Foo)  -> unknown trait: Foo
-///   fn f(..) declared twice          -> contract facade: some declarations
-///                                       have no implementation file
+///   struct P { x: Intt }              -> unknown type Intt in field x
 ///
-/// The duplicate message is the loader's, and it names the wrong cause: `f` IS
-/// implemented, and the duplicate is what breaks the facade. This lane says
-/// what is actually wrong instead, which is the point of reporting it here at
-/// all.
+/// Both rules call checker/contract-owned functions: `validate_derives`, the
+/// checker's unknown-type walker, and `contract_type_provenance`. There is no
+/// second builtin-name or import-kind table here for the lanes to disagree on.
 ///
-/// `validate_derives` is the CHECKER's own function, exported for this, so the
-/// derive message is identical to the build's rather than a second
-/// implementation that could drift.
-///
-/// Positions come from searching the buffer for the offending name, the way
-/// `locate_by_marker` already places `unknown name:` and friends. Statements
-/// carry no offsets (`SLet(Bool, Bool, String, Option[TypeExpr], Expr)` has no
-/// span), and adding them is a change at every construction site.
-fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt]) -> Array[String] with Exception {
+/// Unknown type messages are declaration-granular, matching the materialized
+/// types module's source mapping: `stmt_at` carries the parser's token index and
+/// `starts` converts it to the contract's byte offset. The message itself names
+/// the field or payload, so the reported edit remains actionable.
+fn contract_type_shadow(stmts: Array[Stmt], type_defs: Array[Stmt], opaque_names: Array[(String, Int)]) -> Array[String] {
+  let out = contract_types_item_names(type_defs)
+  let provenance = contract_type_provenance(stmts, opaque_names)
+  let mut i = 0
+  while i < Array::length(provenance) {
+    let (name, _) = Array::get(provenance, i)
+    Array::push(out, name)
+    i = i + 1
+  }
+  out
+}
+
+fn contract_decl_shadow(base: Array[String], params: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(base) {
+    Array::push(out, Array::get(base, i))
+    i = i + 1
+  }
+  let mut pi = 0
+  while pi < Array::length(params) {
+    Array::push(out, Array::get(params, pi))
+    pi = pi + 1
+  }
+  out
+}
+
+fn contract_append_decl_errors(source: String, starts: Array[Int], stmt_at: Array[Int], stmt_index: Int, raw: Array[String], out: Array[String]) -> Unit {
+  let mut off = 0 - 1
+  if stmt_index >= 0 && stmt_index < Array::length(stmt_at) {
+    let tok = Array::get(stmt_at, stmt_index)
+    if tok >= 0 && tok < Array::length(starts) {
+      off = Array::get(starts, tok)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  let mut i = 0
+  while i < Array::length(raw) {
+    Array::push(out, located_at_offset(source, off, Array::get(raw, i)))
+    i = i + 1
+  }
+}
+
+fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], opaque_names: Array[(String, Int)], type_defs: Array[Stmt]) -> Array[String] with Exception {
   let out = array_empty()
   let derive_names = contract_derive_name_table(tokens, starts)
   let derive_taken = contract_taken_flags(derive_names)
+  let base_shadow = contract_type_shadow(stmts, type_defs, opaque_names)
+  let no_defs: Array[TypeDef] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, _, _, derives, _, _) => contract_derive_errors(source, derive_names, derive_taken, derives, out),
-      SEnum(_, _, _, _, derives) => contract_derive_errors(source, derive_names, derive_taken, derives, out),
+      SStruct(_, name, fields, derives, _, params) => {
+        contract_derive_errors(source, derive_names, derive_taken, derives, out)
+        let raw = array_empty()
+        let shadow = contract_decl_shadow(base_shadow, params)
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fte) = Array::get(fields, fi)
+          let where_label = String::concat(String::concat(String::concat("field `", fname), String::concat("` of struct `", name)), "`")
+          report_unknown_type_names_deferred_validation(fte, no_defs, shadow, EnvEmpty, array_empty(), where_label, raw)
+          fi = fi + 1
+        }
+        contract_append_decl_errors(source, starts, stmt_at, i, raw, out)
+      },
+      SEnum(_, name, params, variants, derives) => {
+        contract_derive_errors(source, derive_names, derive_taken, derives, out)
+        let raw = array_empty()
+        let shadow = contract_decl_shadow(base_shadow, params)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            let where_label = String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`")
+            report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), no_defs, shadow, EnvEmpty, array_empty(), where_label, raw)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+        contract_append_decl_errors(source, starts, stmt_at, i, raw, out)
+      },
       _ => ()
     }
     i = i + 1
@@ -6255,17 +6327,17 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (cdecls_raw, _copaques, cstmts, cstmt_at, cdecl_at) = parse_contract_program_spans(ctokens)
+      let (cdecls_raw, copaques, cstmts, cstmt_at, cdecl_at) = parse_contract_program_spans(ctokens)
       // The classifier is caught SEPARATELY from the parse. Both throw
       // unlocated messages, but they need different anchors: a parse error
       // belongs at the token the parser stopped on, a rejected statement at
       // that statement's own first token (#2317). Letting one handler take
       // both left the classifier's message at the synthetic 0:0 -- the reader
       // is told the contract is broken and not told where.
-      let cls_err = handle {
-        let (_raws, _type_defs) = classify_contract_stmts(cstmts)
-        ""
-      } with { Exception::Throw(m) => m }
+      let (cls_err, ctype_defs) = handle {
+        let (_raws, type_defs) = classify_contract_stmts(cstmts)
+        ("", type_defs)
+      } with { Exception::Throw(m) => (m, array_empty()) }
       if cls_err != "" {
         contract_classify_diagnostic(source, cstarts, cstmts, cstmt_at, cls_err)
       } else {
@@ -6280,7 +6352,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
         if dup_at >= 0 {
           contract_duplicate_diagnostic(source, cstarts, cdecls, ceff_idx, cdecl_at, dup_at)
         } else {
-          contract_semantic_errors(source, ctokens, cstarts, cstmts)
+          contract_semantic_errors(source, ctokens, cstarts, cstmts, cstmt_at, copaques, ctype_defs)
         }
       }
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
