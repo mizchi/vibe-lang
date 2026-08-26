@@ -78,7 +78,8 @@ import @vibe/compiler/contract {
   semver_parts,
   verify_publish_bump,
   vpkg_shared_import_marker,
-  vpkg_types_contract_of_source
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_marker
 }
 
 import ./ingestion_pipeline_telemetry.vibe {
@@ -1259,7 +1260,14 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
           let cached_types_fresh = if cached_types_path == "" {
             true
           } else {
-            vpkg_types_contract_of_source(cached_types_text) != ""
+            // #2317: BOTH markers. A stub from the version that had only
+            // provenance passes a provenance-only check, so the cache keeps
+            // serving it and located diagnostics go on naming the artifact --
+            // the same staleness hole as #2324, one marker later. Every stub
+            // that exists has at least one declaration (none are generated for
+            // a contract with no type family), so a missing decl marker means
+            // the stub predates them.
+            vpkg_types_contract_of_source(cached_types_text) != "" && String::index_of(cached_types_text, vpkg_types_decl_marker) >= 0
           }
           if cached_types_fresh {
             // Same registry note as the facade-cache hit: a warm prefix
@@ -2120,7 +2128,8 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
       let fc_types_fresh = if fc_types_path == "" {
         true
       } else {
-        vpkg_types_contract_of_source(fc_types_text) != ""
+        // #2317: both markers, exactly as in the prefix cache above.
+        vpkg_types_contract_of_source(fc_types_text) != "" && String::index_of(fc_types_text, vpkg_types_decl_marker) >= 0
       }
       if fc_types_fresh {
         // #1840: the registry note must happen on the HIT path too —
