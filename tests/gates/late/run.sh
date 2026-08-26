@@ -8937,8 +8937,35 @@ if ! grep -q '^line 11:1:' "$dupdir/twice.buf" 2>/dev/null; then
   cat "$dupdir/twice.buf" 2>/dev/null >&2 || true
   exit 1
 fi
+# ...and when a contract has BOTH faults, the two lanes recommend the SAME first
+# edit. The loader checked duplicates before classifying while the buffer lane
+# classified first, so one said "declared more than once" and the other
+# "unsupported statement" about the same file (Codex review on #2328) -- a
+# fresh instance of the divergence this work exists to close.
+dup_mk both 'fn plain(x: Int) -> Int
+
+fn plain(x: Int) -> Int
+
+export let z: Int = 5
+' "$dup_plain_impl"
+rm -f "$dupdir/both.imp" "$dupdir/both.imp.diag" "$dupdir/both.buf"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dupdir/both/index.vpkg" "$dupdir/both.imp" main >/dev/null 2>&1 || true
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dupdir/both/index.vpkg" "$dupdir/both.buf" main >/dev/null 2>&1 || true
+# Both must lead with the unsupported statement: it is the more basic fault,
+# and the point is that they AGREE, not which one wins.
+for lane in imp.diag buf; do
+  if ! grep -qF 'unsupported statement in a contract file' "$dupdir/both.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: with a duplicate AND an unsupported statement, the $lane lane does not lead with the unsupported statement (#2328)" >&2
+    cat "$dupdir/both.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
 rm -rf "$dupdir"
-echo "[compiler-gate] a duplicated contract declaration is refused by both lanes and anchored on the repeat; the filtered version shape stays accepted ok (#2317)"
+echo "[compiler-gate] a duplicated contract declaration is refused by both lanes and anchored on the repeat; the filtered version shape stays accepted; both lanes agree on precedence ok (#2317, #2328)"
 
 # 123/123. A LOCATED type diagnostic about a materialized contract names the
 # contract, at the declaration the author wrote (#2317).
