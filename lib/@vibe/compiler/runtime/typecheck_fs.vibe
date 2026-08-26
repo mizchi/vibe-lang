@@ -25,7 +25,8 @@ import @vibe/compiler/checker {
   detect_unbound_nonunit_returns,
   detect_unused_imports,
   import_item_kind_errors,
-  typing_semantics_seed
+  typing_semantics_seed,
+  validate_derives
 }
 
 import @vibe/compiler/checker/artifacts {
@@ -5687,6 +5688,174 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
   dedupe_diagnostics(located)
 }
 
+/// #2317: the contract checks a single buffer CAN decide, beyond the grammar.
+///
+/// `parse_contract_program` plus `classify_contract_stmts` answer "is this
+/// shaped like a contract". They do not answer everything the loader does, and
+/// three of those answers need nothing but the parsed statements -- so the
+/// buffer lane reported clean for contracts the build refuses. Measured, all
+/// on complete packages through `vibe check`:
+///
+///   struct P { x: Int } derive(Foo)  -> unknown trait: Foo
+///   fn f(..) declared twice          -> contract facade: some declarations
+///                                       have no implementation file
+///
+/// The duplicate message is the loader's, and it names the wrong cause: `f` IS
+/// implemented, and the duplicate is what breaks the facade. This lane says
+/// what is actually wrong instead, which is the point of reporting it here at
+/// all.
+///
+/// `validate_derives` is the CHECKER's own function, exported for this, so the
+/// derive message is identical to the build's rather than a second
+/// implementation that could drift.
+///
+/// Positions come from searching the buffer for the offending name, the way
+/// `locate_by_marker` already places `unknown name:` and friends. Statements
+/// carry no offsets (`SLet(Bool, Bool, String, Option[TypeExpr], Expr)` has no
+/// span), and adding them is a change at every construction site.
+fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt]) -> Array[String] with Exception {
+  let out = array_empty()
+  let derive_names = contract_derive_name_table(tokens, starts)
+  let derive_taken = contract_taken_flags(derive_names)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, _, _, derives, _, _) => contract_derive_errors(source, derive_names, derive_taken, derives, out),
+      SEnum(_, _, _, _, derives) => contract_derive_errors(source, derive_names, derive_taken, derives, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `validate_derives`, with each message anchored on the offending trait name.
+///
+/// The checker's messages are bare (`unknown trait: Foo`), because on the
+/// import lane something downstream locates them. Returned bare from here they
+/// render at the synthetic 0:0 and an editor cannot highlight the derive clause
+/// (Codex review on #2320). The trait name appears verbatim in the buffer, so
+/// the same locator the duplicate uses places it -- first occurrence, since a
+/// derive names it once.
+fn contract_derive_errors(source: String, derive_names: Array[(String, Int)], derive_taken: Array[Bool], derives: Array[String], out: Array[String]) -> Unit {
+  let raw = array_empty()
+  validate_derives(derives, raw)
+  let mut i = 0
+  while i < Array::length(raw) {
+    let msg = Array::get(raw, i)
+    let marker = "unknown trait: "
+    let mi = String::index_of(msg, marker)
+    if mi < 0 {
+      Array::push(out, msg)
+    } else {
+      let sstart = mi + String::length(marker)
+      let send = typecheck_ident_run(msg, sstart)
+      if send <= sstart {
+        Array::push(out, msg)
+      } else {
+        let tname = String::substring(msg, sstart, send)
+        Array::push(out, located_at_offset(source, contract_take_anchor(derive_names, derive_taken, tname), msg))
+      }
+    }
+    i = i + 1
+  }
+}
+
+/// Every trait name appearing inside a `derive(..)` clause, in source order.
+/// One pass, so a clause naming several traits yields several entries and a
+/// second clause continues the list -- both of which a per-query scan missed.
+fn contract_derive_name_table(tokens: Array[Token], starts: Array[Int]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let n = Array::length(tokens)
+  let lim = Array::length(starts)
+  let mut i = 0
+  while i < n {
+    let is_derive = match Array::get(tokens, i) {
+      TDerive => true,
+      _ => false
+    }
+    if is_derive {
+      let opens = match Array::get(tokens, i + 1) {
+        TLParen => true,
+        _ => false
+      }
+      if opens {
+        let mut d = i + 2
+        let mut scanning = true
+        while scanning && d < n {
+          match Array::get(tokens, d) {
+            TRParen => {
+              scanning = false
+            },
+            TIdent(tname) => {
+              if d < lim {
+                Array::push(out, (tname, Array::get(starts, d)))
+              } else {
+                ()
+              }
+              d = d + 1
+            },
+            _ => {
+              d = d + 1
+            }
+          }
+        }
+        i = d
+      } else {
+        i = i + 1
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// The offset of the next unconsumed entry named `name`, or -1. `taken` marks
+/// entries already spent, so repeated reports of one name walk forward instead
+/// of all landing on the same occurrence.
+fn contract_take_anchor(table: Array[(String, Int)], taken: Array[Bool], name: String) -> Int {
+  let mut i = 0
+  let mut at = 0 - 1
+  while i < Array::length(table) && at < 0 {
+    let (entry_name, entry_off) = Array::get(table, i)
+    if entry_name == name && !Array::get(taken, i) {
+      Array::set(taken, i, true)
+      at = entry_off
+    } else {
+      i = i + 1
+    }
+  }
+  at
+}
+
+/// A `false` for every entry of `table`.
+fn contract_taken_flags(table: Array[(String, Int)]) -> Array[Bool] {
+  let out: Array[Bool] = []
+  let mut i = 0
+  while i < Array::length(table) {
+    Array::push(out, false)
+    i = i + 1
+  }
+  out
+}
+
+/// Byte offset of `name` where it appears INSIDE a `derive(..)` clause, or -1.
+///
+/// The same reasoning: the trait name can occur anywhere else in the buffer,
+/// so the anchor is the occurrence that sits between `derive (` and the
+/// matching `)`.
+
+/// `msg` prefixed with the position at `off`, or bare when `off` is -1 --
+/// degraded, never wrong, the same rule the parse anchor states for itself.
+fn located_at_offset(source: String, off: Int, msg: String) -> String {
+  if off >= 0 {
+    String::concat(offset_line_col_prefix(source, off), msg)
+  } else {
+    msg
+  }
+}
+
 /// One located diagnostic for a contract parse failure.
 fn contract_parse_diagnostic(source: String, tokens: Array[Token], starts: Array[Int], msg: String) -> Array[String] with Exception {
   if diag_already_located(msg) {
@@ -5736,9 +5905,9 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (_, _, cstmts) = parse_contract_program(ctokens)
+      let (_cdecls, _copaques, cstmts) = parse_contract_program(ctokens)
       let (_raws, _type_defs) = classify_contract_stmts(cstmts)
-      array_empty()
+      contract_semantic_errors(source, ctokens, cstarts, cstmts)
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
     ()

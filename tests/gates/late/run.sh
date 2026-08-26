@@ -8323,3 +8323,141 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
 fi
 rm -rf "$fwddir"
 echo "[compiler-gate] a call is checked identically in both declaration orders; correct forward calls still run; optional params stand down ok (#2318)"
+
+# 119/119. The buffer lane reports an unknown `derive`, and agrees with the
+# build about it (#2317).
+#
+# `parse_contract_program` + `classify_contract_stmts` answer "is this shaped
+# like a contract". They do not answer everything the loader does, so the
+# buffer lane reported CLEAN for contracts `vibe check` refuses. Measured on a
+# complete package before this: `derive(Foo)` -> `unknown trait: Foo` on the
+# import lane and nothing on the buffer lane.
+#
+# ONLY the derive check. A duplicate-declaration check was implemented and
+# removed: the loader accepts shapes it would have rejected -- a duplicated
+# QUALIFIED declaration (`fn Map::get` twice) checks clean on the import lane
+# while an unqualified one is refused, and a repeated legacy
+# `let version: String` is filtered out entirely when the header carries a
+# `version` directive. Deciding duplicates needs the loader's own rules, which
+# is the shared-function work #2317 describes. A diagnostic on a contract the
+# build accepts is worse than the missing one it was meant to add.
+echo "[compiler-gate] 119/119 the buffer lane reports an unknown derive, and agrees with the build (#2317)"
+csdir="_build/_gate_contract_semantic"
+rm -rf "$csdir"; mkdir -p "$csdir/derive" "$csdir/clean" "$csdir/decoyderive" "$csdir/twoderive" "$csdir/multiderive"
+cs_header='name = @gate/contractsem
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+cs_impl_a='export fn a(x: Int) -> Int {
+  x + 1
+}
+'
+printf '%s\nstruct P {\n  x: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/derive/index.vpkg"
+printf '%s' "$cs_impl_a" > "$csdir/derive/impl.vibe"
+printf '%s\nstruct P {\n  x: Int\n} derive(Eq)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/clean/index.vpkg"
+printf '%s' "$cs_impl_a" > "$csdir/clean/impl.vibe"
+# The name occurs EARLIER as an unrelated struct, so an anchor found by
+# counting occurrences lands on the decoy instead of the derive clause.
+printf '%s\nstruct Foo {\n  y: Int\n}\n\nstruct P {\n  x: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/decoyderive/index.vpkg"
+printf '%s' "$cs_impl_a" > "$csdir/decoyderive/impl.vibe"
+# Two clauses naming the same unknown trait: each diagnostic needs its own.
+printf '%s\nstruct A {\n  x: Int\n} derive(Foo)\n\nstruct B {\n  y: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/twoderive/index.vpkg"
+printf '%s' "$cs_impl_a" > "$csdir/twoderive/impl.vibe"
+# One clause naming several unknown traits.
+printf '%s\nstruct A {\n  x: Int\n} derive(Foo, Bar)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/multiderive/index.vpkg"
+printf '%s' "$cs_impl_a" > "$csdir/multiderive/impl.vibe"
+# Each bad contract refused by BOTH lanes, the clean one by neither. Asserting
+# only the buffer lane would not notice the two drifting apart again, and
+# asserting only that it refuses would not notice it refusing a VALID contract
+# -- which is how the duplicate check was caught.
+for probe in derive decoyderive twoderive multiderive clean; do
+  rm -f "$csdir/$probe.imp" "$csdir/$probe.imp.diag" "$csdir/$probe.buf"
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$csdir/$probe/index.vpkg" "$csdir/$probe.imp" main >/dev/null 2>&1; then
+    imp="clean"
+  else
+    imp="refused"
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$csdir/$probe/index.vpkg" "$csdir/$probe.buf" main >/dev/null 2>&1 || true
+  if [ -s "$csdir/$probe.buf" ]; then buf="refused"; else buf="clean"; fi
+  if [ "$probe" = clean ]; then want="clean"; else want="refused"; fi
+  if [ "$imp" != "$want" ] || [ "$buf" != "$want" ]; then
+    echo "[compiler-gate] FAIL: contract '$probe' -- import lane says $imp, buffer lane says $buf, both should say $want (#2317)" >&2
+    cat "$csdir/$probe.imp.diag" 2>/dev/null >&2 || true
+    cat "$csdir/$probe.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# The message is the CHECKER's own -- `validate_derives` is exported for this,
+# so the two lanes cannot word it differently.
+if ! grep -qF 'unknown trait: Foo' "$csdir/derive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the buffer lane does not report an unknown derive with the checker's own message (#2317)" >&2
+  cat "$csdir/derive.buf" >&2 || true
+  exit 1
+fi
+# Anchored, not left at the synthetic 0:0. Line numbers below are read off the
+# generated fixtures, not counted by hand -- an earlier version of this section
+# asserted 12 and 16 for the twoderive clauses, which are on 11 and 15, and CI
+# caught it.
+if ! grep -q '^line 11:' "$csdir/derive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the unknown derive is not anchored on its derive clause (expected line 11) (#2317)" >&2
+  cat "$csdir/derive.buf" >&2 || true
+  exit 1
+fi
+if grep -q '^line 9:' "$csdir/decoyderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the unknown derive anchored on the unrelated 'struct Foo', not on the derive clause (#2317)" >&2
+  cat "$csdir/decoyderive.buf" >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 15:' "$csdir/decoyderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the unknown derive is not anchored on its clause with a decoy present (expected line 15) (#2317)" >&2
+  cat "$csdir/decoyderive.buf" >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 11:' "$csdir/twoderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the first of two identical unknown derives is not anchored on its own clause (expected line 11) (#2317)" >&2
+  cat "$csdir/twoderive.buf" >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 15:' "$csdir/twoderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the SECOND identical unknown derive is not anchored on its own clause (expected line 15) (#2317)" >&2
+  cat "$csdir/twoderive.buf" >&2 || true
+  exit 1
+fi
+if ! grep -qF 'unknown trait: Bar' "$csdir/multiderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the second trait of a multi-name derive is not reported (#2317)" >&2
+  cat "$csdir/multiderive.buf" >&2 || true
+  exit 1
+fi
+if grep -q '^unknown trait' "$csdir/multiderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a multi-name derive left a diagnostic unanchored (#2317)" >&2
+  cat "$csdir/multiderive.buf" >&2 || true
+  exit 1
+fi
+# ...and NO committed contract in the tree may gain a diagnostic. A check that
+# fires on real contracts is worse than one that never fires, and the probes
+# above cannot see it.
+cs_noisy=0
+for contract in $(git ls-files 'lib/**/index.vpkg'); do
+  rm -f "$csdir/tree.out"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$contract" "$csdir/tree.out" main >/dev/null 2>&1 || true
+  if [ -s "$csdir/tree.out" ]; then
+    echo "[compiler-gate] FAIL: committed contract $contract gained a diagnostic (#2317)" >&2
+    cat "$csdir/tree.out" >&2
+    cs_noisy=$((cs_noisy + 1))
+  fi
+done
+if [ "$cs_noisy" -ne 0 ]; then
+  exit 1
+fi
+rm -rf "$csdir"
+echo "[compiler-gate] an unknown derive is refused by both lanes and anchored on its own clause; no committed contract regressed ok (#2317)"
