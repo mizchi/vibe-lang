@@ -25,7 +25,8 @@ import @vibe/compiler/checker {
   detect_unbound_nonunit_returns,
   detect_unused_imports,
   import_item_kind_errors,
-  typing_semantics_seed
+  typing_semantics_seed,
+  validate_derives
 }
 
 import @vibe/compiler/checker/artifacts {
@@ -5687,6 +5688,91 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
   dedupe_diagnostics(located)
 }
 
+/// #2317: the contract checks a single buffer CAN decide, beyond the grammar.
+///
+/// `parse_contract_program` plus `classify_contract_stmts` answer "is this
+/// shaped like a contract". They do not answer everything the loader does, and
+/// three of those answers need nothing but the parsed statements -- so the
+/// buffer lane reported clean for contracts the build refuses. Measured, all
+/// on complete packages through `vibe check`:
+///
+///   struct P { x: Int } derive(Foo)  -> unknown trait: Foo
+///   fn f(..) declared twice          -> contract facade: some declarations
+///                                       have no implementation file
+///
+/// The duplicate message is the loader's, and it names the wrong cause: `f` IS
+/// implemented, and the duplicate is what breaks the facade. This lane says
+/// what is actually wrong instead, which is the point of reporting it here at
+/// all.
+///
+/// `validate_derives` is the CHECKER's own function, exported for this, so the
+/// derive message is identical to the build's rather than a second
+/// implementation that could drift.
+///
+/// Positions come from searching the buffer for the offending name, the way
+/// `locate_by_marker` already places `unknown name:` and friends. Statements
+/// carry no offsets (`SLet(Bool, Bool, String, Option[TypeExpr], Expr)` has no
+/// span), and adding them is a change at every construction site.
+fn contract_semantic_errors(source: String, stmts: Array[Stmt]) -> Array[String] with Exception {
+  let out = array_empty()
+  let seen: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if str_array_contains_name(seen, name) {
+        Array::push(out, located_for_name(source, name, 2, String::concat(String::concat("duplicate declaration in a contract: `", name), "` is declared more than once -- a contract declares each name once, and the facade cannot allocate it twice")))
+      } else {
+        Array::push(seen, name)
+      },
+      SStruct(_, _, _, derives, _, _) => validate_derives(derives, out),
+      SEnum(_, _, _, _, derives) => validate_derives(derives, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn str_array_contains_name(xs: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == name {
+      found = true
+      i = Array::length(xs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// `msg` prefixed with the position of the `occurrence`-th appearance of
+/// `name` in `source` (1-based), or bare when it cannot be found. For a
+/// duplicate that is the SECOND one: the first declaration is fine, and the
+/// second is the line to delete.
+fn located_for_name(source: String, name: String, occurrence: Int, msg: String) -> String {
+  let mut cursor = 0
+  let mut seen = 0
+  let mut at = 0 - 1
+  let total = String::length(source)
+  while seen < occurrence && cursor < total {
+    let rel = String::index_of(String::substring(source, cursor, total), name)
+    if rel < 0 {
+      cursor = total
+    } else {
+      at = cursor + rel
+      seen = seen + 1
+      cursor = at + String::length(name)
+    }
+  }
+  if seen == occurrence && at >= 0 {
+    String::concat(offset_line_col_prefix(source, at), msg)
+  } else {
+    msg
+  }
+}
+
 /// One located diagnostic for a contract parse failure.
 fn contract_parse_diagnostic(source: String, tokens: Array[Token], starts: Array[Int], msg: String) -> Array[String] with Exception {
   if diag_already_located(msg) {
@@ -5738,7 +5824,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     return handle {
       let (_, _, cstmts) = parse_contract_program(ctokens)
       let (_raws, _type_defs) = classify_contract_stmts(cstmts)
-      array_empty()
+      contract_semantic_errors(source, cstmts)
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
     ()
