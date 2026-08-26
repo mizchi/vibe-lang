@@ -99,6 +99,7 @@ fn opq_provider_name(operation: String) -> String {
 
 fn opq_resolution(resolution: Array[(String, String)], operation: String) -> String with Exception {
   let provider = opq_provider_name(operation)
+  let mut default_status = "NotGranted"
   let mut provider_status = ""
   let mut exact_status = ""
   let mut i = 0
@@ -106,6 +107,8 @@ fn opq_resolution(resolution: Array[(String, String)], operation: String) -> Str
     let (name, status) = Array::get(resolution, i)
     if status != "Granted" && status != "NotGranted" {
       throw(String::concat("optional capability resolution for `", String::concat(name, String::concat("` must be `Granted` or `NotGranted`, got `", String::concat(status, "`")))))
+    } else if name == "*" {
+      default_status = status
     } else if name == operation {
       exact_status = status
     } else if name == provider {
@@ -120,8 +123,15 @@ fn opq_resolution(resolution: Array[(String, String)], operation: String) -> Str
   } else if provider_status != "" {
     provider_status
   } else {
-    "NotGranted"
+    default_status
   }
+}
+
+/// Test, bench, and example blocks keep their established ambient-full-authority
+/// contract: every optional capability is granted inside the block regardless
+/// of the non-interactive entry default.
+fn opq_ambient_resolution() -> Array[(String, String)] {
+  [("*", "Granted")]
 }
 
 fn opq_expr_array(items: Array[Expr], resolution: Array[(String, String)]) -> Array[Expr] with Exception {
@@ -204,9 +214,9 @@ export fn lower_optional_performs(stmts: Array[Stmt], resolution: Array[(String,
     match Array::get(stmts, i) {
       SLet(exported, recursive, name, ty, value) => Array::set(stmts, i, SLet(exported, recursive, name, ty, opq_expr(value, resolution))),
       SLetMut(name, ty, value) => Array::set(stmts, i, SLetMut(name, ty, opq_expr(value, resolution))),
-      STest(name, body) => Array::set(stmts, i, STest(name, opq_expr(body, resolution))),
-      SBench(name, body) => Array::set(stmts, i, SBench(name, opq_expr(body, resolution))),
-      SExample(name, body) => Array::set(stmts, i, SExample(name, opq_expr(body, resolution))),
+      STest(name, body) => Array::set(stmts, i, STest(name, opq_expr(body, opq_ambient_resolution()))),
+      SBench(name, body) => Array::set(stmts, i, SBench(name, opq_expr(body, opq_ambient_resolution()))),
+      SExample(name, body) => Array::set(stmts, i, SExample(name, opq_expr(body, opq_ambient_resolution()))),
       SExpr(value) => Array::set(stmts, i, SExpr(opq_expr(value, resolution))),
       SLetPat(pat, value) => Array::set(stmts, i, SLetPat(pat, opq_expr(value, resolution))),
       SModule(exported, name, body) => {

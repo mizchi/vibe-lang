@@ -66,6 +66,33 @@ test "#2236: a provider-level denial covers its operations" with Exception {
   }
 }
 
+fn optional_call() -> Expr {
+  ECall(EIdent("perform?", 0), [
+    ECall(EIdent("Fs::read_file", 0), [EString("x")], 0)
+  ], 0)
+}
+
+fn assert_ambient_granted(stmt: Stmt) -> Unit with Exception {
+  let stmts = [stmt]
+  lower_optional_performs(stmts, [])
+  let body = match Array::get(stmts, 0) {
+    STest(_, value) => value,
+    SBench(_, value) => value,
+    SExample(_, value) => value,
+    _ => throw("expected a test-like block")
+  }
+  match body {
+    ECall(EIdent("Granted", _), args, _) => assert_eq(Array::length(args), 1),
+    _ => assert(false)
+  }
+}
+
+test "#2236 review: test, bench, and example optionals use ambient grants" with Exception {
+  assert_ambient_granted(STest("test", optional_call()))
+  assert_ambient_granted(SBench("bench", optional_call()))
+  assert_ambient_granted(SExample("example", optional_call()))
+}
+
 test "#2236: the linear backend compiles a well-graded perform?" with Exception {
   let msg = handle {
     let bytes = compile_source_wasi(optional_program(), "main")
