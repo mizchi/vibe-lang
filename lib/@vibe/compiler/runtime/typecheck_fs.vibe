@@ -5488,7 +5488,7 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
 /// worth keeping. Neither marker below can come out of a directive name: a
 /// name is a single token and cannot contain a space.
 fn contract_msg_mentions_eof(msg: String) -> Bool {
-  unstable_index_of_str(msg, "but got eof") >= 0 || unstable_index_of_str(msg, "unexpected eof") >= 0
+  String::index_of(msg, "but got eof") >= 0 || String::index_of(msg, "unexpected eof") >= 0
 }
 
 /// Byte offset of the last token that is not `TEof`, or -1.
@@ -5527,7 +5527,19 @@ fn contract_prefix_throws(tokens: Array[Token], k: Int, msg: String) -> Bool wit
     i = i + 1
   }
   handle {
-    let (_, _, _stmts) = parse_contract_program(head)
+    let (_, _, hstmts) = parse_contract_program(head)
+    // Parse AND classify, because both throws reach the caller and both need
+    // anchoring (#2315 review). Probing the parser alone left a classifier
+    // rejection unlocated: the parse succeeds on every prefix, so no prefix
+    // ever matched and the anchor answered -1 -> the synthetic 0:0.
+    //
+    // Monotone for a classifier message for the same reason as a non-eof parse
+    // message: classification is a left-to-right scan with no lookahead, so
+    // the smallest prefix whose statements include the offending one throws
+    // it, and every longer prefix throws it at the same place. A shorter
+    // prefix either does not produce that statement at all (classify succeeds)
+    // or fails to parse (a different message).
+    let (_r, _t) = classify_contract_stmts(hstmts)
     false
   } with { Exception::Throw(m) => m == msg }
 }
