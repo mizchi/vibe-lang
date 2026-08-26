@@ -8216,8 +8216,101 @@ if grep -q '"diagnostics":\[\]' "$vpbufdir/prog.out" 2>/dev/null; then
   echo "[compiler-gate] FAIL: an ordinary .vibe buffer with a type error published as CLEAN -- the contract branch is catching everything (#2314)" >&2
   exit 1
 fi
+# ...and an unsupported `#` directive is reported, at its own `#` (#2316).
+#
+# That check lives in `parse_contract_program`, i.e. only on the contract
+# branch this section added -- before it the buffer lane read the file as
+# statements and answered CLEAN for a contract `vibe check` refuses. Measured
+# on a stage2 built before that branch: buffer lane empty, import lane
+# `unsupported # directive in a contract file: eof`. So this probe fails on the
+# pre-fix compiler rather than merely passing on the fixed one.
+#
+# #2316 blamed the pin-blanking for erasing the directive line. It does not:
+# `scan_package_header` blanks only the directives it recognizes, and a `#`
+# line takes its final branch, which copies the line through verbatim. Both
+# positions are covered below because the two reach the scanner differently --
+# a `#` AFTER the header ends the scan there, one BEFORE it ends the scan
+# immediately, so the header directives are copied through unblanked too.
+#
+# Each fixture is a real package DIRECTORY with a sibling implementation. A
+# bare `.vpkg` is refused by the import lane whatever it contains ("contract
+# declaration 'a' has no implementation"), which would make the oracle below
+# pass without ever seeing the directive -- measured, a `#deprecated` fixture
+# with no sibling was still "refused". The oracle asserts the MESSAGE, not the
+# exit status, for the same reason.
+for dirpos in after before; do
+  rm -rf "$vpbufdir/$dirpos"; mkdir -p "$vpbufdir/$dirpos"
+  rm -f "$vpbufdir/$dirpos.imp" "$vpbufdir/$dirpos.imp.diag" "$vpbufdir/$dirpos.buf"
+  hdr='name = @gate/vpkgdir
+version = 0.0.1
+description =
+  #|gate-only package for #2316
+deps = {}
+
+generated_hash =
+
+'
+  printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$vpbufdir/$dirpos/impl.vibe"
+  if [ "$dirpos" = after ]; then
+    printf '%s#eof\nfn a(x: Int) -> Int\n' "$hdr" > "$vpbufdir/$dirpos/index.vpkg"
+    want_line='line 9:2:'
+  else
+    printf '#eof\n%sfn a(x: Int) -> Int\n' "$hdr" > "$vpbufdir/$dirpos/index.vpkg"
+    want_line='line 1:2:'
+  fi
+  # The import lane is the oracle. Assert it reports THIS diagnostic before
+  # asserting the buffer lane agrees -- a directive the loader started
+  # accepting would otherwise leave this probe demanding an answer that is no
+  # longer correct.
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$vpbufdir/$dirpos/index.vpkg" "$vpbufdir/$dirpos.imp" main >/dev/null 2>&1 || true
+  if ! grep -qF 'unsupported # directive in a contract file: eof' "$vpbufdir/$dirpos.imp.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the import lane no longer reports a '#eof' directive ($dirpos the header) -- repoint this probe (#2316)" >&2
+    cat "$vpbufdir/$dirpos.imp.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$vpbufdir/$dirpos/index.vpkg" "$vpbufdir/$dirpos.buf" main >/dev/null 2>&1 || true
+  if ! grep -qF 'unsupported # directive in a contract file: eof' "$vpbufdir/$dirpos.buf" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the buffer lane does not report a '#eof' directive ($dirpos the header) that the import lane refuses (#2316)" >&2
+    cat "$vpbufdir/$dirpos.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  # Anchored on the directive's own '#', not left at 0:0 and not pushed to the
+  # last real token by `contract_msg_mentions_eof` matching the word `eof` in
+  # the MESSAGE -- which is the trap that predicate was narrowed to avoid.
+  if ! grep -q "^$want_line" "$vpbufdir/$dirpos.buf" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the '#eof' directive ($dirpos the header) is not anchored on its own '#' (expected $want_line) (#2316)" >&2
+    cat "$vpbufdir/$dirpos.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# `#deprecated` is the one directive a contract may carry, so it must stay
+# clean on BOTH lanes -- otherwise the assertions above would pass on a fix
+# that rejects every `#` line.
+rm -rf "$vpbufdir/dep"; mkdir -p "$vpbufdir/dep"
+rm -f "$vpbufdir/dep.imp" "$vpbufdir/dep.imp.diag" "$vpbufdir/dep.buf"
+printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$vpbufdir/dep/impl.vibe"
+printf 'name = @gate/vpkgdir\nversion = 0.0.1\ndescription =\n  #|gate-only package for #2316\ndeps = {}\n\ngenerated_hash =\n\n#deprecated\nfn a(x: Int) -> Int\n' > "$vpbufdir/dep/index.vpkg"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$vpbufdir/dep/index.vpkg" "$vpbufdir/dep.imp" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: the import lane refuses a '#deprecated' contract -- the control for the probes above is not valid (#2316)" >&2
+  cat "$vpbufdir/dep.imp.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$vpbufdir/dep/index.vpkg" "$vpbufdir/dep.buf" main >/dev/null 2>&1 || true
+if [ -s "$vpbufdir/dep.buf" ]; then
+  echo "[compiler-gate] FAIL: '#deprecated' -- the one directive a contract may carry -- is reported as an error (#2316)" >&2
+  cat "$vpbufdir/dep.buf" >&2
+  exit 1
+fi
 rm -rf "$vpbufdir"
-echo "[compiler-gate] a .vpkg buffer reads as a contract, still rejects a malformed declaration, and .vibe buffers still type-check ok (#2314)"
+echo "[compiler-gate] a .vpkg buffer reads as a contract, still rejects a malformed declaration, reports an unsupported # directive at its own '#', and .vibe buffers still type-check ok (#2314, #2316)"
 
 # 118/118. A call is checked the same above its callee's definition as below
 # it (#2318).

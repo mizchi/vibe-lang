@@ -5493,14 +5493,21 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
 /// The first version tested for `" eof"`, which is too loose (Codex review on
 /// #2315): `parse_contract_program` also throws `unsupported # directive in a
 /// contract file: eof (only #deprecated is allowed)`, and that contains
-/// `" eof"` too. MEASURED, that particular message cannot reach here -- this
-/// lane pin-blanks the header first, which erases a `#` directive line before
-/// the parser sees it, so the buffer answers clean where the import lane
-/// reports the directive (a real gap, but a pre-existing one in the blanking,
-/// not in this predicate; filed separately). The marker is still narrowed,
-/// because a predicate that is right only until the blanking changes is not
-/// worth keeping. Neither marker below can come out of a directive name: a
-/// name is a single token and cannot contain a space.
+/// `" eof"` too -- so `#eof` would have been anchored as a truncation, at the
+/// last real token instead of at its own `#`.
+///
+/// That message DOES reach here. This comment used to claim the opposite, on
+/// the grounds that the lane pin-blanks the header first and the blanking
+/// erases a `#` directive line before the parser sees it. Measured (#2316):
+/// `extract_require_pins` does not erase it. `scan_package_header` blanks only
+/// the directives it recognizes; a `#` line matches none of them, so it takes
+/// the scanner's final branch, which ends the header scan and copies the line
+/// through VERBATIM. Both lanes report the directive, and the buffer lane
+/// anchors it -- `line 9:2` for a `#eof` on line 9, where the import lane has
+/// no position at all.
+///
+/// Neither marker below can come out of a directive name: a name is a single
+/// token and cannot contain a space.
 fn contract_msg_mentions_eof(msg: String) -> Bool {
   String::index_of(msg, "but got eof") >= 0 || String::index_of(msg, "unexpected eof") >= 0
 }
