@@ -106,14 +106,28 @@ fn array_empty_ecfg() -> Array[(String, Array[String], Array[String])] {
   Array::slice([("", array_empty_str(), array_empty_str())], 0, 0)
 }
 
-/// #2318: this said `Array[(String, String)]`, but the scope it seeds is
-/// `(binding name, kind)` with an Int kind -- every consumer
-/// (`scps_scope_bind_params`, `scps_prepass_expr`, `scps_rewrite`) declares
-/// `Array[(String, Int)]`. The array is always EMPTY, so nothing ever read a
-/// String as an Int and the mistake was inert; it survived only because the
-/// call sites sit above `scps_scope_bind_params`'s definition and a forward
-/// reference skipped argument checking entirely.
-fn array_empty_scope() -> Array[(String, Int)] {
+/// The `scps_rewrite` / `scps_transform_handle` / `scps_scope_push_pat` scope,
+/// whose entries are `(binding name, "")`.
+fn array_empty_scope() -> Array[(String, String)] {
+  Array::slice([("", "")], 0, 0)
+}
+
+/// #2318: the OTHER scope in this file -- `(binding name, kind)` with an Int
+/// kind, as `scps_scope_bind*`, `scps_calls_ok` and `scps_prepass_expr` all
+/// declare it (22 parameters against the 3 above).
+///
+/// Both were seeded from `array_empty_scope`, so the prepass sites were
+/// passing `Array[(String, String)]` where `Array[(String, Int)]` was
+/// declared. The arrays are always EMPTY, so nothing ever read a String as an
+/// Int and the mistake was inert -- it survived because those call sites sit
+/// above `scps_scope_bind_params`'s definition, and a forward reference
+/// skipped argument checking entirely.
+///
+/// Two helpers rather than one retyped: they are two different scopes that
+/// happen to share a parameter name, and merging them is what let the mistake
+/// exist. Retyping the single helper just moves the error to the other family
+/// -- measured, that is exactly what the next build reported.
+fn array_empty_kind_scope() -> Array[(String, Int)] {
   Array::slice([("", 0)], 0, 0)
 }
 
@@ -8335,16 +8349,16 @@ export fn suspend_cps_pass(stmts: Array[Stmt]) -> Array[String] {
         // material. Splitting it here double-wrapped the clone (emit_clone
         // re-split an already-split body into Done(Y(..))).
         SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, ip, SLet(exported, is_rec, name, ty, match expr {
-          EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_prepass_expr(b, ecfgs, ctx, st, split_effs, scps_scope_bind_params(array_empty_scope(), params, "", ctx))),
-          _ => scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_scope())
+          EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_prepass_expr(b, ecfgs, ctx, st, split_effs, scps_scope_bind_params(array_empty_kind_scope(), params, "", ctx))),
+          _ => scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_kind_scope())
         })),
         SLetMut(name, ty, expr) => Array::set(stmts, ip, SLetMut(name, ty, match expr {
-          EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_prepass_expr(b, ecfgs, ctx, st, split_effs, scps_scope_bind_params(array_empty_scope(), params, "", ctx))),
-          _ => scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_scope())
+          EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_prepass_expr(b, ecfgs, ctx, st, split_effs, scps_scope_bind_params(array_empty_kind_scope(), params, "", ctx))),
+          _ => scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_kind_scope())
         })),
-        SExpr(expr) => Array::set(stmts, ip, SExpr(scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_scope()))),
-        STest(tn, expr) => Array::set(stmts, ip, STest(tn, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_scope()))),
-        SBench(bn, expr) => Array::set(stmts, ip, SBench(bn, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_scope()))),
+        SExpr(expr) => Array::set(stmts, ip, SExpr(scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_kind_scope()))),
+        STest(tn, expr) => Array::set(stmts, ip, STest(tn, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_kind_scope()))),
+        SBench(bn, expr) => Array::set(stmts, ip, SBench(bn, scps_prepass_expr(expr, ecfgs, ctx, st, split_effs, array_empty_kind_scope()))),
         _ => ()
       }
       ip = ip + 1
