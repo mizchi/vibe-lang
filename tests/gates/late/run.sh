@@ -8218,3 +8218,108 @@ if grep -q '"diagnostics":\[\]' "$vpbufdir/prog.out" 2>/dev/null; then
 fi
 rm -rf "$vpbufdir"
 echo "[compiler-gate] a .vpkg buffer reads as a contract, still rejects a malformed declaration, and .vibe buffers still type-check ok (#2314)"
+
+# 118/118. A call is checked the same above its callee's definition as below
+# it (#2318).
+#
+# A forward reference skipped argument checking ENTIRELY -- types, arity, and
+# the return type -- because the hoist pre-pass bound a top-level `fn`'s name
+# with its ANNOTATION's type, and a `fn` carries its types on the EFn parameter
+# list rather than on a binding annotation. It hoisted as `CtUnknown`, so the
+# call checker's `_` arm returned `CtUnknown` and reported nothing.
+#
+# The property to pin is ORDER-INDEPENDENCE, not any single case: the verdict
+# must not depend on where the definition sits. So every probe is run BOTH ways
+# and the two verdicts compared, rather than asserting one message.
+echo "[compiler-gate] 118/118 a call is checked the same above its callee's definition as below (#2318)"
+fwddir="_build/_gate_fwd_check"
+rm -rf "$fwddir"; mkdir -p "$fwddir"
+# name|bad call|definition -- each is checked with the definition first and
+# with the call first; the two must agree.
+fwd_cases='argtype|takes(1, "s")|fn takes(a: Int, b: Int) -> Int { a + b }
+arity|takes(1)|fn takes(a: Int, b: Int) -> Int { a + b }
+unknownfn|nosuchfn(1)|fn takes(a: Int, b: Int) -> Int { a + b }'
+printf '%s\n' "$fwd_cases" | while IFS='|' read -r nm call def; do
+  [ -n "$nm" ] || continue
+  printf 'fn caller() -> Int {\n  %s\n}\n\n%s\n\nfn main() -> Int {\n  caller()\n}\n' "$call" "$def" > "$fwddir/$nm.fwd.vibe"
+  printf '%s\n\nfn caller() -> Int {\n  %s\n}\n\nfn main() -> Int {\n  caller()\n}\n' "$def" "$call" > "$fwddir/$nm.back.vibe"
+  for ord in fwd back; do
+    rm -f "$fwddir/$nm.$ord.out" "$fwddir/$nm.$ord.out.diag"
+    if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fwddir/$nm.$ord.vibe" "$fwddir/$nm.$ord.out" main >/dev/null 2>&1; then
+      echo "accepted" > "$fwddir/$nm.$ord.verdict"
+    else
+      echo "rejected" > "$fwddir/$nm.$ord.verdict"
+    fi
+  done
+  fv="$(cat "$fwddir/$nm.fwd.verdict")"
+  bv="$(cat "$fwddir/$nm.back.verdict")"
+  if [ "$fv" != "$bv" ]; then
+    echo "[compiler-gate] FAIL: case '$nm' depends on declaration order -- call-first says $fv, definition-first says $bv (#2318)" >&2
+    cat "$fwddir/$nm.fwd.out.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  # ...and both must REJECT. Agreeing by accepting everything is the failure
+  # this section exists to catch, and an order comparison alone cannot see it.
+  if [ "$fv" != "rejected" ]; then
+    echo "[compiler-gate] FAIL: case '$nm' is ACCEPTED in both orders -- the ill-typed call is not being checked at all (#2318)" >&2
+    exit 1
+  fi
+done || exit 1
+# A CORRECT forward call must still compile and run, or "reject everything"
+# would pass every assertion above.
+cat > "$fwddir/ok.vibe" <<'FWDEOF'
+fn caller() -> Int {
+  takes(1, 2)
+}
+
+fn takes(a: Int, b: Int) -> Int {
+  a + b
+}
+
+fn main() -> Int {
+  caller()
+}
+FWDEOF
+rm -f "$fwddir/ok.wasm" "$fwddir/ok.wasm.diag"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fwddir/ok.vibe" "$fwddir/ok.wasm" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a CORRECT forward call no longer compiles (#2318)" >&2
+  cat "$fwddir/ok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+ok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$fwddir/ok.wasm" 2>&1 | head -1)"
+if [ "$ok_out" != "3" ]; then
+  echo "[compiler-gate] FAIL: the correct forward call ran to '$ok_out', expected 3 (#2318)" >&2
+  exit 1
+fi
+# An optional parameter may be omitted by a legitimate call, so the hoisted
+# signature must stand down for it rather than report a false arity error.
+cat > "$fwddir/opt.vibe" <<'FWDEOF'
+fn caller() -> Int {
+  takes(1)
+}
+
+fn takes(a: Int, b?: Int) -> Int {
+  a
+}
+
+fn main() -> Int {
+  caller()
+}
+FWDEOF
+rm -f "$fwddir/opt.out" "$fwddir/opt.out.diag"
+# `vibe check` exits 0 when clean, so the assertion is on the NEGATION -- the
+# first draft had it inverted and failed on the fixed compiler, which is how
+# the inversion was caught.
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fwddir/opt.vibe" "$fwddir/opt.out" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: omitting an OPTIONAL parameter in a forward call is reported as an error (#2318)" >&2
+  cat "$fwddir/opt.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$fwddir"
+echo "[compiler-gate] a call is checked identically in both declaration orders; correct forward calls still run; optional params stand down ok (#2318)"
