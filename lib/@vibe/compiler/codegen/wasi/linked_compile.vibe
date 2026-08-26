@@ -210,6 +210,7 @@ import @vibe/compiler/codegen/common_base {
   resolve_func,
   resolve_local,
   rewrite_self_tail_calls,
+  source_declares_constructor,
   suspend_cps_pass,
   ty_head_names_formal,
   wrap_entry_exception_boundary
@@ -3954,32 +3955,30 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     i = i + 1
   }
   let ctor_names_list = lc_fresh_string_array()
-  Array::push(ctor_names_list, "None")
-  Array::push(ctor_names_list, "Some")
-  // ADR-0088 / #2236: Attempt is checker-owned just like Option, so its
-  // constructors must exist even in a single-file compile with no explicit
-  // @vibe/core enum declaration in the statement array.
-  Array::push(ctor_names_list, "NotGranted")
-  Array::push(ctor_names_list, "Errored")
-  Array::push(ctor_names_list, "Granted")
   let ctor_tags_list = lc_fresh_int_array()
-  Array::push(ctor_tags_list, 0)
-  Array::push(ctor_tags_list, 1)
-  Array::push(ctor_tags_list, 2)
-  Array::push(ctor_tags_list, 3)
-  Array::push(ctor_tags_list, 4)
   let ctor_field_counts_list = lc_fresh_int_array()
-  Array::push(ctor_field_counts_list, 0)
-  Array::push(ctor_field_counts_list, 1)
-  Array::push(ctor_field_counts_list, 0)
-  Array::push(ctor_field_counts_list, 1)
-  Array::push(ctor_field_counts_list, 1)
   let ctor_type_names_list = lc_fresh_string_array()
-  Array::push(ctor_type_names_list, "Option")
-  Array::push(ctor_type_names_list, "Option")
-  Array::push(ctor_type_names_list, "Attempt")
-  Array::push(ctor_type_names_list, "Attempt")
-  Array::push(ctor_type_names_list, "Attempt")
+  // Option and Attempt are checker-owned, so their constructors must exist in
+  // single-file codegen without an explicit @vibe/core enum declaration.
+  // They are fallbacks: a same-named source constructor keeps lexical
+  // precedence and its real payload layout.
+  let builtin_ctor_names = ["None", "Some", "NotGranted", "Errored", "Granted"]
+  let builtin_ctor_tags = [0, 1, 2, 3, 4]
+  let builtin_ctor_fields = [0, 1, 0, 1, 1]
+  let builtin_ctor_types = ["Option", "Option", "Attempt", "Attempt", "Attempt"]
+  let mut builtin_ctor_i = 0
+  while builtin_ctor_i < Array::length(builtin_ctor_names) {
+    let builtin_ctor_name = Array::get(builtin_ctor_names, builtin_ctor_i)
+    if !source_declares_constructor(stmts, builtin_ctor_name) {
+      Array::push(ctor_names_list, builtin_ctor_name)
+      Array::push(ctor_tags_list, Array::get(builtin_ctor_tags, builtin_ctor_i))
+      Array::push(ctor_field_counts_list, Array::get(builtin_ctor_fields, builtin_ctor_i))
+      Array::push(ctor_type_names_list, Array::get(builtin_ctor_types, builtin_ctor_i))
+    } else {
+      ()
+    }
+    builtin_ctor_i = builtin_ctor_i + 1
+  }
   // #1062: sparse `ctor_idx * 64 + field_idx` entries for Double/Float-typed
   // positional constructor fields (see CompileCtx.ctor_float_fields). Built
   // alongside ctor_names_list/ctor_field_counts_list above so ctor_idx here

@@ -1629,6 +1629,44 @@ export fn ctor_sorted_index(names: Array[String]) -> (Array[String], Array[Int])
   (apply_perm_strings(names, perm), perm)
 }
 
+/// Compiler-owned fallback constructors must not outrank a constructor from
+/// the compiled source. The checker permits local constructors to shadow
+/// imported/compiler-owned names, so both codegen lanes use this predicate
+/// before seeding Option and Attempt fallbacks.
+export fn source_declares_constructor(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SEnum(_, _, _, variants, _) => {
+        let mut present = false
+        let mut j = 0
+        while j < Array::length(variants) && !present {
+          let (variant_name, _) = Array::get(variants, j)
+          present = variant_name == name
+          j = j + 1
+        }
+        present
+      },
+      SStruct(_, struct_name, _, _, _, _) => struct_name == name,
+      SSuberror(_, _, variants) => {
+        let mut present = false
+        let mut j = 0
+        while j < Array::length(variants) && !present {
+          let (variant_name, _) = Array::get(variants, j)
+          present = variant_name == name
+          j = j + 1
+        }
+        present
+      },
+      SModule(_, _, body) => source_declares_constructor(body, name),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// O(log N) replacement for `lookup_ctor(ct.names, name, 0)` at CtorTable
 /// call sites. Falls back to the linear scan when the sorted view is absent
 /// (defensive: a table built without ctor_sorted_index stays correct).

@@ -68,6 +68,7 @@ import @vibe/compiler/codegen/common_base {
   resolve_func,
   resolve_local,
   rewrite_self_tail_calls,
+  source_declares_constructor,
   ty_head_names_formal,
   wrap_entry_exception_boundary
 }
@@ -1347,22 +1348,27 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   // Attempt is checker-owned just like Option. Keep the built-in constructor
   // table identical to the linear backend so single-file codegen can emit the
   // result of `perform?` without importing an enum declaration first.
-  let ctor_names_list = Array::slice([
-    "None",
-    "Some",
-    "NotGranted",
-    "Errored",
-    "Granted"
-  ], 0, 5)
-  let ctor_tags_list = Array::slice([0, 1, 2, 3, 4], 0, 5)
-  let ctor_field_counts_list = Array::slice([0, 1, 0, 1, 1], 0, 5)
-  let ctor_type_names_list = Array::slice([
-    "Option",
-    "Option",
-    "Attempt",
-    "Attempt",
-    "Attempt"
-  ], 0, 5)
+  let ctor_names_list = array_empty()
+  let ctor_tags_list = array_empty()
+  let ctor_field_counts_list = array_empty()
+  let ctor_type_names_list = array_empty()
+  let builtin_ctor_names = ["None", "Some", "NotGranted", "Errored", "Granted"]
+  let builtin_ctor_tags = [0, 1, 2, 3, 4]
+  let builtin_ctor_fields = [0, 1, 0, 1, 1]
+  let builtin_ctor_types = ["Option", "Option", "Attempt", "Attempt", "Attempt"]
+  let mut builtin_ctor_i = 0
+  while builtin_ctor_i < Array::length(builtin_ctor_names) {
+    let builtin_ctor_name = Array::get(builtin_ctor_names, builtin_ctor_i)
+    if !source_declares_constructor(stmts, builtin_ctor_name) {
+      Array::push(ctor_names_list, builtin_ctor_name)
+      Array::push(ctor_tags_list, Array::get(builtin_ctor_tags, builtin_ctor_i))
+      Array::push(ctor_field_counts_list, Array::get(builtin_ctor_fields, builtin_ctor_i))
+      Array::push(ctor_type_names_list, Array::get(builtin_ctor_types, builtin_ctor_i))
+    } else {
+      ()
+    }
+    builtin_ctor_i = builtin_ctor_i + 1
+  }
   let mut type_index = 1
   let mut ei2 = 0
   while ei2 < Array::length(stmts) {
