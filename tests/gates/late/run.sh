@@ -8356,10 +8356,21 @@ printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/clean/impl.vibe"
 mkdir -p "$csdir/dupopaque"
 printf '%s\ntype Token\ntype Token\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/dupopaque/index.vpkg"
 printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/dupopaque/impl.vibe"
+# DECOYS. An anchor found by counting occurrences of the name across the whole
+# buffer picks the wrong one as soon as the name appears earlier for any other
+# reason. `struct Foo` before `derive(Foo)`, and a `Token` parameter type before
+# the two `type Token` declarations, are exactly those cases (Codex review on
+# #2320). Both must still anchor on the DECLARATION, which is why the anchors
+# are derived from `fn`/`type`/`derive` tokens rather than from ordinals.
+mkdir -p "$csdir/decoyderive" "$csdir/decoydup"
+printf '%s\nstruct Foo {\n  y: Int\n}\n\nstruct P {\n  x: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/decoyderive/index.vpkg"
+printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/decoyderive/impl.vibe"
+printf '%s\nfn uses(t: Token) -> Int\ntype Token\ntype Token\n' "$cs_header" > "$csdir/decoydup/index.vpkg"
+printf 'export fn uses(t: Token) -> Int {\n  0\n}\n' > "$csdir/decoydup/impl.vibe"
 # Each bad contract must be refused by BOTH lanes, and the clean one by
 # neither. Asserting only the buffer lane would not notice the two drifting
 # apart again, which is what #2317 is about.
-for probe in derive dup dupopaque clean; do
+for probe in derive dup dupopaque decoyderive decoydup clean; do
   rm -f "$csdir/$probe.imp" "$csdir/$probe.imp.diag" "$csdir/$probe.buf"
   if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -8408,6 +8419,26 @@ fi
 if ! grep -q '^line 11:' "$csdir/derive.buf" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the unknown derive is not anchored on its derive clause (expected line 11) (#2317)" >&2
   cat "$csdir/derive.buf" >&2 || true
+  exit 1
+fi
+# The decoys: the name occurs EARLIER in the buffer for an unrelated reason, so
+# an occurrence-counting anchor lands on the decoy. `struct Foo` is on line 9
+# and the `derive(Foo)` clause on line 15; the anchor must be 15.
+if grep -q '^line 9:' "$csdir/decoyderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the unknown derive anchored on the unrelated 'struct Foo', not on the derive clause (#2317)" >&2
+  cat "$csdir/decoyderive.buf" >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 15:' "$csdir/decoyderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the unknown derive is not anchored on its derive clause with a decoy present (expected line 15) (#2317)" >&2
+  cat "$csdir/decoyderive.buf" >&2 || true
+  exit 1
+fi
+# `Token` appears first as a PARAMETER type on line 9; the two declarations are
+# lines 10 and 11, so the duplicate must anchor on 11.
+if ! grep -q '^line 11:' "$csdir/decoydup.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the duplicate type anchored somewhere other than its second declaration -- a parameter reference displaced it (expected line 11) (#2317)" >&2
+  cat "$csdir/decoydup.buf" >&2 || true
   exit 1
 fi
 # ...and NO committed contract in the tree may gain a diagnostic. A check that
