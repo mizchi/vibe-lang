@@ -5713,35 +5713,82 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
 /// `locate_by_marker` already places `unknown name:` and friends. Statements
 /// carry no offsets (`SLet(Bool, Bool, String, Option[TypeExpr], Expr)` has no
 /// span), and adding them is a change at every construction site.
-fn contract_semantic_errors(source: String, decls: Array[(String, String)], stmts: Array[Stmt]) -> Array[String] with Exception {
+fn contract_semantic_errors(source: String, decls: Array[(String, String)], opaques: Array[(String, Int)], stmts: Array[Stmt]) -> Array[String] with Exception {
   let out = array_empty()
   // Bodyless declarations live in `parse_contract_program`'s FIRST tuple
   // element, not among its statements -- a contract's `fn f(x: Int) -> Int` is
   // not an `SLet`. The first version scanned the statements for one and so
   // never fired; measured, the duplicate probe reported nothing until this
   // moved to `decls`.
+  //
+  // Opaque type declarations share the namespace: the facade allocates each
+  // name once, so `opaque type Token` twice is the same defect as `fn f`
+  // twice, and the second tuple element is where those live (Codex review on
+  // #2320 -- the first version discarded it).
   let seen: Array[String] = []
   let mut d = 0
   while d < Array::length(decls) {
     let (dname, _sig) = Array::get(decls, d)
-    if str_array_contains_name(seen, dname) {
-      let dup_msg = String::concat(String::concat("duplicate declaration in a contract: `", dname), "` is declared more than once -- a contract declares each name once, and the facade it generates can allocate the name only once")
-      Array::push(out, located_for_name(source, dname, 2, dup_msg))
-    } else {
-      Array::push(seen, dname)
-    }
+    contract_note_duplicate(source, dname, seen, out)
     d = d + 1
+  }
+  let mut o = 0
+  while o < Array::length(opaques) {
+    let (oname, _arity) = Array::get(opaques, o)
+    contract_note_duplicate(source, oname, seen, out)
+    o = o + 1
   }
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, _, _, derives, _, _) => validate_derives(derives, out),
-      SEnum(_, _, _, _, derives) => validate_derives(derives, out),
+      SStruct(_, _, _, derives, _, _) => contract_derive_errors(source, derives, out),
+      SEnum(_, _, _, _, derives) => contract_derive_errors(source, derives, out),
       _ => ()
     }
     i = i + 1
   }
   out
+}
+
+/// Record `name` as seen, reporting it when it was seen before.
+fn contract_note_duplicate(source: String, name: String, seen: Array[String], out: Array[String]) -> Unit {
+  if str_array_contains_name(seen, name) {
+    let dup_msg = String::concat(String::concat("duplicate declaration in a contract: `", name), "` is declared more than once -- a contract declares each name once, and the facade it generates can allocate the name only once")
+    Array::push(out, located_for_name(source, name, 2, dup_msg))
+  } else {
+    Array::push(seen, name)
+  }
+}
+
+/// `validate_derives`, with each message anchored on the offending trait name.
+///
+/// The checker's messages are bare (`unknown trait: Foo`), because on the
+/// import lane something downstream locates them. Returned bare from here they
+/// render at the synthetic 0:0 and an editor cannot highlight the derive clause
+/// (Codex review on #2320). The trait name appears verbatim in the buffer, so
+/// the same locator the duplicate uses places it -- first occurrence, since a
+/// derive names it once.
+fn contract_derive_errors(source: String, derives: Array[String], out: Array[String]) -> Unit {
+  let raw = array_empty()
+  validate_derives(derives, raw)
+  let mut i = 0
+  while i < Array::length(raw) {
+    let msg = Array::get(raw, i)
+    let marker = "unknown trait: "
+    let mi = String::index_of(msg, marker)
+    if mi < 0 {
+      Array::push(out, msg)
+    } else {
+      let sstart = mi + String::length(marker)
+      let send = typecheck_ident_run(msg, sstart)
+      if send <= sstart {
+        Array::push(out, msg)
+      } else {
+        Array::push(out, located_for_name(source, String::substring(msg, sstart, send), 1, msg))
+      }
+    }
+    i = i + 1
+  }
 }
 
 fn str_array_contains_name(xs: Array[String], name: String) -> Bool {
@@ -5767,14 +5814,37 @@ fn located_for_name(source: String, name: String, occurrence: Int, msg: String) 
   let mut seen = 0
   let mut at = 0 - 1
   let total = String::length(source)
+  let nlen = String::length(name)
   while seen < occurrence && cursor < total {
     let rel = String::index_of(String::substring(source, cursor, total), name)
     if rel < 0 {
       cursor = total
     } else {
-      at = cursor + rel
-      seen = seen + 1
-      cursor = at + String::length(name)
+      let hit = cursor + rel
+      // WHOLE identifier tokens only. A raw substring search counted the `f`
+      // inside the `fn` keyword as an occurrence of a declaration named `f`,
+      // so a duplicate anchored on the FIRST declaration instead of the second
+      // (Codex review on #2320). Measured: `line 9:4` for a contract whose
+      // second declaration is on line 10 -- and the gate asserted line 9, so
+      // it passed on the broken locator.
+      let before_ok = if hit == 0 {
+        true
+      } else {
+        !loc_ident_char(String::char_code_at(source, hit - 1))
+      }
+      let after = hit + nlen
+      let after_ok = if after >= total {
+        true
+      } else {
+        !loc_ident_char(String::char_code_at(source, after))
+      }
+      if before_ok && after_ok {
+        at = hit
+        seen = seen + 1
+      } else {
+        ()
+      }
+      cursor = hit + nlen
     }
   }
   if seen == occurrence && at >= 0 {
@@ -5833,9 +5903,9 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (cdecls, _copaques, cstmts) = parse_contract_program(ctokens)
+      let (cdecls, copaques, cstmts) = parse_contract_program(ctokens)
       let (_raws, _type_defs) = classify_contract_stmts(cstmts)
-      contract_semantic_errors(source, cdecls, cstmts)
+      contract_semantic_errors(source, cdecls, copaques, cstmts)
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
     ()

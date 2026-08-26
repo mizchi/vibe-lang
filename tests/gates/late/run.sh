@@ -8350,10 +8350,16 @@ printf '%s\nfn f(x: Int) -> Int\nfn f(x: Int) -> Int\n' "$cs_header" > "$csdir/d
 printf 'export fn f(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/dup/impl.vibe"
 printf '%s\nstruct P {\n  x: Int\n} derive(Eq)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/clean/index.vpkg"
 printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/clean/impl.vibe"
+# Opaque types share the declaration namespace -- the facade allocates each name
+# once, so declaring one twice is the same defect as a duplicated `fn`. The
+# first version discarded the opaque list entirely.
+mkdir -p "$csdir/dupopaque"
+printf '%s\ntype Token\ntype Token\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/dupopaque/index.vpkg"
+printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/dupopaque/impl.vibe"
 # Each bad contract must be refused by BOTH lanes, and the clean one by
 # neither. Asserting only the buffer lane would not notice the two drifting
 # apart again, which is what #2317 is about.
-for probe in derive dup clean; do
+for probe in derive dup dupopaque clean; do
   rm -f "$csdir/$probe.imp" "$csdir/$probe.imp.diag" "$csdir/$probe.buf"
   if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -8383,10 +8389,25 @@ if ! grep -qF 'unknown trait: Foo' "$csdir/derive.buf" 2>/dev/null; then
   exit 1
 fi
 # The duplicate must be anchored on the SECOND declaration -- the first is
-# fine, the second is the line to delete. Line 9 is `fn f` the second time.
-if ! grep -q '^line 9:' "$csdir/dup.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the duplicate declaration is not anchored on the second declaration (expected line 9) (#2317)" >&2
+# fine, the second is the line to delete. The header is 7 lines plus a blank,
+# so the two `fn f` lines are 9 and 10: line 10 is the one to report.
+#
+# This assertion said line 9 and PASSED on a broken locator: a raw substring
+# search counted the `f` inside the first `fn` keyword, anchoring on the first
+# declaration, which happens to be line 9 (Codex review on #2320). Asserting
+# the line the fixture actually puts the second declaration on is what makes it
+# mean anything.
+if ! grep -q '^line 10:' "$csdir/dup.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the duplicate declaration is not anchored on the SECOND declaration (expected line 10) (#2317)" >&2
   cat "$csdir/dup.buf" >&2 || true
+  exit 1
+fi
+# The unknown derive must be anchored too, not left at the synthetic 0:0 --
+# `validate_derives` returns a bare message and the buffer lane has to place it.
+# `derive(Foo)` is on line 11 of that fixture.
+if ! grep -q '^line 11:' "$csdir/derive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the unknown derive is not anchored on its derive clause (expected line 11) (#2317)" >&2
+  cat "$csdir/derive.buf" >&2 || true
   exit 1
 fi
 # ...and NO committed contract in the tree may gain a diagnostic. A check that
