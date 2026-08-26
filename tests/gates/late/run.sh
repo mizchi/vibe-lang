@@ -8463,16 +8463,22 @@ if ! grep -q '^line 11:' "$csdir/decoydup.buf" 2>/dev/null; then
   cat "$csdir/decoydup.buf" >&2 || true
   exit 1
 fi
-# Two clauses, two DIFFERENT anchors. `derive(Foo)` is on line 12 and line 16;
-# a locator that rescans from 0 reports line 12 twice, which is why the
-# assertion is on the second line rather than merely on the count.
-if ! grep -q '^line 12:' "$csdir/twoderive.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the first of two identical unknown derives is not anchored on its own clause (expected line 12) (#2317)" >&2
+# Two clauses, two DIFFERENT anchors. The `} derive(Foo)` lines are 11 and 15
+# (the header is 7 lines plus a blank, then each struct spans three). A locator
+# that rescans from 0 reports line 11 twice, which is why the assertion names
+# the second line rather than merely counting diagnostics.
+#
+# These two numbers were 12 and 16 in the first version and CI caught them: the
+# implementation was right and the expectation was wrong, because I counted the
+# fixture in my head. Every line number in this section is now read off the
+# generated file instead.
+if ! grep -q '^line 11:' "$csdir/twoderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the first of two identical unknown derives is not anchored on its own clause (expected line 11) (#2317)" >&2
   cat "$csdir/twoderive.buf" >&2 || true
   exit 1
 fi
-if ! grep -q '^line 16:' "$csdir/twoderive.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the SECOND identical unknown derive is not anchored on its own clause (expected line 16) -- the locator rescans from the start (#2317)" >&2
+if ! grep -q '^line 15:' "$csdir/twoderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the SECOND identical unknown derive is not anchored on its own clause (expected line 15) -- the locator rescans from the start (#2317)" >&2
   cat "$csdir/twoderive.buf" >&2 || true
   exit 1
 fi
