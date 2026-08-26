@@ -8939,3 +8939,84 @@ if ! grep -q '^line 11:1:' "$dupdir/twice.buf" 2>/dev/null; then
 fi
 rm -rf "$dupdir"
 echo "[compiler-gate] a duplicated contract declaration is refused by both lanes and anchored on the repeat; the filtered version shape stays accepted ok (#2317)"
+
+# 123/123. A LOCATED type diagnostic about a materialized contract names the
+# contract, at the declaration the author wrote (#2317).
+#
+# #2324 remapped only UNLOCATED messages, because `locate_type_error` computes
+# its line against the STUB and pairing a contract path with a stub line is
+# confidently wrong. The stub now records each declaration's contract line:col
+# beside it, so a located message can be remapped honestly.
+#
+# Declaration-granular, and the assertions say so: `print_stmt` rebuilds a
+# declaration from the AST, so the column INSIDE it is gone. What is recovered
+# is which declaration -- which is what the reader acts on, and the message
+# already names the offending type parameter.
+echo "[compiler-gate] 123/123 a located contract diagnostic names the contract at its declaration (#2317)"
+mapdir="_build/_gate_decl_map"
+rm -rf "$mapdir"; mkdir -p "$mapdir/pkg" "$mapdir/clean"
+map_header='name = @gate/declmap
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+map_impl='export fn a(x: Int) -> Int {
+  x + 1
+}
+'
+# `struct Box[T]` is on line 13 of this fixture; `struct T` on line 9. The
+# shadowing diagnostic is about Box, so line 13 is the answer and line 9 is the
+# decoy an off-by-one declaration mapping would produce.
+printf '%s\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn a(x: Int) -> Int\n' "$map_header" > "$mapdir/pkg/index.vpkg"
+printf '%s' "$map_impl" > "$mapdir/pkg/impl.vibe"
+printf '%s\nstruct P {\n  x: Int\n}\n\nfn a(x: Int) -> Int\n' "$map_header" > "$mapdir/clean/index.vpkg"
+printf '%s' "$map_impl" > "$mapdir/clean/impl.vibe"
+rm -f "$mapdir/pkg.out" "$mapdir/pkg.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mapdir/pkg/index.vpkg" "$mapdir/pkg.out" main >/dev/null 2>&1 || true
+map_report="$(cat "$mapdir/pkg.out.diag" 2>/dev/null || true)"
+# Still fires, and still LOCATED -- either failing would make the rest vacuous.
+if ! printf '%s\n' "$map_report" | grep -qF 'shadows the declared type'; then
+  echo "[compiler-gate] FAIL: the shadowing diagnostic no longer fires -- repoint this probe (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$map_report" | grep -q 'line [0-9]*:'; then
+  echo "[compiler-gate] FAIL: the shadowing diagnostic is no longer located -- this probe no longer tests the remap (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$map_report" | grep -qF 'vibe_vpkg_types/'; then
+  echo "[compiler-gate] FAIL: a located diagnostic still names the generated types module (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$map_report" | grep -qF "$mapdir/pkg/index.vpkg"; then
+  echo "[compiler-gate] FAIL: a located diagnostic does not name the contract the author wrote (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+# The DECLARATION, not merely some line of the contract. `struct Box[T]` is on
+# line 13; line 9 is the other declaration and is what an off-by-one mapping
+# would report.
+if ! printf '%s\n' "$map_report" | grep -qF ': line 13:'; then
+  echo "[compiler-gate] FAIL: the located diagnostic does not point at the declaration it is about (expected line 13) (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+# ...and a contract with no such error stays clean, so a change that reported
+# every materialized package cannot pass the assertions above.
+rm -f "$mapdir/clean.out" "$mapdir/clean.out.diag"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mapdir/clean/index.vpkg" "$mapdir/clean.out" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a contract with a plain transparent struct is refused -- the control is not valid (#2317)" >&2
+  cat "$mapdir/clean.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$mapdir"
+echo "[compiler-gate] a located contract diagnostic names the contract at its own declaration; a clean contract stays clean ok (#2317)"

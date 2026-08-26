@@ -89,7 +89,8 @@ import @vibe/compiler/contract {
   parse_contract_program,
   parse_contract_program_spans,
   vpkg_path_escape_one_line,
-  vpkg_types_contract_of_source
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_pos_for_line
 }
 
 import @vibe/compiler/loader {
@@ -1439,20 +1440,82 @@ fn is_generated_vpkg_types_path(path: String) -> Bool {
   }
 }
 
-fn type_diagnostic_display_path(path: String, source: String, located_msg: String) -> String {
-  if is_generated_vpkg_types_path(path) && !diag_already_located(located_msg) {
-    let owner = vpkg_types_contract_of_source(source)
-    if owner == "" {
-      path
-    } else {
-      // Escaped for DISPLAY. The marker round-trips a path exactly, newlines
-      // included, and this string goes straight into a diagnostic -- rendered
-      // verbatim it would split one record across lines, and crafted path
-      // components could resemble further diagnostics (Codex review on #2324).
-      vpkg_path_escape_one_line(owner)
-    }
+/// #2317: split a located message into its 1-based line number and the body
+/// after the `line L:C: ` prefix. `(-1, msg)` when it carries no prefix.
+///
+/// The prefix ends at the first `": "`, which is unambiguous: the position is
+/// `L:C` or `L:C-E`, and neither contains a space.
+fn located_line_and_body(msg: String) -> (Int, String) {
+  if !String::starts_with(msg, "line ") {
+    return (0 - 1, msg)
   } else {
-    path
+    ()
+  }
+  let n = String::length(msg)
+  let mut i = 5
+  let mut num = 0
+  let mut digits = 0
+  while i < n {
+    let c = String::char_code_at(msg, i)
+    if c >= 48 && c <= 57 {
+      num = num * 10 + (c - 48)
+      digits = digits + 1
+      i = i + 1
+    } else {
+      i = n
+    }
+  }
+  if digits == 0 {
+    return (0 - 1, msg)
+  } else {
+    ()
+  }
+  let sep = String::index_of(msg, ": ")
+  if sep < 0 {
+    (0 - 1, msg)
+  } else {
+    (num, String::substring(msg, sep + 2, String::length(msg)))
+  }
+}
+
+fn type_diagnostic_display(path: String, source: String, located_msg: String) -> (String, String) with Exception {
+  if !is_generated_vpkg_types_path(path) {
+    return (path, located_msg)
+  } else {
+    ()
+  }
+  let owner_raw = vpkg_types_contract_of_source(source)
+  if owner_raw == "" {
+    return (path, located_msg)
+  } else {
+    ()
+  }
+  // Escaped for DISPLAY. The marker round-trips a path exactly, newlines
+  // included, and this string goes straight into a diagnostic -- rendered
+  // verbatim it would split one record across lines, and crafted path
+  // components could resemble further diagnostics (Codex review on #2324).
+  let owner = vpkg_path_escape_one_line(owner_raw)
+  let (lno, body) = located_line_and_body(located_msg)
+  if lno < 0 {
+    // Unlocated: nothing to remap, and nothing to get wrong.
+    return (owner, located_msg)
+  } else {
+    ()
+  }
+  // #2317: located. The stub records each declaration's contract `line:col`
+  // beside it, so the message can name the contract AND point at the
+  // declaration the author wrote. Declaration-granular: `print_stmt` rebuilds
+  // the declaration from the AST, so the column inside it is gone -- what is
+  // recovered is WHICH declaration, which is what the reader acts on.
+  //
+  // Without a marker the stub path and its own line are kept together. That
+  // pair is at least self-consistent; pairing the contract with a stub line is
+  // the confidently-wrong shape #2324 exists to avoid.
+  let pos = vpkg_types_decl_pos_for_line(source, lno)
+  if pos == "" {
+    (path, located_msg)
+  } else {
+    (owner, String::concat("line ", String::concat(pos, String::concat(": ", body))))
   }
 }
 
@@ -4235,8 +4298,9 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with { Exception::Throw(msg) => {
       let located = locate_type_error(job.source, msg)
+      let (disp_path, disp_msg) = type_diagnostic_display(job.path, job.source, located)
       Diagnosed(job.path, [
-        String::concat(String::concat(type_diagnostic_display_path(job.path, job.source, located), ": "), located)
+        String::concat(String::concat(disp_path, ": "), disp_msg)
       ])
     } }
   }
