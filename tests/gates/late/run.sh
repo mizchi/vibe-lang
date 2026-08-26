@@ -8795,8 +8795,15 @@ fi
 # alone still accepts `_build/vibe_vpkg_types/types_fake/source.vibe`, which is
 # an ordinary file someone wrote; the loader only ever produces a single
 # `types_<fingerprint>.vibe` basename there (Codex review on #2324).
-mkdir -p "$dpvdir/nested/_build/vibe_vpkg_types/types_fake"
-cat > "$dpvdir/nested/_build/vibe_vpkg_types/types_fake/source.vibe" <<'DPVEOF'
+# The fixture has to sit at the REAL relative path, because the predicate reads
+# the path it is given -- no `cd` (this gate's `stage2_wasm` can be relative, so
+# a subshell that changed directory would stop finding the compiler; measured in
+# tests/gates/lib.sh, which sets it to `_build/_gate_lane_gen/stage2.wasm`).
+# Only the `types_fake/` subdirectory is created and removed; the real generated
+# stubs alongside it are untouched.
+nesteddir="_build/vibe_vpkg_types/types_fake"
+rm -rf "$nesteddir"; mkdir -p "$nesteddir"
+cat > "$nesteddir/source.vibe" <<'DPVEOF'
 // vibe: vpkg contract types module (#1840)
 // vibe: generated from lib/@gate/NOT_THIS_FILE/index.vpkg
 struct P {
@@ -8808,19 +8815,21 @@ fn main() -> Int {
 }
 DPVEOF
 rm -f "$dpvdir/nested.out" "$dpvdir/nested.out.diag"
-( cd "$dpvdir/nested" && VIBE_PREOPEN_DIR="$PWD" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
-  bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$stage2_wasm" \
-  "_build/vibe_vpkg_types/types_fake/source.vibe" "$ROOT_DIR/$dpvdir/nested.out" main ) >/dev/null 2>&1 || true
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$nesteddir/source.vibe" "$dpvdir/nested.out" main >/dev/null 2>&1 || true
 nested_report="$(cat "$dpvdir/nested.out.diag" 2>/dev/null || true)"
 if ! printf '%s\n' "$nested_report" | grep -qF 'unknown trait: Foo'; then
   echo "[compiler-gate] FAIL: the nested spoof fixture produced no unknown-derive diagnostic -- repoint this probe (#2324)" >&2
   printf '%s\n' "$nested_report" >&2
+  rm -rf "$nesteddir"
   exit 1
 fi
 if printf '%s\n' "$nested_report" | grep -qF 'NOT_THIS_FILE'; then
   echo "[compiler-gate] FAIL: a file NESTED under the generated directory had its provenance comment believed (#2324)" >&2
   printf '%s\n' "$nested_report" >&2
+  rm -rf "$nesteddir"
   exit 1
 fi
-rm -rf "$dpvdir"
+rm -rf "$dpvdir" "$nesteddir"
 echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, ignores a hand-written provenance claim flat or nested, and a known derive stays clean ok (#2317, #2324)"
