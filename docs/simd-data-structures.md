@@ -391,19 +391,28 @@ layers above are proposed in dependency order for that reason, and Layer 3's
 `F32Column` and `U8Column` are explicitly gated behind a workload that wants
 them.
 
-## 7. Suggested issue tree
+## 7. Issue tree
 
-One parent, six children, three-axis labels per
-[docs/issue-triage.md](issue-triage.md):
+Parent [#2340](https://github.com/mizchi/vibe-lang/issues/2340), three-axis
+labels per [docs/issue-triage.md](issue-triage.md). Priority is the symptom the
+issue states and nothing else, so most of this is P2 — almost none of it is
+something that works today being broken.
 
 | # | item | kind | priority |
 | :-- | :--- | :--- | :--- |
-| parent | SIMD-first data-structure foundation | epic | — |
-| 1 | `V128` intrinsics: unbox or retire (§3.1) | bug | P1 |
-| 2 | inline wasm: out-of-range `i32.const` passes `vibe check`, fails at load (§4/Layer 0) | bug | **P0** |
-| 3 | `Int::popcount` / `ctz` / `clz` / `select1` and `~` (§3.2) | feature | P1 |
-| 4 | `Bytes` search/compare/count kernels; route `String::*` through them (§4/Layer 2) | feature | P1 |
-| 5 | `MutMap`: `Array[Int]` state -> `Bytes` control byte + fingerprint (§3.4) | perf | P1 |
-| 6 | `I32Column` builder/frozen pair (§4/Layer 3) | feature | P2 |
+| [#2340](https://github.com/mizchi/vibe-lang/issues/2340) | SIMD-first data-structure foundation (index) | `epic` | P2 |
+| [#2341](https://github.com/mizchi/vibe-lang/issues/2341) | inline wasm: out-of-range `i32.const` passes `vibe check`, fails at module load (§4/Layer 0) | `bug` | **P0** |
+| [#2342](https://github.com/mizchi/vibe-lang/issues/2342) | `V128` intrinsics heap-box every vector and never reclaim it — unbox or retire (§3.1) | `bug` `performance` | P1 |
+| [#2343](https://github.com/mizchi/vibe-lang/issues/2343) | the low-level wasm intrinsic block in `declarations.vibe` does not resolve from user code (§3.2) | `bug` | P2 |
+| [#2344](https://github.com/mizchi/vibe-lang/issues/2344) | `Int::popcount` / `ctz` / `clz` / `select1`, and `~` (§3.2) | `enhancement` `blocker` | P2 |
+| [#2345](https://github.com/mizchi/vibe-lang/issues/2345) | `Bytes` search/compare/count kernels; route `String::*` through them (§4/Layer 2) | `enhancement` | P2 |
+| [#2346](https://github.com/mizchi/vibe-lang/issues/2346) | `MutMap`: `Array[Int]` state -> `Bytes` control byte + fingerprint (§3.4) | `performance` | P2 |
+| [#2347](https://github.com/mizchi/vibe-lang/issues/2347) | `I32Column` builder/frozen pair (§4/Layer 3) | `enhancement` | P2 |
+| [#2348](https://github.com/mizchi/vibe-lang/issues/2348) | inline wasm: no `call` between kernels, no `Array[T]` param (§3.3, §4/Layer 0) | `enhancement` | P2 |
 
-Items 2, 3, 4 and 5 need no new language surface and no decision from item 1.
+Layers 4 and 5 have no issue yet, deliberately: by §5 each needs a documented
+end-to-end workload that wins against a native builtin before it is written.
+
+The order falls out of the triage rules — #2341, then #2342, then #2344 (the
+`blocker`), then the rest. #2343, #2344, #2345 and #2346 need no new language
+surface and no decision from #2342.
