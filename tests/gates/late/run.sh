@@ -8721,35 +8721,43 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   cat "$dpvdir/clean.out.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-# ...and a LOCATED diagnostic keeps the generated path (Codex review on #2324).
+# The LOCATED case moved to section 123 (#2317). This section asserted that a
+# located diagnostic must NOT name the contract, which was right while the stub
+# recorded no declaration positions: `locate_type_error` computes its line
+# against the STUB, and pairing a contract path with a stub line is confidently
+# wrong. The stub now records each declaration's contract line:col, so the
+# remap is honest and section 123 asserts it -- including that the reported
+# line is the declaration's own.
 #
-# `locate_type_error` computes its line against the STUB's source, and the stub
-# carries neither the contract's header nor its formatting. Renaming a located
-# message to the contract pairs a file the author wrote with a line number from
-# a generated one -- confidently wrong, which outranks unhelpful.
-#
-# Measured on this fixture: `struct Box[T]` is on line 13 of the contract, and
-# the diagnostic reads `line 4:15-18`. Line 4 of the contract is inside its
-# `description` block, so the rename would point at an unrelated line.
-mkdir -p "$dpvdir/located"
-printf '%s\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/located/index.vpkg"
-printf '%s' "$dpv_impl" > "$dpvdir/located/impl.vibe"
-rm -f "$dpvdir/located.out" "$dpvdir/located.out.diag"
+# Kept as one assertion rather than deleted outright: whatever else changes,
+# a located diagnostic must not end up pointing at a file with a line from
+# somewhere else, and the two sections must not both claim to own this. 123
+# owns the positive; this owns the fallback, where a stub carries provenance
+# but no declaration markers and therefore keeps its own path AND its own line
+# together. That is the shape every stub written before those markers has.
+locmarker="$dpvdir/nomarker"
+mkdir -p "$locmarker/_build/vibe_vpkg_types"
+locstub="_build/vibe_vpkg_types/types_nomarkerprobe.vibe"
+rm -f "$locstub"
+printf '// vibe: vpkg contract types module (#1840)\n// vibe: generated from %s/pkg/index.vpkg\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn main() -> Int {\n  0\n}\n' "$dpvdir" > "$locstub"
+rm -f "$dpvdir/nomarker.out" "$dpvdir/nomarker.out.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$dpvdir/located/index.vpkg" "$dpvdir/located.out" main >/dev/null 2>&1 || true
-loc_report="$(cat "$dpvdir/located.out.diag" 2>/dev/null || true)"
-# It must still be the LOCATED shape, or this probe stops testing the guard.
-if ! printf '%s\n' "$loc_report" | grep -q 'line [0-9]*:'; then
-  echo "[compiler-gate] FAIL: the shadowing diagnostic is no longer located -- repoint this probe, it no longer exercises the guard (#2324)" >&2
-  printf '%s\n' "$loc_report" >&2
+  "$locstub" "$dpvdir/nomarker.out" main >/dev/null 2>&1 || true
+nomarker_report="$(cat "$dpvdir/nomarker.out.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$nomarker_report" | grep -q 'line [0-9]*:'; then
+  echo "[compiler-gate] FAIL: the marker-less stub produced no located diagnostic -- repoint this probe (#2317)" >&2
+  printf '%s\n' "$nomarker_report" >&2
+  rm -f "$locstub"
   exit 1
 fi
-if printf '%s\n' "$loc_report" | grep -qF "$dpvdir/located/index.vpkg"; then
-  echo "[compiler-gate] FAIL: a LOCATED diagnostic was renamed to the contract, pairing it with a line from the generated stub (#2324)" >&2
-  printf '%s\n' "$loc_report" >&2
+if printf '%s\n' "$nomarker_report" | grep -qF "$dpvdir/pkg/index.vpkg"; then
+  echo "[compiler-gate] FAIL: a stub with NO declaration markers had its located diagnostic renamed to the contract, pairing it with a stub line (#2317)" >&2
+  printf '%s\n' "$nomarker_report" >&2
+  rm -f "$locstub"
   exit 1
 fi
+rm -f "$locstub"
 # ...and a HAND-WRITTEN module that merely claims generated provenance is not
 # believed (Codex review on #2324).
 #
@@ -8833,3 +8841,245 @@ if printf '%s\n' "$nested_report" | grep -qF 'NOT_THIS_FILE'; then
 fi
 rm -rf "$dpvdir" "$nesteddir"
 echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, ignores a hand-written provenance claim flat or nested, and a known derive stays clean ok (#2317, #2324)"
+
+# 122/122. A duplicated bodyless declaration is refused by both lanes, with a
+# message that names the duplication (#2317).
+#
+# The build already refused it -- through `contract_facade_source`, whose
+# `allocated` list is set-like while `decls` counts multiplicity, so the count
+# check trips and reports "some declarations have no implementation file" about
+# a name that IS implemented. Measured before this, `fn plain` declared twice
+# with a matching impl got exactly that: an edit that does nothing.
+#
+# Both lanes now decide it from `contract_effective_decls`, the SAME filter the
+# facade builder applies -- which is the whole point of the shared function.
+# The filter matters: a legacy `let version: String` under a real `version`
+# directive is dropped before counting, so declaring THAT twice is accepted by
+# the build, and a check counting raw declarations would refuse a contract the
+# build takes. Measured both ways.
+echo "[compiler-gate] 122/122 a duplicated contract declaration is refused by both lanes, and named (#2317)"
+dupdir="_build/_gate_contract_dup"
+rm -rf "$dupdir"; mkdir -p "$dupdir"
+dup_header='name = @gate/contractdup
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+dup_mk() {
+  mkdir -p "$dupdir/$1"
+  printf '%s\n%s' "$dup_header" "$2" > "$dupdir/$1/index.vpkg"
+  printf '%s' "$3" > "$dupdir/$1/impl.vibe"
+}
+dup_plain_impl='export fn plain(x: Int) -> Int {
+  x + 1
+}
+'
+dup_mk once 'fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+dup_mk twice 'fn plain(x: Int) -> Int
+
+fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+# Qualified names go through the same facade allocation, so they duplicate the
+# same way. An earlier reading of this row claimed they were accepted; that
+# rested on a fixture whose impl did not match its contract at all.
+dup_mk qtwice 'fn Int::twice(x: Int) -> Int
+
+fn Int::twice(x: Int) -> Int
+' 'export fn Int::twice(x: Int) -> Int {
+  x + x
+}
+'
+# The filtered shape: a legacy `let version: String` beside a real `version`
+# directive is dropped before counting, so twice is FINE. This is the control
+# that a raw-declaration count would fail.
+dup_mk vtwice 'let version: String
+
+let version: String
+
+fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+for probe in once twice qtwice vtwice; do
+  if [ "$probe" = twice ] || [ "$probe" = qtwice ]; then want="refused"; else want="clean"; fi
+  rm -f "$dupdir/$probe.imp" "$dupdir/$probe.imp.diag" "$dupdir/$probe.buf"
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dupdir/$probe/index.vpkg" "$dupdir/$probe.imp" main >/dev/null 2>&1; then
+    imp="clean"
+  else
+    imp="refused"
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dupdir/$probe/index.vpkg" "$dupdir/$probe.buf" main >/dev/null 2>&1 || true
+  if [ -s "$dupdir/$probe.buf" ]; then buf="refused"; else buf="clean"; fi
+  if [ "$imp" != "$want" ] || [ "$buf" != "$want" ]; then
+    echo "[compiler-gate] FAIL: contract '$probe' -- import lane says $imp, buffer lane says $buf, both should say $want (#2317)" >&2
+    cat "$dupdir/$probe.imp.diag" 2>/dev/null >&2 || true
+    cat "$dupdir/$probe.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# The message must name the DUPLICATION. "no implementation file" is the old
+# answer, and it points the reader at an edit that does nothing.
+for lane in imp.diag buf; do
+  if ! grep -qF "declares 'plain' more than once" "$dupdir/twice.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $lane lane does not name the duplication for a repeated declaration (#2317)" >&2
+    cat "$dupdir/twice.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if grep -qF 'no implementation file' "$dupdir/twice.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $lane lane still blames a missing implementation for a duplicate (#2317)" >&2
+    cat "$dupdir/twice.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# Anchored on the REPEAT, not on the first declaration. `fn plain` is on lines
+# 9 and 11 of the generated fixture; pointing at 9 would send the reader to the
+# declaration they want to keep.
+if ! grep -q '^line 11:1:' "$dupdir/twice.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the duplicate is not anchored on the repeated declaration (expected line 11) (#2317)" >&2
+  cat "$dupdir/twice.buf" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and a FILTERED declaration sharing the duplicate's name does not shift the
+# anchor. A dropped legacy `let version: String` sits before two effective
+# `let version: Int` declarations; counting name occurrences in the raw list
+# would skip one and point at the first effective declaration -- the line the
+# reader wants to keep (Codex review on #2328). `version` is on lines 9, 11 and
+# 13; the repeat is 13.
+dup_mk vfiltered 'let version: String
+
+let version: Int
+
+let version: Int
+
+fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+rm -f "$dupdir/vfiltered.buf"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dupdir/vfiltered/index.vpkg" "$dupdir/vfiltered.buf" main >/dev/null 2>&1 || true
+if ! grep -qF "declares 'version' more than once" "$dupdir/vfiltered.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: two effective 'version' declarations beside a filtered one are not reported as a duplicate (#2328)" >&2
+  cat "$dupdir/vfiltered.buf" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 13:1:' "$dupdir/vfiltered.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a filtered declaration sharing the name shifted the duplicate anchor off the repeat (expected line 13) (#2328)" >&2
+  cat "$dupdir/vfiltered.buf" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and when a contract has BOTH faults, the two lanes recommend the SAME first
+# edit. The loader checked duplicates before classifying while the buffer lane
+# classified first, so one said "declared more than once" and the other
+# "unsupported statement" about the same file (Codex review on #2328) -- a
+# fresh instance of the divergence this work exists to close.
+dup_mk both 'fn plain(x: Int) -> Int
+
+fn plain(x: Int) -> Int
+
+export let z: Int = 5
+' "$dup_plain_impl"
+rm -f "$dupdir/both.imp" "$dupdir/both.imp.diag" "$dupdir/both.buf"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dupdir/both/index.vpkg" "$dupdir/both.imp" main >/dev/null 2>&1 || true
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dupdir/both/index.vpkg" "$dupdir/both.buf" main >/dev/null 2>&1 || true
+# Both must lead with the unsupported statement: it is the more basic fault,
+# and the point is that they AGREE, not which one wins.
+for lane in imp.diag buf; do
+  if ! grep -qF 'unsupported statement in a contract file' "$dupdir/both.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: with a duplicate AND an unsupported statement, the $lane lane does not lead with the unsupported statement (#2328)" >&2
+    cat "$dupdir/both.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+rm -rf "$dupdir"
+echo "[compiler-gate] a duplicated contract declaration is refused by both lanes and anchored on the repeat; the filtered version shape stays accepted; both lanes agree on precedence ok (#2317, #2328)"
+
+# 123/123. A LOCATED type diagnostic about a materialized contract names the
+# contract, at the declaration the author wrote (#2317).
+#
+# #2324 remapped only UNLOCATED messages, because `locate_type_error` computes
+# its line against the STUB and pairing a contract path with a stub line is
+# confidently wrong. The stub now records each declaration's contract line:col
+# beside it, so a located message can be remapped honestly.
+#
+# Declaration-granular, and the assertions say so: `print_stmt` rebuilds a
+# declaration from the AST, so the column INSIDE it is gone. What is recovered
+# is which declaration -- which is what the reader acts on, and the message
+# already names the offending type parameter.
+echo "[compiler-gate] 123/123 a located contract diagnostic names the contract at its declaration (#2317)"
+mapdir="_build/_gate_decl_map"
+rm -rf "$mapdir"; mkdir -p "$mapdir/pkg" "$mapdir/clean"
+map_header='name = @gate/declmap
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+map_impl='export fn a(x: Int) -> Int {
+  x + 1
+}
+'
+# `struct Box[T]` is on line 13 of this fixture; `struct T` on line 9. The
+# shadowing diagnostic is about Box, so line 13 is the answer and line 9 is the
+# decoy an off-by-one declaration mapping would produce.
+printf '%s\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn a(x: Int) -> Int\n' "$map_header" > "$mapdir/pkg/index.vpkg"
+printf '%s' "$map_impl" > "$mapdir/pkg/impl.vibe"
+printf '%s\nstruct P {\n  x: Int\n}\n\nfn a(x: Int) -> Int\n' "$map_header" > "$mapdir/clean/index.vpkg"
+printf '%s' "$map_impl" > "$mapdir/clean/impl.vibe"
+rm -f "$mapdir/pkg.out" "$mapdir/pkg.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mapdir/pkg/index.vpkg" "$mapdir/pkg.out" main >/dev/null 2>&1 || true
+map_report="$(cat "$mapdir/pkg.out.diag" 2>/dev/null || true)"
+# Still fires, and still LOCATED -- either failing would make the rest vacuous.
+if ! printf '%s\n' "$map_report" | grep -qF 'shadows the declared type'; then
+  echo "[compiler-gate] FAIL: the shadowing diagnostic no longer fires -- repoint this probe (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$map_report" | grep -q 'line [0-9]*:'; then
+  echo "[compiler-gate] FAIL: the shadowing diagnostic is no longer located -- this probe no longer tests the remap (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$map_report" | grep -qF 'vibe_vpkg_types/'; then
+  echo "[compiler-gate] FAIL: a located diagnostic still names the generated types module (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$map_report" | grep -qF "$mapdir/pkg/index.vpkg"; then
+  echo "[compiler-gate] FAIL: a located diagnostic does not name the contract the author wrote (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+# The DECLARATION, not merely some line of the contract. `struct Box[T]` is on
+# line 13; line 9 is the other declaration and is what an off-by-one mapping
+# would report.
+if ! printf '%s\n' "$map_report" | grep -qF ': line 13:'; then
+  echo "[compiler-gate] FAIL: the located diagnostic does not point at the declaration it is about (expected line 13) (#2317)" >&2
+  printf '%s\n' "$map_report" >&2
+  exit 1
+fi
+# ...and a contract with no such error stays clean, so a change that reported
+# every materialized package cannot pass the assertions above.
+rm -f "$mapdir/clean.out" "$mapdir/clean.out.diag"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$mapdir/clean/index.vpkg" "$mapdir/clean.out" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a contract with a plain transparent struct is refused -- the control is not valid (#2317)" >&2
+  cat "$mapdir/clean.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$mapdir"
+echo "[compiler-gate] a located contract diagnostic names the contract at its own declaration; a clean contract stays clean ok (#2317)"

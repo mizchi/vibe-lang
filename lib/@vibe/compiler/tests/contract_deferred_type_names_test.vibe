@@ -7,7 +7,11 @@
 // same predicate the checker already uses (`compiler_owned_type_arity`).
 
 import @vibe/compiler/contract {
-  contract_types_module_text, vpkg_deferred_type_names_prefix, vpkg_path_escape_one_line, vpkg_types_contract_of_source
+  contract_types_module_text,
+  vpkg_deferred_type_names_prefix,
+  vpkg_path_escape_one_line,
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_pos_for_line
 }
 
 import @vibe/compiler/core {
@@ -24,7 +28,8 @@ fn map_headers_field() -> (String, TypeExpr) {
 
 test "2164: Map in a contract type is not a deferred name" {
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  ])
   assert(!String::contains(text, vpkg_deferred_type_names_prefix))
 }
 
@@ -34,7 +39,8 @@ test "2164: MutMap in a contract type is not a deferred name" {
       ("inner", TyApp("MutMap", [TyName("String"), TyName("Int"), TyName("r")]))
     ], [], [], ["r"])
   ]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  ])
   assert(!String::contains(text, vpkg_deferred_type_names_prefix))
 }
 
@@ -43,7 +49,8 @@ test "2164: a typo next to Map is deferred, Map is not" {
     SStruct(true, "HttpRequest", [map_headers_field(), ("x", TyName("Intt"))], [
     ], [], [])
   ]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  ])
   assert(String::contains(text, vpkg_deferred_type_names_prefix))
   assert(String::contains(text, "HttpRequest : Intt"))
   assert(!String::contains(text, "HttpRequest : Map"))
@@ -51,13 +58,15 @@ test "2164: a typo next to Map is deferred, Map is not" {
 
 test "2164: a cross-package name is still deferred" {
   let defs = [SStruct(true, "ModuleJob", [("env", TyName("TypeEnv"))], [], [], [])]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  ])
   assert(String::contains(text, "ModuleJob : TypeEnv"))
 }
 
 test "2317: the generated types module carries its contract, readable from the text alone" {
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  ])
   // Read back from the TEXT, with no loader and no registry -- this is the
   // property the isolated worker lane depends on (`VIBE_MODULE_JOB_DIR` hands
   // a worker `source.vibe` and nothing else). A process-local registry answers
@@ -75,7 +84,7 @@ test "2324: a contract path keeping leading whitespace round-trips verbatim" {
   // written with no padding, so trimming the suffix could only corrupt the
   // path -- the diagnostic would then name a file that does not exist.
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
-  let text = contract_types_module_text(defs, "t", " odd dir/pkg/index.vpkg")
+  let text = contract_types_module_text(defs, "t", " odd dir/pkg/index.vpkg", [])
   assert(vpkg_types_contract_of_source(text) == " odd dir/pkg/index.vpkg")
 }
 
@@ -89,7 +98,7 @@ test "2324: a contract path containing a newline cannot escape the marker commen
   // comment and turn the rest of the path into generated source.
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
   let evil = "lib/pkg\nstruct Injected { x: Int }\n/index.vpkg"
-  let text = contract_types_module_text(defs, "t", evil)
+  let text = contract_types_module_text(defs, "t", evil, [])
   // The marker stays on ONE line, so the injected text never BEGINS a line --
   // it stays inside the comment, where it is inert. Asserting it is absent
   // entirely would be false and was: the escaped marker still contains those
@@ -103,7 +112,7 @@ test "2324: a contract path containing a newline cannot escape the marker commen
 test "2324: a backslash in a contract path round-trips" {
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
   let odd = "lib/we\\ird/index.vpkg"
-  let text = contract_types_module_text(defs, "t", odd)
+  let text = contract_types_module_text(defs, "t", odd, [])
   assert(vpkg_types_contract_of_source(text) == odd)
 }
 
@@ -115,4 +124,45 @@ test "2324: a decoded path is escaped again before it reaches a diagnostic" {
   assert(String::index_of(shown, "\n") < 0)
   // An ordinary path is untouched, so escaping costs nothing in the normal case.
   assert(vpkg_path_escape_one_line("lib/@gate/pkg/index.vpkg") == "lib/@gate/pkg/index.vpkg")
+}
+
+test "2317: a stub records each declaration's contract position, nearest marker wins" {
+  let defs = [
+    SStruct(true, "A", [("x", TyName("Int"))], [], [], []),
+    SStruct(true, "B", [("y", TyName("Int"))], [], [], [])
+  ]
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+    "9:1",
+    "13:1"
+  ])
+  // The marker sits immediately above its declaration, so the declaration's
+  // own line resolves to it -- and so does any later line the printer might
+  // render that declaration onto.
+  let lines = String::split(text, "\n")
+  let mut a_line = 0
+  let mut b_line = 0
+  let mut i = 0
+  while i < Array::length(lines) {
+    if String::index_of(Array::get(lines, i), "struct A") >= 0 {
+      a_line = i + 1
+    } else {
+      ()
+    }
+    if String::index_of(Array::get(lines, i), "struct B") >= 0 {
+      b_line = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(a_line > 0 && b_line > a_line)
+  assert(vpkg_types_decl_pos_for_line(text, a_line) == "9:1")
+  assert(vpkg_types_decl_pos_for_line(text, b_line) == "13:1")
+}
+
+test "2317: a stub with no position markers reads as empty, not as a guess" {
+  let defs = [SStruct(true, "A", [("x", TyName("Int"))], [], [], [])]
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  ])
+  assert(vpkg_types_decl_pos_for_line(text, 4) == "")
 }

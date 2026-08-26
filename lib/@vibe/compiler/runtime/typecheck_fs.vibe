@@ -81,12 +81,17 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 
 import @vibe/compiler/contract {
   classify_contract_stmts,
+  contract_duplicate_decl_index,
+  contract_effective_decl_indices,
+  contract_effective_decls,
   contract_unsupported_stmt_index,
+  extract_package_version,
   extract_require_pins,
   parse_contract_program,
   parse_contract_program_spans,
   vpkg_path_escape_one_line,
-  vpkg_types_contract_of_source
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_pos_for_line
 }
 
 import @vibe/compiler/loader {
@@ -1436,20 +1441,82 @@ fn is_generated_vpkg_types_path(path: String) -> Bool {
   }
 }
 
-fn type_diagnostic_display_path(path: String, source: String, located_msg: String) -> String {
-  if is_generated_vpkg_types_path(path) && !diag_already_located(located_msg) {
-    let owner = vpkg_types_contract_of_source(source)
-    if owner == "" {
-      path
-    } else {
-      // Escaped for DISPLAY. The marker round-trips a path exactly, newlines
-      // included, and this string goes straight into a diagnostic -- rendered
-      // verbatim it would split one record across lines, and crafted path
-      // components could resemble further diagnostics (Codex review on #2324).
-      vpkg_path_escape_one_line(owner)
-    }
+/// #2317: split a located message into its 1-based line number and the body
+/// after the `line L:C: ` prefix. `(-1, msg)` when it carries no prefix.
+///
+/// The prefix ends at the first `": "`, which is unambiguous: the position is
+/// `L:C` or `L:C-E`, and neither contains a space.
+fn located_line_and_body(msg: String) -> (Int, String) {
+  if !String::starts_with(msg, "line ") {
+    return (0 - 1, msg)
   } else {
-    path
+    ()
+  }
+  let n = String::length(msg)
+  let mut i = 5
+  let mut num = 0
+  let mut digits = 0
+  while i < n {
+    let c = String::char_code_at(msg, i)
+    if c >= 48 && c <= 57 {
+      num = num * 10 + (c - 48)
+      digits = digits + 1
+      i = i + 1
+    } else {
+      i = n
+    }
+  }
+  if digits == 0 {
+    return (0 - 1, msg)
+  } else {
+    ()
+  }
+  let sep = String::index_of(msg, ": ")
+  if sep < 0 {
+    (0 - 1, msg)
+  } else {
+    (num, String::substring(msg, sep + 2, String::length(msg)))
+  }
+}
+
+fn type_diagnostic_display(path: String, source: String, located_msg: String) -> (String, String) with Exception {
+  if !is_generated_vpkg_types_path(path) {
+    return (path, located_msg)
+  } else {
+    ()
+  }
+  let owner_raw = vpkg_types_contract_of_source(source)
+  if owner_raw == "" {
+    return (path, located_msg)
+  } else {
+    ()
+  }
+  // Escaped for DISPLAY. The marker round-trips a path exactly, newlines
+  // included, and this string goes straight into a diagnostic -- rendered
+  // verbatim it would split one record across lines, and crafted path
+  // components could resemble further diagnostics (Codex review on #2324).
+  let owner = vpkg_path_escape_one_line(owner_raw)
+  let (lno, body) = located_line_and_body(located_msg)
+  if lno < 0 {
+    // Unlocated: nothing to remap, and nothing to get wrong.
+    return (owner, located_msg)
+  } else {
+    ()
+  }
+  // #2317: located. The stub records each declaration's contract `line:col`
+  // beside it, so the message can name the contract AND point at the
+  // declaration the author wrote. Declaration-granular: `print_stmt` rebuilds
+  // the declaration from the AST, so the column inside it is gone -- what is
+  // recovered is WHICH declaration, which is what the reader acts on.
+  //
+  // Without a marker the stub path and its own line are kept together. That
+  // pair is at least self-consistent; pairing the contract with a stub line is
+  // the confidently-wrong shape #2324 exists to avoid.
+  let pos = vpkg_types_decl_pos_for_line(source, lno)
+  if pos == "" {
+    (path, located_msg)
+  } else {
+    (owner, String::concat("line ", String::concat(pos, String::concat(": ", body))))
   }
 }
 
@@ -4232,8 +4299,9 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with { Exception::Throw(msg) => {
       let located = locate_type_error(job.source, msg)
+      let (disp_path, disp_msg) = type_diagnostic_display(job.path, job.source, located)
       Diagnosed(job.path, [
-        String::concat(String::concat(type_diagnostic_display_path(job.path, job.source, located), ": "), located)
+        String::concat(String::concat(disp_path, ": "), disp_msg)
       ])
     } }
   }
@@ -5665,7 +5733,15 @@ export fn collect_all_diagnostics_for_path(input_path: String, source: String) -
   } else {
     ()
   }
-  collect_all_diagnostics_on(input_path, pin_blanked)
+  // #2317: the version directive is BLANKED out of `pin_blanked` (measured --
+  // `scan_package_header` blanks every directive it recognizes), so the
+  // effective-declaration filter has to be told it from the RAW source. Read
+  // it here, where that source is still in hand; a header the scanner itself
+  // rejects has already returned above, so this cannot throw a second time.
+  let pkg_version = handle {
+    extract_package_version(source)
+  } with { Exception::Throw(_) => "" }
+  collect_all_diagnostics_on(input_path, pin_blanked, pkg_version)
 }
 
 /// #2314, the LSP half of #2280: a `.vpkg` is a list of BODYLESS declarations,
@@ -6114,7 +6190,43 @@ fn contract_classify_diagnostic(source: String, starts: Array[Int], stmts: Array
   [locate_type_error(source, msg)]
 }
 
-fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
+/// #2317: anchor a duplicate declaration on the REPEAT, not on the first one.
+///
+/// The offsets are recorded against the RAW declaration list, so the effective
+/// index is mapped through `contract_effective_decl_indices` rather than by
+/// counting name occurrences. Counting is wrong when a FILTERED entry shares
+/// the name -- a dropped legacy `let version: String` beside two effective
+/// `version` declarations makes the count skip one, and the anchor lands on
+/// the declaration the reader wants to keep (Codex review on #2328).
+///
+/// `decl_at` holds TOKEN indices; `starts` converts one to a byte offset.
+///
+/// Falls back to unlocated rather than to a guess, as every other diagnostic
+/// this lane cannot place does.
+fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Array[(String, String)], eff_idx: Array[Int], decl_at: Array[Int], dup_at: Int) -> Array[String] with Exception {
+  let (dup_name, _) = Array::get(decls, dup_at)
+  let msg = String::concat(String::concat("contract declares '", dup_name), "' more than once; remove the repeated declaration (#2317)")
+  if dup_at >= 0 && dup_at < Array::length(eff_idx) {
+    let raw_i = Array::get(eff_idx, dup_at)
+    if raw_i >= 0 && raw_i < Array::length(decl_at) {
+      let tok = Array::get(decl_at, raw_i)
+      if tok >= 0 && tok < Array::length(starts) {
+        return [
+          String::concat(offset_line_col_prefix(source, Array::get(starts, tok)), msg)
+        ]
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  [locate_type_error(source, msg)]
+}
+
+fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
     // A contract LEXES like a program, so it gets the recovering lexer and
     // every lex error, the same as the branch below (#2314 review). Only the
@@ -6143,7 +6255,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (_cdecls, _copaques, cstmts, cstmt_at) = parse_contract_program_spans(ctokens)
+      let (cdecls_raw, _copaques, cstmts, cstmt_at, cdecl_at) = parse_contract_program_spans(ctokens)
       // The classifier is caught SEPARATELY from the parse. Both throw
       // unlocated messages, but they need different anchors: a parse error
       // belongs at the token the parser stopped on, a rejected statement at
@@ -6157,7 +6269,19 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
       if cls_err != "" {
         contract_classify_diagnostic(source, cstarts, cstmts, cstmt_at, cls_err)
       } else {
-        contract_semantic_errors(source, ctokens, cstarts, cstmts)
+        // #2317: the loader's own effective-declaration list, not a second
+        // reading of it -- `contract_effective_decls` drops exactly what the
+        // build drops (a legacy `let version: String` under a real `version`
+        // directive), so the two lanes cannot disagree about which shapes
+        // count. Measured: declared twice, that one IS accepted by the build.
+        let cdecls = contract_effective_decls(cdecls_raw, pkg_version)
+        let ceff_idx = contract_effective_decl_indices(cdecls_raw, pkg_version)
+        let dup_at = contract_duplicate_decl_index(cdecls)
+        if dup_at >= 0 {
+          contract_duplicate_diagnostic(source, cstarts, cdecls, ceff_idx, cdecl_at, dup_at)
+        } else {
+          contract_semantic_errors(source, ctokens, cstarts, cstmts)
+        }
       }
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
