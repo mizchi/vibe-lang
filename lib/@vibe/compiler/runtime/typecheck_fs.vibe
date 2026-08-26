@@ -5713,17 +5713,28 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
 /// `locate_by_marker` already places `unknown name:` and friends. Statements
 /// carry no offsets (`SLet(Bool, Bool, String, Option[TypeExpr], Expr)` has no
 /// span), and adding them is a change at every construction site.
-fn contract_semantic_errors(source: String, stmts: Array[Stmt]) -> Array[String] with Exception {
+fn contract_semantic_errors(source: String, decls: Array[(String, String)], stmts: Array[Stmt]) -> Array[String] with Exception {
   let out = array_empty()
+  // Bodyless declarations live in `parse_contract_program`'s FIRST tuple
+  // element, not among its statements -- a contract's `fn f(x: Int) -> Int` is
+  // not an `SLet`. The first version scanned the statements for one and so
+  // never fired; measured, the duplicate probe reported nothing until this
+  // moved to `decls`.
   let seen: Array[String] = []
+  let mut d = 0
+  while d < Array::length(decls) {
+    let (dname, _sig) = Array::get(decls, d)
+    if str_array_contains_name(seen, dname) {
+      let dup_msg = String::concat(String::concat("duplicate declaration in a contract: `", dname), "` is declared more than once -- a contract declares each name once, and the facade it generates can allocate the name only once")
+      Array::push(out, located_for_name(source, dname, 2, dup_msg))
+    } else {
+      Array::push(seen, dname)
+    }
+    d = d + 1
+  }
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => if str_array_contains_name(seen, name) {
-        Array::push(out, located_for_name(source, name, 2, String::concat(String::concat("duplicate declaration in a contract: `", name), "` is declared more than once -- a contract declares each name once, and the facade cannot allocate it twice")))
-      } else {
-        Array::push(seen, name)
-      },
       SStruct(_, _, _, derives, _, _) => validate_derives(derives, out),
       SEnum(_, _, _, _, derives) => validate_derives(derives, out),
       _ => ()
@@ -5822,9 +5833,9 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (_, _, cstmts) = parse_contract_program(ctokens)
+      let (cdecls, _copaques, cstmts) = parse_contract_program(ctokens)
       let (_raws, _type_defs) = classify_contract_stmts(cstmts)
-      contract_semantic_errors(source, cstmts)
+      contract_semantic_errors(source, cdecls, cstmts)
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
     ()
