@@ -8554,3 +8554,99 @@ if [ "$cs_noisy" -ne 0 ]; then
 fi
 rm -rf "$csdir"
 echo "[compiler-gate] an unknown derive is refused by both lanes and anchored on its own clause; no committed contract regressed ok (#2317)"
+
+# 120/120. A statement a contract may not contain is anchored on THAT
+# statement, on both lanes' shared message (#2317).
+#
+# `classify_contract_stmts` throws an unlocated message. The buffer lane caught
+# it in the same handler as a parse error, whose anchor is a token-prefix probe
+# that can only reproduce PARSER throws -- so the probe missed, and the reader
+# got the synthetic 0:0: the contract is broken, and nowhere to look. Measured
+# before this: both lanes printed the message bare.
+#
+# The offset is now READ, not searched for. `parse_contract_program_spans`
+# carries the token index each statement started at, and
+# `contract_unsupported_stmt_index` asks the classifier itself which statement
+# it stops on. Three attempts in the #2315 review to locate this by probing
+# growing prefixes each produced a non-monotone predicate that binary search
+# could resolve to VALID code, which is why searching is not used here.
+echo "[compiler-gate] 120/120 an unsupported contract statement is anchored on that statement (#2317)"
+clsdir="_build/_gate_contract_classify"
+rm -rf "$clsdir"; mkdir -p "$clsdir"
+cls_header='name = @gate/contractcls
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+cls_impl='export fn a(x: Int) -> Int {
+  x + 1
+}
+
+export fn b(y: Int) -> Int {
+  y
+}
+'
+# `later`: the offending statement is the THIRD, so an anchor that always
+# points at the first statement (or at offset 0) fails. `first`: it is the
+# first, so an anchor that is off by one statement fails too. The pair pins the
+# mapping in both directions; one alone does not.
+mkdir -p "$clsdir/later" "$clsdir/first" "$clsdir/clean"
+printf '%s\nfn a(x: Int) -> Int\n\nexport let z: Int = 5\n\nfn b(y: Int) -> Int\n' "$cls_header" > "$clsdir/later/index.vpkg"
+printf '%s' "$cls_impl" > "$clsdir/later/impl.vibe"
+printf '%s\nexport let z: Int = 5\n\nfn a(x: Int) -> Int\n\nfn b(y: Int) -> Int\n' "$cls_header" > "$clsdir/first/index.vpkg"
+printf '%s' "$cls_impl" > "$clsdir/first/impl.vibe"
+printf '%s\nfn a(x: Int) -> Int\n\nfn b(y: Int) -> Int\n' "$cls_header" > "$clsdir/clean/index.vpkg"
+printf '%s' "$cls_impl" > "$clsdir/clean/impl.vibe"
+cls_msg='unsupported statement in a contract file'
+for probe in later first; do
+  if [ "$probe" = later ]; then want_line='line 11:1:'; else want_line='line 9:1:'; fi
+  rm -f "$clsdir/$probe.imp" "$clsdir/$probe.imp.diag" "$clsdir/$probe.buf"
+  # The import lane is the oracle, asserted by MESSAGE. Its exit status alone
+  # says nothing: a contract with an unimplemented declaration is refused
+  # whatever else it contains, so a status check would pass without ever
+  # reaching the classifier.
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$clsdir/$probe/index.vpkg" "$clsdir/$probe.imp" main >/dev/null 2>&1 || true
+  if ! grep -qF "$cls_msg" "$clsdir/$probe.imp.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the import lane no longer refuses a top-level let in a contract ($probe) -- repoint this probe (#2317)" >&2
+    cat "$clsdir/$probe.imp.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$clsdir/$probe/index.vpkg" "$clsdir/$probe.buf" main >/dev/null 2>&1 || true
+  if ! grep -qF "$cls_msg" "$clsdir/$probe.buf" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the buffer lane does not refuse a top-level let in a contract ($probe) (#2317)" >&2
+    cat "$clsdir/$probe.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! grep -q "^$want_line" "$clsdir/$probe.buf" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the unsupported statement ($probe) is not anchored on itself (expected $want_line) (#2317)" >&2
+    cat "$clsdir/$probe.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# A contract with no forbidden statement stays clean on both lanes -- without
+# this, a change that reported every contract would pass everything above.
+rm -f "$clsdir/clean.imp" "$clsdir/clean.imp.diag" "$clsdir/clean.buf"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$clsdir/clean/index.vpkg" "$clsdir/clean.imp" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: the import lane refuses the CLEAN control contract -- the probes above are not valid (#2317)" >&2
+  cat "$clsdir/clean.imp.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$clsdir/clean/index.vpkg" "$clsdir/clean.buf" main >/dev/null 2>&1 || true
+if [ -s "$clsdir/clean.buf" ]; then
+  echo "[compiler-gate] FAIL: a contract with no forbidden statement is reported by the buffer lane (#2317)" >&2
+  cat "$clsdir/clean.buf" >&2
+  exit 1
+fi
+rm -rf "$clsdir"
+echo "[compiler-gate] an unsupported contract statement is refused by both lanes and anchored on itself, first or later ok (#2317)"

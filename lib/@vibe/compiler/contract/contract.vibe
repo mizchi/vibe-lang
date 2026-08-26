@@ -119,10 +119,39 @@ fn fn_sig_text(tps: Array[String], tbs: Array[(String, Array[String])], params: 
 /// #739: opaque/bodyless type declarations carry (name, arity) so conformance
 /// can reject an impl whose type-parameter count differs and the semver
 /// surface can see `Box` -> `Box[T]` as a breaking change.
+/// #2317: record a contract statement together with the token index it
+/// started at.
+///
+/// The two arrays are read positionally by `contract_classify_diagnostic`, so
+/// a push that lands in only one of them does not fail -- it shifts every
+/// later statement's anchor onto its neighbour, which is a diagnostic pointing
+/// confidently at the wrong line. One call site each keeps them paired, and
+/// the length check at the end of the parse catches a site that bypasses this.
+fn push_contract_stmt(stmts: Array[Stmt], stmt_at: Array[Int], stmt: Stmt, at: Int) -> Unit {
+  Array::push(stmts, stmt)
+  Array::push(stmt_at, at)
+}
+
 export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt]) with Exception {
+  let (decls, opaques, stmts, _at) = parse_contract_program_spans(tokens)
+  (decls, opaques, stmts)
+}
+
+/// #2317: `parse_contract_program`, plus the TOKEN INDEX each statement
+/// started at (one entry per `Stmt`, same order).
+///
+/// `classify_contract_stmts` rejects a statement a contract may not contain,
+/// and its message carries no position -- so the buffer lane rendered it at
+/// the synthetic 0:0 and told the reader a contract is broken without saying
+/// where. The parser is the only place that knows where each statement began;
+/// it used to discard that. Recovering it by SEARCH was tried three times in
+/// the #2315 review and each attempt produced a predicate that could anchor on
+/// valid code, so the offset is carried instead.
+export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt], Array[Int]) with Exception {
   let decls = array_empty()
   let opaques = array_empty()
   let stmts = array_empty()
+  let stmt_at = array_empty()
   let mut pos = 0
   let mut done = false
   while !done {
@@ -192,7 +221,7 @@ export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String
           pos = la
         } else {
           let (stmt, next) = parse_stmt(tokens, [], pos)
-          Array::push(stmts, stmt)
+          push_contract_stmt(stmts, stmt_at, stmt, pos)
           pos = next
         }
       },
@@ -240,7 +269,7 @@ export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String
         }
       } else {
         let (stmt, next) = parse_stmt(tokens, [], pos)
-        Array::push(stmts, stmt)
+        push_contract_stmt(stmts, stmt_at, stmt, pos)
         pos = next
       },
       // `#deprecated` is a token-level marker (`vibe check` scans the
@@ -293,12 +322,17 @@ export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String
       },
       _ => {
         let (stmt, next) = parse_stmt(tokens, [], pos)
-        Array::push(stmts, stmt)
+        push_contract_stmt(stmts, stmt_at, stmt, pos)
         pos = next
       }
     }
   }
-  (decls, opaques, stmts)
+  if Array::length(stmts) != Array::length(stmt_at) {
+    throw("internal: contract statement offsets desynced (#2317) -- a statement was recorded without its position")
+  } else {
+    ()
+  }
+  (decls, opaques, stmts, stmt_at)
 }
 
 /// Collect (name, Some(sig) | None, exported) for every top-level let whose
@@ -841,6 +875,40 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
     i = i + 1
   }
   (raws, type_defs)
+}
+
+/// #2317: index of the first statement `classify_contract_stmts` rejects, or
+/// -1 when it accepts them all.
+///
+/// It ASKS the classifier, one statement at a time, rather than mirroring its
+/// match arms -- a second copy of the rule would drift the first time a
+/// statement kind is added, and the classifier's own loop is per-statement
+/// with no cross-statement state, so `classify_contract_stmts([s])` throws
+/// exactly when `s` is the kind it refuses. Walking in order therefore finds
+/// the same statement the full call stopped on.
+///
+/// Deliberately not a prefix search: three attempts in the #2315 review to
+/// locate a diagnostic by probing growing prefixes each produced a predicate
+/// that was not monotone, and binary search over one can anchor on valid code.
+/// This asks about each statement on its own, so there is no predicate shape
+/// to get wrong.
+export fn contract_unsupported_stmt_index(stmts: Array[Stmt]) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(stmts) && found < 0 {
+    let one = array_empty()
+    Array::push(one, Array::get(stmts, i))
+    let bad = handle {
+      let (_raws, _defs) = classify_contract_stmts(one)
+      false
+    } with { Exception::Throw(_) => true }
+    if bad {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 /// Compat shim for the strict v1 shape (implementation imports only).
