@@ -4,6 +4,10 @@ import ./ast.vibe {
   TypeExpr
 }
 
+import @vibe/ast {
+  trait_ref_from_key, trait_ref_name
+}
+
 import ./exception_effect.vibe {
   exception_label_kind, is_exception_label
 }
@@ -1156,7 +1160,7 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
   match env {
     EnvEmpty => empty,
     EnvBind(_, _, rest) => trait_supers(rest, name),
-    EnvTraitDef(tname, supers, _, _, rest, _, _) => if tname == name {
+    EnvTraitDef(tname, supers, _, _, rest, _, _) => if tname == trait_ref_name(name) {
       supers
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
@@ -1210,7 +1214,7 @@ export fn trait_method_sig_binders(env: TypeEnv, trait_name: String, method_name
   match env {
     EnvEmpty => None,
     EnvBind(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
-    EnvTraitDef(tname, _, _, methods, rest, tparams, method_gens) => if tname == trait_name {
+    EnvTraitDef(tname, _, _, methods, rest, tparams, method_gens) => if tname == trait_ref_name(trait_name) {
       let mlen = Array::length(methods)
       let mut i = 0
       let mut found = None
@@ -1795,7 +1799,7 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_defined(rest, name),
-    EnvTraitDef(tname, _, _, _, rest, _, _) => if tname == name {
+    EnvTraitDef(tname, _, _, _, rest, _, _) => if tname == trait_ref_name(name) {
       true
     } else trait_defined(rest, name),
     EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
@@ -1804,6 +1808,24 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
     EnvTypeDefs(_, _, rest) => trait_defined(rest, name),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => trait_defined(rest, name)
+  }
+}
+
+export fn trait_decl_params(env: TypeEnv, name: String) -> Option[Array[String]] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => trait_decl_params(rest, name),
+    EnvTraitDef(tname, _, _, _, rest, params, _) => if tname == trait_ref_name(name) {
+      Some(params)
+    } else {
+      trait_decl_params(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => trait_decl_params(rest, name),
+    EnvMutCell(_, _, rest) => trait_decl_params(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_decl_params(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_decl_params(rest, name),
+    EnvFlat(_) => None,
+    EnvCached(_, _, rest) => trait_decl_params(rest, name)
   }
 }
 
@@ -3622,6 +3644,37 @@ fn impl_target_patterns_overlap(left_params: Array[String], left_target: Type, r
   }
 }
 
+/// Decide coherence over the trait application and target as one pattern.
+/// The same impl binder can occur in both halves (`impl [T] Value[T] for
+/// Box[T]`), so freshening and unification must share one substitution rather
+/// than comparing the trait arguments and target independently.
+fn impl_trait_and_target_patterns_overlap(left_trait: String, left_params: Array[String], left_target: Type, right_trait: String, right_params: Array[String], right_target: Type) -> Bool {
+  if trait_ref_name(left_trait) != trait_ref_name(right_trait) {
+    false
+  } else match (trait_ref_from_key(left_trait), trait_ref_from_key(right_trait)) {
+    (Some(left_ref), Some(right_ref)) => {
+      let left_pattern = CtTuple([
+        trait_ref_type_expr_type(left_ref),
+        left_target
+      ])
+      let right_pattern = CtTuple([
+        trait_ref_type_expr_type(right_ref),
+        right_target
+      ])
+      let left = freshen_impl_pattern(left_pattern, left_params, 100000000)
+      let right = freshen_impl_pattern(right_pattern, right_params, 200000000)
+      match unify_impl_patterns_exact(left, right, SubstEmpty) {
+        Some(_) => true,
+        None => false
+      }
+    },
+    // A bare parameterized trait spelling is the compatibility form that
+    // denotes the whole trait family. Its target therefore remains the only
+    // coherence discriminator when paired with an applied spelling.
+    _ => impl_target_patterns_overlap(left_params, left_target, right_params, right_target)
+  }
+}
+
 /// Return the first existing target whose instance set intersects the new
 /// target. TypeEnv is newest-first, so this is deterministic for a fixed
 /// source order and gives the checker both candidate targets for its error.
@@ -3636,17 +3689,17 @@ export fn overlapping_impl_target_for(env: TypeEnv, trait_name: String, new_para
     // @vibe/builtin bound-only declaration) without treating their mirrored
     // primitive impl declarations as source duplicates. Impl nodes belonging
     // to the current declaration are always above this boundary.
-    EnvTraitDef(name, _, _, _, rest, _, _) => if name == trait_name {
+    EnvTraitDef(name, _, _, _, rest, _, _) => if name == trait_ref_name(trait_name) {
       None
     } else {
       overlapping_impl_target_for(rest, trait_name, new_params, new_target)
     },
-    EnvTraitImpl(tname, target, rest) => if tname == trait_name && impl_target_patterns_overlap(array_empty(), target, new_params, new_target) {
+    EnvTraitImpl(tname, target, rest) => if impl_trait_and_target_patterns_overlap(tname, array_empty(), target, trait_name, new_params, new_target) {
       Some(target)
     } else {
       overlapping_impl_target_for(rest, trait_name, new_params, new_target)
     },
-    EnvTraitImplGen(tname, params, _, target, rest) => if tname == trait_name && impl_target_patterns_overlap(params, target, new_params, new_target) {
+    EnvTraitImplGen(tname, params, _, target, rest) => if impl_trait_and_target_patterns_overlap(tname, params, target, trait_name, new_params, new_target) {
       Some(target)
     } else {
       overlapping_impl_target_for(rest, trait_name, new_params, new_target)
@@ -3889,7 +3942,7 @@ fn trait_is_method_bearing(env: TypeEnv, trait_name: String) -> Bool {
   match env {
     EnvEmpty => false,
     EnvBind(_, _, rest) => trait_is_method_bearing(rest, trait_name),
-    EnvTraitDef(tname, _, _, methods, rest, _, _) => if tname == trait_name {
+    EnvTraitDef(tname, _, _, methods, rest, _, _) => if tname == trait_ref_name(trait_name) {
       Array::length(methods) > 0
     } else trait_is_method_bearing(rest, trait_name),
     EnvTraitImpl(_, _, rest) => trait_is_method_bearing(rest, trait_name),
@@ -4016,6 +4069,52 @@ fn generic_target_match(template: Type, actual: Type, tparams: Array[String], ar
   }
 }
 
+fn trait_ref_type_expr_type(expr: TypeExpr) -> Type {
+  match expr {
+    TyName(name) => match resolve_builtin(name) {
+      Some(ty) => ty,
+      None => CtNamed(name, array_empty())
+    },
+    TyApp(name, args) => {
+      let resolved = for arg in args {
+        trait_ref_type_expr_type(arg)
+      }
+      if name == "Array" && Array::length(resolved) == 1 {
+        CtArray(Array::get(resolved, 0))
+      } else if name == "Option" && Array::length(resolved) == 1 {
+        CtOption(Array::get(resolved, 0))
+      } else {
+        CtNamed(name, resolved)
+      }
+    },
+    TyTuple(items) => CtTuple(for item in items {
+      trait_ref_type_expr_type(item)
+    }),
+    TyFn(params, ret, effect) => CtFn(for param in params {
+      trait_ref_type_expr_type(param)
+    }, trait_ref_type_expr_type(ret), effect),
+    TyUnit => CtUnit
+  }
+}
+
+fn generic_trait_ref_matches(template_key: String, actual_key: String, tparams: Array[String], args: Array[Type]) -> Bool {
+  if template_key == actual_key {
+    true
+  } else {
+    match trait_ref_from_key(template_key) {
+      Some(template) => match trait_ref_from_key(actual_key) {
+        Some(actual) => if trait_ref_name(template_key) == trait_ref_name(actual_key) {
+          generic_target_match(trait_ref_type_expr_type(template), trait_ref_type_expr_type(actual), tparams, args)
+        } else {
+          false
+        },
+        None => false
+      },
+      None => false
+    }
+  }
+}
+
 /// Match the retained impl target against one concrete use and return its type
 /// arguments in impl-binder order. Reordered targets such as `Pair[V, K]`
 /// therefore bind V to the first concrete slot and K to the second instead of
@@ -4074,10 +4173,10 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
     EnvMutCell(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
       let head = type_constructor_name(resolved)
-      let shape_ok = itrait == trait_name && head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name)
+      let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name)
       if shape_ok {
         match generic_target_args(tparams, target, resolved) {
-          Some(args) => if generic_bounds_hold(full, s, tparams, bounds, args) {
+          Some(args) => if generic_trait_ref_matches(itrait, trait_name, tparams, args) && generic_bounds_hold(full, s, tparams, bounds, args) {
             true
           } else {
             generic_impl_satisfies(rest, full, s, trait_name, resolved)

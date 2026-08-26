@@ -1,0 +1,46 @@
+import ./checker_parity_test_support.vibe {
+  check_source_error_message
+}
+
+test "applied trait bounds report arity at the declaration" {
+  let source = "trait Value[A] { value(Self) -> A }\nfn bad[T: Value[Int, String]](item: T) -> Int { 0 }"
+  inspect(check_source_error_message(source), "trait `Value` expects 1 type argument(s), got 2 in bound `Value[Int, String]`")
+}
+
+test "applied impl heads report arity at the declaration" {
+  let source = "trait Value[A] { value(Self) -> A }\nstruct Box { value: Int }\nimpl Value[Int, String] for Box { value(self: Box) -> Int { self.value } }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "trait `Value` expects 1 type argument(s), got 2 in impl head `Value[Int, String]`"))
+}
+
+test "missing applied instances use source trait syntax" {
+  let source = "trait Value[A] { value(Self) -> A }\nstruct Box { value: String }\nimpl Value[String] for Box { value(self: Box) -> String { self.value } }\nfn need[T: Value[Int]](item: T) -> Int { T::value(item) }\nlet answer = need(Box::{ value: \"text\" })"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "no impl `Value[Int]` for `Box`"))
+  assert(!String::contains(message, "$trait$"))
+}
+
+test "trait parameters constrain method arguments" {
+  let source = "trait Value[A] { choose(Self, A) -> A }\nfn bad[T: Value[Int]](item: T) -> Int { T::choose(item, \"wrong\") }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "argument type mismatch"))
+  assert(String::contains(message, "expected Int, got String"))
+}
+
+test "overlap diagnostics distinguish applied trait arguments" {
+  let source = "trait Value[A] { value(Self) -> A }\nstruct Box { value: Int }\nimpl Value[Int] for Box\nimpl Value[Int] for Box"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "overlapping impls for `Value[Int]`"))
+  assert(!String::contains(message, "$trait$"))
+}
+
+test "generic and concrete applied impls overlap when their instances intersect" {
+  let source = "trait Value[A] { value(Self) -> A }\nstruct Box[T] { value: T }\nimpl [T] Value[T] for Box[T]\nimpl Value[Int] for Box[Int]"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "overlapping impls for `Value[Int]`"))
+}
+
+test "disjoint concrete applied impls do not overlap" {
+  let source = "trait Value[A] { value(Self) -> A }\nstruct Box { value: Int }\nimpl Value[Int] for Box\nimpl Value[String] for Box"
+  inspect(check_source_error_message(source), "")
+}

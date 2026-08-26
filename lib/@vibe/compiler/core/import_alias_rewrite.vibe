@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  impl_method_owner
+  impl_method_owner, trait_ref_from_key, trait_ref_key
 }
 
 import ./module_graph_path.vibe {
@@ -577,6 +577,25 @@ fn rewrite_alias_type_opt(ty: Option[TypeExpr], am: AliasIdx) -> Option[TypeExpr
   }
 }
 
+fn rewrite_alias_trait_ref(trait_ref: String, am: AliasIdx) -> String {
+  match trait_ref_from_key(trait_ref) {
+    Some(applied) => trait_ref_key(rewrite_alias_type_expr(applied, am)),
+    None => match MutMap::get(am.idx, trait_ref) {
+      Some(original) => original,
+      None => trait_ref
+    }
+  }
+}
+
+fn rewrite_alias_bounds(bounds: Array[(String, Array[String])], am: AliasIdx) -> Array[(String, Array[String])] {
+  for bound in bounds {
+    let (param, traits) = bound
+    (param, for trait_ref in traits {
+      rewrite_alias_trait_ref(trait_ref, am)
+    })
+  }
+}
+
 fn rewrite_alias_param_types(params: Array[(String, Option[TypeExpr])], am: AliasIdx) -> Array[(String, Option[TypeExpr])] {
   for param in params {
     let (name, ty) = param
@@ -666,7 +685,7 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // namespaces while canonicalizing imported contract aliases in fn
         // parameter and return annotations (#1539 StdinStream as S).
         let type_am = aliasidx_without_names(am, type_params)
-        EFn(type_params, bounds, rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params)))
+        EFn(type_params, rewrite_alias_bounds(bounds, type_am), rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params)))
       },
       // #897: `mod.x` written against a qualified-import namespace (`import
       // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see
@@ -796,9 +815,11 @@ fn collect_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(String,
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SImpl(tparams, _, trait_name, target) => {
-        let rewritten_target = rewrite_alias_type_expr(target, aliasidx_without_names(am, tparams))
+        let type_am = aliasidx_without_names(am, tparams)
+        let rewritten_trait = rewrite_alias_trait_ref(trait_name, type_am)
+        let rewritten_target = rewrite_alias_type_expr(target, type_am)
         let source_owner = impl_method_owner(tparams, trait_name, target)
-        let rewritten_owner = impl_method_owner(tparams, trait_name, rewritten_target)
+        let rewritten_owner = impl_method_owner(tparams, rewritten_trait, rewritten_target)
         if source_owner != rewritten_owner {
           Array::push(out, (source_owner, rewritten_owner))
         } else {
@@ -1021,7 +1042,10 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
     // rewrite at all) and is tracked separately -- what this guard buys is that
     // the rewrite is not a SECOND, independent source of the same bug.
     STypeAlias(exported, name, params, target) => STypeAlias(exported, name, params, rewrite_alias_type_expr(target, aliasidx_without_names(am, params))),
-    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_alias_type_expr(target, aliasidx_without_names(am, tparams))),
+    SImpl(tparams, bounds, trait_name, target) => {
+      let type_am = aliasidx_without_names(am, tparams)
+      SImpl(tparams, rewrite_alias_bounds(bounds, type_am), rewrite_alias_trait_ref(trait_name, type_am), rewrite_alias_type_expr(target, type_am))
+    },
     _ => stmt
   }
 }

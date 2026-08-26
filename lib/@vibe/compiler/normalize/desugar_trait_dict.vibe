@@ -19,7 +19,14 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_applied_target_key, impl_method_owner, impl_specialized_method_binding_name, impl_target_from_key, impl_target_head, impl_target_key
+  impl_applied_target_key,
+  impl_method_owner,
+  impl_specialized_method_binding_name,
+  impl_target_from_key,
+  impl_target_head,
+  impl_target_key,
+  trait_ref_from_key,
+  trait_ref_name
 }
 
 import @vibe/core {
@@ -302,7 +309,7 @@ fn split_qualified(name: String) -> Option[(String, String)] {
 
 /// The dict struct name for a trait, e.g. `Measurable` -> `MeasurableDict`.
 fn dict_struct_name(trait_name: String) -> String {
-  String::concat(trait_name, "Dict")
+  String::concat(trait_ref_name(trait_name), "Dict")
 }
 
 /// #2286: which dict structs THIS program's desugar actually synthesized, and
@@ -361,7 +368,14 @@ export fn synthesized_dict_field_trait(struct_name: String, field_name: String) 
 
 /// The hidden dict parameter name for `[T: Tr]`, e.g. `__dict_Measurable_T`.
 fn dict_param_name(trait_name: String, tparam: String) -> String {
-  String::concat("__dict_", String::concat(trait_name, String::concat("_", tparam)))
+  let applied = match trait_ref_from_key(trait_name) {
+    Some(reference) => match reference {
+      TyApp(_, _) => String::concat("_", impl_target_key(reference)),
+      _ => ""
+    },
+    None => ""
+  }
+  String::concat("__dict_", String::concat(trait_ref_name(trait_name), String::concat(applied, String::concat("_", tparam))))
 }
 
 /// Collect method-bearing traits (name -> signatures). Marker-only traits
@@ -528,7 +542,7 @@ fn lookup_method_gen(table: Array[(String, Array[(String, Array[String], Array[(
   let mut result = None
   while i < Array::length(table) {
     let (tn, gens) = Array::get(table, i)
-    if tn == trait_name {
+    if tn == trait_ref_name(trait_name) {
       let mut j = 0
       while j < Array::length(gens) {
         let (mname, tps, bounds) = Array::get(gens, j)
@@ -1030,7 +1044,7 @@ fn lookup_supers(supers_map: Array[(String, Array[String])], name: String) -> Ar
   let mut result = empty_str_array()
   while i < Array::length(supers_map) {
     let (tname, supers) = Array::get(supers_map, i)
-    if tname == name {
+    if tname == trait_ref_name(name) {
       result = supers
       i = Array::length(supers_map)
     } else {
@@ -1134,7 +1148,7 @@ fn lookup_trait_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], Type
   let mut result = None
   while i < Array::length(traits) {
     let (tname, sigs) = Array::get(traits, i)
-    if tname == name {
+    if tname == trait_ref_name(name) {
       result = Some(sigs)
       i = Array::length(traits)
     } else {
@@ -2476,6 +2490,22 @@ fn generic_impl_target_is_total(target: TypeExpr, params: Array[String]) -> Bool
   }
 }
 
+fn impl_trait_pattern_matches(template_key: String, actual_key: String, params: Array[String], bindings: Array[(String, TypeExpr)]) -> Bool {
+  if template_key == actual_key {
+    true
+  } else if trait_ref_name(template_key) != trait_ref_name(actual_key) {
+    false
+  } else {
+    match trait_ref_from_key(template_key) {
+      Some(template) => match trait_ref_from_key(actual_key) {
+        Some(actual) => impl_target_pattern_matches(template, actual, params, bindings),
+        None => false
+      },
+      None => false
+    }
+  }
+}
+
 fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name: String, method: String, actual: TypeExpr) -> Option[String] {
   let mut i = 0
   let mut result = None
@@ -2484,17 +2514,17 @@ fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name:
   while i < Array::length(gens) {
     let gen = Array::get(gens, i)
     let bindings = []
-    if gen.impl_trait == trait_name && impl_target_head(match gen.impl_target {
+    if impl_target_head(match gen.impl_target {
       Some(target) => target,
       None => TyName("")
     }) == cname && String::ends_with(gen.name, String::concat("::", method)) {
       match gen.impl_target {
-        Some(target) => if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) {
+        Some(target) => if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) && impl_trait_pattern_matches(gen.impl_trait, trait_name, gen.impl_params, bindings) {
           result = Some(gen.name)
           i = Array::length(gens)
         } else {
           match actual {
-            TyName(actual_head) => if actual_head == cname && generic_impl_target_is_total(target, gen.impl_params) {
+            TyName(actual_head) => if actual_head == cname && generic_impl_target_is_total(target, gen.impl_params) && impl_trait_pattern_matches(gen.impl_trait, trait_name, gen.impl_params, bindings) {
               erased_result = Some(gen.name)
               erased_count = erased_count + 1
             } else (),
@@ -2709,7 +2739,7 @@ fn bind_impl_target_key(var_types: Array[(String, String)], name: String, value:
 /// miscompile).
 fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] {
   let cname = impl_target_head(actual_target)
-  match lookup_trait_sigs(traits, trait_name) {
+  match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
     Some(sigs) => {
       let mnames = method_names_of_sigs(sigs)
       let recfields = array_empty()
@@ -2732,7 +2762,7 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
           // never turns a compiling program into a failing one. This is the
           // one trait allowed a fabricated member, and only because its
           // fallback is the status quo rather than a guess at an impl.
-          if trait_name == "Show" && m == "to_string" {
+          if trait_ref_name(trait_name) == "Show" && m == "to_string" {
             Array::push(recfields, (m, show_fallback_closure()))
           } else {
             // No `cname::m` free function exists — `cname` does not actually
