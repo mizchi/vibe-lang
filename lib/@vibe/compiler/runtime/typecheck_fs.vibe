@@ -79,7 +79,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 }
 
 import @vibe/compiler/contract {
-  extract_require_pins, parse_contract_program
+  classify_contract_stmts, extract_require_pins, parse_contract_program
 }
 
 import @vibe/compiler/loader {
@@ -5371,7 +5371,7 @@ export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: 
 /// `extract_require_pins` blanks to spaces and preserves byte length, so the
 /// positions this scan reports stay exact.
 export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, source: String, allow_unstable: Bool) -> Array[String] with Exception {
-  let msgs = collect_all_diagnostics(source)
+  let msgs = collect_all_diagnostics_for_path(input_path, source)
   if allow_unstable {
     msgs
   } else {
@@ -5400,7 +5400,13 @@ export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, sou
   }
 }
 
+/// #2314: no path, so a `.vpkg` buffer is read as statements. Callers that
+/// HAVE a path should use `collect_all_diagnostics_for_path`.
 export fn collect_all_diagnostics(source: String) -> Array[String] with Exception {
+  collect_all_diagnostics_for_path("", source)
+}
+
+export fn collect_all_diagnostics_for_path(input_path: String, source: String) -> Array[String] with Exception {
   // #2227, round 3 of the book-review eval: a leading `require @scope/name
   // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
   // ingestion blanks before parsing -- but this single-file lane parsed the
@@ -5460,10 +5466,283 @@ export fn collect_all_diagnostics(source: String) -> Array[String] with Exceptio
   } else {
     ()
   }
-  collect_all_diagnostics_on(pin_blanked)
+  collect_all_diagnostics_on(input_path, pin_blanked)
 }
 
-fn collect_all_diagnostics_on(source: String) -> Array[String] with Exception {
+/// #2314, the LSP half of #2280: a `.vpkg` is a list of BODYLESS declarations,
+/// not statement grammar. Reading it with `parse_program_recovering` answered
+/// `expected { but got eof` about `lib/@vibe/random/index.vpkg` and about every
+/// other contract the build consumes -- a diagnostic that asserts something
+/// untrue about the file, which this repo ranks above crashing.
+///
+/// A contract stops at its own grammar. It does NOT go on to `check_program` /
+/// `expand_interp_stmts` / the unused-import walk: those read a program, and a
+/// contract is a declaration surface whose implementations live in sibling
+/// files this lane cannot see. `vibe check` WITHOUT `--single-file` is the
+/// verb that answers the cross-file half (`contract violation: contract
+/// declaration 'x' has no implementation`, #2280) -- reporting a subset here
+/// is honest; inventing the rest from one buffer is not.
+/// Does `msg` report hitting end of input?
+///
+/// The two spellings the parsers actually produce, and only those:
+///
+///   - `expected <what> but got eof` (parser_base, via `tk_name(TEof)`);
+///   - `unexpected eof in block` (parser_expr_dispatch).
+///
+/// The first version tested for `" eof"`, which is too loose (Codex review on
+/// #2315): `parse_contract_program` also throws `unsupported # directive in a
+/// contract file: eof (only #deprecated is allowed)`, and that contains
+/// `" eof"` too. MEASURED, that particular message cannot reach here -- this
+/// lane pin-blanks the header first, which erases a `#` directive line before
+/// the parser sees it, so the buffer answers clean where the import lane
+/// reports the directive (a real gap, but a pre-existing one in the blanking,
+/// not in this predicate; filed separately). The marker is still narrowed,
+/// because a predicate that is right only until the blanking changes is not
+/// worth keeping. Neither marker below can come out of a directive name: a
+/// name is a single token and cannot contain a space.
+fn contract_msg_mentions_eof(msg: String) -> Bool {
+  String::index_of(msg, "but got eof") >= 0 || String::index_of(msg, "unexpected eof") >= 0
+}
+
+/// Byte offset of the last token that is not `TEof`, or -1.
+///
+/// Where an "expected ... but got eof" belongs: the parser ran out of input, so
+/// the actionable position is the end of what the author actually wrote, not
+/// the whitespace past it.
+fn last_real_token_offset(tokens: Array[Token], starts: Array[Int]) -> Int {
+  let mut i = Array::length(tokens) - 1
+  let lim = Array::length(starts)
+  let mut found = 0 - 1
+  while i >= 0 {
+    let is_eof = match Array::get(tokens, i) {
+      TEof => true,
+      _ => false
+    }
+    if is_eof || i >= lim {
+      i = i - 1
+    } else {
+      found = Array::get(starts, i)
+      i = 0 - 1
+    }
+  }
+  found
+}
+
+/// Does the first `k` tokens throw exactly `msg` from the contract parser?
+///
+/// `peek` answers `TEof` past the end of the array, so a plain truncation is a
+/// well-formed token prefix -- no sentinel to append.
+fn contract_prefix_throws(tokens: Array[Token], k: Int, msg: String) -> Bool with Exception {
+  let head = array_empty()
+  let mut i = 0
+  while i < k {
+    Array::push(head, Array::get(tokens, i))
+    i = i + 1
+  }
+  handle {
+    let (_, _, _hstmts) = parse_contract_program(head)
+    false
+  } with { Exception::Throw(m) => m == msg }
+}
+
+/// Byte offset of the token the contract PARSER stopped at, or -1.
+///
+/// Parser only. A round of this review extended the probe to run the
+/// classifier too, so a `classify_contract_stmts` rejection would anchor
+/// instead of rendering at 0:0 -- and that predicate is NOT monotone, which is
+/// the third time in this review I claimed monotonicity without testing the
+/// shape that breaks it. With a forbidden statement followed by a longer valid
+/// declaration it reads true (classify throws), then FALSE for prefixes ending
+/// partway through the next declaration (the parse throws first, a different
+/// message), then true again once that declaration completes. Binary search
+/// over true/false/true can discard the first match and anchor the diagnostic
+/// on later VALID code.
+///
+/// So a classifier rejection is deliberately left unlocated. That is the
+/// existing behavior for every diagnostic this lane cannot place, and it is
+/// the rule this function already states for its own failure: degraded, never
+/// wrong. Anchoring it needs the rejected statement's own offset rather than a
+/// search -- tracked with the rest of the contract-validation family in #2317.
+///
+/// `parse_contract_program` throws an UNLOCATED message, and
+/// `locate_type_error`'s heuristics key on message prefixes the contract
+/// grammar never produces ("unknown name: ", "function arity mismatch for ",
+/// ...). Without this the JSON and live-LSP forms render the synthetic 0:0
+/// range instead of pointing at the malformed declaration (#2314 review) --
+/// the reader is told a contract is broken and not told where.
+///
+/// Same shape as `header_prefix_throws` above, and for the same reason: ask
+/// the PARSER where it stopped rather than mirroring its grammar. Two earlier
+/// attempts in this file at recovering a position by reading the MESSAGE
+/// drifted from the grammar each time (#2253 rounds 3-4/6); a probe has no
+/// grammar mirror, so there is nothing to drift.
+///
+/// The search is used ONLY for a message that does not mention `eof`, because
+/// only there is the predicate monotone in k: the full parse stops at some
+/// token j with this message, every prefix longer than j stops at the same
+/// place with the same message, and every shorter prefix runs out of input
+/// first and throws an eof-flavoured message that does not match. Parsing is
+/// deterministic and left to right, so no shorter prefix can produce the same
+/// NON-eof message at an earlier position -- if it could, the full parse would
+/// have stopped there too. The smallest matching prefix is therefore exactly
+/// j + 1.
+///
+/// For an eof message that reasoning FAILS, and the first version of this
+/// claimed monotonicity without testing it (Codex review on #2315). Given
+///
+///     fn a(x: Int) -> Int
+///     fn b(x: Int) ->
+///
+/// the full stream throws `expected type but got eof` -- and so does the
+/// prefix that stops right after the FIRST `->`. A shorter prefix matches, so
+/// the search walks `hi` backwards and anchors on line 1 instead of line 2:
+/// a diagnostic pointing at correct code, which is the worst way to be wrong.
+///
+/// An eof message means the parser ran out of input, so its position is the
+/// END of the token stream by definition. Anchor it at the last real token --
+/// the declaration that ran out -- and no search is needed or sound.
+fn contract_parse_error_offset(tokens: Array[Token], starts: Array[Int], msg: String) -> Int with Exception {
+  let n = Array::length(tokens)
+  if n <= 0 {
+    return 0 - 1
+  } else {
+    ()
+  }
+  if contract_msg_mentions_eof(msg) {
+    return last_real_token_offset(tokens, starts)
+  } else {
+    ()
+  }
+  // The full-length prefix reproduces `msg` by construction; confirm it anyway
+  // so a violated assumption answers BARE rather than wrong.
+  if !contract_prefix_throws(tokens, n, msg) {
+    return 0 - 1
+  } else {
+    ()
+  }
+  let mut lo = 0
+  let mut hi = n
+  while hi - lo > 1 {
+    let mid = (lo + hi) / 2
+    if contract_prefix_throws(tokens, mid, msg) {
+      hi = mid
+    } else {
+      lo = mid
+    }
+  }
+  // `hi` is the smallest throwing prefix length, so the offending token is at
+  // index hi - 1.
+  let idx = hi - 1
+  if idx >= 0 && idx < Array::length(starts) {
+    Array::get(starts, idx)
+  } else {
+    0 - 1
+  }
+}
+
+/// The recovering lexer's errors, each located and deduped.
+///
+/// Shared by the program branch and the contract branch of
+/// `collect_all_diagnostics_on` (#2314 review): a contract lexes with exactly
+/// the same rules as a program, so a second copy of this would be a second
+/// answer to one question.
+///
+/// #997 review (Codex): a handful of lexer throw sites (the `\(expr)`
+/// interpolation-removal message, and #997's own scientific-notation /
+/// incomplete-exponent messages) embed their OWN precise `line L:C: ` prefix
+/// directly in the message, because `lex_err_offsets` always records the START
+/// offset of the enclosing `lex_one_token` call -- wrong for a throw raised
+/// partway through a multi-char token (at the `e`/`E`, not the token's first
+/// digit). Blindly prepending the generic outer `loc` on top of an
+/// already-self-located message produced a doubled/conflicting location
+/// (`line 1:9: line 1:18: ...`, confirmed empirically via `vibe diagnostics`
+/// on `123456789e10`). Skip the outer prefix for messages that already start
+/// with "line " -- they're self-located and the outer offset would only be
+/// redundant or wrong.
+///
+/// This also collapses a separate pre-existing duplication: a
+/// non-quote-delimited lex error (anything but a broken string/char literal)
+/// resumes ONE character past the failure and retries, so a multi-digit
+/// scientific-notation literal re-throws the SAME underlying error once per
+/// remaining digit (9 identical reports for `123456789e10`) -- previously each
+/// got a DIFFERENT (wrong) outer offset, defeating the exact-string dedup
+/// below. With the outer prefix suppressed, all 9 become byte-identical and
+/// collapse to the single correctly-located report.
+fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs: Array[String]) -> Array[String] with Exception {
+  let located = array_empty()
+  let mut i = 0
+  while i < Array::length(lex_err_msgs) {
+    let msg = Array::get(lex_err_msgs, i)
+    let entry = if String::starts_with(msg, "line ") {
+      msg
+    } else {
+      let off = Array::get(lex_err_offsets, i)
+      let (line, col) = offset_to_line_col(source, off)
+      let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+      String::concat(loc, msg)
+    }
+    Array::push(located, entry)
+    i = i + 1
+  }
+  dedupe_diagnostics(located)
+}
+
+/// One located diagnostic for a contract parse failure.
+fn contract_parse_diagnostic(source: String, tokens: Array[Token], starts: Array[Int], msg: String) -> Array[String] with Exception {
+  if diag_already_located(msg) {
+    return [msg]
+  } else {
+    ()
+  }
+  let off = handle {
+    contract_parse_error_offset(tokens, starts, msg)
+  } with { Exception::Throw(_) => 0 - 1 }
+  if off >= 0 {
+    [String::concat(offset_line_col_prefix(source, off), msg)]
+  } else {
+    // Bare rather than wrong: `locate_type_error` will render this at the
+    // synthetic 0:0, which is what an unlocatable diagnostic already does
+    // everywhere else in this lane.
+    [locate_type_error(source, msg)]
+  }
+}
+
+fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
+  if is_contract_ext(input_path) {
+    // A contract LEXES like a program, so it gets the recovering lexer and
+    // every lex error, the same as the branch below (#2314 review). Only the
+    // GRAMMAR above the tokens differs.
+    let (ctokens, cstarts, _cends, clex_offs, clex_msgs) = lex_with_offsets_recovering(source)
+    if Array::length(clex_msgs) > 0 {
+      return located_lex_errors(source, clex_offs, clex_msgs)
+    } else {
+      ()
+    }
+    // `parse_contract_program` throws on the first error -- there is no
+    // recovering contract parser, so a contract with two broken declarations
+    // reports one. That is NOT a loss from this change: the authoritative
+    // import lane (`vibe check`, the verb #2280 fixed) reports one too --
+    // measured, `expected type but got fn` for a contract with two of them,
+    // and unlocated at that. What the recovering STATEMENT parser used to
+    // report here was several errors that were each false about the file,
+    // which is the bug this section exists to remove. Multi-error recovery
+    // for contract grammar is a real improvement, and it belongs in both
+    // lanes at once rather than only in this one.
+    // Parsing is not the whole contract grammar: `parse_contract_program`
+    // accepts statements a contract may not CONTAIN, and the loader rejects
+    // those separately via `classify_contract_stmts` (#729). Discarding the
+    // statements reported `export let x: Int = "s"` as clean here while the
+    // build refused it (Codex review on #2315) -- and the statement-grammar
+    // branch this replaces did catch it, through `check_program`. So run the
+    // classifier the loader runs, on the statements the parse produced.
+    return handle {
+      let (_, _, cstmts) = parse_contract_program(ctokens)
+      let (_raws, _type_defs) = classify_contract_stmts(cstmts)
+      array_empty()
+    } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
+  } else {
+    ()
+  }
   let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(source)
   if Array::length(lex_err_msgs) > 0 {
     // Report ONLY the lexer errors: the recovered token stream has holes, so
@@ -5491,22 +5770,7 @@ fn collect_all_diagnostics_on(source: String) -> Array[String] with Exception {
     // offset, defeating `dedupe_diagnostics`'s exact-string dedup below.
     // With the outer prefix suppressed, all 9 become byte-identical and
     // collapse to the single correctly-located report.
-    let located = array_empty()
-    let mut i = 0
-    while i < Array::length(lex_err_msgs) {
-      let msg = Array::get(lex_err_msgs, i)
-      let entry = if String::starts_with(msg, "line ") {
-        msg
-      } else {
-        let off = Array::get(lex_err_offsets, i)
-        let (line, col) = offset_to_line_col(source, off)
-        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
-        String::concat(loc, msg)
-      }
-      Array::push(located, entry)
-      i = i + 1
-    }
-    dedupe_diagnostics(located)
+    located_lex_errors(source, lex_err_offsets, lex_err_msgs)
   } else {
     let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
     if Array::length(parse_diags) > 0 {

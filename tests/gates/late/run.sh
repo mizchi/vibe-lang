@@ -7822,3 +7822,399 @@ if ! printf '%s\n' "$own_report" | grep -qF 'Child::own'; then
 fi
 rm -rf "$tdlabdir"
 echo "[compiler-gate] trait-method diagnostics name the DECLARING trait, inherited or own; a hand-written dict struct keeps its own label ok (#2286)"
+
+# 117/117. A `.vpkg` buffer is read with the contract grammar on the
+# single-buffer lanes too (#2314, the LSP half of #2280).
+#
+# #2280 taught `vibe check` (no `--single-file`) to read a contract as a
+# contract. The single-buffer lanes never got it: `collect_all_diagnostics`
+# took no path, so `vibe lsp` and the `vibe diagnostics` buffer lane answered
+# `expected { but got fn` about a valid contract -- a diagnostic that asserts
+# something untrue about a file the build consumes on every run.
+echo "[compiler-gate] 117/117 a .vpkg buffer is read as a contract on the single-buffer lanes (#2314)"
+vpbufdir="_build/_gate_vpkg_buffer"
+rm -rf "$vpbufdir"; mkdir -p "$vpbufdir"
+# A real tree contract, so a failure cannot be blamed on a synthetic fixture.
+# `lib/@vibe/random/index.vpkg` is the file #2280 named.
+real_contract="lib/@vibe/random/index.vpkg"
+if [ ! -f "$ROOT_DIR/$real_contract" ]; then
+  echo "[compiler-gate] FAIL: $real_contract is gone -- repoint this section (#2314)" >&2
+  exit 1
+fi
+# The `vibe diagnostics` buffer lane writes its report to the OUTPUT file and
+# exits 0 ("a report, not a failure"), so read that -- not just `.diag`/stdout,
+# which are empty here and would make this assertion unable to fail.
+rm -f "$vpbufdir/sf.out" "$vpbufdir/sf.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$real_contract" "$vpbufdir/sf.out" main >"$vpbufdir/sf.stdout" 2>&1 || true
+sf_report="$(cat "$vpbufdir/sf.out" "$vpbufdir/sf.out.diag" "$vpbufdir/sf.stdout" 2>/dev/null || true)"
+if printf '%s\n' "$sf_report" | grep -qF 'expected { but got'; then
+  echo "[compiler-gate] FAIL: the vibe diagnostics buffer lane still reads $real_contract as statement grammar (#2314)" >&2
+  printf '%s\n' "$sf_report" >&2
+  exit 1
+fi
+# The live LSP is the surface the issue is filed against. Drive it over framed
+# messages, the way section 115 does.
+python3 - "$vpbufdir/lsp.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "fn implemented(x: Int) -> Int\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/lsp.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/lsp.out" 2>/dev/null || true
+if ! grep -q 'publishDiagnostics' "$vpbufdir/lsp.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe lsp published nothing for a .vpkg buffer (#2314)" >&2
+  exit 1
+fi
+if grep -q 'expected { but got' "$vpbufdir/lsp.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: vibe lsp still reads a .vpkg buffer as statement grammar (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/lsp.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"diagnostics":\[\]' "$vpbufdir/lsp.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a well-formed .vpkg buffer is not clean on the LSP (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/lsp.out" >&2 || true
+  exit 1
+fi
+# It must still be able to REJECT. Exit-clean alone would pass on a fix that
+# simply suppressed every diagnostic for contracts -- which is the cheap wrong
+# answer here, and indistinguishable from the right one without this half.
+python3 - "$vpbufdir/bad.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+# Broken in the DECLARATION section, not the header: a bodyless `fn` with no
+# return type. The header half is already covered by the pin-head scan.
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "fn implemented(x: Int) ->\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/bad.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/bad.out" 2>/dev/null || true
+if grep -q '"diagnostics":\[\]' "$vpbufdir/bad.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a malformed .vpkg declaration published as CLEAN -- the contract branch reports nothing at all (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"severity":1' "$vpbufdir/bad.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the malformed .vpkg declaration is not published as an error (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
+  exit 1
+fi
+# ...and it must POINT AT the declaration. `parse_contract_program` throws an
+# unlocated message, and `locate_type_error`'s heuristics key on message
+# prefixes the contract grammar never produces -- so without an anchor the
+# editor gets the synthetic 0:0 range and the reader is told a contract is
+# broken without being told where (#2314 review). The malformed `fn` is the
+# LAST line of the probe, so a 0:0 answer and a correct one are far apart.
+if grep -q '"start":{"line":0,"character":0}' "$vpbufdir/bad.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the malformed .vpkg declaration is published at the synthetic 0:0 range, not at the declaration (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"start":{"line":8' "$vpbufdir/bad.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the malformed .vpkg declaration is not anchored on its own line (expected line 8, 0-based) (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/bad.out" >&2 || true
+  exit 1
+fi
+# ...and a contract whose EARLIER declaration is well-formed must not have the
+# error anchored on it. This is the shape that broke the first anchor (Codex
+# review on #2315): both the full token stream AND the prefix stopping right
+# after line 1's `->` throw `expected type but got eof`, so a smallest-matching-
+# prefix search walks BACKWARDS and publishes the error on line 1 -- pointing at
+# correct code, which is the worst way to be wrong. The eof case is now anchored
+# at the last real token instead of searched.
+python3 - "$vpbufdir/eof.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "fn a(x: Int) -> Int\n"
+    "fn b(x: Int) ->\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/eof.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/eof.out" 2>/dev/null || true
+if ! grep -q '"severity":1' "$vpbufdir/eof.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the two-declaration malformed .vpkg published no error (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
+  exit 1
+fi
+# Line 8 (0-based) is the WELL-FORMED `fn a`; line 9 is the malformed `fn b`.
+if grep -q '"start":{"line":8' "$vpbufdir/eof.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the error is anchored on the WELL-FORMED declaration -- the eof anchor searched backwards (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
+  exit 1
+fi
+if ! grep -q '"start":{"line":9' "$vpbufdir/eof.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the error is not anchored on the malformed declaration (expected line 9, 0-based) (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/eof.out" >&2 || true
+  exit 1
+fi
+# ...and parsing is not the whole contract grammar. `parse_contract_program`
+# ACCEPTS statements a contract may not contain; the loader rejects those
+# separately with `classify_contract_stmts` (#729). Discarding the parsed
+# statements reported this buffer as clean while the build refused it -- and
+# the statement-grammar branch being replaced DID catch it, through
+# `check_program` (Codex review on #2315).
+python3 - "$vpbufdir/forbidden.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "export let x: Int = \"s\"\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/forbidden.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/forbidden.out" 2>/dev/null || true
+if grep -q '"diagnostics":\[\]' "$vpbufdir/forbidden.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a contract containing a forbidden statement published as CLEAN -- the parsed statements are not classified (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/forbidden.out" >&2 || true
+  exit 1
+fi
+if ! grep -q 'unsupported statement in a contract file' "$vpbufdir/forbidden.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the forbidden contract statement is not rejected for the loader's reason (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/forbidden.out" >&2 || true
+  exit 1
+fi
+# NOT asserted: a position for this one. A classifier rejection is deliberately
+# left unlocated -- the anchor probes the PARSER, and extending it to classify
+# gives a non-monotone predicate that can anchor on later VALID code (the
+# reasoning is in `contract_parse_error_offset`). Unlocated is what this lane
+# already does with any diagnostic it cannot place. Tracked in #2317.
+#
+# The assertions above are what keeps this case honest without a position: a
+# crash satisfies neither of them, which is how the earlier version of this
+# section passed vacuously while the compiler was trapping.
+# ...and reading a contract as a contract must not COST the ADR-0068 opt-in.
+# This is the trap the rest of this section sets up: the `vibe diagnostics`
+# buffer lane used to compute the unstable set with a SECOND scan over the RAW
+# buffer, which could not parse a `.vpkg` header and so returned nothing. That
+# was invisible while the base set was answering `expected { but got eof` about
+# the same file -- removing the false error would have left a contract that
+# imports `@vibe/concurrent` reporting NOTHING AT ALL, which is strictly worse
+# than the wrong parse error this section removes (#2314 review). Measured on
+# the pre-fix compiler: the LSP reported the opt-in for this contract and this
+# lane did not.
+cat > "$vpbufdir/unstable.vpkg" <<'VPBUFEOF'
+name = @gate/unstablecontract
+version = 0.0.1
+description =
+  #|gate-only package for #2314
+deps = {}
+
+generated_hash =
+
+import @vibe/concurrent { TaskGroup }
+
+fn implemented(x: Int) -> Int
+VPBUFEOF
+for form in text json; do
+  rm -f "$vpbufdir/u.$form.out"
+  if [ "$form" = json ]; then json_env=1; else json_env=0; fi
+  env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 \
+    VIBE_DIAGNOSTICS_JSON="$json_env" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$vpbufdir/unstable.vpkg" "$vpbufdir/u.$form.out" main >/dev/null 2>&1 || true
+  if ! grep -q 'VIBE_UNSTABLE=1' "$vpbufdir/u.$form.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $form diagnostics form dropped the ADR-0068 opt-in for a .vpkg buffer (#2314)" >&2
+    cat "$vpbufdir/u.$form.out" >&2 || true
+    exit 1
+  fi
+  if grep -q 'expected { but got' "$vpbufdir/u.$form.out" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $form diagnostics form still reads a .vpkg as statement grammar (#2314)" >&2
+    cat "$vpbufdir/u.$form.out" >&2 || true
+    exit 1
+  fi
+done
+# ...and the grant still suppresses it, or the assertion above would pass on a
+# lane that appends the diagnostic unconditionally.
+rm -f "$vpbufdir/u.granted.out"
+VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$vpbufdir/unstable.vpkg" "$vpbufdir/u.granted.out" main >/dev/null 2>&1 || true
+if grep -q 'VIBE_UNSTABLE=1' "$vpbufdir/u.granted.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not suppress the opt-in on the .vpkg buffer lane (#2314)" >&2
+  cat "$vpbufdir/u.granted.out" >&2 || true
+  exit 1
+fi
+# ...and a contract lexes like a program: EVERY lex error, not just the first.
+# The contract branch reaches for `parse_contract_program`, which throws, and
+# the first version reached for the throwing lexer to match it. But a contract
+# lexes with exactly the same rules as a program, and the `.vibe` lane reports
+# both errors in `let p = ` + backtick twice -- so a contract reporting one was
+# a gap, not a property of contract grammar (#2314 review).
+python3 - "$vpbufdir/lex.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = (
+    "name = @gate/vpkgbuffer\n"
+    "version = 0.0.1\n"
+    "description =\n"
+    "  #|gate-only package for #2314\n"
+    "deps = {}\n"
+    "\n"
+    "generated_hash =\n"
+    "\n"
+    "fn a(x: Int) -> `\n"
+    "fn b(y: Int) -> `\n"
+)
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/index.vpkg", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/lex.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/lex.out" 2>/dev/null || true
+lex_count="$(grep -o '"severity":1' "$vpbufdir/lex.out" 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$lex_count" -lt 2 ]; then
+  echo "[compiler-gate] FAIL: a .vpkg buffer with two lex errors published $lex_count -- the contract branch lexes without recovery (#2314)" >&2
+  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/lex.out" >&2 || true
+  exit 1
+fi
+# ...and an ordinary `.vibe` buffer is untouched: it still type-checks, so a
+# real type error must survive. Routing every buffer through the contract
+# branch would pass everything above and silently stop checking programs.
+python3 - "$vpbufdir/prog.bin" <<'VPBUFEOF'
+import json, sys
+
+def frame(obj):
+    b = json.dumps(obj).encode("utf-8")
+    return f"Content-Length: {len(b)}\r\n\r\n".encode("ascii") + b
+
+src = 'fn main() -> Int {\n  let a: Int = "not an int"\n  0\n}\n'
+msgs = [
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": "file:///gate/prog.vibe", "languageId": "vibe", "version": 1, "text": src}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+]
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(msgs))
+VPBUFEOF
+env -u VIBE_UNSTABLE VIBE_STDIN_BYTES="$(cat "$vpbufdir/prog.bin")" \
+  VIBE_LSP=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  > "$vpbufdir/prog.out" 2>/dev/null || true
+if grep -q '"diagnostics":\[\]' "$vpbufdir/prog.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: an ordinary .vibe buffer with a type error published as CLEAN -- the contract branch is catching everything (#2314)" >&2
+  exit 1
+fi
+rm -rf "$vpbufdir"
+echo "[compiler-gate] a .vpkg buffer reads as a contract, still rejects a malformed declaration, and .vibe buffers still type-check ok (#2314)"

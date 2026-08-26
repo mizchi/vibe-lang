@@ -71,7 +71,13 @@
 //# Imports
 
 import @vibe/compiler/runtime {
-  binding_occurrences, collect_all_diagnostics, collect_all_diagnostics_with_unstable_for_path, doc_at_source, symbol_spans, type_at_source
+  binding_occurrences,
+  collect_all_diagnostics,
+  collect_all_diagnostics_for_path,
+  collect_all_diagnostics_with_unstable_for_path,
+  doc_at_source,
+  symbol_spans,
+  type_at_source
 }
 
 import @vibe/parser {
@@ -833,14 +839,31 @@ export fn lsp_diagnostics_json_string(source: String) -> String {
 /// internal failure in single-file analysis is not a reason to drop a verdict
 /// the caller already computed.
 export fn lsp_diagnostics_json_string_with(source: String, extra: Array[String]) -> String {
+  lsp_diagnostics_json_string_with_for_path("", source, extra)
+}
+
+/// #2314: with the path, a `.vpkg` buffer is read with the contract grammar
+/// instead of answering `expected { but got eof` about a valid contract.
+export fn lsp_diagnostics_json_string_with_for_path(input_path: String, source: String, extra: Array[String]) -> String {
   let msgs = handle {
-    collect_all_diagnostics(source)
+    collect_all_diagnostics_for_path(input_path, source)
   } with { Exception::Throw(_) => array_empty() }
   let mut i = 0
   while i < Array::length(extra) {
     Array::push(msgs, Array::get(extra, i))
     i = i + 1
   }
+  lsp_diagnostics_json_of_messages(source, msgs)
+}
+
+/// Render an ALREADY-COLLECTED message list in the LSP Diagnostic shape.
+///
+/// #2314 review: the `vibe diagnostics` adapter has to render exactly the list
+/// `collect_all_diagnostics_with_unstable_for_path` returns. Without this it
+/// had to collect the base set here and the ADR-0068 set separately, and the
+/// two drifted -- the separate scan read the RAW buffer, so a `.vpkg` header it
+/// could not parse dropped the opt-in error entirely.
+export fn lsp_diagnostics_json_of_messages(source: String, msgs: Array[String]) -> String {
   Json::stringify(handle {
     JArr(for msg in msgs {
       lsp_parse_diag_line(source, msg)
