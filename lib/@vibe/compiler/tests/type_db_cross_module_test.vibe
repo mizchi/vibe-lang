@@ -317,6 +317,14 @@ fn typecheck_db_pair_error(dep_src: String, main_src: String) -> String with Exc
   } with { Exception::Throw(msg) => msg }
 }
 
+fn typecheck_db_reexport_chain_error(dep_src: String, mid_src: String, main_src: String) -> String with Exception {
+  handle {
+    let db = db_set_source(db_set_source(db_set_source(db_new(), "mem/dep.vibe", dep_src), "mem/mid.vibe", mid_src), "mem/main.vibe", main_src)
+    let _ = db_typecheck(db, "mem/main.vibe")
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
 test "forward alias bodies stay resolved across module projection" {
   let dep_source = "export type Pair = StringMap[Int, String]\ntype StringMap[A, B] = (A, B)"
   let pair_binding_is_resolved = match env_lookup(checked_test_env(dep_source), "Pair") {
@@ -1800,6 +1808,13 @@ test "#2310: aliased type and trait re-exports remain importable downstream" {
     (mid_path, mid_fp)
   ]))
   inspect(export_surface_error([dep_path, mid_path, main_path], main_path), "")
+}
+
+test "#2310: in-memory TypeDb retains aliased declaration re-exports" {
+  let dep_src = "export type Original = Int\nexport trait Marker\nimpl Marker for Int\n"
+  let mid_src = "export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }\n"
+  let main_src = "import ./mid.vibe { type PublicT, trait PublicMarker }\nexport fn use_it[T: PublicMarker](value: T) -> PublicT { let _ = value; 1 }\n"
+  inspect(typecheck_db_reexport_chain_error(dep_src, mid_src, main_src), "")
 }
 
 test "#2310: plain type and trait re-exports retain local compatibility" {
