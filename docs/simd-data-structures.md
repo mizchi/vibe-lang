@@ -45,12 +45,17 @@ nothing new has to be invented — the discipline just has to be applied to the
 new structures.
 
 **Transfers — design bulk operations first, point conveniences second.**
-Measured here on a 4000-key lookup (§3.4): the same frozen table costs
-5.1 ns/lookup through a point API and 2.6 ns/lookup when the loop stays inside
-the kernel. Nothing about the data changed; the difference is entirely the
-per-call boundary. jsimd states this as a contract — "individual gets were
-12.5x slower" is written into `byte-key-flat-hash`'s own row — and vibe should
-do the same rather than let a fast structure be quoted at its slowest call.
+Measured here on a 4000-key lookup (§3.4), same table, same packed query
+column, the only difference being where the loop lives: 2.7 ns/lookup with the
+loop inside the kernel, 3.6 ns/lookup with it in vibe. **1.32x** for the
+per-call boundary alone. A third lane that also moves the queries back into an
+`Array[Int]` costs 6.6 ns/lookup — so in the first draft of this document, which
+had no packed-query point lane, the boundary looked like 1.9x because it was
+carrying the query representation with it. Two variables, one number; the fix
+was another lane, not a softer sentence. jsimd states the bulk-vs-point rule as
+a contract — "individual gets were 12.5x slower" is written into
+`byte-key-flat-hash`'s own row — and vibe should do the same rather than let a
+fast structure be quoted at its slowest call.
 
 **Transfers — export algorithms, not vector values.** jsimd deliberately does
 not export `v128`: "JavaScript cannot pass `v128` across the Wasm boundary, and
@@ -224,23 +229,35 @@ keys, 500 iters:
 
 | lane | ns/op (mean) | ns/lookup | B/op |
 | :--- | ---: | ---: | ---: |
-| stdlib `MutMap[Int, Int]` (`MutMap::has` in a vibe loop) | 151134 | 37.8 | 0 |
-| frozen control-byte table, point API, vibe loop | 20158 | 5.0 | 0 |
-| frozen control-byte table, bulk kernel | **10522** | **2.6** | 0 |
+| stdlib `MutMap[Int, Int]` (`MutMap::has` in a vibe loop) | 149739 | 37.4 | 0 |
+| frozen table, point API, queries in an `Array[Int]` | 26293 | 6.6 | 0 |
+| frozen table, point API, queries in the packed column | 14284 | 3.6 | 0 |
+| frozen table, bulk kernel | **10850** | **2.7** | 0 |
 
-This is **not** apples to apples and the file says so: `MutMap` is generic over
-`K`/`V` with closed-over `hash_fn`/`eq_fn` and `Option`-wrapped slots, while the
-frozen table is a monomorphic set of non-negative `Int`s. The comparison sizes
-headroom, it does not indict the stdlib. But the decomposition is the
-interesting part: **7.5x comes from the representation, and a further 1.9x from
-keeping the loop inside the kernel.**
+**Read the 13.8x between the first and last rows as aggregate headroom and
+nothing finer.** The two ends differ in at least eight ways at once: generic
+`K`/`V` vs monomorphic `Int`; a map vs a set; `Option`-wrapped slots vs raw
+ones; closed-over `hash_fn`/`eq_fn` indirect calls vs an inlined multiply; a
+different hash; linear probing vs group-of-16; an 8-byte state slot vs a
+1-byte control byte; and tagged 8-byte keys vs a packed i32 column. **Not one of
+those is isolated by this bench**, so no single one of them can be credited with
+a share of the 13.8x. It sizes what a specialized frozen representation can
+reach; it does not indict the stdlib and it does not price any individual
+change.
 
-The representational cost is concrete. `lib/@vibe/core/hashmap.vibe` stores slot
-state as `Array[Int]` — one tagged i64, **8 bytes per slot**, for a value with
-three possible states. A SwissTable control byte is 1 byte and carries a 7-bit
-fingerprint as well, so one `v128.load` covers 16 slots where `Array[Int]`
-covers 2. Even with no SIMD at all, moving that array to a `Bytes` control array
-cuts probe-metadata traffic 8x.
+The three frozen rows *are* controlled against each other, and that is where
+the readable numbers are: same table, same probe, same hash. Loop-in-kernel vs
+loop-in-vibe is **1.32x**; moving the queries from an `Array[Int]` to the packed
+column is another **1.84x**.
+
+The case for changing `MutMap` is therefore structural, not measured here.
+`lib/@vibe/core/hashmap.vibe` stores slot state as `Array[Int]` — one tagged
+i64, **8 bytes per slot**, for a value with three possible states. A SwissTable
+control byte is 1 byte and carries a 7-bit fingerprint as well, so one
+`v128.load` covers 16 slots where `Array[Int]` covers 2, and the fingerprint
+skips most of the `eq_fn` indirect calls. Even with no SIMD, that is an 8x cut
+in probe-metadata traffic. What it is *worth* is [#2346](https://github.com/mizchi/vibe-lang/issues/2346)'s
+job to measure, with the rest of `MutMap` held fixed.
 
 ## 4. Proposal: five layers, bottom-up
 
@@ -352,8 +369,9 @@ and point access as a convenience that is explicitly *not* in the contract.
 Separately and independently of any of this: **change `MutMap`'s `state:
 Array[Int]` to a `Bytes` control array carrying a 7-bit fingerprint.** It is a
 local change to one file, it needs no new language surface, and it cuts
-probe-metadata traffic 8x with the fingerprint eliminating most key comparisons.
-That is the single highest value-per-line item in this document.
+probe-metadata traffic 8x with the fingerprint skipping most `eq_fn` calls. It
+is the cheapest change proposed here by a wide margin — but §3.4 does not price
+it, so it ships with its own before/after bench or not at all.
 
 ## 5. Admission policy
 
@@ -419,5 +437,7 @@ Layers 4 and 5 have no issue yet, deliberately: by §5 each needs a documented
 end-to-end workload that wins against a native builtin before it is written.
 
 The order falls out of the triage rules — #2341, then #2342, then #2344 (the
-`blocker`), then the rest. #2343, #2344, #2345 and #2346 need no new language
-surface and no decision from #2342.
+`blocker`), then the rest. None of #2343 / #2344 / #2345 / #2346 waits on the
+#2342 decision. Of those, #2343, #2345 and #2346 need no new language surface
+at all; #2344 does — `Int::popcount` and friends are builtin additions, and `~`
+is a new operator, so it touches the lexer, the parser and the printer as well.
