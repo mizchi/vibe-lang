@@ -368,6 +368,37 @@ test "retained import survives a colliding re-export alias" {
   assert_wasm_magic(merged_bytes)
 }
 
+test "later re-export alias blocks an earlier import rewrite through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_later_alias_blocks_import"
+  let a_path = String::concat(base_dir, "/a.vibe")
+  let b_path = String::concat(base_dir, "/b.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(a_path, string_to_bytes("export fn old() -> Int { 1 }\n"))
+  Fs::write_bytes(b_path, string_to_bytes("export fn new() -> Int { 2 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./a.vibe { old as foo }\nexport ./b.vibe { new as foo }\nexport fn answer() -> Int { foo() }\n"))
+  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: foo"), content = "true")
+  inspect(String::contains(merged_source_error(main_path), "unknown name: foo"), content = "true")
+}
+
+test "collision preservation selects the latest same-local import" {
+  let base_dir = "/tmp/vibe_compiler_collision_latest_import"
+  let a_path = String::concat(base_dir, "/a.vibe")
+  let b_path = String::concat(base_dir, "/b.vibe")
+  let c_path = String::concat(base_dir, "/c.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(a_path, string_to_bytes("export fn first() -> Int { 11 }\n"))
+  Fs::write_bytes(b_path, string_to_bytes("export fn second() -> Int { 22 }\n"))
+  Fs::write_bytes(c_path, string_to_bytes("export fn blocker() -> Int { 33 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./a.vibe { first as local }\nimport ./b.vibe { second as local }\nexport ./b.vibe { second as public_b }\nexport ./c.vibe { blocker as second }\nexport fn answer() -> Int { local() }\n"))
+  let merged = merged_program_source_fs(main_path)
+  assert(String::contains(merged, "let rec local = () -> Int { 22 }"))
+  assert(!String::contains(merged, "let rec local = () -> Int { 11 }"))
+  assert_wasm_magic(compile_file_wasi_only(main_path, "answer"))
+  assert_wasm_magic(compile_source_wasi_only(merged, "answer"))
+}
+
 test "same-source plain assert_eq re-export remains callable through FS merge" {
   let base_dir = "/tmp/vibe_compiler_reexport_plain_assert_eq_blocker"
   let dep_path = String::concat(base_dir, "/dep.vibe")

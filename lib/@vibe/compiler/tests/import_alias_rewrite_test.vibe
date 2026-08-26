@@ -51,3 +51,22 @@ test "later plain re-export wins over an earlier import reference rename" {
   assert(local == "foo")
   assert(target == namespace_exported_name(b_path, "foo"))
 }
+
+test "later aliased re-export blocks an earlier import reference rename" {
+  let a_path = "/virtual/a.vibe"
+  let b_path = "/virtual/b.vibe"
+  let facade_path = "/virtual/facade.vibe"
+  let main_path = "/virtual/main.vibe"
+  let a_stmts = parse_program(lex("export fn old() -> Int { 1 }"))
+  let b_stmts = parse_program(lex("export fn new() -> Int { 2 }"))
+  let facade_stmts = parse_program(lex("import ./a.vibe { old as foo }\nexport ./b.vibe { new as foo }\nexport fn bar() -> Int { foo() }"))
+  let main_stmts = parse_program(lex("import ./facade.vibe { bar }\nexport fn answer() -> Int { bar() }"))
+  let plan = build_export_rename_plan([a_path, b_path, facade_path, main_path], [
+    a_stmts,
+    b_stmts,
+    facade_stmts,
+    main_stmts
+  ], main_path)
+  let renames = collect_import_value_renames(plan, facade_path, facade_stmts)
+  assert(Array::length(renames) == 0)
+}

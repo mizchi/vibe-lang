@@ -140,12 +140,14 @@ fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: Stri
 /// import's distinct local binding keeps the two source meanings separate.
 fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, selected_locals: Array[String]) -> Unit with Exception + Fs {
   let emitted = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
+  // Import lookup is last-binding-wins. Preserve the same winner when more
+  // than one import uses the selected local spelling.
+  let mut i = Array::length(stmts) - 1
+  while i >= 0 {
     match Array::get(stmts, i) {
       SImport(raw_path, items) => {
-        let mut j = 0
-        while j < Array::length(items) {
+        let mut j = Array::length(items) - 1
+        while j >= 0 {
           let item = Array::get(items, j)
           let local = match item.alias {
             Some(alias) => alias,
@@ -160,12 +162,12 @@ fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stm
           } else {
             ()
           }
-          j = j + 1
+          j = j - 1
         }
       },
       _ => ()
     }
-    i = i + 1
+    i = i - 1
   }
 }
 
@@ -175,6 +177,21 @@ fn import_rename_locals_targeting(renames: Array[(String, String)], names: Array
   while i < Array::length(renames) {
     let (local, target) = Array::get(renames, i)
     if string_array_contains_local(names, target) && !string_array_contains_local(out, local) {
+      Array::push(out, local)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn import_rename_locals_named(renames: Array[(String, String)], names: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (local, _) = Array::get(renames, i)
+    if string_array_contains_local(names, local) && !string_array_contains_local(out, local) {
       Array::push(out, local)
     } else {
       ()
@@ -366,6 +383,7 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
       append_unique_strings(retained_collision_locals, import_rename_locals_targeting(import_renames, reexport_surface_only))
       let active_import_renames = import_renames_without_locals(import_renames, retained_collision_locals)
       let skipped_locals = collect_import_alias_collision_locals(stmts)
+      append_unique_strings(skipped_locals, import_rename_locals_named(collect_import_aliases(stmts), reexport_surface_only))
       append_unique_strings(skipped_locals, retained_collision_locals)
       let inline_exclusions = import_value_rename_locals(active_import_renames)
       append_unique_strings(inline_exclusions, retained_collision_locals)
