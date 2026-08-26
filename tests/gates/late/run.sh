@@ -8721,35 +8721,43 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   cat "$dpvdir/clean.out.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-# ...and a LOCATED diagnostic keeps the generated path (Codex review on #2324).
+# The LOCATED case moved to section 123 (#2317). This section asserted that a
+# located diagnostic must NOT name the contract, which was right while the stub
+# recorded no declaration positions: `locate_type_error` computes its line
+# against the STUB, and pairing a contract path with a stub line is confidently
+# wrong. The stub now records each declaration's contract line:col, so the
+# remap is honest and section 123 asserts it -- including that the reported
+# line is the declaration's own.
 #
-# `locate_type_error` computes its line against the STUB's source, and the stub
-# carries neither the contract's header nor its formatting. Renaming a located
-# message to the contract pairs a file the author wrote with a line number from
-# a generated one -- confidently wrong, which outranks unhelpful.
-#
-# Measured on this fixture: `struct Box[T]` is on line 13 of the contract, and
-# the diagnostic reads `line 4:15-18`. Line 4 of the contract is inside its
-# `description` block, so the rename would point at an unrelated line.
-mkdir -p "$dpvdir/located"
-printf '%s\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/located/index.vpkg"
-printf '%s' "$dpv_impl" > "$dpvdir/located/impl.vibe"
-rm -f "$dpvdir/located.out" "$dpvdir/located.out.diag"
+# Kept as one assertion rather than deleted outright: whatever else changes,
+# a located diagnostic must not end up pointing at a file with a line from
+# somewhere else, and the two sections must not both claim to own this. 123
+# owns the positive; this owns the fallback, where a stub carries provenance
+# but no declaration markers and therefore keeps its own path AND its own line
+# together. That is the shape every stub written before those markers has.
+locmarker="$dpvdir/nomarker"
+mkdir -p "$locmarker/_build/vibe_vpkg_types"
+locstub="_build/vibe_vpkg_types/types_nomarkerprobe.vibe"
+rm -f "$locstub"
+printf '// vibe: vpkg contract types module (#1840)\n// vibe: generated from %s/pkg/index.vpkg\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn main() -> Int {\n  0\n}\n' "$dpvdir" > "$locstub"
+rm -f "$dpvdir/nomarker.out" "$dpvdir/nomarker.out.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$dpvdir/located/index.vpkg" "$dpvdir/located.out" main >/dev/null 2>&1 || true
-loc_report="$(cat "$dpvdir/located.out.diag" 2>/dev/null || true)"
-# It must still be the LOCATED shape, or this probe stops testing the guard.
-if ! printf '%s\n' "$loc_report" | grep -q 'line [0-9]*:'; then
-  echo "[compiler-gate] FAIL: the shadowing diagnostic is no longer located -- repoint this probe, it no longer exercises the guard (#2324)" >&2
-  printf '%s\n' "$loc_report" >&2
+  "$locstub" "$dpvdir/nomarker.out" main >/dev/null 2>&1 || true
+nomarker_report="$(cat "$dpvdir/nomarker.out.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$nomarker_report" | grep -q 'line [0-9]*:'; then
+  echo "[compiler-gate] FAIL: the marker-less stub produced no located diagnostic -- repoint this probe (#2317)" >&2
+  printf '%s\n' "$nomarker_report" >&2
+  rm -f "$locstub"
   exit 1
 fi
-if printf '%s\n' "$loc_report" | grep -qF "$dpvdir/located/index.vpkg"; then
-  echo "[compiler-gate] FAIL: a LOCATED diagnostic was renamed to the contract, pairing it with a line from the generated stub (#2324)" >&2
-  printf '%s\n' "$loc_report" >&2
+if printf '%s\n' "$nomarker_report" | grep -qF "$dpvdir/pkg/index.vpkg"; then
+  echo "[compiler-gate] FAIL: a stub with NO declaration markers had its located diagnostic renamed to the contract, pairing it with a stub line (#2317)" >&2
+  printf '%s\n' "$nomarker_report" >&2
+  rm -f "$locstub"
   exit 1
 fi
+rm -f "$locstub"
 # ...and a HAND-WRITTEN module that merely claims generated provenance is not
 # believed (Codex review on #2324).
 #
