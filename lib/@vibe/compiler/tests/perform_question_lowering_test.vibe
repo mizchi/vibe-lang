@@ -1,7 +1,7 @@
 //# `perform?` lowering (#2236)
 
 import @vibe/compiler/codegen/common_base {
-  lower_optional_performs
+  lower_optional_performs, optional_perform_artifact_resolution
 }
 
 import @vibe/compiler/core {
@@ -74,7 +74,9 @@ fn optional_call() -> Expr {
 
 fn assert_ambient_granted(stmt: Stmt) -> Unit with Exception {
   let stmts = [stmt]
-  lower_optional_performs(stmts, [])
+  let resolution = optional_perform_artifact_resolution(stmts, "__no_entry__", [
+  ])
+  lower_optional_performs(stmts, resolution)
   let body = match Array::get(stmts, 0) {
     STest(_, value) => value,
     SBench(_, value) => value,
@@ -91,6 +93,46 @@ test "#2236 review: test, bench, and example optionals use ambient grants" with 
   assert_ambient_granted(STest("test", optional_call()))
   assert_ambient_granted(SBench("bench", optional_call()))
   assert_ambient_granted(SExample("example", optional_call()))
+}
+
+test "#2236 review: a test artifact grants optionals in reachable helpers" with Exception {
+  let stmts = [
+    SLet(false, false, "read_optional", None, EFn([], [], [], None, None, optional_call())),
+    STest("uses helper", ECall(EIdent("read_optional", 0), [], 0))
+  ]
+  let resolution = optional_perform_artifact_resolution(stmts, "__no_entry__", [
+  ])
+  lower_optional_performs(stmts, resolution)
+  match Array::get(stmts, 0) {
+    SLet(_, _, "read_optional", _, EFn(_, _, _, _, _, ECall(EIdent("Granted", _), args, _))) => assert_eq(Array::length(args), 1),
+    _ => assert(false)
+  }
+}
+
+test "#2236 review: non-test artifacts keep the non-interactive default" with Exception {
+  let main_stmts = [
+    SLet(false, false, "main", None, EFn([], [], [], None, None, optional_call())),
+    STest("not part of this entry", ECall(EIdent("main", 0), [], 0))
+  ]
+  let library_stmts = [
+    SLet(false, false, "helper", None, EFn([], [], [], None, None, optional_call()))
+  ]
+  assert_eq(Array::length(optional_perform_artifact_resolution(main_stmts, "main", [
+  ])), 0)
+  assert_eq(Array::length(optional_perform_artifact_resolution(library_stmts, "__no_entry__", [
+  ])), 0)
+}
+
+test "#2236 review: GC-lowered test artifacts retain ambient authority" {
+  let stmts = [
+    SLet(false, false, "read_optional", None, EFn([], [], [], None, None, optional_call())),
+    SLet(false, false, "__test_uses helper", None, EFn([], [], [], None, None, ECall(EIdent("read_optional", 0), [
+    ], 0))),
+    SLet(true, false, "_start", None, EFn([], [], [], None, None, ECall(EIdent("__test_uses helper", 0), [
+    ], 0)))
+  ]
+  assert_eq(Array::length(optional_perform_artifact_resolution(stmts, "_start", [
+  ])), 1)
 }
 
 test "#2236: the linear backend compiles a well-graded perform?" with Exception {

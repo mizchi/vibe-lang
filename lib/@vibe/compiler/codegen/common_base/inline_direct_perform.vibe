@@ -127,11 +127,48 @@ fn opq_resolution(resolution: Array[(String, String)], operation: String) -> Str
   }
 }
 
-/// Test, bench, and example blocks keep their established ambient-full-authority
-/// contract: every optional capability is granted inside the block regardless
-/// of the non-interactive entry default.
-fn opq_ambient_resolution() -> Array[(String, String)] {
-  [("*", "Granted")]
+fn opq_contains_source_test_like(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      STest(_, _) => true,
+      SBench(_, _) => true,
+      SExample(_, _) => true,
+      SModule(_, _, body) => opq_contains_source_test_like(body),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn opq_contains_lowered_test_like(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => String::starts_with(name, "__test_") || String::starts_with(name, "__bench_"),
+      SModule(_, _, body) => opq_contains_lowered_test_like(body),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Resolve authority once for the whole compiled artifact. A `__no_entry__`
+/// artifact containing test-like blocks has ambient full authority, including
+/// every top-level helper those blocks can reach. Other non-interactive
+/// artifacts keep the caller's fail-closed resolution table.
+export fn optional_perform_artifact_resolution(stmts: Array[Stmt], entry_name: String, resolution: Array[(String, String)]) -> Array[(String, String)] {
+  let source_test_artifact = entry_name == "__no_entry__" && opq_contains_source_test_like(stmts)
+  let gc_lowered_test_artifact = entry_name == "_start" && opq_contains_lowered_test_like(stmts)
+  if source_test_artifact || gc_lowered_test_artifact {
+    [("*", "Granted")]
+  } else {
+    resolution
+  }
 }
 
 fn opq_expr_array(items: Array[Expr], resolution: Array[(String, String)]) -> Array[Expr] with Exception {
@@ -214,9 +251,9 @@ export fn lower_optional_performs(stmts: Array[Stmt], resolution: Array[(String,
     match Array::get(stmts, i) {
       SLet(exported, recursive, name, ty, value) => Array::set(stmts, i, SLet(exported, recursive, name, ty, opq_expr(value, resolution))),
       SLetMut(name, ty, value) => Array::set(stmts, i, SLetMut(name, ty, opq_expr(value, resolution))),
-      STest(name, body) => Array::set(stmts, i, STest(name, opq_expr(body, opq_ambient_resolution()))),
-      SBench(name, body) => Array::set(stmts, i, SBench(name, opq_expr(body, opq_ambient_resolution()))),
-      SExample(name, body) => Array::set(stmts, i, SExample(name, opq_expr(body, opq_ambient_resolution()))),
+      STest(name, body) => Array::set(stmts, i, STest(name, opq_expr(body, resolution))),
+      SBench(name, body) => Array::set(stmts, i, SBench(name, opq_expr(body, resolution))),
+      SExample(name, body) => Array::set(stmts, i, SExample(name, opq_expr(body, resolution))),
       SExpr(value) => Array::set(stmts, i, SExpr(opq_expr(value, resolution))),
       SLetPat(pat, value) => Array::set(stmts, i, SLetPat(pat, opq_expr(value, resolution))),
       SModule(exported, name, body) => {
