@@ -9083,3 +9083,71 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
 fi
 rm -rf "$mapdir"
 echo "[compiler-gate] a located contract diagnostic names the contract at its own declaration; a clean contract stays clean ok (#2317)"
+
+# 124/124. An undeclared type head in a transparent contract type is refused
+# by BOTH the import lane and the single-buffer/LSP lane (#2317).
+#
+# #2327 removed the generated types module's wildcard for a typo, so the full
+# lane began refusing `Intt`. The buffer lane still ran only derive validation
+# after parsing the same contract and reported it clean. This gate asserts the
+# two answers by message, not merely status: a contract can fail later for an
+# unrelated conformance reason, which would make a status-only probe vacuous.
+echo "[compiler-gate] 124/124 contract unknown type heads are refused by the full and buffer lanes (#2317)"
+utdir="_build/_gate_contract_unknown_type"
+rm -rf "$utdir"; mkdir -p "$utdir/field" "$utdir/payload" "$utdir/clean" "$utdir/local"
+ut_header='name = @gate/contractunknown
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+ut_impl='export fn plain(x: Int) -> Int {
+  x + 1
+}
+'
+printf '%s\nstruct Bad {\n  x: Intt\n}\n\nfn plain(x: Int) -> Int\n' "$ut_header" > "$utdir/field/index.vpkg"
+printf '%s\nenum Bad {\n  V(Intt)\n}\n\nfn plain(x: Int) -> Int\n' "$ut_header" > "$utdir/payload/index.vpkg"
+printf '%s\nstruct Good {\n  x: Array[Int]\n}\n\nfn plain(x: Int) -> Int\n' "$ut_header" > "$utdir/clean/index.vpkg"
+printf '%s\ntype Remote\n\nstruct Good {\n  x: Remote\n}\n\nfn plain(x: Int) -> Int\n' "$ut_header" > "$utdir/local/index.vpkg"
+for probe in field payload clean local; do
+  if [ "$probe" = local ]; then
+    printf 'export struct Remote {\n  value: Int\n}\n\n%s' "$ut_impl" > "$utdir/$probe/impl.vibe"
+  else
+    printf '%s' "$ut_impl" > "$utdir/$probe/impl.vibe"
+  fi
+  rm -f "$utdir/$probe.imp" "$utdir/$probe.imp.diag" "$utdir/$probe.buf"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$utdir/$probe/index.vpkg" "$utdir/$probe.imp" main >/dev/null 2>&1 || true
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$utdir/$probe/index.vpkg" "$utdir/$probe.buf" main >/dev/null 2>&1 || true
+done
+for lane in imp.diag buf; do
+  if ! grep -qF "unknown type \`Intt\` in field \`x\` of struct \`Bad\`" "$utdir/field.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $lane lane does not reject an unknown contract field type (#2317)" >&2
+    cat "$utdir/field.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if ! grep -qF "unknown type \`Intt\` in the payload of \`Bad::V\`" "$utdir/payload.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $lane lane does not reject an unknown contract payload type (#2317)" >&2
+    cat "$utdir/payload.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+if ! grep -q '^line 9:1:' "$utdir/field.buf" 2>/dev/null || ! grep -q '^line 9:1:' "$utdir/payload.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a buffer-lane unknown type is not anchored on its declaration (#2317)" >&2
+  cat "$utdir/field.buf" "$utdir/payload.buf" 2>/dev/null >&2 || true
+  exit 1
+fi
+for probe in clean local; do
+  if [ -s "$utdir/$probe.imp.diag" ] || [ -s "$utdir/$probe.buf" ]; then
+    echo "[compiler-gate] FAIL: valid contract '$probe' gained a diagnostic (#2317)" >&2
+    cat "$utdir/$probe.imp.diag" "$utdir/$probe.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+rm -rf "$utdir"
+echo "[compiler-gate] unknown contract field/payload types are refused by both lanes at the declaration; builtin and local provenance stay clean ok (#2317)"

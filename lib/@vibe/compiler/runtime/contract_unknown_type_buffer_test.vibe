@@ -1,0 +1,45 @@
+//# Imports
+
+import ./typecheck_fs.vibe {
+  collect_all_diagnostics_for_path
+}
+
+//# Functions
+
+fn contract_source(body: String) -> String {
+  "name = @gate/contract_buffer\nversion = 0.0.1\ndescription =\n  #|single-buffer contract type provenance\ndeps = {}\n\ngenerated_hash =\n\n\{body}"
+}
+
+fn contract_diagnostics(body: String) -> Array[String] with Exception {
+  collect_all_diagnostics_for_path("lib/@gate/contract_buffer/index.vpkg", contract_source(body))
+}
+
+//# Tests
+
+test "2317: the buffer lane rejects an unknown struct field type" {
+  inspect(contract_diagnostics("struct Bad {\n  x: Intt\n}\n"), content = "[line 9:1: unknown type `Intt` in field `x` of struct `Bad`]")
+}
+
+test "2317: the buffer lane rejects an unknown enum payload type" {
+  inspect(contract_diagnostics("enum Bad {\n  V(Intt)\n}\n"), content = "[line 9:1: unknown type `Intt` in the payload of `Bad::V`]")
+}
+
+test "2317: compiler-owned and local contract types stay clean" {
+  inspect(contract_diagnostics("type Remote\n\nstruct Good[T] {\n  builtin: Array[Int];\n  local: Remote;\n  param: T\n}\n"), content = "[]")
+}
+
+test "2317: an explicitly kinded lowercase type import is provenance" {
+  inspect(contract_diagnostics("import @scope/dep { struct Remote as remote }\n\nstruct Good {\n  value: remote\n}\n"), content = "[]")
+}
+
+test "2317: a bare uppercase type import is provenance" {
+  inspect(contract_diagnostics("import @scope/dep { TypeEnv }\n\nstruct Good {\n  value: TypeEnv\n}\n"), content = "[]")
+}
+
+test "2317: a transparent contract type is provenance before its use" {
+  inspect(contract_diagnostics("struct Good {\n  value: Remote\n}\n\nstruct Remote {\n  value: Int\n}\n"), content = "[]")
+}
+
+test "2317: an imported trait alias is not type provenance" {
+  inspect(contract_diagnostics("import @scope/dep { trait Marker as Remote }\n\nstruct Bad {\n  value: Remote\n}\n"), content = "[line 11:1: unknown type `Remote` in field `value` of struct `Bad`]")
+}
