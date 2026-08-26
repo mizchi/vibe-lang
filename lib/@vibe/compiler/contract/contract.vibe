@@ -927,13 +927,27 @@ export fn contract_type_family_offsets(stmts: Array[Stmt], stmt_at: Array[Int]) 
 /// and cannot read the contract to convert an offset. `offset_to_line_col` is
 /// the same function the diagnostic renderer uses, so the two agree on what a
 /// column is (1-based bytes, ADR-0108).
-export fn contract_type_family_decl_positions(source: String, stmts: Array[Stmt], stmt_at: Array[Int]) -> Array[String] {
+export fn contract_type_family_decl_positions(source: String, stmts: Array[Stmt], stmt_at: Array[Int], starts: Array[Int]) -> Array[String] {
+  // `stmt_at` holds TOKEN INDICES, not byte offsets -- `starts` is what turns
+  // one into the other. Passing the index straight to `offset_to_line_col`
+  // reads it as a byte offset and answers from the top of the file: measured,
+  // a declaration on line 13 reported `line 1:8`, which is token index 8 read
+  // as offset 8. `contract_classify_diagnostic` already does this conversion;
+  // this function was written without it.
   let offs = contract_type_family_offsets(stmts, stmt_at)
+  let lim = Array::length(starts)
   let out = array_empty()
   let mut i = 0
   while i < Array::length(offs) {
-    let (l, c) = offset_to_line_col(source, Array::get(offs, i))
-    Array::push(out, String::concat(__to_string(l), String::concat(":", __to_string(c))))
+    let tok = Array::get(offs, i)
+    if tok >= 0 && tok < lim {
+      let (l, c) = offset_to_line_col(source, Array::get(starts, tok))
+      Array::push(out, String::concat(__to_string(l), String::concat(":", __to_string(c))))
+    } else {
+      // No position rather than a wrong one; the generator omits the marker
+      // and the reader keeps the stub's own line.
+      Array::push(out, "")
+    }
     i = i + 1
   }
   out

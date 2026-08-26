@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, parse_program, parse_program_preserving
+  lex, lex_with_offsets, parse_program, parse_program_preserving
 }
 
 import @vibe/core {
@@ -1291,7 +1291,8 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       } else {
         let vpkg_raw = Fs::read_file(vpkg_path)
         let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
-        let (_, _, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(lex(vpkg_pin_blanked))
+        let (vpkg_tokens, vpkg_starts, _ve) = lex_with_offsets(vpkg_pin_blanked)
+        let (_, _, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
         let shared_text = contract_directory_shared_import_prefix_text(vpkg_extra)
         // #1840: siblings import the contract's type family from the
         // materialized types module — this is what gives enum constructors
@@ -1300,7 +1301,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
         // #2317: positions come from the SAME blanked text the parse used, so
         // the offsets and the source agree. Blanking is offset-preserving, so
         // a line:col computed here is the line:col in the real contract too.
-        let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at)
+        let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at, vpkg_starts)
         let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_decl_pos)
         let prefix_text = if types_path == "" {
           shared_text
@@ -2009,7 +2010,10 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
 fn desugar_contract_source_fs(path: String, source: String) -> String with Exception + Fs {
   let dir = dir_of_path(path)
   validate_index_layout_fs(path)
-  let (decls_raw, opaque_names, extra, stmt_at, _decl_at) = parse_contract_program_spans(lex(source))
+  // `lex_with_offsets`, because the declaration positions below need byte
+  // offsets and `stmt_at` records token indices.
+  let (src_tokens, src_starts, _src_ends) = lex_with_offsets(source)
+  let (decls_raw, opaque_names, extra, stmt_at, _decl_at) = parse_contract_program_spans(src_tokens)
   // `source` here has already had its leading directive region blanked by
   // extract_require_pins (see ingest_source_text_fs), so the directive must
   // be read back from the ORIGINAL on-disk text via `path`.
@@ -2220,7 +2224,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // canonical root-relative path for its existence re-check.
   // #2317: the contract's own line:col for each materialized declaration, so a
   // located diagnostic about the generated module can name the contract.
-  let facade_decl_pos = contract_type_family_decl_positions(source, extra, stmt_at)
+  let facade_decl_pos = contract_type_family_decl_positions(source, extra, stmt_at, src_starts)
   let facade_types_path = ensure_vpkg_types_module_fs(path, extra, facade_decl_pos)
   let facade_types_rel = if facade_types_path == "" {
     ""
