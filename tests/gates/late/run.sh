@@ -8791,5 +8791,36 @@ if printf '%s\n' "$spoof_report" | grep -qF 'NOT_THIS_FILE'; then
   printf '%s\n' "$spoof_report" >&2
   exit 1
 fi
+# ...including one NESTED under the generated directory. Prefix plus extension
+# alone still accepts `_build/vibe_vpkg_types/types_fake/source.vibe`, which is
+# an ordinary file someone wrote; the loader only ever produces a single
+# `types_<fingerprint>.vibe` basename there (Codex review on #2324).
+mkdir -p "$dpvdir/nested/_build/vibe_vpkg_types/types_fake"
+cat > "$dpvdir/nested/_build/vibe_vpkg_types/types_fake/source.vibe" <<'DPVEOF'
+// vibe: vpkg contract types module (#1840)
+// vibe: generated from lib/@gate/NOT_THIS_FILE/index.vpkg
+struct P {
+  x: Int
+} derive(Foo)
+
+fn main() -> Int {
+  0
+}
+DPVEOF
+rm -f "$dpvdir/nested.out" "$dpvdir/nested.out.diag"
+( cd "$dpvdir/nested" && VIBE_PREOPEN_DIR="$PWD" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$stage2_wasm" \
+  "_build/vibe_vpkg_types/types_fake/source.vibe" "$ROOT_DIR/$dpvdir/nested.out" main ) >/dev/null 2>&1 || true
+nested_report="$(cat "$dpvdir/nested.out.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$nested_report" | grep -qF 'unknown trait: Foo'; then
+  echo "[compiler-gate] FAIL: the nested spoof fixture produced no unknown-derive diagnostic -- repoint this probe (#2324)" >&2
+  printf '%s\n' "$nested_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$nested_report" | grep -qF 'NOT_THIS_FILE'; then
+  echo "[compiler-gate] FAIL: a file NESTED under the generated directory had its provenance comment believed (#2324)" >&2
+  printf '%s\n' "$nested_report" >&2
+  exit 1
+fi
 rm -rf "$dpvdir"
-echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, ignores a hand-written provenance claim, and a known derive stays clean ok (#2317, #2324)"
+echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, ignores a hand-written provenance claim flat or nested, and a known derive stays clean ok (#2317, #2324)"

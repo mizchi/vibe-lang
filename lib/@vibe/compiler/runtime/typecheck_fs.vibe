@@ -1409,7 +1409,31 @@ fn is_vpkg_types_stub_path(path: String) -> Bool {
 /// the build directory the compiler owns. The prefix is shared with the
 /// generator so the two cannot drift apart.
 fn is_generated_vpkg_types_path(path: String) -> Bool {
-  String::starts_with(path, vpkg_types_module_path_prefix) && String::ends_with(path, ".vibe")
+  if !String::starts_with(path, vpkg_types_module_path_prefix) || !String::ends_with(path, ".vibe") {
+    false
+  } else {
+    // The WHOLE basename, not just the ends. Prefix plus extension alone still
+    // accepts a nested `types_fake/source.vibe`, which is an ordinary file the
+    // author wrote (Codex review on #2324). The loader can only ever produce
+    // `types_<fingerprint>.vibe` in that one directory, and it builds the
+    // fingerprint by replacing every non-identifier byte with `_`, so the
+    // basename is exactly [0-9A-Za-z_]+ -- a `/`, a `.`, or anything else in
+    // there means some other producer wrote it.
+    let plen = String::length(vpkg_types_module_path_prefix)
+    let stem_end = String::length(path) - 5
+    let mut i = plen
+    let mut ok = stem_end > plen
+    while i < stem_end && ok {
+      let c = String::char_code_at(path, i)
+      let ident = (c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+      if ident {
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    ok
+  }
 }
 
 fn type_diagnostic_display_path(path: String, source: String, located_msg: String) -> String {
