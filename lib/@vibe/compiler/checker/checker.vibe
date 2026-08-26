@@ -2871,6 +2871,13 @@ fn is_nullary_named(ty: Type) -> Bool {
   }
 }
 
+fn is_skolem_named(ty: Type) -> Bool {
+  match ty {
+    CtNamed(n, args) => Array::length(args) == 0 && !String::starts_with(n, "#"),
+    _ => false
+  }
+}
+
 fn is_unresolved_head(ty: Type) -> Bool {
   match ty {
     CtVar(_) => true,
@@ -2889,26 +2896,37 @@ fn skolem_vs_concrete(a: Type, b: Type) -> Bool {
   }
 }
 
-/// #2268: F[A] vs F[B] with rigid A, B, and F[A] vs a concrete constructor
-/// (Array[Int], Option[Int], ...) must not be swallowed by the polymorphic
-/// tolerate branch (`CtNamed` is kind 0 / non-ground).
+/// #2268: F[A] vs F[B] with rigid A, B, F[A] vs a concrete constructor, and
+/// unapplied rigid T vs a concrete type (`[T](x: T) -> T { 42 }`). CtNamed
+/// is kind 0 / non-ground, so the polymorphic tolerate branch would
+/// swallow these. Compiler-internal `#hkt` / `#ctor.*` names are not
+/// skolems. Struct construction binds fresh CtVars, so it is unaffected.
 fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
   match expected {
-    CtNamed(en, ea) => match actual {
-      CtNamed(an, aa) => en == an && Array::length(ea) > 0 && named_args_skolem_differ(ea, aa),
-      CtArray(_) => is_applied_named(expected),
-      CtOption(_) => is_applied_named(expected),
-      _ => false
+    CtNamed(en, ea) => if is_skolem_named(expected) {
+      match actual {
+        CtVar(_) => false,
+        CtUnknown => false,
+        CtNamed(an, aa) => Array::length(aa) == 0 && an != en && !String::starts_with(an, "#"),
+        _ => true
+      }
+    } else {
+      match actual {
+        CtNamed(an, aa) => en == an && Array::length(ea) > 0 && named_args_skolem_differ(ea, aa),
+        CtArray(_) => is_applied_named(expected),
+        CtOption(_) => is_applied_named(expected),
+        _ => false
+      }
     },
     CtArray(e) => match actual {
       CtArray(a) => skolem_vs_concrete(e, a),
-      _ => is_applied_named(actual)
+      _ => is_applied_named(actual) || is_skolem_named(actual)
     },
     CtOption(e) => match actual {
       CtOption(a) => skolem_vs_concrete(e, a),
-      _ => is_applied_named(actual)
+      _ => is_applied_named(actual) || is_skolem_named(actual)
     },
-    _ => false
+    _ => is_skolem_named(actual) && !is_unresolved_head(expected)
   }
 }
 
