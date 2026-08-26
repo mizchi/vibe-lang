@@ -313,12 +313,9 @@ export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> Typ
 ///      `fn fill(l: MutList[Int, r]) -> Unit with r`. Nothing binds `r` as a
 ///      value there; the binder is the row, so the call site passes its
 ///      variables in `row_binders`.
-/// #2268: collect type applications whose head the caller classifies as a
-/// type formal (`F[A]` under `[F, A]`). Resolution has no application
-/// semantics for that shape: `F` unifies with the WHOLE applied type and the
-/// bracket arguments are ignored, so a signature spelled
-/// `(F[A], (A) -> B) -> F[B]` silently accepts the identity function. Fail
-/// closed at the annotation site until a type parameter can carry a kind.
+/// Collect type applications whose head the caller classifies as a type
+/// formal (`F[A]` under `[F, A]`). Used to detect mixed-kind (`F` and
+/// `F[A]` together). Constructor-only `F[A]` is well-kinded HKT.
 export fn collect_formal_applications_by(te: TypeExpr, is_formal: (String) -> Bool, out: Array[String]) -> Unit {
   collect_formal_kind_uses(te, is_formal, out, array_empty())
 }
@@ -2860,21 +2857,56 @@ fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
   }
 }
 
-/// #2268: F[A] vs F[B] with rigid A, B must not be swallowed by the
-/// polymorphic tolerate branch (`CtNamed` is kind 0 / non-ground).
+fn is_applied_named(ty: Type) -> Bool {
+  match ty {
+    CtNamed(_, args) => Array::length(args) > 0,
+    _ => false
+  }
+}
+
+fn is_nullary_named(ty: Type) -> Bool {
+  match ty {
+    CtNamed(_, args) => Array::length(args) == 0,
+    _ => false
+  }
+}
+
+fn is_unresolved_head(ty: Type) -> Bool {
+  match ty {
+    CtVar(_) => true,
+    CtUnknown => true,
+    _ => false
+  }
+}
+
+fn skolem_vs_concrete(a: Type, b: Type) -> Bool {
+  if is_nullary_named(a) && !is_nullary_named(b) && !is_unresolved_head(b) {
+    true
+  } else if is_nullary_named(b) && !is_nullary_named(a) && !is_unresolved_head(a) {
+    true
+  } else {
+    nullary_named_differ(a, b)
+  }
+}
+
+/// #2268: F[A] vs F[B] with rigid A, B, and F[A] vs a concrete constructor
+/// (Array[Int], Option[Int], ...) must not be swallowed by the polymorphic
+/// tolerate branch (`CtNamed` is kind 0 / non-ground).
 fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
   match expected {
     CtNamed(en, ea) => match actual {
       CtNamed(an, aa) => en == an && Array::length(ea) > 0 && named_args_skolem_differ(ea, aa),
+      CtArray(_) => is_applied_named(expected),
+      CtOption(_) => is_applied_named(expected),
       _ => false
     },
     CtArray(e) => match actual {
-      CtArray(a) => nullary_named_differ(e, a),
-      _ => false
+      CtArray(a) => skolem_vs_concrete(e, a),
+      _ => is_applied_named(actual)
     },
     CtOption(e) => match actual {
-      CtOption(a) => nullary_named_differ(e, a),
-      _ => false
+      CtOption(a) => skolem_vs_concrete(e, a),
+      _ => is_applied_named(actual)
     },
     _ => false
   }
@@ -7691,37 +7723,6 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
-        } else if name == "Iterator::map" && Array::length(args) == 2 {
-          let (recv_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-          let (fn_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let recv = subst_apply(s2, recv_ty)
-          match recv {
-            CtArray(_) => {
-              let s3 = check_hof_param_vs_elem(recv, subst_apply(s2, fn_ty), 0, s2, errors, "Iterator::map function parameter type mismatch")
-              let result = match subst_apply(s3, fn_ty) {
-                CtFn(_, ret, _) => CtArray(ret),
-                _ => CtUnknown
-              }
-              (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
-            },
-            _ => {
-              let (elem_v, c3) = fresh_var(c2)
-              match unify(CtArray(elem_v), recv, s2) {
-                Some(s3) => {
-                  let s4 = check_hof_param_vs_elem(subst_apply(s3, recv), subst_apply(s3, fn_ty), 0, s3, errors, "Iterator::map function parameter type mismatch")
-                  let result = match subst_apply(s4, fn_ty) {
-                    CtFn(_, ret, _) => CtArray(ret),
-                    _ => CtUnknown
-                  }
-                  (tab_call_ty(tytab, call_off, result, capture, lane), s4, c3)
-                },
-                None => {
-                  Array::push(errors, String::concat("Iterator::map maps `Array`; the argument is ", type_to_string(recv)))
-                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
-                }
-              }
-            }
-          }
         } else if name == "TaskGroup::run" && Array::length(args) == 1 {
           // #1081 step 3: `TaskGroup::run` mints a fresh generative region.
           // There is no general rank-2/`Region`-bound mechanism in this

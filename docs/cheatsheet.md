@@ -875,8 +875,11 @@ let ok = keep([1, 2, 3])
 **A type formal may stand in constructor position — `F[A]`.** Unification
 binds `F` to a type constructor (`F := Array` yields `Array[A]`). The
 pipeline combinator is `xs |> Iterator::map(f)` (not bare `map`, not
-`Array::map`). A formal used both unapplied (`x: F`) and applied (`y: F[A]`)
-is rejected as mixed-kind.
+`Array::map`). `Iterator::map` itself is Array-only until a functor
+instance exists; a user `fn map[F, A, B](xs: F[A], f: (A) -> B) -> F[B]`
+is what instantiates `F`. A formal used both unapplied (`x: F`) and
+applied (`y: F[A]`) is rejected as mixed-kind. Ascribing `F[A]` to a
+concrete constructor (`let ys: Array[Int] = xs`) is rejected.
 
 <!-- doctest-skip: mixed-kind is deliberately rejected -->
 ```vibe skip

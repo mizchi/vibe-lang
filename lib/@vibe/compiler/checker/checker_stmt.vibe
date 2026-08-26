@@ -4002,39 +4002,11 @@ fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[
   }
 }
 
-/// #2268 (Codex on #2267, rounds 2-3): a formal application can hide in any
-/// declaration whose signatures are resolved WITHOUT passing through
-/// `report_unknown_type_names` -- a parameterized alias body
-/// (`type Apply[F, A] = F[A]`), a generic effect operation
-/// (`effect Bad[F, A] { Put(F[A]) -> Unit }`, #1340 registers eparams as
-/// rigid names and substitutes them wholesale), and a trait method signature
-/// (`trait Functor[F] { fmap[A, B](F[A], (A) -> B) -> F[B] }`, stored
-/// unchanged by the STrait arm). Each declaration's own params are the whole
-/// formal set -- none of these bodies has an enclosing formal scope -- so
-/// shadow membership is the whole test here.
+/// Mixed-kind only (`F` unapplied and `F[A]` applied on the same TypeExpr).
+/// Alias / effect / trait / struct-field `F[A]` is a well-kinded constructor
+/// use; `report_formal_applications` is the shared rule with fn signatures.
 fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
-  let hits = array_empty()
-  // Bound to a let rather than written inline: vibe fmt's guard refuses
-  // a multiline closure literal in a non-final argument slot (#2271).
-  let is_param = (head) -> {
-    let mut pi = 0
-    let mut found = false
-    while pi < Array::length(formals) {
-      if Array::get(formals, pi) == head {
-        found = true
-      } else {
-        ()
-      }
-      pi = pi + 1
-    }
-    found
-  }
-  collect_formal_applications_by(te, is_param, hits)
-  let mut hi = 0
-  while hi < Array::length(hits) {
-    Array::push(errors, formal_application_error(Array::get(hits, hi), where_label))
-    hi = hi + 1
-  }
+  report_formal_applications(te, formals, where_label, errors)
 }
 
 /// #2286: the label for a struct FIELD diagnostic.
