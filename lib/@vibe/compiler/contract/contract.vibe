@@ -970,10 +970,41 @@ export fn contract_effective_decls(decls_raw: Array[(String, String)], pkg_versi
   let mut i = 0
   while i < Array::length(decls_raw) {
     let (dname, dsig) = Array::get(decls_raw, i)
-    if dname == "version" && dsig == "val String" && pkg_version != "" {
+    if contract_decl_is_filtered(dname, dsig, pkg_version) {
       ()
     } else {
       Array::push(out, (dname, dsig))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The one filter rule, so `contract_effective_decls` and
+/// `contract_effective_decl_indices` cannot disagree about which entries
+/// survive.
+fn contract_decl_is_filtered(dname: String, dsig: String, pkg_version: String) -> Bool {
+  dname == "version" && dsig == "val String" && pkg_version != ""
+}
+
+/// #2317: for each EFFECTIVE declaration, its index in the raw list.
+///
+/// The offsets are recorded against the raw list, so a caller holding an
+/// effective index needs this to reach them. Counting name occurrences instead
+/// is wrong when a FILTERED entry shares the name: a dropped legacy `let
+/// version: String` beside two effective `version` declarations makes the
+/// count skip one, and the diagnostic anchors on the first declaration rather
+/// than the repeat -- telling the reader to delete the line they want to keep
+/// (Codex review on #2328).
+export fn contract_effective_decl_indices(decls_raw: Array[(String, String)], pkg_version: String) -> Array[Int] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(decls_raw) {
+    let (dname, dsig) = Array::get(decls_raw, i)
+    if contract_decl_is_filtered(dname, dsig, pkg_version) {
+      ()
+    } else {
+      Array::push(out, i)
     }
     i = i + 1
   }

@@ -8945,6 +8945,34 @@ if ! grep -q '^line 11:1:' "$dupdir/twice.buf" 2>/dev/null; then
   cat "$dupdir/twice.buf" 2>/dev/null >&2 || true
   exit 1
 fi
+# ...and a FILTERED declaration sharing the duplicate's name does not shift the
+# anchor. A dropped legacy `let version: String` sits before two effective
+# `let version: Int` declarations; counting name occurrences in the raw list
+# would skip one and point at the first effective declaration -- the line the
+# reader wants to keep (Codex review on #2328). `version` is on lines 9, 11 and
+# 13; the repeat is 13.
+dup_mk vfiltered 'let version: String
+
+let version: Int
+
+let version: Int
+
+fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+rm -f "$dupdir/vfiltered.buf"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dupdir/vfiltered/index.vpkg" "$dupdir/vfiltered.buf" main >/dev/null 2>&1 || true
+if ! grep -qF "declares 'version' more than once" "$dupdir/vfiltered.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: two effective 'version' declarations beside a filtered one are not reported as a duplicate (#2328)" >&2
+  cat "$dupdir/vfiltered.buf" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 13:1:' "$dupdir/vfiltered.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a filtered declaration sharing the name shifted the duplicate anchor off the repeat (expected line 13) (#2328)" >&2
+  cat "$dupdir/vfiltered.buf" 2>/dev/null >&2 || true
+  exit 1
+fi
 # ...and when a contract has BOTH faults, the two lanes recommend the SAME first
 # edit. The loader checked duplicates before classifying while the buffer lane
 # classified first, so one said "declared more than once" and the other

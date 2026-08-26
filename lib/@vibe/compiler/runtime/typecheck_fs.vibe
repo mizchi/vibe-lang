@@ -82,6 +82,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 import @vibe/compiler/contract {
   classify_contract_stmts,
   contract_duplicate_decl_index,
+  contract_effective_decl_indices,
   contract_effective_decls,
   contract_unsupported_stmt_index,
   extract_package_version,
@@ -6191,54 +6192,34 @@ fn contract_classify_diagnostic(source: String, starts: Array[Int], stmts: Array
 
 /// #2317: anchor a duplicate declaration on the REPEAT, not on the first one.
 ///
-/// `contract_effective_decls` filters, so an index into the effective list is
-/// not an index into the raw one the offsets belong to. The name is matched
-/// back into the raw list, skipping as many earlier occurrences as the
-/// effective list already had -- the filter only ever drops entries, never
-/// reorders them, so the n-th surviving occurrence of a name is the n-th raw
-/// occurrence of it.
+/// The offsets are recorded against the RAW declaration list, so the effective
+/// index is mapped through `contract_effective_decl_indices` rather than by
+/// counting name occurrences. Counting is wrong when a FILTERED entry shares
+/// the name -- a dropped legacy `let version: String` beside two effective
+/// `version` declarations makes the count skip one, and the anchor lands on
+/// the declaration the reader wants to keep (Codex review on #2328).
+///
+/// `decl_at` holds TOKEN indices; `starts` converts one to a byte offset.
 ///
 /// Falls back to unlocated rather than to a guess, as every other diagnostic
 /// this lane cannot place does.
-fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Array[(String, String)], decls_raw: Array[(String, String)], decl_at: Array[Int], dup_at: Int) -> Array[String] with Exception {
+fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Array[(String, String)], eff_idx: Array[Int], decl_at: Array[Int], dup_at: Int) -> Array[String] with Exception {
   let (dup_name, _) = Array::get(decls, dup_at)
   let msg = String::concat(String::concat("contract declares '", dup_name), "' more than once; remove the repeated declaration (#2317)")
-  let mut seen_before = 0
-  let mut i = 0
-  while i < dup_at {
-    let (n, _) = Array::get(decls, i)
-    if n == dup_name {
-      seen_before = seen_before + 1
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  let mut want = seen_before
-  let mut r = 0
-  let mut off = 0 - 1
-  let lim = Array::length(decl_at)
-  while r < Array::length(decls_raw) && off < 0 {
-    let (rn, _) = Array::get(decls_raw, r)
-    if rn == dup_name {
-      if want == 0 {
-        if r < lim {
-          off = Array::get(decl_at, r)
-        } else {
-          ()
-        }
+  if dup_at >= 0 && dup_at < Array::length(eff_idx) {
+    let raw_i = Array::get(eff_idx, dup_at)
+    if raw_i >= 0 && raw_i < Array::length(decl_at) {
+      let tok = Array::get(decl_at, raw_i)
+      if tok >= 0 && tok < Array::length(starts) {
+        return [
+          String::concat(offset_line_col_prefix(source, Array::get(starts, tok)), msg)
+        ]
       } else {
-        want = want - 1
+        ()
       }
     } else {
       ()
     }
-    r = r + 1
-  }
-  if off >= 0 && off < Array::length(starts) {
-    return [
-      String::concat(offset_line_col_prefix(source, Array::get(starts, off)), msg)
-    ]
   } else {
     ()
   }
@@ -6294,9 +6275,10 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
         // directive), so the two lanes cannot disagree about which shapes
         // count. Measured: declared twice, that one IS accepted by the build.
         let cdecls = contract_effective_decls(cdecls_raw, pkg_version)
+        let ceff_idx = contract_effective_decl_indices(cdecls_raw, pkg_version)
         let dup_at = contract_duplicate_decl_index(cdecls)
         if dup_at >= 0 {
-          contract_duplicate_diagnostic(source, cstarts, cdecls, cdecls_raw, cdecl_at, dup_at)
+          contract_duplicate_diagnostic(source, cstarts, cdecls, ceff_idx, cdecl_at, dup_at)
         } else {
           contract_semantic_errors(source, ctokens, cstarts, cstmts)
         }
