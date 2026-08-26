@@ -5719,25 +5719,28 @@ fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[
   // element, not among its statements -- a contract's `fn f(x: Int) -> Int` is
   // not an `SLet`. Opaque type declarations share the namespace, since the
   // facade allocates each name once, so both lists feed one `seen` set.
+  let heads = contract_decl_head_table(tokens, starts)
+  let head_taken = contract_taken_flags(heads)
+  let derive_names = contract_derive_name_table(tokens, starts)
+  let derive_taken = contract_taken_flags(derive_names)
   let seen: Array[String] = []
-  let derive_cursor = [0]
   let mut d = 0
   while d < Array::length(decls) {
     let (dname, _sig) = Array::get(decls, d)
-    contract_note_duplicate(source, tokens, starts, dname, seen, out)
+    contract_note_duplicate(source, heads, head_taken, dname, seen, out)
     d = d + 1
   }
   let mut o = 0
   while o < Array::length(opaques) {
     let (oname, _arity) = Array::get(opaques, o)
-    contract_note_duplicate(source, tokens, starts, oname, seen, out)
+    contract_note_duplicate(source, heads, head_taken, oname, seen, out)
     o = o + 1
   }
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(_, _, _, derives, _, _) => contract_derive_errors(source, tokens, starts, derives, derive_cursor, out),
-      SEnum(_, _, _, _, derives) => contract_derive_errors(source, tokens, starts, derives, derive_cursor, out),
+      SStruct(_, _, _, derives, _, _) => contract_derive_errors(source, derive_names, derive_taken, derives, out),
+      SEnum(_, _, _, _, derives) => contract_derive_errors(source, derive_names, derive_taken, derives, out),
       _ => ()
     }
     i = i + 1
@@ -5746,11 +5749,15 @@ fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[
 }
 
 /// Record `name` as seen, reporting it when it was seen before.
-fn contract_note_duplicate(source: String, tokens: Array[Token], starts: Array[Int], name: String, seen: Array[String], out: Array[String]) -> Unit {
+fn contract_note_duplicate(source: String, heads: Array[(String, Int)], head_taken: Array[Bool], name: String, seen: Array[String], out: Array[String]) -> Unit {
   if str_array_contains_name(seen, name) {
     let dup_msg = String::concat(String::concat("duplicate declaration in a contract: `", name), "` is declared more than once -- a contract declares each name once, and the facade it generates can allocate the name only once")
-    Array::push(out, located_at_offset(source, contract_decl_head_offset(tokens, starts, name, 2), dup_msg))
+    Array::push(out, located_at_offset(source, contract_take_anchor(heads, head_taken, name), dup_msg))
   } else {
+    // Spend the FIRST head for this name, so the first duplicate takes the
+    // second and an Nth duplicate takes the Nth -- three declarations of one
+    // name gave three reports all pointing at the second before this.
+    let _first = contract_take_anchor(heads, head_taken, name)
     Array::push(seen, name)
   }
 }
@@ -5763,7 +5770,7 @@ fn contract_note_duplicate(source: String, tokens: Array[Token], starts: Array[I
 /// (Codex review on #2320). The trait name appears verbatim in the buffer, so
 /// the same locator the duplicate uses places it -- first occurrence, since a
 /// derive names it once.
-fn contract_derive_errors(source: String, tokens: Array[Token], starts: Array[Int], derives: Array[String], cursor: Array[Int], out: Array[String]) -> Unit {
+fn contract_derive_errors(source: String, derive_names: Array[(String, Int)], derive_taken: Array[Bool], derives: Array[String], out: Array[String]) -> Unit {
   let raw = array_empty()
   validate_derives(derives, raw)
   let mut i = 0
@@ -5780,7 +5787,7 @@ fn contract_derive_errors(source: String, tokens: Array[Token], starts: Array[In
         Array::push(out, msg)
       } else {
         let tname = String::substring(msg, sstart, send)
-        Array::push(out, located_at_offset(source, contract_derive_name_offset(tokens, starts, tname, cursor), msg))
+        Array::push(out, located_at_offset(source, contract_take_anchor(derive_names, derive_taken, tname), msg))
       }
     }
     i = i + 1
@@ -5819,18 +5826,26 @@ fn str_array_contains_name(xs: Array[String], name: String) -> Bool {
 /// A declaration head is `fn <ident>` or `type <ident>`, which is exactly what
 /// `parse_contract_program` matches to produce the lists being scanned, so this
 /// walk and that parse agree by construction.
-fn contract_decl_head_offset(tokens: Array[Token], starts: Array[Int], name: String, occurrence: Int) -> Int {
+/// Every declaration head in the buffer, in source order, as
+/// `(declared name, byte offset of the name)`.
+///
+/// Built ONCE and consumed in order, rather than searched per diagnostic. Five
+/// rounds of review found edge cases in the per-query searches -- a name that
+/// occurs earlier for another reason, a third duplicate, a multi-name derive,
+/// a qualified `fn Map::get` -- and every one of them was this code
+/// reconstructing what the parser already knew. A table consumed in order has
+/// no ordinal to get wrong: the k-th report of a name takes the k-th entry.
+///
+/// The heads are exactly the ones `parse_contract_program` accepts for a name
+/// that reaches `decls`/`opaques`: `fn`, `type`, `let`, and `opaque type`.
+/// A qualified head (`fn Map::get`) is joined the way the parser joins it, so
+/// the name here matches the name recorded there.
+fn contract_decl_head_table(tokens: Array[Token], starts: Array[Int]) -> Array[(String, Int)] {
+  let out = array_empty()
   let n = Array::length(tokens)
   let lim = Array::length(starts)
   let mut i = 0
-  let mut seen = 0
-  let mut at = 0 - 1
-  while i + 1 < n && seen < occurrence {
-    // Every head `parse_contract_program` accepts for a name that lands in the
-    // lists being scanned: `fn`, `type`, `let` (a bodyless value declaration,
-    // #752), and the `opaque` head, which is a plain identifier rather than a
-    // keyword. `let` was missing in the first token version, so a duplicated
-    // `let answer: Int` rendered at 0:0 (Codex review on #2320).
+  while i + 1 < n {
     let heads = match Array::get(tokens, i) {
       TFn => true,
       TType => true,
@@ -5849,11 +5864,9 @@ fn contract_decl_head_offset(tokens: Array[Token], starts: Array[Int], name: Str
       }
       if name_at < n && name_at < lim {
         match Array::get(tokens, name_at) {
-          TIdent(got) => if got == name {
-            seen = seen + 1
-            at = Array::get(starts, name_at)
-          } else {
-            ()
+          TIdent(head_name) => {
+            let qualified = contract_qualified_head_name(tokens, name_at, head_name)
+            Array::push(out, (qualified, Array::get(starts, name_at)))
           },
           _ => ()
         }
@@ -5865,29 +5878,35 @@ fn contract_decl_head_offset(tokens: Array[Token], starts: Array[Int], name: Str
     }
     i = i + 1
   }
-  if seen == occurrence {
-    at
+  out
+}
+
+/// `A::b` when the head is qualified, otherwise the bare name.
+fn contract_qualified_head_name(tokens: Array[Token], name_at: Int, head_name: String) -> String {
+  let n = Array::length(tokens)
+  if name_at + 2 < n {
+    let joined = match Array::get(tokens, name_at + 1) {
+      TDoubleColon => match Array::get(tokens, name_at + 2) {
+        TIdent(rest) => String::concat(head_name, String::concat("::", rest)),
+        _ => head_name
+      },
+      _ => head_name
+    }
+    joined
   } else {
-    0 - 1
+    head_name
   }
 }
 
-/// Byte offset of `name` where it appears INSIDE a `derive(..)` clause, or -1.
-///
-/// The same reasoning: the trait name can occur anywhere else in the buffer,
-/// so the anchor is the occurrence that sits between `derive (` and the
-/// matching `)`.
-fn contract_derive_name_offset(tokens: Array[Token], starts: Array[Int], name: String, cursor: Array[Int]) -> Int {
+/// Every trait name appearing inside a `derive(..)` clause, in source order.
+/// One pass, so a clause naming several traits yields several entries and a
+/// second clause continues the list -- both of which a per-query scan missed.
+fn contract_derive_name_table(tokens: Array[Token], starts: Array[Int]) -> Array[(String, Int)] {
+  let out = array_empty()
   let n = Array::length(tokens)
   let lim = Array::length(starts)
-  // Resume where the previous clause ended. Scanning from 0 each time anchored
-  // EVERY diagnostic on the first matching clause, so two structs deriving the
-  // same unknown trait both pointed at the first (Codex review on #2320).
-  // `contract_semantic_errors` walks statements in source order, so a
-  // monotonic cursor lines each error up with its own clause.
-  let mut i = Array::get(cursor, 0)
-  let mut at = 0 - 1
-  while i < n && at < 0 {
+  let mut i = 0
+  while i < n {
     let is_derive = match Array::get(tokens, i) {
       TDerive => true,
       _ => false
@@ -5905,11 +5924,12 @@ fn contract_derive_name_offset(tokens: Array[Token], starts: Array[Int], name: S
             TRParen => {
               scanning = false
             },
-            TIdent(got) => if got == name && d < lim {
-              at = Array::get(starts, d)
-              Array::set(cursor, 0, d + 1)
-              scanning = false
-            } else {
+            TIdent(tname) => {
+              if d < lim {
+                Array::push(out, (tname, Array::get(starts, d)))
+              } else {
+                ()
+              }
               d = d + 1
             },
             _ => {
@@ -5917,16 +5937,51 @@ fn contract_derive_name_offset(tokens: Array[Token], starts: Array[Int], name: S
             }
           }
         }
+        i = d
       } else {
-        ()
+        i = i + 1
       }
     } else {
-      ()
+      i = i + 1
     }
-    i = i + 1
+  }
+  out
+}
+
+/// The offset of the next unconsumed entry named `name`, or -1. `taken` marks
+/// entries already spent, so repeated reports of one name walk forward instead
+/// of all landing on the same occurrence.
+fn contract_take_anchor(table: Array[(String, Int)], taken: Array[Bool], name: String) -> Int {
+  let mut i = 0
+  let mut at = 0 - 1
+  while i < Array::length(table) && at < 0 {
+    let (entry_name, entry_off) = Array::get(table, i)
+    if entry_name == name && !Array::get(taken, i) {
+      Array::set(taken, i, true)
+      at = entry_off
+    } else {
+      i = i + 1
+    }
   }
   at
 }
+
+/// A `false` for every entry of `table`.
+fn contract_taken_flags(table: Array[(String, Int)]) -> Array[Bool] {
+  let out: Array[Bool] = []
+  let mut i = 0
+  while i < Array::length(table) {
+    Array::push(out, false)
+    i = i + 1
+  }
+  out
+}
+
+/// Byte offset of `name` where it appears INSIDE a `derive(..)` clause, or -1.
+///
+/// The same reasoning: the trait name can occur anywhere else in the buffer,
+/// so the anchor is the occurrence that sits between `derive (` and the
+/// matching `)`.
 
 /// `msg` prefixed with the position at `off`, or bare when `off` is -1 --
 /// degraded, never wrong, the same rule the parse anchor states for itself.

@@ -8377,10 +8377,22 @@ printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/twoderive/impl.vib
 # too, and the first token version recognised only `fn` and `type`.
 printf '%s\nlet answer: Int\nlet answer: Int\n' "$cs_header" > "$csdir/duplet/index.vpkg"
 printf 'export let answer: Int = 42\n' > "$csdir/duplet/impl.vibe"
+# Three declarations of one name: the second and third reports must land on the
+# second and third declarations, not both on the second.
+mkdir -p "$csdir/triple" "$csdir/multiderive" "$csdir/qualified"
+printf '%s\nfn f(x: Int) -> Int\nfn f(x: Int) -> Int\nfn f(x: Int) -> Int\n' "$cs_header" > "$csdir/triple/index.vpkg"
+printf 'export fn f(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/triple/impl.vibe"
+# One clause naming several unknown traits: each needs its own anchor.
+printf '%s\nstruct A {\n  x: Int\n} derive(Foo, Bar)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/multiderive/index.vpkg"
+printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/multiderive/impl.vibe"
+# A qualified head: the parser records `Map::get`, so the anchor has to join
+# the same way rather than matching the first identifier alone.
+printf '%s\nfn Map::get(x: Int) -> Int\nfn Map::get(x: Int) -> Int\n' "$cs_header" > "$csdir/qualified/index.vpkg"
+printf 'export fn Map::get(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/qualified/impl.vibe"
 # Each bad contract must be refused by BOTH lanes, and the clean one by
 # neither. Asserting only the buffer lane would not notice the two drifting
 # apart again, which is what #2317 is about.
-for probe in derive dup dupopaque decoyderive decoydup twoderive duplet clean; do
+for probe in derive dup dupopaque decoyderive decoydup twoderive duplet triple multiderive qualified clean; do
   rm -f "$csdir/$probe.imp" "$csdir/$probe.imp.diag" "$csdir/$probe.buf"
   if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -8468,6 +8480,46 @@ fi
 if ! grep -q '^line 10:' "$csdir/duplet.buf" 2>/dev/null; then
   echo "[compiler-gate] FAIL: a duplicated bodyless let is not anchored on its second declaration (expected line 10) (#2317)" >&2
   cat "$csdir/duplet.buf" >&2 || true
+  exit 1
+fi
+# Three declarations on lines 9, 10, 11: the two reports must be lines 10 AND
+# 11. Anchoring both on 10 is what a fixed "occurrence 2" does, and exact-string
+# dedupe would then collapse them to one.
+if ! grep -q '^line 10:' "$csdir/triple.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the second of three duplicate declarations is not anchored on line 10 (#2317)" >&2
+  cat "$csdir/triple.buf" >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 11:' "$csdir/triple.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the THIRD duplicate declaration is not anchored on its own line (expected 11) -- every duplicate is asking for the same occurrence (#2317)" >&2
+  cat "$csdir/triple.buf" >&2 || true
+  exit 1
+fi
+# `derive(Foo, Bar)` on line 12: two diagnostics, both anchored, neither at 0:0.
+if ! grep -qF 'unknown trait: Foo' "$csdir/multiderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the first trait of a multi-name derive is not reported (#2317)" >&2
+  cat "$csdir/multiderive.buf" >&2 || true
+  exit 1
+fi
+if ! grep -qF 'unknown trait: Bar' "$csdir/multiderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the SECOND trait of a multi-name derive is not reported (#2317)" >&2
+  cat "$csdir/multiderive.buf" >&2 || true
+  exit 1
+fi
+if grep -q '^unknown trait' "$csdir/multiderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a multi-name derive left a diagnostic unanchored -- the cursor moved past its own clause (#2317)" >&2
+  cat "$csdir/multiderive.buf" >&2 || true
+  exit 1
+fi
+# A qualified head `fn Map::get` declared twice: anchored on line 10, not bare.
+if grep -q '^duplicate declaration' "$csdir/qualified.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a duplicated QUALIFIED declaration is unanchored -- the head name was not joined (#2317)" >&2
+  cat "$csdir/qualified.buf" >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 10:' "$csdir/qualified.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a duplicated qualified declaration is not anchored on its second declaration (expected line 10) (#2317)" >&2
+  cat "$csdir/qualified.buf" >&2 || true
   exit 1
 fi
 # ...and NO committed contract in the tree may gain a diagnostic. A check that
