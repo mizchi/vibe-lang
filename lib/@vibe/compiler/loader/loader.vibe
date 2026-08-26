@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, parse_program, parse_program_preserving
+  lex, lex_with_offsets, parse_program, parse_program_preserving
 }
 
 import @vibe/core {
@@ -56,11 +56,14 @@ import @vibe/compiler/contract {
   check_contract,
   classify_contract_stmts,
   contract_directory_shared_import_prefix_text,
+  contract_duplicate_decl_index,
+  contract_effective_decls,
   contract_facade_marker,
   contract_facade_source,
   contract_hash,
   contract_imported_type_names,
   contract_surface_lines,
+  contract_type_family_decl_positions,
   contract_type_family_defs,
   contract_types_module_line,
   contract_types_module_text,
@@ -71,11 +74,13 @@ import @vibe/compiler/contract {
   extract_require_pins,
   package_hash_from_sources,
   parse_contract_program,
+  parse_contract_program_spans,
   replace_generated_hash_directive,
   semver_parts,
   verify_publish_bump,
   vpkg_shared_import_marker,
-  vpkg_types_contract_of_source
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_marker
 }
 
 import ./ingestion_pipeline_telemetry.vibe {
@@ -1096,7 +1101,7 @@ export let vpkg_types_module_path_prefix: String = "_build/vibe_vpkg_types/types
 /// the package lives outside the repo-relative tree (an absolute VIBE_LIB
 /// external root — the relative import spelling below cannot reach _build
 /// from there, so those packages keep the verbatim-facade behavior).
-fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Int)]) -> String with Exception + Fs {
+fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Int)], decl_pos: Array[String]) -> String with Exception + Fs {
   if String::starts_with(vpkg_path, "/") {
     return ""
   } else {
@@ -1138,7 +1143,7 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_nam
       Array::push(provenance, Array::get(imported, ii))
       ii = ii + 1
     }
-    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb), vpkg_path, provenance)
+    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb), vpkg_path, provenance, decl_pos)
     let raw_key = compact_string_fingerprint(String::concat(vpkg_path, String::concat("|", text)))
     // Identifier-safe basename: the import-path grammar (parser_base.vibe's
     // collect_import_path) lexes path segments as identifier/keyword tokens,
@@ -1268,7 +1273,14 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
           let cached_types_fresh = if cached_types_path == "" {
             true
           } else {
-            vpkg_types_contract_of_source(cached_types_text) != ""
+            // #2317: BOTH markers. A stub from the version that had only
+            // provenance passes a provenance-only check, so the cache keeps
+            // serving it and located diagnostics go on naming the artifact --
+            // the same staleness hole as #2324, one marker later. Every stub
+            // that exists has at least one declaration (none are generated for
+            // a contract with no type family), so a missing decl marker means
+            // the stub predates them.
+            vpkg_types_contract_of_source(cached_types_text) != "" && String::index_of(cached_types_text, vpkg_types_decl_marker) >= 0
           }
           if cached_types_fresh {
             // Same registry note as the facade-cache hit: a warm prefix
@@ -1292,13 +1304,18 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       } else {
         let vpkg_raw = Fs::read_file(vpkg_path)
         let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
-        let (_, vpkg_opaques, vpkg_extra) = parse_contract_program(lex(vpkg_pin_blanked))
+        let (vpkg_tokens, vpkg_starts, _ve) = lex_with_offsets(vpkg_pin_blanked)
+        let (_, vpkg_opaques, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
         let shared_text = contract_directory_shared_import_prefix_text(vpkg_extra)
         // #1840: siblings import the contract's type family from the
         // materialized types module — this is what gives enum constructors
         // real value bindings inside impl units (the facade cannot be
         // imported from a sibling: facade → impl is already an edge).
-        let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_opaques)
+        // #2317: positions come from the SAME blanked text the parse used, so
+        // the offsets and the source agree. Blanking is offset-preserving, so
+        // a line:col computed here is the line:col in the real contract too.
+        let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at, vpkg_starts)
+        let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_opaques, vpkg_decl_pos)
         let prefix_text = if types_path == "" {
           shared_text
         } else {
@@ -2006,7 +2023,10 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
 fn desugar_contract_source_fs(path: String, source: String) -> String with Exception + Fs {
   let dir = dir_of_path(path)
   validate_index_layout_fs(path)
-  let (decls_raw, opaque_names, extra) = parse_contract_program(lex(source))
+  // `lex_with_offsets`, because the declaration positions below need byte
+  // offsets and `stmt_at` records token indices.
+  let (src_tokens, src_starts, _src_ends) = lex_with_offsets(source)
+  let (decls_raw, opaque_names, extra, stmt_at, _decl_at) = parse_contract_program_spans(src_tokens)
   // `source` here has already had its leading directive region blanked by
   // extract_require_pins (see ingest_source_text_fs), so the directive must
   // be read back from the ORIGINAL on-disk text via `path`.
@@ -2025,18 +2045,32 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // export. A contract that still spells the old bodyless `let version:
   // String` line alongside a real directive keeps parsing (this filter just
   // makes it a no-op) so existing packages migrate at their own pace.
-  let decls = array_empty()
-  let mut dvi = 0
-  while dvi < Array::length(decls_raw) {
-    let (dname, dsig) = Array::get(decls_raw, dvi)
-    if dname == "version" && dsig == "val String" && pkg_version != "" {
-      ()
-    } else {
-      Array::push(decls, (dname, dsig))
-    }
-    dvi = dvi + 1
-  }
+  let decls = contract_effective_decls(decls_raw, pkg_version)
+  // #2317: say what is actually wrong. A duplicate declaration reaches
+  // `contract_facade_source` as an extra entry that can never be allocated
+  // (its `allocated` list is set-like, `decls` counts multiplicity), so the
+  // count check there trips and reports "some declarations have no
+  // implementation file" -- about a name that IS implemented, handing the
+  // reader an edit that does nothing. Measured before this: a contract
+  // declaring `fn plain` twice with a matching impl got exactly that.
+  //
+  // Decided from the contract alone, and from the SAME effective list the
+  // buffer lane uses, so the two cannot disagree about which shapes are
+  // duplicates.
   let (impl_raws0, type_defs) = classify_contract_stmts(extra)
+  // AFTER classification, to match the buffer lane's order. Both lanes must
+  // recommend the same first edit for the same file: a contract with a
+  // duplicate AND an unsupported statement reported the duplicate here and the
+  // unsupported statement there (Codex review on #2328), which is a fresh
+  // instance of the divergence this work exists to close. A statement the
+  // contract may not contain is the more basic error, so it leads.
+  let dup_at = contract_duplicate_decl_index(decls)
+  if dup_at >= 0 {
+    let (dup_name, _) = Array::get(decls, dup_at)
+    throw("contract declares '\{dup_name}' more than once; remove the repeated declaration (#2317)")
+  } else {
+    ()
+  }
   // #730: explicit `import ./impl.vibe {}` declarations win; a contract that
   // declares none auto-discovers its sibling *.vibe files (Fs::readdir,
   // byte-sorted by the host so the facade is deterministic).
@@ -2111,7 +2145,8 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
       let fc_types_fresh = if fc_types_path == "" {
         true
       } else {
-        vpkg_types_contract_of_source(fc_types_text) != ""
+        // #2317: both markers, exactly as in the prefix cache above.
+        vpkg_types_contract_of_source(fc_types_text) != "" && String::index_of(fc_types_text, vpkg_types_decl_marker) >= 0
       }
       if fc_types_fresh {
         // #1840: the registry note must happen on the HIT path too —
@@ -2200,7 +2235,10 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // text needs the package-dir-RELATIVE spelling (the export grammar rejects
   // a bare root-relative head token); the cache row below keeps the
   // canonical root-relative path for its existence re-check.
-  let facade_types_path = ensure_vpkg_types_module_fs(path, extra, opaque_names)
+  // #2317: the contract's own line:col for each materialized declaration, so a
+  // located diagnostic about the generated module can name the contract.
+  let facade_decl_pos = contract_type_family_decl_positions(source, extra, stmt_at, src_starts)
+  let facade_types_path = ensure_vpkg_types_module_fs(path, extra, opaque_names, facade_decl_pos)
   let facade_types_rel = if facade_types_path == "" {
     ""
   } else {

@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/syntax {
-  Token, parse_fn_signature, parse_stmt, parse_type, peek, print_stmt, print_type_expr, tk_name
+  Token, offset_to_line_col, parse_fn_signature, parse_stmt, parse_type, peek, print_stmt, print_type_expr, tk_name
 }
 
 // #741: consumed through the @vibe/core contract boundary (directory import
@@ -132,8 +132,17 @@ fn push_contract_stmt(stmts: Array[Stmt], stmt_at: Array[Int], stmt: Stmt, at: I
   Array::push(stmt_at, at)
 }
 
+/// #2317: record a bodyless declaration together with the token index it
+/// started at, for the same reason as `push_contract_stmt` -- the two arrays
+/// are read positionally, so a push landing in only one of them would shift
+/// every later declaration's anchor onto its neighbour.
+fn push_contract_decl(decls: Array[(String, String)], decl_at: Array[Int], name: String, sig: String, at: Int) -> Unit {
+  Array::push(decls, (name, sig))
+  Array::push(decl_at, at)
+}
+
 export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt]) with Exception {
-  let (decls, opaques, stmts, _at) = parse_contract_program_spans(tokens)
+  let (decls, opaques, stmts, _at, _dat) = parse_contract_program_spans(tokens)
   (decls, opaques, stmts)
 }
 
@@ -147,8 +156,9 @@ export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String
 /// it used to discard that. Recovering it by SEARCH was tried three times in
 /// the #2315 review and each attempt produced a predicate that could anchor on
 /// valid code, so the offset is carried instead.
-export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt], Array[Int]) with Exception {
+export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt], Array[Int], Array[Int]) with Exception {
   let decls = array_empty()
+  let decl_at = array_empty()
   let opaques = array_empty()
   let stmts = array_empty()
   let stmt_at = array_empty()
@@ -249,7 +259,7 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
           TEq => throw("contract value declaration '\{vname}' must not have a definition (#752)"),
           _ => ()
         }
-        Array::push(decls, (vname, String::concat("val ", print_type_expr(vty))))
+        push_contract_decl(decls, decl_at, vname, String::concat("val ", print_type_expr(vty)), pos)
         pos = vnext
       },
       TIdent(head) => if head == "opaque" {
@@ -315,7 +325,7 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
           _ => ()
         }
         match fn_sig_text(tps, tbs, params, ret_ty, eff_opt) {
-          Some(sig) => Array::push(decls, (name, sig)),
+          Some(sig) => push_contract_decl(decls, decl_at, name, sig, pos),
           None => throw("contract fn declaration '\{name}' requires full annotations")
         }
         pos = next
@@ -327,12 +337,12 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
       }
     }
   }
-  if Array::length(stmts) != Array::length(stmt_at) {
-    throw("internal: contract statement offsets desynced (#2317) -- a statement was recorded without its position")
+  if Array::length(stmts) != Array::length(stmt_at) || Array::length(decls) != Array::length(decl_at) {
+    throw("internal: contract offsets desynced (#2317) -- a statement or declaration was recorded without its position")
   } else {
     ()
   }
-  (decls, opaques, stmts, stmt_at)
+  (decls, opaques, stmts, stmt_at, decl_at)
 }
 
 /// Collect (name, Some(sig) | None, exported) for every top-level let whose
@@ -877,6 +887,161 @@ export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[S
   (raws, type_defs)
 }
 
+/// #2317: the contract offset of each type-family definition, in the order
+/// `contract_type_family_defs` yields them.
+///
+/// Derived by ASKING the two real filters one statement at a time, not by
+/// mirroring their match arms -- a second copy of those rules drifts the first
+/// time a statement kind is added. Both filters only drop entries and neither
+/// reorders, so the n-th surviving statement is the n-th materialized
+/// declaration, and its recorded offset is the one to report.
+///
+/// A statement the classifier rejects contributes nothing: by the time a types
+/// module is generated the whole list has already classified cleanly, so this
+/// only guards against being called out of order.
+export fn contract_type_family_offsets(stmts: Array[Stmt], stmt_at: Array[Int]) -> Array[Int] {
+  let out = array_empty()
+  let lim = Array::length(stmt_at)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let one = array_empty()
+    Array::push(one, Array::get(stmts, i))
+    let is_family = handle {
+      let (_raws, tds) = classify_contract_stmts(one)
+      Array::length(contract_type_family_defs(tds)) == 1
+    } with { Exception::Throw(_) => false }
+    if is_family && i < lim {
+      Array::push(out, Array::get(stmt_at, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2317: the `line:col` of each type-family definition, in the order the
+/// generator emits them.
+///
+/// Rendered here, at generation time, because the diagnostic site has no `Fs`
+/// and cannot read the contract to convert an offset. `offset_to_line_col` is
+/// the same function the diagnostic renderer uses, so the two agree on what a
+/// column is (1-based bytes, ADR-0108).
+export fn contract_type_family_decl_positions(source: String, stmts: Array[Stmt], stmt_at: Array[Int], starts: Array[Int]) -> Array[String] {
+  // `stmt_at` holds TOKEN INDICES, not byte offsets -- `starts` is what turns
+  // one into the other. Passing the index straight to `offset_to_line_col`
+  // reads it as a byte offset and answers from the top of the file: measured,
+  // a declaration on line 13 reported `line 1:8`, which is token index 8 read
+  // as offset 8. `contract_classify_diagnostic` already does this conversion;
+  // this function was written without it.
+  let offs = contract_type_family_offsets(stmts, stmt_at)
+  let lim = Array::length(starts)
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(offs) {
+    let tok = Array::get(offs, i)
+    if tok >= 0 && tok < lim {
+      let (l, c) = offset_to_line_col(source, Array::get(starts, tok))
+      Array::push(out, String::concat(__to_string(l), String::concat(":", __to_string(c))))
+    } else {
+      // No position rather than a wrong one; the generator omits the marker
+      // and the reader keeps the stub's own line.
+      Array::push(out, "")
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2317: the declarations a contract EFFECTIVELY has, after the one filter
+/// the loader applies before counting them.
+///
+/// A legacy bodyless `let version: String` is dropped when the header carries
+/// a real `version` directive (#1054): the facade synthesizes that binding, so
+/// demanding an implementation for it would be wrong. Without the directive it
+/// is an ordinary declaration with a hand-written implementation and must stay.
+///
+/// This lived inline in `desugar_contract_source_fs`, which is why the buffer
+/// lane could not reproduce it: any check counting raw declarations disagrees
+/// with the build on exactly this shape. One function, both callers -- so a
+/// filter added later cannot land in only one lane (#2317's whole point).
+export fn contract_effective_decls(decls_raw: Array[(String, String)], pkg_version: String) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(decls_raw) {
+    let (dname, dsig) = Array::get(decls_raw, i)
+    if contract_decl_is_filtered(dname, dsig, pkg_version) {
+      ()
+    } else {
+      Array::push(out, (dname, dsig))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The one filter rule, so `contract_effective_decls` and
+/// `contract_effective_decl_indices` cannot disagree about which entries
+/// survive.
+fn contract_decl_is_filtered(dname: String, dsig: String, pkg_version: String) -> Bool {
+  dname == "version" && dsig == "val String" && pkg_version != ""
+}
+
+/// #2317: for each EFFECTIVE declaration, its index in the raw list.
+///
+/// The offsets are recorded against the raw list, so a caller holding an
+/// effective index needs this to reach them. Counting name occurrences instead
+/// is wrong when a FILTERED entry shares the name: a dropped legacy `let
+/// version: String` beside two effective `version` declarations makes the
+/// count skip one, and the diagnostic anchors on the first declaration rather
+/// than the repeat -- telling the reader to delete the line they want to keep
+/// (Codex review on #2328).
+export fn contract_effective_decl_indices(decls_raw: Array[(String, String)], pkg_version: String) -> Array[Int] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(decls_raw) {
+    let (dname, dsig) = Array::get(decls_raw, i)
+    if contract_decl_is_filtered(dname, dsig, pkg_version) {
+      ()
+    } else {
+      Array::push(out, i)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2317: index of the first EFFECTIVE declaration whose name was already
+/// declared, or -1.
+///
+/// Measured: the build refuses a duplicate today, but through
+/// `contract_facade_source`, whose `allocated` list is set-like while `decls`
+/// counts multiplicity -- so the count check trips and reports "some
+/// declarations have no implementation file" about a name that is implemented.
+/// The reader is handed an edit that does nothing. Deciding it here instead
+/// lets both lanes say what is actually wrong.
+///
+/// Names only. Two declarations of one name are a duplicate whatever their
+/// signatures: the facade allocates by name, so the second can never bind.
+export fn contract_duplicate_decl_index(decls: Array[(String, String)]) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(decls) && found < 0 {
+    let (iname, _) = Array::get(decls, i)
+    let mut j = 0
+    while j < i && found < 0 {
+      let (jname, _) = Array::get(decls, j)
+      if jname == iname {
+        found = i
+      } else {
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// #2317: index of the first statement `classify_contract_stmts` rejects, or
 /// -1 when it accepts them all.
 ///
@@ -958,6 +1123,19 @@ export let vpkg_types_module_marker: String = "// vibe: vpkg contract types modu
 /// about the same file is the bug #2317 is about; the fix must not add a new
 /// instance of it (Codex review on #2324).
 export let vpkg_types_contract_marker: String = "// vibe: generated from "
+
+/// #2317: per-declaration position marker, emitted immediately ABOVE the
+/// declaration it describes.
+///
+/// Adjacent rather than a header table, so nothing depends on how many lines
+/// `print_stmt` renders a declaration onto -- the reader takes the nearest
+/// preceding marker, which stays correct if the printer's output grows.
+///
+/// The value is the contract's own `line:col`, precomputed here because the
+/// diagnostic site has no `Fs` and cannot read the contract to convert an
+/// offset. Declaration-granular by construction: `print_stmt` rebuilds the
+/// declaration from the AST, so positions INSIDE it are gone.
+export let vpkg_types_decl_marker: String = "// vibe: decl-at "
 
 /// #2324: escape a contract path for the single-line `//` provenance marker.
 ///
@@ -1228,7 +1406,7 @@ export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names
 /// names at field/payload positions without any process-lifetime registry.
 /// `uniq` keeps the binding name collision-free when several contracts'
 /// modules meet in one merge.
-export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_path: String, opaque_names: Array[(String, Int)]) -> String {
+export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_path: String, opaque_names: Array[(String, Int)], decl_pos: Array[String]) -> String {
   let lines = array_empty()
   Array::push(lines, vpkg_types_module_marker)
   // Provenance, so a process holding only this text can still name the
@@ -1246,10 +1424,55 @@ export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_pa
   }
   let mut i = 0
   while i < Array::length(tds) {
+    // Position first, then the declaration it belongs to. A missing entry is
+    // simply omitted: the reader falls back to the stub's own position, which
+    // is what every stub written before this marker existed will do.
+    if i < Array::length(decl_pos) {
+      let dp = Array::get(decl_pos, i)
+      if dp == "" {
+        ()
+      } else {
+        Array::push(lines, String::concat(vpkg_types_decl_marker, dp))
+      }
+    } else {
+      ()
+    }
     Array::push(lines, print_stmt(Array::get(tds, i)))
     i = i + 1
   }
   String::concat(String::join(lines, "\n"), "\n")
+}
+
+/// #2317: the contract `line:col` for a 1-based line of a materialized types
+/// module, or "" when the stub carries no marker for it.
+///
+/// The NEAREST PRECEDING marker wins, so this stays correct however many lines
+/// `print_stmt` renders a declaration onto. Declaration-granular by
+/// construction: the printer rebuilds the declaration from the AST, so a
+/// column inside it cannot be recovered and is not claimed to be.
+///
+/// "" for a stub written before the marker existed, so the caller keeps the
+/// stub's own position rather than inventing one.
+export fn vpkg_types_decl_pos_for_line(source: String, stub_line: Int) -> String {
+  let lines = String::split(source, "\n")
+  let n = Array::length(lines)
+  let lim = if stub_line - 1 < n {
+    stub_line - 1
+  } else {
+    n
+  }
+  let mut i = 0
+  let mut found = ""
+  while i < lim {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, vpkg_types_decl_marker) {
+      found = String::trim(String::substring(line, String::length(vpkg_types_decl_marker), String::length(line)))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// #2317: the contract a materialized types module was generated from, read
