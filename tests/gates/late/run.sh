@@ -8650,3 +8650,186 @@ if [ -s "$clsdir/clean.buf" ]; then
 fi
 rm -rf "$clsdir"
 echo "[compiler-gate] an unsupported contract statement is refused by both lanes and anchored on itself, first or later ok (#2317)"
+
+# 121/121. A type diagnostic about a contract's transparent types names the
+# CONTRACT, not the generated module it was materialized into (#2317).
+#
+# A `.vpkg` whose contract declares transparent types is materialized into
+# `_build/vibe_vpkg_types/types_<fingerprint>.vibe` (#1840), and the checker
+# walks THAT. So `derive(Foo)` on a contract struct reported
+# `_build/vibe_vpkg_types/types_114_….vibe: unknown trait: Foo` -- the reader
+# is sent to a build artifact to go edit, and the file they wrote is not
+# named at all. Measured before this, same fixture:
+#
+#   full lane    _build/vibe_vpkg_types/types_114_…vibe: unknown trait: Foo
+#   buffer lane  line 11:10: unknown trait: Foo
+#
+# The stub's name is a fingerprint of (contract path, generated text), so it
+# cannot be inverted -- the mapping comes from the registry that recorded it.
+echo "[compiler-gate] 121/121 a type diagnostic names the contract, not the generated types module (#2317)"
+dpvdir="_build/_gate_derive_provenance"
+rm -rf "$dpvdir"; mkdir -p "$dpvdir/bad" "$dpvdir/clean"
+dpv_header='name = @gate/derprov
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+dpv_impl='export fn a(x: Int) -> Int {
+  x + 1
+}
+'
+printf '%s\nstruct P {\n  x: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/bad/index.vpkg"
+printf '%s' "$dpv_impl" > "$dpvdir/bad/impl.vibe"
+# A transparent struct with a derive the checker KNOWS, so the package still
+# materializes a types module -- the control has to exercise the same path,
+# or it only proves that a package with no types stays quiet.
+printf '%s\nstruct P {\n  x: Int\n} derive(Eq)\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/clean/index.vpkg"
+printf '%s' "$dpv_impl" > "$dpvdir/clean/impl.vibe"
+rm -f "$dpvdir/bad.out" "$dpvdir/bad.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/bad/index.vpkg" "$dpvdir/bad.out" main >/dev/null 2>&1 || true
+dpv_report="$(cat "$dpvdir/bad.out.diag" 2>/dev/null || true)"
+# The diagnostic must still FIRE. Asserting only "no generated path" would
+# pass on a change that stopped reporting the unknown derive altogether, which
+# is the cheap wrong answer here.
+if ! printf '%s\n' "$dpv_report" | grep -qF 'unknown trait: Foo'; then
+  echo "[compiler-gate] FAIL: the full lane no longer reports an unknown derive on a contract struct -- repoint this probe (#2317)" >&2
+  printf '%s\n' "$dpv_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$dpv_report" | grep -qF 'vibe_vpkg_types/'; then
+  echo "[compiler-gate] FAIL: the diagnostic still names the generated types module instead of the contract (#2317)" >&2
+  printf '%s\n' "$dpv_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$dpv_report" | grep -qF "$dpvdir/bad/index.vpkg"; then
+  echo "[compiler-gate] FAIL: the diagnostic does not name the contract the author wrote (#2317)" >&2
+  printf '%s\n' "$dpv_report" >&2
+  exit 1
+fi
+# ...and a contract whose derives are all known stays clean, so a change that
+# reported every materialized package cannot pass the assertions above.
+rm -f "$dpvdir/clean.out" "$dpvdir/clean.out.diag"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/clean/index.vpkg" "$dpvdir/clean.out" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a contract with a KNOWN derive is refused -- the control for the probe above is not valid (#2317)" >&2
+  cat "$dpvdir/clean.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+# ...and a LOCATED diagnostic keeps the generated path (Codex review on #2324).
+#
+# `locate_type_error` computes its line against the STUB's source, and the stub
+# carries neither the contract's header nor its formatting. Renaming a located
+# message to the contract pairs a file the author wrote with a line number from
+# a generated one -- confidently wrong, which outranks unhelpful.
+#
+# Measured on this fixture: `struct Box[T]` is on line 13 of the contract, and
+# the diagnostic reads `line 4:15-18`. Line 4 of the contract is inside its
+# `description` block, so the rename would point at an unrelated line.
+mkdir -p "$dpvdir/located"
+printf '%s\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/located/index.vpkg"
+printf '%s' "$dpv_impl" > "$dpvdir/located/impl.vibe"
+rm -f "$dpvdir/located.out" "$dpvdir/located.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/located/index.vpkg" "$dpvdir/located.out" main >/dev/null 2>&1 || true
+loc_report="$(cat "$dpvdir/located.out.diag" 2>/dev/null || true)"
+# It must still be the LOCATED shape, or this probe stops testing the guard.
+if ! printf '%s\n' "$loc_report" | grep -q 'line [0-9]*:'; then
+  echo "[compiler-gate] FAIL: the shadowing diagnostic is no longer located -- repoint this probe, it no longer exercises the guard (#2324)" >&2
+  printf '%s\n' "$loc_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$loc_report" | grep -qF "$dpvdir/located/index.vpkg"; then
+  echo "[compiler-gate] FAIL: a LOCATED diagnostic was renamed to the contract, pairing it with a line from the generated stub (#2324)" >&2
+  printf '%s\n' "$loc_report" >&2
+  exit 1
+fi
+# ...and a HAND-WRITTEN module that merely claims generated provenance is not
+# believed (Codex review on #2324).
+#
+# The predicate used to be a substring test for `vibe_vpkg_types/`, so an
+# ordinary source under a directory of that name could carry a
+# `// vibe: generated from ...` comment and have its diagnostics attributed to
+# whatever path the comment named -- a file the reader never edited. The marker
+# is now trusted only for the exact path shape the loader itself writes.
+mkdir -p "$dpvdir/vibe_vpkg_types"
+cat > "$dpvdir/vibe_vpkg_types/spoof.vibe" <<'DPVEOF'
+// vibe: vpkg contract types module (#1840)
+// vibe: generated from lib/@gate/NOT_THIS_FILE/index.vpkg
+struct P {
+  x: Int
+} derive(Foo)
+
+fn main() -> Int {
+  0
+}
+DPVEOF
+rm -f "$dpvdir/spoof.out" "$dpvdir/spoof.out.diag"
+# VIBE_CHECK_ONLY, deliberately: a plain compile of this file reports the bare
+# `unknown trait: Foo` with NO path prefix at all, so the assertion below could
+# never fire no matter what the predicate did. Measured -- the first draft of
+# this probe used a plain compile and passed on a build that DOES believe the
+# spoof. `check_module_impl`, which attaches the path, runs on the check lane.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/vibe_vpkg_types/spoof.vibe" "$dpvdir/spoof.out" main >/dev/null 2>&1 || true
+spoof_report="$(cat "$dpvdir/spoof.out.diag" 2>/dev/null || true)"
+# It must still be diagnosed, or this probe proves nothing about attribution.
+if ! printf '%s\n' "$spoof_report" | grep -qF 'unknown trait: Foo'; then
+  echo "[compiler-gate] FAIL: the spoof fixture produced no unknown-derive diagnostic -- repoint this probe (#2324)" >&2
+  printf '%s\n' "$spoof_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$spoof_report" | grep -qF 'NOT_THIS_FILE'; then
+  echo "[compiler-gate] FAIL: a hand-written module's provenance comment was believed, attributing its diagnostic to another file (#2324)" >&2
+  printf '%s\n' "$spoof_report" >&2
+  exit 1
+fi
+# ...including one NESTED under the generated directory. Prefix plus extension
+# alone still accepts `_build/vibe_vpkg_types/types_fake/source.vibe`, which is
+# an ordinary file someone wrote; the loader only ever produces a single
+# `types_<fingerprint>.vibe` basename there (Codex review on #2324).
+# The fixture has to sit at the REAL relative path, because the predicate reads
+# the path it is given -- no `cd` (this gate's `stage2_wasm` can be relative, so
+# a subshell that changed directory would stop finding the compiler; measured in
+# tests/gates/lib.sh, which sets it to `_build/_gate_lane_gen/stage2.wasm`).
+# Only the `types_fake/` subdirectory is created and removed; the real generated
+# stubs alongside it are untouched.
+nesteddir="_build/vibe_vpkg_types/types_fake"
+rm -rf "$nesteddir"; mkdir -p "$nesteddir"
+cat > "$nesteddir/source.vibe" <<'DPVEOF'
+// vibe: vpkg contract types module (#1840)
+// vibe: generated from lib/@gate/NOT_THIS_FILE/index.vpkg
+struct P {
+  x: Int
+} derive(Foo)
+
+fn main() -> Int {
+  0
+}
+DPVEOF
+rm -f "$dpvdir/nested.out" "$dpvdir/nested.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$nesteddir/source.vibe" "$dpvdir/nested.out" main >/dev/null 2>&1 || true
+nested_report="$(cat "$dpvdir/nested.out.diag" 2>/dev/null || true)"
+if ! printf '%s\n' "$nested_report" | grep -qF 'unknown trait: Foo'; then
+  echo "[compiler-gate] FAIL: the nested spoof fixture produced no unknown-derive diagnostic -- repoint this probe (#2324)" >&2
+  printf '%s\n' "$nested_report" >&2
+  rm -rf "$nesteddir"
+  exit 1
+fi
+if printf '%s\n' "$nested_report" | grep -qF 'NOT_THIS_FILE'; then
+  echo "[compiler-gate] FAIL: a file NESTED under the generated directory had its provenance comment believed (#2324)" >&2
+  printf '%s\n' "$nested_report" >&2
+  rm -rf "$nesteddir"
+  exit 1
+fi
+rm -rf "$dpvdir" "$nesteddir"
+echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, ignores a hand-written provenance claim flat or nested, and a known derive stays clean ok (#2317, #2324)"

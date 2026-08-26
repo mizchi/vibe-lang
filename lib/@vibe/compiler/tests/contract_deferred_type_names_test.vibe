@@ -7,7 +7,7 @@
 // same predicate the checker already uses (`compiler_owned_type_arity`).
 
 import @vibe/compiler/contract {
-  contract_types_module_text, vpkg_deferred_type_names_prefix
+  contract_types_module_text, vpkg_deferred_type_names_prefix, vpkg_path_escape_one_line, vpkg_types_contract_of_source
 }
 
 import @vibe/compiler/core {
@@ -24,7 +24,7 @@ fn map_headers_field() -> (String, TypeExpr) {
 
 test "2164: Map in a contract type is not a deferred name" {
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
-  let text = contract_types_module_text(defs, "t")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
   assert(!String::contains(text, vpkg_deferred_type_names_prefix))
 }
 
@@ -34,7 +34,7 @@ test "2164: MutMap in a contract type is not a deferred name" {
       ("inner", TyApp("MutMap", [TyName("String"), TyName("Int"), TyName("r")]))
     ], [], [], ["r"])
   ]
-  let text = contract_types_module_text(defs, "t")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
   assert(!String::contains(text, vpkg_deferred_type_names_prefix))
 }
 
@@ -43,7 +43,7 @@ test "2164: a typo next to Map is deferred, Map is not" {
     SStruct(true, "HttpRequest", [map_headers_field(), ("x", TyName("Intt"))], [
     ], [], [])
   ]
-  let text = contract_types_module_text(defs, "t")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
   assert(String::contains(text, vpkg_deferred_type_names_prefix))
   assert(String::contains(text, "HttpRequest : Intt"))
   assert(!String::contains(text, "HttpRequest : Map"))
@@ -51,6 +51,68 @@ test "2164: a typo next to Map is deferred, Map is not" {
 
 test "2164: a cross-package name is still deferred" {
   let defs = [SStruct(true, "ModuleJob", [("env", TyName("TypeEnv"))], [], [], [])]
-  let text = contract_types_module_text(defs, "t")
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
   assert(String::contains(text, "ModuleJob : TypeEnv"))
+}
+
+test "2317: the generated types module carries its contract, readable from the text alone" {
+  let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg")
+  // Read back from the TEXT, with no loader and no registry -- this is the
+  // property the isolated worker lane depends on (`VIBE_MODULE_JOB_DIR` hands
+  // a worker `source.vibe` and nothing else). A process-local registry answers
+  // "" there, which is how the same contract came to be named in one lane and
+  // not in the other (Codex review on #2324).
+  assert(vpkg_types_contract_of_source(text) == "lib/@gate/pkg/index.vpkg")
+}
+
+test "2317: a types module with no provenance marker reads as empty, not as a guess" {
+  assert(vpkg_types_contract_of_source("// vibe: vpkg contract types module (#1840)\nstruct P { x: Int }\n") == "")
+}
+
+test "2324: a contract path keeping leading whitespace round-trips verbatim" {
+  // A top-level directory may legally begin with a space. The marker is
+  // written with no padding, so trimming the suffix could only corrupt the
+  // path -- the diagnostic would then name a file that does not exist.
+  let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
+  let text = contract_types_module_text(defs, "t", " odd dir/pkg/index.vpkg")
+  assert(vpkg_types_contract_of_source(text) == " odd dir/pkg/index.vpkg")
+}
+
+test "2324: a CRLF-split marker line does not leave a CR in the path" {
+  let crlf = "// vibe: vpkg contract types module (#1840)\r\n// vibe: generated from lib/@gate/pkg/index.vpkg\r\nstruct P { x: Int }\r\n"
+  assert(vpkg_types_contract_of_source(crlf) == "lib/@gate/pkg/index.vpkg")
+}
+
+test "2324: a contract path containing a newline cannot escape the marker comment" {
+  // A POSIX path may legally contain a newline. Raw, it would end the `//`
+  // comment and turn the rest of the path into generated source.
+  let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
+  let evil = "lib/pkg\nstruct Injected { x: Int }\n/index.vpkg"
+  let text = contract_types_module_text(defs, "t", evil)
+  // The marker stays on ONE line, so the injected text never BEGINS a line --
+  // it stays inside the comment, where it is inert. Asserting it is absent
+  // entirely would be false and was: the escaped marker still contains those
+  // characters, harmlessly, and the first draft of this test failed on that.
+  assert(String::index_of(text, "\nstruct Injected") < 0)
+  assert(!String::starts_with(text, "struct Injected"))
+  // ...and the path still round-trips exactly.
+  assert(vpkg_types_contract_of_source(text) == evil)
+}
+
+test "2324: a backslash in a contract path round-trips" {
+  let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
+  let odd = "lib/we\\ird/index.vpkg"
+  let text = contract_types_module_text(defs, "t", odd)
+  assert(vpkg_types_contract_of_source(text) == odd)
+}
+
+test "2324: a decoded path is escaped again before it reaches a diagnostic" {
+  // The marker round-trips a newline exactly, which is right for the record
+  // and wrong for the display: a diagnostic is one record per line.
+  let evil = "lib/pkg\nline 1:1: not a real diagnostic\n/index.vpkg"
+  let shown = vpkg_path_escape_one_line(evil)
+  assert(String::index_of(shown, "\n") < 0)
+  // An ordinary path is untouched, so escaping costs nothing in the normal case.
+  assert(vpkg_path_escape_one_line("lib/@gate/pkg/index.vpkg") == "lib/@gate/pkg/index.vpkg")
 }

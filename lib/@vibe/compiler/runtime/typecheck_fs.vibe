@@ -80,11 +80,17 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 }
 
 import @vibe/compiler/contract {
-  classify_contract_stmts, contract_unsupported_stmt_index, extract_require_pins, parse_contract_program, parse_contract_program_spans
+  classify_contract_stmts,
+  contract_unsupported_stmt_index,
+  extract_require_pins,
+  parse_contract_program,
+  parse_contract_program_spans,
+  vpkg_path_escape_one_line,
+  vpkg_types_contract_of_source
 }
 
 import @vibe/compiler/loader {
-  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
+  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs, vpkg_types_module_path_prefix
 }
 
 import @vibe/compiler/incremental {
@@ -1348,6 +1354,103 @@ fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
 
 fn is_vpkg_types_stub_path(path: String) -> Bool {
   String::index_of(path, "vibe_vpkg_types/") >= 0
+}
+
+/// #2317: the path a TYPE diagnostic about `path` should name.
+///
+/// A `.vpkg` whose contract declares transparent types is materialized into a
+/// generated module under `_build/vibe_vpkg_types/` (#1840), and that module
+/// is what the checker walks -- so a `derive` naming an unknown trait reported
+/// `_build/vibe_vpkg_types/types_114_….vibe: unknown trait: Foo`, pointing the
+/// reader at a build artifact to go edit. The stub's content is the contract's
+/// own type-family definitions, so the diagnostic is about text the AUTHOR
+/// wrote, and the contract is the honest place to name.
+///
+/// TYPE diagnostics only. A parse or import failure inside the stub is about
+/// the GENERATED text, not about anything in the contract, and naming the
+/// contract for one of those would send the reader to a file that is fine.
+///
+/// UNLOCATED messages only, and that is the whole subtlety (Codex review on
+/// #2324). `locate_type_error` computes its line and column against the STUB's
+/// source, and the stub carries neither the contract's header nor its
+/// formatting -- so a located message renamed to the contract pairs a file the
+/// author wrote with a line number from a generated one. Measured: a contract
+/// whose `struct Box[T]` sits on line 13 reports `line 4:15-18` against the
+/// stub, and line 4 of that contract is inside its `description` block.
+///
+/// A stub path with a stub-relative line is at least self-consistent -- the
+/// reader can open that file and find the line. A contract path with a stub
+/// line is confidently wrong, which this repo ranks above unhelpful. So a
+/// located diagnostic keeps the generated path until the stub carries a real
+/// offset mapping back to the contract; that needs the generator to emit one,
+/// and is tracked with the rest of #2317.
+///
+/// The owner is read from the module's OWN text, not from a registry. A types
+/// module is also checked by an isolated worker under `VIBE_MODULE_JOB_DIR`,
+/// which is handed `source.vibe` plus its dependencies' environments and never
+/// runs the loader -- so a process-local registry is empty there, and the same
+/// contract would be named in one lane and not in the other. Lanes disagreeing
+/// about one file is the bug #2317 is about, so the fix must not add a new
+/// instance of it (Codex review on #2324).
+///
+/// Falls back to the stub path when the marker is absent, which is what a stub
+/// generated before it existed will have. That is the behavior this replaces,
+/// so a miss degrades rather than misreports.
+/// #2324: the EXACT shape the loader writes, not a substring test.
+///
+/// `is_vpkg_types_stub_path` matches any path CONTAINING `vibe_vpkg_types/`.
+/// That is fine for its own callers, which only decide whether to load a file
+/// from disk, but far too loose to gate an attribution: an ordinary module
+/// under a directory of that name could carry a `// vibe: generated from ...`
+/// comment and have its diagnostics attributed to whatever path that comment
+/// names -- a file the reader never edited (Codex review on #2324).
+///
+/// The marker is only trusted for a path the loader itself generates, under
+/// the build directory the compiler owns. The prefix is shared with the
+/// generator so the two cannot drift apart.
+fn is_generated_vpkg_types_path(path: String) -> Bool {
+  if !String::starts_with(path, vpkg_types_module_path_prefix) || !String::ends_with(path, ".vibe") {
+    false
+  } else {
+    // The WHOLE basename, not just the ends. Prefix plus extension alone still
+    // accepts a nested `types_fake/source.vibe`, which is an ordinary file the
+    // author wrote (Codex review on #2324). The loader can only ever produce
+    // `types_<fingerprint>.vibe` in that one directory, and it builds the
+    // fingerprint by replacing every non-identifier byte with `_`, so the
+    // basename is exactly [0-9A-Za-z_]+ -- a `/`, a `.`, or anything else in
+    // there means some other producer wrote it.
+    let plen = String::length(vpkg_types_module_path_prefix)
+    let stem_end = String::length(path) - 5
+    let mut i = plen
+    let mut ok = stem_end > plen
+    while i < stem_end && ok {
+      let c = String::char_code_at(path, i)
+      let ident = (c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+      if ident {
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    ok
+  }
+}
+
+fn type_diagnostic_display_path(path: String, source: String, located_msg: String) -> String {
+  if is_generated_vpkg_types_path(path) && !diag_already_located(located_msg) {
+    let owner = vpkg_types_contract_of_source(source)
+    if owner == "" {
+      path
+    } else {
+      // Escaped for DISPLAY. The marker round-trips a path exactly, newlines
+      // included, and this string goes straight into a diagnostic -- rendered
+      // verbatim it would split one record across lines, and crafted path
+      // components could resemble further diagnostics (Codex review on #2324).
+      vpkg_path_escape_one_line(owner)
+    }
+  } else {
+    path
+  }
 }
 
 /// A materialized #1840 types stub can appear in a module's resolved deps
@@ -4127,9 +4230,12 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
         None
       }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
-    } with { Exception::Throw(msg) => Diagnosed(job.path, [
-      String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
-    ]) }
+    } with { Exception::Throw(msg) => {
+      let located = locate_type_error(job.source, msg)
+      Diagnosed(job.path, [
+        String::concat(String::concat(type_diagnostic_display_path(job.path, job.source, located), ": "), located)
+      ])
+    } }
   }
 }
 

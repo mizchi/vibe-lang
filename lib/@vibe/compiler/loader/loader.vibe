@@ -73,7 +73,8 @@ import @vibe/compiler/contract {
   replace_generated_hash_directive,
   semver_parts,
   verify_publish_bump,
-  vpkg_shared_import_marker
+  vpkg_shared_import_marker,
+  vpkg_types_contract_of_source
 }
 
 import ./ingestion_pipeline_telemetry.vibe {
@@ -1082,6 +1083,14 @@ let vpkg_types_registry_contracts: Array[String] = [] let vpkg_types_registry_pa
   }
 }
 
+/// #2324: the exact prefix every materialized types module is written under.
+///
+/// Shared with the predicate that decides whether to trust a module's
+/// provenance marker, so the two cannot drift: a generator that moved and a
+/// predicate that did not would silently stop attributing diagnostics, or
+/// start trusting a file it should not.
+export let vpkg_types_module_path_prefix: String = "_build/vibe_vpkg_types/types_"
+
 /// Returns "" when the contract declares no type-family definitions, or when
 /// the package lives outside the repo-relative tree (an absolute VIBE_LIB
 /// external root — the relative import spelling below cannot reach _build
@@ -1116,7 +1125,7 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt]) -> String 
       }
       uci = uci + 1
     }
-    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb))
+    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb), vpkg_path)
     let raw_key = compact_string_fingerprint(String::concat(vpkg_path, String::concat("|", text)))
     // Identifier-safe basename: the import-path grammar (parser_base.vibe's
     // collect_import_path) lexes path segments as identifier/keyword tokens,
@@ -1136,7 +1145,7 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt]) -> String 
       }
       kci = kci + 1
     }
-    let types_path = String::concat("_build/vibe_vpkg_types/types_", String::concat(StringBuilder::freeze(key_sb), ".vibe"))
+    let types_path = String::concat(vpkg_types_module_path_prefix, String::concat(StringBuilder::freeze(key_sb), ".vibe"))
     if Fs::exists(types_path) {
       ()
     } else {
@@ -1230,14 +1239,32 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
           ""
         } else {
           let cached_types_path = rest[0: nl]
-          if cached_types_path == "" || Fs::exists(cached_types_path) {
+          // #2324: a stub written before the provenance marker existed is
+          // STALE, not merely present. This branch skips regeneration on
+          // mere existence, so a workspace warmed by an older compiler
+          // would keep serving a marker-less stub and the diagnostic would
+          // go on naming the generated file after the upgrade. Reading the
+          // text once folds the missing-file case in: absent reads as "",
+          // which has no marker, so both fall through to the same
+          // idempotent regeneration below.
+          let cached_types_text = if cached_types_path != "" && Fs::exists(cached_types_path) {
+            Fs::read_file(cached_types_path)
+          } else {
+            ""
+          }
+          let cached_types_fresh = if cached_types_path == "" {
+            true
+          } else {
+            vpkg_types_contract_of_source(cached_types_text) != ""
+          }
+          if cached_types_fresh {
             // Same registry note as the facade-cache hit: a warm prefix
             // used to skip ensure_vpkg_types_module_fs, so collect_merged
             // and the typecheck source set never saw the stub (#1921).
             if cached_types_path == "" {
               ()
             } else {
-              vpkg_types_registry_note(vpkg_path, cached_types_path, Fs::read_file(cached_types_path))
+              vpkg_types_registry_note(vpkg_path, cached_types_path, cached_types_text)
             }
             rest[nl + 1: String::length(rest)]
           } else {
@@ -2062,7 +2089,18 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
     let fc_nl = String::index_of(fc_rest, "\n")
     if fc_nl >= 0 {
       let fc_types_path = fc_rest[0: fc_nl]
-      if fc_types_path == "" || Fs::exists(fc_types_path) {
+      // #2324: stale-not-merely-absent, exactly as in the prefix cache above.
+      let fc_types_text = if fc_types_path != "" && Fs::exists(fc_types_path) {
+        Fs::read_file(fc_types_path)
+      } else {
+        ""
+      }
+      let fc_types_fresh = if fc_types_path == "" {
+        true
+      } else {
+        vpkg_types_contract_of_source(fc_types_text) != ""
+      }
+      if fc_types_fresh {
         // #1840: the registry note must happen on the HIT path too —
         // collect_merged_stmts' fixed-source-set re-injection reads the
         // process-local registry, and a warm facade cache would otherwise
@@ -2072,7 +2110,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
         if fc_types_path == "" {
           ()
         } else {
-          vpkg_types_registry_note(path, fc_types_path, Fs::read_file(fc_types_path))
+          vpkg_types_registry_note(path, fc_types_path, fc_types_text)
         }
         return fc_rest[fc_nl + 1: String::length(fc_rest)]
       } else {
