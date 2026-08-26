@@ -8077,22 +8077,15 @@ if ! grep -q 'unsupported statement in a contract file' "$vpbufdir/forbidden.out
   grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/forbidden.out" >&2 || true
   exit 1
 fi
-# ...and the CLASSIFIER's rejection is anchored too. The probe that finds the
-# position runs parse AND classify, because probing the parser alone left this
-# one unlocated: the parse succeeds on every prefix, so nothing ever matched
-# and the anchor answered -1 -> the synthetic 0:0 (Codex review on #2315).
-# Line 8 (0-based) is the forbidden statement, and it is the only declaration,
-# so 0:0 and the right answer are distinguishable.
-if grep -q '"start":{"line":0,"character":0}' "$vpbufdir/forbidden.out" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the forbidden contract statement is published at the synthetic 0:0 -- the classifier throw is not anchored (#2314)" >&2
-  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/forbidden.out" >&2 || true
-  exit 1
-fi
-if ! grep -q '"start":{"line":8' "$vpbufdir/forbidden.out" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the forbidden contract statement is not anchored on its own line (expected line 8, 0-based) (#2314)" >&2
-  grep -o '"diagnostics":\[[^]]*\]' "$vpbufdir/forbidden.out" >&2 || true
-  exit 1
-fi
+# NOT asserted: a position for this one. A classifier rejection is deliberately
+# left unlocated -- the anchor probes the PARSER, and extending it to classify
+# gives a non-monotone predicate that can anchor on later VALID code (the
+# reasoning is in `contract_parse_error_offset`). Unlocated is what this lane
+# already does with any diagnostic it cannot place. Tracked in #2317.
+#
+# The assertions above are what keeps this case honest without a position: a
+# crash satisfies neither of them, which is how the earlier version of this
+# section passed vacuously while the compiler was trapping.
 # ...and reading a contract as a contract must not COST the ADR-0068 opt-in.
 # This is the trap the rest of this section sets up: the `vibe diagnostics`
 # buffer lane used to compute the unstable set with a SECOND scan over the RAW

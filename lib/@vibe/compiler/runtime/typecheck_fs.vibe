@@ -5527,24 +5527,29 @@ fn contract_prefix_throws(tokens: Array[Token], k: Int, msg: String) -> Bool wit
     i = i + 1
   }
   handle {
-    let (_, _, hstmts) = parse_contract_program(head)
-    // Parse AND classify, because both throws reach the caller and both need
-    // anchoring (#2315 review). Probing the parser alone left a classifier
-    // rejection unlocated: the parse succeeds on every prefix, so no prefix
-    // ever matched and the anchor answered -1 -> the synthetic 0:0.
-    //
-    // Monotone for a classifier message for the same reason as a non-eof parse
-    // message: classification is a left-to-right scan with no lookahead, so
-    // the smallest prefix whose statements include the offending one throws
-    // it, and every longer prefix throws it at the same place. A shorter
-    // prefix either does not produce that statement at all (classify succeeds)
-    // or fails to parse (a different message).
-    let (_r, _t) = classify_contract_stmts(hstmts)
+    let (_, _, _hstmts) = parse_contract_program(head)
     false
   } with { Exception::Throw(m) => m == msg }
 }
 
-/// Byte offset of the token the contract parser stopped at, or -1.
+/// Byte offset of the token the contract PARSER stopped at, or -1.
+///
+/// Parser only. A round of this review extended the probe to run the
+/// classifier too, so a `classify_contract_stmts` rejection would anchor
+/// instead of rendering at 0:0 -- and that predicate is NOT monotone, which is
+/// the third time in this review I claimed monotonicity without testing the
+/// shape that breaks it. With a forbidden statement followed by a longer valid
+/// declaration it reads true (classify throws), then FALSE for prefixes ending
+/// partway through the next declaration (the parse throws first, a different
+/// message), then true again once that declaration completes. Binary search
+/// over true/false/true can discard the first match and anchor the diagnostic
+/// on later VALID code.
+///
+/// So a classifier rejection is deliberately left unlocated. That is the
+/// existing behavior for every diagnostic this lane cannot place, and it is
+/// the rule this function already states for its own failure: degraded, never
+/// wrong. Anchoring it needs the rejected statement's own offset rather than a
+/// search -- tracked with the rest of the contract-validation family in #2317.
 ///
 /// `parse_contract_program` throws an UNLOCATED message, and
 /// `locate_type_error`'s heuristics key on message prefixes the contract
