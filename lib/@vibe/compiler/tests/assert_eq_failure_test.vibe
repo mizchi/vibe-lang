@@ -16,6 +16,14 @@ import @vibe/compiler/entry/source_compile/gc_only {
   compile_source_gc_only
 }
 
+import @vibe/compiler/normalize {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
 //# Helpers
 
 fn bytes_contains(hay: Bytes, needle: String) -> Bool {
@@ -62,6 +70,12 @@ fn capture_failing_assert_eq(body: String) -> String with Exception + Fs + Proce
   Fs::read_file("_build/vibe_test/assert_eq_fail_probe.err")
 }
 
+fn desugared_assert_eq_source(source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
 //# Tests
 
 /// Drive the shipped compile path (`compile_source_wasi` ->
@@ -96,6 +110,16 @@ test "assert_eq failure compiles a fallback for an unrenderable value" {
 test "assert_eq lowering still compiles on the gc lane" {
   let bytes = compile_source_gc_only("let main: () -> Int with Stdout = () -> {\n  assert_eq(1, 1)\n  0\n}", "main")
   assert(Bytes::length(bytes) > 8)
+}
+
+test "#2287 review: a surface-only re-export alias preserves the local assert_eq blocker" {
+  let out = desugared_assert_eq_source("export ./dep.vibe { cmp as assert_eq }\nfn valid() -> Unit { assert_eq(1, 2) }\n")
+  inspect(String::contains(out, "assert_eq failed"), content = "false")
+}
+
+test "#2287 review: a plain assert_eq re-export still suppresses builtin lowering" {
+  let out = desugared_assert_eq_source("export ./dep.vibe { assert_eq }\nfn valid() -> Unit { assert_eq(1, 2) }\n")
+  inspect(String::contains(out, "assert_eq failed"), content = "false")
 }
 
 test "assert_eq failure prints expected and actual on stderr" {

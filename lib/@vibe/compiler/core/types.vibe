@@ -67,7 +67,10 @@ export enum TypeDef {
 /// Persistent/public TypeEnv transport intentionally drops this payload.
 export enum BindingOrigin {
   BindingOriginUnavailable;
-  BindingOriginModuleExport(String, String)
+  BindingOriginModuleExport(String, String);
+  /// A re-export contributes to this module's published surface, but the
+  /// re-export statement does not introduce a local binder (#2287).
+  BindingOriginReExportSurface(String, String)
 }
 
 export struct EnvValueBinding {
@@ -349,10 +352,20 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
         EnvEmpty => {
           done = true
         },
-        EnvBind(n, binding, rest) => {
-          ArrayBuilder::push(names, n)
-          ArrayBuilder::push(types, binding)
-          cur = rest
+        EnvBind(n, binding, rest) => match binding.origin {
+          BindingOriginReExportSurface(_, _) => {
+            // Surface-only entries are lookup barriers, not local values. They
+            // still belong in the acceleration index so an older same-named
+            // real binding cannot win before the authoritative chain is read.
+            ArrayBuilder::push(names, n)
+            ArrayBuilder::push(types, binding)
+            cur = rest
+          },
+          _ => {
+            ArrayBuilder::push(names, n)
+            ArrayBuilder::push(types, binding)
+            cur = rest
+          }
         },
         EnvTraitDef(_, _, _, _, rest, _, _) => {
           cur = rest
@@ -465,6 +478,140 @@ export fn env_lookup(env: TypeEnv, name: String) -> Option[Type] {
   }
 }
 
+/// Whether `name` is present only to publish an aliased re-export. This is
+/// deliberately separate from `env_lookup`: the alias is not a local value,
+/// but its spelling must still block a same-named builtin from silently
+/// claiming the source call (#2287).
+export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
+  let mut cur = env
+  let mut found = false
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, binding, rest) => {
+        if String::equals(n, name) {
+          match binding.origin {
+            BindingOriginReExportSurface(_, _) => {
+              found = true
+              done = true
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        if !done {
+          cur = rest
+        } else {
+          ()
+        }
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) && !found {
+          let (n, binding) = Array::get(bindings, i)
+          if String::equals(n, name) {
+            match binding.origin {
+              BindingOriginReExportSurface(_, _) => {
+                found = true
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        // The authoritative chain retains surface-only entries even though
+        // the acceleration arrays intentionally omit them.
+        cur = rest
+      }
+    }
+  }
+  found
+}
+
+fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => match binding.origin {
+      BindingOriginReExportSurface(_, _) => env_without_reexport_surface_bindings(rest),
+      _ => EnvBind(name, binding, env_without_reexport_surface_bindings(rest))
+    },
+    EnvTraitDef(name, supers, marker, methods, rest, params, method_gens) => EnvTraitDef(name, supers, marker, methods, env_without_reexport_surface_bindings(rest), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_without_reexport_surface_bindings(rest)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_without_reexport_surface_bindings(rest)),
+    EnvTypeDefs(defs, selectable, rest) => EnvTypeDefs(defs, selectable, env_without_reexport_surface_bindings(rest)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_without_reexport_surface_bindings(rest)),
+    EnvFlat(bindings) => {
+      let kept = array_empty()
+      let mut i = 0
+      while i < Array::length(bindings) {
+        let pair = Array::get(bindings, i)
+        match pair.1.origin {
+          BindingOriginReExportSurface(_, _) => (),
+          _ => Array::push(kept, pair)
+        }
+        i = i + 1
+      }
+      EnvFlat(kept)
+    },
+    EnvCached(names, bindings, rest) => {
+      let kept_names = array_empty()
+      let kept_bindings = array_empty()
+      let mut i = 0
+      while i < Array::length(names) {
+        let binding = Array::get(bindings, i)
+        match binding.origin {
+          BindingOriginReExportSurface(_, _) => (),
+          _ => {
+            Array::push(kept_names, Array::get(names, i))
+            Array::push(kept_bindings, binding)
+          }
+        }
+        i = i + 1
+      }
+      EnvCached(kept_names, kept_bindings, env_without_reexport_surface_bindings(rest))
+    }
+  }
+}
+
+/// Replace the transient re-export blockers for the next source unit in an
+/// FS-merged program. The empty origin path is a lookup barrier: it keeps a
+/// same-named definition flattened from an earlier source out of local scope
+/// while still participating in builtin exclusion (#2287).
+export fn env_with_reexport_surface_blockers(env: TypeEnv, names: Array[String]) -> TypeEnv {
+  let mut out = env_without_reexport_surface_bindings(env)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    out = env_bind_with_origin(out, name, CtUnknown, BindingOriginReExportSurface("", name))
+    i = i + 1
+  }
+  out
+}
+
 export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
   let mut cur = env
   let mut result = None
@@ -475,8 +622,19 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
         done = true
       },
       EnvBind(n, binding, rest) => if String::equals(n, name) {
-        result = Some(binding)
-        done = true
+        match binding.origin {
+          BindingOriginReExportSurface(_, _) => {
+            // A surface-only binding is authoritative at its position in the
+            // chain. A later real binding is already nearer the head; when the
+            // surface entry itself is reached, do not reveal an older plain
+            // import or re-export with the same spelling.
+            done = true
+          },
+          _ => {
+            result = Some(binding)
+            done = true
+          }
+        }
       } else {
         cur = rest
       },
@@ -500,8 +658,15 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
         while j < Array::length(bindings) && !done {
           let (n, binding) = Array::get(bindings, j)
           if String::equals(n, name) {
-            result = Some(binding)
-            done = true
+            match binding.origin {
+              BindingOriginReExportSurface(_, _) => {
+                done = true
+              },
+              _ => {
+                result = Some(binding)
+                done = true
+              }
+            }
           } else {
             j = j + 1
           }
@@ -513,8 +678,16 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
       EnvCached(names_sorted, types_sorted, rest) => {
         let slot = bsearch_leftmost(names_sorted, name)
         if slot >= 0 {
-          result = Some(Array::get(types_sorted, slot))
-          done = true
+          let binding = Array::get(types_sorted, slot)
+          match binding.origin {
+            BindingOriginReExportSurface(_, _) => {
+              done = true
+            },
+            _ => {
+              result = Some(binding)
+              done = true
+            }
+          }
         } else {
           cur = rest
         }

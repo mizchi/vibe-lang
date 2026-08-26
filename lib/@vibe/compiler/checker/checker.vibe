@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   env_bind,
   env_bind_mut,
   env_cache_binding,
+  env_has_reexport_surface_binding,
   env_lookup,
   exception_effect_kind,
   exception_effect_labels_equal,
@@ -4131,7 +4132,22 @@ fn direct_builtin_return(name: String) -> Option[Type] {
 fn direct_call_return(env: TypeEnv, name: String) -> Option[Type] {
   match env_lookup(env, name) {
     Some(_) => None,
-    None => direct_builtin_return(canonical_builtin_name(name))
+    None => if env_has_reexport_surface_binding(env, name) {
+      None
+    } else {
+      direct_builtin_return(canonical_builtin_name(name))
+    }
+  }
+}
+
+/// A surface-only re-export alias is not a local value, but it is still a
+/// source spelling claimed by this module. Do not let a same-named builtin
+/// turn that invalid local use into different executable behavior (#2287).
+fn lookup_builtin_in_env(env: TypeEnv, name: String) -> Option[Type] {
+  if env_has_reexport_surface_binding(env, name) {
+    None
+  } else {
+    lookup_builtin(name)
   }
 }
 
@@ -6504,7 +6520,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         (ti, s1, c1)
       },
-      None => match lookup_builtin(railway_ident_lookup_name(name)) {
+      None => match lookup_builtin_in_env(env, railway_ident_lookup_name(name)) {
         Some(t) => if builtin_is_first_class_value(railway_ident_lookup_name(name)) || !String::contains(name, "::") {
           // Bare names (`None`) keep the historical lookup: nullary
           // constructors are values, and rejecting every non-table builtin
@@ -7946,7 +7962,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let method_form = if String::index_of(name, "::") < 0 && Array::length(args) >= 1 {
                 match env_lookup(env, name) {
                   Some(_) => false,
-                  None => match lookup_builtin(name) {
+                  None => match lookup_builtin_in_env(env, name) {
                     Some(_) => false,
                     None => true
                   }
@@ -7960,7 +7976,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 let qual = String::concat(type_name_prefix(recv_ty), String::concat("::", name))
                 let has_qual = match env_lookup(env, qual) {
                   Some(_) => true,
-                  None => match lookup_builtin(qual) {
+                  None => match lookup_builtin_in_env(env, qual) {
                     Some(_) => true,
                     None => false
                   }
@@ -8010,7 +8026,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       }
                       (ti, sbound, nc)
                     },
-                    None => match lookup_builtin(lookup_name) {
+                    None => match lookup_builtin_in_env(env, lookup_name) {
                       Some(t) => (t, s, c),
                       None => check_expr_capture(EIdent(name, callee_off), env, defs, s, c, errors, tytab, capture, lane)
                     }
@@ -8139,7 +8155,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // `a.set(0, "bad")`). Reject these HERE instead of silently
             // accepting a call that can never compile.
             if !has_real_fn_binding && is_known_builtin_receiver_prefix(type_prefix) {
-              match lookup_builtin(qualified) {
+              match lookup_builtin_in_env(env, qualified) {
                 Some(_) => {
                   Array::push(errors, String::concat("dot-call syntax is not supported for the builtin method `", String::concat(qualified, String::concat("` -- call it as `", String::concat(qualified, String::concat("(...)`", off_marker_len(qcall_field_off, String::length(method))))))))
                   (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s1, c1)
@@ -8160,7 +8176,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   let (ti, c2, _) = instantiate(t, c1)
                   (ti, s1, c2)
                 },
-                None => match lookup_builtin(qualified) {
+                None => match lookup_builtin_in_env(env, qualified) {
                   Some(t) => (t, s1, c1),
                   None => (CtUnknown, s1, c1)
                 }
@@ -8260,7 +8276,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         }
                         let has_method_binding = match env_lookup(env, qualified) {
                           Some(_) => true,
-                          None => match lookup_builtin(qualified) {
+                          None => match lookup_builtin_in_env(env, qualified) {
                             Some(_) => true,
                             None => false
                           }

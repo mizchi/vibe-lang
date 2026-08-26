@@ -8,7 +8,12 @@ import @vibe/core {
 // collect_linked_compile_inputs used to arrive via a separate leaf import of
 // linked_artifacts.vibe, now merged into this one package-form import.
 import @vibe/compiler/entry/source_compile/wasi_only {
-  collect_linked_compile_inputs, compile_file_wasi_library, compile_file_wasi_linked_artifacts, compile_file_wasi_only
+  collect_linked_compile_inputs,
+  compile_file_wasi_library,
+  compile_file_wasi_linked_artifacts,
+  compile_file_wasi_only,
+  compile_source_wasi_only,
+  merged_program_source_fs
 }
 
 //# Functions
@@ -139,6 +144,311 @@ test "collect_linked_compile_inputs: resolves an aliased re-export the entry imp
   let (module_name, func_name, _, _) = Array::get(linked_imports, 0)
   assert(module_name == "lib")
   assert(func_name == "bar")
+}
+
+test "re-export aliases in a dependency do not suppress entry builtins" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_builtin_scope"
+  let inner_path = String::concat(base_dir, "/inner.vibe")
+  let facade_path = String::concat(base_dir, "/facade.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(inner_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\nexport fn view(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(facade_path, string_to_bytes("export ./inner.vibe { cmp as assert_eq, view as inspect }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert, inspect as forwarded_inspect }\nexport let answer: () -> Int with Stdout = () -> {\n  let _ = forwarded_assert(1, 2)\n  let _ = forwarded_inspect(1, 2)\n  inspect(1, \"1\")\n  assert_eq(1, 2)\n  0\n}\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  assert(bytes_contains_ascii(bytes, "assert_eq failed"))
+}
+
+test "same-source imported assert_eq is not lowered as the builtin through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_imported_assert_eq_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn assert_eq(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "false")
+  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  assert_wasm_magic(merged_bytes)
+  inspect(bytes_contains_ascii(merged_bytes, "assert_eq failed"), content = "false")
+}
+
+test "same-source import aliased as assert_eq is not lowered as the builtin through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_import_alias_assert_eq_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { cmp as assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "false")
+}
+
+test "same-source imported inspect is not lowered as the builtin through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_imported_inspect_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn inspect(a: Int, _expected: String) -> Int { a + 1 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(1, \"ignored\") }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+}
+
+test "same-source import aliased as inspect is not lowered as the builtin through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_import_alias_inspect_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn view(a: Int, _expected: String) -> Int { a + 1 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { view as inspect }\nexport fn answer() -> Int { inspect(1, \"ignored\") }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+}
+
+fn compile_file_error(path: String, entry: String) -> String with Fs + Exception {
+  handle {
+    let _ = compile_file_wasi_only(path, entry)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn merged_source_error(path: String) -> String with Fs + Exception {
+  handle {
+    let _ = merged_program_source_fs(path)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "merged source preserves a same-source re-export alias blocker" {
+  let base_dir = "/tmp/vibe_compiler_merged_source_reexport_alias_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { cmp as assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
+  inspect(String::contains(merged_source_error(main_path), "unknown name: assert_eq"), content = "true")
+}
+
+test "merged source keeps a dependency re-export from suppressing an entry builtin" {
+  let base_dir = "/tmp/vibe_compiler_merged_source_entry_builtin_scope"
+  let inner_path = String::concat(base_dir, "/inner.vibe")
+  let facade_path = String::concat(base_dir, "/facade.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(inner_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(facade_path, string_to_bytes("export ./inner.vibe { cmp as assert_eq }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert }\nexport fn answer() -> Int with Stdout {\n  let _ = forwarded_assert(1, 2)\n  assert_eq(1, 2)\n  0\n}\n"))
+  let bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  assert_wasm_magic(bytes)
+  inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "true")
+}
+
+test "same-source assert_eq re-export alias remains unknown through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_assert_eq_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { cmp as assert_eq }\nexport let answer: () -> Int with Stdout = () -> { assert_eq(1, 2); 0 }\n"))
+  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: assert_eq"), content = "true")
+}
+
+test "same-source assert_eq re-export alias value remains unknown before serialization" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_assert_eq_value_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { cmp as assert_eq }\nexport fn answer() -> Int { let f = assert_eq; f(1, 2) }\n"))
+  inspect(String::contains(merged_source_error(main_path), "unknown name: assert_eq"), content = "true")
+}
+
+test "same-source inspect re-export alias remains unknown through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_inspect_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn view(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { view as inspect }\nexport let answer: () -> Int with Stdout = () -> { inspect(1, \"1\"); 0 }\n"))
+  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: inspect"), content = "true")
+  inspect(String::contains(merged_source_error(main_path), "unknown name: inspect"), content = "true")
+}
+
+test "same-source inspect re-export alias value remains unknown before serialization" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_inspect_value_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn view(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { view as inspect }\nexport fn answer() -> Int { let f = inspect; f(1, 2) }\n"))
+  inspect(String::contains(merged_source_error(main_path), "unknown name: inspect"), content = "true")
+}
+
+test "same-source builtin-named re-export alias remains unknown before serialization" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_println_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn emit(message: String) -> Unit { () }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { emit as println }\nexport fn answer() -> Unit with Stdout { println(\"x\") }\n"))
+  inspect(String::contains(merged_source_error(main_path), "unknown name: println"), content = "true")
+}
+
+test "nested alias shadow does not hide an unbound re-export alias reference" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_lexical_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { cmp as assert_eq }\nexport fn shadow(assert_eq: (Int, Int) -> Int) -> Int { assert_eq(1, 2) }\nexport fn answer() -> Int { let f = assert_eq; f(1, 2) }\n"))
+  inspect(String::contains(merged_source_error(main_path), "unknown name: assert_eq"), content = "true")
+}
+
+test "lexically shadowed re-export alias reference remains valid" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_lexical_shadow"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn emit(message: String) -> Unit { () }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { emit as println }\nexport fn answer() -> Unit { let println = (_message: String) -> (); println(\"x\") }\n"))
+  inspect(merged_source_error(main_path), content = "")
+}
+
+test "same-source ordinary re-export alias remains unknown through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_value_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn source_value() -> Int { 7 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { source_value as forwarded }\nexport fn answer() -> Int { forwarded() }\n"))
+  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: forwarded"), content = "true")
+  inspect(String::contains(merged_source_error(main_path), "unknown name: forwarded"), content = "true")
+}
+
+test "entry re-export source name remains inaccessible through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_source_name_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn source_value() -> Int { 7 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { source_value as forwarded }\nexport fn answer() -> Int { source_value() }\n"))
+  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: source_value"), content = "true")
+  inspect(String::contains(merged_source_error(main_path), "unknown name: source_value"), content = "true")
+}
+
+test "entry import rewrite may use a retained re-export source name" {
+  let base_dir = "/tmp/vibe_compiler_reexport_alias_retained_import"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn source_value() -> Int { 7 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { source_value as local_value }\nexport ./dep.vibe { source_value as public_value }\nexport fn answer() -> Int { local_value() }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  assert_wasm_magic(merged_bytes)
+}
+
+test "retained import survives a colliding re-export alias" {
+  let base_dir = "/tmp/vibe_compiler_retained_import_alias_collision"
+  let a_path = String::concat(base_dir, "/a.vibe")
+  let b_path = String::concat(base_dir, "/b.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(a_path, string_to_bytes("export fn f() -> Int { 7 }\n"))
+  Fs::write_bytes(b_path, string_to_bytes("export fn h() -> Int { 8 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./a.vibe { f as local_value }\nexport ./a.vibe { f as public_a }\nexport ./b.vibe { h as f }\nexport fn answer() -> Int { local_value() }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  assert_wasm_magic(merged_bytes)
+}
+
+test "later re-export alias blocks an earlier import rewrite through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_later_alias_blocks_import"
+  let a_path = String::concat(base_dir, "/a.vibe")
+  let b_path = String::concat(base_dir, "/b.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(a_path, string_to_bytes("export fn old() -> Int { 1 }\n"))
+  Fs::write_bytes(b_path, string_to_bytes("export fn new() -> Int { 2 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./a.vibe { old as foo }\nexport ./b.vibe { new as foo }\nexport fn answer() -> Int { foo() }\n"))
+  inspect(String::contains(compile_file_error(main_path, "answer"), "unknown name: foo"), content = "true")
+  inspect(String::contains(merged_source_error(main_path), "unknown name: foo"), content = "true")
+}
+
+test "collision preservation selects the latest same-local import" {
+  let base_dir = "/tmp/vibe_compiler_collision_latest_import"
+  let a_path = String::concat(base_dir, "/a.vibe")
+  let b_path = String::concat(base_dir, "/b.vibe")
+  let c_path = String::concat(base_dir, "/c.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(a_path, string_to_bytes("export fn first() -> Int { 11 }\n"))
+  Fs::write_bytes(b_path, string_to_bytes("export fn second() -> Int { 22 }\n"))
+  Fs::write_bytes(c_path, string_to_bytes("export fn blocker() -> Int { 33 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./a.vibe { first as local }\nimport ./b.vibe { second as local }\nexport ./b.vibe { second as public_b }\nexport ./c.vibe { blocker as second }\nexport fn answer() -> Int { local() }\n"))
+  let merged = merged_program_source_fs(main_path)
+  assert(String::contains(merged, "let rec local = () -> Int { 22 }"))
+  assert(!String::contains(merged, "let rec local = () -> Int { 11 }"))
+  assert_wasm_magic(compile_file_wasi_only(main_path, "answer"))
+  assert_wasm_magic(compile_source_wasi_only(merged, "answer"))
+}
+
+test "same-source plain assert_eq re-export remains callable through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_reexport_plain_assert_eq_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn assert_eq(a: Int, b: Int) -> Int { a + b }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { assert_eq }\nexport fn answer() -> Int { assert_eq(1, 2) }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+  inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "false")
+  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  assert_wasm_magic(merged_bytes)
+  inspect(bytes_contains_ascii(merged_bytes, "assert_eq failed"), content = "false")
+}
+
+test "same-source plain inspect re-export remains callable through FS merge" {
+  let base_dir = "/tmp/vibe_compiler_reexport_plain_inspect_blocker"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn inspect(a: Int, _expected: String) -> Int { a + 1 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./dep.vibe { inspect }\nexport fn answer() -> Int { inspect(1, \"ignored\") }\n"))
+  let bytes = compile_file_wasi_only(main_path, "answer")
+  assert_wasm_magic(bytes)
+}
+
+test "non-entry facade can call its plain re-export after FS namespacing" {
+  let base_dir = "/tmp/vibe_compiler_non_entry_plain_reexport_call"
+  let dep_path = String::concat(base_dir, "/dep.vibe")
+  let facade_path = String::concat(base_dir, "/facade.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(dep_path, string_to_bytes("export fn foo() -> Int { 41 }\n"))
+  Fs::write_bytes(facade_path, string_to_bytes("export ./dep.vibe { foo }\nexport fn bar() -> Int { foo() + 1 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./facade.vibe { bar }\nexport fn answer() -> Int { bar() }\n"))
+  assert_wasm_magic(compile_file_wasi_only(main_path, "answer"))
+  assert_wasm_magic(compile_source_wasi_only(merged_program_source_fs(main_path), "answer"))
+}
+
+test "later plain re-export cancels an earlier same-name alias blocker" {
+  let base_dir = "/tmp/vibe_compiler_reexport_plain_cancels_alias"
+  let a_path = String::concat(base_dir, "/a.vibe")
+  let b_path = String::concat(base_dir, "/b.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(a_path, string_to_bytes("export fn f() -> Int { 1 }\n"))
+  Fs::write_bytes(b_path, string_to_bytes("export fn foo() -> Int { 2 }\n"))
+  Fs::write_bytes(main_path, string_to_bytes("export ./a.vibe { f as foo }\nexport ./b.vibe { foo }\nexport fn answer() -> Int { foo() }\n"))
+  assert_wasm_magic(compile_file_wasi_only(main_path, "answer"))
+  assert_wasm_magic(compile_source_wasi_only(merged_program_source_fs(main_path), "answer"))
 }
 
 test "compile_file_wasi_only: simple file produces valid WASM" {

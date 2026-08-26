@@ -137,6 +137,39 @@ test "parse_program: legacy @zero_alloc remains accepted during migration" {
   assert(Array::length(stmts) == 2)
 }
 
+test "an ordinary export named like the old boundary sentinel stays an export" {
+  let source = "export { __vibe_reexport_boundary__, assert_eq }"
+  let stmts = parse_program(lex(source))
+  match Array::get(stmts, 0) {
+    SExport(names) => {
+      inspect(Array::length(names), "2")
+      inspect(Array::get(names, 0), "__vibe_reexport_boundary__")
+      inspect(Array::get(names, 1), "assert_eq")
+    },
+    _ => assert(false)
+  }
+  inspect(print_program(stmts), source)
+}
+
+test "a boundary-looking comment remains trivia" {
+  let source = "//#reexport_source_boundary\nexport { assert_eq, inspect }\nexport { inspect }"
+  let stmts = parse_program(lex(source))
+  inspect(Array::length(stmts), "2")
+  match Array::get(stmts, 0) {
+    SExport(names) => {
+      inspect(Array::length(names), "2")
+      inspect(Array::get(names, 0), "assert_eq")
+      inspect(Array::get(names, 1), "inspect")
+    },
+    _ => assert(false)
+  }
+  match Array::get(stmts, 1) {
+    SExport(names) => inspect(Array::get(names, 0), "inspect"),
+    _ => assert(false)
+  }
+  inspect(print_program(stmts), "export { assert_eq, inspect }\nexport { inspect }")
+}
+
 fn zero_alloc_marker_name(stmts: Array[Stmt]) -> String {
   match Array::get(stmts, 0) {
     SExpr(EIdent(name, _)) => name,

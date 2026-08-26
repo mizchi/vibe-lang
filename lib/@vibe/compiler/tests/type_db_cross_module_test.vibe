@@ -946,7 +946,7 @@ test "db_typecheck_fs: extensionless directory re-export imports enum constructo
   assert(has_ctor)
 }
 
-test "projected checker root preserves direct alias re-export and companion origins" {
+test "projected checker keeps alias re-exports surface-only" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let direct = 1\nexport let renamed = \"ok\"\nexport enum Choice { Pick(Int) }")
   let source = "import ./dep.vibe { direct, renamed as alias, Choice, Pick as ExplicitPick }\nexport ./dep.vibe { direct, renamed as forwarded }\nlet use_alias: String = alias\nlet use_direct: Int = direct"
@@ -955,7 +955,7 @@ test "projected checker root preserves direct alias re-export and companion orig
   ])
   assert_module_origin(checked, "direct", dep_path, "direct")
   assert_module_origin(checked, "alias", dep_path, "renamed")
-  assert_module_origin(checked, "forwarded", dep_path, "renamed")
+  inspect(env_lookup(checked, "forwarded") == None, "true")
   assert_module_origin(checked, "Choice", dep_path, "Choice")
   assert_module_origin(checked, "ExplicitPick", dep_path, "Pick")
   // Importing the enum attaches its automatic companion using the
@@ -965,6 +965,30 @@ test "projected checker root preserves direct alias re-export and companion orig
     (Some(CtString), Some(CtInt)) => (),
     _ => assert(false)
   }
+}
+
+test "projected checker keeps an aliased re-export out of local scope" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = checked_test_env("export let renamed = \"ok\"")
+  let message = handle {
+    let _ = projected_checked_env("export ./dep.vibe { renamed as forwarded }\nlet local_use = forwarded", "workspace/main.vibe", [
+      dep_path
+    ], [(dep_path, dep_env)])
+    ""
+  } with { Exception::Throw(msg) => msg }
+  inspect(String::contains(message, "unknown name: forwarded"), "true")
+}
+
+test "projected checker does not let builtin assert_eq claim a re-export alias" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = checked_test_env("export fn cmp(a: Int, b: Int) -> Int { a + b }")
+  let message = handle {
+    let _ = projected_checked_env("export ./dep.vibe { cmp as assert_eq }\nlet local_use = assert_eq(1, 2)", "workspace/main.vibe", [
+      dep_path
+    ], [(dep_path, dep_env)])
+    ""
+  } with { Exception::Throw(msg) => msg }
+  inspect(String::contains(message, "unknown name: assert_eq"), "true")
 }
 
 test "projected checker root keeps path and source-order winners with cached payloads" {
@@ -1094,7 +1118,7 @@ test "exact dep projection resolves the selected package and directory candidate
   }
 }
 
-test "exact dep projection preserves duplicate order and cache first-match semantics" {
+test "exact dep projection preserves duplicate order without binding re-export aliases locally" {
   let dep_path = "workspace/dep.vibe"
   let int_env = checked_test_env("export let value = 1")
   let string_env = checked_test_env("export let value = \"first\"")
@@ -1104,18 +1128,20 @@ test "exact dep projection preserves duplicate order and cache first-match seman
     (dep_path, int_env),
     (dep_path, string_env)
   ])
-  match (env_lookup(first_int, "imported"), env_lookup(first_int, "reexported")) {
-    (Some(CtInt), Some(CtInt)) => (),
+  match env_lookup(first_int, "imported") {
+    Some(CtInt) => (),
     _ => assert(false)
   }
+  inspect(env_lookup(first_int, "reexported") == None, "true")
   let first_string = projected_import_env_for_test(source, "workspace/main.vibe", deps, [
     (dep_path, string_env),
     (dep_path, int_env)
   ])
-  match (env_lookup(first_string, "imported"), env_lookup(first_string, "reexported")) {
-    (Some(CtString), Some(CtString)) => (),
+  match env_lookup(first_string, "imported") {
+    Some(CtString) => (),
     _ => assert(false)
   }
+  inspect(env_lookup(first_string, "reexported") == None, "true")
 }
 
 test "exact dep projection fails closed when a resolved row is missing" {
@@ -1679,6 +1705,28 @@ test "db_typecheck_fs: a re-exported name IS on the middleman's surface (#1533 c
   ]))
   let err = export_surface_error([dep_path, mid_path, main_path], main_path)
   assert(err == "")
+}
+
+test "db_typecheck_fs: an aliased re-export stays importable by a consumer (#2287)" {
+  let dir = "/tmp/vibe_compiler_export_surface_reexport_alias"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let mid_path = String::concat(dir, "/mid.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let dep_src = "export fn public_fn(x: Int) -> Int {\n  x + 1\n}\n"
+  let mid_src = "export ./dep.vibe { public_fn as forwarded }\n"
+  let main_src = "import ./mid.vibe { forwarded }\nexport let m = forwarded(1)\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (mid_path, mid_fp)
+  ]))
+  inspect(export_surface_error([dep_path, mid_path, main_path], main_path), "")
 }
 
 test "db_typecheck_fs: private struct enum and alias declarations are not importable" {

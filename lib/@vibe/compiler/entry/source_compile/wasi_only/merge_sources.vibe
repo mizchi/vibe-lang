@@ -12,6 +12,10 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl
 }
 
+import @vibe/compiler/normalize {
+  desugar_inspect_calls, validate_serializable_reexport_references
+}
+
 import @vibe/compiler/syntax {
   lex, parse_program, print_program
 }
@@ -27,6 +31,7 @@ import @vibe/compiler/core {
   build_export_rename_plan,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
+  collect_import_aliases,
   collect_import_value_renames,
   dir_of_path,
   export_plan_renames_for,
@@ -91,32 +96,134 @@ fn resolve_existing_import_path(base_dir: String, raw_path: String, self_path: S
 /// would double-bind the local. The copy gets the target file's export renames
 /// applied first, so its body's references to renamed sibling exports stay
 /// consistent with the merged program.
+fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_path: String, original: String, local: String, plan: ExportRenamePlan) -> Bool with Exception + Fs {
+  let resolved = resolve_existing_import_path(dir_of_path(current_path), raw_path, current_path)
+  // Builtin read + ingest, same as collect_parsed_sources_recursive
+  // (flatten-lane wiring constraint / #741).
+  let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
+  let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parse_program(lex(source)), export_plan_renames_for(plan, resolved)))
+  let mut i = 0
+  let mut done = false
+  while i < Array::length(source_stmts) && !done {
+    match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, i), original, local) {
+      Some(local_stmt) => {
+        Array::push(merged, local_stmt)
+        done = true
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  done
+}
+
 fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Exception + Fs {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
-  let base_dir = dir_of_path(current_path)
   let mut i = 0
   while i < Array::length(refs) {
     let (raw_path, original, local) = Array::get(refs, i)
     if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
-      let resolved = resolve_existing_import_path(base_dir, raw_path, current_path)
-      // Builtin read + ingest, same as collect_parsed_sources_recursive
-      // (flatten-lane wiring constraint / #741).
-      let source = ingest_source_text_fs(resolved, Fs::read_file(resolved))
-      let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parse_program(lex(source)), export_plan_renames_for(plan, resolved)))
-      let mut j = 0
-      let mut done = false
-      while j < Array::length(source_stmts) && !done {
-        match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
-          Some(local_stmt) => {
-            Array::push(merged, local_stmt)
-            Array::push(emitted, local)
-            done = true
-          },
-          None => ()
-        }
-        j = j + 1
+      if append_fs_import_local_def(merged, current_path, raw_path, original, local, plan) {
+        Array::push(emitted, local)
+      } else {
+        ()
       }
+    }
+    i = i + 1
+  }
+}
+
+/// Inline a real import under its local spelling when its ordinary rewrite
+/// target is also claimed by a publication-only re-export alias. A bare target
+/// name cannot carry both authorities through the merged AST; retaining the
+/// import's distinct local binding keeps the two source meanings separate.
+fn append_fs_selected_import_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, selected_locals: Array[String]) -> Unit with Exception + Fs {
+  let emitted = array_empty()
+  // Import lookup is last-binding-wins. Preserve the same winner when more
+  // than one import uses the selected local spelling.
+  let mut i = Array::length(stmts) - 1
+  while i >= 0 {
+    match Array::get(stmts, i) {
+      SImport(raw_path, items) => {
+        let mut j = Array::length(items) - 1
+        while j >= 0 {
+          let item = Array::get(items, j)
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if string_array_contains_local(selected_locals, local) && !string_array_contains_local(emitted, local) {
+            if append_fs_import_local_def(merged, current_path, raw_path, item.name, local, plan) {
+              Array::push(emitted, local)
+            } else {
+              throw(String::concat("cannot preserve imported value through re-export alias collision: ", local))
+            }
+          } else {
+            ()
+          }
+          j = j - 1
+        }
+      },
+      _ => ()
+    }
+    i = i - 1
+  }
+}
+
+fn import_rename_locals_targeting(renames: Array[(String, String)], names: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (local, target) = Array::get(renames, i)
+    if string_array_contains_local(names, target) && !string_array_contains_local(out, local) {
+      Array::push(out, local)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn import_rename_locals_named(renames: Array[(String, String)], names: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (local, _) = Array::get(renames, i)
+    if string_array_contains_local(names, local) && !string_array_contains_local(out, local) {
+      Array::push(out, local)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn import_renames_without_locals(renames: Array[(String, String)], omitted_locals: Array[String]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(renames) {
+    let rename = Array::get(renames, i)
+    if !string_array_contains_local(omitted_locals, rename.0) {
+      Array::push(out, rename)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn append_unique_strings(target: Array[String], source: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(source) {
+    let item = Array::get(source, i)
+    if !string_array_contains_local(target, item) {
+      Array::push(target, item)
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -185,6 +292,78 @@ fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], 
   }
 }
 
+fn reexport_source_boundary(stmts: Array[Stmt], retain_entry_originals: Bool) -> (Array[String], Array[String], Array[String]) {
+  let locals = array_empty()
+  let surface_only = array_empty()
+  let retained_originals = array_empty()
+  let decided = array_empty()
+  // Re-export projection is last-binding-wins. Scan backwards so a later
+  // plain re-export cancels an earlier publication-only alias blocker, while
+  // a later alias still hides an earlier plain binding.
+  let mut i = Array::length(stmts) - 1
+  while i >= 0 {
+    match Array::get(stmts, i) {
+      SReExport(_, items) => {
+        let mut j = Array::length(items) - 1
+        while j >= 0 {
+          let item = Array::get(items, j)
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if string_array_contains_local(decided, local) {
+            ()
+          } else {
+            Array::push(decided, local)
+            Array::push(locals, local)
+            match item.alias {
+              Some(alias) => Array::push(surface_only, alias),
+              None => ()
+            }
+          }
+          // Entry re-exports retain the dependency definition under its
+          // original ABI spelling. Record that spelling for validation before
+          // import rewriting: a raw source reference is invalid, while a real
+          // imported alias may legitimately rewrite to the same retained name.
+          match item.alias {
+            Some(_) => if retain_entry_originals && !string_array_contains_local(decided, item.name) {
+              Array::push(decided, item.name)
+              Array::push(locals, item.name)
+              Array::push(retained_originals, item.name)
+            } else {
+              ()
+            },
+            None => ()
+          }
+          j = j - 1
+        }
+      },
+      _ => ()
+    }
+    i = i - 1
+  }
+  (locals, surface_only, retained_originals)
+}
+
+/// Reject direct uses of an entry re-export's retained implementation name
+/// before import aliases are rewritten. The merged AST may contain that name
+/// afterward as the valid target of a real import, so it cannot remain a
+/// checker lookup blocker in the transformed source.
+fn validate_retained_entry_source_names(stmts: Array[Stmt], retained_originals: Array[String]) -> Unit with Exception {
+  if Array::length(retained_originals) > 0 {
+    let source_unit = empty_stmt_array()
+    Array::push(source_unit, SReExportSourceBoundary(array_empty(), retained_originals))
+    let mut i = 0
+    while i < Array::length(stmts) {
+      Array::push(source_unit, Array::get(stmts, i))
+      i = i + 1
+    }
+    validate_serializable_reexport_references(source_unit)
+  } else {
+    ()
+  }
+}
+
 fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], file_stmts: Array[Array[Stmt]], merged: Array[Stmt]) -> ExportRenamePlan with Exception + Fs {
   let plan = build_export_rename_plan(file_paths, file_stmts, entry_path)
   let mut fi = 0
@@ -192,11 +371,25 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     let path = Array::get(file_paths, fi)
     let stmts = Array::get(file_stmts, fi)
     let namespaced_stmts = transformed_file_stmts(entry_path, path, stmts, plan)
+    // Imports and re-exports disappear from the executable merged AST. Keep
+    // each source's locally visible names separate from aliased surface-only
+    // names, without blocking builtins in the next unit (#2287).
+    let (reexport_locals, reexport_surface_only, retained_originals) = reexport_source_boundary(stmts, path == entry_path)
+    validate_retained_entry_source_names(stmts, retained_originals)
+    Array::push(merged, SReExportSourceBoundary(reexport_locals, reexport_surface_only))
     if stmts_have_import_deep(stmts) {
       let import_renames = collect_import_value_renames(plan, path, stmts)
+      let retained_collision_locals = import_rename_locals_targeting(collect_import_aliases(stmts), reexport_surface_only)
+      append_unique_strings(retained_collision_locals, import_rename_locals_targeting(import_renames, reexport_surface_only))
+      let active_import_renames = import_renames_without_locals(import_renames, retained_collision_locals)
       let skipped_locals = collect_import_alias_collision_locals(stmts)
-      append_fs_import_alias_collision_defs(merged, path, stmts, plan, import_value_rename_locals(import_renames))
-      append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
+      append_unique_strings(skipped_locals, import_rename_locals_named(collect_import_aliases(stmts), reexport_surface_only))
+      append_unique_strings(skipped_locals, retained_collision_locals)
+      let inline_exclusions = import_value_rename_locals(active_import_renames)
+      append_unique_strings(inline_exclusions, retained_collision_locals)
+      append_fs_import_alias_collision_defs(merged, path, stmts, plan, inline_exclusions)
+      append_fs_selected_import_defs(merged, path, stmts, plan, retained_collision_locals)
+      append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, active_import_renames)
     } else {
       append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
     }
@@ -524,7 +717,13 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
   let plan = append_parsed_merged_stmts(entry_path, file_paths, file_stmts, merged)
   let driver_source = ingest_source_text_fs(driver_path, Fs::read_file(driver_path))
   let driver_stmts = parse_program(lex(driver_source))
+  // The driver is a separate source unit from the compiler entry that precedes
+  // it, so source-scoped builtin classification must start a fresh range.
+  Array::push(merged, SReExportSourceBoundary(array_empty(), array_empty()))
   append_coverage_driver_stmts(entry_path, driver_path, driver_stmts, file_paths, file_stmts, plan, merged)
+  validate_serializable_reexport_references(merged)
+  desugar_inspect_calls(merged)
+  expand_interp_stmts(merged)
   print_program(merged)
 }
 
@@ -544,6 +743,12 @@ export fn merged_program_source_fs(entry_path: String) -> String with Exception 
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
+  // Complete source-scoped special-call rewrites while the in-memory boundary
+  // metadata still exists. The printed program needs no sentinel syntax and
+  // can be reparsed as ordinary user source without a lexer/parser exception.
+  validate_serializable_reexport_references(stmts)
+  desugar_inspect_calls(stmts)
+  expand_interp_stmts(stmts)
   print_program(stmts)
 }
 

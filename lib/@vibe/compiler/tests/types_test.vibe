@@ -307,6 +307,62 @@ test "provenance survives repeated env_cache" {
   }
 }
 
+test "re-export surface bindings block older locals and survive caches" {
+  let local = env_bind(EnvEmpty, "forwarded", CtInt)
+  let surface = env_bind_with_origin(local, "forwarded", CtString, BindingOriginReExportSurface("/dep.vibe", "source_value"))
+  inspect(match env_lookup(surface, "forwarded") {
+    None => "blocked",
+    Some(_) => "visible"
+  }, "blocked")
+  let cached = env_cache(surface)
+  inspect(match env_lookup(cached, "forwarded") {
+    None => "blocked",
+    Some(_) => "visible"
+  }, "blocked")
+  let surface_only = env_bind_with_origin(EnvEmpty, "forwarded", CtString, BindingOriginReExportSurface("/dep.vibe", "source_value"))
+  inspect(match env_lookup(surface_only, "forwarded") {
+    None => "absent",
+    Some(_) => "visible"
+  }, "absent")
+  inspect(match env_lookup(env_cache(surface_only), "forwarded") {
+    None => "absent",
+    Some(_) => "visible"
+  }, "absent")
+  let newer_local = env_bind(surface_only, "forwarded", CtInt)
+  match env_lookup(env_cache(newer_local), "forwarded") {
+    Some(ty) => inspect(type_to_string(ty), "Int"),
+    None => assert(false)
+  }
+  let flat_surface = EnvFlat([
+    ("forwarded", EnvValueBinding::{
+      ty: CtString,
+      origin: BindingOriginReExportSurface("/dep.vibe", "source_value")
+    }),
+    ("local", env_value_binding(CtInt))
+  ])
+  match env_cache(flat_surface) {
+    EnvCached(names, _, _) => inspect(Array::length(names), "2"),
+    _ => assert(false)
+  }
+}
+
+test "FS re-export blockers hide earlier sources but allow a newer local binding" {
+  let earlier = env_bind(EnvEmpty, "forwarded", CtInt)
+  let blocked = env_bind_with_origin(earlier, "forwarded", CtUnknown, BindingOriginReExportSurface("", "forwarded"))
+  inspect(match env_lookup(blocked, "forwarded") {
+    None => "blocked",
+    Some(_) => "visible"
+  }, "blocked")
+  inspect(match env_lookup(env_cache(blocked), "forwarded") {
+    None => "blocked",
+    Some(_) => "visible"
+  }, "blocked")
+  match env_lookup(env_bind(blocked, "forwarded", CtBool), "forwarded") {
+    Some(ty) => inspect(type_to_string(ty), "Bool"),
+    None => assert(false)
+  }
+}
+
 test "cache-only indexes remain fail-closed for mutable facts" {
   let cache_only = EnvCached(["x"], [env_value_binding(CtInt)], EnvEmpty)
   inspect(mut_escape_text(cache_only, "x"), "none")

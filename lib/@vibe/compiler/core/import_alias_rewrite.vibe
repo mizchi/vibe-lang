@@ -847,6 +847,7 @@ export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
   let rec stmt_has_import_deep: (Stmt) -> Bool = (stmt) -> {
     match stmt {
       SImport(_, _) => true,
+      SReExport(_, _) => true,
       SModule(_, _, inner_stmts) => stmts_have_import_deep(inner_stmts),
       _ => false
     }
@@ -2110,8 +2111,50 @@ export fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String {
   StringBuilder::freeze(buf)
 }
 
+fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Array[ImportItem], plain_reexports_only: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit {
+  let mut j = Array::length(items) - 1
+  while j >= 0 {
+    let item = Array::get(items, j)
+    let original = item.name
+    let alias_opt = item.alias
+    let local = match alias_opt {
+      Some(alias) => alias,
+      None => original
+    }
+    let locally_visible = if plain_reexports_only {
+      match alias_opt {
+        Some(_) => false,
+        None => true
+      }
+    } else {
+      true
+    }
+    if String::index_of(original, "::") < 0 && !string_array_contains(locals_seen, local) {
+      // Walk bindings newest-first. Even a target that stays bare claims the
+      // spelling and prevents an older import from supplying a stale rename.
+      // Publication-only aliases claim their local spelling too: they emit no
+      // rewrite, but still override an earlier import with the same local name.
+      Array::push(locals_seen, local)
+      if locally_visible {
+        match MutMap::get(plan.rename_idx, plan_rename_key(target, original)) {
+          Some(mangled) => {
+            Array::push(out, (local, mangled))
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    j = j - 1
+  }
+}
+
 /// (local -> mangled) reference renames for one importing file, derived from
-/// its `import` statements against the plan.
+/// ordinary imports and locally visible plain re-exports. Aliased re-exports
+/// remain publication-only and deliberately contribute no local rewrite.
 export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = empty_aliases()
   let locals_seen = empty_strings()
@@ -2122,37 +2165,23 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
     out
   } else {
     let base_dir = dir_of_path(path)
-    let mut i = 0
-    while i < Array::length(stmts) {
+    // `build_import_env_collecting` prepends bindings as it walks source
+    // order, so the last statement wins. Visit in reverse and retain only the
+    // first occurrence of each local spelling to match that environment.
+    let mut i = Array::length(stmts) - 1
+    while i >= 0 {
       match Array::get(stmts, i) {
         SImport(raw_path, items) => {
           let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, path)
-          let mut j = 0
-          while j < Array::length(items) {
-            let item = Array::get(items, j)
-            let original = item.name
-            let alias_opt = item.alias
-            let local = match alias_opt {
-              Some(alias) => alias,
-              None => original
-            }
-            if String::index_of(original, "::") < 0 && !string_array_contains(locals_seen, local) {
-              match MutMap::get(plan.rename_idx, plan_rename_key(target, original)) {
-                Some(mangled) => {
-                  Array::push(out, (local, mangled))
-                  Array::push(locals_seen, local)
-                },
-                None => ()
-              }
-            } else {
-              ()
-            }
-            j = j + 1
-          }
+          append_import_value_renames(plan, target, items, false, out, locals_seen)
+        },
+        SReExport(raw_path, items) => {
+          let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, path)
+          append_import_value_renames(plan, target, items, true, out, locals_seen)
         },
         _ => ()
       }
-      i = i + 1
+      i = i - 1
     }
     out
   }

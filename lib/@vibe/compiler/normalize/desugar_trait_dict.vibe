@@ -36,7 +36,8 @@ import @vibe/parser {
   binder_authority_slot_role,
   detach_stmts,
   located_program_binder_authority_nodes,
-  located_program_binder_authority_program
+  located_program_binder_authority_program,
+  resolve_interp_expr
 }
 
 //# Functions
@@ -6458,11 +6459,10 @@ fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
 /// Pass state, reset at every `desugar_trait_dicts` entry like the exn-kind
 /// cell above: whether THIS program binds `assert_eq` itself.
 ///
-/// The unit is the program this pass was handed, which in the FS lane is every
-/// module merged together -- so one module binding `assert_eq` stands the
-/// lowering down for all of them. Coarse, and deliberately so: the merged
-/// program is what this pass sees, and a per-module answer here would be
-/// invented.
+/// For an ordinary source array this is program-wide. The FS merge inserts an
+/// `SReExportSourceBoundary` marker before each source unit; the final rewrite
+/// loop resets the cached answer and active range at every marker, so a
+/// dependency's blocker cannot suppress an unrelated entry builtin (#2287).
 ///
 /// COMPUTED LAZILY (#2285). The scan now descends into every expression, and
 /// paying for a whole-program AST walk on every compile is not free -- an
@@ -6481,8 +6481,19 @@ let dtd_user_assert_eq = [-1]
 /// (a throw mid-rewrite) unable to leave a previous program behind.
 let dtd_user_assert_eq_program: Array[Array[Stmt]] = array_empty()
 
+/// Half-open source-unit range within the retained program. `end < 0` means
+/// the entire array (the ordinary non-merged path).
+let dtd_user_assert_eq_range = [0, -1]
+
+/// Whether the current FS source boundary carries an aliased re-export named
+/// `assert_eq`. Kept separate so the expensive expression walk stays lazy.
+let dtd_user_assert_eq_alias_blocker = [0]
+
 fn user_assert_eq_reset(stmts: Array[Stmt]) -> Unit {
   Array::set(dtd_user_assert_eq, 0, -1)
+  Array::set(dtd_user_assert_eq_range, 0, 0)
+  Array::set(dtd_user_assert_eq_range, 1, -1)
+  Array::set(dtd_user_assert_eq_alias_blocker, 0, 0)
   Array::truncate(dtd_user_assert_eq_program, 0)
   Array::push(dtd_user_assert_eq_program, stmts)
 }
@@ -6496,7 +6507,13 @@ fn user_assert_eq_bound() -> Bool {
     // lowering -- the same thing a caller that never reset would have got.
     false
   } else {
-    let answer = stmts_define_assert_eq(Array::get(dtd_user_assert_eq_program, 0))
+    let program = Array::get(dtd_user_assert_eq_program, 0)
+    let range_end = Array::get(dtd_user_assert_eq_range, 1)
+    let answer = Array::get(dtd_user_assert_eq_alias_blocker, 0) == 1 || if range_end < 0 {
+      stmts_define_assert_eq(program)
+    } else {
+      stmts_range_define_assert_eq(program, Array::get(dtd_user_assert_eq_range, 0), range_end)
+    }
     Array::set(dtd_user_assert_eq, 0, if answer {
       1
     } else {
@@ -6523,46 +6540,13 @@ fn user_assert_eq_bound() -> Bool {
 /// a free use inside a lambda is no longer recorded as the #1095 capture
 /// artifact that made `local_idx_hint` unreadable.
 ///
-/// UNSCOPED, like the top-level half: one binder anywhere stands the lowering
-/// down for the whole merged program, even for call sites the binder does not
-/// reach. A scoped answer would have to thread a binder set through
-/// `rewrite_expr`, which carries nine parameters already. The coarseness errs
-/// in the safe direction -- standing down loses the expected/actual message,
-/// it never runs the wrong function -- and it costs nothing today: no file
-/// under `lib/`, `fixtures/`, or `examples/` binds the name locally.
+/// UNSCOPED within one source unit: one binder anywhere in that unit stands
+/// the lowering down even for call sites the binder does not reach. A scoped
+/// answer would have to thread a binder set through `rewrite_expr`, which
+/// carries nine parameters already. `SReExportSourceBoundary` still separates
+/// FS-merged units, so this conservative answer does not leak across modules.
 fn stmts_define_assert_eq(stmts: Array[Stmt]) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(stmts) && !found {
-    let hit = match Array::get(stmts, i) {
-      SLet(_, _, name, _, value) => name == "assert_eq" || expr_binds_assert_eq(value),
-      SLetMut(name, _, value) => name == "assert_eq" || expr_binds_assert_eq(value),
-      SLetPat(pat, value) => pat_binds_assert_eq(pat) || expr_binds_assert_eq(value),
-      SExpr(e) => expr_binds_assert_eq(e),
-      STest(_, e) => expr_binds_assert_eq(e),
-      SBench(_, e) => expr_binds_assert_eq(e),
-      SExample(_, e) => expr_binds_assert_eq(e),
-      SFnDecl(_, name, e, _, _) => name == "assert_eq" || expr_binds_assert_eq(e),
-      // NO `SModule` recursion. A module member declares `M::assert_eq`, not
-      // the bare prelude name, so recursing would stand the lowering down for
-      // an unrelated top-level `assert_eq(a, b)` -- and the function table
-      // holds only the qualified definition, so codegen would then fall to a
-      // bare `unreachable`, losing the message and both operands (#2296
-      // review). Unreachable today either way: `module` blocks were removed in
-      // #728 and the parser answers this shape with "'module' blocks are
-      // removed", measured on the current tree. Left out rather than left
-      // wrong, since the arm would be a latent defect the day modules return.
-      SImport(_, items) => import_binds_assert_eq(items),
-      _ => false
-    }
-    if hit {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
+  stmts_range_define_assert_eq(stmts, 0, Array::length(stmts))
 }
 
 fn import_binds_assert_eq(items: Array[ImportItem]) -> Bool {
@@ -6703,6 +6687,80 @@ fn arms_bind_assert_eq(arms: Array[(Pat, Expr)]) -> Bool {
     i = i + 1
   }
   found
+}
+
+fn plain_reexport_binds(items: Array[ImportItem], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    if item.name == wanted && item.alias == None {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stmt_binds_assert_eq(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, name, _, value) => name == "assert_eq" || expr_binds_assert_eq(value),
+    SLetMut(name, _, value) => name == "assert_eq" || expr_binds_assert_eq(value),
+    SLetPat(pat, value) => pat_binds_assert_eq(pat) || expr_binds_assert_eq(value),
+    SExpr(e) => expr_binds_assert_eq(e),
+    STest(_, e) => expr_binds_assert_eq(e),
+    SBench(_, e) => expr_binds_assert_eq(e),
+    SExample(_, e) => expr_binds_assert_eq(e),
+    SFnDecl(_, name, e, _, _) => name == "assert_eq" || expr_binds_assert_eq(e),
+    // NO `SModule` recursion. A member would declare `M::assert_eq`, not the
+    // bare prelude name; see the #2296 review measurement above.
+    SImport(_, items) => import_binds_assert_eq(items),
+    // Direct/single-source checking still sees the original re-export. The FS
+    // merge carries re-export locals separately in SReExportSourceBoundary (#2287).
+    SReExport(_, items) => import_binds_assert_eq(items),
+    _ => false
+  }
+}
+
+fn stmts_range_define_assert_eq(stmts: Array[Stmt], start: Int, end: Int) -> Bool {
+  let mut i = start
+  let mut found = false
+  while !found && i < end {
+    found = stmt_binds_assert_eq(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+fn reexport_blockers_bind_assert_eq(names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(names) {
+    found = Array::get(names, i) == "assert_eq"
+    i = i + 1
+  }
+  found
+}
+
+fn merged_source_range_end(stmts: Array[Stmt], start: Int) -> Int {
+  let mut end = start
+  while end < Array::length(stmts) && !(Array::get(stmts, end) is SReExportSourceBoundary(_, _)) {
+    end = end + 1
+  }
+  end
+}
+
+fn user_assert_eq_set_merged_source(stmts: Array[Stmt], start: Int, names: Array[String]) -> Unit {
+  Array::set(dtd_user_assert_eq, 0, -1)
+  Array::set(dtd_user_assert_eq_range, 0, start)
+  Array::set(dtd_user_assert_eq_range, 1, merged_source_range_end(stmts, start))
+  Array::set(dtd_user_assert_eq_alias_blocker, 0, if reexport_blockers_bind_assert_eq(names) {
+    1
+  } else {
+    0
+  })
 }
 
 fn assert_eq_concat(a: Expr, b: Expr) -> Expr {
@@ -14571,6 +14629,207 @@ fn dinsp_stmt_uses(stmt: Stmt) -> Bool {
   }
 }
 
+fn import_items_bind_name(items: Array[ImportItem], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    let local = match item.alias {
+      Some(alias) => alias,
+      None => item.name
+    }
+    found = local == name
+    i = i + 1
+  }
+  found
+}
+
+/// A declaration that gives `name` real source-local meaning. Top-level value
+/// declarations are preclaimed by the checker, so their order within the
+/// source unit does not change this answer. An aliased re-export is omitted on
+/// purpose: its alias is publication-only and is exactly what this validation
+/// protects from becoming a local after serialization.
+fn stmt_top_level_binds_name(stmt: Stmt, name: String) -> Bool {
+  match stmt {
+    SLet(_, _, local, _, _) => local == name,
+    SLetMut(local, _, _) => local == name,
+    SLetPat(pat, _) => pat_binds_name(pat, name),
+    SFnDecl(_, local, _, _, _) => local == name,
+    SExternLet(local, _) => local == name,
+    SImport(_, items) => import_items_bind_name(items, name),
+    SReExport(_, items) => plain_reexport_binds(items, name),
+    _ => false
+  }
+}
+
+fn range_top_level_binds_name(stmts: Array[Stmt], start: Int, end: Int, name: String) -> Bool {
+  let mut i = start
+  let mut found = false
+  while i < end && !found {
+    found = stmt_top_level_binds_name(Array::get(stmts, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn expr_list_has_free_name(items: Array[Expr], name: String) -> Bool with Exception {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    found = expr_has_free_name(Array::get(items, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn arm_list_has_free_name(arms: Array[(Pat, Expr)], name: String) -> Bool with Exception {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) && !found {
+    let (pat, body) = Array::get(arms, i)
+    if !pat_binds_name(pat, name) {
+      found = expr_has_free_name(body, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Whether `name` occurs free in this expression. Binding forms stop only the
+/// body region they govern; a same-spelled parameter in one nested function
+/// must not hide an unrelated reference elsewhere in the source unit.
+fn expr_has_free_name(expr: Expr, name: String) -> Bool with Exception {
+  match expr {
+    EIdent(local, _) => local == name,
+    EStringInterp(_) => expr_has_free_name(resolve_interp_expr(expr), name),
+    ELet(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    ELetRec(local, value, body) => if local == name {
+      false
+    } else {
+      expr_has_free_name(value, name) || expr_has_free_name(body, name)
+    },
+    ELetMut(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    EAssign(local, value, body) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
+    EAssignOp(local, _, value, body) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
+    EForIn(value_name, key_name, iter, body) => expr_has_free_name(iter, name) || if value_name == name || match key_name {
+      Some(key) => key == name,
+      None => false
+    } {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    EFn(_, _, params, _, _, body) => if params_bind_name(params, name) {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = false
+      let mut shadowed = false
+      while i < Array::length(params) {
+        let (local, initial) = Array::get(params, i)
+        if !found {
+          found = expr_has_free_name(initial, name)
+        } else {
+          ()
+        }
+        if local == name {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || if shadowed {
+        false
+      } else {
+        expr_has_free_name(body, name)
+      }
+    },
+    EMatch(scrutinee, arms) => expr_has_free_name(scrutinee, name) || arm_list_has_free_name(arms, name),
+    EHandle(body, arms) => expr_has_free_name(body, name) || arm_list_has_free_name(arms, name),
+    _ => expr_list_has_free_name(expr_children(expr), name)
+  }
+}
+
+fn stmt_has_free_name(stmt: Stmt, name: String) -> Bool with Exception {
+  match stmt {
+    SLet(_, _, _, _, expr) => expr_has_free_name(expr, name),
+    SLetMut(_, _, expr) => expr_has_free_name(expr, name),
+    SLetPat(_, expr) => expr_has_free_name(expr, name),
+    STest(_, expr) => expr_has_free_name(expr, name),
+    SBench(_, expr) => expr_has_free_name(expr, name),
+    SExample(_, expr) => expr_has_free_name(expr, name),
+    SExpr(expr) => expr_has_free_name(expr, name),
+    SFnDecl(_, _, expr, requires, ensures) => expr_has_free_name(expr, name) || expr_list_has_free_name(requires, name) || expr_list_has_free_name(ensures, name),
+    SModule(_, _, body) => range_has_free_name(body, 0, Array::length(body), name),
+    _ => false
+  }
+}
+
+fn range_has_free_name(stmts: Array[Stmt], start: Int, end: Int, name: String) -> Bool with Exception {
+  if range_top_level_binds_name(stmts, start, end, name) {
+    false
+  } else {
+    let mut i = start
+    let mut found = false
+    while i < end && !found {
+      found = stmt_has_free_name(Array::get(stmts, i), name)
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Reject every free reference to a publication-only re-export alias before
+/// source-boundary metadata is removed. Without this check, reparsing the
+/// printed program can silently reinterpret names such as `println`,
+/// `assert_eq`, or `inspect` as compiler builtins. A real top-level binding or
+/// a lexical binding that governs the particular reference remains valid.
+export fn validate_serializable_reexport_references(stmts: Array[Stmt]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExportSourceBoundary(_, surface_only_names) => {
+        let start = i + 1
+        let end = merged_source_range_end(stmts, start)
+        let mut n = 0
+        let mut invalid = ""
+        while n < Array::length(surface_only_names) && String::length(invalid) == 0 {
+          let name = Array::get(surface_only_names, n)
+          if range_has_free_name(stmts, start, end, name) {
+            invalid = name
+          } else {
+            ()
+          }
+          n = n + 1
+        }
+        if String::length(invalid) > 0 {
+          throw(String::concat("unknown name: ", invalid))
+        } else {
+          ()
+        }
+        i = end
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+}
+
 fn dinsp_stmts_use(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
@@ -14606,6 +14865,82 @@ fn dinsp_binds_inspect(stmts: Array[Stmt]) -> Bool {
   found
 }
 
+fn dinsp_blocker_names_inspect(names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(names) {
+    found = Array::get(names, i) == "inspect"
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_range_binds_inspect(stmts: Array[Stmt], start: Int, end: Int) -> Bool {
+  let mut i = start
+  let mut found = false
+  while !found && i < end {
+    found = dinsp_stmt_binds(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_rewrite_range(stmts: Array[Stmt], start: Int, end: Int) -> Bool {
+  let mut changed = false
+  let mut i = start
+  while i < end {
+    let stmt = Array::get(stmts, i)
+    if dinsp_stmt_uses(stmt) {
+      Array::set(stmts, i, dinsp_stmt(stmt))
+      changed = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  changed
+}
+
+fn dinsp_has_reexport_source_boundaries(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(stmts) {
+    found = Array::get(stmts, i) is SReExportSourceBoundary(_, _)
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_rewrite_merged_source_ranges(stmts: Array[Stmt]) -> Bool {
+  let mut changed = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExportSourceBoundary(local_names, _) => {
+        let start = i + 1
+        let mut end = start
+        while end < Array::length(stmts) && !(Array::get(stmts, end) is SReExportSourceBoundary(_, _)) {
+          end = end + 1
+        }
+        if !dinsp_blocker_names_inspect(local_names) && !dinsp_range_binds_inspect(stmts, start, end) {
+          if dinsp_rewrite_range(stmts, start, end) {
+            changed = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = end
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  changed
+}
+
 fn dinsp_import_binds(items: Array[ImportItem]) -> Bool {
   let mut i = 0
   let mut found = false
@@ -14625,6 +14960,9 @@ fn dinsp_import_binds(items: Array[ImportItem]) -> Bool {
 fn dinsp_stmt_binds(stmt: Stmt) -> Bool {
   match stmt {
     SImport(_, items) => dinsp_import_binds(items),
+    // Direct/single-source checking sees the original re-export. The FS merge
+    // replaces it with a source-boundary marker consumed by the range-aware
+    // path above, so unrelated modules keep their builtin (#2287).
     SReExport(_, items) => dinsp_import_binds(items),
     SLet(_, _, name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
     SLetMut(name, _, body) => name == "inspect" || dinsp_mentions_binder(body),
@@ -14654,20 +14992,12 @@ fn dinsp_mentions_binder(expr: Expr) -> Bool {
 /// see dinsp_uses for why that guard is load-bearing rather than cosmetic.
 export fn desugar_inspect_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
   let mut changed = false
-  if dinsp_binds_inspect(stmts) {
+  if dinsp_has_reexport_source_boundaries(stmts) {
+    changed = dinsp_rewrite_merged_source_ranges(stmts)
+  } else if dinsp_binds_inspect(stmts) {
     ()
   } else {
-    let mut i = 0
-    while i < Array::length(stmts) {
-      let stmt = Array::get(stmts, i)
-      if dinsp_stmt_uses(stmt) {
-        Array::set(stmts, i, dinsp_stmt(stmt))
-        changed = true
-      } else {
-        ()
-      }
-      i = i + 1
-    }
+    changed = dinsp_rewrite_range(stmts, 0, Array::length(stmts))
   }
   changed
 }
@@ -15372,7 +15702,10 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   Array::set(dtd_exn_kind_state, 2, 0)
   let mut i = 0
   while i < Array::length(stmts) {
-    Array::set(stmts, i, rewrite_stmt(Array::get(stmts, i), gens, traits, struct_sets, fn_returns, toplevel_vars))
+    match Array::get(stmts, i) {
+      SReExportSourceBoundary(local_names, _) => user_assert_eq_set_merged_source(stmts, i + 1, local_names),
+      stmt => Array::set(stmts, i, rewrite_stmt(stmt, gens, traits, struct_sets, fn_returns, toplevel_vars))
+    }
     i = i + 1
   }
   // #1526: the rewrite above is what emits `__arr_equals__<key>` calls, so it
