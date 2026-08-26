@@ -7,6 +7,7 @@
 // same predicate the checker already uses (`compiler_owned_type_arity`).
 
 import @vibe/compiler/contract {
+  contract_imported_type_names,
   contract_types_module_text,
   vpkg_deferred_type_names_prefix,
   vpkg_path_escape_one_line,
@@ -15,7 +16,11 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/core {
-  Stmt, TypeExpr
+  ImportItem, ImportKind, Stmt, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
 }
 
 //# Functions
@@ -24,11 +29,15 @@ fn map_headers_field() -> (String, TypeExpr) {
   ("headers", TyApp("Map", [TyName("String"), TyName("String")]))
 }
 
+fn no_opaques() -> Array[(String, Int)] {
+  array_empty()
+}
+
 //# Tests
 
 test "2164: Map in a contract type is not a deferred name" {
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", no_opaques(), [
   ])
   assert(!String::contains(text, vpkg_deferred_type_names_prefix))
 }
@@ -39,33 +48,53 @@ test "2164: MutMap in a contract type is not a deferred name" {
       ("inner", TyApp("MutMap", [TyName("String"), TyName("Int"), TyName("r")]))
     ], [], [], ["r"])
   ]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", no_opaques(), [
   ])
   assert(!String::contains(text, vpkg_deferred_type_names_prefix))
 }
 
-test "2164: a typo next to Map is deferred, Map is not" {
+test "2164: a typo next to Map is not deferred" {
   let defs = [
     SStruct(true, "HttpRequest", [map_headers_field(), ("x", TyName("Intt"))], [
     ], [], [])
   ]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", no_opaques(), [
   ])
-  assert(String::contains(text, vpkg_deferred_type_names_prefix))
-  assert(String::contains(text, "HttpRequest : Intt"))
-  assert(!String::contains(text, "HttpRequest : Map"))
+  assert(!String::contains(text, vpkg_deferred_type_names_prefix))
 }
 
-test "2164: a cross-package name is still deferred" {
+test "2164: a cross-package name is deferred only with opaque provenance" {
   let defs = [SStruct(true, "ModuleJob", [("env", TyName("TypeEnv"))], [], [], [])]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  let without = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", no_opaques(), [
   ])
-  assert(String::contains(text, "ModuleJob : TypeEnv"))
+  assert(!String::contains(without, vpkg_deferred_type_names_prefix))
+  let opaques = no_opaques()
+  Array::push(opaques, ("TypeEnv", 0))
+  let with_opaque = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", opaques, [
+  ])
+  assert(String::contains(with_opaque, "ModuleJob : TypeEnv"))
+}
+
+test "2164: an explicit type import keeps a lowercase alias as provenance" {
+  let extra = [
+    SImport("@scope/dep", [
+      ImportItem::{
+        kind: Some(ImportStruct),
+        name: "Remote",
+        alias: Some("remote")
+      }
+    ])
+  ]
+  let imported = contract_imported_type_names(extra)
+  assert(Array::length(imported) == 1)
+  let (name, arity) = Array::get(imported, 0)
+  assert(name == "remote")
+  assert(arity == 0)
 }
 
 test "2317: the generated types module carries its contract, readable from the text alone" {
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", no_opaques(), [
   ])
   // Read back from the TEXT, with no loader and no registry -- this is the
   // property the isolated worker lane depends on (`VIBE_MODULE_JOB_DIR` hands
@@ -84,7 +113,8 @@ test "2324: a contract path keeping leading whitespace round-trips verbatim" {
   // written with no padding, so trimming the suffix could only corrupt the
   // path -- the diagnostic would then name a file that does not exist.
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
-  let text = contract_types_module_text(defs, "t", " odd dir/pkg/index.vpkg", [])
+  let text = contract_types_module_text(defs, "t", " odd dir/pkg/index.vpkg", no_opaques(), [
+  ])
   assert(vpkg_types_contract_of_source(text) == " odd dir/pkg/index.vpkg")
 }
 
@@ -98,7 +128,7 @@ test "2324: a contract path containing a newline cannot escape the marker commen
   // comment and turn the rest of the path into generated source.
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
   let evil = "lib/pkg\nstruct Injected { x: Int }\n/index.vpkg"
-  let text = contract_types_module_text(defs, "t", evil, [])
+  let text = contract_types_module_text(defs, "t", evil, no_opaques(), [])
   // The marker stays on ONE line, so the injected text never BEGINS a line --
   // it stays inside the comment, where it is inert. Asserting it is absent
   // entirely would be false and was: the escaped marker still contains those
@@ -112,7 +142,7 @@ test "2324: a contract path containing a newline cannot escape the marker commen
 test "2324: a backslash in a contract path round-trips" {
   let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
   let odd = "lib/we\\ird/index.vpkg"
-  let text = contract_types_module_text(defs, "t", odd, [])
+  let text = contract_types_module_text(defs, "t", odd, no_opaques(), [])
   assert(vpkg_types_contract_of_source(text) == odd)
 }
 
@@ -131,7 +161,7 @@ test "2317: a stub records each declaration's contract position, nearest marker 
     SStruct(true, "A", [("x", TyName("Int"))], [], [], []),
     SStruct(true, "B", [("y", TyName("Int"))], [], [], [])
   ]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", no_opaques(), [
     "9:1",
     "13:1"
   ])
@@ -162,7 +192,7 @@ test "2317: a stub records each declaration's contract position, nearest marker 
 
 test "2317: a stub with no position markers reads as empty, not as a guess" {
   let defs = [SStruct(true, "A", [("x", TyName("Int"))], [], [], [])]
-  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", [
+  let text = contract_types_module_text(defs, "t", "lib/@gate/pkg/index.vpkg", no_opaques(), [
   ])
   assert(vpkg_types_decl_pos_for_line(text, 4) == "")
 }

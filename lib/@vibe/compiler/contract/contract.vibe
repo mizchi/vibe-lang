@@ -1203,28 +1203,71 @@ fn vpkg_marker_decode(text: String) -> String {
   StringBuilder::freeze(sb)
 }
 
-/// #2125: the type-name heads `tds` reference minus the names `tds` declare
-/// -- the names this module can neither declare nor import: a
-/// contract-`opaque` name whose definition lives in a sibling impl
-/// (types -> impl would be an import cycle), or a name from another package.
-/// Those resolve to the intentional bare `CtNamed` contract artifact.
-///
-/// This is textual, not provenance-checked, BY NECESSITY (Codex on #2162
-/// asked for opaque/import provenance): contract conformance is textual and
-/// a cross-package name has no declaration channel in the contract at all --
-/// measured, `TypeEnv` in incremental's `ModuleJob` is spelled with no
-/// `opaque` and no import anywhere in that index.vpkg. Compiler-owned type
-/// heads (`Map`, `MutMap`, `Array`, ...) are not deferred: they go through
-/// `is_builtin_type_name` (#2164). The residual is that a typo INSIDE a
-/// contract's transparent type, or a genuine cross-package name, keeps its
-/// pre-enforcement wildcard behavior; the sentinel enumerates that residual
-/// greppably, and closing it needs a contract-level provenance declaration.
-/// Returns (declared type names, deferred names). A declaration's own
-/// generic binders shadow its references LOCALLY only (Codex round 3 on
-/// #2162: a module-wide `declared` let `struct Box[Counter]`'s binder hide
-/// `struct Holder`'s reference to the contract-`opaque` `Counter`, dropping
-/// it from the sentinel and rejecting a valid contract).
-fn ctm_deferred_type_names(tds: Array[Stmt]) -> (Array[String], Array[String]) {
+/// #2125 / #2164: heads `tds` reference minus names `tds` declare, restricted
+/// to contract-`opaque` provenance. A sibling-impl opaque (`PerceusActionKind`)
+/// or a foreign name declared `opaque type` / bodyless `type` stays a
+/// wildcard; a typo (`Intt`) is not in that set and is reported. Compiler-owned
+/// heads (`Map`, `MutMap`, ...) go through `is_builtin_type_name`. A
+/// declaration's own generic binders shadow its references locally only.
+fn ctm_name_is_type_head(n: String) -> Bool {
+  if String::length(n) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(n, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+export fn contract_imported_type_names(extra: Array[Stmt]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(extra) {
+    match Array::get(extra, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let local = match item.alias {
+            Some(a) => a,
+            None => item.name
+          }
+          let imports_type = match item.kind {
+            Some(kind) => match kind {
+              ImportType => true,
+              ImportStruct => true,
+              ImportEnum => true,
+              ImportEffect => true,
+              ImportTrait => false
+            },
+            None => ctm_name_is_type_head(local)
+          }
+          if imports_type {
+            Array::push(out, (local, 0))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn ctm_opaque_name_list(opaque_names: Array[(String, Int)]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(opaque_names) {
+    let (n, _) = Array::get(opaque_names, i)
+    Array::push(out, n)
+    i = i + 1
+  }
+  out
+}
+
+fn ctm_deferred_type_names(tds: Array[Stmt], opaque_names: Array[String]) -> (Array[String], Array[String]) {
   let declared = array_empty()
   let referenced = array_empty()
   let mut i = 0
@@ -1293,8 +1336,10 @@ fn ctm_deferred_type_names(tds: Array[Stmt]) -> (Array[String], Array[String]) {
     let n = Array::get(referenced, ri)
     if is_builtin_type_name(n) || ctm_str_list_has(declared, n) || ctm_str_list_has(out, n) {
       ()
-    } else {
+    } else if ctm_str_list_has(opaque_names, n) {
       Array::push(out, n)
+    } else {
+      ()
     }
     ri = ri + 1
   }
@@ -1361,13 +1406,13 @@ export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names
 /// names at field/payload positions without any process-lifetime registry.
 /// `uniq` keeps the binding name collision-free when several contracts'
 /// modules meet in one merge.
-export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_path: String, decl_pos: Array[String]) -> String {
+export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_path: String, opaque_names: Array[(String, Int)], decl_pos: Array[String]) -> String {
   let lines = array_empty()
   Array::push(lines, vpkg_types_module_marker)
   // Provenance, so a process holding only this text can still name the
   // contract. Emitted even when empty so the header shape is uniform.
   Array::push(lines, String::concat(vpkg_types_contract_marker, vpkg_path_escape_one_line(contract_path)))
-  let (decl_names, deferred) = ctm_deferred_type_names(tds)
+  let (decl_names, deferred) = ctm_deferred_type_names(tds, ctm_opaque_name_list(opaque_names))
   if Array::length(deferred) == 0 {
     ()
   } else {

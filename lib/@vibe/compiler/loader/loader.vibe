@@ -61,6 +61,7 @@ import @vibe/compiler/contract {
   contract_facade_marker,
   contract_facade_source,
   contract_hash,
+  contract_imported_type_names,
   contract_surface_lines,
   contract_type_family_decl_positions,
   contract_type_family_defs,
@@ -1100,7 +1101,7 @@ export let vpkg_types_module_path_prefix: String = "_build/vibe_vpkg_types/types
 /// the package lives outside the repo-relative tree (an absolute VIBE_LIB
 /// external root — the relative import spelling below cannot reach _build
 /// from there, so those packages keep the verbatim-facade behavior).
-fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], decl_pos: Array[String]) -> String with Exception + Fs {
+fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Int)], decl_pos: Array[String]) -> String with Exception + Fs {
   if String::starts_with(vpkg_path, "/") {
     return ""
   } else {
@@ -1130,7 +1131,19 @@ fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], decl_pos: 
       }
       uci = uci + 1
     }
-    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb), vpkg_path, decl_pos)
+    let provenance = array_empty()
+    let mut oi = 0
+    while oi < Array::length(opaque_names) {
+      Array::push(provenance, Array::get(opaque_names, oi))
+      oi = oi + 1
+    }
+    let imported = contract_imported_type_names(extra)
+    let mut ii = 0
+    while ii < Array::length(imported) {
+      Array::push(provenance, Array::get(imported, ii))
+      ii = ii + 1
+    }
+    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb), vpkg_path, provenance, decl_pos)
     let raw_key = compact_string_fingerprint(String::concat(vpkg_path, String::concat("|", text)))
     // Identifier-safe basename: the import-path grammar (parser_base.vibe's
     // collect_import_path) lexes path segments as identifier/keyword tokens,
@@ -1292,7 +1305,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
         let vpkg_raw = Fs::read_file(vpkg_path)
         let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
         let (vpkg_tokens, vpkg_starts, _ve) = lex_with_offsets(vpkg_pin_blanked)
-        let (_, _, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
+        let (_, vpkg_opaques, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
         let shared_text = contract_directory_shared_import_prefix_text(vpkg_extra)
         // #1840: siblings import the contract's type family from the
         // materialized types module — this is what gives enum constructors
@@ -1302,7 +1315,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
         // the offsets and the source agree. Blanking is offset-preserving, so
         // a line:col computed here is the line:col in the real contract too.
         let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at, vpkg_starts)
-        let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_decl_pos)
+        let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_opaques, vpkg_decl_pos)
         let prefix_text = if types_path == "" {
           shared_text
         } else {
@@ -2225,7 +2238,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // #2317: the contract's own line:col for each materialized declaration, so a
   // located diagnostic about the generated module can name the contract.
   let facade_decl_pos = contract_type_family_decl_positions(source, extra, stmt_at, src_starts)
-  let facade_types_path = ensure_vpkg_types_module_fs(path, extra, facade_decl_pos)
+  let facade_types_path = ensure_vpkg_types_module_fs(path, extra, opaque_names, facade_decl_pos)
   let facade_types_rel = if facade_types_path == "" {
     ""
   } else {
