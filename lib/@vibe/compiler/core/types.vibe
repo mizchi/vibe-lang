@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_from_key, trait_ref_name
+  trait_ref_from_key, trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./exception_effect.vibe {
@@ -37,6 +37,11 @@ export enum Type {
   CtStruct(String);
   CtBytes;
   CtNamed(String, Array[Type]);
+  /// A type-level constructor value. It is never a value type by itself.
+  CtConstructor(String, Int);
+  /// Application whose head may be an inference variable (`F[A]`). Concrete
+  /// heads are normalized back to CtArray/CtOption/CtNamed immediately.
+  CtApplied(Type, Array[Type]);
   CtVar(Int);
   CtForAll(Array[Int], Array[(Int, Array[String])], Type);
   CtUnknown;
@@ -753,6 +758,16 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
     },
     CtArray(elem) => occurs_in(id, elem),
     CtOption(elem) => occurs_in(id, elem),
+    CtConstructor(_, _) => false,
+    CtApplied(head, args) => {
+      let mut found = occurs_in(id, head)
+      let mut ai = 0
+      while ai < Array::length(args) && !found {
+        found = occurs_in(id, Array::get(args, ai))
+        ai = ai + 1
+      }
+      found
+    },
     CtRecord(rfields) => {
       let mut ri = 0
       let mut rfound = false
@@ -1266,6 +1281,8 @@ fn trait_target_head_name(ty: Type) -> String {
     CtNamed(n, _) => n,
     CtStruct(n) => n,
     CtEnum(n) => n,
+    CtConstructor(n, _) => n,
+    CtApplied(head, _) => type_constructor_name(head),
     _ => ""
   }
 }
@@ -1735,6 +1752,7 @@ export fn subst_apply(s: Subst, ty: Type) -> Type {
     CtChar => ty,
     CtBytes => ty,
     CtUnknown => ty,
+    CtConstructor(_, _) => ty,
     CtVar(_) => {
       let mut cur = ty
       let mut out = ty
@@ -1780,6 +1798,9 @@ export fn subst_apply(s: Subst, ty: Type) -> Type {
     },
     CtArray(elem) => CtArray(subst_apply(s, elem)),
     CtOption(elem) => CtOption(subst_apply(s, elem)),
+    CtApplied(head, args) => apply_type_constructor(subst_apply(s, head), for arg in args {
+      subst_apply(s, arg)
+    }),
     CtTuple(elems) => CtTuple(for e in elems {
       subst_apply(s, e)
     }),
@@ -1859,6 +1880,13 @@ export fn type_to_string(ty: Type) -> String {
     CtUnit => "()",
     CtBytes => "Bytes",
     CtVar(id) => "?t\{id}",
+    CtConstructor(name, arity) => String::concat(name, String::concat("/", __to_string(arity))),
+    CtApplied(head, args) => {
+      let parts = for arg in args {
+        type_to_string(arg)
+      }
+      String::concat(type_to_string(head), String::concat("[", String::concat(String::join(parts, ", "), "]")))
+    },
     CtForAll(vars, _, body) => {
       let vlen = Array::length(vars)
       let mut vi = 0
@@ -2112,6 +2140,10 @@ fn type_clone(ty: Type) -> Type {
     CtBytes => CtBytes,
     CtUnknown => CtUnknown,
     CtVar(id) => CtVar(id),
+    CtConstructor(name, arity) => CtConstructor(name, arity),
+    CtApplied(head, args) => CtApplied(type_clone(head), for arg in args {
+      type_clone(arg)
+    }),
     CtEnum(n) => CtEnum(n),
     CtStruct(n) => CtStruct(n),
     CtArray(e) => CtArray(type_clone(e)),
@@ -2156,7 +2188,7 @@ export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array
       let mut idx = 0 - 1
       let mut i = 0
       while i < Array::length(params) {
-        if Array::get(params, i) == name {
+        if type_param_name(Array::get(params, i)) == name {
           idx = i
         }
         i = i + 1
@@ -2182,6 +2214,10 @@ export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array
     },
     CtArray(e) => CtArray(resolve_type_alias_params(e, params, args)),
     CtOption(e) => CtOption(resolve_type_alias_params(e, params, args)),
+    CtConstructor(name, arity) => CtConstructor(name, arity),
+    CtApplied(head, applied_args) => apply_type_constructor(resolve_type_alias_params(head, params, args), for arg in applied_args {
+      resolve_type_alias_params(arg, params, args)
+    }),
     CtTuple(es) => CtTuple(for e in es {
       resolve_type_alias_params(e, params, args)
     }),
@@ -2196,12 +2232,102 @@ fn type_expr_name_is_shadowed(shadow: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(shadow) {
-    if Array::get(shadow, i) == name {
+    if type_param_name(Array::get(shadow, i)) == name {
       found = true
     }
     i = i + 1
   }
   found
+}
+
+fn type_expr_shadowed_arity(shadow: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut arity = 0 - 1
+  while i < Array::length(shadow) {
+    let param = Array::get(shadow, i)
+    if type_param_name(param) == name {
+      arity = type_param_arity(param)
+    }
+    i = i + 1
+  }
+  arity
+}
+
+/// Normalize a type-level constructor application. Array and Option keep
+/// their established structural nodes; nominal constructors return CtNamed.
+/// Only an unresolved variable head remains CtApplied.
+export fn apply_type_constructor(head: Type, args: Array[Type]) -> Type {
+  match head {
+    CtConstructor(name, arity) => if arity != Array::length(args) {
+      CtApplied(head, args)
+    } else if name == "Array" && arity == 1 {
+      CtArray(Array::get(args, 0))
+    } else if name == "Option" && arity == 1 {
+      CtOption(Array::get(args, 0))
+    } else {
+      CtNamed(name, args)
+    },
+    _ => CtApplied(head, args)
+  }
+}
+
+fn type_def_params(td: TypeDef) -> Array[String] {
+  match td {
+    TDEnum(_, params, _) => params,
+    TDStruct(_, _, _, params) => params,
+    TDAlias(_, params, _) => params,
+    TDEffect(_, _, params) => params,
+    TDEffectSet(_, _) => array_empty()
+  }
+}
+
+fn declared_type_constructor_arity(defs: Array[TypeDef], name: String) -> Option[Int] {
+  match find_typedef(defs, name) {
+    Some(td) => Some(Array::length(type_def_params(td))),
+    None => match compiler_owned_type_arity(name) {
+      Some(arity) => Some(arity),
+      None => match resolve_builtin(name) {
+        Some(_) => Some(0),
+        None => None
+      }
+    }
+  }
+}
+
+/// Reify bare constructor arguments according to the kind declared by the
+/// receiving type parameter. A shadowed constructor variable stays nominal so
+/// checker binding can replace its head with a CtVar; concrete constructors
+/// carry their declared arity explicitly across alias substitution and caches.
+fn resolve_type_constructor_args(params: Array[String], source_args: Array[TypeExpr], resolved_args: Array[Type], defs: Array[TypeDef], shadow: Array[String]) -> Array[Type] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(resolved_args) {
+    let resolved = Array::get(resolved_args, i)
+    if i < Array::length(params) && type_param_arity(Array::get(params, i)) > 0 && i < Array::length(source_args) {
+      match Array::get(source_args, i) {
+        TyName(name) => {
+          let shadow_arity = type_expr_shadowed_arity(shadow, name)
+          if shadow_arity > 0 {
+            Array::push(out, resolved)
+          } else {
+            match declared_type_constructor_arity(defs, name) {
+              Some(arity) => if arity > 0 {
+                Array::push(out, CtConstructor(name, arity))
+              } else {
+                Array::push(out, resolved)
+              },
+              None => Array::push(out, resolved)
+            }
+          }
+        },
+        _ => Array::push(out, resolved)
+      }
+    } else {
+      Array::push(out, resolved)
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// Resolve a source type expression while preserving the enclosing type
@@ -2228,14 +2354,14 @@ export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], sh
       }
     },
     TyApp(name, args) => {
-      let ra = for a in args {
+      let raw_args = for a in args {
         resolve_type_expr_core_shadowed(a, defs, shadow)
       }
-      if name == "Array" && Array::length(ra) == 1 {
-        CtArray(Array::get(ra, 0))
-      } else if name == "Option" && Array::length(ra) == 1 {
-        CtOption(Array::get(ra, 0))
-      } else if name == "StringMap" && Array::length(ra) == 1 && !type_expr_name_is_shadowed(shadow, name) {
+      if name == "Array" && Array::length(raw_args) == 1 {
+        CtArray(Array::get(raw_args, 0))
+      } else if name == "Option" && Array::length(raw_args) == 1 {
+        CtOption(Array::get(raw_args, 0))
+      } else if name == "StringMap" && Array::length(raw_args) == 1 && !type_expr_name_is_shadowed(shadow, name) {
         // #2263: the concrete name for the builtin map, which is String-keyed
         // (`Map[K, V]`'s generality is not implemented and the name is
         // reserved for it). Resolved here rather than declared as a prelude
@@ -2247,20 +2373,25 @@ export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], sh
         // covered by the shadow test above, and source declarations by defs.
         match find_typedef(defs, name) {
           Some(td) => match td {
-            TDAlias(_, params, body) => resolve_type_alias_params(body, params, ra),
-            _ => CtNamed(name, ra)
+            TDAlias(_, params, body) => resolve_type_alias_params(body, params, resolve_type_constructor_args(params, args, raw_args, defs, shadow)),
+            _ => CtNamed(name, raw_args)
           },
-          None => CtNamed("Map", [CtString, Array::get(ra, 0)])
+          None => CtNamed("Map", [CtString, Array::get(raw_args, 0)])
         }
       } else if type_expr_name_is_shadowed(shadow, name) {
-        CtNamed(name, ra)
+        let arity = type_expr_shadowed_arity(shadow, name)
+        if arity > 0 {
+          CtApplied(CtNamed(name, array_empty()), raw_args)
+        } else {
+          CtNamed(name, raw_args)
+        }
       } else {
         match find_typedef(defs, name) {
           Some(td) => match td {
-            TDAlias(_, params, body) => resolve_type_alias_params(body, params, ra),
-            _ => CtNamed(name, ra)
+            TDAlias(_, params, body) => resolve_type_alias_params(body, params, resolve_type_constructor_args(params, args, raw_args, defs, shadow)),
+            _ => CtNamed(name, resolve_type_constructor_args(type_def_params(td), args, raw_args, defs, shadow))
           },
-          None => CtNamed(name, ra)
+          None => CtNamed(name, raw_args)
         }
       }
     },
@@ -2589,6 +2720,14 @@ fn collect_tvars_walk(t: Type, out: Array[Int]) -> Int {
     CtNamed(_, args) => {
       for a in args {
         let _ = collect_tvars_walk(a, out)
+      }
+      0
+    },
+    CtConstructor(_, _) => 0,
+    CtApplied(head, args) => {
+      let _ = collect_tvars_walk(head, out)
+      for arg in args {
+        let _ = collect_tvars_walk(arg, out)
       }
       0
     },
@@ -2964,6 +3103,24 @@ export fn types_equal(a: Type, b: Type) -> Bool {
       CtVar(bid) => (aid == bid),
       _ => false
     },
+    CtConstructor(aname, aarity) => match b {
+      CtConstructor(bname, barity) => aname == bname && aarity == barity,
+      _ => false
+    },
+    CtApplied(ahead, aargs) => match b {
+      CtApplied(bhead, bargs) => if Array::length(aargs) != Array::length(bargs) || !types_equal(ahead, bhead) {
+        false
+      } else {
+        let mut ai = 0
+        let mut equal = true
+        while ai < Array::length(aargs) && equal {
+          equal = types_equal(Array::get(aargs, ai), Array::get(bargs, ai))
+          ai = ai + 1
+        }
+        equal
+      },
+      _ => false
+    },
     CtArray(aelem) => match b {
       CtArray(belem) => types_equal(aelem, belem),
       _ => false
@@ -3167,6 +3324,64 @@ export fn types_equal(a: Type, b: Type) -> Bool {
 /// tokens (TInt, see lexer.vibe lex_char), so a value of Char and a value of Int
 /// share one runtime representation and must unify freely — a `Char` annotation
 /// accepts an int value and vice versa (`'A' == 65`, `c + 1`, char_test).
+fn type_application_view(ty: Type) -> Option[(Type, Array[Type])] {
+  match ty {
+    CtApplied(head, args) => Some((head, args)),
+    CtArray(elem) => Some((CtConstructor("Array", 1), [elem])),
+    CtOption(elem) => Some((CtConstructor("Option", 1), [elem])),
+    CtNamed(name, args) => if Array::length(args) > 0 {
+      Some((CtConstructor(name, Array::length(args)), args))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// `Some(result)` means application decomposition handled the pair. Outer
+/// `None` means ordinary first-order unification should continue.
+fn unify_type_applications(a: Type, b: Type, s: Subst) -> Option[Option[Subst]] {
+  match type_application_view(a) {
+    Some(ap) => match type_application_view(b) {
+      Some(bp) => {
+        let (ahead, aargs) = ap
+        let (bhead, bargs) = bp
+        if Array::length(aargs) != Array::length(bargs) {
+          Some(None)
+        } else match unify(ahead, bhead, s) {
+          None => Some(None),
+          Some(head_subst) => {
+            let mut acc = head_subst
+            let mut i = 0
+            let mut ok = true
+            while i < Array::length(aargs) && ok {
+              match unify(Array::get(aargs, i), Array::get(bargs, i), acc) {
+                Some(next) => {
+                  acc = next
+                },
+                None => {
+                  ok = false
+                }
+              }
+              i = i + 1
+            }
+            if ok {
+              Some(Some(acc))
+            } else {
+              Some(None)
+            }
+          }
+        }
+      },
+      None => None
+    },
+    None => match type_application_view(b) {
+      Some(_) => None,
+      None => None
+    }
+  }
+}
+
 fn char_int_compatible(ta: Type, tb: Type) -> Bool {
   match ta {
     CtChar => match tb {
@@ -3195,247 +3410,250 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
       CtUnknown => Some(s),
       _ => if is_hkt_app(ta) || is_hkt_app(tb) {
         unify_hkt(ta, tb, s)
-      } else match ta {
-        CtVar(id) => if occurs_in(id, tb) {
-          None
-        } else Some(SubstBind(id, tb, s)),
-        _ => match tb {
-          CtVar(id) => if occurs_in(id, ta) {
+      } else match unify_type_applications(ta, tb, s) {
+        Some(result) => result,
+        None => match ta {
+          CtVar(id) => if occurs_in(id, tb) {
             None
-          } else Some(SubstBind(id, ta, s)),
-          _ => match ta {
-            CtForAll(_, _, body_a) => match tb {
-              CtForAll(_, _, body_b) => unify(body_a, body_b, s),
-              _ => unify(body_a, tb, s)
-            },
-            _ => match tb {
-              CtForAll(_, _, body_b) => unify(ta, body_b, s),
-              _ => match ta {
-                CtArray(ea) => match tb {
-                  CtArray(eb) => unify(ea, eb, s),
-                  _ => None
-                },
-                CtOption(ea) => match tb {
-                  CtOption(eb) => unify(ea, eb, s),
-                  _ => None
-                },
-                CtFn(pa, ra, aeffect) => match tb {
-                  CtFn(pb, rb, beffect) => if Array::length(pa) != Array::length(pb) {
-                    None
-                  }
-                  else {
-                    let ul_len = Array::length(pa)
-                    let mut ul_i = 0
-                    let mut ul_acc = s
-                    let mut ul_result = Some(s)
-                    let mut ul_done = false
-                    while !ul_done {
-                      if ul_i >= ul_len {
-                        ul_result = Some(ul_acc)
-                        ul_done = true
-                      } else {
-                        match unify(Array::get(pa, ul_i), Array::get(pb, ul_i), ul_acc) {
-                          Some(s2) => {
-                            ul_acc = s2
-                            ul_i = ul_i + 1
-                          },
-                          None => {
-                            ul_result = None
-                            ul_done = true
-                          }
-                        }
-                      }
-                    }
-                    // #626 criterion 4: unify params, then the return type, then
-                    // the EFFECT row — binding an effect variable to the other
-                    // side (or failing on a genuine effect conflict) instead of
-                    // the old unconditional-wildcard accept.
-                    match ul_result {
-                      Some(s2) => match unify(ra, rb, s2) {
-                        Some(s3) => unify_effects(aeffect, beffect, s3),
-                        None => None
-                      },
-                      None => None
-                    }
+          } else Some(SubstBind(id, tb, s)),
+          _ => match tb {
+            CtVar(id) => if occurs_in(id, ta) {
+              None
+            } else Some(SubstBind(id, ta, s)),
+            _ => match ta {
+              CtForAll(_, _, body_a) => match tb {
+                CtForAll(_, _, body_b) => unify(body_a, body_b, s),
+                _ => unify(body_a, tb, s)
+              },
+              _ => match tb {
+                CtForAll(_, _, body_b) => unify(ta, body_b, s),
+                _ => match ta {
+                  CtArray(ea) => match tb {
+                    CtArray(eb) => unify(ea, eb, s),
+                    _ => None
                   },
-                  _ => None
-                },
-                CtTuple(ea) => match tb {
-                  CtTuple(eb) => if Array::length(ea) != Array::length(eb) {
-                    None
-                  }
-                  else {
-                    let ul_len2 = Array::length(ea)
-                    let mut ul_i2 = 0
-                    let mut ul_acc2 = s
-                    let mut ul_result2 = Some(s)
-                    let mut ul_done2 = false
-                    while !ul_done2 {
-                      if ul_i2 >= ul_len2 {
-                        ul_result2 = Some(ul_acc2)
-                        ul_done2 = true
-                      } else {
-                        match unify(Array::get(ea, ul_i2), Array::get(eb, ul_i2), ul_acc2) {
-                          Some(s2) => {
-                            ul_acc2 = s2
-                            ul_i2 = ul_i2 + 1
-                          },
-                          None => {
-                            ul_result2 = None
-                            ul_done2 = true
-                          }
-                        }
-                      }
-                    }
-                    ul_result2
+                  CtOption(ea) => match tb {
+                    CtOption(eb) => unify(ea, eb, s),
+                    _ => None
                   },
-                  _ => None
-                },
-                // #1839: records unify only with records of the same shape —
-                // same field names in the same order (order IS the runtime
-                // slot layout), field types unified pairwise. Against any
-                // nominal type (CtStruct/CtNamed/...) the catch-all below
-                // rejects, which is the point: an anonymous record can never
-                // silently satisfy a struct-typed position.
-                CtRecord(raf) => match tb {
-                  CtRecord(rbf) => if Array::length(raf) != Array::length(rbf) {
-                    None
-                  }
-                  else {
-                    let ur_len = Array::length(raf)
-                    let mut ur_i = 0
-                    let mut ur_acc = s
-                    let mut ur_result = Some(s)
-                    let mut ur_done = false
-                    while !ur_done {
-                      if ur_i >= ur_len {
-                        ur_result = Some(ur_acc)
-                        ur_done = true
-                      } else {
-                        let (ur_an, ur_at) = Array::get(raf, ur_i)
-                        let (ur_bn, ur_bt) = Array::get(rbf, ur_i)
-                        if ur_an != ur_bn {
-                          ur_result = None
-                          ur_done = true
+                  CtFn(pa, ra, aeffect) => match tb {
+                    CtFn(pb, rb, beffect) => if Array::length(pa) != Array::length(pb) {
+                      None
+                    }
+                    else {
+                      let ul_len = Array::length(pa)
+                      let mut ul_i = 0
+                      let mut ul_acc = s
+                      let mut ul_result = Some(s)
+                      let mut ul_done = false
+                      while !ul_done {
+                        if ul_i >= ul_len {
+                          ul_result = Some(ul_acc)
+                          ul_done = true
                         } else {
-                          match unify(ur_at, ur_bt, ur_acc) {
+                          match unify(Array::get(pa, ul_i), Array::get(pb, ul_i), ul_acc) {
                             Some(s2) => {
-                              ur_acc = s2
-                              ur_i = ur_i + 1
+                              ul_acc = s2
+                              ul_i = ul_i + 1
                             },
                             None => {
-                              ur_result = None
-                              ur_done = true
+                              ul_result = None
+                              ul_done = true
                             }
                           }
                         }
                       }
-                    }
-                    ur_result
+                      // #626 criterion 4: unify params, then the return type, then
+                      // the EFFECT row — binding an effect variable to the other
+                      // side (or failing on a genuine effect conflict) instead of
+                      // the old unconditional-wildcard accept.
+                      match ul_result {
+                        Some(s2) => match unify(ra, rb, s2) {
+                          Some(s3) => unify_effects(aeffect, beffect, s3),
+                          None => None
+                        },
+                        None => None
+                      }
+                    },
+                    _ => None
                   },
-                  _ => None
-                },
-                CtEnum(a_name) => match tb {
-                  CtEnum(b_name) => if a_name == b_name {
-                    Some(s)
-                  } else None,
-                  // Bridge `CtEnum(X)` with `CtNamed(X, args)` of any arity: an
-                  // enum VALUE carries no type args (constructors yield a bare
-                  // CtEnum), so it must still unify by name with an applied
-                  // annotation like `Result[U, E]`.
-                  CtNamed(b_name, _) => if a_name == b_name {
-                    Some(s)
-                  } else None,
-                  _ => None
-                },
-                CtStruct(a_name) => match tb {
-                  CtStruct(b_name) => if a_name == b_name {
-                    Some(s)
-                  } else None,
-                  // #829: a bare `CtStruct(S)` (unparameterized annotation /
-                  // pre-bound structural fn signature) unifies by name with an
-                  // INSTANTIATED `CtNamed(S, args)` of any arity — the bare
-                  // form carries no argument information to conflict with,
-                  // exactly like the CtEnum/CtNamed bridge below.
-                  //
-                  // #843 review follow-up (Codex P1): this bridge (both this
-                  // arm and its mirror in the `CtNamed(a_name, _)` case below)
-                  // lets a value's real #829-instantiated args get discarded
-                  // when it flows through a bare annotation (`let x: Box =
-                  // Box::{v:1}` types `x` as bare `Box`, forgetting `[Int]`),
-                  // and a LATER, unrelated annotation can then silently
-                  // re-narrow it (`let y: Box[String] = x; y.v` reads a
-                  // stored Int as String) — this is a real, confirmed hole.
-                  // It is NOT fixed by restricting the bridge's direction:
-                  // call sites are inconsistent about which side is
-                  // "expected" (`check_assignable(expected, actual, ..)` →
-                  // `unify(expected, actual, ..)`, but the function-body
-                  // return-type check calls `unify(body_ty, declared_ret,
-                  // ..)` — actual FIRST) — a one-directional restriction here
-                  // broke the legitimate mirror case instead (a trait `impl
-                  // Trait for S { ... }` method's bare-`S`-typed return
-                  // accepting a freshly `S::{...}`-constructed `S[X]`, gate
-                  // section 18) without closing the hole (the erasure
-                  // happens earlier, in the ascription-lambda / `let`
-                  // annotation machinery that decides which of {declared,
-                  // inferred} type to keep — not in `unify` itself). Full
-                  // bridge restored pending a real fix (tracked in #844:
-                  // thread fresh type vars through bare generic-struct
-                  // annotations instead of erasing to `CtStruct`, so the
-                  // annotation's own vars — not a name-only bridge — carry
-                  // the value's real args forward).
-                  CtNamed(b_name, _) => if a_name == b_name {
-                    Some(s)
-                  } else None,
-                  _ => None
-                },
-                CtNamed(a_name, a_args) => match tb {
-                  // Symmetric to the CtEnum bridge: an applied `CtNamed(X, args)`
-                  // unifies with the bare enum value `CtEnum(X)` by name.
-                  CtEnum(b_name) => if a_name == b_name {
-                    Some(s)
-                  } else None,
-                  // #829: symmetric bridge — an applied `CtNamed(S, args)`
-                  // unifies with the bare struct `CtStruct(S)` by name. See
-                  // the long #843/#844 note on the `CtStruct(a_name)` arm
-                  // above — restored (not narrowed) for the same reason.
-                  CtStruct(b_name) => if a_name == b_name {
-                    Some(s)
-                  } else None,
-                  CtNamed(b_name, b_args) => if a_name != b_name {
-                    None
-                  }
-                  else if Array::length(a_args) != Array::length(b_args) {
-                    None
-                  }
-                  else {
-                    let ul_len3 = Array::length(a_args)
-                    let mut ul_i3 = 0
-                    let mut ul_acc3 = s
-                    let mut ul_result3 = Some(s)
-                    let mut ul_done3 = false
-                    while !ul_done3 {
-                      if ul_i3 >= ul_len3 {
-                        ul_result3 = Some(ul_acc3)
-                        ul_done3 = true
-                      } else {
-                        match unify(Array::get(a_args, ul_i3), Array::get(b_args, ul_i3), ul_acc3) {
-                          Some(s2) => {
-                            ul_acc3 = s2
-                            ul_i3 = ul_i3 + 1
-                          },
-                          None => {
-                            ul_result3 = None
-                            ul_done3 = true
+                  CtTuple(ea) => match tb {
+                    CtTuple(eb) => if Array::length(ea) != Array::length(eb) {
+                      None
+                    }
+                    else {
+                      let ul_len2 = Array::length(ea)
+                      let mut ul_i2 = 0
+                      let mut ul_acc2 = s
+                      let mut ul_result2 = Some(s)
+                      let mut ul_done2 = false
+                      while !ul_done2 {
+                        if ul_i2 >= ul_len2 {
+                          ul_result2 = Some(ul_acc2)
+                          ul_done2 = true
+                        } else {
+                          match unify(Array::get(ea, ul_i2), Array::get(eb, ul_i2), ul_acc2) {
+                            Some(s2) => {
+                              ul_acc2 = s2
+                              ul_i2 = ul_i2 + 1
+                            },
+                            None => {
+                              ul_result2 = None
+                              ul_done2 = true
+                            }
                           }
                         }
                       }
+                      ul_result2
+                    },
+                    _ => None
+                  },
+                  // #1839: records unify only with records of the same shape —
+                  // same field names in the same order (order IS the runtime
+                  // slot layout), field types unified pairwise. Against any
+                  // nominal type (CtStruct/CtNamed/...) the catch-all below
+                  // rejects, which is the point: an anonymous record can never
+                  // silently satisfy a struct-typed position.
+                  CtRecord(raf) => match tb {
+                    CtRecord(rbf) => if Array::length(raf) != Array::length(rbf) {
+                      None
                     }
-                    ul_result3
+                    else {
+                      let ur_len = Array::length(raf)
+                      let mut ur_i = 0
+                      let mut ur_acc = s
+                      let mut ur_result = Some(s)
+                      let mut ur_done = false
+                      while !ur_done {
+                        if ur_i >= ur_len {
+                          ur_result = Some(ur_acc)
+                          ur_done = true
+                        } else {
+                          let (ur_an, ur_at) = Array::get(raf, ur_i)
+                          let (ur_bn, ur_bt) = Array::get(rbf, ur_i)
+                          if ur_an != ur_bn {
+                            ur_result = None
+                            ur_done = true
+                          } else {
+                            match unify(ur_at, ur_bt, ur_acc) {
+                              Some(s2) => {
+                                ur_acc = s2
+                                ur_i = ur_i + 1
+                              },
+                              None => {
+                                ur_result = None
+                                ur_done = true
+                              }
+                            }
+                          }
+                        }
+                      }
+                      ur_result
+                    },
+                    _ => None
+                  },
+                  CtEnum(a_name) => match tb {
+                    CtEnum(b_name) => if a_name == b_name {
+                      Some(s)
+                    } else None,
+                    // Bridge `CtEnum(X)` with `CtNamed(X, args)` of any arity: an
+                    // enum VALUE carries no type args (constructors yield a bare
+                    // CtEnum), so it must still unify by name with an applied
+                    // annotation like `Result[U, E]`.
+                    CtNamed(b_name, _) => if a_name == b_name {
+                      Some(s)
+                    } else None,
+                    _ => None
+                  },
+                  CtStruct(a_name) => match tb {
+                    CtStruct(b_name) => if a_name == b_name {
+                      Some(s)
+                    } else None,
+                    // #829: a bare `CtStruct(S)` (unparameterized annotation /
+                    // pre-bound structural fn signature) unifies by name with an
+                    // INSTANTIATED `CtNamed(S, args)` of any arity — the bare
+                    // form carries no argument information to conflict with,
+                    // exactly like the CtEnum/CtNamed bridge below.
+                    //
+                    // #843 review follow-up (Codex P1): this bridge (both this
+                    // arm and its mirror in the `CtNamed(a_name, _)` case below)
+                    // lets a value's real #829-instantiated args get discarded
+                    // when it flows through a bare annotation (`let x: Box =
+                    // Box::{v:1}` types `x` as bare `Box`, forgetting `[Int]`),
+                    // and a LATER, unrelated annotation can then silently
+                    // re-narrow it (`let y: Box[String] = x; y.v` reads a
+                    // stored Int as String) — this is a real, confirmed hole.
+                    // It is NOT fixed by restricting the bridge's direction:
+                    // call sites are inconsistent about which side is
+                    // "expected" (`check_assignable(expected, actual, ..)` →
+                    // `unify(expected, actual, ..)`, but the function-body
+                    // return-type check calls `unify(body_ty, declared_ret,
+                    // ..)` — actual FIRST) — a one-directional restriction here
+                    // broke the legitimate mirror case instead (a trait `impl
+                    // Trait for S { ... }` method's bare-`S`-typed return
+                    // accepting a freshly `S::{...}`-constructed `S[X]`, gate
+                    // section 18) without closing the hole (the erasure
+                    // happens earlier, in the ascription-lambda / `let`
+                    // annotation machinery that decides which of {declared,
+                    // inferred} type to keep — not in `unify` itself). Full
+                    // bridge restored pending a real fix (tracked in #844:
+                    // thread fresh type vars through bare generic-struct
+                    // annotations instead of erasing to `CtStruct`, so the
+                    // annotation's own vars — not a name-only bridge — carry
+                    // the value's real args forward).
+                    CtNamed(b_name, _) => if a_name == b_name {
+                      Some(s)
+                    } else None,
+                    _ => None
+                  },
+                  CtNamed(a_name, a_args) => match tb {
+                    // Symmetric to the CtEnum bridge: an applied `CtNamed(X, args)`
+                    // unifies with the bare enum value `CtEnum(X)` by name.
+                    CtEnum(b_name) => if a_name == b_name {
+                      Some(s)
+                    } else None,
+                    // #829: symmetric bridge — an applied `CtNamed(S, args)`
+                    // unifies with the bare struct `CtStruct(S)` by name. See
+                    // the long #843/#844 note on the `CtStruct(a_name)` arm
+                    // above — restored (not narrowed) for the same reason.
+                    CtStruct(b_name) => if a_name == b_name {
+                      Some(s)
+                    } else None,
+                    CtNamed(b_name, b_args) => if a_name != b_name {
+                      None
+                    }
+                    else if Array::length(a_args) != Array::length(b_args) {
+                      None
+                    }
+                    else {
+                      let ul_len3 = Array::length(a_args)
+                      let mut ul_i3 = 0
+                      let mut ul_acc3 = s
+                      let mut ul_result3 = Some(s)
+                      let mut ul_done3 = false
+                      while !ul_done3 {
+                        if ul_i3 >= ul_len3 {
+                          ul_result3 = Some(ul_acc3)
+                          ul_done3 = true
+                        } else {
+                          match unify(Array::get(a_args, ul_i3), Array::get(b_args, ul_i3), ul_acc3) {
+                            Some(s2) => {
+                              ul_acc3 = s2
+                              ul_i3 = ul_i3 + 1
+                            },
+                            None => {
+                              ul_result3 = None
+                              ul_done3 = true
+                            }
+                          }
+                        }
+                      }
+                      ul_result3
+                    },
+                    _ => None
                   },
                   _ => None
-                },
-                _ => None
+                }
               }
             }
           }
@@ -3459,7 +3677,7 @@ fn impl_pattern_param_index(params: Array[String], name: String) -> Int {
   let mut result = -1
   let mut i = 0
   while i < Array::length(params) && result < 0 {
-    if Array::get(params, i) == name {
+    if type_param_name(Array::get(params, i)) == name {
       result = i
     } else {
       ()
@@ -3917,6 +4135,8 @@ export fn type_constructor_name(ty: Type) -> String {
     } else {
       n
     },
+    CtConstructor(name, _) => name,
+    CtApplied(head, _) => type_constructor_name(head),
     CtStruct(n) => n,
     CtEnum(n) => n,
     _ => ""
@@ -3980,7 +4200,7 @@ fn generic_param_index(tparams: Array[String], name: String) -> Int {
   let mut i = 0
   let mut found = 0 - 1
   while i < Array::length(tparams) && found < 0 {
-    if Array::get(tparams, i) == name {
+    if type_param_name(Array::get(tparams, i)) == name {
       found = i
     } else {
       i = i + 1

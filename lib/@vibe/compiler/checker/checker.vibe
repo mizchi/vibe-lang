@@ -8,9 +8,11 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  apply_type_constructor,
   builtin_registry,
   canonical_builtin_name,
   collect_tvars,
+  compiler_owned_type_arity,
   env_bind,
   env_bind_mut,
   env_cache_binding,
@@ -49,7 +51,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner_head, trait_ref_args, trait_ref_from_key, trait_ref_name
+  impl_method_owner_head, trait_ref_args, trait_ref_from_key, trait_ref_name, type_param_arity, type_param_name
 }
 
 import @vibe/parser {
@@ -164,7 +166,7 @@ export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, na
       // sites (alias bodies, effect ops, trait methods, struct fields, enum
       // payloads) stay unlocated exactly like their `unknown type` siblings
       // -- locating those is the #1567 positions program, not this marker.
-      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `") || String::starts_with(msg, "type parameter `") || String::starts_with(msg, "if branches have incompatible types")
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `") || String::starts_with(msg, "type parameter `") || String::starts_with(msg, "type constructor parameter `") || String::starts_with(msg, "if branches have incompatible types")
       if anchorable && unlocated {
         Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
       }
@@ -471,6 +473,7 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
   let tes = array_empty()
   Array::push(tes, te)
   report_formal_applications_across(tes, formals, where_label, errors)
+  report_kinded_formal_applications(te, formals, where_label, errors)
 }
 
 /// Mixed-kind across a local-let annotation and the enclosing signature.
@@ -599,6 +602,64 @@ fn collect_hkt_related_formals(te: TypeExpr, formals: Array[String], out: Array[
       }
     }
   }
+}
+
+/// Kinded `F[_]` / `F[_, _]` arity. Unkinded `F[A]` stays legal (#2351).
+fn report_kinded_formal_applications(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  let rec find_arity: (String, Int) -> Int = (name, i) -> {
+    if i >= Array::length(formals) {
+      0 - 1
+    } else {
+      let param = Array::get(formals, i)
+      if type_param_name(param) == name {
+        type_param_arity(param)
+      } else {
+        find_arity(name, i + 1)
+      }
+    }
+  }
+  let rec validate: (TypeExpr, Bool) -> Unit = (node, constructor_argument) -> {
+    match node {
+      TyName(name) => {
+        let arity = find_arity(name, 0)
+        if arity > 0 && !constructor_argument {
+          Array::push(errors, String::concat(String::concat(String::concat(String::concat("type constructor parameter `", name), "` must be applied to "), String::concat(__to_string(arity), " type argument(s) in ")), String::concat(where_label, "; apply it to concrete type arguments instead of returning or storing the constructor itself")))
+        } else {
+          ()
+        }
+      },
+      TyApp(head, args) => {
+        let arity = find_arity(head, 0)
+        if arity > 0 && arity != Array::length(args) {
+          Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("type constructor parameter `", head), "` expects "), __to_string(arity)), " type argument(s), got "), __to_string(Array::length(args))), String::concat(" in ", where_label)))
+        } else {
+          ()
+        }
+        let mut i = 0
+        while i < Array::length(args) {
+          validate(Array::get(args, i), true)
+          i = i + 1
+        }
+      },
+      TyFn(params, ret, _) => {
+        let mut i = 0
+        while i < Array::length(params) {
+          validate(Array::get(params, i), false)
+          i = i + 1
+        }
+        validate(ret, false)
+      },
+      TyTuple(items) => {
+        let mut i = 0
+        while i < Array::length(items) {
+          validate(Array::get(items, i), false)
+          i = i + 1
+        }
+      },
+      TyUnit => ()
+    }
+  }
+  validate(te, false)
 }
 
 /// #2263: the builtin map is String-keyed -- `Map[K, V]`'s generality is not
@@ -863,6 +924,106 @@ fn structural_arity_error(name: String, given: Int, want: Int, where_label: Stri
   String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("`", name), "` takes "), Int::to_string(want)), " type argument, but "), Int::to_string(given)), " were given in "), String::concat(where_label, String::concat(String::concat(" -- write `", name), "[T]` with a single element type")))
 }
 
+fn shadow_type_constructor_arity(shadow: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(shadow) {
+    let param = Array::get(shadow, i)
+    if type_param_name(param) == name {
+      found = type_param_arity(param)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn declared_type_expr_kind_arity(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Option[Int] {
+  match te {
+    TyName(name) => {
+      let shadow_arity = shadow_type_constructor_arity(shadow, name)
+      if shadow_arity >= 0 {
+        Some(shadow_arity)
+      } else match find_typedef(defs, name) {
+        Some(td) => match td {
+          TDEnum(_, params, _) => Some(Array::length(params)),
+          TDStruct(_, _, _, params) => Some(Array::length(params)),
+          TDAlias(_, params, _) => Some(Array::length(params)),
+          TDEffect(_, _, params) => Some(Array::length(params)),
+          TDEffectSet(_, _) => Some(0)
+        },
+        None => match compiler_owned_type_arity(name) {
+          Some(arity) => Some(arity),
+          None => match resolve_builtin(name) {
+            Some(_) => Some(0),
+            None => None
+          }
+        }
+      }
+    },
+    _ => Some(0)
+  }
+}
+
+fn type_def_formals(td: TypeDef) -> Array[String] {
+  match td {
+    TDEnum(_, params, _) => params,
+    TDStruct(_, _, _, params) => params,
+    TDAlias(_, params, _) => params,
+    TDEffect(_, _, params) => params,
+    TDEffectSet(_, _) => array_empty()
+  }
+}
+
+fn report_one_type_argument_kind(owner: String, formal: String, expected: Int, actual_expr: TypeExpr, defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  match declared_type_expr_kind_arity(actual_expr, defs, shadow) {
+    Some(actual) => if actual != expected {
+      let rendered = print_type_expr(actual_expr)
+      if expected == 0 {
+        Array::push(errors, "type parameter `\{formal}` of `\{owner}` expects a complete type, but `\{rendered}` is a constructor with \{actual} argument(s) in \{where_label} -- apply the constructor to concrete type arguments")
+      } else {
+        Array::push(errors, "type parameter `\{formal}` of `\{owner}` expects a constructor with \{expected} argument(s), but `\{rendered}` has \{actual} in \{where_label} -- pass a bare constructor with the required arity")
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+fn report_kinded_type_arguments(name: String, args: Array[TypeExpr], defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  match find_typedef(defs, name) {
+    Some(td) => {
+      let formals = type_def_formals(td)
+      let mut i = 0
+      while i < Array::length(args) && i < Array::length(formals) {
+        let formal = Array::get(formals, i)
+        report_one_type_argument_kind(name, type_param_name(formal), type_param_arity(formal), Array::get(args, i), defs, shadow, where_label, errors)
+        i = i + 1
+      }
+    },
+    None => {
+      let head_arity = shadow_type_constructor_arity(shadow, name)
+      let known_arity = if head_arity > 0 {
+        head_arity
+      } else match compiler_owned_type_arity(name) {
+        Some(arity) => arity,
+        None => 0 - 1
+      }
+      if known_arity > 0 {
+        let mut i = 0
+        while i < Array::length(args) {
+          report_one_type_argument_kind(name, "element", 0, Array::get(args, i), defs, shadow, where_label, errors)
+          i = i + 1
+        }
+      } else {
+        ()
+      }
+    }
+  }
+}
+
 /// Walks the annotation WITHOUT resolving it. Resolution allocates, and this
 /// runs at every one of `report_unknown_type_names`'s ~84 sites, so the whole
 /// annotation is never re-resolved: only a `Map` head's KEY argument is
@@ -888,6 +1049,7 @@ fn report_map_key_types_walk(te: TypeExpr, defs: Array[TypeDef], shadow: Array[S
     },
     TyUnit => (),
     TyApp(name, args) => {
+      report_kinded_type_arguments(name, args, defs, shadow, where_label, errors)
       let want = structural_head_arity(name)
       if want >= 0 && Array::length(args) != want && !string_array_has(shadow, name) && find_typedef(defs, name) is None {
         Array::push(errors, structural_arity_error(name, Array::length(args), want, where_label))
@@ -1059,6 +1221,9 @@ fn subst_self_in_type(ty: Type, self_ty: Type) -> Type {
       }
       CtNamed(n, ra)
     },
+    CtApplied(head, args) => apply_type_constructor(subst_self_in_type(head, self_ty), for arg in args {
+      subst_self_in_type(arg, self_ty)
+    }),
     CtArray(e) => CtArray(subst_self_in_type(e, self_ty)),
     CtOption(e) => CtOption(subst_self_in_type(e, self_ty)),
     CtTuple(elems) => CtTuple(for e in elems {
@@ -1094,6 +1259,9 @@ fn relax_unknown_named(ty: Type, defs: Array[TypeDef]) -> Type {
         CtUnknown
       }
     },
+    CtApplied(head, args) => apply_type_constructor(relax_unknown_named(head, defs), for arg in args {
+      relax_unknown_named(arg, defs)
+    }),
     CtArray(e) => CtArray(relax_unknown_named(e, defs)),
     CtOption(e) => CtOption(relax_unknown_named(e, defs)),
     CtTuple(es) => CtTuple(for e in es {
@@ -1118,6 +1286,9 @@ fn replace_trait_bound_vars_from_env(ty: Type, env: TypeEnv) -> Type {
         replace_trait_bound_vars_from_env(arg, env)
       })
     },
+    CtApplied(head, args) => apply_type_constructor(replace_trait_bound_vars_from_env(head, env), for arg in args {
+      replace_trait_bound_vars_from_env(arg, env)
+    }),
     CtArray(elem) => CtArray(replace_trait_bound_vars_from_env(elem, env)),
     CtOption(elem) => CtOption(replace_trait_bound_vars_from_env(elem, env)),
     CtTuple(items) => CtTuple(for item in items {
@@ -4054,6 +4225,7 @@ fn type_can_carry_region(ty: Type) -> Bool {
     CtTuple(_) => true,
     CtRecord(_) => true,
     CtNamed(_, _) => true,
+    CtApplied(_, _) => true,
     CtStruct(_) => true,
     CtEnum(_) => true,
     CtVar(_) => true,
@@ -4078,6 +4250,9 @@ fn add_param_capture_dependency(ty: Type, index: Int) -> Type {
       (name, add_param_capture_dependency(field_ty, index))
     }),
     CtNamed(name, args) => CtNamed(name, for arg in args {
+      add_param_capture_dependency(arg, index)
+    }),
+    CtApplied(head, args) => apply_type_constructor(add_param_capture_dependency(head, index), for arg in args {
       add_param_capture_dependency(arg, index)
     }),
     CtForAll(vars, bounds, body) => CtForAll(vars, bounds, add_param_capture_dependency(body, index)),
@@ -4115,6 +4290,12 @@ fn collect_internal_provenance(ty: Type, out: Array[String]) -> Unit {
       if String::starts_with(name, "#region_") && !string_array_has(out, name) {
         Array::push(out, name)
       }
+      for arg in args {
+        collect_internal_provenance(arg, out)
+      }
+    },
+    CtApplied(head, args) => {
+      collect_internal_provenance(head, out)
       for arg in args {
         collect_internal_provenance(arg, out)
       }
@@ -4164,6 +4345,15 @@ fn type_has_param_marker(ty: Type, marker: Int) -> Bool {
     },
     CtNamed(_, args) => {
       let mut found = false
+      for arg in args {
+        if type_has_param_marker(arg, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    CtApplied(head, args) => {
+      let mut found = type_has_param_marker(head, marker)
       for arg in args {
         if type_has_param_marker(arg, marker) {
           found = true
@@ -4227,6 +4417,9 @@ fn resolve_param_provenance(ty: Type, param_tys: Array[Type], arg_tys: Array[Typ
     CtNamed(name, args) => CtNamed(name, for arg in args {
       resolve_param_provenance(arg, param_tys, arg_tys)
     }),
+    CtApplied(head, args) => apply_type_constructor(resolve_param_provenance(head, param_tys, arg_tys), for arg in args {
+      resolve_param_provenance(arg, param_tys, arg_tys)
+    }),
     _ => ty
   }
 }
@@ -4234,7 +4427,7 @@ fn resolve_param_provenance(ty: Type, param_tys: Array[Type], arg_tys: Array[Typ
 fn call_result_with_provenance(ret: Type, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Type {
   let resolved_ret = subst_apply(s, ret)
   match resolved_ret {
-    CtFn(_, _, _)|CtArray(_)|CtOption(_)|CtTuple(_)|CtRecord(_)|CtNamed(_, _) => {
+    CtFn(_, _, _)|CtArray(_)|CtOption(_)|CtTuple(_)|CtRecord(_)|CtNamed(_, _)|CtApplied(_, _) => {
       let resolved_params = for param in param_tys {
         subst_apply(s, param)
       }
@@ -5319,6 +5512,10 @@ fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
     },
     CtArray(e) => CtArray(resolve_tparams_in(e, env)),
     CtOption(e) => CtOption(resolve_tparams_in(e, env)),
+    CtConstructor(_, _) => ty,
+    CtApplied(head, args) => apply_type_constructor(resolve_tparams_in(head, env), for arg in args {
+      resolve_tparams_in(arg, env)
+    }),
     CtTuple(es) => CtTuple(for e in es {
       resolve_tparams_in(e, env)
     }),
@@ -10019,7 +10216,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let mut tpi = 0
       while tpi < tplen {
-        let tpname = Array::get(tparams, tpi)
+        let tpkey = Array::get(tparams, tpi)
+        let tpname = type_param_name(tpkey)
         match fresh_var(c0) {
           (tv, nc) => {
             let vid = nc - 1
@@ -10030,7 +10228,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             let mut found_bounds = false
             while tbi < tblen {
               let (bname, blist) = Array::get(tbounds, tbi)
-              if !found_bounds && bname == tpname {
+              if !found_bounds && bname == tpkey {
                 bounds = blist
                 found_bounds = true
               }

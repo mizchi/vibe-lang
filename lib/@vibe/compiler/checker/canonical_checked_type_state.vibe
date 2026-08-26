@@ -14,6 +14,10 @@ import @vibe/core {
   array_empty
 }
 
+import @vibe/ast {
+  type_param_arity, type_param_name
+}
+
 // #2125: the two observation wrappers below annotate parameters with types
 // this package's contract declares BODYLESS (`type CheckedProgram`). A
 // bodyless declaration has no `TypeDef`, so the annotation used to resolve to
@@ -260,13 +264,23 @@ fn canonical_named_bound(names: Array[String], name: String) -> Int {
   let mut i = 0
   let mut found = -1
   while i < Array::length(names) && found < 0 {
-    if Array::get(names, i) == name {
+    if type_param_name(Array::get(names, i)) == name {
       found = i
     } else {
       i = i + 1
     }
   }
   found
+}
+
+fn canonical_param_arities(params: Array[String]) -> String {
+  let fields = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(fields, __to_string(type_param_arity(Array::get(params, i))))
+    i = i + 1
+  }
+  canonical_node("K", fields)
 }
 
 fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], bound_names: Array[String], free_ids: Array[Int], free_names: Array[String], resolving: Array[Int]) -> String {
@@ -297,6 +311,18 @@ fn canonical_type(ty: Type, s: Subst, bound_ids: Array[Int], bound_names: Array[
           ])
         }
       }
+    },
+    CtConstructor(name, arity) => canonical_node("H", [name, __to_string(arity)]),
+    CtApplied(head, args) => {
+      let fields = [
+        canonical_type(head, s, bound_ids, bound_names, free_ids, free_names, resolving)
+      ]
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(fields, canonical_type(Array::get(args, i), s, bound_ids, bound_names, free_ids, free_names, resolving))
+        i = i + 1
+      }
+      canonical_node("P", fields)
     },
     CtTuple(items) => {
       let fields = array_empty()
@@ -487,7 +513,7 @@ export fn canonical_effective_value_env_snapshot(env: TypeEnv, s: Subst) -> Stri
   let bindings = canonical_sorted_bindings(canonical_collect_effective_bindings(env))
   let free_ids = array_empty()
   let free_names = array_empty()
-  let fields = ["v2"]
+  let fields = ["v3"]
   let mut i = 0
   while i < Array::length(bindings) {
     let (name, ty) = Array::get(bindings, i)
@@ -531,7 +557,7 @@ fn canonical_trait_impl_param_position(params: Array[String], name: String) -> I
   let mut position = -1
   let mut matches = 0
   while i < Array::length(params) {
-    if Array::get(params, i) == name {
+    if type_param_name(Array::get(params, i)) == name {
       position = i
       matches = matches + 1
     } else {
@@ -636,6 +662,7 @@ fn canonical_trait_impl_gen_entry(trait_name: String, params: Array[String], bou
   canonical_node("G", [
     trait_name,
     __to_string(Array::length(params)),
+    canonical_param_arities(params),
     encoded_bounds,
     encoded_target
   ])
@@ -650,7 +677,7 @@ fn canonical_trait_impl_gen_entry(trait_name: String, params: Array[String], bou
 /// EnvFlat and EnvEmpty terminate traversal; trait definitions, values, cache
 /// payloads, and all other CheckedProgram state are excluded.
 export fn canonical_retained_trait_impl_entries_snapshot(env: TypeEnv, s: Subst) -> String {
-  let fields = ["v3"]
+  let fields = ["v4"]
   let free_ids = array_empty()
   let free_names = array_empty()
   let mut cur = env
@@ -703,15 +730,16 @@ export fn canonical_retained_trait_impl_entries_snapshot(env: TypeEnv, s: Subst)
 fn canonical_trait_method_generic_entry(params: Array[String], bounds: Array[(String, Array[String])]) -> String {
   let fields = [
     __to_string(Array::length(params)),
+    canonical_param_arities(params),
     canonical_trait_impl_bounds(params, bounds)
   ]
   let mut position = 0
   while position < Array::length(params) {
-    let name = Array::get(params, position)
+    let name = type_param_name(Array::get(params, position))
     let mut matches = 0
     let mut i = 0
     while i < Array::length(params) {
-      if Array::get(params, i) == name {
+      if type_param_name(Array::get(params, i)) == name {
         matches = matches + 1
       } else {
         ()
@@ -795,7 +823,7 @@ fn canonical_retained_trait_method_gens_entry(trait_name: String, methods: Array
 /// This is not source interface identity, trace schema, cache key, or reuse
 /// decision. EnvFlat and EnvEmpty terminate traversal.
 export fn canonical_retained_trait_method_gens_snapshot(env: TypeEnv) -> String {
-  let fields = ["v2"]
+  let fields = ["v3"]
   let mut cur = env
   let mut done = false
   while !done {
@@ -912,7 +940,11 @@ fn canonical_typedef_type(ty: Type, s: Subst, enum_binders: Array[Int], rigid_pa
 fn canonical_typedef(def: TypeDef, binders: Array[Int], s: Subst, free_ids: Array[Int], free_names: Array[String]) -> String {
   match def {
     TDEnum(name, params, variants) => {
-      let fields = [name, __to_string(Array::length(params))]
+      let fields = [
+        name,
+        __to_string(Array::length(params)),
+        canonical_param_arities(params)
+      ]
       let mut i = 0
       while i < Array::length(variants) {
         let (variant_name, payloads) = Array::get(variants, i)
@@ -928,7 +960,11 @@ fn canonical_typedef(def: TypeDef, binders: Array[Int], s: Subst, free_ids: Arra
       canonical_node("E", fields)
     },
     TDStruct(name, fields_raw, mut_fields, params) => {
-      let fields = [name, __to_string(Array::length(params))]
+      let fields = [
+        name,
+        __to_string(Array::length(params)),
+        canonical_param_arities(params)
+      ]
       let mut i = 0
       while i < Array::length(fields_raw) {
         let (field_name, field_ty) = Array::get(fields_raw, i)
@@ -944,10 +980,15 @@ fn canonical_typedef(def: TypeDef, binders: Array[Int], s: Subst, free_ids: Arra
     TDAlias(name, params, body) => canonical_node("A", [
       name,
       __to_string(Array::length(params)),
+      canonical_param_arities(params),
       canonical_typedef_type(body, s, array_empty(), params, free_ids, free_names)
     ]),
     TDEffect(name, ops, params) => {
-      let fields = [name, __to_string(Array::length(params))]
+      let fields = [
+        name,
+        __to_string(Array::length(params)),
+        canonical_param_arities(params)
+      ]
       let mut i = 0
       while i < Array::length(ops) {
         let (op_name, args, ret) = Array::get(ops, i)
@@ -1010,7 +1051,7 @@ fn canonical_malformed_provenance(position: Int, kind: String, defs_count: Int, 
 /// Malformed provenance is represented explicitly rather than treated as an
 /// empty binder list.
 export fn canonical_checked_type_defs_snapshot(observation: CheckedProgramTypeDefsObservation) -> String {
-  let fields = ["v1"]
+  let fields = ["v2"]
   let checked = observation.checked_program
   let defs = checked.type_defs
   let binders_by_def = observation.type_def_binders

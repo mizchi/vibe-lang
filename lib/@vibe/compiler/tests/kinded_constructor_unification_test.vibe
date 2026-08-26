@@ -1,0 +1,97 @@
+import ./checker_parity_test_support.vibe {
+  check_source_error_message, check_source_located_err_contains
+}
+
+import @vibe/compiler/core {
+  CtApplied, CtArray, CtConstructor, CtForAll, CtInt, CtString, CtVar, SubstEmpty, generalize, instantiate, subst_apply, types_equal, unify
+}
+
+test "a unary constructor variable preserves distinct argument types" {
+  let source = "fn pair[F[_], A, B](left: F[A], right: F[B]) -> (F[A], F[B]) { (left, right) }\nlet arrays = pair([1], [\"vibe\"])\nlet options = pair(Some(1), Some(\"vibe\"))"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a trait method can quantify over a unary constructor" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "constructor parameter arity errors name the edit site" {
+  let source = "fn bad[F[_], A](value: F[A, String]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(check_source_located_err_contains(source, "line 1:"))
+  assert(String::contains(message, "type constructor parameter `F` expects 1 type argument(s), got 2 in parameter `value`"))
+}
+
+test "constructor values cannot escape into value types" {
+  let source = "fn bad[F[_]](value: Int) -> F { value }"
+  let message = check_source_error_message(source)
+  assert(check_source_located_err_contains(source, "line 1:"))
+  assert(String::contains(message, "type constructor parameter `F` must be applied to 1 type argument(s) in the return type"))
+}
+
+test "arity-zero parameters remain fail-closed in constructor position" {
+  let source = "fn bad[F, A](value: F[A]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "type parameter `F` cannot take type arguments in parameter `value`"))
+}
+
+test "one constructor variable cannot unify Array with Option" {
+  let source = "fn pair[F[_], A, B](left: F[A], right: F[B]) -> Int { 0 }\nlet bad = pair([1], Some(\"vibe\"))"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "argument type mismatch"))
+}
+
+test "one applied argument variable remains shared" {
+  let source = "fn same[F[_], A](left: F[A], right: F[A]) -> Int { 0 }\nlet bad = same([1], [\"vibe\"])"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "argument type mismatch"))
+}
+
+test "a constructor parameter can flow through a type alias" {
+  let source = "type Apply[F[_], A] = F[A]\nfn keep[F[_], A](value: Apply[F, A]) -> F[A] { value }\nfn keep_array(value: Apply[Array, Int]) -> Array[Int] { value }\nfn keep_option(value: Apply[Option, String]) -> Option[String] { value }\ntest \"alias\" { let xs: Apply[Array, Int] = [1] }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "constructor parameters flow through nominal type arguments" {
+  let source = "struct Holder[F[_], A] { value: F[A] }\nfn array_holder(value: Holder[Array, Int]) -> Holder[Array, Int] { value }\nfn generic_holder[F[_], A](value: Holder[F, A]) -> Holder[F, A] { value }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "kinded alias arguments reject complete types" {
+  let source = "type Apply[F[_], A] = F[A]\nfn bad(value: Apply[Int, String]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(check_source_located_err_contains(source, "line 2:"))
+  assert(String::contains(message, "type parameter `F` of `Apply` expects a constructor with 1 argument(s), but `Int` has 0"))
+}
+
+test "complete type arguments reject bare constructor variables" {
+  let source = "fn bad[F[_]](value: Array[F]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "expects a complete type, but `F` is a constructor with 1 argument(s)"))
+}
+
+test "applied constructor variables survive generalization and instantiation" {
+  let applied = CtApplied(CtVar(4), [CtVar(5)])
+  let scheme = generalize(SubstEmpty, applied)
+  match scheme {
+    CtForAll(ids, _, _) => assert(Array::length(ids) == 2),
+    _ => assert(false)
+  }
+  let (instantiated, _, _) = instantiate(scheme, 20)
+  match unify(instantiated, CtArray(CtInt), SubstEmpty) {
+    Some(subst) => assert(types_equal(subst_apply(subst, instantiated), CtArray(CtInt))),
+    None => assert(false)
+  }
+}
+
+test "constructor heads participate in occurs checks" {
+  match unify(CtVar(7), CtApplied(CtVar(7), [CtString]), SubstEmpty) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match unify(CtApplied(CtVar(8), [CtInt]), CtArray(CtInt), SubstEmpty) {
+    Some(subst) => assert(types_equal(subst_apply(subst, CtVar(8)), CtConstructor("Array", 1))),
+    None => assert(false)
+  }
+}

@@ -36,9 +36,9 @@ const telemetryKeys = [
 const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key";
 const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
-const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v3 canonical exported surface including applied trait bounds)";
-const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v2 canonical effective TypeEnv value bindings including applied trait bounds)";
-const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v6 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
+const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v4 canonical exported surface including kinded applications)";
+const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)";
+const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v7 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
 const expectedCorpus = new Map([
   ["no_op", { sourceChanged: [], implementationChanged: [], invalidated: [] }],
@@ -395,7 +395,7 @@ function ownerNames(paths) {
 /// Classify the bounded library-body edit without promoting any observation to
 /// production policy. The consumer must name exactly the edited dependency in
 /// both snapshots: extra, missing, reordered, or changed edges fail closed.
-/// TypeEnv-v6 transport state is reported independently from interface-v3.
+/// TypeEnv-v7 transport state is reported independently from interface-v4.
 export function classifyPrivateDependencyEditExternallyUnchanged(before, after, dependencyName, consumerName) {
   const beforeDependency = moduleByName(before, dependencyName);
   const afterDependency = moduleByName(after, dependencyName);
@@ -427,7 +427,7 @@ export function classifyPrivateDependencyEditExternallyUnchanged(before, after, 
     fail("private dependency edit did not change dependency implementation identity");
   }
   if (beforeDependency.interface_fingerprint !== afterDependency.interface_fingerprint) {
-    fail("private dependency edit changed dependency interface-v3 identity");
+    fail("private dependency edit changed dependency interface-v4 identity");
   }
 
   const consumerIdentityFields = [

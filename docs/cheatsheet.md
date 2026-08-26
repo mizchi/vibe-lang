@@ -870,7 +870,7 @@ fn keep[T: Measured](x: T) -> T { x }
 let ok = keep([1, 2, 3])
 ```
 
-### Higher-kinded type parameters (`F[A]`)
+### Higher-kinded type parameters (`F[A]` and `F[_]`)
 
 **A type formal may stand in constructor position — `F[A]`.** Unification
 binds `F` to a type constructor (`F := Array` yields `Array[A]`). The
@@ -880,6 +880,27 @@ instance exists; a user `fn map[F, A, B](xs: F[A], f: (A) -> B) -> F[B]`
 is what instantiates `F`. A formal used both unapplied (`x: F`) and
 applied (`y: F[A]`) is rejected as mixed-kind. Ascribing `F[A]` to a
 concrete constructor (`let ys: Array[Int] = xs`) is rejected.
+
+A constructor parameter may also declare its arity with underscore slots
+(`F[_]`, `F[_, _]`). Applied constructor variables participate in ordinary
+unification, so their element arguments remain distinct and the shared
+constructor head must match:
+
+```vibe
+fn pair[F[_], A, B](left: F[A], right: F[B]) -> (F[A], F[B]) {
+  (left, right)
+}
+
+let arrays = pair([1], ["vibe"])
+let options = pair(Some(1), Some("vibe"))
+
+type Apply[F[_], A] = F[A]
+let optional: Apply[Option, Int] = Some(42)
+```
+
+Kinded binders and applied types are preserved across package interfaces.
+Passing a complete type where a constructor is required is rejected with the
+expected and actual arities. Unkinded `F[A]` remains legal.
 
 <!-- doctest-skip: mixed-kind is deliberately rejected -->
 ```vibe skip
