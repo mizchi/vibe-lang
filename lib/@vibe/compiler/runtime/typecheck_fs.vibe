@@ -80,7 +80,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 }
 
 import @vibe/compiler/contract {
-  classify_contract_stmts, extract_require_pins, parse_contract_program
+  classify_contract_stmts, contract_unsupported_stmt_index, extract_require_pins, parse_contract_program, parse_contract_program_spans
 }
 
 import @vibe/compiler/loader {
@@ -5883,6 +5883,39 @@ fn contract_parse_diagnostic(source: String, tokens: Array[Token], starts: Array
   }
 }
 
+/// #2317: anchor a `classify_contract_stmts` rejection on the statement it
+/// rejected.
+///
+/// `parse_contract_program_spans` carries the token index each statement
+/// started at, and `contract_unsupported_stmt_index` asks the classifier which
+/// statement it stops on -- so the position is READ, not searched for. The
+/// three search-based attempts in the #2315 review each produced a
+/// non-monotone predicate that binary search could resolve to valid code.
+///
+/// Falls back to unlocated rather than to a guess, the same as every other
+/// diagnostic this lane cannot place.
+fn contract_classify_diagnostic(source: String, starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], msg: String) -> Array[String] with Exception {
+  if diag_already_located(msg) {
+    return [msg]
+  } else {
+    ()
+  }
+  let idx = contract_unsupported_stmt_index(stmts)
+  if idx >= 0 && idx < Array::length(stmt_at) {
+    let tok = Array::get(stmt_at, idx)
+    if tok >= 0 && tok < Array::length(starts) {
+      return [
+        String::concat(offset_line_col_prefix(source, Array::get(starts, tok)), msg)
+      ]
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  [locate_type_error(source, msg)]
+}
+
 fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
     // A contract LEXES like a program, so it gets the recovering lexer and
@@ -5912,9 +5945,22 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (_cdecls, _copaques, cstmts) = parse_contract_program(ctokens)
-      let (_raws, _type_defs) = classify_contract_stmts(cstmts)
-      contract_semantic_errors(source, ctokens, cstarts, cstmts)
+      let (_cdecls, _copaques, cstmts, cstmt_at) = parse_contract_program_spans(ctokens)
+      // The classifier is caught SEPARATELY from the parse. Both throw
+      // unlocated messages, but they need different anchors: a parse error
+      // belongs at the token the parser stopped on, a rejected statement at
+      // that statement's own first token (#2317). Letting one handler take
+      // both left the classifier's message at the synthetic 0:0 -- the reader
+      // is told the contract is broken and not told where.
+      let cls_err = handle {
+        let (_raws, _type_defs) = classify_contract_stmts(cstmts)
+        ""
+      } with { Exception::Throw(m) => m }
+      if cls_err != "" {
+        contract_classify_diagnostic(source, cstarts, cstmts, cstmt_at, cls_err)
+      } else {
+        contract_semantic_errors(source, ctokens, cstarts, cstmts)
+      }
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
     ()
