@@ -175,6 +175,25 @@ fn alias_map_without_names(aliases: Array[(String, String)], names: Array[String
   }
 }
 
+fn alias_map_put_last(aliases: Array[(String, String)], local: String, target: String) -> Unit {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(aliases) && !found {
+    let (alias, _) = Array::get(aliases, i)
+    if alias == local {
+      Array::set(aliases, i, (local, target))
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  if !found {
+    Array::push(aliases, (local, target))
+  } else {
+    ()
+  }
+}
+
 fn pat_binds_name(pat: Pat, name: String) -> Bool {
   match pat {
     PBind(bound) => bound == name,
@@ -2030,6 +2049,22 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
     }
     ri = ri + 1
   }
+  // Entry re-export origins stay unmangled, so they were missing from
+  // rename_idx and a nested public name could not close to the origin def.
+  // Identity mappings let the facade-closure walk (and a same-file re-export
+  // lookup) return the bare origin name.
+  let mut oi = 0
+  while oi < Array::length(excluded_paths) {
+    let origin_path = Array::get(excluded_paths, oi)
+    let origin_name = Array::get(excluded_names, oi)
+    let origin_key = plan_rename_key(origin_path, origin_name)
+    if !MutMap::has(rename_idx, origin_key) {
+      MutMap::set(rename_idx, origin_key, origin_name)
+    } else {
+      ()
+    }
+    oi = oi + 1
+  }
   // Close the rename table over re-export facades so an import THROUGH a
   // facade (`import ./index.vibe { eq }` where index re-exports float's `eq`)
   // resolves to the renamed origin in one lookup.
@@ -2114,52 +2149,45 @@ export fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String {
   StringBuilder::freeze(buf)
 }
 
-/// (local -> mangled) reference renames for one importing file, derived from
-/// its `import` statements against the plan.
+fn collect_plan_item_renames(plan: ExportRenamePlan, base_dir: String, self_path: String, raw_path: String, items: Array[ImportItem], out: Array[(String, String)]) -> Unit {
+  let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, self_path)
+  let mut j = 0
+  while j < Array::length(items) {
+    let item = Array::get(items, j)
+    let original = item.name
+    let alias_opt = item.alias
+    let local = match alias_opt {
+      Some(alias) => alias,
+      None => original
+    }
+    if String::index_of(original, "::") < 0 {
+      match MutMap::get(plan.rename_idx, plan_rename_key(target, original)) {
+        Some(mangled) => alias_map_put_last(out, local, mangled),
+        None => ()
+      }
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+}
+
+/// (local -> mangled-or-origin) reference renames for one file, derived from
+/// its `import` and re-export statements against the plan. Last bind wins,
+/// matching `env_bind` prepend / `env_lookup` first-match in the checker.
 export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = empty_aliases()
-  let locals_seen = empty_strings()
-  let rename_paths = plan.rename_paths
-  let rename_names = plan.rename_names
-  let rename_mangled = plan.rename_mangled
-  if Array::length(rename_paths) == 0 {
-    out
-  } else {
-    let base_dir = dir_of_path(path)
-    let mut i = 0
-    while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SImport(raw_path, items) => {
-          let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, path)
-          let mut j = 0
-          while j < Array::length(items) {
-            let item = Array::get(items, j)
-            let original = item.name
-            let alias_opt = item.alias
-            let local = match alias_opt {
-              Some(alias) => alias,
-              None => original
-            }
-            if String::index_of(original, "::") < 0 && !string_array_contains(locals_seen, local) {
-              match MutMap::get(plan.rename_idx, plan_rename_key(target, original)) {
-                Some(mangled) => {
-                  Array::push(out, (local, mangled))
-                  Array::push(locals_seen, local)
-                },
-                None => ()
-              }
-            } else {
-              ()
-            }
-            j = j + 1
-          }
-        },
-        _ => ()
-      }
-      i = i + 1
+  let base_dir = dir_of_path(path)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, items) => collect_plan_item_renames(plan, base_dir, path, raw_path, items, out),
+      SReExport(raw_path, items) => collect_plan_item_renames(plan, base_dir, path, raw_path, items, out),
+      _ => ()
     }
-    out
+    i = i + 1
   }
+  out
 }
 
 export fn import_value_rename_locals(renames: Array[(String, String)]) -> Array[String] {
