@@ -80,11 +80,16 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 }
 
 import @vibe/compiler/contract {
-  classify_contract_stmts, contract_unsupported_stmt_index, extract_require_pins, parse_contract_program, parse_contract_program_spans
+  classify_contract_stmts,
+  contract_unsupported_stmt_index,
+  extract_require_pins,
+  parse_contract_program,
+  parse_contract_program_spans,
+  vpkg_types_contract_of_source
 }
 
 import @vibe/compiler/loader {
-  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs, vpkg_types_contract_for_path
+  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
 }
 
 import @vibe/compiler/incremental {
@@ -1319,12 +1324,20 @@ fn is_vpkg_types_stub_path(path: String) -> Bool {
 /// offset mapping back to the contract; that needs the generator to emit one,
 /// and is tracked with the rest of #2317.
 ///
-/// Falls back to the stub path when the registry has no entry, which is what a
-/// process that checks a stub it did not itself materialize will see. That is
-/// the behavior this replaces, so a miss degrades rather than misreports.
-fn type_diagnostic_display_path(path: String, located_msg: String) -> String {
+/// The owner is read from the module's OWN text, not from a registry. A types
+/// module is also checked by an isolated worker under `VIBE_MODULE_JOB_DIR`,
+/// which is handed `source.vibe` plus its dependencies' environments and never
+/// runs the loader -- so a process-local registry is empty there, and the same
+/// contract would be named in one lane and not in the other. Lanes disagreeing
+/// about one file is the bug #2317 is about, so the fix must not add a new
+/// instance of it (Codex review on #2324).
+///
+/// Falls back to the stub path when the marker is absent, which is what a stub
+/// generated before it existed will have. That is the behavior this replaces,
+/// so a miss degrades rather than misreports.
+fn type_diagnostic_display_path(path: String, source: String, located_msg: String) -> String {
   if is_vpkg_types_stub_path(path) && !diag_already_located(located_msg) {
-    let owner = vpkg_types_contract_for_path(path)
+    let owner = vpkg_types_contract_of_source(source)
     if owner == "" {
       path
     } else {
@@ -4083,7 +4096,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
     } with { Exception::Throw(msg) => {
       let located = locate_type_error(job.source, msg)
       Diagnosed(job.path, [
-        String::concat(String::concat(type_diagnostic_display_path(job.path, located), ": "), located)
+        String::concat(String::concat(type_diagnostic_display_path(job.path, job.source, located), ": "), located)
       ])
     } }
   }

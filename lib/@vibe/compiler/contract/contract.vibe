@@ -946,6 +946,19 @@ export fn contract_type_family_defs(type_defs: Array[Stmt]) -> Array[Stmt] {
 /// `contract_facade_marker` / `vpkg_shared_import_marker`).
 export let vpkg_types_module_marker: String = "// vibe: vpkg contract types module (#1840)\n"
 
+/// #2317: header prefix naming the contract a types module was generated from.
+///
+/// Carried IN-BAND, for the same reason the deferred-name sentinel is (#2125):
+/// the value has to travel with the TEXT through every lane. A materialized
+/// types module is checked in-process by the serial walk, but also by an
+/// isolated worker under `VIBE_MODULE_JOB_DIR`, which is handed `source.vibe`
+/// and its dependencies' environments and never runs the loader -- so any
+/// process-local registry is empty there, and a diagnostic would name the
+/// contract in one lane and the generated file in the other. Lanes disagreeing
+/// about the same file is the bug #2317 is about; the fix must not add a new
+/// instance of it (Codex review on #2324).
+export let vpkg_types_contract_marker: String = "// vibe: generated from "
+
 /// #2125: the type-name heads `tds` reference minus the names `tds` declare
 /// -- the names this module can neither declare nor import: a
 /// contract-`opaque` name whose definition lives in a sibling impl
@@ -1104,9 +1117,12 @@ export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names
 /// names at field/payload positions without any process-lifetime registry.
 /// `uniq` keeps the binding name collision-free when several contracts'
 /// modules meet in one merge.
-export fn contract_types_module_text(tds: Array[Stmt], uniq: String) -> String {
+export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_path: String) -> String {
   let lines = array_empty()
   Array::push(lines, vpkg_types_module_marker)
+  // Provenance, so a process holding only this text can still name the
+  // contract. Emitted even when empty so the header shape is uniform.
+  Array::push(lines, String::concat(vpkg_types_contract_marker, contract_path))
   let (decl_names, deferred) = ctm_deferred_type_names(tds)
   if Array::length(deferred) == 0 {
     ()
@@ -1123,6 +1139,30 @@ export fn contract_types_module_text(tds: Array[Stmt], uniq: String) -> String {
     i = i + 1
   }
   String::concat(String::join(lines, "\n"), "\n")
+}
+
+/// #2317: the contract a materialized types module was generated from, read
+/// from the module's OWN text, or "" when the marker is absent.
+///
+/// Text, not a registry: this has to answer the same way in the isolated
+/// worker lane, which never runs the loader. "" when absent, so a stub
+/// generated before this marker existed keeps the caller's fallback rather
+/// than producing a guess.
+export fn vpkg_types_contract_of_source(source: String) -> String {
+  let lines = String::split(source, "\n")
+  let n = Array::length(lines)
+  let mut i = 0
+  let mut found = ""
+  while i < n && found == "" {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, vpkg_types_contract_marker) {
+      found = String::trim(String::substring(line, String::length(vpkg_types_contract_marker), String::length(line)))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// #1840: the `type <Name>` item list for importing / re-exporting the
