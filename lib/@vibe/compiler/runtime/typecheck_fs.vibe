@@ -1106,7 +1106,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
   out
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool) -> TypeEnv {
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool) -> TypeEnv {
   let cached = lookup_env_cache(cache, resolved)
   let dep_env = match cached {
     Some(e) => e,
@@ -1182,7 +1182,15 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       }
       let with_name = match imported_ty {
         Some(_) => env_bind_with_origin(nacc, bound_name, ty, selected_module_binding_origin(resolved, name, surface_only_item)),
-        None => env_bind(nacc, bound_name, ty)
+        None => if surface_only_item && (contains_str(dep_selectable_type_defs, name) || trait_defined(dep_env, name)) {
+          // Declaration aliases travel in the separate publication projection
+          // below. Retain only an origin marker here so checker diagnostics can
+          // distinguish this claimed-but-nonlocal spelling from an unrelated
+          // unknown declaration; env_lookup deliberately hides the marker.
+          env_bind_with_origin(nacc, bound_name, ty, selected_module_binding_origin(resolved, name, true))
+        } else {
+          env_bind(nacc, bound_name, ty)
+        }
       }
       let with_companions = match ty {
         CtEnum(enum_name) => bind_enum_constructor_companions(with_name, resolved, dep_bindings, enum_name, trait_mappings, surface_only_item),
@@ -1195,7 +1203,39 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       bind_names(j + 1, with_companions)
     }
   }
-  bind_names(0, prepend_dependency_trait_nodes(dep_env, trait_mappings, prepend_dependency_type_defs(dep_env, names, acc)))
+  let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, declaration_names, array_empty())
+  bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(dep_env, declaration_names, acc)))
+}
+
+fn reexport_items_with_alias(items: Array[ImportItem], want_alias: Bool) -> Array[ImportItem] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if (item.alias != None) == want_alias {
+      Array::push(out, item)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Declaration authority from an aliased re-export is needed by the module's
+/// published interface, but the re-export statement introduces no local type
+/// or trait binder. Keep that projection apart from the checker environment;
+/// check_module_impl joins it back only while constructing the public env.
+fn prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)]) -> TypeEnv {
+  let cached = lookup_env_cache(cache, resolved)
+  let dep_env = match cached {
+    Some(env) => env,
+    None => EnvEmpty
+  }
+  let dep_bindings = env_flat_bindings(dep_env)
+  let ignored = array_empty()
+  let mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, ignored)
+  prepend_dependency_trait_nodes(dep_env, mappings, prepend_dependency_type_defs(dep_env, names, acc))
 }
 
 /// Shared by the filesystem and in-memory TypeDb lanes. The latter accepts
@@ -1218,28 +1258,35 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
 /// `build_import_env`, additionally collecting the imported names the
 /// dependency does not export (#1521 -- see
 /// `bind_import_names_from_cache_collecting`).
-fn build_import_env_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
+fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> (TypeEnv, TypeEnv) {
   let trait_claims = array_empty()
   let len = Array::length(stmts)
-  let rec go: (Int, TypeEnv) -> TypeEnv = (i, acc) -> {
+  let rec go: (Int, TypeEnv, TypeEnv) -> (TypeEnv, TypeEnv) = (i, local_acc, surface_acc) -> {
     if i >= len {
-      acc
+      (local_acc, surface_acc)
     } else {
-      let next = match Array::get(stmts, i) {
+      let (next_local, next_surface) = match Array::get(stmts, i) {
         SImport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims, false)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false), surface_acc)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          bind_import_names_from_cache_collecting(acc, resolved, raw_path, names, cache, unresolved, trait_claims, true)
+          let local_declarations = reexport_items_with_alias(names, false)
+          let surface_declarations = reexport_items_with_alias(names, true)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache))
         },
-        _ => acc
+        _ => (local_acc, surface_acc)
       }
-      go(i + 1, next)
+      go(i + 1, next_local, next_surface)
     }
   }
-  go(0, EnvEmpty)
+  go(0, EnvEmpty, EnvEmpty)
+}
+
+fn build_import_env_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv {
+  let (local_env, _) = build_import_envs_collecting(stmts, base_dir, cache, unresolved)
+  local_env
 }
 
 fn upsert_env_cache(cache: Array[(String, TypeEnv)], path: String, env: TypeEnv) -> Array[(String, TypeEnv)] {
@@ -2424,11 +2471,39 @@ fn prepend_explicit_builtin_value_markers(value_surface: Array[String], env: Typ
 /// in-memory TypeDb lanes. Only declarations named by this module's explicit
 /// export surface leave the check; imported authority stays local unless the
 /// module re-exports it.
-export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv {
+fn append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
+  match head {
+    EnvEmpty => tail,
+    EnvBind(name, binding, rest) => EnvBind(name, binding, append_env_tail(rest, tail)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, append_env_tail(rest, tail), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, append_env_tail(rest, tail)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, append_env_tail(rest, tail)),
+    EnvTypeDefs(defs, selectable, rest) => EnvTypeDefs(defs, selectable, append_env_tail(rest, tail)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, append_env_tail(rest, tail)),
+    EnvFlat(bindings) => {
+      let mut out = tail
+      let mut i = Array::length(bindings) - 1
+      while i >= 0 {
+        let (name, binding) = Array::get(bindings, i)
+        out = EnvBind(name, binding, out)
+        i = i - 1
+      }
+      out
+    },
+    // Cached names are derived acceleration state. Reattaching the semantic
+    // chain and letting publication discard/rebuild caches preserves meaning.
+    EnvCached(_, _, rest) => append_env_tail(rest, tail)
+  }
+}
+
+fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv {
+  // Local declarations stay ahead of the publication-only projection, which
+  // preserves lexical shadowing when both select the same public spelling.
+  let publication_env = append_env_tail(full_checked_env, reexport_declarations)
   let value_surface = interface_public_value_names(stmts)
-  let trait_surface = interface_public_trait_names(stmts, full_checked_env)
-  let type_surface = interface_public_type_names(stmts, full_checked_env)
-  let published = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, full_checked_env)
+  let trait_surface = interface_public_trait_names(stmts, publication_env)
+  let type_surface = interface_public_type_names(stmts, publication_env)
+  let published = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env)
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
@@ -2438,6 +2513,10 @@ export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEn
     published
   }
   prepend_explicit_builtin_value_markers(value_surface, with_builtin_types)
+}
+
+export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv {
+  checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, EnvEmpty)
 }
 
 fn interface_decl_line(prefix: String, name: String, body: String) -> String {
@@ -3984,7 +4063,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
   // the body is checked, so the diagnostic names the import rather than
   // whatever the body happened to do with it.
   let unresolved_imports = array_empty()
-  let import_env = build_import_env_collecting(stmts, dir_of_path(job.path), job.dep_envs, unresolved_imports)
+  let (import_env, reexport_declarations) = build_import_envs_collecting(stmts, dir_of_path(job.path), job.dep_envs, unresolved_imports)
   // The CANONICAL fingerprint, computed the same way the serial walk
   // computes it (build_fingerprint, same file) from the same inputs: this
   // module's own source and each dependency's fingerprint in declaration
@@ -4013,7 +4092,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // consumer of `Checked`'s env (env cache, persistent store, worker
       // transport, TDRE5, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
-      let checked_env = checked_module_public_env(stmts, full_checked_env)
+      let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {
