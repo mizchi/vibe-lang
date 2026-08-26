@@ -541,6 +541,11 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 (`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
 `Array::map(xs, (v) -> v * 2)`.
 
+**0.1.0 destination (ADR-0110):** pipeline combinators are higher-kinded
+(`xs |> map(f)` over a constructor parameter `F`), not per-container
+`Array::map`. Today's `Array::map` is the eager lowering (ADR-0099) until
+HKT lands.
+
 **Method-style calls** (#736): `xs.length()` and `xs |> length` resolve to
 `List::length(xs)` when `xs`'s type is a USER type and the method is declared
 as a top-level fn in the **`Type::method` spelling** (`fn List::length(xs:
@@ -877,7 +882,9 @@ parameter always stands for a complete type; if the shape were accepted, `F`
 would unify with the whole applied type and the bracket arguments would be
 ignored, so a signature spelled `(F[A], (A) -> B) -> F[B]` would silently
 accept the identity function. Higher-kinded parameters are not implemented;
-which release implements them is decided on #2269. The diagnostic reads
+they land before the 0.1.0 tag (ADR-0110, #2269). Until then this diagnostic
+fail-closes the shape so the freeze does not ship vacuous constructor
+application. The diagnostic reads
 ``type parameter `F` cannot take type arguments in parameter `x` ``.
 
 <!-- doctest-skip: deliberately rejected shapes (#2268 fail-close) -->

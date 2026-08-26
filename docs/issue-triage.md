@@ -1,7 +1,7 @@
 # Issue triage — deciding kind and priority mechanically
 
-Last updated: 2026-08-25 (applied state rewritten against the open set;
-the 2026-08-07 P0/P1 lists are closed).
+Last updated: 2026-08-26 (HKT scheduled before 0.1.0, ADR-0110; the
+2026-08-25 applied-state P0/P1 tables are not re-derived here).
 
 So that "what do I do next" does not have to be re-derived every time, **each
 label means exactly one thing**. Every issue is labelled independently on three
@@ -86,6 +86,7 @@ edits.** Merge or land that PR first, then take the leftover.
 
 | # | what it is holding up |
 |---|---|
+| #2269 | pipeline combinators over `F[_]` before 0.1.0 (ADR-0110); #2270 is not the substitute |
 | #1959 | persist semantic module / SCC reuse (#1960) |
 
 ### epics (indexes, not things to work on)

@@ -53,6 +53,9 @@ read, and every feature below is one the compiler itself depends on.
 - Syntax was narrowed where two spellings meant one thing: string interpolation
   is `\{expr}`, type-declaration bodies separate with `;`, top-level named
   functions are `fn` (ADR-0064), and struct literals are `Type::{ ... }`.
+- **Pipeline combinators are higher-kinded** (ADR-0110). The 0.1.0 destination
+  is `xs |> map(f)` over a constructor parameter `F`, not `Array::map`. Not
+  yet implemented — #2269; #2268 fail-closes `F[T]` until it is.
 - Other additions: generic struct type parameters, trait bounds in package
   contracts, `derive(Eq)`, conditional impls, `is` expressions, `loop` /
   `break(v)` / `continue(...)`, and inline wasm

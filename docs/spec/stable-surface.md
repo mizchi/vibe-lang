@@ -215,9 +215,12 @@ The stable symbols listed under "Key Builtins" in the
 - **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
   **combinator layer (`Iterator::map` and friends) is not frozen** — it is
   retired by ADR-0099's two-layer split and has zero rows in the registry
-  (measured: `Iterator::` 0 hits). Eager iteration is the call forms
-  `Array::map` / `Array::filter` / `Array::fold` (cannot be frozen as
-  first-class values; see Array above).
+  (measured: `Iterator::` 0 hits). The **0.1.0 combinator surface is
+  pipeline-first over `F[_]` (ADR-0110)**; today's call forms
+  `Array::map` / `Array::filter` / `Array::fold` are the eager lowering
+  (cannot be frozen as first-class values; see Array above) and are not the
+  form the freeze holds. Until HKT lands, #2268 fail-closes `F[T]` where `F`
+  is a type formal.
 - **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), and the
   `let*` railway bind. `Result::and_then` **cannot be frozen** — `Result` was
   removed from the language in #1324, and `Result::` has zero registry rows.

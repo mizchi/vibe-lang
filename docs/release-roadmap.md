@@ -32,8 +32,9 @@ is on 0.x, SemVer shifts one step: a breaking change to that surface is a
 
 ### What 0.1.0 needs
 
-"Usable by anyone but the author" is the bar, so the remaining work is about
-someone else's first hour, not about compiler internals:
+"Usable by anyone but the author" is the bar. Two kinds of remaining work:
+someone else's first hour, and the language surface that hour is supposed to
+meet. The second is no longer "internals we can defer":
 
 1. **Install and run on a machine that is not the author's.** The
    `cli-install` workflow already covers multi-OS install smoke; what it does
@@ -51,6 +52,12 @@ someone else's first hour, not about compiler internals:
    (`vibe check` / `symbols` / `type-at` / `binding-at` / `deps` / `grep`).
 6. **Apache License 2.0.** The `0.1.0` tag is the first release usable by
    anyone but the author; it does not ship under MIT.
+7. **Higher-kinded pipeline combinators (ADR-0110).** `Array::map` is not the
+   0.1.0 destination spelling. The tag does not cut until a constructor
+   parameter can stand in `F[A]` and `xs |> map(f)` type-checks for at least
+   Array and Option (#2269). This is a kernel project (cost survey on that
+   issue); the delay is accepted. #2270's concrete `Iter[A]` without HKT is
+   not a substitute.
 
 ### What 0.2.0 holds
 
