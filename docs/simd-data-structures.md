@@ -280,7 +280,10 @@ in library code:
    assembles to the same bytes as `-1640531535`) and gives a located error for
    what is genuinely out of range — for `v128.const` lanes, which silently
    truncated, and for an integer literal longer than a vibe `Int`, which
-   silently wrapped, as well.
+   silently wrapped, as well. Until the next bootstrap bump the committed seed
+   predates the fix, and `vibe test` compiles with the seed by default — so the
+   benches here still spell that constant the signed way, and
+   `bench/bench_simd_hash_probe.vibe` says why at the top.
 2. **No `call`.** Kernels cannot compose, so every structure re-inlines its own
    hash, its own group probe, its own tail handling. Allowing a call to another
    inline-wasm `fn` in the same module would remove most of the duplication.

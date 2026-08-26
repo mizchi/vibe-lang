@@ -15,12 +15,21 @@
 // first vs second isolates the call boundary; second vs third isolates the
 // query representation.
 //
-// Two inline-wasm frictions are visible in the source and are part of the
-// finding (docs/simd-data-structures.md, Layer 0): the kernel cannot call
-// another vibe fn, so `cap`, the group mask and the hash constant are spelled
-// twice -- once in vibe, once as literals inside the WAT; and the WAT needs the
-// SIGNED i32 spelling of 0x9E3779B1 (-1640531535), because an out-of-range
-// `i32.const` passes `vibe check` clean and only fails at module load.
+// One inline-wasm friction is visible in the source and is part of the finding
+// (docs/simd-data-structures.md, Layer 0, #2348): the kernel cannot call another
+// vibe fn, so `cap`, the group mask and the hash constant are spelled twice --
+// once in vibe, once as literals inside the WAT.
+//
+// The WAT spells the hash constant -1640531535 where vibe spells it 2654435761.
+// Same bit pattern, 0x9E3779B1. That is NOT the old #2341 workaround, which this
+// PR fixed -- both spellings of an `iN` immediate are accepted now, per the text
+// format's `iN ::= n:uN | i:sN`. It is because `vibe test` compiles with the
+// COMMITTED SEED by default (CLAUDE.md, "Which compiler answered?"), and the seed
+// predates the fix: measured, `(i32.const -1640531535)` here makes this whole file
+// FAIL under `scripts/vibe_test.sh` until the next bootstrap bump. The regression
+// for both spellings lives in lib/@vibe/compiler/tests/inline_wasm_test.vibe,
+// which tests the assembler through the checkout's own source and so answers for
+// the compiler being changed rather than for whichever one ran the file.
 
 import @vibe/core {
   MutMap, MutMap::has, MutMap::new_int, MutMap::set
