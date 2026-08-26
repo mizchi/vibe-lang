@@ -837,6 +837,138 @@ fn rewrite_impl_method_binding(stmt: Stmt, owner_aliases: Array[(String, String)
   }
 }
 
+fn collect_local_type_aliases(stmts: Array[Stmt]) -> Array[(String, Array[String], TypeExpr)] {
+  let out = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, target) => Array::push(out, (name, params, target)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn lookup_local_type_alias(aliases: Array[(String, Array[String], TypeExpr)], name: String) -> Option[(Array[String], TypeExpr)] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(aliases) {
+    let (alias_name, params, target) = Array::get(aliases, i)
+    if alias_name == name {
+      found = Some((params, target))
+      i = Array::length(aliases)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn local_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(params) {
+    if Array::get(params, i) == name && i < Array::length(args) {
+      found = Some(Array::get(args, i))
+      i = Array::length(params)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn substitute_local_alias_target(target: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match target {
+    TyName(name) => match local_alias_arg(params, args, name) {
+      Some(arg) => arg,
+      None => target
+    },
+    TyApp(name, items) => TyApp(name, for item in items {
+      substitute_local_alias_target(item, params, args)
+    }),
+    TyFn(fn_params, ret, effect) => TyFn(for param in fn_params {
+      substitute_local_alias_target(param, params, args)
+    }, substitute_local_alias_target(ret, params, args), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_local_alias_target(item, params, args)
+    }),
+    TyUnit => target
+  }
+}
+
+fn normalize_local_alias_target_with_fuel(target: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    target
+  } else match target {
+    TyName(name) => match lookup_local_type_alias(aliases, name) {
+      Some(alias) => {
+        let (params, alias_target) = alias
+        if Array::length(params) == 0 {
+          normalize_local_alias_target_with_fuel(alias_target, aliases, fuel - 1)
+        } else {
+          target
+        }
+      },
+      None => target
+    },
+    TyApp(name, args) => match lookup_local_type_alias(aliases, name) {
+      Some(alias) => {
+        let (params, alias_target) = alias
+        if Array::length(params) == Array::length(args) {
+          normalize_local_alias_target_with_fuel(substitute_local_alias_target(alias_target, params, args), aliases, fuel - 1)
+        } else {
+          target
+        }
+      },
+      None => TyApp(name, for arg in args {
+        normalize_local_alias_target_with_fuel(arg, aliases, fuel - 1)
+      })
+    },
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      normalize_local_alias_target_with_fuel(param, aliases, fuel - 1)
+    }, normalize_local_alias_target_with_fuel(ret, aliases, fuel - 1), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      normalize_local_alias_target_with_fuel(item, aliases, fuel - 1)
+    }),
+    TyUnit => target
+  }
+}
+
+fn normalize_local_alias_target(target: TypeExpr, aliases: Array[(String, Array[String], TypeExpr)]) -> TypeExpr {
+  normalize_local_alias_target_with_fuel(target, aliases, Array::length(aliases) + 1)
+}
+
+fn collect_local_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(String, Array[String], TypeExpr)]) -> Array[(String, String)] {
+  let out = empty_aliases()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, _, trait_name, target) => {
+        let normalized_target = normalize_local_alias_target(target, aliases)
+        let source_owner = impl_method_owner(tparams, trait_name, target)
+        let normalized_owner = impl_method_owner(tparams, trait_name, normalized_target)
+        if source_owner != normalized_owner {
+          Array::push(out, (source_owner, normalized_owner))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn rewrite_local_alias_impl_stmt(stmt: Stmt, aliases: Array[(String, Array[String], TypeExpr)], owner_aliases: Array[(String, String)]) -> Stmt {
+  match rewrite_impl_method_binding(stmt, owner_aliases) {
+    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, normalize_local_alias_target(target, aliases)),
+    rewritten => rewritten
+  }
+}
+
 export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String, String)]) -> Array[Stmt] {
   let owner_aliases = collect_impl_method_owner_aliases(stmts, aliases)
   let combined = empty_aliases()
@@ -851,8 +983,13 @@ export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String,
     oi = oi + 1
   }
   let am = aliasidx_build(combined)
-  for stmt in stmts {
+  let imported = for stmt in stmts {
     rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
+  }
+  let local_aliases = collect_local_type_aliases(imported)
+  let local_owner_aliases = collect_local_impl_method_owner_aliases(imported, local_aliases)
+  for stmt in imported {
+    rewrite_local_alias_impl_stmt(stmt, local_aliases, local_owner_aliases)
   }
 }
 
@@ -965,6 +1102,10 @@ fn append_stdin_provider_import_alias_markers(merged: Array[Stmt], items: Array[
 }
 
 export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stmts: Array[Stmt]) -> Unit {
+  // Even an import-free file needs impl owners normalized through its local
+  // transparent aliases. The empty import map keeps every ordinary name
+  // untouched while rewrite_import_alias_stmts performs that owner pass.
+  let rewritten = rewrite_import_alias_stmts(stmts, empty_aliases())
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -972,7 +1113,7 @@ export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stm
       SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
-      _ => Array::push(merged, stmt)
+      _ => Array::push(merged, Array::get(rewritten, i))
     }
     i = i + 1
   }
@@ -1605,7 +1746,11 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
   if Array::length(type_renames) == 0 && Array::length(ctor_renames) == 0 {
     value_renamed
   } else {
-    for stmt in value_renamed {
+    let owner_aliases = collect_impl_method_owner_aliases(value_renamed, type_renames)
+    let owner_renamed = for stmt in value_renamed {
+      rewrite_impl_method_binding(stmt, owner_aliases)
+    }
+    for stmt in owner_renamed {
       namespace_private_type_ctor_stmt_local(stmt, type_renames, ctor_renames)
     }
   }

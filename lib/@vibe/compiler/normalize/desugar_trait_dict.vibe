@@ -2601,68 +2601,71 @@ fn impl_target_fn_key(name: String) -> String {
 }
 
 fn infer_impl_target_expr(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
-  match arg {
-    EInt(_) => Some(TyName("Int")),
-    EBool(_) => Some(TyName("Bool")),
-    EString(_) => Some(TyName("String")),
-    EFloat(_) => Some(TyName("Double")),
-    EArray(items) => if Array::length(items) == 0 {
-      None
-    } else {
-      match infer_impl_target_expr(Array::get(items, 0), struct_sets, var_types, fn_returns) {
-        Some(elem_type) => {
-          let mut i = 1
-          let mut same = true
-          while i < Array::length(items) && same {
-            same = match infer_impl_target_expr(Array::get(items, i), struct_sets, var_types, fn_returns) {
-              Some(next) => impl_target_key(next) == impl_target_key(elem_type),
-              None => false
-            }
-            i = i + 1
-          }
-          if same {
-            Some(TyApp("Array", [elem_type]))
-          } else {
-            None
-          }
-        },
-        None => None
-      }
-    },
-    ERecord(name, _, type_args) => if name != "" {
-      if Array::length(type_args) > 0 {
-        Some(TyApp(name, type_args))
+  match dtd_ascribed_type(arg) {
+    Some(ascribed) => Some(ascribed),
+    None => match arg {
+      EInt(_) => Some(TyName("Int")),
+      EBool(_) => Some(TyName("Bool")),
+      EString(_) => Some(TyName("String")),
+      EFloat(_) => Some(TyName("Double")),
+      EArray(items) => if Array::length(items) == 0 {
+        None
       } else {
-        Some(TyName(name))
-      }
-    } else {
-      None
-    },
-    EIdent(name, _) => match lookup_var_type(var_types, impl_target_var_key(name)) {
-      Some(key) => impl_target_from_key(key),
-      None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        match infer_impl_target_expr(Array::get(items, 0), struct_sets, var_types, fn_returns) {
+          Some(elem_type) => {
+            let mut i = 1
+            let mut same = true
+            while i < Array::length(items) && same {
+              same = match infer_impl_target_expr(Array::get(items, i), struct_sets, var_types, fn_returns) {
+                Some(next) => impl_target_key(next) == impl_target_key(elem_type),
+                None => false
+              }
+              i = i + 1
+            }
+            if same {
+              Some(TyApp("Array", [elem_type]))
+            } else {
+              None
+            }
+          },
+          None => None
+        }
+      },
+      ERecord(name, _, type_args) => if name != "" {
+        if Array::length(type_args) > 0 {
+          Some(TyApp(name, type_args))
+        } else {
+          Some(TyName(name))
+        }
+      } else {
+        None
+      },
+      EIdent(name, _) => match lookup_var_type(var_types, impl_target_var_key(name)) {
+        Some(key) => impl_target_from_key(key),
+        None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+          Some(head) => Some(TyName(head)),
+          None => None
+        }
+      },
+      ECall(EIdent("Some", _), args, _) => if Array::length(args) == 1 {
+        match infer_impl_target_expr(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          Some(payload) => Some(TyApp("Option", [payload])),
+          None => None
+        }
+      } else {
+        None
+      },
+      ECall(EIdent(name, _), _, _) => match fn_return_type(fn_returns, impl_target_fn_key(name)) {
+        Some(key) => impl_target_from_key(key),
+        None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+          Some(head) => Some(TyName(head)),
+          None => None
+        }
+      },
+      _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
         Some(head) => Some(TyName(head)),
         None => None
       }
-    },
-    ECall(EIdent("Some", _), args, _) => if Array::length(args) == 1 {
-      match infer_impl_target_expr(Array::get(args, 0), struct_sets, var_types, fn_returns) {
-        Some(payload) => Some(TyApp("Option", [payload])),
-        None => None
-      }
-    } else {
-      None
-    },
-    ECall(EIdent(name, _), _, _) => match fn_return_type(fn_returns, impl_target_fn_key(name)) {
-      Some(key) => impl_target_from_key(key),
-      None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-        Some(head) => Some(TyName(head)),
-        None => None
-      }
-    },
-    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-      Some(head) => Some(TyName(head)),
-      None => None
     }
   }
 }
