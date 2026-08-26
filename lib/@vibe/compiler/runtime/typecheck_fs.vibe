@@ -84,7 +84,7 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/loader {
-  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
+  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs, vpkg_types_contract_for_path
 }
 
 import @vibe/compiler/incremental {
@@ -1288,6 +1288,36 @@ fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
 
 fn is_vpkg_types_stub_path(path: String) -> Bool {
   String::index_of(path, "vibe_vpkg_types/") >= 0
+}
+
+/// #2317: the path a TYPE diagnostic about `path` should name.
+///
+/// A `.vpkg` whose contract declares transparent types is materialized into a
+/// generated module under `_build/vibe_vpkg_types/` (#1840), and that module
+/// is what the checker walks -- so a `derive` naming an unknown trait reported
+/// `_build/vibe_vpkg_types/types_114_….vibe: unknown trait: Foo`, pointing the
+/// reader at a build artifact to go edit. The stub's content is the contract's
+/// own type-family definitions, so the diagnostic is about text the AUTHOR
+/// wrote, and the contract is the honest place to name.
+///
+/// TYPE diagnostics only. A parse or import failure inside the stub is about
+/// the GENERATED text, not about anything in the contract, and naming the
+/// contract for one of those would send the reader to a file that is fine.
+///
+/// Falls back to the stub path when the registry has no entry, which is what a
+/// process that checks a stub it did not itself materialize will see. That is
+/// the behavior this replaces, so a miss degrades rather than misreports.
+fn type_diagnostic_display_path(path: String) -> String {
+  if is_vpkg_types_stub_path(path) {
+    let owner = vpkg_types_contract_for_path(path)
+    if owner == "" {
+      path
+    } else {
+      owner
+    }
+  } else {
+    path
+  }
 }
 
 /// A materialized #1840 types stub can appear in a module's resolved deps
@@ -4036,7 +4066,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with { Exception::Throw(msg) => Diagnosed(job.path, [
-      String::concat(String::concat(job.path, ": "), locate_type_error(job.source, msg))
+      String::concat(String::concat(type_diagnostic_display_path(job.path), ": "), locate_type_error(job.source, msg))
     ]) }
   }
 }

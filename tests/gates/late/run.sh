@@ -8650,3 +8650,76 @@ if [ -s "$clsdir/clean.buf" ]; then
 fi
 rm -rf "$clsdir"
 echo "[compiler-gate] an unsupported contract statement is refused by both lanes and anchored on itself, first or later ok (#2317)"
+
+# 121/121. A type diagnostic about a contract's transparent types names the
+# CONTRACT, not the generated module it was materialized into (#2317).
+#
+# A `.vpkg` whose contract declares transparent types is materialized into
+# `_build/vibe_vpkg_types/types_<fingerprint>.vibe` (#1840), and the checker
+# walks THAT. So `derive(Foo)` on a contract struct reported
+# `_build/vibe_vpkg_types/types_114_….vibe: unknown trait: Foo` -- the reader
+# is sent to a build artifact to go edit, and the file they wrote is not
+# named at all. Measured before this, same fixture:
+#
+#   full lane    _build/vibe_vpkg_types/types_114_…vibe: unknown trait: Foo
+#   buffer lane  line 11:10: unknown trait: Foo
+#
+# The stub's name is a fingerprint of (contract path, generated text), so it
+# cannot be inverted -- the mapping comes from the registry that recorded it.
+echo "[compiler-gate] 121/121 a type diagnostic names the contract, not the generated types module (#2317)"
+dpvdir="_build/_gate_derive_provenance"
+rm -rf "$dpvdir"; mkdir -p "$dpvdir/bad" "$dpvdir/clean"
+dpv_header='name = @gate/derprov
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+dpv_impl='export fn a(x: Int) -> Int {
+  x + 1
+}
+'
+printf '%s\nstruct P {\n  x: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/bad/index.vpkg"
+printf '%s' "$dpv_impl" > "$dpvdir/bad/impl.vibe"
+# A transparent struct with a derive the checker KNOWS, so the package still
+# materializes a types module -- the control has to exercise the same path,
+# or it only proves that a package with no types stays quiet.
+printf '%s\nstruct P {\n  x: Int\n} derive(Eq)\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/clean/index.vpkg"
+printf '%s' "$dpv_impl" > "$dpvdir/clean/impl.vibe"
+rm -f "$dpvdir/bad.out" "$dpvdir/bad.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/bad/index.vpkg" "$dpvdir/bad.out" main >/dev/null 2>&1 || true
+dpv_report="$(cat "$dpvdir/bad.out.diag" 2>/dev/null || true)"
+# The diagnostic must still FIRE. Asserting only "no generated path" would
+# pass on a change that stopped reporting the unknown derive altogether, which
+# is the cheap wrong answer here.
+if ! printf '%s\n' "$dpv_report" | grep -qF 'unknown trait: Foo'; then
+  echo "[compiler-gate] FAIL: the full lane no longer reports an unknown derive on a contract struct -- repoint this probe (#2317)" >&2
+  printf '%s\n' "$dpv_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$dpv_report" | grep -qF 'vibe_vpkg_types/'; then
+  echo "[compiler-gate] FAIL: the diagnostic still names the generated types module instead of the contract (#2317)" >&2
+  printf '%s\n' "$dpv_report" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$dpv_report" | grep -qF "$dpvdir/bad/index.vpkg"; then
+  echo "[compiler-gate] FAIL: the diagnostic does not name the contract the author wrote (#2317)" >&2
+  printf '%s\n' "$dpv_report" >&2
+  exit 1
+fi
+# ...and a contract whose derives are all known stays clean, so a change that
+# reported every materialized package cannot pass the assertions above.
+rm -f "$dpvdir/clean.out" "$dpvdir/clean.out.diag"
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/clean/index.vpkg" "$dpvdir/clean.out" main >/dev/null 2>&1; then
+  echo "[compiler-gate] FAIL: a contract with a KNOWN derive is refused -- the control for the probe above is not valid (#2317)" >&2
+  cat "$dpvdir/clean.out.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$dpvdir"
+echo "[compiler-gate] a type diagnostic on a materialized contract names the contract; a known derive stays clean ok (#2317)"
