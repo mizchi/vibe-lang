@@ -81,7 +81,10 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 
 import @vibe/compiler/contract {
   classify_contract_stmts,
+  contract_duplicate_decl_index,
+  contract_effective_decls,
   contract_unsupported_stmt_index,
+  extract_package_version,
   extract_require_pins,
   parse_contract_program,
   parse_contract_program_spans,
@@ -6114,6 +6117,62 @@ fn contract_classify_diagnostic(source: String, starts: Array[Int], stmts: Array
   [locate_type_error(source, msg)]
 }
 
+/// #2317: anchor a duplicate declaration on the REPEAT, not on the first one.
+///
+/// `contract_effective_decls` filters, so an index into the effective list is
+/// not an index into the raw one the offsets belong to. The name is matched
+/// back into the raw list, skipping as many earlier occurrences as the
+/// effective list already had -- the filter only ever drops entries, never
+/// reorders them, so the n-th surviving occurrence of a name is the n-th raw
+/// occurrence of it.
+///
+/// Falls back to unlocated rather than to a guess, as every other diagnostic
+/// this lane cannot place does.
+fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Array[(String, String)], decls_raw: Array[(String, String)], decl_at: Array[Int], dup_at: Int) -> Array[String] with Exception {
+  let (dup_name, _) = Array::get(decls, dup_at)
+  let msg = String::concat(String::concat("contract declares '", dup_name), "' more than once; remove the repeated declaration (#2317)")
+  let mut seen_before = 0
+  let mut i = 0
+  while i < dup_at {
+    let (n, _) = Array::get(decls, i)
+    if n == dup_name {
+      seen_before = seen_before + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut want = seen_before
+  let mut r = 0
+  let mut off = 0 - 1
+  let lim = Array::length(decl_at)
+  while r < Array::length(decls_raw) && off < 0 {
+    let (rn, _) = Array::get(decls_raw, r)
+    if rn == dup_name {
+      if want == 0 {
+        if r < lim {
+          off = Array::get(decl_at, r)
+        } else {
+          ()
+        }
+      } else {
+        want = want - 1
+      }
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  if off >= 0 && off < Array::length(starts) {
+    return [
+      String::concat(offset_line_col_prefix(source, Array::get(starts, off)), msg)
+    ]
+  } else {
+    ()
+  }
+  [locate_type_error(source, msg)]
+}
+
 fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[String] with Exception {
   if is_contract_ext(input_path) {
     // A contract LEXES like a program, so it gets the recovering lexer and
@@ -6143,7 +6202,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (_cdecls, _copaques, cstmts, cstmt_at) = parse_contract_program_spans(ctokens)
+      let (cdecls_raw, _copaques, cstmts, cstmt_at, cdecl_at) = parse_contract_program_spans(ctokens)
       // The classifier is caught SEPARATELY from the parse. Both throw
       // unlocated messages, but they need different anchors: a parse error
       // belongs at the token the parser stopped on, a rejected statement at
@@ -6157,7 +6216,18 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
       if cls_err != "" {
         contract_classify_diagnostic(source, cstarts, cstmts, cstmt_at, cls_err)
       } else {
-        contract_semantic_errors(source, ctokens, cstarts, cstmts)
+        // #2317: the loader's own effective-declaration list, not a second
+        // reading of it -- `contract_effective_decls` drops exactly what the
+        // build drops (a legacy `let version: String` under a real `version`
+        // directive), so the two lanes cannot disagree about which shapes
+        // count. Measured: declared twice, that one IS accepted by the build.
+        let cdecls = contract_effective_decls(cdecls_raw, extract_package_version(source))
+        let dup_at = contract_duplicate_decl_index(cdecls)
+        if dup_at >= 0 {
+          contract_duplicate_diagnostic(source, cstarts, cdecls, cdecls_raw, cdecl_at, dup_at)
+        } else {
+          contract_semantic_errors(source, ctokens, cstarts, cstmts)
+        }
       }
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {

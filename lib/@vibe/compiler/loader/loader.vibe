@@ -56,6 +56,8 @@ import @vibe/compiler/contract {
   check_contract,
   classify_contract_stmts,
   contract_directory_shared_import_prefix_text,
+  contract_duplicate_decl_index,
+  contract_effective_decls,
   contract_facade_marker,
   contract_facade_source,
   contract_hash,
@@ -2012,16 +2014,24 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // export. A contract that still spells the old bodyless `let version:
   // String` line alongside a real directive keeps parsing (this filter just
   // makes it a no-op) so existing packages migrate at their own pace.
-  let decls = array_empty()
-  let mut dvi = 0
-  while dvi < Array::length(decls_raw) {
-    let (dname, dsig) = Array::get(decls_raw, dvi)
-    if dname == "version" && dsig == "val String" && pkg_version != "" {
-      ()
-    } else {
-      Array::push(decls, (dname, dsig))
-    }
-    dvi = dvi + 1
+  let decls = contract_effective_decls(decls_raw, pkg_version)
+  // #2317: say what is actually wrong. A duplicate declaration reaches
+  // `contract_facade_source` as an extra entry that can never be allocated
+  // (its `allocated` list is set-like, `decls` counts multiplicity), so the
+  // count check there trips and reports "some declarations have no
+  // implementation file" -- about a name that IS implemented, handing the
+  // reader an edit that does nothing. Measured before this: a contract
+  // declaring `fn plain` twice with a matching impl got exactly that.
+  //
+  // Decided from the contract alone, and from the SAME effective list the
+  // buffer lane uses, so the two cannot disagree about which shapes are
+  // duplicates.
+  let dup_at = contract_duplicate_decl_index(decls)
+  if dup_at >= 0 {
+    let (dup_name, _) = Array::get(decls, dup_at)
+    throw("contract declares '\{dup_name}' more than once; remove the repeated declaration (#2317)")
+  } else {
+    ()
   }
   let (impl_raws0, type_defs) = classify_contract_stmts(extra)
   // #730: explicit `import ./impl.vibe {}` declarations win; a contract that

@@ -8833,3 +8833,109 @@ if printf '%s\n' "$nested_report" | grep -qF 'NOT_THIS_FILE'; then
 fi
 rm -rf "$dpvdir" "$nesteddir"
 echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, ignores a hand-written provenance claim flat or nested, and a known derive stays clean ok (#2317, #2324)"
+
+# 122/122. A duplicated bodyless declaration is refused by both lanes, with a
+# message that names the duplication (#2317).
+#
+# The build already refused it -- through `contract_facade_source`, whose
+# `allocated` list is set-like while `decls` counts multiplicity, so the count
+# check trips and reports "some declarations have no implementation file" about
+# a name that IS implemented. Measured before this, `fn plain` declared twice
+# with a matching impl got exactly that: an edit that does nothing.
+#
+# Both lanes now decide it from `contract_effective_decls`, the SAME filter the
+# facade builder applies -- which is the whole point of the shared function.
+# The filter matters: a legacy `let version: String` under a real `version`
+# directive is dropped before counting, so declaring THAT twice is accepted by
+# the build, and a check counting raw declarations would refuse a contract the
+# build takes. Measured both ways.
+echo "[compiler-gate] 122/122 a duplicated contract declaration is refused by both lanes, and named (#2317)"
+dupdir="_build/_gate_contract_dup"
+rm -rf "$dupdir"; mkdir -p "$dupdir"
+dup_header='name = @gate/contractdup
+version = 0.0.1
+description =
+  #|gate-only package for #2317
+deps = {}
+
+generated_hash =
+'
+dup_mk() {
+  mkdir -p "$dupdir/$1"
+  printf '%s\n%s' "$dup_header" "$2" > "$dupdir/$1/index.vpkg"
+  printf '%s' "$3" > "$dupdir/$1/impl.vibe"
+}
+dup_plain_impl='export fn plain(x: Int) -> Int {
+  x + 1
+}
+'
+dup_mk once 'fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+dup_mk twice 'fn plain(x: Int) -> Int
+
+fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+# Qualified names go through the same facade allocation, so they duplicate the
+# same way. An earlier reading of this row claimed they were accepted; that
+# rested on a fixture whose impl did not match its contract at all.
+dup_mk qtwice 'fn Int::twice(x: Int) -> Int
+
+fn Int::twice(x: Int) -> Int
+' 'export fn Int::twice(x: Int) -> Int {
+  x + x
+}
+'
+# The filtered shape: a legacy `let version: String` beside a real `version`
+# directive is dropped before counting, so twice is FINE. This is the control
+# that a raw-declaration count would fail.
+dup_mk vtwice 'let version: String
+
+let version: String
+
+fn plain(x: Int) -> Int
+' "$dup_plain_impl"
+for probe in once twice qtwice vtwice; do
+  if [ "$probe" = twice ] || [ "$probe" = qtwice ]; then want="refused"; else want="clean"; fi
+  rm -f "$dupdir/$probe.imp" "$dupdir/$probe.imp.diag" "$dupdir/$probe.buf"
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dupdir/$probe/index.vpkg" "$dupdir/$probe.imp" main >/dev/null 2>&1; then
+    imp="clean"
+  else
+    imp="refused"
+  fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_DIAGNOSTICS=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dupdir/$probe/index.vpkg" "$dupdir/$probe.buf" main >/dev/null 2>&1 || true
+  if [ -s "$dupdir/$probe.buf" ]; then buf="refused"; else buf="clean"; fi
+  if [ "$imp" != "$want" ] || [ "$buf" != "$want" ]; then
+    echo "[compiler-gate] FAIL: contract '$probe' -- import lane says $imp, buffer lane says $buf, both should say $want (#2317)" >&2
+    cat "$dupdir/$probe.imp.diag" 2>/dev/null >&2 || true
+    cat "$dupdir/$probe.buf" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# The message must name the DUPLICATION. "no implementation file" is the old
+# answer, and it points the reader at an edit that does nothing.
+for lane in imp.diag buf; do
+  if ! grep -qF "declares 'plain' more than once" "$dupdir/twice.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $lane lane does not name the duplication for a repeated declaration (#2317)" >&2
+    cat "$dupdir/twice.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+  if grep -qF 'no implementation file' "$dupdir/twice.$lane" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the $lane lane still blames a missing implementation for a duplicate (#2317)" >&2
+    cat "$dupdir/twice.$lane" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+# Anchored on the REPEAT, not on the first declaration. `fn plain` is on lines
+# 9 and 11 of the generated fixture; pointing at 9 would send the reader to the
+# declaration they want to keep.
+if ! grep -q '^line 11:1:' "$dupdir/twice.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the duplicate is not anchored on the repeated declaration (expected line 11) (#2317)" >&2
+  cat "$dupdir/twice.buf" 2>/dev/null >&2 || true
+  exit 1
+fi
+rm -rf "$dupdir"
+echo "[compiler-gate] a duplicated contract declaration is refused by both lanes and anchored on the repeat; the filtered version shape stays accepted ok (#2317)"
