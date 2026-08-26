@@ -1,0 +1,114 @@
+// Sum 4096 Ints three ways (see docs/simd-data-structures.md):
+//
+//   sum_4k_vibe_array_loop          the loop a library writes today
+//   sum_4k_simd_over_tagged_array   SIMD over vibe's 8-byte tagged slots
+//   sum_4k_simd_over_i32_column     SIMD over a packed i32 column in `Bytes`
+//
+// The tagged lane needs no untag/retag at all: `Int` n is represented n<<1 and
+// addition is tag-transparent, so `i64x2.add` over the raw slots is already
+// correct. What it cannot do is halve the memory traffic -- that is what the
+// packed i32 column buys, and it is the case vibe has no type for.
+
+fn vibe_sum(xs: Array[Int]) -> Int {
+  let mut i = 0
+  let mut acc = 0
+  let n = Array::length(xs)
+  while i < n {
+    acc = acc + Array::get(xs, i)
+    i = i + 1
+  }
+  acc
+}
+
+// Array block layout: [capacity@0][length@4][data_ptr@8], slots are tagged i64.
+// n<<1 is tag-transparent under addition, so no untag/retag is needed at all.
+fn simd_sum_tagged(xs: Bytes, n: Int) -> Int = wasm
+"(local $p i32) (local $i i32) (local $e i32) (local $a v128)"
+"local.get $xs i32.wrap_i64 i32.load offset=8 local.set $p"
+"local.get $n i64.const 1 i64.shr_s i32.wrap_i64 local.set $e"
+"(block $done"
+"  (loop $w"
+"    (br_if $done (i32.gt_s (i32.add (local.get $i) (i32.const 2)) (local.get $e)))"
+"    (local.set $a (i64x2.add (local.get $a) (v128.load align=1 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 3))))))"
+"    (local.set $i (i32.add (local.get $i) (i32.const 2)))"
+"    (br $w)"
+"  )"
+")"
+"(i64.add (i64x2.extract_lane 0 (local.get $a)) (i64x2.extract_lane 1 (local.get $a)))"
+
+// i32 column packed into Bytes, 4 lanes per vector.
+fn simd_sum_i32col(b: Bytes, n: Int) -> Int = wasm
+"(local $p i32) (local $i i32) (local $e i32) (local $a v128)"
+"local.get $b i32.wrap_i64 i32.load offset=8 local.set $p"
+"local.get $n i64.const 1 i64.shr_s i32.wrap_i64 local.set $e"
+"(block $done"
+"  (loop $w"
+"    (br_if $done (i32.gt_s (i32.add (local.get $i) (i32.const 4)) (local.get $e)))"
+"    (local.set $a (i32x4.add (local.get $a) (v128.load align=1 (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 2))))))"
+"    (local.set $i (i32.add (local.get $i) (i32.const 4)))"
+"    (br $w)"
+"  )"
+")"
+"(i64.shl (i64.extend_i32_s (i32.add (i32.add (i32x4.extract_lane 0 (local.get $a)) (i32x4.extract_lane 1 (local.get $a))) (i32.add (i32x4.extract_lane 2 (local.get $a)) (i32x4.extract_lane 3 (local.get $a))))) (i64.const 1))"
+
+// NOTE: `fn arr_as_bytes(xs: Array[Int]) -> Bytes = wasm "..."` is REJECTED --
+// "param must be typed Int or Bytes". A SIMD kernel cannot see an Array[T] at
+// all, so the tagged-slot lane below rebuilds the same 8-byte tagged layout in
+// a Bytes by hand to measure the representation rather than the container.
+fn mk_tagged(n: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    let v = (i % 100) * 2
+    Bytes::push(b, v & 255)
+    Bytes::push(b, (v >> 8) & 255)
+    let mut k = 0
+    while k < 6 {
+      Bytes::push(b, 0)
+      k = k + 1
+    }
+    i = i + 1
+  }
+  b
+}
+
+fn mk_arr(n: Int) -> Array[Int] {
+  let xs: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(xs, i % 100)
+    i = i + 1
+  }
+  xs
+}
+
+fn mk_col(n: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    let v = i % 100
+    Bytes::push(b, v & 255)
+    Bytes::push(b, (v >> 8) & 255)
+    Bytes::push(b, 0)
+    Bytes::push(b, 0)
+    i = i + 1
+  }
+  b
+}
+
+let xs = mk_arr(4096)
+let col = mk_col(4096)
+let tagged = mk_tagged(4096)
+let sink = [
+  0
+]
+
+test "sums agree" {
+  assert_eq(vibe_sum(xs), 202560)
+  assert_eq(simd_sum_tagged(tagged, 4096), 202560)
+  assert_eq(simd_sum_i32col(col, 4096), 202560)
+}
+
+bench "sum_4k_vibe_array_loop" { Array::set(sink, 0, vibe_sum(xs)) }
+bench "sum_4k_simd_over_tagged_array" { Array::set(sink, 0, simd_sum_tagged(tagged, 4096)) }
+bench "sum_4k_simd_over_i32_column" { Array::set(sink, 0, simd_sum_i32col(col, 4096)) }
