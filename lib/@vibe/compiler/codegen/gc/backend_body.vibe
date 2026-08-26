@@ -60,6 +60,7 @@ import @vibe/compiler/codegen/common_base {
   gc_slot_map_get,
   inline_direct_performs,
   lookup_ctor,
+  lower_optional_performs,
   region_exn_tag_gc,
   region_max_depth,
   region_saves_base_of,
@@ -1073,6 +1074,10 @@ export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_s
 fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int]) -> Bytes with Exception {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
+  // ADR-0088 / #2236: the gc lane has its own lowering convergence point.
+  // Its source compiler is non-interactive, so absent resolution facts use
+  // the same NotGranted default as the linear lane.
+  lower_optional_performs(stmts, array_empty())
   gc_add_ref_twins(stmts)
   // #1015: `gc_to_string_is_wrapper` is a PARAMETER, not computed here --
   // see the doc comment on gc_to_string_resolves_to_show_wrapper (which
@@ -1337,10 +1342,25 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   } else {
     ()
   }
-  let ctor_names_list = Array::slice(["None", "Some"], 0, 2)
-  let ctor_tags_list = Array::slice([0, 1], 0, 2)
-  let ctor_field_counts_list = Array::slice([0, 1], 0, 2)
-  let ctor_type_names_list = Array::slice(["Option", "Option"], 0, 2)
+  // Attempt is checker-owned just like Option. Keep the built-in constructor
+  // table identical to the linear backend so single-file codegen can emit the
+  // result of `perform?` without importing an enum declaration first.
+  let ctor_names_list = Array::slice([
+    "None",
+    "Some",
+    "NotGranted",
+    "Errored",
+    "Granted"
+  ], 0, 5)
+  let ctor_tags_list = Array::slice([0, 1, 2, 3, 4], 0, 5)
+  let ctor_field_counts_list = Array::slice([0, 1, 0, 1, 1], 0, 5)
+  let ctor_type_names_list = Array::slice([
+    "Option",
+    "Option",
+    "Attempt",
+    "Attempt",
+    "Attempt"
+  ], 0, 5)
   let mut type_index = 1
   let mut ei2 = 0
   while ei2 < Array::length(stmts) {

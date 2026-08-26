@@ -96,11 +96,11 @@ not `with` (ADR-0088, #1345)
 `perform? Fs::read_file("p")` は `Attempt` を返します —
 `Granted` / `NotGranted` / `Errored`。
 
-型検査は今日これを受け付けます。**コード生成は受け付けないので、
-コンパイラが拒否します** — 走らないものを作るよりは、という判断です。
+非対話コンパイラには build/apply の grant 情報がないため、未解決の optional
+capability は codegen 前に `NotGranted` へ固定されます。operation とその引数は
+評価されません。
 
-```vibe skip
-// skip: 拒否される。codegen が `perform?` をまだ lower しない (#2145)
+```vibe run
 fn main() -> Int with () allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("config.json")
   match a {
@@ -111,16 +111,13 @@ fn main() -> Int with () allows Console + Fs::read_file? {
 }
 ```
 
-```
-line 2:11: drop the `?` from `allows Fs::read_file?` and call
-`Fs::read_file(..)` directly -- a capability is an ordinary call, not a
-`perform` -- then handle the failure with `try`/`handle` instead of matching
-`Attempt`. `perform?` is not lowered yet: the checker types it as
-`Attempt[T, String]`, but code generation cannot emit it (#2145).
+```output
+0
 ```
 
-`vibe check` も同じことを言うので、ビルドする前に分かります。着地するまでは
-ケーパビリティを必須にして、普通の呼び出しで使ってください。
+固定済み解決表からの lowering は linear / wasm-gc の両 backend で共通です。
+`--allow-*`、BindingLock、対話 preflight を production に接続する作業は #2332 に残り、
+それまでは production compile が `Granted` / `Errored` を選ぶことはありません。
 
 ## 2種類の見分け方
 

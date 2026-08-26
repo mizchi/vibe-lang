@@ -35,7 +35,9 @@ read, and every feature below is one the compiler itself depends on.
   instantiate and is then invariant for the run (ADR-0075/0084/0088). The
   two-clause form `with {A} allows {C}`, the optional grade `?`, and the
   `Attempt[T, E]` that `perform?` returns landed over the #1961 series — they
-  are on the unstable surface and can still change.
+  are on the unstable surface and can still change. Non-interactive compilation
+  now lowers an unresolved optional operation to `NotGranted` on both backends;
+  production grant/preflight wiring remains future work (#2332).
 - **`Result` was removed** (#1324). Errors are the `Exception` effect, and
   `Error` is deprecated at the freeze in favour of it (ADR-0085).
 - **`String` is a byte string** with byte-offset indexing (ADR-0098), which is

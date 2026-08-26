@@ -201,6 +201,7 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   lookup_ctor,
+  lower_optional_performs,
   rc_shadow_reserve,
   region_exn_tag_linear,
   region_max_depth,
@@ -3478,6 +3479,11 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // (nothing named `inspect` survives it), same as desugar_labeled_args's
     // check-then-codegen double run.
     desugar_inspect_calls(stmts)
+    // ADR-0088 / #2236: resolve the optional-capability surface before any
+    // effect or builtin analysis sees the `perform?` marker. This compiler
+    // entry is non-interactive; absent build/apply facts therefore freeze to
+    // NotGranted. The pass accepts an explicit table for the launcher ladder.
+    lower_optional_performs(stmts, array_empty())
     // #1947: merged FS programs are a fresh parse; check erased its own
     // array. Drop leftover `__try_none` markers before codegen.
     erase_railway_origin_markers(stmts)
@@ -3947,15 +3953,30 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   let ctor_names_list = lc_fresh_string_array()
   Array::push(ctor_names_list, "None")
   Array::push(ctor_names_list, "Some")
+  // ADR-0088 / #2236: Attempt is checker-owned just like Option, so its
+  // constructors must exist even in a single-file compile with no explicit
+  // @vibe/core enum declaration in the statement array.
+  Array::push(ctor_names_list, "NotGranted")
+  Array::push(ctor_names_list, "Errored")
+  Array::push(ctor_names_list, "Granted")
   let ctor_tags_list = lc_fresh_int_array()
   Array::push(ctor_tags_list, 0)
   Array::push(ctor_tags_list, 1)
+  Array::push(ctor_tags_list, 2)
+  Array::push(ctor_tags_list, 3)
+  Array::push(ctor_tags_list, 4)
   let ctor_field_counts_list = lc_fresh_int_array()
   Array::push(ctor_field_counts_list, 0)
+  Array::push(ctor_field_counts_list, 1)
+  Array::push(ctor_field_counts_list, 0)
+  Array::push(ctor_field_counts_list, 1)
   Array::push(ctor_field_counts_list, 1)
   let ctor_type_names_list = lc_fresh_string_array()
   Array::push(ctor_type_names_list, "Option")
   Array::push(ctor_type_names_list, "Option")
+  Array::push(ctor_type_names_list, "Attempt")
+  Array::push(ctor_type_names_list, "Attempt")
+  Array::push(ctor_type_names_list, "Attempt")
   // #1062: sparse `ctor_idx * 64 + field_idx` entries for Double/Float-typed
   // positional constructor fields (see CompileCtx.ctor_float_fields). Built
   // alongside ctor_names_list/ctor_field_counts_list above so ctor_idx here
