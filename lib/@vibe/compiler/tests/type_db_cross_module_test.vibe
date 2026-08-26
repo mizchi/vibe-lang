@@ -22,6 +22,8 @@ import @vibe/compiler/core {
   env_cache,
   env_lookup,
   env_lookup_binding,
+  env_selectable_type_defs,
+  env_type_defs,
   env_value_binding,
   trait_defined
 }
@@ -310,6 +312,14 @@ fn typecheck_fs_pair_error(dep_path: String, dep_src: String, main_path: String,
 fn typecheck_db_pair_error(dep_src: String, main_src: String) -> String with Exception {
   handle {
     let db = db_set_source(db_set_source(db_new(), "mem/dep.vibe", dep_src), "mem/main.vibe", main_src)
+    let _ = db_typecheck(db, "mem/main.vibe")
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn typecheck_db_reexport_chain_error(dep_src: String, mid_src: String, main_src: String) -> String with Exception {
+  handle {
+    let db = db_set_source(db_set_source(db_set_source(db_new(), "mem/dep.vibe", dep_src), "mem/mid.vibe", mid_src), "mem/main.vibe", main_src)
     let _ = db_typecheck(db, "mem/main.vibe")
     ""
   } with { Exception::Throw(msg) => msg }
@@ -1175,6 +1185,19 @@ test "exact dep projection gives explicit trait aliases precedence over selected
   assert(imported_forall_bound_label(trait_first, "accept") == "Local")
 }
 
+test "#2310: projected re-export aliases exclude local declaration authority" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_env = EnvTraitDef("Marker", [], false, [], EnvTypeDefs([
+    TDAlias("Original", [], CtInt)
+  ], ["Original"], EnvEmpty), [], [])
+  let import_env = projected_import_env_for_test("export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }", "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  assert(Array::length(env_type_defs(import_env)) == 0)
+  assert(Array::length(env_selectable_type_defs(import_env)) == 0)
+  assert(!trait_defined(import_env, "PublicMarker"))
+}
+
 test "db_typecheck_fs: missing imported trait impl fails cold and with a warm dependency interface" {
   let dep_path = "/tmp/vibe_compiler_trait_authority_missing_impl_dep.vibe"
   let main_path = "/tmp/vibe_compiler_trait_authority_missing_impl_main.vibe"
@@ -1727,6 +1750,88 @@ test "db_typecheck_fs: an aliased re-export stays importable by a consumer (#228
     (mid_path, mid_fp)
   ]))
   inspect(export_surface_error([dep_path, mid_path, main_path], main_path), "")
+}
+
+test "#2310: an aliased type re-export is not a local declaration" {
+  let dir = "/tmp/vibe_compiler_type_reexport_alias_local_scope"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let mid_path = String::concat(dir, "/mid.vibe")
+  let dep_src = "export type Original = Int\n"
+  let mid_src = "export ./dep.vibe { type Original as PublicT }\nexport let local: PublicT = 1\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(mid_path, mid_src, build_test_fingerprint(mid_src, [
+    (dep_path, dep_fp)
+  ]))
+  let err = export_surface_error([dep_path, mid_path], mid_path)
+  assert(String::contains(err, "unknown type `PublicT`"))
+}
+
+test "#2310: an aliased trait re-export is not a local declaration" {
+  let dir = "/tmp/vibe_compiler_trait_reexport_alias_local_scope"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let mid_path = String::concat(dir, "/mid.vibe")
+  let dep_src = "export trait Marker\n"
+  let mid_src = "export ./dep.vibe { trait Marker as PublicMarker }\nexport fn local[T: PublicMarker](value: T) -> Int { let _ = value; 1 }\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(mid_path, mid_src, build_test_fingerprint(mid_src, [
+    (dep_path, dep_fp)
+  ]))
+  let err = export_surface_error([dep_path, mid_path], mid_path)
+  assert(String::contains(err, "unknown trait: PublicMarker"))
+}
+
+test "#2310: aliased type and trait re-exports remain importable downstream" {
+  let dir = "/tmp/vibe_compiler_decl_reexport_alias_public_surface"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let mid_path = String::concat(dir, "/mid.vibe")
+  let main_path = String::concat(dir, "/main.vibe")
+  let dep_src = "type Hidden = Int\nexport type Original = Hidden\nexport trait Marker\nimpl Marker for Int\n"
+  let mid_src = "export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }\n"
+  let main_src = "import ./mid.vibe { type PublicT, trait PublicMarker }\nexport fn use_it[T: PublicMarker](value: T) -> PublicT { let _ = value; 1 }\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
+  Fs::write_bytes(main_path, string_to_bytes(main_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  let mid_fp = build_test_fingerprint(mid_src, [(dep_path, dep_fp)])
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(mid_path, mid_src, mid_fp)
+  remove_typecheck_fs_cache(main_path, main_src, build_test_fingerprint(main_src, [
+    (mid_path, mid_fp)
+  ]))
+  inspect(export_surface_error([dep_path, mid_path, main_path], main_path), "")
+}
+
+test "#2310: in-memory TypeDb retains aliased declaration re-exports" {
+  let dep_src = "export type Original = Int\nexport trait Marker\nimpl Marker for Int\n"
+  let mid_src = "export ./dep.vibe { type Original as PublicT, trait Marker as PublicMarker }\n"
+  let main_src = "import ./mid.vibe { type PublicT, trait PublicMarker }\nexport fn use_it[T: PublicMarker](value: T) -> PublicT { let _ = value; 1 }\n"
+  inspect(typecheck_db_reexport_chain_error(dep_src, mid_src, main_src), "")
+}
+
+test "#2310: plain type and trait re-exports retain local compatibility" {
+  let dir = "/tmp/vibe_compiler_decl_plain_reexport_local_scope"
+  let dep_path = String::concat(dir, "/dep.vibe")
+  let mid_path = String::concat(dir, "/mid.vibe")
+  let dep_src = "export type PublicT = Int\nexport trait Marker\nimpl Marker for Int\n"
+  let mid_src = "export ./dep.vibe { type PublicT, trait Marker }\nexport fn local[T: Marker](value: T) -> PublicT { let _ = value; 1 }\n"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(dep_path, string_to_bytes(dep_src))
+  Fs::write_bytes(mid_path, string_to_bytes(mid_src))
+  let dep_fp = build_test_fingerprint(dep_src, array_empty())
+  remove_typecheck_fs_cache(dep_path, dep_src, dep_fp)
+  remove_typecheck_fs_cache(mid_path, mid_src, build_test_fingerprint(mid_src, [
+    (dep_path, dep_fp)
+  ]))
+  inspect(export_surface_error([dep_path, mid_path], mid_path), "")
 }
 
 test "db_typecheck_fs: private struct enum and alias declarations are not importable" {

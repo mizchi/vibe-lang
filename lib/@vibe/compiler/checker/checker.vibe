@@ -9507,6 +9507,26 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
     },
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
+      // An aliased re-export publishes a trait spelling but does not bind it
+      // in this module (#2310). The import projection retains an origin marker
+      // so this declaration site can report the invalid bound immediately,
+      // instead of accepting the generic function until a concrete call later
+      // fails with a misleading missing-impl error.
+      let mut rti = 0
+      while rti < Array::length(tbounds) {
+        let (_, declared_bounds) = Array::get(tbounds, rti)
+        let mut rbi = 0
+        while rbi < Array::length(declared_bounds) {
+          let bound = Array::get(declared_bounds, rbi)
+          if env_has_reexport_surface_binding(env, bound) {
+            Array::push(errors, String::concat("unknown trait: ", bound))
+          } else {
+            ()
+          }
+          rbi = rbi + 1
+        }
+        rti = rti + 1
+      }
       let tplen = Array::length(tparams)
       let mut tp_env = env
       let mut s0 = s
