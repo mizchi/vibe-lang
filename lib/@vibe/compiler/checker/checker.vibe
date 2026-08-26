@@ -787,6 +787,7 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
     let is_type_formal = match env_lookup(env, name) {
       Some(t) => match t {
         CtVar(_) => true,
+        CtNamed(bound_name, bargs) => bound_name == name && Array::length(bargs) == 0,
         _ => false
       },
       None => false
@@ -2831,6 +2832,54 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
 /// be reported here (EXCEPT a concrete covariant row drop — see
 /// `effect_row_dropped` above, #939). Returns the (possibly extended)
 /// substitution.
+fn nullary_named_differ(a: Type, b: Type) -> Bool {
+  match a {
+    CtNamed(an, aa) => match b {
+      CtNamed(bn, ba) => Array::length(aa) == 0 && Array::length(ba) == 0 && an != bn,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
+  if Array::length(ea) != Array::length(aa) {
+    false
+  } else {
+    let mut i = 0
+    let mut differ = false
+    while i < Array::length(ea) {
+      if nullary_named_differ(Array::get(ea, i), Array::get(aa, i)) {
+        differ = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    differ
+  }
+}
+
+/// #2268: F[A] vs F[B] with rigid A, B must not be swallowed by the
+/// polymorphic tolerate branch (`CtNamed` is kind 0 / non-ground).
+fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
+  match expected {
+    CtNamed(en, ea) => match actual {
+      CtNamed(an, aa) => en == an && Array::length(ea) > 0 && named_args_skolem_differ(ea, aa),
+      _ => false
+    },
+    CtArray(e) => match actual {
+      CtArray(a) => nullary_named_differ(e, a),
+      _ => false
+    },
+    CtOption(e) => match actual {
+      CtOption(a) => nullary_named_differ(e, a),
+      _ => false
+    },
+    _ => false
+  }
+}
+
 export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
   match unify(expected, actual, s) {
     Some(su) => su,
@@ -2876,7 +2925,8 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       let actual_zonked = subst_apply(s, actual)
       let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
       let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
-      if stdin_stream_conflict || nominal_conflict {
+      let rigid_applied_conflict = rigid_applied_mismatch(expected_zonked, actual_zonked)
+      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
         s
       } else if structural {
@@ -9578,6 +9628,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let tplen = Array::length(tparams)
       let mut tp_env = env
+      let mut scheme_env = env
       let mut s0 = s
       let mut c0 = c
       let tparam_ids = array_empty()
@@ -9603,7 +9654,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             s0 = if Array::length(bounds) == 0 {
               s0
             } else subst_add_bound(s0, vid, bounds)
-            tp_env = env_bind(env_bind(tp_env, tpname, tv), String::concat(fapp_formal_marker_prefix, tpname), CtUnit)
+            let marker = String::concat(fapp_formal_marker_prefix, tpname)
+            // Unbounded formals are rigid in the body so F[A] is not
+            // assignable to F[B] (#2268). Trait-bounded formals stay
+            // unification vars so `C: Iterable` dispatch still finds C.
+            let body_ty = if Array::length(bounds) == 0 {
+              CtNamed(tpname, array_empty())
+            } else {
+              tv
+            }
+            tp_env = env_bind(env_bind(tp_env, tpname, body_ty), marker, CtUnit)
+            scheme_env = env_bind(env_bind(scheme_env, tpname, tv), marker, CtUnit)
             c0 = nc
           },
           _ => ()
@@ -9802,13 +9863,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
       let scheme_ret = match ret_ty {
-        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, tparams), fn_env), tparam_ids),
+        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, tparams), scheme_env), tparam_ids),
         None => subst_apply_except(s3, final_ret, tparam_ids)
       }
       let scheme_params = array_empty()
       let mut spi2 = 0
-      while spi2 < Array::length(param_types) {
-        Array::push(scheme_params, subst_apply_except(s3, Array::get(param_types, spi2), tparam_ids))
+      while spi2 < plen {
+        match Array::get(params, spi2) {
+          (_, Some(pte)) => Array::push(scheme_params, subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, tparams), scheme_env), tparam_ids)),
+          _ => Array::push(scheme_params, subst_apply_except(s3, Array::get(param_types, spi2), tparam_ids))
+        }
         spi2 = spi2 + 1
       }
       let fn_ty = if tplen == 0 {

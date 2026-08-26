@@ -1,0 +1,36 @@
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "identity F[A] as F[B] is rejected" {
+  let src = "fn fake_map[F, A, B](x: F[A], f: (A) -> B) -> F[B] {\n  x\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "F[A] to F[A] identity is accepted" {
+  let src = "fn keep[F, A](xs: F[A]) -> F[A] {\n  xs\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(msg == "")
+}
+
+test "calling identity-as-map at A != B is rejected" {
+  let src = "fn fake_map[F, A, B](x: F[A], f: (A) -> B) -> F[B] {\n  x\n}\nfn main {\n  let xs = [1, 2, 3]\n  let _ys: Array[String] = fake_map(xs, (n: Int) -> String { \"x\" })\n  ()\n}\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
