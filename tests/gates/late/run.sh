@@ -8750,5 +8750,46 @@ if printf '%s\n' "$loc_report" | grep -qF "$dpvdir/located/index.vpkg"; then
   printf '%s\n' "$loc_report" >&2
   exit 1
 fi
+# ...and a HAND-WRITTEN module that merely claims generated provenance is not
+# believed (Codex review on #2324).
+#
+# The predicate used to be a substring test for `vibe_vpkg_types/`, so an
+# ordinary source under a directory of that name could carry a
+# `// vibe: generated from ...` comment and have its diagnostics attributed to
+# whatever path the comment named -- a file the reader never edited. The marker
+# is now trusted only for the exact path shape the loader itself writes.
+mkdir -p "$dpvdir/vibe_vpkg_types"
+cat > "$dpvdir/vibe_vpkg_types/spoof.vibe" <<'DPVEOF'
+// vibe: vpkg contract types module (#1840)
+// vibe: generated from lib/@gate/NOT_THIS_FILE/index.vpkg
+struct P {
+  x: Int
+} derive(Foo)
+
+fn main() -> Int {
+  0
+}
+DPVEOF
+rm -f "$dpvdir/spoof.out" "$dpvdir/spoof.out.diag"
+# VIBE_CHECK_ONLY, deliberately: a plain compile of this file reports the bare
+# `unknown trait: Foo` with NO path prefix at all, so the assertion below could
+# never fire no matter what the predicate did. Measured -- the first draft of
+# this probe used a plain compile and passed on a build that DOES believe the
+# spoof. `check_module_impl`, which attaches the path, runs on the check lane.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/vibe_vpkg_types/spoof.vibe" "$dpvdir/spoof.out" main >/dev/null 2>&1 || true
+spoof_report="$(cat "$dpvdir/spoof.out.diag" 2>/dev/null || true)"
+# It must still be diagnosed, or this probe proves nothing about attribution.
+if ! printf '%s\n' "$spoof_report" | grep -qF 'unknown trait: Foo'; then
+  echo "[compiler-gate] FAIL: the spoof fixture produced no unknown-derive diagnostic -- repoint this probe (#2324)" >&2
+  printf '%s\n' "$spoof_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$spoof_report" | grep -qF 'NOT_THIS_FILE'; then
+  echo "[compiler-gate] FAIL: a hand-written module's provenance comment was believed, attributing its diagnostic to another file (#2324)" >&2
+  printf '%s\n' "$spoof_report" >&2
+  exit 1
+fi
 rm -rf "$dpvdir"
-echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, and a known derive stays clean ok (#2317, #2324)"
+echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, ignores a hand-written provenance claim, and a known derive stays clean ok (#2317, #2324)"

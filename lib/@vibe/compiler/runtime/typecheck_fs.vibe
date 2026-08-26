@@ -89,7 +89,7 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/loader {
-  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs
+  ingest_source_text_fs, ingestion_pipeline_telemetry_add, load_or_parse_module_header_fs, vpkg_types_module_path_prefix
 }
 
 import @vibe/compiler/incremental {
@@ -1395,8 +1395,24 @@ fn is_vpkg_types_stub_path(path: String) -> Bool {
 /// Falls back to the stub path when the marker is absent, which is what a stub
 /// generated before it existed will have. That is the behavior this replaces,
 /// so a miss degrades rather than misreports.
+/// #2324: the EXACT shape the loader writes, not a substring test.
+///
+/// `is_vpkg_types_stub_path` matches any path CONTAINING `vibe_vpkg_types/`.
+/// That is fine for its own callers, which only decide whether to load a file
+/// from disk, but far too loose to gate an attribution: an ordinary module
+/// under a directory of that name could carry a `// vibe: generated from ...`
+/// comment and have its diagnostics attributed to whatever path that comment
+/// names -- a file the reader never edited (Codex review on #2324).
+///
+/// The marker is only trusted for a path the loader itself generates, under
+/// the build directory the compiler owns. The prefix is shared with the
+/// generator so the two cannot drift apart.
+fn is_generated_vpkg_types_path(path: String) -> Bool {
+  String::starts_with(path, vpkg_types_module_path_prefix) && String::ends_with(path, ".vibe")
+}
+
 fn type_diagnostic_display_path(path: String, source: String, located_msg: String) -> String {
-  if is_vpkg_types_stub_path(path) && !diag_already_located(located_msg) {
+  if is_generated_vpkg_types_path(path) && !diag_already_located(located_msg) {
     let owner = vpkg_types_contract_of_source(source)
     if owner == "" {
       path
