@@ -45,7 +45,8 @@ import @vibe/core {
 //     declarations would silently renumber; a located error enforces the
 //     grouping). Declared locals index from `extra_base` (the caller's
 //     param-slot count including the closure-env slot).
-//   - i32/i64 const (decimal / hex / `_` separators; vibe Int range only),
+//   - i32/i64 const (decimal / hex / `_` separators; BOTH the signed and the
+//     unsigned spelling of an immediate, per the spec's `iN ::= n:uN | i:sN`),
 //     full i32/i64 integer arithmetic / compare / shift / rotate /
 //     conversion set, f32/f64 arithmetic + compares (no f32/f64.const)
 //   - memory loads/stores with optional `offset=` / `align=` (align in
@@ -192,11 +193,13 @@ fn iw_parse_int(fn_name: String, s: String, off: Int) -> Int with Exception {
       } else {
         ()
       }
+      iw_check_digit_fits(fn_name, s, v, 16, d, off)
       v = v * 16 + d
       any = true
       i = i + 1
     } else {
       if c >= '0' && c <= '9' {
+        iw_check_digit_fits(fn_name, s, v, 10, c - '0', off)
         v = v * 10 + (c - '0')
         any = true
         i = i + 1
@@ -214,6 +217,48 @@ fn iw_parse_int(fn_name: String, s: String, off: Int) -> Int with Exception {
     0 - v
   } else {
     v
+  }
+}
+
+/// The largest vibe `Int`, 2^62-1. Spelled by arithmetic on purpose: until the
+/// next bootstrap bump the committed seed still enforces the pre-#1877 literal
+/// bound of 2^61-1, and seed-driven tooling (`vibe fmt`) lexes all of `lib/**`.
+fn iw_int_max() -> Int {
+  (2305843009213693951<<1)|1
+}
+
+/// Reject `v * base + d` BEFORE it wraps. #1877 made `Int` arithmetic wrap as
+/// 63-bit two's complement, so an over-long literal used to silently become a
+/// different number -- the worst way to break, and invisible in a WAT string.
+fn iw_check_digit_fits(fn_name: String, s: String, v: Int, base: Int, d: Int, off: Int) -> Unit with Exception {
+  if v > (iw_int_max() - d) / base {
+    throw(iw_err(fn_name, "integer literal '\{s}' is out of range for a vibe Int (max \{iw_int_max()})", off))
+  } else {
+    ()
+  }
+}
+
+/// Fold a WAT integer immediate into the signed range wasm actually encodes.
+///
+/// The text format accepts BOTH spellings of an `iN` immediate (spec:
+/// `iN ::= n:uN | i:sN`), so `(i32.const 2654435761)` and
+/// `(i32.const -1640531535)` are the same instruction -- 0x9E3779B1 either way.
+/// This used to encode the first one verbatim as a 5-byte s32 LEB, which no
+/// validator accepts: `vibe check` reported the file CLEAN and the module then
+/// failed at load with a wasmtime backtrace naming a function index the author
+/// never wrote (#2341).
+///
+/// `bits` is 8 / 16 / 32; 64-bit immediates need no folding because every vibe
+/// `Int` already fits in an i64.
+fn iw_fold_signed_imm(fn_name: String, what: String, v: Int, bits: Int, off: Int) -> Int with Exception {
+  let span = 1<<bits
+  let half = span / 2
+  if v >= 0 - half && v < half {
+    v
+  } else if v >= half && v < span {
+    v - span
+  } else {
+    throw(iw_err(fn_name, "\{what} \{v} is out of range for i\{bits}: write a value in \{0 - half}..\{span - 1} (either spelling of the same bit pattern is accepted), or widen the instruction", off))
   }
 }
 
@@ -758,7 +803,15 @@ fn iw_v128_const(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[St
   let mut li = 0
   while li < lane_count {
     let t = iw_want_word(fn_name, kinds, texts, offs, p, end, "v128.const")
-    let v = iw_parse_int(fn_name, t, Array::get(offs, p))
+    let raw = iw_parse_int(fn_name, t, Array::get(offs, p))
+    // `(v >> bi*8) & 255` truncated an out-of-range lane silently, so
+    // `v128.const i8x16 300 ...` used to assemble as 44 (#2341). i64x2 needs no
+    // check: every vibe Int fits in an i64.
+    let v = if lane_bytes == 8 {
+      raw
+    } else {
+      iw_fold_signed_imm(fn_name, "v128.const \{shape} lane", raw, lane_bytes * 8, Array::get(offs, p))
+    }
     let mut bi = 0
     while bi < lane_bytes {
       bytebuf_push(buf, (v>>(bi * 8))&255)
@@ -807,7 +860,8 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
     pos + 2
   } else if name == "i32.const" {
     let t = iw_want_word(fn_name, kinds, texts, offs, pos + 1, end, name)
-    let v = iw_parse_int(fn_name, t, Array::get(offs, pos + 1))
+    let raw = iw_parse_int(fn_name, t, Array::get(offs, pos + 1))
+    let v = iw_fold_signed_imm(fn_name, "i32.const", raw, 32, Array::get(offs, pos + 1))
     bytebuf_push(buf, 0x41)
     leb128_encode_s32(buf, v)
     pos + 2

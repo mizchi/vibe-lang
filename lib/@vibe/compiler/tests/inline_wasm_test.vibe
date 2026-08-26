@@ -139,6 +139,65 @@ test "inline wasm assembler: lane and align immediates are validated (Codex P2 o
   assert(String::contains(e5, "align=0 is invalid"))
 }
 
+test "inline wasm assembler: integer immediates accept both spellings (#2341)" {
+  // The text format defines `iN ::= n:uN | i:sN`, so 0x9E3779B1 may be written
+  // either way and both mean the same instruction. The unsigned spelling used
+  // to be LEB-encoded verbatim as an out-of-range s32: `vibe check` reported
+  // the file CLEAN and the module then failed at LOAD with a wasmtime
+  // backtrace naming a function index the author never wrote.
+  let unsigned_spelling = compile_inline_wat("probe", "(i32.const 2654435761)", [
+    "a"
+  ])
+  let signed_spelling = compile_inline_wat("probe", "(i32.const -1640531535)", [
+    "a"
+  ])
+  assert(unsigned_spelling == signed_spelling)
+  assert(Bytes::length(unsigned_spelling) == 6)
+  assert(unsigned_spelling[0] == 0x41)
+  let hex_spelling = compile_inline_wat("probe", "(i32.const 0x9E3779B1)", ["a"])
+  assert(hex_spelling == signed_spelling)
+  // ... and out of range is a LOCATED error, not a truncation and not a
+  // load-time failure.
+  let e1 = wat_err("(i32.const 5000000000)")
+  assert(String::contains(e1, "i32.const 5000000000 is out of range for i32"))
+  assert(String::contains(e1, "-2147483648..4294967295"))
+  assert(String::contains(e1, "WAT offset"))
+  let e2 = wat_err("(i32.const -2147483649)")
+  assert(String::contains(e2, "is out of range for i32"))
+}
+
+test "inline wasm assembler: v128.const lanes are range-checked (#2341)" {
+  // `(v >> bi * 8) & 255` truncated an out-of-range lane silently, so
+  // `v128.const i8x16 300 ...` assembled as 44.
+  let ok = compile_inline_wat("probe", "(v128.const i8x16 200 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)", [
+    "a"
+  ])
+  assert(Bytes::length(ok) == 18)
+  assert(ok[0] == 0xFD)
+  assert(ok[1] == 12)
+  assert(ok[2] == 200)
+  let e1 = wat_err("(v128.const i8x16 300 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)")
+  assert(String::contains(e1, "v128.const i8x16 lane 300 is out of range for i8"))
+  assert(String::contains(e1, "-128..255"))
+  let e2 = wat_err("(v128.const i16x8 70000 0 0 0 0 0 0 0)")
+  assert(String::contains(e2, "is out of range for i16"))
+  // i64x2 needs no check: every vibe Int already fits in an i64.
+  let wide = compile_inline_wat("probe", "(v128.const i64x2 4611686018427387903 -1)", [
+    "a"
+  ])
+  assert(Bytes::length(wide) == 18)
+}
+
+test "inline wasm assembler: an over-long integer literal is a located error (#2341)" {
+  // #1877 made Int arithmetic wrap, so the digit accumulator used to turn an
+  // over-long literal into a DIFFERENT number with no complaint.
+  let e = wat_err("(i64.const 99999999999999999999)")
+  assert(String::contains(e, "integer literal '99999999999999999999' is out of range for a vibe Int"))
+  assert(String::contains(e, "WAT offset"))
+  let e_hex = wat_err("(i64.const 0xFFFFFFFFFFFFFFFF)")
+  assert(String::contains(e_hex, "is out of range for a vibe Int"))
+}
+
 test "inline wasm assembler: (local ...) declarations resolve and count by type" {
   // one i32 + two v128 locals, params $a (idx 0) + env (idx 1) -> extra_base 2:
   // $p = 2, $u = 3, $v = 4. Body: local.get $v / local.set $p is a type error

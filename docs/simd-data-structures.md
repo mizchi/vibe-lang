@@ -253,12 +253,17 @@ first, because that is where the measurements say the value is.
 Unbox `V128` or retire it. Independently, three inline-wasm gaps block kernels
 in library code:
 
-1. **Out-of-range `i32.const` produces an invalid module with no diagnostic.**
-   Measured: `(i32.const 2654435761)` — in range for a vibe `Int`, out of range
-   for `i32` — passes `vibe check` **clean** and then fails at load with
-   `viberun: from_file: failed to compile: wasm[0]::function[70]::f` and a Rust
-   backtrace. `vibe check` answering "clean" for a program that cannot be built
-   breaks the CLI contract in `CLAUDE.md`; this deserves its own issue.
+1. ~~**Out-of-range `i32.const` produces an invalid module with no
+   diagnostic.**~~ **Fixed** (#2341). It used to be: `(i32.const 2654435761)` —
+   in range for a vibe `Int`, out of range for a *signed* `i32` — passed
+   `vibe check` **clean** and then failed at load with `viberun: from_file:
+   failed to compile: wasm[0]::function[70]::f` and a Rust backtrace, which is
+   `vibe check` lying about whether a program builds. The fix accepts both
+   spellings the text format defines (`iN ::= n:uN | i:sN`, so that literal now
+   assembles to the same bytes as `-1640531535`) and gives a located error for
+   what is genuinely out of range — for `v128.const` lanes, which silently
+   truncated, and for an integer literal longer than a vibe `Int`, which
+   silently wrapped, as well.
 2. **No `call`.** Kernels cannot compose, so every structure re-inlines its own
    hash, its own group probe, its own tail handling. Allowing a call to another
    inline-wasm `fn` in the same module would remove most of the duplication.
