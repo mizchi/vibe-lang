@@ -144,6 +144,7 @@ test "a kinded trait bound reifies Array as a constructor" {
   inspect(check_source_error_message(source), "")
 }
 
+<<<<<<< HEAD
 test "a kinded struct literal reifies Array as a constructor" {
   let source = "struct Holder[F[_], A] { value: F[A] }\nfn make() -> Holder[Array, Int] { Holder[Array, Int]::{ value: [1, 2] } }"
   inspect(check_source_error_message(source), "")
@@ -162,4 +163,18 @@ test "a kinded effect application accepts a user constructor" {
 test "a kinded effect application accepts a constructor formal" {
   let source = "effect Read[F[_]] {\n  Get() -> F[Int]\n}\nfn f[G[_]]() -> Int with Read[G] {\n  0\n}"
   inspect(check_source_error_message(source), "")
+}
+
+test "a missing constructor-indexed instance fails during checking" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nstruct Box[T] { value: T }\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nlet bad = map(Box::{ value: 1 }, (x) -> { x + 1 })"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "no impl `Mappable[Box]` for `Box/1`"))
+  assert(!String::contains(message, "reached code generation unresolved"))
+}
+
+test "duplicate constructor-indexed instances fail during checking" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nimpl Mappable[Array] for Array { map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) } }\nimpl Mappable[Array] for Array { map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) } }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "duplicate declaration: Array$impl$"))
+  assert(!String::contains(message, "reached code generation unresolved"))
 }

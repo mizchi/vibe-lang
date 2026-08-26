@@ -181,9 +181,6 @@ fn expand_interp_stmts(stmts: Array[Stmt]) -> Unit with Exception {
     }
     i = i + 1
   }
-  // Method-bearing-trait dictionary passing (#641 PR-3). No-op unless the
-  // program declares a trait with method signatures.
-  desugar_trait_dicts(stmts)
 }
 
 /// #2141: see the wasi_only twin (preprocess_strip.vibe) -- a stripped
@@ -368,14 +365,18 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   // Double alias is indistinguishable from that alias and is misclassified.
   let gc_float_ret_fn_names = gc_float_returning_names_pre_erasure(stmts)
   let gc_pre_hoist_fn_names = gc_top_level_function_names(stmts)
-  // Same effective order as the linear lane: strip source-level generic
-  // params, then the trait-dict desugar (compile_wasi_module_linked_impl
-  // runs it as its first step).
-  strip_generic_type_params(stmts)
+  // Same effective order as the linear lane: check the source contract first,
+  // lower trait witnesses while generic binders are still present, then erase
+  // those binders for codegen. GC previously lowered inside
+  // expand_interp_stmts BEFORE checking, so the checker reinterpreted a
+  // rank-1 witness field such as `map[A, B]` as a monomorphic struct field.
+  // Constructor-indexed pipeline calls then rejected `Array[Int]` against the
+  // generated `Array[A]`, despite the original source checking cleanly.
   desugar_trait_dicts(stmts)
   // Trait-dict desugaring hoists capture-free effectful lambdas after the
   // pre-erasure snapshot. Add only those generated declarations; ordinary
   // declarations must keep the binder-aware pre-erasure answer.
   gc_add_hoisted_float_returning_names(stmts, gc_pre_hoist_fn_names, gc_float_ret_fn_names)
+  strip_generic_type_params(stmts)
   compile_wasi_module_gc(stmts, effective_entry, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
 }

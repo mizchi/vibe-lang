@@ -84,6 +84,7 @@ import ./checker.vibe {
   report_map_key_types,
   report_unknown_type_names,
   report_unknown_type_names_deferred_validation,
+  resolve_trait_bound_self_reference,
   trait_erased_type_param_env,
   trait_reference_display,
   typed_occurrence_capture_begin_statement,
@@ -3121,17 +3122,18 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
         let mut bi = 0
         while bi < bn {
           let b = Array::get(bounds, bi)
-          let sat = if b == "" {
+          let resolved_bound = resolve_trait_bound_self_reference(b, resolved)
+          let sat = if resolved_bound == "" {
             true
-          } else if b == "Send" {
+          } else if resolved_bound == "Send" {
             // ADR-0068: `Send` is judged structurally from the type
             // definitions (type_send_ok), not from user impls.
             type_send_ok(env, s, defs, resolved)
           } else {
-            type_implements_trait(env, s, resolved, b)
+            type_implements_trait(env, s, resolved, resolved_bound)
           }
-          if b != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(b), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, b, resolved)))))))
+          if resolved_bound != "" && not(sat) {
+            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, resolved_bound, resolved)))))))
           }
           bi = bi + 1
         }

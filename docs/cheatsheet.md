@@ -541,6 +541,20 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 (`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
 `Array::map(xs, (v) -> v * 2)`.
 
+The constructor-indexed `map` is the canonical container-preserving pipeline
+combinator (ADR-0110):
+
+```vibe
+import @vibe/builtin { trait Mappable, map }
+
+let arrays = [1, 2] |> map((x) -> { x + 1 }) |> map((x) -> { x * 2 })
+let option = Some(3) |> map((x) -> { x + 1 })
+```
+
+`Mappable[Array]` lowers to eager `Array::map`; `Mappable[Option]` preserves
+the Option shape. This shared spelling does not collapse ADR-0099's separate
+eager Array and pull AsyncIter implementation layers.
+
 **Method-style calls** (#736): `xs.length()` and `xs |> length` resolve to
 `List::length(xs)` when `xs`'s type is a USER type and the method is declared
 as a top-level fn in the **`Type::method` spelling** (`fn List::length(xs:
@@ -901,6 +915,23 @@ let optional: Apply[Option, Int] = Some(42)
 Kinded binders and applied types are preserved across package interfaces.
 Passing a complete type where a constructor is required is rejected with the
 expected and actual arities. Unkinded `F[A]` remains legal.
+
+Constructor parameters may carry applied trait bounds. `Mappable[F]` selects a
+witness for the constructor itself, while `F[A]` and `F[B]` remain ordinary
+applied value types:
+
+```vibe
+trait LocalMappable[F[_]] {
+  map[A, B](F[A], (A) -> B) -> F[B]
+}
+
+fn local_map[F[_]: LocalMappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] {
+  F::map(xs, f)
+}
+```
+
+Missing or duplicate constructor instances are checker errors; an unresolved
+`F::map` never reaches code generation.
 
 <!-- doctest-skip: mixed-kind is deliberately rejected -->
 ```vibe skip

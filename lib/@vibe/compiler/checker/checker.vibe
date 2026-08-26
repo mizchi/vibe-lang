@@ -53,7 +53,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner_head, trait_ref_args, trait_ref_from_key, trait_ref_name, type_param_arity, type_param_name
+  impl_method_owner_head, trait_ref_args, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
 }
 
 import @vibe/parser {
@@ -1363,9 +1363,184 @@ fn replace_trait_bound_vars_from_env(ty: Type, env: TypeEnv) -> Type {
   }
 }
 
-fn resolve_trait_bound_args(args: Array[TypeExpr], env: TypeEnv, defs: Array[TypeDef], params: Array[String]) -> Array[Type] {
+let trait_bound_self_marker: String = "$trait_bound_self$"
+
+fn bind_trait_bound_self_type_expr(te: TypeExpr, binder: String) -> TypeExpr {
+  match te {
+    TyName(name) => if name == binder {
+      TyName(trait_bound_self_marker)
+    } else {
+      te
+    },
+    TyApp(name, args) => TyApp(name, for arg in args {
+      bind_trait_bound_self_type_expr(arg, binder)
+    }),
+    TyTuple(items) => TyTuple(for item in items {
+      bind_trait_bound_self_type_expr(item, binder)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      bind_trait_bound_self_type_expr(param, binder)
+    }, bind_trait_bound_self_type_expr(ret, binder), effect),
+    TyUnit => TyUnit
+  }
+}
+
+fn bind_trait_bound_self_reference(key: String, binder: String) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => trait_ref_key(bind_trait_bound_self_type_expr(reference, binder)),
+    None => key
+  }
+}
+
+fn replace_trait_bound_self_type(ty: Type, self_ty: Type) -> Type {
+  match ty {
+    CtNamed(name, args) => if name == trait_bound_self_marker && Array::length(args) == 0 {
+      self_ty
+    } else {
+      CtNamed(name, for arg in args {
+        replace_trait_bound_self_type(arg, self_ty)
+      })
+    },
+    CtApplied(head, args) => apply_type_constructor(replace_trait_bound_self_type(head, self_ty), for arg in args {
+      replace_trait_bound_self_type(arg, self_ty)
+    }),
+    CtArray(elem) => CtArray(replace_trait_bound_self_type(elem, self_ty)),
+    CtOption(elem) => CtOption(replace_trait_bound_self_type(elem, self_ty)),
+    CtTuple(items) => CtTuple(for item in items {
+      replace_trait_bound_self_type(item, self_ty)
+    }),
+    CtFn(params, ret, effect) => CtFn(for param in params {
+      replace_trait_bound_self_type(param, self_ty)
+    }, replace_trait_bound_self_type(ret, self_ty), effect),
+    _ => ty
+  }
+}
+
+fn trait_bound_type_expr(ty: Type) -> Option[TypeExpr] {
+  match ty {
+    CtInt => Some(TyName("Int")),
+    CtDouble => Some(TyName("Double")),
+    CtBool => Some(TyName("Bool")),
+    CtString => Some(TyName("String")),
+    CtChar => Some(TyName("Char")),
+    CtBytes => Some(TyName("Bytes")),
+    CtUnit => Some(TyUnit),
+    CtArray(elem) => match trait_bound_type_expr(elem) {
+      Some(arg) => Some(TyApp("Array", [arg])),
+      None => None
+    },
+    CtOption(elem) => match trait_bound_type_expr(elem) {
+      Some(arg) => Some(TyApp("Option", [arg])),
+      None => None
+    },
+    CtTuple(items) => {
+      let out = array_empty()
+      let mut ok = true
+      for item in items {
+        match trait_bound_type_expr(item) {
+          Some(mapped) => Array::push(out, mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        Some(TyTuple(out))
+      } else {
+        None
+      }
+    },
+    CtFn(params, ret, effect) => {
+      let out = array_empty()
+      let mut ok = true
+      for param in params {
+        match trait_bound_type_expr(param) {
+          Some(mapped) => Array::push(out, mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      match trait_bound_type_expr(ret) {
+        Some(mapped_ret) => if ok {
+          Some(TyFn(out, mapped_ret, effect))
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    CtNamed(name, args) => {
+      let out = array_empty()
+      let mut ok = true
+      for arg in args {
+        match trait_bound_type_expr(arg) {
+          Some(mapped) => Array::push(out, mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if !ok {
+        None
+      } else if Array::length(out) == 0 {
+        Some(TyName(name))
+      } else {
+        Some(TyApp(name, out))
+      }
+    },
+    CtConstructor(name, _) => Some(TyName(name)),
+    CtApplied(head, args) => {
+      let name = type_constructor_name(head)
+      let out = array_empty()
+      let mut ok = name != ""
+      for arg in args {
+        match trait_bound_type_expr(arg) {
+          Some(mapped) => Array::push(out, mapped),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        Some(TyApp(name, out))
+      } else {
+        None
+      }
+    },
+    CtEnum(name) => Some(TyName(name)),
+    CtStruct(name) => Some(TyName(name)),
+    _ => None
+  }
+}
+
+export fn resolve_trait_bound_self_reference(key: String, self_ty: Type) -> String {
+  match trait_ref_from_key(key) {
+    Some(TyApp(name, args)) => {
+      let mapped = array_empty()
+      let mut ok = true
+      for arg in args {
+        let resolved = replace_trait_bound_self_type(resolve_type_expr(arg, array_empty()), self_ty)
+        match trait_bound_type_expr(resolved) {
+          Some(next) => Array::push(mapped, next),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        trait_ref_key(TyApp(name, mapped))
+      } else {
+        key
+      }
+    },
+    _ => key
+  }
+}
+
+fn resolve_trait_bound_args(args: Array[TypeExpr], env: TypeEnv, defs: Array[TypeDef], self_ty: Type, params: Array[String]) -> Array[Type] {
   let resolved = for arg in args {
-    replace_trait_bound_vars_from_env(resolve_type_expr(arg, defs), env)
+    replace_trait_bound_self_type(replace_trait_bound_vars_from_env(resolve_type_expr(arg, defs), env), self_ty)
   }
   resolve_type_constructor_args(params, args, resolved, defs, array_empty())
 }
@@ -1450,7 +1625,7 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
                     Some(ps) => ps,
                     None => array_empty()
                   }
-                  let resolved_trait_args = resolve_trait_bound_args(trait_args, env, defs, trait_params)
+                  let resolved_trait_args = resolve_trait_bound_args(trait_args, env, defs, self_ty, trait_params)
                   let resolved_params = for pte in params_te {
                     relax_unknown_named(subst_type_params(subst_self_in_type(resolve_type_expr_shadowed(pte, defs, binders), self_ty), param_names, resolved_trait_args), defs)
                   }
@@ -10308,9 +10483,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
               tbi = tbi + 1
             }
-            s0 = if Array::length(bounds) == 0 {
+            let owned_bounds = for bound in bounds {
+              bind_trait_bound_self_reference(bound, tpname)
+            }
+            s0 = if Array::length(owned_bounds) == 0 {
               s0
-            } else subst_add_bound(s0, vid, bounds)
+            } else subst_add_bound(s0, vid, owned_bounds)
             let marker = String::concat(fapp_formal_marker_prefix, tpname)
             // HKT formals (`F`/`A` in `F[A]`) are rigid so F[A] is not
             // assignable to F[B] or Array[Int]. Plain `T` and trait-bounded

@@ -55,6 +55,11 @@ read, and every feature below is one the compiler itself depends on.
 - Syntax was narrowed where two spellings meant one thing: string interpolation
   is `\{expr}`, type-declaration bodies separate with `;`, top-level named
   functions are `fn` (ADR-0064), and struct literals are `Type::{ ... }`.
+- **Pipeline combinators are constructor-polymorphic** (ADR-0110). Kinded
+  parameters such as `F[_]` support applied types `F[A]`, and
+  `xs |> map(f)` dispatches through `Mappable[F]`. The shipped instances cover
+  eager Array and Option; cross-package contracts and both codegen backends are
+  covered by executable fixtures.
 - Other additions: generic struct type parameters, trait bounds in package
   contracts, `derive(Eq)`, conditional impls, `is` expressions, `loop` /
   `break(v)` / `continue(...)`, and inline wasm

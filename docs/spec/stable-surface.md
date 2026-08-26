@@ -215,11 +215,15 @@ The stable symbols listed under "Key Builtins" in the
 - **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
   **combinator layer (`Iterator::map` and friends) is not frozen** — it is
   retired by ADR-0099's two-layer split and has zero rows in the registry
-  (measured: `Iterator::` 0 hits). Eager iteration is the call forms
-  `Array::map` / `Array::filter` / `Array::fold` (cannot be frozen as
-  first-class values; see Array above).
-- **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), and the
-  `let*` railway bind. `Result::and_then` **cannot be frozen** — `Result` was
+  (measured: `Iterator::` 0 hits). The frozen constructor-polymorphic surface
+  is the Mappable trait and pipeline-first map function listed under
+  @vibe/builtin below; its shipped implementations are eager Array and Option
+  (ADR-0110). Container-specific
+  `Array::map` / `Array::filter` / `Array::fold` remain available but cannot be frozen
+  as first-class values; see Array above.
+- **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), the
+  `Mappable[F[_]]` trait and `map` function (ADR-0110), and the `let*` railway
+  bind. `Result::and_then` **cannot be frozen** — `Result` was
   removed from the language in #1324, and `Result::` has zero registry rows.
   `tap` / `tap_some` moved to `@vibe/console` in #2102 (`tap_ok` / `tap_err`
   were removed in #1324).
