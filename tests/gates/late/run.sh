@@ -8367,10 +8367,20 @@ printf '%s\nstruct Foo {\n  y: Int\n}\n\nstruct P {\n  x: Int\n} derive(Foo)\n\n
 printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/decoyderive/impl.vibe"
 printf '%s\nfn uses(t: Token) -> Int\ntype Token\ntype Token\n' "$cs_header" > "$csdir/decoydup/index.vpkg"
 printf 'export fn uses(t: Token) -> Int {\n  0\n}\n' > "$csdir/decoydup/impl.vibe"
+# Two declarations deriving the SAME unknown trait: each diagnostic must point
+# at its own clause. A locator that rescans from the start anchors both on the
+# first (Codex review on #2320).
+mkdir -p "$csdir/twoderive" "$csdir/duplet"
+printf '%s\nstruct A {\n  x: Int\n} derive(Foo)\n\nstruct B {\n  y: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/twoderive/index.vpkg"
+printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/twoderive/impl.vibe"
+# A bodyless VALUE declaration (#752) duplicated: `let` is a declaration head
+# too, and the first token version recognised only `fn` and `type`.
+printf '%s\nlet answer: Int\nlet answer: Int\n' "$cs_header" > "$csdir/duplet/index.vpkg"
+printf 'export let answer: Int = 42\n' > "$csdir/duplet/impl.vibe"
 # Each bad contract must be refused by BOTH lanes, and the clean one by
 # neither. Asserting only the buffer lane would not notice the two drifting
 # apart again, which is what #2317 is about.
-for probe in derive dup dupopaque decoyderive decoydup clean; do
+for probe in derive dup dupopaque decoyderive decoydup twoderive duplet clean; do
   rm -f "$csdir/$probe.imp" "$csdir/$probe.imp.diag" "$csdir/$probe.buf"
   if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -8439,6 +8449,25 @@ fi
 if ! grep -q '^line 11:' "$csdir/decoydup.buf" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the duplicate type anchored somewhere other than its second declaration -- a parameter reference displaced it (expected line 11) (#2317)" >&2
   cat "$csdir/decoydup.buf" >&2 || true
+  exit 1
+fi
+# Two clauses, two DIFFERENT anchors. `derive(Foo)` is on line 12 and line 16;
+# a locator that rescans from 0 reports line 12 twice, which is why the
+# assertion is on the second line rather than merely on the count.
+if ! grep -q '^line 12:' "$csdir/twoderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the first of two identical unknown derives is not anchored on its own clause (expected line 12) (#2317)" >&2
+  cat "$csdir/twoderive.buf" >&2 || true
+  exit 1
+fi
+if ! grep -q '^line 16:' "$csdir/twoderive.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the SECOND identical unknown derive is not anchored on its own clause (expected line 16) -- the locator rescans from the start (#2317)" >&2
+  cat "$csdir/twoderive.buf" >&2 || true
+  exit 1
+fi
+# A duplicated bodyless `let`: the second declaration is line 10.
+if ! grep -q '^line 10:' "$csdir/duplet.buf" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a duplicated bodyless let is not anchored on its second declaration (expected line 10) (#2317)" >&2
+  cat "$csdir/duplet.buf" >&2 || true
   exit 1
 fi
 # ...and NO committed contract in the tree may gain a diagnostic. A check that
