@@ -47,6 +47,7 @@ import @vibe/compiler/core {
   find_typedef,
   generalize,
   is_singleton_resource_kind,
+  overlapping_impl_target_for,
   predeclared_resources,
   resolve_builtin,
   rewrite_import_alias_stmt,
@@ -117,10 +118,8 @@ import @vibe/parser {
   located_program_binder_authority_program
 }
 
-/// Declared arity of a type constructor used by an erased generic impl target.
-/// The parser can prove that target arguments mirror the impl formals, but the
-/// SImpl AST cannot carry the target TypeExpr far enough to check its arity.
-/// Keep builtin container authority here; user declarations come from defs.
+/// Declared arity of a type constructor used by an impl target. Keep builtin
+/// container authority here; user declarations come from defs.
 fn impl_target_declared_arity(defs: Array[TypeDef], name: String) -> Option[Int] {
   match find_typedef(defs, name) {
     Some(td) => match td {
@@ -137,6 +136,42 @@ fn impl_target_declared_arity(defs: Array[TypeDef], name: String) -> Option[Int]
         None => None
       }
     }
+  }
+}
+
+fn impl_target_mentions(target: TypeExpr, wanted: String) -> Bool {
+  match target {
+    TyName(name) => name == wanted,
+    TyApp(name, args) => if name == wanted {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) && !found {
+        found = impl_target_mentions(Array::get(args, i), wanted)
+        i = i + 1
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = impl_target_mentions(ret, wanted)
+      while i < Array::length(params) && !found {
+        found = impl_target_mentions(Array::get(params, i), wanted)
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) && !found {
+        found = impl_target_mentions(Array::get(items, i), wanted)
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
   }
 }
 
@@ -2798,7 +2833,12 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         let is_open = false
         (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
       },
-      SImpl(tparams, tbounds, trait_name, type_name) => {
+      SImpl(tparams, tbounds, trait_name, target_expr) => {
+        let type_name = match target_expr {
+          TyName(name) => name,
+          TyApp(name, _) => name,
+          _ => ""
+        }
         // ADR-0068: `Send` is compiler-judged (structural); user impls
         // would let a non-sendable type cross task/channel boundaries.
         if trait_name == "Send" {
@@ -2806,10 +2846,24 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           ()
         }
-        if Array::length(tparams) > 0 {
+        let mut tpi = 0
+        while tpi < Array::length(tparams) {
+          let tparam = Array::get(tparams, tpi)
+          if !impl_target_mentions(target_expr, tparam) {
+            Array::push(errors, String::concat("impl type parameter `", String::concat(tparam, "` is not used in its target; remove it, or use it in the target type")))
+          } else {
+            ()
+          }
+          tpi = tpi + 1
+        }
+        let target_arity = match target_expr {
+          TyApp(_, args) => Array::length(args),
+          _ => Array::length(tparams)
+        }
+        if target_arity > 0 {
           match impl_target_declared_arity(defs, type_name) {
-            Some(want) => if want != Array::length(tparams) {
-              Array::push(errors, String::concat("type `", String::concat(type_name, String::concat("` expects ", String::concat(__to_string(want), String::concat(" type argument(s), got ", String::concat(__to_string(Array::length(tparams)), " in impl target")))))))
+            Some(want) => if want != target_arity {
+              Array::push(errors, String::concat("type `", String::concat(type_name, String::concat("` expects ", String::concat(__to_string(want), String::concat(" type argument(s), got ", String::concat(__to_string(target_arity), " in impl target")))))))
             } else {
               ()
             },
@@ -2818,15 +2872,16 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         } else {
           ()
         }
-        let target = match resolve_builtin(type_name) {
-          Some(t) => t,
-          None => CtNamed(type_name, array_empty())
+        let target = resolve_type_expr_shadowed(target_expr, defs, tparams)
+        match overlapping_impl_target_for(env, trait_name, tparams, target) {
+          Some(existing_target) => Array::push(errors, String::concat("overlapping impls for `", String::concat(trait_name, String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), "`"))))))),
+          None => ()
         }
-        // A generic impl `impl [T] Trait for C` (type parameters present) is
+        // A generic impl `impl [T] Trait for C[T]` (type parameters present) is
         // registered as `EnvTraitImplGen` so trait resolution can match the
-        // family `C[..]` against a concrete `C[K]` by constructor (the target's
-        // type args are erased). A plain `impl Trait for C` stays a nominal
-        // `EnvTraitImpl`. (#5 generic impls, Increment A.)
+        // family `C[..]` against a concrete `C[K]`. A plain impl stays a
+        // nominal `EnvTraitImpl`. The complete target is retained so concrete
+        // specializations and reordered generic parameters cannot widen.
         let new_env = if Array::length(tparams) > 0 {
           EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
         } else {

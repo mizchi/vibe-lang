@@ -4,6 +4,10 @@ import @vibe/compiler/core {
   append_import_alias_rewritten_non_import_stmts, build_export_rename_plan, collect_import_value_renames, namespace_exported_name
 }
 
+import @vibe/ast {
+  TypeExpr, impl_method_binding_name
+}
+
 import @vibe/compiler/syntax {
   lex, parse_program, print_program
 }
@@ -27,6 +31,21 @@ test "imported type aliases rewrite fn annotations but not type formals" {
   assert(String::contains(printed, "StdinStream"))
   assert(!String::contains(printed, "(stream: S)"))
   assert(String::contains(printed, "(value: S)"))
+}
+
+test "import aliases rewrite concrete impl method owners with their targets" {
+  let stmts = parse_program(lex("import ./dep.vibe { Box as B }\ntrait Measured { measure(Self) -> Int }\nimpl Measured for B[Int] { measure(self) -> Int { 1 } }"))
+  let out = Array::slice(stmts, 0, 0)
+  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let printed = print_program(out)
+  let old_name = impl_method_binding_name([], "Measured", TyApp("B", [
+    TyName("Int")
+  ]), "measure")
+  let expected_name = impl_method_binding_name([], "Measured", TyApp("Box", [
+    TyName("Int")
+  ]), "measure")
+  assert(String::contains(printed, expected_name))
+  assert(!String::contains(printed, old_name))
 }
 
 test "later plain re-export wins over an earlier import reference rename" {

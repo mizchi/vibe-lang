@@ -892,11 +892,13 @@ The same `F[A]` shape is legal in a parameterized alias body, a generic
 effect operation, and a trait method signature. Mixed-kind (`F` and `F[A]`
 together) is still rejected on every declaration surface.
 
-> A concrete generic impl target such as `impl M for Array[Int]` is rejected
-> (#2262). The impl AST cannot retain the `[Int]` argument; accepting it would
-> silently widen the impl to `Array[String]` and every other instantiation.
-> Write the honest generic form, `impl [T] M for Array[T]`. Impl specialization
-> for one generic instantiation is not supported yet.
+Concrete applied impl targets are preserved and matched exactly (#2335):
+`impl M for Array[Int]` does not satisfy `M` for `Array[String]`. Distinct
+concrete targets may coexist and dispatch to their own method bodies. Generic
+targets retain their complete argument pattern as well, so a declaration such
+as `impl [A, B] M for Pair[B, A]` maps each bound to the corresponding target
+slot. Duplicate or overlapping targets are rejected and the diagnostic names
+both targets.
 
 ## Collections
 

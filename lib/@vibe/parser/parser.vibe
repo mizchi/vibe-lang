@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, ImportItem, Pat, Stmt, TypeExpr
+  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name
 }
 
 import ./parser_base.vibe {
@@ -664,9 +664,13 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
   ArrayBuilder::push(out, simpl)
   match peek(tokens, pos) {
     TLBrace => {
-      let type_name = match simpl {
-        SImpl(_, _, _, tn) => tn,
+      let impl_trait = match simpl {
+        SImpl(_, _, trait_name, _) => trait_name,
         _ => ""
+      }
+      let impl_target = match simpl {
+        SImpl(_, _, _, target) => target,
+        _ => TyName("")
       }
       // A generic impl `impl [T: Bound] Trait for C { method(self){..} }` binds
       // `T` (and its bound) over each method body, so inject the impl's type
@@ -699,7 +703,7 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
             } else {
               efn
             }
-            let qname = String::concat(type_name, String::concat("::", mname))
+            let qname = impl_method_binding_name(impl_tparams, impl_trait, impl_target, mname)
             ArrayBuilder::push(out, SLet(false, true, qname, None, efn2))
             p = match peek(tokens, p2) {
               TSemicolon => p2 + 1,

@@ -309,10 +309,13 @@ measured (2026-08-24), it never answers by identity — a comparison it cannot
 resolve structurally traps at run time, and a length/element difference
 answers `false`. Give the trait a method and use a generic impl
 (`impl [T] M for Array[T]`) so it resolves through the witness dictionary.
-A concrete generic target such as `impl M for Array[Int]` is rejected because
-the impl AST cannot retain its type arguments; accepting it would silently
-widen the impl to every `Array[T]` (#2262). Specialization for one generic
-instantiation is not supported. See #1503.
+Concrete applied targets are retained and matched exactly (#2335), so
+`impl M for Array[Int]` does not widen to `Array[String]`. Multiple distinct
+concrete targets may coexist and dispatch to different method bodies. Generic
+targets retain the full pattern as well; reordered parameters in
+`impl [A, B] M for Pair[B, A]` keep their declared association. Duplicate or
+overlapping impl targets are rejected with both targets in the diagnostic.
+See #1503 for the separate marker-trait container restriction.
 
 ### Effects
 

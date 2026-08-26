@@ -123,6 +123,32 @@ fn retained_generic_impl_bounds(env: TypeEnv, name: String) -> Array[(String, Ar
   }
 }
 
+fn retained_impl_targets(env: TypeEnv, name: String) -> Array[Type] {
+  match env {
+    EnvEmpty => [],
+    EnvBind(_, _, rest) => retained_impl_targets(rest, name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => retained_impl_targets(rest, name),
+    EnvTraitImpl(trait_name, target, rest) => {
+      if trait_name == name {
+        Array::concat([target], retained_impl_targets(rest, name))
+      } else {
+        retained_impl_targets(rest, name)
+      }
+    },
+    EnvMutCell(_, _, rest) => retained_impl_targets(rest, name),
+    EnvTraitImplGen(trait_name, _, _, target, rest) => {
+      if trait_name == name {
+        Array::concat([target], retained_impl_targets(rest, name))
+      } else {
+        retained_impl_targets(rest, name)
+      }
+    },
+    EnvTypeDefs(_, _, rest) => retained_impl_targets(rest, name),
+    EnvFlat(_) => [],
+    EnvCached(_, _, rest) => retained_impl_targets(rest, name)
+  }
+}
+
 fn malformed_rejected(text: String) -> Bool {
   handle {
     match parse_persistent_type_env(text) {
@@ -249,6 +275,27 @@ test "persistent module interface v5 round-trips every variant and trait payload
         },
         None => assert(false)
       }
+    },
+    None => assert(false)
+  }
+}
+
+test "persistent module interface retains complete concrete and generic impl targets" {
+  let int_box = CtNamed("Box", [CtInt])
+  let string_box = CtNamed("Box", [CtString])
+  let reordered_pair = CtNamed("Pair", [CtNamed("B", []), CtNamed("A", [])])
+  let env = EnvTraitImpl("Observed", int_box, EnvTraitImpl("Observed", string_box, EnvTraitImplGen("Observed", [
+    "A",
+    "B"
+  ], [], reordered_pair, EnvEmpty)))
+  match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+    Some(decoded) => {
+      let targets = retained_impl_targets(decoded, "Observed")
+      assert(Array::length(targets) == 3)
+      assert(types_equal(Array::get(targets, 0), int_box))
+      assert(types_equal(Array::get(targets, 1), string_box))
+      assert(types_equal(Array::get(targets, 2), reordered_pair))
+      assert(!types_equal(Array::get(targets, 0), Array::get(targets, 1)))
     },
     None => assert(false)
   }

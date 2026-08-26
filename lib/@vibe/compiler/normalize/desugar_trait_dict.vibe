@@ -18,6 +18,10 @@ import @vibe/compiler/core {
   trait_method_sig_binders_deep
 }
 
+import @vibe/ast {
+  impl_applied_target_key, impl_method_owner, impl_specialized_method_binding_name, impl_target_head, impl_target_key
+}
+
 import @vibe/core {
   array_empty
 }
@@ -528,15 +532,15 @@ fn lookup_method_gen(table: Array[(String, Array[(String, Array[String], Array[(
   result
 }
 
-/// Map each impl's target type to the trait it implements
-/// (`impl Tr for C` -> (C, Tr)). A type may implement several traits; the first
-/// matching trait that declares the method is used at lookup time.
+/// Map each impl method owner to the trait it implements. Concrete applied
+/// targets have a specialization-specific internal owner; generic and bare
+/// targets keep their constructor owner.
 fn collect_impl_trait_map(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImpl(_, _, trait_name, type_name) => Array::push(out, (type_name, trait_name)),
+      SImpl(tparams, _, trait_name, target) => Array::push(out, (impl_method_owner(tparams, trait_name, target), trait_name)),
       _ => ()
     }
     i = i + 1
@@ -2035,7 +2039,7 @@ fn collect_generic_impl_types(stmts: Array[Stmt]) -> Array[String] {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImpl(tparams, tbounds, _, type_name) => if Array::length(tparams) > 0 {
+      SImpl(tparams, tbounds, _, target) => if Array::length(tparams) > 0 {
         let mut has_bound = false
         let mut bi = 0
         while bi < Array::length(tbounds) {
@@ -2052,7 +2056,7 @@ fn collect_generic_impl_types(stmts: Array[Stmt]) -> Array[String] {
           bi = bi + 1
         }
         if has_bound {
-          Array::push(out, type_name)
+          Array::push(out, impl_target_head(target))
         } else {
           ()
         }
@@ -2327,6 +2331,80 @@ fn first_array_elem(e: Expr) -> Option[Expr] {
   }
 }
 
+fn impl_target_var_key(name: String) -> String {
+  String::concat("$impl_target$", name)
+}
+
+fn impl_target_fn_key(name: String) -> String {
+  String::concat("$impl_return$", name)
+}
+
+fn infer_impl_target_key(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match arg {
+    EInt(_) => Some(impl_target_key(TyName("Int"))),
+    EBool(_) => Some(impl_target_key(TyName("Bool"))),
+    EString(_) => Some(impl_target_key(TyName("String"))),
+    EFloat(_) => Some(impl_target_key(TyName("Double"))),
+    EArray(items) => if Array::length(items) == 0 {
+      None
+    } else {
+      match infer_impl_target_key(Array::get(items, 0), struct_sets, var_types, fn_returns) {
+        Some(elem_key) => {
+          let mut i = 1
+          let mut same = true
+          while i < Array::length(items) && same {
+            same = match infer_impl_target_key(Array::get(items, i), struct_sets, var_types, fn_returns) {
+              Some(next) => next == elem_key,
+              None => false
+            }
+            i = i + 1
+          }
+          if same {
+            Some(impl_applied_target_key("Array", [elem_key]))
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    },
+    EIdent(name, _) => match lookup_var_type(var_types, impl_target_var_key(name)) {
+      Some(key) => Some(key),
+      None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        Some(head) => Some(impl_target_key(TyName(head))),
+        None => None
+      }
+    },
+    ECall(EIdent(name, _), _, _) => match fn_return_type(fn_returns, impl_target_fn_key(name)) {
+      Some(key) => Some(key),
+      None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        Some(head) => Some(impl_target_key(TyName(head))),
+        None => None
+      }
+    },
+    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(head) => Some(impl_target_key(TyName(head))),
+      None => None
+    }
+  }
+}
+
+fn bind_impl_target_key(var_types: Array[(String, String)], name: String, value: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match infer_impl_target_key(value, struct_sets, var_types, fn_returns) {
+    Some(key) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        Array::push(out, Array::get(var_types, i))
+        i = i + 1
+      }
+      Array::push(out, (impl_target_var_key(name), key))
+      out
+    },
+    None => var_types
+  }
+}
+
 /// Build the witness `ERecord` for a concrete type `cname` implementing
 /// `trait_name`. Codegen resolves it to the dict struct structurally by field
 /// names.
@@ -2350,7 +2428,16 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
       let mut failed = false
       while mi < Array::length(mnames) {
         let m = Array::get(mnames, mi)
-        let qm = String::concat(cname, String::concat("::", m))
+        let plain_qm = String::concat(cname, String::concat("::", m))
+        let specialized_qm = match infer_impl_target_key(arg_expr, struct_sets, var_types, fn_returns) {
+          Some(target_key) => impl_specialized_method_binding_name(cname, trait_name, target_key, m),
+          None => ""
+        }
+        let qm = if specialized_qm != "" && fn_exists(fn_returns, specialized_qm) {
+          specialized_qm
+        } else {
+          plain_qm
+        }
         if not(fn_exists(fn_returns, qm)) {
           // #1445: the SYNTHETIC `Show` witness is total. A type with no
           // `C::to_string` renders through the ADR-0058 heuristic -- exactly
@@ -3919,7 +4006,8 @@ fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]
 /// The same binding-site records `rewrite_expr` makes at an `ELet`/`ELetMut`,
 /// so the walk above reads names the way the comparison site will.
 fn bound_var_types(var_types: Array[(String, String)], n: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let base = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
+  let inferred = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
+  let base = bind_impl_target_key(inferred, n, val, struct_sets, fn_returns)
   eq_shape_bind(bind_shapes(base, n, val, struct_sets, fn_returns), n, val, struct_sets, fn_returns)
 }
 
@@ -4327,10 +4415,9 @@ fn seed_ctor_payload(out: Array[(String, String)], pname: String, ctor: String, 
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
-/// made at use time against the in-scope dict bindings. `tparams` is retained for
-/// signature compatibility but no longer filters (both kinds are tracked).
+/// made at use time against the in-scope dict bindings. Both kinds are tracked;
+/// `tparams` prevents a same-spelled formal from expanding through a global alias.
 fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[String], base: Array[(String, String)]) -> Array[(String, String)] {
-  let _ = tparams
   let out = array_empty()
   let mut b = 0
   while b < Array::length(base) {
@@ -4372,6 +4459,11 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
       // infer_arg_type_name.
       Some(TyApp(tn, targs)) => {
         Array::push(out, (pname, tn))
+        if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
+          Array::push(out, (impl_target_var_key(pname), impl_target_key(TyApp(tn, targs))))
+        } else {
+          ()
+        }
         // Equality needs the complete annotation, not only its head. Keep the
         // recursive shape for every monomorphic aggregate parameter so nested
         // Array/Option/Result paths do not fall back to word identity.
@@ -4597,6 +4689,17 @@ fn collect_fn_eq_return_shape(out: Array[(String, String)], fname: String, tpara
   }
 }
 
+fn collect_fn_impl_return_key(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr]) -> Unit {
+  match ret {
+    Some(te) => if !ty_mentions_name_in(te, tparams) {
+      Array::push(out, (impl_target_fn_key(fname), impl_target_key(te)))
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
 fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
@@ -4615,6 +4718,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             head
           }
           Array::push(out, (fname, head2))
+          collect_fn_impl_return_key(out, fname, tparams, ret)
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
         _ => ()
@@ -4634,6 +4738,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             head
           }
           Array::push(out, (fname, head2))
+          collect_fn_impl_return_key(out, fname, tparams, ret)
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
         _ => ()
@@ -7243,7 +7348,8 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       // #2157: an unannotated `let xs = []` reads its element type off the
@@ -7254,7 +7360,8 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       let body_vars = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)

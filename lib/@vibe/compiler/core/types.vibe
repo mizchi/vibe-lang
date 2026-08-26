@@ -1254,9 +1254,9 @@ export fn trait_method_sig(env: TypeEnv, trait_name: String, method_name: String
 }
 
 /// The declared name at the head of a (possibly generic) named type, for
-/// matching against a trait impl's target. Impl targets are stored with their
-/// type arguments erased to `CtUnknown` (see the `SImpl` handler), so element
-/// types must be matched by head name, not by `types_equal`.
+/// recognizing iterator-shaped trait impl targets. This query asks only about
+/// the constructor's protocol shape, so it deliberately ignores retained type
+/// arguments.
 fn trait_target_head_name(ty: Type) -> String {
   match ty {
     CtNamed(n, _) => n,
@@ -1335,9 +1335,9 @@ fn type_name_async_iterator_impl_scan(scan: TypeEnv, full: TypeEnv, type_name: S
     // sees the lowered `Iter::next` and injects `await` on a Future return),
     // so a generically-implemented async iterator suspended from a row-free
     // function with no diagnostic. Verified against a repro that RAN the await
-    // loop (a sync EForIn over the struct would have trapped). Impl targets
-    // store their type arguments erased, so head-name matching is exact here
-    // just as it is in the non-generic arm.
+    // loop (a sync EForIn over the struct would have trapped). This protocol
+    // query is constructor-shaped, so head-name matching mirrors the
+    // non-generic arm even though the complete impl target is retained.
     //
     // The SYNC sibling scan above deliberately keeps skipping this case: it
     // feeds element-type inference, where widening the match would change
@@ -3440,30 +3440,233 @@ export fn types_compatible(expected: Type, actual: Type) -> Bool {
   }
 }
 
-export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) -> Bool {
-  match env {
-    EnvEmpty => false,
-    EnvBind(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
-    EnvMutCell(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
-    EnvTraitDef(_, _, _, _, rest, _, _) => impls_overlap_for(rest, trait_name, new_target),
-    EnvTraitImpl(tname, target, rest) => if tname == trait_name {
-      if types_equal(target, new_target) {
-        true
+fn impl_pattern_param_index(params: Array[String], name: String) -> Int {
+  let mut result = -1
+  let mut i = 0
+  while i < Array::length(params) && result < 0 {
+    if Array::get(params, i) == name {
+      result = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+/// Replace each impl-target formal with a fresh checker variable. Using one
+/// stable variable per formal preserves repeated-variable constraints such as
+/// `Pair[T, T]`; using disjoint bases for the two candidates lets ordinary
+/// unification decide whether their instance sets intersect.
+fn freshen_impl_pattern(ty: Type, params: Array[String], base: Int) -> Type {
+  match ty {
+    CtNamed(name, args) => {
+      let param_index = if Array::length(args) == 0 {
+        impl_pattern_param_index(params, name)
+      } else {
+        -1
       }
-      else impls_overlap_for(rest, trait_name, new_target)
-    } else impls_overlap_for(rest, trait_name, new_target),
-    EnvTraitImplGen(_, _, _, _, rest) => impls_overlap_for(rest, trait_name, new_target),
-    EnvTypeDefs(_, _, rest) => impls_overlap_for(rest, trait_name, new_target),
-    EnvFlat(_) => false,
-    EnvCached(_, _, rest) => impls_overlap_for(rest, trait_name, new_target)
+      if param_index >= 0 {
+        CtVar(base + param_index)
+      } else {
+        CtNamed(name, for arg in args {
+          freshen_impl_pattern(arg, params, base)
+        })
+      }
+    },
+    CtArray(elem) => CtArray(freshen_impl_pattern(elem, params, base)),
+    CtOption(elem) => CtOption(freshen_impl_pattern(elem, params, base)),
+    CtTuple(items) => CtTuple(for item in items {
+      freshen_impl_pattern(item, params, base)
+    }),
+    CtFn(args, ret, effect) => CtFn(for arg in args {
+      freshen_impl_pattern(arg, params, base)
+    }, freshen_impl_pattern(ret, params, base), effect),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, field_ty) = field
+      (name, freshen_impl_pattern(field_ty, params, base))
+    }),
+    _ => ty
   }
 }
 
-/// #829: an `impl Trait for S` stores its target with the type arguments
-/// ERASED (the SImpl handler registers `CtNamed(S, [])` / `CtStruct(S)`), but
-/// an instantiated generic struct value is now typed `CtNamed(S, args)`.
-/// Bridge the two by head name — the unparameterized impl covers every
-/// instantiation — mirroring the CtEnum/CtNamed unify bridge.
+fn impl_pattern_effects_equal(left: Option[String], right: Option[String]) -> Bool {
+  match (left, right) {
+    (None, None) => true,
+    (Some(a), Some(b)) => a == b,
+    _ => false
+  }
+}
+
+fn is_fresh_impl_pattern_var(id: Int) -> Bool {
+  id >= 100000000 && id < 300000000
+}
+
+/// Trait-instance overlap is stricter than expression unification: assignment
+/// coercions such as Char <-> Int and the CtUnknown wildcard must not make two
+/// impl heads overlap. This unifier handles only the fresh variables introduced
+/// from impl formals and otherwise requires the same type structure.
+fn unify_impl_patterns_exact(left: Type, right: Type, subst: Subst) -> Option[Subst] {
+  let a = subst_apply(subst, left)
+  let b = subst_apply(subst, right)
+  if types_equal(a, b) {
+    Some(subst)
+  } else {
+    match a {
+      CtVar(id) => if is_fresh_impl_pattern_var(id) {
+        if occurs_in(id, b) {
+          None
+        } else {
+          Some(SubstBind(id, b, subst))
+        }
+      } else {
+        None
+      },
+      _ => match b {
+        CtVar(id) => if is_fresh_impl_pattern_var(id) {
+          if occurs_in(id, a) {
+            None
+          } else {
+            Some(SubstBind(id, a, subst))
+          }
+        } else {
+          None
+        },
+        _ => match (a, b) {
+          (CtArray(ae), CtArray(be)) => unify_impl_patterns_exact(ae, be, subst),
+          (CtOption(ae), CtOption(be)) => unify_impl_patterns_exact(ae, be, subst),
+          (CtTuple(a_items), CtTuple(b_items)) => {
+            if Array::length(a_items) != Array::length(b_items) {
+              None
+            } else {
+              let mut result = Some(subst)
+              let mut i = 0
+              while i < Array::length(a_items) {
+                result = match result {
+                  Some(current) => unify_impl_patterns_exact(Array::get(a_items, i), Array::get(b_items, i), current),
+                  None => None
+                }
+                i = i + 1
+              }
+              result
+            }
+          },
+          (CtFn(aa, ar, ae), CtFn(ba, br, be)) => {
+            if Array::length(aa) != Array::length(ba) || !impl_pattern_effects_equal(ae, be) {
+              None
+            } else {
+              let mut result = Some(subst)
+              let mut i = 0
+              while i < Array::length(aa) {
+                result = match result {
+                  Some(current) => unify_impl_patterns_exact(Array::get(aa, i), Array::get(ba, i), current),
+                  None => None
+                }
+                i = i + 1
+              }
+              match result {
+                Some(current) => unify_impl_patterns_exact(ar, br, current),
+                None => None
+              }
+            }
+          },
+          (CtNamed(an, aa), CtNamed(bn, ba)) => {
+            if an != bn || Array::length(aa) != Array::length(ba) {
+              None
+            } else {
+              let mut result = Some(subst)
+              let mut i = 0
+              while i < Array::length(aa) {
+                result = match result {
+                  Some(current) => unify_impl_patterns_exact(Array::get(aa, i), Array::get(ba, i), current),
+                  None => None
+                }
+                i = i + 1
+              }
+              result
+            }
+          },
+          (CtStruct(an), CtNamed(bn, _)) => if an == bn {
+            Some(subst)
+          } else {
+            None
+          },
+          (CtNamed(an, _), CtStruct(bn)) => if an == bn {
+            Some(subst)
+          } else {
+            None
+          },
+          (CtEnum(an), CtNamed(bn, _)) => if an == bn {
+            Some(subst)
+          } else {
+            None
+          },
+          (CtNamed(an, _), CtEnum(bn)) => if an == bn {
+            Some(subst)
+          } else {
+            None
+          },
+          _ => None
+        }
+      }
+    }
+  }
+}
+
+fn impl_target_patterns_overlap(left_params: Array[String], left_target: Type, right_params: Array[String], right_target: Type) -> Bool {
+  let left = freshen_impl_pattern(left_target, left_params, 100000000)
+  let right = freshen_impl_pattern(right_target, right_params, 200000000)
+  match unify_impl_patterns_exact(left, right, SubstEmpty) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// Return the first existing target whose instance set intersects the new
+/// target. TypeEnv is newest-first, so this is deterministic for a fixed
+/// source order and gives the checker both candidate targets for its error.
+export fn overlapping_impl_target_for(env: TypeEnv, trait_name: String, new_params: Array[String], new_target: Type) -> Option[Type] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => overlapping_impl_target_for(rest, trait_name, new_params, new_target),
+    EnvMutCell(_, _, rest) => overlapping_impl_target_for(rest, trait_name, new_params, new_target),
+    // A newer declaration of the same trait starts a new instance scope. This
+    // is how a package's method-bearing definition replaces an imported
+    // bodyless marker contract (for example @vibe/core Default replacing the
+    // @vibe/builtin bound-only declaration) without treating their mirrored
+    // primitive impl declarations as source duplicates. Impl nodes belonging
+    // to the current declaration are always above this boundary.
+    EnvTraitDef(name, _, _, _, rest, _, _) => if name == trait_name {
+      None
+    } else {
+      overlapping_impl_target_for(rest, trait_name, new_params, new_target)
+    },
+    EnvTraitImpl(tname, target, rest) => if tname == trait_name && impl_target_patterns_overlap(array_empty(), target, new_params, new_target) {
+      Some(target)
+    } else {
+      overlapping_impl_target_for(rest, trait_name, new_params, new_target)
+    },
+    EnvTraitImplGen(tname, params, _, target, rest) => if tname == trait_name && impl_target_patterns_overlap(params, target, new_params, new_target) {
+      Some(target)
+    } else {
+      overlapping_impl_target_for(rest, trait_name, new_params, new_target)
+    },
+    EnvTypeDefs(_, _, rest) => overlapping_impl_target_for(rest, trait_name, new_params, new_target),
+    EnvFlat(_) => None,
+    EnvCached(_, _, rest) => overlapping_impl_target_for(rest, trait_name, new_params, new_target)
+  }
+}
+
+export fn impls_overlap_for(env: TypeEnv, trait_name: String, new_target: Type) -> Bool {
+  match overlapping_impl_target_for(env, trait_name, array_empty(), new_target) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// #829: a deliberately bare `impl Trait for S` has no target arguments, but
+/// an instantiated generic struct value is typed `CtNamed(S, args)`. Bridge
+/// the two by head name: the bare impl covers the constructor family.
 fn struct_impl_target_matches(target: Type, resolved: Type) -> Bool {
   match resolved {
     CtNamed(rname, rargs) => if Array::length(rargs) > 0 {
@@ -3481,9 +3684,9 @@ fn struct_impl_target_matches(target: Type, resolved: Type) -> Bool {
 
 /// #1503: a bare constructor impl (`impl Show for Array`) records
 /// `CtNamed("Array", [])`, which `types_equal` cannot match against a concrete
-/// `CtArray(CtInt)` use site. Match those intentionally erased targets by
-/// constructor. A concrete generic target (`impl Show for Array[Int]`) is
-/// rejected by the parser (#2262), so it can never be widened through here.
+/// `CtArray(CtInt)` use site. Match only that intentionally unspecialized bare
+/// spelling by constructor. Applied targets retain their arguments and must
+/// match exactly instead of passing through this fallback.
 fn erased_impl_ctor_matches(target: Type, resolved: Type) -> Bool {
   let head = type_constructor_name(resolved)
   match target {
@@ -3633,11 +3836,18 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
       }
       else type_implements_check_super(rest, full_env, s, trait_name, resolved)
     } else type_implements_check_super(rest, full_env, s, trait_name, resolved),
-    EnvTraitImplGen(itrait, _, bounds, target, rest) => {
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
       let head = type_constructor_name(resolved)
       let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full_env, trait_name) && trait_is_subtrait(full_env, itrait, trait_name) && itrait != trait_name
-      if shape_ok && generic_bounds_hold(full_env, s, bounds, type_args_of(resolved)) {
-        true
+      if shape_ok {
+        match generic_target_args(tparams, target, resolved) {
+          Some(args) => if generic_bounds_hold(full_env, s, tparams, bounds, args) {
+            true
+          } else {
+            type_implements_check_super(rest, full_env, s, trait_name, resolved)
+          },
+          None => type_implements_check_super(rest, full_env, s, trait_name, resolved)
+        }
       } else {
         type_implements_check_super(rest, full_env, s, trait_name, resolved)
       }
@@ -3648,10 +3858,8 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
   }
 }
 
-/// Constructor/head name of a type, for matching a generic impl's erased target
-/// against a concrete type (`Array[Int]` and the impl target `Array` both have
-/// head "Array"). Returns "" for types with no nominal constructor (tuples,
-/// primitives, vars) so they never match a generic impl.
+/// Constructor/head name of a type. Returns "" for types with no nominal
+/// constructor (tuples, primitives, vars) so they never match a generic impl.
 export fn type_constructor_name(ty: Type) -> String {
   match ty {
     CtArray(_) => "Array",
@@ -3722,13 +3930,141 @@ fn type_args_of(ty: Type) -> Array[Type] {
   }
 }
 
-/// Does an in-env method-bearing generic impl `impl [T(: Bound)?] Trait for C`
-/// cover the concrete `resolved` type? Matched by constructor name (the impl
-/// target's args are erased); for a bounded impl, EVERY type argument of
-/// `resolved` must satisfy EVERY bound (recursively via `type_implements_trait`),
-/// which is the dictionary-of-dictionaries condition. The dict-passing desugar
-/// synthesizes a `{ method: C::method }` witness (unbounded) or a nested closure
-/// witness supplying the element dict (bounded). (#5 generic impls.)
+fn generic_param_index(tparams: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(tparams) && found < 0 {
+    if Array::get(tparams, i) == name {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn generic_target_match(template: Type, actual: Type, tparams: Array[String], args: Array[Type]) -> Bool {
+  match template {
+    CtNamed(name, targs) => {
+      let pi = if Array::length(targs) == 0 {
+        generic_param_index(tparams, name)
+      } else {
+        0 - 1
+      }
+      if pi >= 0 {
+        match Array::get(args, pi) {
+          CtUnknown => {
+            Array::set(args, pi, actual)
+            true
+          },
+          bound => types_equal(bound, actual)
+        }
+      } else {
+        match actual {
+          CtNamed(aname, aargs) => if name == aname && Array::length(targs) == Array::length(aargs) {
+            let mut i = 0
+            let mut ok = true
+            while i < Array::length(targs) && ok {
+              ok = generic_target_match(Array::get(targs, i), Array::get(aargs, i), tparams, args)
+              i = i + 1
+            }
+            ok
+          } else {
+            false
+          },
+          _ => false
+        }
+      }
+    },
+    CtArray(inner) => match actual {
+      CtArray(actual_inner) => generic_target_match(inner, actual_inner, tparams, args),
+      _ => false
+    },
+    CtOption(inner) => match actual {
+      CtOption(actual_inner) => generic_target_match(inner, actual_inner, tparams, args),
+      _ => false
+    },
+    CtTuple(items) => match actual {
+      CtTuple(actual_items) => if Array::length(items) == Array::length(actual_items) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(items) && ok {
+          ok = generic_target_match(Array::get(items, i), Array::get(actual_items, i), tparams, args)
+          i = i + 1
+        }
+        ok
+      } else {
+        false
+      },
+      _ => false
+    },
+    CtFn(params, ret, effect) => match actual {
+      CtFn(actual_params, actual_ret, actual_effect) => if Array::length(params) == Array::length(actual_params) && impl_pattern_effects_equal(effect, actual_effect) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(params) && ok {
+          ok = generic_target_match(Array::get(params, i), Array::get(actual_params, i), tparams, args)
+          i = i + 1
+        }
+        ok && generic_target_match(ret, actual_ret, tparams, args)
+      } else {
+        false
+      },
+      _ => false
+    },
+    _ => types_equal(template, actual)
+  }
+}
+
+/// Match the retained impl target against one concrete use and return its type
+/// arguments in impl-binder order. Reordered targets such as `Pair[V, K]`
+/// therefore bind V to the first concrete slot and K to the second instead of
+/// silently applying bounds by declaration order.
+fn generic_target_args(tparams: Array[String], target: Type, resolved: Type) -> Option[Array[Type]] {
+  let target_args = type_args_of(target)
+  if Array::length(target_args) == 0 {
+    let legacy = type_args_of(resolved)
+    if type_constructor_name(target) == type_constructor_name(resolved) && Array::length(legacy) == Array::length(tparams) {
+      Some(legacy)
+    } else {
+      None
+    }
+  } else {
+    let args = array_empty()
+    let mut i = 0
+    while i < Array::length(tparams) {
+      Array::push(args, CtUnknown)
+      i = i + 1
+    }
+    if generic_target_match(target, resolved, tparams, args) {
+      let mut ai = 0
+      let mut complete = true
+      while ai < Array::length(args) {
+        match Array::get(args, ai) {
+          CtUnknown => {
+            complete = false
+          },
+          _ => ()
+        }
+        ai = ai + 1
+      }
+      if complete {
+        Some(args)
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  }
+}
+
+/// Does an in-env method-bearing generic impl cover the concrete `resolved`
+/// type? The retained target is matched structurally and each bound is checked
+/// against the concrete argument bound to its own impl parameter. The
+/// dict-passing desugar synthesizes a `{ method: C::method }` witness
+/// (unbounded) or a nested closure witness supplying the element dict
+/// (bounded). (#5 generic impls.)
 fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> Bool {
   match scan {
     EnvEmpty => false,
@@ -3736,11 +4072,18 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
     EnvTraitDef(_, _, _, _, rest, _, _) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvMutCell(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
-    EnvTraitImplGen(itrait, _tparams, bounds, target, rest) => {
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
       let head = type_constructor_name(resolved)
       let shape_ok = itrait == trait_name && head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name)
-      if shape_ok && generic_bounds_hold(full, s, bounds, type_args_of(resolved)) {
-        true
+      if shape_ok {
+        match generic_target_args(tparams, target, resolved) {
+          Some(args) => if generic_bounds_hold(full, s, tparams, bounds, args) {
+            true
+          } else {
+            generic_impl_satisfies(rest, full, s, trait_name, resolved)
+          },
+          None => generic_impl_satisfies(rest, full, s, trait_name, resolved)
+        }
       } else generic_impl_satisfies(rest, full, s, trait_name, resolved)
     },
     EnvTypeDefs(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
@@ -3751,32 +4094,29 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
 
 /// Every non-empty per-parameter bound is satisfied by every concrete type
 /// argument. Empty bound lists (Increment A) hold trivially.
-fn generic_bounds_hold(full: TypeEnv, s: Subst, bounds: Array[(String, Array[String])], args: Array[Type]) -> Bool {
+fn generic_bounds_hold(full: TypeEnv, s: Subst, tparams: Array[String], bounds: Array[(String, Array[String])], args: Array[Type]) -> Bool {
   let mut bi = 0
   let mut ok = true
   while bi < Array::length(bounds) {
-    let (_, btraits) = Array::get(bounds, bi)
+    let (param, btraits) = Array::get(bounds, bi)
+    let ai = generic_param_index(tparams, param)
     let mut ti = 0
     while ti < Array::length(btraits) {
       let bt = Array::get(btraits, ti)
-      if bt != "" {
-        let mut ai = 0
-        while ai < Array::length(args) {
-          // A still-unknown element type (e.g. a struct literal, which the
-          // checker types as `CtUnknown`) defers its bound to the dict-passing
-          // desugar — which infers the element type syntactically and either
-          // threads the nested witness or fails loudly. This mirrors how a
-          // `CtUnknown` receiver skips the top-level bound check, so accepting
-          // it here is no less sound.
-          match subst_apply(s, Array::get(args, ai)) {
-            CtUnknown => (),
-            _ => if not(type_implements_trait(full, s, Array::get(args, ai), bt)) {
-              ok = false
-            } else {
-              ()
-            }
+      if bt != "" && ai >= 0 && ai < Array::length(args) {
+        // A still-unknown element type (e.g. a struct literal, which the
+        // checker types as `CtUnknown`) defers its bound to the dict-passing
+        // desugar — which infers the element type syntactically and either
+        // threads the nested witness or fails loudly. This mirrors how a
+        // `CtUnknown` receiver skips the top-level bound check, so accepting
+        // it here is no less sound.
+        match subst_apply(s, Array::get(args, ai)) {
+          CtUnknown => (),
+          _ => if not(type_implements_trait(full, s, Array::get(args, ai), bt)) {
+            ok = false
+          } else {
+            ()
           }
-          ai = ai + 1
         }
       } else {
         ()
