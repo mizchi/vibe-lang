@@ -1795,13 +1795,80 @@ fn hoisted_binding_type(annotation: Option[TypeExpr], defs: Array[TypeDef]) -> T
   }
 }
 
+/// #2318: the signature of a top-level `fn`, for the hoist.
+///
+/// A top-level `fn f(a: Int) -> Int { .. }` is an `SLet` whose types live on
+/// the EFn's parameter list, NOT on a binding annotation -- so it hoisted as
+/// `CtUnknown`, and a call placed ABOVE it saw a non-`CtFn` callee and fell
+/// into the `_` arm of the call checker, which returns `CtUnknown` and reports
+/// nothing. Measured: argument types, ARITY, and the return type were all
+/// unchecked, and an arity-short forward call emitted a module wasm refuses to
+/// instantiate (`not enough arguments on the stack for call`) with `vibe check`
+/// silent. The same call written BELOW the definition was rejected, so the
+/// verdict depended on source order.
+///
+/// A missing parameter or return annotation does NOT disqualify the signature:
+/// that slot resolves to `CtUnknown`, which unifies with anything, so the
+/// unannotated position goes unchecked exactly as before while arity and the
+/// annotated positions are checked. `hoisted_binding_type` is what turns each
+/// `Option[TypeExpr]` into a type, so there is one implementation of that rule
+/// rather than a copy per slot.
+///
+/// Two shapes ARE excluded, because for them a synthesized signature would be
+/// WRONG rather than merely imprecise:
+///
+///   - a type parameter makes a concrete `CtFn` a lie at every call site;
+///   - an optional or labeled parameter (a trailing `~`/`?` in the raw AST
+///     name, see `labeled_param_base_name`) may be omitted by a legitimate
+///     call, so a strict arity would report a false error.
+///
+/// Both keep the `CtUnknown` the hoist gave everything before this. Ordered
+/// (backward-reference) code is unaffected either way: the binding's own
+/// statement fills in the precise type when it is reached and shadows this
+/// pre-binding.
+fn hoisted_fn_signature(value: Expr, defs: Array[TypeDef]) -> Type {
+  match value {
+    EFn(tparams, _bounds, params, ret, eff, _body) => if Array::length(tparams) > 0 {
+      CtUnknown
+    } else {
+      let ptys = array_empty()
+      let mut usable = true
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, pann) = Array::get(params, i)
+        if labeled_param_base_name(pname) != pname {
+          usable = false
+        } else {
+          Array::push(ptys, hoisted_binding_type(pann, defs))
+        }
+        i = i + 1
+      }
+      if usable {
+        CtFn(ptys, hoisted_binding_type(ret, defs), eff)
+      } else {
+        CtUnknown
+      }
+    },
+    _ => CtUnknown
+  }
+}
+
+/// The type to pre-bind for a hoisted `SLet`: its annotation when it has one,
+/// otherwise a `fn`'s own signature (#2318), otherwise unknown.
+fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[TypeDef]) -> Type {
+  match annotation {
+    Some(type_expr) => resolve_type_expr(type_expr, defs),
+    None => hoisted_fn_signature(value, defs)
+  }
+}
+
 fn hoist_merged_source_values(stmts: Array[Stmt], start: Int, env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
   let mut out = env
   let mut i = start
   while i < Array::length(stmts) && !(Array::get(stmts, i) is SReExportSourceBoundary(_, _)) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, annotation, _) => {
-        let ty = hoisted_binding_type(annotation, defs)
+      SLet(_, _, name, annotation, value) => {
+        let ty = hoisted_value_type(annotation, value, defs)
         out = env_bind(out, name, ty)
       },
       _ => ()
@@ -1908,8 +1975,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
   let mut hoist_i = idx
   while hoist_i < Array::length(stmts) {
     match Array::get(stmts, hoist_i) {
-      SLet(_, _, hname, hann, _) => {
-        let ht = hoisted_binding_type(hann, defs)
+      SLet(_, _, hname, hann, hval) => {
+        let ht = hoisted_value_type(hann, hval, defs)
         cur_env = env_bind(cur_env, hname, ht)
       },
       _ => ()
