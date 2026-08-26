@@ -5713,29 +5713,10 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
 /// `locate_by_marker` already places `unknown name:` and friends. Statements
 /// carry no offsets (`SLet(Bool, Bool, String, Option[TypeExpr], Expr)` has no
 /// span), and adding them is a change at every construction site.
-fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], decls: Array[(String, String)], opaques: Array[(String, Int)], stmts: Array[Stmt]) -> Array[String] with Exception {
+fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt]) -> Array[String] with Exception {
   let out = array_empty()
-  // Bodyless declarations live in `parse_contract_program`'s FIRST tuple
-  // element, not among its statements -- a contract's `fn f(x: Int) -> Int` is
-  // not an `SLet`. Opaque type declarations share the namespace, since the
-  // facade allocates each name once, so both lists feed one `seen` set.
-  let heads = contract_decl_head_table(tokens, starts)
-  let head_taken = contract_taken_flags(heads)
   let derive_names = contract_derive_name_table(tokens, starts)
   let derive_taken = contract_taken_flags(derive_names)
-  let seen: Array[String] = []
-  let mut d = 0
-  while d < Array::length(decls) {
-    let (dname, _sig) = Array::get(decls, d)
-    contract_note_duplicate(source, heads, head_taken, dname, seen, out)
-    d = d + 1
-  }
-  let mut o = 0
-  while o < Array::length(opaques) {
-    let (oname, _arity) = Array::get(opaques, o)
-    contract_note_duplicate(source, heads, head_taken, oname, seen, out)
-    o = o + 1
-  }
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -5746,20 +5727,6 @@ fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[
     i = i + 1
   }
   out
-}
-
-/// Record `name` as seen, reporting it when it was seen before.
-fn contract_note_duplicate(source: String, heads: Array[(String, Int)], head_taken: Array[Bool], name: String, seen: Array[String], out: Array[String]) -> Unit {
-  if str_array_contains_name(seen, name) {
-    let dup_msg = String::concat(String::concat("duplicate declaration in a contract: `", name), "` is declared more than once -- a contract declares each name once, and the facade it generates can allocate the name only once")
-    Array::push(out, located_at_offset(source, contract_take_anchor(heads, head_taken, name), dup_msg))
-  } else {
-    // Spend the FIRST head for this name, so the first duplicate takes the
-    // second and an Nth duplicate takes the Nth -- three declarations of one
-    // name gave three reports all pointing at the second before this.
-    let _first = contract_take_anchor(heads, head_taken, name)
-    Array::push(seen, name)
-  }
 }
 
 /// `validate_derives`, with each message anchored on the offending trait name.
@@ -5791,110 +5758,6 @@ fn contract_derive_errors(source: String, derive_names: Array[(String, Int)], de
       }
     }
     i = i + 1
-  }
-}
-
-fn str_array_contains_name(xs: Array[String], name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(xs) {
-    if Array::get(xs, i) == name {
-      found = true
-      i = Array::length(xs)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// `msg` prefixed with the position of the `occurrence`-th appearance of
-/// `name` in `source` (1-based), or bare when it cannot be found. For a
-/// duplicate that is the SECOND one: the first declaration is fine, and the
-/// second is the line to delete.
-/// Byte offset of the identifier that HEADS the `occurrence`-th declaration
-/// named `name`, or -1.
-///
-/// Token-derived, not a text search. Two earlier versions searched the source
-/// for the name and both anchored on the wrong thing (Codex review on #2320):
-/// a raw substring match counted the `f` inside the first `fn` keyword, and
-/// whole-token matching still counted any other identifier with that spelling
-/// -- `struct Foo { .. }` before `derive(Foo)` anchors on the struct's name.
-/// An ordinal over the whole file cannot express "the declaration", however
-/// the matching is narrowed.
-///
-/// A declaration head is `fn <ident>` or `type <ident>`, which is exactly what
-/// `parse_contract_program` matches to produce the lists being scanned, so this
-/// walk and that parse agree by construction.
-/// Every declaration head in the buffer, in source order, as
-/// `(declared name, byte offset of the name)`.
-///
-/// Built ONCE and consumed in order, rather than searched per diagnostic. Five
-/// rounds of review found edge cases in the per-query searches -- a name that
-/// occurs earlier for another reason, a third duplicate, a multi-name derive,
-/// a qualified `fn Map::get` -- and every one of them was this code
-/// reconstructing what the parser already knew. A table consumed in order has
-/// no ordinal to get wrong: the k-th report of a name takes the k-th entry.
-///
-/// The heads are exactly the ones `parse_contract_program` accepts for a name
-/// that reaches `decls`/`opaques`: `fn`, `type`, `let`, and `opaque type`.
-/// A qualified head (`fn Map::get`) is joined the way the parser joins it, so
-/// the name here matches the name recorded there.
-fn contract_decl_head_table(tokens: Array[Token], starts: Array[Int]) -> Array[(String, Int)] {
-  let out = array_empty()
-  let n = Array::length(tokens)
-  let lim = Array::length(starts)
-  let mut i = 0
-  while i + 1 < n {
-    let heads = match Array::get(tokens, i) {
-      TFn => true,
-      TType => true,
-      TLet => true,
-      TIdent(kw) => kw == "opaque",
-      _ => false
-    }
-    if heads {
-      // `opaque type Token` puts the name two tokens along, not one.
-      let name_at = match Array::get(tokens, i) {
-        TIdent(_) => match Array::get(tokens, i + 1) {
-          TType => i + 2,
-          _ => i + 1
-        },
-        _ => i + 1
-      }
-      if name_at < n && name_at < lim {
-        match Array::get(tokens, name_at) {
-          TIdent(head_name) => {
-            let qualified = contract_qualified_head_name(tokens, name_at, head_name)
-            Array::push(out, (qualified, Array::get(starts, name_at)))
-          },
-          _ => ()
-        }
-      } else {
-        ()
-      }
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
-}
-
-/// `A::b` when the head is qualified, otherwise the bare name.
-fn contract_qualified_head_name(tokens: Array[Token], name_at: Int, head_name: String) -> String {
-  let n = Array::length(tokens)
-  if name_at + 2 < n {
-    let joined = match Array::get(tokens, name_at + 1) {
-      TDoubleColon => match Array::get(tokens, name_at + 2) {
-        TIdent(rest) => String::concat(head_name, String::concat("::", rest)),
-        _ => head_name
-      },
-      _ => head_name
-    }
-    joined
-  } else {
-    head_name
   }
 }
 
@@ -6042,9 +5905,9 @@ fn collect_all_diagnostics_on(input_path: String, source: String) -> Array[Strin
     // branch this replaces did catch it, through `check_program`. So run the
     // classifier the loader runs, on the statements the parse produced.
     return handle {
-      let (cdecls, copaques, cstmts) = parse_contract_program(ctokens)
+      let (_cdecls, _copaques, cstmts) = parse_contract_program(ctokens)
       let (_raws, _type_defs) = classify_contract_stmts(cstmts)
-      contract_semantic_errors(source, ctokens, cstarts, cdecls, copaques, cstmts)
+      contract_semantic_errors(source, ctokens, cstarts, cstmts)
     } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
   } else {
     ()

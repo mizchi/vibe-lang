@@ -8324,18 +8324,26 @@ fi
 rm -rf "$fwddir"
 echo "[compiler-gate] a call is checked identically in both declaration orders; correct forward calls still run; optional params stand down ok (#2318)"
 
-# 119/119. The buffer lane reports the contract checks it CAN decide, and the
-# two lanes agree (#2317).
+# 119/119. The buffer lane reports an unknown `derive`, and agrees with the
+# build about it (#2317).
 #
 # `parse_contract_program` + `classify_contract_stmts` answer "is this shaped
 # like a contract". They do not answer everything the loader does, so the
-# buffer lane reported CLEAN for contracts `vibe check` refuses. Measured on
-# complete packages before this: `derive(Foo)` -> `unknown trait: Foo` on the
-# import lane and nothing on the buffer lane; a name declared twice -> the
-# facade error on the import lane and nothing on the buffer lane.
-echo "[compiler-gate] 119/119 the buffer lane decides the contract checks it can, and agrees with the build (#2317)"
+# buffer lane reported CLEAN for contracts `vibe check` refuses. Measured on a
+# complete package before this: `derive(Foo)` -> `unknown trait: Foo` on the
+# import lane and nothing on the buffer lane.
+#
+# ONLY the derive check. A duplicate-declaration check was implemented and
+# removed: the loader accepts shapes it would have rejected -- a duplicated
+# QUALIFIED declaration (`fn Map::get` twice) checks clean on the import lane
+# while an unqualified one is refused, and a repeated legacy
+# `let version: String` is filtered out entirely when the header carries a
+# `version` directive. Deciding duplicates needs the loader's own rules, which
+# is the shared-function work #2317 describes. A diagnostic on a contract the
+# build accepts is worse than the missing one it was meant to add.
+echo "[compiler-gate] 119/119 the buffer lane reports an unknown derive, and agrees with the build (#2317)"
 csdir="_build/_gate_contract_semantic"
-rm -rf "$csdir"; mkdir -p "$csdir/derive" "$csdir/dup" "$csdir/clean"
+rm -rf "$csdir"; mkdir -p "$csdir/derive" "$csdir/clean" "$csdir/decoyderive" "$csdir/twoderive" "$csdir/multiderive"
 cs_header='name = @gate/contractsem
 version = 0.0.1
 description =
@@ -8344,55 +8352,29 @@ deps = {}
 
 generated_hash =
 '
+cs_impl_a='export fn a(x: Int) -> Int {
+  x + 1
+}
+'
 printf '%s\nstruct P {\n  x: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/derive/index.vpkg"
-printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/derive/impl.vibe"
-printf '%s\nfn f(x: Int) -> Int\nfn f(x: Int) -> Int\n' "$cs_header" > "$csdir/dup/index.vpkg"
-printf 'export fn f(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/dup/impl.vibe"
+printf '%s' "$cs_impl_a" > "$csdir/derive/impl.vibe"
 printf '%s\nstruct P {\n  x: Int\n} derive(Eq)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/clean/index.vpkg"
-printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/clean/impl.vibe"
-# Opaque types share the declaration namespace -- the facade allocates each name
-# once, so declaring one twice is the same defect as a duplicated `fn`. The
-# first version discarded the opaque list entirely.
-mkdir -p "$csdir/dupopaque"
-printf '%s\ntype Token\ntype Token\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/dupopaque/index.vpkg"
-printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/dupopaque/impl.vibe"
-# DECOYS. An anchor found by counting occurrences of the name across the whole
-# buffer picks the wrong one as soon as the name appears earlier for any other
-# reason. `struct Foo` before `derive(Foo)`, and a `Token` parameter type before
-# the two `type Token` declarations, are exactly those cases (Codex review on
-# #2320). Both must still anchor on the DECLARATION, which is why the anchors
-# are derived from `fn`/`type`/`derive` tokens rather than from ordinals.
-mkdir -p "$csdir/decoyderive" "$csdir/decoydup"
+printf '%s' "$cs_impl_a" > "$csdir/clean/impl.vibe"
+# The name occurs EARLIER as an unrelated struct, so an anchor found by
+# counting occurrences lands on the decoy instead of the derive clause.
 printf '%s\nstruct Foo {\n  y: Int\n}\n\nstruct P {\n  x: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/decoyderive/index.vpkg"
-printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/decoyderive/impl.vibe"
-printf '%s\nfn uses(t: Token) -> Int\ntype Token\ntype Token\n' "$cs_header" > "$csdir/decoydup/index.vpkg"
-printf 'export fn uses(t: Token) -> Int {\n  0\n}\n' > "$csdir/decoydup/impl.vibe"
-# Two declarations deriving the SAME unknown trait: each diagnostic must point
-# at its own clause. A locator that rescans from the start anchors both on the
-# first (Codex review on #2320).
-mkdir -p "$csdir/twoderive" "$csdir/duplet"
+printf '%s' "$cs_impl_a" > "$csdir/decoyderive/impl.vibe"
+# Two clauses naming the same unknown trait: each diagnostic needs its own.
 printf '%s\nstruct A {\n  x: Int\n} derive(Foo)\n\nstruct B {\n  y: Int\n} derive(Foo)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/twoderive/index.vpkg"
-printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/twoderive/impl.vibe"
-# A bodyless VALUE declaration (#752) duplicated: `let` is a declaration head
-# too, and the first token version recognised only `fn` and `type`.
-printf '%s\nlet answer: Int\nlet answer: Int\n' "$cs_header" > "$csdir/duplet/index.vpkg"
-printf 'export let answer: Int = 42\n' > "$csdir/duplet/impl.vibe"
-# Three declarations of one name: the second and third reports must land on the
-# second and third declarations, not both on the second.
-mkdir -p "$csdir/triple" "$csdir/multiderive" "$csdir/qualified"
-printf '%s\nfn f(x: Int) -> Int\nfn f(x: Int) -> Int\nfn f(x: Int) -> Int\n' "$cs_header" > "$csdir/triple/index.vpkg"
-printf 'export fn f(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/triple/impl.vibe"
-# One clause naming several unknown traits: each needs its own anchor.
+printf '%s' "$cs_impl_a" > "$csdir/twoderive/impl.vibe"
+# One clause naming several unknown traits.
 printf '%s\nstruct A {\n  x: Int\n} derive(Foo, Bar)\n\nfn a(x: Int) -> Int\n' "$cs_header" > "$csdir/multiderive/index.vpkg"
-printf 'export fn a(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/multiderive/impl.vibe"
-# A qualified head: the parser records `Map::get`, so the anchor has to join
-# the same way rather than matching the first identifier alone.
-printf '%s\nfn Map::get(x: Int) -> Int\nfn Map::get(x: Int) -> Int\n' "$cs_header" > "$csdir/qualified/index.vpkg"
-printf 'export fn Map::get(x: Int) -> Int {\n  x + 1\n}\n' > "$csdir/qualified/impl.vibe"
-# Each bad contract must be refused by BOTH lanes, and the clean one by
-# neither. Asserting only the buffer lane would not notice the two drifting
-# apart again, which is what #2317 is about.
-for probe in derive dup dupopaque decoyderive decoydup twoderive duplet triple multiderive qualified clean; do
+printf '%s' "$cs_impl_a" > "$csdir/multiderive/impl.vibe"
+# Each bad contract refused by BOTH lanes, the clean one by neither. Asserting
+# only the buffer lane would not notice the two drifting apart again, and
+# asserting only that it refuses would not notice it refusing a VALID contract
+# -- which is how the duplicate check was caught.
+for probe in derive decoyderive twoderive multiderive clean; do
   rm -f "$csdir/$probe.imp" "$csdir/$probe.imp.diag" "$csdir/$probe.buf"
   if VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -8413,119 +8395,50 @@ for probe in derive dup dupopaque decoyderive decoydup twoderive duplet triple m
     exit 1
   fi
 done
-# The derive message must be the CHECKER's own, not a second implementation:
-# `validate_derives` is exported for this so the two lanes cannot word it
-# differently.
+# The message is the CHECKER's own -- `validate_derives` is exported for this,
+# so the two lanes cannot word it differently.
 if ! grep -qF 'unknown trait: Foo' "$csdir/derive.buf" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the buffer lane does not report an unknown derive with the checker's own message (#2317)" >&2
   cat "$csdir/derive.buf" >&2 || true
   exit 1
 fi
-# The duplicate must be anchored on the SECOND declaration -- the first is
-# fine, the second is the line to delete. The header is 7 lines plus a blank,
-# so the two `fn f` lines are 9 and 10: line 10 is the one to report.
-#
-# This assertion said line 9 and PASSED on a broken locator: a raw substring
-# search counted the `f` inside the first `fn` keyword, anchoring on the first
-# declaration, which happens to be line 9 (Codex review on #2320). Asserting
-# the line the fixture actually puts the second declaration on is what makes it
-# mean anything.
-if ! grep -q '^line 10:' "$csdir/dup.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the duplicate declaration is not anchored on the SECOND declaration (expected line 10) (#2317)" >&2
-  cat "$csdir/dup.buf" >&2 || true
-  exit 1
-fi
-# The unknown derive must be anchored too, not left at the synthetic 0:0 --
-# `validate_derives` returns a bare message and the buffer lane has to place it.
-# `derive(Foo)` is on line 11 of that fixture.
+# Anchored, not left at the synthetic 0:0. Line numbers below are read off the
+# generated fixtures, not counted by hand -- an earlier version of this section
+# asserted 12 and 16 for the twoderive clauses, which are on 11 and 15, and CI
+# caught it.
 if ! grep -q '^line 11:' "$csdir/derive.buf" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the unknown derive is not anchored on its derive clause (expected line 11) (#2317)" >&2
   cat "$csdir/derive.buf" >&2 || true
   exit 1
 fi
-# The decoys: the name occurs EARLIER in the buffer for an unrelated reason, so
-# an occurrence-counting anchor lands on the decoy. `struct Foo` is on line 9
-# and the `derive(Foo)` clause on line 15; the anchor must be 15.
 if grep -q '^line 9:' "$csdir/decoyderive.buf" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the unknown derive anchored on the unrelated 'struct Foo', not on the derive clause (#2317)" >&2
   cat "$csdir/decoyderive.buf" >&2 || true
   exit 1
 fi
 if ! grep -q '^line 15:' "$csdir/decoyderive.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the unknown derive is not anchored on its derive clause with a decoy present (expected line 15) (#2317)" >&2
+  echo "[compiler-gate] FAIL: the unknown derive is not anchored on its clause with a decoy present (expected line 15) (#2317)" >&2
   cat "$csdir/decoyderive.buf" >&2 || true
   exit 1
 fi
-# `Token` appears first as a PARAMETER type on line 9; the two declarations are
-# lines 10 and 11, so the duplicate must anchor on 11.
-if ! grep -q '^line 11:' "$csdir/decoydup.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the duplicate type anchored somewhere other than its second declaration -- a parameter reference displaced it (expected line 11) (#2317)" >&2
-  cat "$csdir/decoydup.buf" >&2 || true
-  exit 1
-fi
-# Two clauses, two DIFFERENT anchors. The `} derive(Foo)` lines are 11 and 15
-# (the header is 7 lines plus a blank, then each struct spans three). A locator
-# that rescans from 0 reports line 11 twice, which is why the assertion names
-# the second line rather than merely counting diagnostics.
-#
-# These two numbers were 12 and 16 in the first version and CI caught them: the
-# implementation was right and the expectation was wrong, because I counted the
-# fixture in my head. Every line number in this section is now read off the
-# generated file instead.
 if ! grep -q '^line 11:' "$csdir/twoderive.buf" 2>/dev/null; then
   echo "[compiler-gate] FAIL: the first of two identical unknown derives is not anchored on its own clause (expected line 11) (#2317)" >&2
   cat "$csdir/twoderive.buf" >&2 || true
   exit 1
 fi
 if ! grep -q '^line 15:' "$csdir/twoderive.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the SECOND identical unknown derive is not anchored on its own clause (expected line 15) -- the locator rescans from the start (#2317)" >&2
+  echo "[compiler-gate] FAIL: the SECOND identical unknown derive is not anchored on its own clause (expected line 15) (#2317)" >&2
   cat "$csdir/twoderive.buf" >&2 || true
   exit 1
 fi
-# A duplicated bodyless `let`: the second declaration is line 10.
-if ! grep -q '^line 10:' "$csdir/duplet.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a duplicated bodyless let is not anchored on its second declaration (expected line 10) (#2317)" >&2
-  cat "$csdir/duplet.buf" >&2 || true
-  exit 1
-fi
-# Three declarations on lines 9, 10, 11: the two reports must be lines 10 AND
-# 11. Anchoring both on 10 is what a fixed "occurrence 2" does, and exact-string
-# dedupe would then collapse them to one.
-if ! grep -q '^line 10:' "$csdir/triple.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the second of three duplicate declarations is not anchored on line 10 (#2317)" >&2
-  cat "$csdir/triple.buf" >&2 || true
-  exit 1
-fi
-if ! grep -q '^line 11:' "$csdir/triple.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the THIRD duplicate declaration is not anchored on its own line (expected 11) -- every duplicate is asking for the same occurrence (#2317)" >&2
-  cat "$csdir/triple.buf" >&2 || true
-  exit 1
-fi
-# `derive(Foo, Bar)` on line 12: two diagnostics, both anchored, neither at 0:0.
-if ! grep -qF 'unknown trait: Foo' "$csdir/multiderive.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the first trait of a multi-name derive is not reported (#2317)" >&2
-  cat "$csdir/multiderive.buf" >&2 || true
-  exit 1
-fi
 if ! grep -qF 'unknown trait: Bar' "$csdir/multiderive.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the SECOND trait of a multi-name derive is not reported (#2317)" >&2
+  echo "[compiler-gate] FAIL: the second trait of a multi-name derive is not reported (#2317)" >&2
   cat "$csdir/multiderive.buf" >&2 || true
   exit 1
 fi
 if grep -q '^unknown trait' "$csdir/multiderive.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a multi-name derive left a diagnostic unanchored -- the cursor moved past its own clause (#2317)" >&2
+  echo "[compiler-gate] FAIL: a multi-name derive left a diagnostic unanchored (#2317)" >&2
   cat "$csdir/multiderive.buf" >&2 || true
-  exit 1
-fi
-# A qualified head `fn Map::get` declared twice: anchored on line 10, not bare.
-if grep -q '^duplicate declaration' "$csdir/qualified.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a duplicated QUALIFIED declaration is unanchored -- the head name was not joined (#2317)" >&2
-  cat "$csdir/qualified.buf" >&2 || true
-  exit 1
-fi
-if ! grep -q '^line 10:' "$csdir/qualified.buf" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: a duplicated qualified declaration is not anchored on its second declaration (expected line 10) (#2317)" >&2
-  cat "$csdir/qualified.buf" >&2 || true
   exit 1
 fi
 # ...and NO committed contract in the tree may gain a diagnostic. A check that
@@ -8547,4 +8460,4 @@ if [ "$cs_noisy" -ne 0 ]; then
   exit 1
 fi
 rm -rf "$csdir"
-echo "[compiler-gate] unknown derive and duplicate declaration are refused by both lanes, anchored, and no committed contract regressed ok (#2317)"
+echo "[compiler-gate] an unknown derive is refused by both lanes and anchored on its own clause; no committed contract regressed ok (#2317)"
