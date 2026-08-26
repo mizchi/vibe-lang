@@ -83,3 +83,22 @@ test "2324: a CRLF-split marker line does not leave a CR in the path" {
   let crlf = "// vibe: vpkg contract types module (#1840)\r\n// vibe: generated from lib/@gate/pkg/index.vpkg\r\nstruct P { x: Int }\r\n"
   assert(vpkg_types_contract_of_source(crlf) == "lib/@gate/pkg/index.vpkg")
 }
+
+test "2324: a contract path containing a newline cannot escape the marker comment" {
+  // A POSIX path may legally contain a newline. Raw, it would end the `//`
+  // comment and turn the rest of the path into generated source.
+  let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
+  let evil = "lib/pkg\nstruct Injected { x: Int }\n/index.vpkg"
+  let text = contract_types_module_text(defs, "t", evil)
+  // The marker stays on ONE line: the injected text must not appear as source.
+  assert(!String::contains(text, "struct Injected"))
+  // ...and the path still round-trips exactly.
+  assert(vpkg_types_contract_of_source(text) == evil)
+}
+
+test "2324: a backslash in a contract path round-trips" {
+  let defs = [SStruct(true, "HttpRequest", [map_headers_field()], [], [], [])]
+  let odd = "lib/we\\ird/index.vpkg"
+  let text = contract_types_module_text(defs, "t", odd)
+  assert(vpkg_types_contract_of_source(text) == odd)
+}

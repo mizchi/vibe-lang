@@ -959,6 +959,66 @@ export let vpkg_types_module_marker: String = "// vibe: vpkg contract types modu
 /// instance of it (Codex review on #2324).
 export let vpkg_types_contract_marker: String = "// vibe: generated from "
 
+/// #2324: escape a contract path for the single-line `//` provenance marker.
+///
+/// A POSIX path may legally contain a newline. Concatenated raw, it would end
+/// the comment and turn the remainder of the path into generated vibe source
+/// -- the types module could then fail to parse, or take crafted path text as
+/// declarations, and the reader would recover only the truncated prefix.
+///
+/// Backslash is escaped first so the decode is unambiguous.
+fn vpkg_marker_encode(path: String) -> String {
+  let sb = StringBuilder::new()
+  let n = String::length(path)
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(path, i)
+    if c == 92 {
+      StringBuilder::push(sb, "\\\\")
+    } else if c == 10 {
+      StringBuilder::push(sb, "\\n")
+    } else if c == 13 {
+      StringBuilder::push(sb, "\\r")
+    } else {
+      StringBuilder::push(sb, String::substring(path, i, i + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// Inverse of `vpkg_marker_encode`. An unrecognized escape is passed through
+/// verbatim rather than dropped: a stub written by some other producer should
+/// degrade to a wrong-looking path, never to a silently shortened one.
+fn vpkg_marker_decode(text: String) -> String {
+  let sb = StringBuilder::new()
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(text, i)
+    if c == 92 && i + 1 < n {
+      let d = String::char_code_at(text, i + 1)
+      if d == 110 {
+        StringBuilder::push(sb, "\n")
+        i = i + 2
+      } else if d == 114 {
+        StringBuilder::push(sb, "\r")
+        i = i + 2
+      } else if d == 92 {
+        StringBuilder::push(sb, "\\")
+        i = i + 2
+      } else {
+        StringBuilder::push(sb, String::substring(text, i, i + 1))
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(sb, String::substring(text, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(sb)
+}
+
 /// #2125: the type-name heads `tds` reference minus the names `tds` declare
 /// -- the names this module can neither declare nor import: a
 /// contract-`opaque` name whose definition lives in a sibling impl
@@ -1122,7 +1182,7 @@ export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_pa
   Array::push(lines, vpkg_types_module_marker)
   // Provenance, so a process holding only this text can still name the
   // contract. Emitted even when empty so the header shape is uniform.
-  Array::push(lines, String::concat(vpkg_types_contract_marker, contract_path))
+  Array::push(lines, String::concat(vpkg_types_contract_marker, vpkg_marker_encode(contract_path)))
   let (decl_names, deferred) = ctm_deferred_type_names(tds)
   if Array::length(deferred) == 0 {
     ()
@@ -1164,11 +1224,14 @@ export fn vpkg_types_contract_of_source(source: String) -> String {
       // "\n" leaves it on a CRLF file, and a CR inside the path is just as
       // wrong as a lost space.
       let raw_len = String::length(raw)
-      found = if raw_len > 0 && String::char_code_at(raw, raw_len - 1) == 13 {
+      // Strip a trailing CR before decoding: the writer ESCAPES a real CR, so
+      // a literal one here can only have come from a CRLF line ending.
+      let line_body = if raw_len > 0 && String::char_code_at(raw, raw_len - 1) == 13 {
         String::substring(raw, 0, raw_len - 1)
       } else {
         raw
       }
+      found = vpkg_marker_decode(line_body)
     } else {
       ()
     }
