@@ -8721,5 +8721,34 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
   cat "$dpvdir/clean.out.diag" 2>/dev/null >&2 || true
   exit 1
 fi
+# ...and a LOCATED diagnostic keeps the generated path (Codex review on #2324).
+#
+# `locate_type_error` computes its line against the STUB's source, and the stub
+# carries neither the contract's header nor its formatting. Renaming a located
+# message to the contract pairs a file the author wrote with a line number from
+# a generated one -- confidently wrong, which outranks unhelpful.
+#
+# Measured on this fixture: `struct Box[T]` is on line 13 of the contract, and
+# the diagnostic reads `line 4:15-18`. Line 4 of the contract is inside its
+# `description` block, so the rename would point at an unrelated line.
+mkdir -p "$dpvdir/located"
+printf '%s\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn a(x: Int) -> Int\n' "$dpv_header" > "$dpvdir/located/index.vpkg"
+printf '%s' "$dpv_impl" > "$dpvdir/located/impl.vibe"
+rm -f "$dpvdir/located.out" "$dpvdir/located.out.diag"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dpvdir/located/index.vpkg" "$dpvdir/located.out" main >/dev/null 2>&1 || true
+loc_report="$(cat "$dpvdir/located.out.diag" 2>/dev/null || true)"
+# It must still be the LOCATED shape, or this probe stops testing the guard.
+if ! printf '%s\n' "$loc_report" | grep -q 'line [0-9]*:'; then
+  echo "[compiler-gate] FAIL: the shadowing diagnostic is no longer located -- repoint this probe, it no longer exercises the guard (#2324)" >&2
+  printf '%s\n' "$loc_report" >&2
+  exit 1
+fi
+if printf '%s\n' "$loc_report" | grep -qF "$dpvdir/located/index.vpkg"; then
+  echo "[compiler-gate] FAIL: a LOCATED diagnostic was renamed to the contract, pairing it with a line from the generated stub (#2324)" >&2
+  printf '%s\n' "$loc_report" >&2
+  exit 1
+fi
 rm -rf "$dpvdir"
-echo "[compiler-gate] a type diagnostic on a materialized contract names the contract; a known derive stays clean ok (#2317)"
+echo "[compiler-gate] a type diagnostic on a materialized contract names the contract when unlocated, keeps the generated path when located, and a known derive stays clean ok (#2317, #2324)"

@@ -1304,11 +1304,26 @@ fn is_vpkg_types_stub_path(path: String) -> Bool {
 /// the GENERATED text, not about anything in the contract, and naming the
 /// contract for one of those would send the reader to a file that is fine.
 ///
+/// UNLOCATED messages only, and that is the whole subtlety (Codex review on
+/// #2324). `locate_type_error` computes its line and column against the STUB's
+/// source, and the stub carries neither the contract's header nor its
+/// formatting -- so a located message renamed to the contract pairs a file the
+/// author wrote with a line number from a generated one. Measured: a contract
+/// whose `struct Box[T]` sits on line 13 reports `line 4:15-18` against the
+/// stub, and line 4 of that contract is inside its `description` block.
+///
+/// A stub path with a stub-relative line is at least self-consistent -- the
+/// reader can open that file and find the line. A contract path with a stub
+/// line is confidently wrong, which this repo ranks above unhelpful. So a
+/// located diagnostic keeps the generated path until the stub carries a real
+/// offset mapping back to the contract; that needs the generator to emit one,
+/// and is tracked with the rest of #2317.
+///
 /// Falls back to the stub path when the registry has no entry, which is what a
 /// process that checks a stub it did not itself materialize will see. That is
 /// the behavior this replaces, so a miss degrades rather than misreports.
-fn type_diagnostic_display_path(path: String) -> String {
-  if is_vpkg_types_stub_path(path) {
+fn type_diagnostic_display_path(path: String, located_msg: String) -> String {
+  if is_vpkg_types_stub_path(path) && !diag_already_located(located_msg) {
     let owner = vpkg_types_contract_for_path(path)
     if owner == "" {
       path
@@ -4065,9 +4080,12 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
         None
       }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
-    } with { Exception::Throw(msg) => Diagnosed(job.path, [
-      String::concat(String::concat(type_diagnostic_display_path(job.path), ": "), locate_type_error(job.source, msg))
-    ]) }
+    } with { Exception::Throw(msg) => {
+      let located = locate_type_error(job.source, msg)
+      Diagnosed(job.path, [
+        String::concat(String::concat(type_diagnostic_display_path(job.path, located), ": "), located)
+      ])
+    } }
   }
 }
 
