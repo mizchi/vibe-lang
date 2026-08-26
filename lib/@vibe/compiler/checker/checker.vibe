@@ -23,6 +23,7 @@ import @vibe/compiler/core {
   find_typedef,
   fresh_var,
   generalize,
+  hkt_apply_ctor,
   instantiate,
   is_exception_effect_name,
   is_exception_label,
@@ -34,6 +35,7 @@ import @vibe/compiler/core {
   resolve_type_alias_params,
   subst_add_bound,
   subst_apply,
+  subst_apply_except,
   subst_bounds_for,
   trait_method_sig_binders_deep,
   type_constructor_name,
@@ -318,43 +320,51 @@ export fn trait_erased_type_param_env(env: TypeEnv, binding_name: String) -> Typ
 /// `(F[A], (A) -> B) -> F[B]` silently accepts the identity function. Fail
 /// closed at the annotation site until a type parameter can carry a kind.
 export fn collect_formal_applications_by(te: TypeExpr, is_formal: (String) -> Bool, out: Array[String]) -> Unit {
+  collect_formal_kind_uses(te, is_formal, out, array_empty())
+}
+
+fn collect_formal_kind_uses(te: TypeExpr, is_formal: (String) -> Bool, applied: Array[String], unapplied: Array[String]) -> Unit {
   match te {
-    TyName(_) => (),
+    TyName(n) => if is_formal(n) && !string_array_has(unapplied, n) {
+      Array::push(unapplied, n)
+    } else {
+      ()
+    },
     TyUnit => (),
     TyApp(head, args) => {
-      if is_formal(head) && !string_array_has(out, head) {
-        Array::push(out, head)
+      if is_formal(head) && !string_array_has(applied, head) {
+        Array::push(applied, head)
       } else {
         ()
       }
       let mut i = 0
       while i < Array::length(args) {
-        collect_formal_applications_by(Array::get(args, i), is_formal, out)
+        collect_formal_kind_uses(Array::get(args, i), is_formal, applied, unapplied)
         i = i + 1
       }
     },
     TyFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        collect_formal_applications_by(Array::get(params, i), is_formal, out)
+        collect_formal_kind_uses(Array::get(params, i), is_formal, applied, unapplied)
         i = i + 1
       }
-      collect_formal_applications_by(ret, is_formal, out)
+      collect_formal_kind_uses(ret, is_formal, applied, unapplied)
     },
     TyTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_formal_applications_by(Array::get(items, i), is_formal, out)
+        collect_formal_kind_uses(Array::get(items, i), is_formal, applied, unapplied)
         i = i + 1
       }
     }
   }
 }
 
-/// The one diagnostic text for #2268, shared by every surface that rejects a
-/// formal application so the message cannot drift between them.
+/// Mixed-kind use of a type formal: standing both as a complete type and as
+/// a constructor. Ill-kinded; would otherwise bind `F` to `F[A]`.
 export fn formal_application_error(fname: String, where_label: String) -> String {
-  String::concat(String::concat(String::concat(String::concat("type parameter `", fname), "` cannot take type arguments in "), where_label), " -- a type parameter stands for a complete type, so the arguments would be ignored and every application of it would mean the same type. Spell the concrete constructor (e.g. `Array[...]`), or drop the arguments")
+  String::concat(String::concat(String::concat(String::concat("type parameter `", fname), "` is used both as a type and as a type constructor in "), where_label), " -- a constructor parameter is written only applied (`F[A]`), a type parameter only unapplied (`F`). Split them, or use one kind everywhere")
 }
 
 /// #2268: the reporting face of `collect_formal_applications_by`. `formals`
@@ -372,15 +382,21 @@ export fn formal_application_error(fname: String, where_label: String) -> String
 /// EFn arm binds (Codex round 5), which are also binder provenance.
 export fn report_formal_applications(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
   let applied_formals = array_empty()
+  let unapplied_formals = array_empty()
   // Bound to a let rather than written inline: vibe fmt's guard refuses a
   // multiline closure literal in a non-final argument slot (#2271).
   let is_formal = (head) -> {
     string_array_has(formals, head)
   }
-  collect_formal_applications_by(te, is_formal, applied_formals)
+  collect_formal_kind_uses(te, is_formal, applied_formals, unapplied_formals)
   let mut ai = 0
   while ai < Array::length(applied_formals) {
-    Array::push(errors, formal_application_error(Array::get(applied_formals, ai), where_label))
+    let fname = Array::get(applied_formals, ai)
+    if string_array_has(unapplied_formals, fname) {
+      Array::push(errors, formal_application_error(fname, where_label))
+    } else {
+      ()
+    }
     ai = ai + 1
   }
 }
@@ -4826,7 +4842,7 @@ fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
       }
       match env_lookup(env, name) {
         Some(t) => match t {
-          CtVar(_) => t,
+          CtVar(_) => hkt_apply_ctor(t, ra),
           _ => CtNamed(name, ra)
         },
         None => CtNamed(name, ra)
@@ -7625,6 +7641,37 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+        } else if name == "Iterator::map" && Array::length(args) == 2 {
+          let (recv_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (fn_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let recv = subst_apply(s2, recv_ty)
+          match recv {
+            CtArray(_) => {
+              let s3 = check_hof_param_vs_elem(recv, subst_apply(s2, fn_ty), 0, s2, errors, "Iterator::map function parameter type mismatch")
+              let result = match subst_apply(s3, fn_ty) {
+                CtFn(_, ret, _) => CtArray(ret),
+                _ => CtUnknown
+              }
+              (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+            },
+            _ => {
+              let (elem_v, c3) = fresh_var(c2)
+              match unify(CtArray(elem_v), recv, s2) {
+                Some(s3) => {
+                  let s4 = check_hof_param_vs_elem(subst_apply(s3, recv), subst_apply(s3, fn_ty), 0, s3, errors, "Iterator::map function parameter type mismatch")
+                  let result = match subst_apply(s4, fn_ty) {
+                    CtFn(_, ret, _) => CtArray(ret),
+                    _ => CtUnknown
+                  }
+                  (tab_call_ty(tytab, call_off, result, capture, lane), s4, c3)
+                },
+                None => {
+                  Array::push(errors, String::concat("Iterator::map maps `Array`; the argument is ", type_to_string(recv)))
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
+                }
+              }
+            }
+          }
         } else if name == "TaskGroup::run" && Array::length(args) == 1 {
           // #1081 step 3: `TaskGroup::run` mints a fresh generative region.
           // There is no general rank-2/`Region`-bound mechanism in this
@@ -8364,11 +8411,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             }
             collect_formal_applications_by(ann_te, is_marked_formal, fapp_hits)
+            let marked = array_empty()
             let mut fapp_i = 0
             while fapp_i < Array::length(fapp_hits) {
-              Array::push(errors, formal_application_error(Array::get(fapp_hits, fapp_i), "a local let annotation"))
+              Array::push(marked, Array::get(fapp_hits, fapp_i))
               fapp_i = fapp_i + 1
             }
+            report_formal_applications(ann_te, marked, "a local let annotation", errors)
             let actual = subst_apply(ns0, at)
             // #981: `check_assignable` now runs the #844 same-name concrete
             // `CtNamed` check itself (its tolerate branch calls
@@ -9531,12 +9580,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut tp_env = env
       let mut s0 = s
       let mut c0 = c
+      let tparam_ids = array_empty()
       let mut tpi = 0
       while tpi < tplen {
         let tpname = Array::get(tparams, tpi)
         match fresh_var(c0) {
           (tv, nc) => {
             let vid = nc - 1
+            Array::push(tparam_ids, vid)
             let tblen = Array::length(tbounds)
             let mut bounds = array_empty()
             let mut tbi = 0
@@ -9558,6 +9609,33 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           _ => ()
         }
         tpi = tpi + 1
+      }
+      let sig_applied = array_empty()
+      let sig_unapplied = array_empty()
+      let is_sig_tp = (n) -> {
+        string_array_has(tparams, n)
+      }
+      let mut spi = 0
+      while spi < Array::length(params) {
+        match Array::get(params, spi) {
+          (_, Some(ste)) => collect_formal_kind_uses(ste, is_sig_tp, sig_applied, sig_unapplied),
+          _ => ()
+        }
+        spi = spi + 1
+      }
+      match ret_ty {
+        Some(srte) => collect_formal_kind_uses(srte, is_sig_tp, sig_applied, sig_unapplied),
+        None => ()
+      }
+      let mut ski = 0
+      while ski < Array::length(sig_applied) {
+        let sfn = Array::get(sig_applied, ski)
+        if string_array_has(sig_unapplied, sfn) {
+          Array::push(errors, formal_application_error(sfn, "the function signature"))
+        } else {
+          ()
+        }
+        ski = ski + 1
       }
       let plen = Array::length(params)
       let mut fn_env = env_bind(tp_env, "__capture_boundary__", CtUnit)
@@ -9723,7 +9801,38 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           enum_dependency_effect
         }
       }
-      (CtFn(param_types, final_ret, dependency_effect), s3, c2)
+      let scheme_ret = match ret_ty {
+        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, tparams), fn_env), tparam_ids),
+        None => subst_apply_except(s3, final_ret, tparam_ids)
+      }
+      let scheme_params = array_empty()
+      let mut spi2 = 0
+      while spi2 < Array::length(param_types) {
+        Array::push(scheme_params, subst_apply_except(s3, Array::get(param_types, spi2), tparam_ids))
+        spi2 = spi2 + 1
+      }
+      let fn_ty = if tplen == 0 {
+        CtFn(param_types, final_ret, dependency_effect)
+      } else {
+        CtFn(scheme_params, scheme_ret, dependency_effect)
+      }
+      if tplen == 0 {
+        (fn_ty, s3, c2)
+      } else {
+        let var_bounds = array_empty()
+        let mut vbi = 0
+        while vbi < tplen {
+          let vid = Array::get(tparam_ids, vbi)
+          let bl = subst_bounds_for(s3, vid)
+          if Array::length(bl) != 0 {
+            Array::push(var_bounds, (vid, bl))
+          } else {
+            ()
+          }
+          vbi = vbi + 1
+        }
+        (CtForAll(tparam_ids, var_bounds, subst_apply_except(s3, fn_ty, tparam_ids)), s3, c2)
+      }
     },
     EBreak(opt) => {
       // `break` is only meaningful inside a loop. Loop bodies bind the

@@ -870,33 +870,24 @@ fn keep[T: Measured](x: T) -> T { x }
 let ok = keep([1, 2, 3])
 ```
 
-### A type parameter cannot take type arguments (#2268)
+### Higher-kinded type parameters (`F[A]`)
 
-**A type formal in constructor position — `F[A]` — is rejected.** A type
-parameter always stands for a complete type; if the shape were accepted, `F`
-would unify with the whole applied type and the bracket arguments would be
-ignored, so a signature spelled `(F[A], (A) -> B) -> F[B]` would silently
-accept the identity function. Higher-kinded parameters are not implemented;
-which release implements them is decided on #2269. The diagnostic reads
-``type parameter `F` cannot take type arguments in parameter `x` ``.
+**A type formal may stand in constructor position — `F[A]`.** Unification
+binds `F` to a type constructor (`F := Array` yields `Array[A]`). The
+pipeline combinator is `xs |> Iterator::map(f)` (not bare `map`, not
+`Array::map`). A formal used both unapplied (`x: F`) and applied (`y: F[A]`)
+is rejected as mixed-kind.
 
-<!-- doctest-skip: deliberately rejected shapes (#2268 fail-close) -->
+<!-- doctest-skip: mixed-kind is deliberately rejected -->
 ```vibe skip
-fn fake_map[F, A, B](x: F[A], f: (A) -> B) -> F[B] {  // rejected
-  x
-}
-struct Holder[F] {
-  inner: F[Int]                                       // also rejected
+fn bad[F](x: F, y: F[Int]) -> Int {  // rejected: mixed kind
+  1
 }
 ```
 
-The same rejection covers every declaration surface: a parameterized alias
-body (`type Apply[F, A] = F[A]`), a generic effect operation
-(`effect Bad[F, A] { Put(F[A]) -> Unit }`), and a trait method signature
-(`trait Functor[F] { fmap[A, B](F[A], (A) -> B) -> F[B] }`) all reject with
-the same diagnostic, naming the declaration (`` in the signature of
-`Functor::fmap` ``). A trait or effect may still DECLARE type parameters and
-use them unapplied (`trait Iter[A] { nth(Self, Int) -> Option[A] }`).
+The same `F[A]` shape is legal in a parameterized alias body, a generic
+effect operation, and a trait method signature. Mixed-kind (`F` and `F[A]`
+together) is still rejected on every declaration surface.
 
 > A concrete generic impl target such as `impl M for Array[Int]` is rejected
 > (#2262). The impl AST cannot retain the `[Int]` argument; accepting it would
