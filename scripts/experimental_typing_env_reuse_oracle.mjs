@@ -222,40 +222,40 @@ function bindingFiles(cache, namespace) {
 }
 
 function appSidecar(cache, appSource) {
-  const candidates = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v5");
+  const candidates = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v6");
   const path = candidates.find((candidate) => {
     const text = readFileSync(candidate, "utf8");
-    return text.startsWith("TDRE5A") && text.includes(appSource);
+    return text.startsWith("TDRE6A") && text.includes(appSource);
   });
   if (!path) fail(`non-vacuous TDRE5 app sidecar missing in ${basename(cache)}`);
-  return { path, ...parseBinding(readFileSync(path, "utf8"), "TDRE5A") };
+  return { path, ...parseBinding(readFileSync(path, "utf8"), "TDRE6A") };
 }
 
 function otherSidecar(cache, target) {
-  for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v5")) {
-    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE5A");
+  for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v6")) {
+    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE6A");
     if (binding.target !== target) return { path, ...binding };
   }
   fail("second valid TDRE5 target missing");
 }
 
 function targetWitness(cache, target) {
-  for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v5")) {
-    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE5W");
+  for (const path of bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v6")) {
+    const binding = parseBinding(readFileSync(path, "utf8"), "TDRE6W");
     if (binding.target === target) return { path, ...binding };
   }
   fail(`bound TDRE5 witness missing for ${target}`);
 }
 
 function aliasText(input, target, targetText) {
-  return `TDRE5A${segment(input)}${segment(target)}${segment(targetText)}`;
+  return `TDRE6A${segment(input)}${segment(target)}${segment(targetText)}`;
 }
 
 function witnessText(input, target, targetText) {
-  return `TDRE5W${segment(input)}${segment(target)}${segment(targetText)}`;
+  return `TDRE6W${segment(input)}${segment(target)}${segment(targetText)}`;
 }
 
-const logicalInputTag = "vibe-typing-dependency-transport-env:v5";
+const logicalInputTag = "vibe-typing-dependency-transport-env:v6";
 function parseLogicalInput(input) {
   if (!input.startsWith(logicalInputTag)) fail("TDRE5 logical input tag changed");
   let cursor = logicalInputTag.length;
@@ -311,8 +311,8 @@ function stableCachePath(cache, version, prefix, seed, suffix) {
   return join(cache, `vibe_${prefix}_${token}${suffix}`);
 }
 
-function typeEnvPath(stage2, cache, target, major = "v19") {
-  return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v5", target, ".tsv");
+function typeEnvPath(stage2, cache, target, major = "v20") {
+  return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v6", target, ".tsv");
 }
 
 // Derive the exact referenced TypeEnv filename from the target conservative
@@ -351,16 +351,16 @@ function expectTraceLaneRejected(stage2, project, cache) {
 }
 
 function traceForcedOff(stage2, project, cache) {
-  const beforeAliases = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v5").length;
-  const beforeWitnesses = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v5").length;
+  const beforeAliases = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v6").length;
+  const beforeWitnesses = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v6").length;
   const result = check(stage2, project, cache, true, "trace-forced-off", false, {
     VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "trace-forced-off.json",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "trace-forced-off",
   });
   expectCounts("ordinary trace forced off", result.telemetry, 2, 0);
   if (!existsSync(join(project, "trace-forced-off.json"))) fail("ordinary trace omitted observation sidecar");
-  if (bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v5").length !== beforeAliases ||
-      bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v5").length !== beforeWitnesses) {
+  if (bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v6").length !== beforeAliases ||
+      bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v6").length !== beforeWitnesses) {
     fail("observation-only trace published TDRE5 state");
   }
   return result.telemetry;
@@ -389,29 +389,29 @@ function expectInvalidEnvRejected(stage2, project, cache, variable, value) {
   if (!diagnostic.includes(variable)) fail(`${variable} rejection omitted strict diagnostic`);
 }
 
-function expectV18Isolation(stage2, work) {
-  const project = join(work, "v18-isolation-project");
-  const currentCache = join(work, "v18-isolation-current-cache");
-  const oldCache = join(work, "v18-isolation-old-cache");
+function expectV19Isolation(stage2, work) {
+  const project = join(work, "v19-isolation-project");
+  const currentCache = join(work, "v19-isolation-current-cache");
+  const oldCache = join(work, "v19-isolation-old-cache");
   makeProject(project);
-  check(stage2, project, currentCache, true, "v18-source-cold");
+  check(stage2, project, currentCache, true, "v19-source-cold");
   mkdirSync(oldCache, { recursive: true });
-  const oldVersion = `v18|cg-${stageCodegenFingerprint(stage2)}`;
-  for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_v5")) {
+  const oldVersion = `v19|cg-${stageCodegenFingerprint(stage2)}`;
+  for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_v6")) {
     const text = readFileSync(path, "utf8");
-    const binding = parseBinding(text, "TDRE5A");
-    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_v5", binding.input, ".txt"), text);
-    writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v18"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
+    const binding = parseBinding(text, "TDRE6A");
+    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_v6", binding.input, ".txt"), text);
+    writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v19"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
   }
-  for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_eligibility_v5")) {
+  for (const path of bindingFiles(currentCache, "selfhost_typing_dependency_env_reuse_eligibility_v6")) {
     const text = readFileSync(path, "utf8");
-    const binding = parseBinding(text, "TDRE5W");
-    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_eligibility_v5", binding.target, ".txt"), text);
-    writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v18"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
+    const binding = parseBinding(text, "TDRE6W");
+    writeFileSync(stableCachePath(oldCache, oldVersion, "selfhost_typing_dependency_env_reuse_eligibility_v6", binding.target, ".txt"), text);
+    writeFileSync(typeEnvPath(stage2, oldCache, binding.target, "v19"), readFileSync(typeEnvPath(stage2, currentCache, binding.target), "utf8"));
   }
-  if (bindingFiles(oldCache, "selfhost_typing_dependency_env_reuse_v5").length === 0) fail("v18 isolation fixture omitted valid old aliases");
-  const isolated = check(stage2, project, oldCache, true, "v18-isolated-default");
-  expectCounts("v18 namespace isolation", isolated.telemetry, 2, 0);
+  if (bindingFiles(oldCache, "selfhost_typing_dependency_env_reuse_v6").length === 0) fail("v19 isolation fixture omitted valid old aliases");
+  const isolated = check(stage2, project, oldCache, true, "v19-isolated-default");
+  expectCounts("v19 namespace isolation", isolated.telemetry, 2, 0);
   return isolated.telemetry;
 }
 
@@ -454,7 +454,7 @@ function run(stage2) {
     if (checkedCold.status === 0 || !checkedCold.output.includes("missing { Exception }")) fail("cold checked mode did not reject row-less caller");
     const uncheckedAfterChecked = check(stage2, checkedFirstProject, checkedFirstCache, true, "row-unchecked-after-checked", false, { VIBE_CHECK_ERROR_ROW: "0" });
     expectCounts("unchecked after checked mode isolation", uncheckedAfterChecked.telemetry, 2, 0);
-    const modeSeeds = bindingFiles(uncheckedFirstCache, "selfhost_typing_dependency_env_reuse_v5").map((path) => parseLogicalInput(parseBinding(readFileSync(path, "utf8"), "TDRE5A").input).typingSemantics);
+    const modeSeeds = bindingFiles(uncheckedFirstCache, "selfhost_typing_dependency_env_reuse_v6").map((path) => parseLogicalInput(parseBinding(readFileSync(path, "utf8"), "TDRE6A").input).typingSemantics);
     if (!modeSeeds.includes("checked") || !modeSeeds.includes("unchecked")) fail("TDRE5 aliases did not retain disjoint typing semantics seeds");
     const legacyCompat = check(stage2, onProject, onCache, true, "legacy-compat", false, {
       VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1",
@@ -511,7 +511,7 @@ function run(stage2) {
     expectTraceLaneRejected(stage2, onProject, onCache);
     expectInvalidEnvRejected(stage2, onProject, onCache, "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE", "true");
     expectInvalidEnvRejected(stage2, onProject, onCache, "VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE", "0");
-    const v18Isolation = expectV18Isolation(stage2, work);
+    const v19Isolation = expectV19Isolation(stage2, work);
 
     const malformedProject = join(work, "malformed-target-project");
     const malformedCache = join(work, "malformed-target-cache");
@@ -616,7 +616,7 @@ function run(stage2) {
     makeProject(malformedWitnessProject);
     check(stage2, malformedWitnessProject, malformedWitnessCache, true, "malformed-witness-cold");
     const malformedWitnessApp = appSidecar(malformedWitnessCache, readFileSync(join(malformedWitnessProject, "app.vibe"), "utf8"));
-    writeFileSync(targetWitness(malformedWitnessCache, malformedWitnessApp.target).path, "TDRE5W1:x");
+    writeFileSync(targetWitness(malformedWitnessCache, malformedWitnessApp.target).path, "TDRE6W1:x");
     privateEdit(malformedWitnessProject);
     const malformedWitnessFallback = check(stage2, malformedWitnessProject, malformedWitnessCache, true, "malformed-witness-fallback");
     expectCounts("malformed witness fallback", malformedWitnessFallback.telemetry, 2, 0);
@@ -737,8 +737,8 @@ function run(stage2) {
     writeFileSync(join(noPublishProject, "app.vibe"), failingSource);
     const noPublish = check(stage2, noPublishProject, noPublishCache, true, "diagnostic-no-publish", true);
     if (noPublish.status === 0) fail("diagnostic no-publish scenario unexpectedly succeeded");
-    const noPublishAliases = bindingFiles(noPublishCache, "selfhost_typing_dependency_env_reuse_v5");
-    const noPublishWitnesses = bindingFiles(noPublishCache, "selfhost_typing_dependency_env_reuse_eligibility_v5");
+    const noPublishAliases = bindingFiles(noPublishCache, "selfhost_typing_dependency_env_reuse_v6");
+    const noPublishWitnesses = bindingFiles(noPublishCache, "selfhost_typing_dependency_env_reuse_eligibility_v6");
     if (noPublishAliases.length !== 1 || noPublishWitnesses.length !== 1) fail("diagnosed module published TDRE5 alias or witness");
     if (noPublishAliases.some((path) => readFileSync(path, "utf8").includes(failingSource))) fail("diagnosed owner source appeared in TDRE5 alias");
 
@@ -752,7 +752,7 @@ function run(stage2) {
         explicit_disable_control: coldOff.telemetry,
         trace_forced_off: traceForcedOffTelemetry,
         post_trace_default: postTraceDefault.telemetry,
-        v18_namespace_isolation: v18Isolation,
+        v19_namespace_isolation: v19Isolation,
         conservative_compile_output_parity: true,
         invalid_env_diagnostics: true,
         checked_error_row_mode_isolation: {

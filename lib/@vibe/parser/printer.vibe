@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_from_key
 }
 
 import ./polyfill.vibe {
@@ -102,7 +102,12 @@ fn print_bounded_type_params(params: Array[String], bounds: Array[(String, Array
         if bound_param == param {
           let mut j = 0
           while j < Array::length(bound_labels) {
-            ArrayBuilder::push(labels, Array::get(bound_labels, j))
+            let key = Array::get(bound_labels, j)
+            let label = match trait_ref_from_key(key) {
+              Some(reference) => print_type_expr(reference),
+              None => key
+            }
+            ArrayBuilder::push(labels, label)
             j = j + 1
           }
         } else {
@@ -368,27 +373,7 @@ fn print_ctor(name: String, args: Array[TypeExpr]) -> String {
 /// type-parameter scope and `T` resolves to a concrete `CtNamed("T", [])`
 /// instead of a bound type variable.
 fn print_fn_type_params(type_params: Array[String], bounds: Array[(String, Array[String])]) -> String {
-  if Array::length(type_params) == 0 {
-    ""
-  } else {
-    let parts = for tp in type_params {
-      let mut found = Array::slice([""], 0, 0)
-      let mut bi = 0
-      while bi < Array::length(bounds) {
-        let (bname, blist) = Array::get(bounds, bi)
-        if bname == tp {
-          found = blist
-        }
-        bi = bi + 1
-      }
-      if Array::length(found) == 0 {
-        tp
-      } else {
-        String::concat(tp, String::concat(": ", join(found, " + ")))
-      }
-    }
-    String::concat("[", String::concat(join(parts, ", "), "]"))
-  }
+  print_bounded_type_params(type_params, bounds)
 }
 
 fn peel_empty_handles(expr: Expr) -> Expr {
@@ -835,7 +820,11 @@ export fn print_stmt(s: Stmt) -> String {
       } else {
         String::concat("impl ", String::concat(generic_header, " "))
       }
-      String::concat(head, String::concat(trait_name, String::concat(" for ", print_type_expr(target))))
+      let printed_trait = match trait_ref_from_key(trait_name) {
+        Some(reference) => print_type_expr(reference),
+        None => trait_name
+      }
+      String::concat(head, String::concat(printed_trait, String::concat(" for ", print_type_expr(target))))
     },
     SExternLet(name, ty) => String::concat("extern let ", String::concat(name, String::concat(": ", print_type_expr(ty)))),
     SImport(path, items) => {

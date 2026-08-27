@@ -222,6 +222,43 @@ export fn impl_target_from_key(key: String) -> Option[TypeExpr] {
   }
 }
 
+let applied_trait_ref_prefix: String = "$trait$"
+
+/// Canonical storage for a trait reference in the legacy String-shaped AST
+/// slots. Bare names stay byte-for-byte compatible; applied references use an
+/// identifier-impossible prefix plus the reversible impl-target encoding.
+export fn trait_ref_key(reference: TypeExpr) -> String {
+  match reference {
+    TyName(name) => name,
+    TyApp(_, _) => String::concat(applied_trait_ref_prefix, impl_target_key(reference)),
+    _ => ""
+  }
+}
+
+export fn trait_ref_from_key(key: String) -> Option[TypeExpr] {
+  if String::starts_with(key, applied_trait_ref_prefix) {
+    impl_target_from_key(String::substring(key, String::length(applied_trait_ref_prefix), String::length(key)))
+  } else if key == "" {
+    None
+  } else {
+    Some(TyName(key))
+  }
+}
+
+export fn trait_ref_name(key: String) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => impl_target_head(reference),
+    None => ""
+  }
+}
+
+export fn trait_ref_args(key: String) -> Array[TypeExpr] {
+  match trait_ref_from_key(key) {
+    Some(TyApp(_, args)) => args,
+    _ => []
+  }
+}
+
 export fn impl_applied_target_key(head: String, arg_keys: Array[String]) -> String {
   let mut out = String::concat("A", String::concat(impl_encode_name(head), "L"))
   let mut i = 0
@@ -241,7 +278,11 @@ export fn impl_method_owner(tparams: Array[String], trait_name: String, target: 
   let head = impl_target_head(target)
   match target {
     TyApp(_, _) => String::concat(head, String::concat("$impl$", String::concat(impl_encode_name(trait_name), String::concat("$", impl_target_key(target))))),
-    _ => head
+    _ => if Array::length(trait_ref_args(trait_name)) > 0 {
+      String::concat(head, String::concat("$impl$", String::concat(impl_encode_name(trait_name), String::concat("$", impl_target_key(target)))))
+    } else {
+      head
+    }
   }
 }
 

@@ -39,6 +39,7 @@ import @vibe/compiler/core {
   subst_apply_except,
   subst_bounds_for,
   subst_lookup,
+  trait_decl_params,
   trait_method_sig_binders_deep,
   type_constructor_name,
   type_implements_trait,
@@ -48,7 +49,11 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner_head
+  impl_method_owner_head, trait_ref_args, trait_ref_from_key, trait_ref_name
+}
+
+import @vibe/parser {
+  print_type_expr
 }
 
 import ./builtins.vibe {
@@ -1101,6 +1106,68 @@ fn relax_unknown_named(ty: Type, defs: Array[TypeDef]) -> Type {
   }
 }
 
+fn replace_trait_bound_vars_from_env(ty: Type, env: TypeEnv) -> Type {
+  match ty {
+    CtNamed(name, args) => if Array::length(args) == 0 {
+      match env_lookup(env, name) {
+        Some(CtVar(id)) => CtVar(id),
+        _ => ty
+      }
+    } else {
+      CtNamed(name, for arg in args {
+        replace_trait_bound_vars_from_env(arg, env)
+      })
+    },
+    CtArray(elem) => CtArray(replace_trait_bound_vars_from_env(elem, env)),
+    CtOption(elem) => CtOption(replace_trait_bound_vars_from_env(elem, env)),
+    CtTuple(items) => CtTuple(for item in items {
+      replace_trait_bound_vars_from_env(item, env)
+    }),
+    CtFn(params, ret, effect) => CtFn(for param in params {
+      replace_trait_bound_vars_from_env(param, env)
+    }, replace_trait_bound_vars_from_env(ret, env), effect),
+    _ => ty
+  }
+}
+
+fn resolve_trait_bound_args(args: Array[TypeExpr], env: TypeEnv, defs: Array[TypeDef]) -> Array[Type] {
+  for arg in args {
+    replace_trait_bound_vars_from_env(resolve_type_expr(arg, defs), env)
+  }
+}
+
+fn trait_bound_param_names(binders: Array[String], count: Int) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < count && i < Array::length(binders) {
+    Array::push(out, Array::get(binders, i))
+    i = i + 1
+  }
+  out
+}
+
+export fn trait_reference_display(key: String) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => print_type_expr(reference),
+    None => key
+  }
+}
+
+export fn validate_trait_reference(env: TypeEnv, key: String, context: String, errors: Array[String]) -> Unit {
+  let display = trait_reference_display(key)
+  let args = trait_ref_args(key)
+  match trait_decl_params(env, key) {
+    Some(params) => if Array::length(args) > 0 && Array::length(args) != Array::length(params) {
+      let counts = String::concat(__to_string(Array::length(params)), String::concat(" type argument(s), got ", __to_string(Array::length(args))))
+      let site = String::concat(" in ", String::concat(context, String::concat(" `", String::concat(display, "`"))))
+      Array::push(errors, String::concat("trait `", String::concat(trait_ref_name(key), String::concat("` expects ", String::concat(counts, site)))))
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
 /// Resolve a qualified identifier `T::method` where `T` is a bounded generic
 /// type parameter (`[T: Trait]`). If the head resolves to a type variable whose
 /// recorded bounds include a trait declaring `method`, return that method's
@@ -1127,7 +1194,9 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
               _ => false
             }
             if pending {
-              let trait_name = Array::get(bounds, bi)
+              let trait_key = Array::get(bounds, bi)
+              let trait_name = trait_ref_name(trait_key)
+              let trait_args = trait_ref_args(trait_key)
               match trait_method_sig_binders_deep(env, trait_name, method) {
                 Some(sig) => {
                   // #1512: the trait header's params and the method's own
@@ -1135,10 +1204,12 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
                   // otherwise `import { Hue as T }` captures the `T` of
                   // `trait Boxed[T] { unwrap(Self) -> T }`.
                   let (params_te, ret_te, binders) = sig
+                  let param_names = trait_bound_param_names(binders, Array::length(trait_args))
+                  let resolved_trait_args = resolve_trait_bound_args(trait_args, env, defs)
                   let resolved_params = for pte in params_te {
-                    relax_unknown_named(subst_self_in_type(resolve_type_expr_shadowed(pte, defs, binders), self_ty), defs)
+                    relax_unknown_named(subst_type_params(subst_self_in_type(resolve_type_expr_shadowed(pte, defs, binders), self_ty), param_names, resolved_trait_args), defs)
                   }
-                  let resolved_ret = relax_unknown_named(subst_self_in_type(resolve_type_expr_shadowed(ret_te, defs, binders), self_ty), defs)
+                  let resolved_ret = relax_unknown_named(subst_type_params(subst_self_in_type(resolve_type_expr_shadowed(ret_te, defs, binders), self_ty), param_names, resolved_trait_args), defs)
                   result = Some(CtFn(resolved_params, resolved_ret, None))
                 },
                 None => ()
@@ -9918,10 +9989,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let mut rbi = 0
         while rbi < Array::length(declared_bounds) {
           let bound = Array::get(declared_bounds, rbi)
-          if env_has_reexport_surface_binding(env, bound) {
-            Array::push(errors, String::concat("unknown trait: ", bound))
+          if env_has_reexport_surface_binding(env, trait_ref_name(bound)) {
+            Array::push(errors, String::concat("unknown trait: ", trait_reference_display(bound)))
           } else {
-            ()
+            validate_trait_reference(env, bound, "bound", errors)
           }
           rbi = rbi + 1
         }

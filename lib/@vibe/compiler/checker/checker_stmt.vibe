@@ -84,8 +84,14 @@ import ./checker.vibe {
   report_unknown_type_names,
   report_unknown_type_names_deferred_validation,
   trait_erased_type_param_env,
+  trait_reference_display,
   typed_occurrence_capture_begin_statement,
-  typed_occurrence_capture_end_statement
+  typed_occurrence_capture_end_statement,
+  validate_trait_reference
+}
+
+import @vibe/ast {
+  trait_ref_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -2834,6 +2840,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
       },
       SImpl(tparams, tbounds, trait_name, target_expr) => {
+        validate_trait_reference(env, trait_name, "impl head", errors)
         let type_name = match target_expr {
           TyName(name) => name,
           TyApp(name, _) => name,
@@ -2841,7 +2848,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         // ADR-0068: `Send` is compiler-judged (structural); user impls
         // would let a non-sendable type cross task/channel boundaries.
-        if trait_name == "Send" {
+        if trait_ref_name(trait_name) == "Send" {
           Array::push(errors, "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
         } else {
           ()
@@ -2881,7 +2888,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         let target = resolve_type_expr_shadowed(target_expr, defs, tparams)
         match overlapping_impl_target_for(env, trait_name, tparams, target) {
-          Some(existing_target) => Array::push(errors, String::concat("overlapping impls for `", String::concat(trait_name, String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), "`"))))))),
+          Some(existing_target) => Array::push(errors, String::concat("overlapping impls for `", String::concat(trait_reference_display(trait_name), String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), "`"))))))),
           None => ()
         }
         // A generic impl `impl [T] Trait for C[T]` (type parameters present) is
@@ -3076,7 +3083,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
 /// when "no impl" is the whole truth.
 fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
   if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
-    String::concat(": an `impl ", String::concat(trait_name, String::concat(" for ", String::concat(type_constructor_name(resolved), String::concat("` IS declared, but `", String::concat(trait_name, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those are REFERENCE equality on `Array` / `Bytes` -- honouring the impl would make the comparison silently wrong. Give `", String::concat(trait_name, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))))))))
+    let display = trait_reference_display(trait_name)
+    String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(type_constructor_name(resolved), String::concat("` IS declared, but `", String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those are REFERENCE equality on `Array` / `Bytes` -- honouring the impl would make the comparison silently wrong. Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))))))))
   } else {
     ""
   }
@@ -3122,7 +3130,7 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
             type_implements_trait(env, s, resolved, b)
           }
           if b != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, b, resolved)))))))
+            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(b), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, b, resolved)))))))
           }
           bi = bi + 1
         }

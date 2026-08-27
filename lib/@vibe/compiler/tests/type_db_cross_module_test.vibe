@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   Expr,
   ImportItem,
   Stmt,
+  Subst,
   Type,
   TypeDef,
   TypeEnv,
@@ -25,7 +26,12 @@ import @vibe/compiler/core {
   env_selectable_type_defs,
   env_type_defs,
   env_value_binding,
-  trait_defined
+  trait_defined,
+  type_implements_trait
+}
+
+import @vibe/ast {
+  trait_ref_key
 }
 
 import @vibe/compiler/checker {
@@ -1200,6 +1206,28 @@ test "exact dep projection gives explicit trait aliases precedence over selected
   assert(imported_forall_bound_label(trait_first, "accept") == "Local")
 }
 
+test "applied trait impl projection preserves explicit trait aliases" {
+  let dep_path = "workspace/dep.vibe"
+  let source_ref = trait_ref_key(TyApp("Value", [TyName("Int")]))
+  let local_ref = trait_ref_key(TyApp("ImportedValue", [TyName("Int")]))
+  let dep_env = EnvTraitDef("Value", [], false, [], EnvTraitImpl(source_ref, CtInt, EnvEmpty), [
+    "A"
+  ], [])
+  let projected = projected_import_env_for_test("import ./dep.vibe { trait Value as ImportedValue }", "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  assert(trait_defined(projected, local_ref))
+  assert(type_implements_trait(projected, SubstEmpty, CtInt, local_ref))
+}
+
+test "public trait surfaces retain applied impl instances" {
+  let source = "export trait Value[A]\nimpl Value[Int] for Int"
+  let stmts = parse_program_with_path("workspace/dep.vibe", source)
+  let published = checked_module_public_env(stmts, checked_test_env(source))
+  let applied = trait_ref_key(TyApp("Value", [TyName("Int")]))
+  assert(type_implements_trait(published, SubstEmpty, CtInt, applied))
+}
+
 test "#2310: projected re-export aliases exclude local declaration authority" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = EnvTraitDef("Marker", [], false, [], EnvTypeDefs([
@@ -1924,11 +1952,11 @@ test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck 
   let leaf_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
   Fs::write_file(env_path, "version\t3\nenv\t1:0\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
-  Fs::write_file(env_path, "version\t5\nenv\t1:Z\n")
+  assert(String::starts_with(Fs::read_file(env_path), "version\t6\nenv\t"))
+  Fs::write_file(env_path, "version\t6\nenv\t1:Z\n")
   Fs::write_file(leaf_path, "version\t1\nnot-a-fingerprint\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
+  assert(String::starts_with(Fs::read_file(env_path), "version\t6\nenv\t"))
 }
 
 test "db_typecheck: an imported effect does not leak through a non-re-exporting module (#1549)" {

@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_key
 }
 
 import ./parser_binder_context.vibe {
@@ -560,9 +560,15 @@ fn parse_trait_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], In
   let mut done = false
   while !done {
     match peek(tokens, p) {
-      TIdent(name) => {
-        ArrayBuilder::push(b, name)
-        p = p + 1
+      TIdent(_) => {
+        let (reference, next) = parse_type_impl(tokens, p, 0)
+        let key = match reference {
+          TyName(_) => trait_ref_key(reference),
+          TyApp(_, _) => trait_ref_key(reference),
+          _ => throw("a trait bound must be a named trait, such as `Eq` or `Iter[Int]`")
+        }
+        ArrayBuilder::push(b, key)
+        p = next
         match peek(tokens, p) {
           TPlus => {
             p = p + 1
@@ -1912,8 +1918,14 @@ fn parse_impl_stmt_with_binder_context(tokens: Array[Token], pos: Int, context: 
     _ => (_no_tp(), _no_tb(), pos)
   }
   match peek(tokens, after_tp) {
-    TIdent(trait_name) => {
-      let fp = expect_tk(tokens, after_tp + 1, "for")
+    TIdent(_) => {
+      let (trait_reference, after_trait) = parse_type_impl(tokens, after_tp, 0)
+      let trait_name = match trait_reference {
+        TyName(_) => trait_ref_key(trait_reference),
+        TyApp(_, _) => trait_ref_key(trait_reference),
+        _ => throw("an impl trait must be a named trait, such as `Eq` or `Iter[Int]`")
+      }
+      let fp = expect_tk(tokens, after_trait, "for")
       let (target, after_target) = parse_type_impl(tokens, fp, 0)
       match target {
         TyName(_) => (SImpl(type_params, type_bounds, trait_name, target), after_target),
