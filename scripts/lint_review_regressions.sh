@@ -195,12 +195,28 @@ else
   # branch merges main, the AST backend above takes over automatically.
   violations="$(printf '%s\n' "$diff" \
   | awk '
+      # A binder is allowed by a marker on its OWN line or on the line AFTER
+      # it, matching is_allowed() in review_lint.vibex -- `pkf run fmt` moves a
+      # trailing comment onto the next line, so the documented form never
+      # survives in lib/**. Resolving one line late is what the `pending` state
+      # is for. Deliberately NOT the line before: that direction would let one
+      # marker cover two adjacent binders. Keep these two tiers in step; a
+      # bootstrap checkout with no stage2 runs THIS one, and a mismatch means
+      # code that commits with a stage2 and is rejected without one.
+      function flush_pending() {
+        if (pending) {
+          printf "%s:%d:%s\n", p_path, p_line, p_text
+          pending = 0
+        }
+      }
       /^\+\+\+ / {
+        flush_pending()
         path = $2
         sub(/^[^\/]*\//, "", path)
         next
       }
       /^@@ / {
+        flush_pending()
         if (match($0, /\+[0-9]+/)) {
           line = substr($0, RSTART + 1, RLENGTH - 1) + 0
         }
@@ -208,16 +224,27 @@ else
       }
       /^\+/ && !/^\+\+\+/ {
         text = substr($0, 2)
+        marked = text ~ /review-lint: allow-fixed-synthetic-name/
+        if (pending) {
+          if (marked) {
+            pending = 0
+          } else {
+            flush_pending()
+          }
+        }
         in_transform = path ~ /^lib\/@vibe\/compiler\/(normalize|codegen|loader)\/.*\.vibe$/
         is_binder = in_transform && (text ~ /E(Let|LetMut|LetRec)\("__[A-Za-z0-9_]+"/ \
           || text ~ /PBind\("__[A-Za-z0-9_]+"/ \
           || text ~ /SLet\([^)]*"__[A-Za-z0-9_]+"/)
-        allowed = text ~ /review-lint: allow-fixed-synthetic-name/
-        if (is_binder && !allowed) {
-          printf "%s:%d:%s\n", path, line, text
+        if (is_binder && !marked) {
+          pending = 1
+          p_path = path
+          p_line = line
+          p_text = text
         }
         line++
       }
+      END { flush_pending() }
     ')"
 fi
 

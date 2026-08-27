@@ -70,17 +70,28 @@ fn source_line(path: String, line: Int) -> String with Fs {
 }
 
 fn is_allowed(path: String, line: Int) -> Bool with Fs {
-  // line +-1, exactly like gc_drift_suppressed below, and for a concrete
-  // reason: `pkf run fmt` MOVES A TRAILING COMMENT ONTO THE NEXT LINE. The
-  // documented form -- `ELet("__x", ...) // review-lint: allow-fixed-synthetic-name`
-  // -- therefore never survives in lib/**, which vibe-fmt-check enforces, so
-  // an exact-line test made this suppression unusable everywhere it applies.
-  // The lint's own self-test passes only because its fixture is a shell
-  // heredoc that the formatter never sees.
+  // The binder's own line, or the line AFTER it -- and deliberately NOT the
+  // line before.
+  //
+  // After it, because `pkf run fmt` MOVES A TRAILING COMMENT ONTO THE NEXT
+  // LINE. The documented form -- `ELet("__x", ...) // review-lint:
+  // allow-fixed-synthetic-name` -- therefore never survives in lib/**, which
+  // vibe-fmt-check enforces, so an exact-line test made this suppression
+  // unusable everywhere it applies. The lint's own self-test passes only
+  // because its fixture is a shell heredoc the formatter never sees.
+  //
+  // NOT before it, because that direction lets ONE marker cover TWO binders.
+  // Formatted output interleaves them --
+  //   45  let body  = ELetMut("__bn_i", ...)
+  //   46  // review-lint: allow-fixed-synthetic-name     <- 45's marker
+  //   47  let alloc = ELet("__bn_b", ...)
+  // -- so a `line - 1` test lets 46 suppress 47 as well, and deleting 47's own
+  // marker leaves it silently allowed. One-directional keeps each marker bound
+  // to exactly one binder. Pinned by the adjacency case in
+  // scripts/lint_review_regressions_test.sh.
   let marker = "review-lint: allow-fixed-synthetic-name"
   String::contains(source_line(path, line), marker) ||
-  String::contains(source_line(path, line + 1), marker) ||
-  String::contains(source_line(path, line - 1), marker)
+  String::contains(source_line(path, line + 1), marker)
 }
 
 fn is_transform_path(path: String) -> Bool {

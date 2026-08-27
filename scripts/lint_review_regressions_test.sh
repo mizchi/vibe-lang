@@ -58,6 +58,113 @@ EOF
 git -C "$TMP_ROOT" add .
 VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >/dev/null
 
+# --- the marker on the line AFTER the binder (#2363) --------------------------
+# `pkf run fmt` moves a trailing comment onto the next line, so this is the
+# shape the suppression actually has everywhere lib/** is formatted. An
+# exact-line test made the documented form unusable; this case is why the
+# check accepts line + 1.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EOF'
+fn formatted(e: Expr) -> Expr {
+  ELet("__fmt_tmp", e, e, -1)
+  // review-lint: allow-fixed-synthetic-name -- marker moved down by the formatter
+}
+EOF
+git -C "$TMP_ROOT" add .
+if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$TMP_ROOT/fmt.out" 2>&1; then
+  echo "review-regressions lint self-test: a marker on the NEXT line must suppress" >&2
+  cat "$TMP_ROOT/fmt.out" >&2
+  exit 1
+fi
+
+# --- ADJACENCY: one marker must not cover two binders (#2366 review) ----------
+# Two binders, but only the FIRST is marked. Accepting `line - 1` would let the
+# first binder's marker suppress the second, so an unreviewed fixed synthetic
+# binder would evade the lint entirely. The second binder MUST still be
+# reported.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EOF'
+fn adjacent(e: Expr) -> Expr {
+  ELet("__adj_marked", e, e, -1)
+  // review-lint: allow-fixed-synthetic-name -- belongs to __adj_marked only
+  ELet("__adj_unmarked", e, e, -1)
+}
+EOF
+git -C "$TMP_ROOT" add .
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$TMP_ROOT/adj.out" 2>&1; then
+  echo "review-regressions lint self-test: an unmarked binder next to a marked one must still be reported" >&2
+  cat "$TMP_ROOT/adj.out" >&2
+  exit 1
+fi
+if ! grep -q '__adj_unmarked' "$TMP_ROOT/adj.out"; then
+  echo "review-regressions lint self-test: adjacency case reported the wrong binder" >&2
+  cat "$TMP_ROOT/adj.out" >&2
+  exit 1
+fi
+if grep -q '__adj_marked' "$TMP_ROOT/adj.out"; then
+  echo "review-regressions lint self-test: the MARKED binder must stay suppressed" >&2
+  cat "$TMP_ROOT/adj.out" >&2
+  exit 1
+fi
+
+# --- ADJACENCY on the AST tier (#2366 review) --------------------------------
+# The case above exercises the AWK fallback. The AST backend resolves the
+# suppression in review_lint.vibex::is_allowed -- a DIFFERENT implementation of
+# the same rule -- so it needs its own case, or the two tiers can disagree.
+# That split is exactly what made this fix necessary: the .vibex tier accepted
+# the formatted marker while the fallback still rejected it.
+#
+# Shape (post-formatter):
+#   ELet("__ast_adj_marked", ...)
+#   // review-lint: allow-fixed-synthetic-name   <- belongs to the line ABOVE
+#   ELet("__ast_adj_unmarked", ...)
+# Accepting `line - 1` would let that one marker cover the SECOND binder too.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'ADJEOF'
+fn ast_adjacent(e: Expr) -> Expr {
+  ELet("__ast_adj_marked", e, e, -1)
+  // review-lint: allow-fixed-synthetic-name -- belongs to __ast_adj_marked only
+  ELet("__ast_adj_unmarked", e, e, -1)
+}
+ADJEOF
+git -C "$TMP_ROOT" add .
+
+cat > "$TMP_ROOT/fake-vibe-adjacency" <<'FAKEEOF'
+#!/usr/bin/env bash
+root="${@: -1}"
+f="$root/lib/@vibe/compiler/normalize/pass.vibe"
+if [[ "$*" == *'SLet('* || "$*" == *'EAssignOp('* || "$*" == *'String::contains('* ]]; then
+  echo '[]'; exit 0
+fi
+m=$(grep -n '__ast_adj_marked' "$f" | head -1 | cut -d: -f1)
+u=$(grep -n '__ast_adj_unmarked' "$f" | head -1 | cut -d: -f1)
+jq -n --arg path "$f" --argjson m "$m" --argjson u "$u" \
+  '[{path:$path,line:$m,col:1,start:1,end:2,text:"ELet(\"__ast_adj_marked\", e, e, -1)",captures:{ctor:{text:"ELet",start:1},name:{text:"\"__ast_adj_marked\"",start:2},rest:{text:"e, e, -1",start:3}}},
+    {path:$path,line:$u,col:1,start:1,end:2,text:"ELet(\"__ast_adj_unmarked\", e, e, -1)",captures:{ctor:{text:"ELet",start:1},name:{text:"\"__ast_adj_unmarked\"",start:2},rest:{text:"e, e, -1",start:3}}}]'
+FAKEEOF
+chmod +x "$TMP_ROOT/fake-vibe-adjacency"
+
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-adjacency" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/ast-adj.out" 2>&1; then
+  echo "review-regressions lint self-test: AST tier let an unmarked adjacent binder through" >&2
+  cat "$TMP_ROOT/ast-adj.out" >&2
+  exit 1
+fi
+if ! grep -q '__ast_adj_unmarked' "$TMP_ROOT/ast-adj.out"; then
+  echo "review-regressions lint self-test: AST adjacency case reported the wrong binder" >&2
+  cat "$TMP_ROOT/ast-adj.out" >&2
+  exit 1
+fi
+if grep -q '__ast_adj_marked' "$TMP_ROOT/ast-adj.out"; then
+  echo "review-regressions lint self-test: AST tier must keep the MARKED binder suppressed" >&2
+  cat "$TMP_ROOT/ast-adj.out" >&2
+  exit 1
+fi
+
 git -C "$TMP_ROOT" reset -q HEAD -- .
 git -C "$TMP_ROOT" restore .
 cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EOF'
