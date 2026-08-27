@@ -2407,6 +2407,18 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // The local TDEnum uses this check's ids; published authority retains
         // the name-parameterized shape and rebinds it at each importer.
         let published_variants = array_empty()
+        let enum_payload_tes = array_empty()
+        let mut fvi = 0
+        while fvi < Array::length(variants) {
+          let (_, payloads) = Array::get(variants, fvi)
+          let mut fpi = 0
+          while fpi < Array::length(payloads) {
+            Array::push(enum_payload_tes, Array::get(payloads, fpi))
+            fpi = fpi + 1
+          }
+          fvi = fvi + 1
+        }
+        report_formal_applications_across(enum_payload_tes, params, String::concat(String::concat("enum `", name), "`"), errors)
         // #2125: this enum's slot in `defs` is already claimed (see
         // preclaim_local_type_defs), so a recursive occurrence of `name` in
         // its own payloads resolves to `CtEnum(name)` instead of falling
@@ -2432,7 +2444,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             Array::push(resolved_vtypes, subst_type_params(named_vt, params, param_var_types))
             ti = ti + 1
           }
-          report_formal_applications_across(vtypes, params, String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
           Array::push(resolved_variants, (vname, resolved_vtypes))
           Array::push(published_variants, (vname, named_vtypes))
           vi = vi + 1
@@ -4101,40 +4112,61 @@ fn fapp_decl_label(owner: String, member: String) -> String {
   String::concat(String::concat(String::concat("the signature of `", owner), String::concat("::", member)), "`")
 }
 
+fn fapp_applied_formals_across(tes: Array[TypeExpr], formals: Array[String]) -> Array[String] {
+  let applied = array_empty()
+  let is_formal = (head) -> {
+    string_array_contains_exact(formals, head)
+  }
+  let mut i = 0
+  while i < Array::length(tes) {
+    collect_formal_applications_by(Array::get(tes, i), is_formal, applied)
+    i = i + 1
+  }
+  applied
+}
+
 fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       STypeAlias(_, name, params, te) => fapp_report(te, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
       SEffectDef(_, ename, eparams, ops) => {
+        let effect_tes = array_empty()
         let mut oi = 0
         while oi < Array::length(ops) {
-          let (opname, opparams, opret) = Array::get(ops, oi)
-          let op_tes = array_empty()
+          let (_, opparams, opret) = Array::get(ops, oi)
           let mut pi = 0
           while pi < Array::length(opparams) {
-            Array::push(op_tes, Array::get(opparams, pi))
+            Array::push(effect_tes, Array::get(opparams, pi))
             pi = pi + 1
           }
-          Array::push(op_tes, opret)
-          report_formal_applications_across(op_tes, eparams, fapp_decl_label(ename, opname), errors)
+          Array::push(effect_tes, opret)
           oi = oi + 1
         }
+        report_formal_applications_across(effect_tes, eparams, String::concat(String::concat("effect `", ename), "`"), errors)
       },
       STrait(_, tname, _, methods, method_gens, tparams) => {
+        let trait_tes = array_empty()
         let mut mi = 0
         while mi < Array::length(methods) {
+          let (_, mparams, mret) = Array::get(methods, mi)
+          let mut pi = 0
+          while pi < Array::length(mparams) {
+            Array::push(trait_tes, Array::get(mparams, pi))
+            pi = pi + 1
+          }
+          Array::push(trait_tes, mret)
+          mi = mi + 1
+        }
+        report_formal_applications_across(trait_tes, tparams, String::concat(String::concat("trait `", tname), "`"), errors)
+        mi = 0
+        while mi < Array::length(methods) {
           let (mname, mparams, mret) = Array::get(methods, mi)
-          // The method's formal set: the trait's own params plus this
-          // method's generic binders (`Self` never takes arguments and an
-          // application of it is equally vacuous, so it is included).
+          // Method-local formals are checked per method. Header formals were
+          // checked across the whole trait above because their kind belongs
+          // to the trait declaration, not one member.
           let formals = array_empty()
           Array::push(formals, "Self")
-          let mut ti = 0
-          while ti < Array::length(tparams) {
-            Array::push(formals, Array::get(tparams, ti))
-            ti = ti + 1
-          }
           let mut gi = 0
           while gi < Array::length(method_gens) {
             let (gname, gtp, _) = Array::get(method_gens, gi)
@@ -4157,6 +4189,22 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
           }
           Array::push(method_tes, mret)
           report_formal_applications_across(method_tes, formals, fapp_decl_label(tname, mname), errors)
+          let applied_method_formals = fapp_applied_formals_across(method_tes, formals)
+          let mut afi = 0
+          while afi < Array::length(applied_method_formals) {
+            let applied_name = Array::get(applied_method_formals, afi)
+            if applied_name == "Self" {
+              Array::push(errors, String::concat(String::concat("`Self` is a complete type and cannot be applied in ", fapp_decl_label(tname, mname)), "; write `Self`, not `Self[...]`"))
+            } else {
+              Array::push(errors, String::concat(String::concat(String::concat("constructor parameter in trait method `", tname), String::concat("::", mname)), "` is not supported until parameterized trait dispatch can preserve its arguments"))
+            }
+            afi = afi + 1
+          }
+          if Array::length(fapp_applied_formals_across(method_tes, tparams)) > 0 {
+            Array::push(errors, String::concat(String::concat(String::concat("constructor parameter in trait method `", tname), String::concat("::", mname)), "` is not supported until parameterized trait dispatch can preserve its arguments"))
+          } else {
+            ()
+          }
           mi = mi + 1
         }
       },
