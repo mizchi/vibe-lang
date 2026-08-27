@@ -263,6 +263,10 @@ fn empty_fn_returns() -> Array[(String, String)] {
   array_empty()
 }
 
+fn local_fn_return_key(name: String) -> String {
+  String::concat("__local_fn_return$", name)
+}
+
 /// #886: empty explicit-type-argument list for constructed ERecord nodes
 /// (dict witnesses / trait defaults never carry explicit struct type args).
 fn empty_ty_args() -> Array[TypeExpr] {
@@ -1868,7 +1872,10 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       // the pull-closure loop (#822: the pull desugar called the stream value
       // as a closure — call_indirect on an array pointer = table OOB trap).
       EIdent("String::to_bytes", _) => Some("ByteStream"),
-      EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
+      EIdent(fname, _) => match lookup_var_type(var_types, local_fn_return_key(fname)) {
+        Some(head) => Some(head),
+        None => ctor_enum_of_name(fn_returns, fname)
+      },
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
       // `let a: Option[Int] = None` records `a -> "Option"` for `==` dispatch.
@@ -2210,6 +2217,21 @@ fn anon_or_constructor_infer(val: Expr, gens: Array[DictGen], struct_sets: Array
       EHandle(_, _) => infer_arg_type_name(val, struct_sets, var_types, fn_returns),
       _ => infer_constructor_arg_type_name(val, gens, struct_sets, var_types, fn_returns)
     }
+  }
+}
+
+fn extend_local_fn_return(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
+  let key = local_fn_return_key(name)
+  match value {
+    EFn(_, _, _, ret, _, body) => {
+      let head = fn_return_head_of(ret, body)
+      if String::length(head) == 0 {
+        extend_constructor_var_types(var_types, key, None)
+      } else {
+        extend_constructor_var_types(var_types, key, Some(head))
+      }
+    },
+    _ => extend_constructor_var_types(var_types, key, None)
   }
 }
 
@@ -3457,7 +3479,10 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
         infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
       }
     },
-    ELetRec(_, _, body) => infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns),
+    ELetRec(name, value, body) => {
+      let body_vars = extend_local_fn_return(var_types, name, value)
+      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+    },
     EAssign(_, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
     EAssignOp(_, _, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
     ESeq(_, result) => infer_constructor_arg_type_name(result, gens, struct_sets, var_types, fn_returns),
@@ -3554,7 +3579,7 @@ fn collect_parameterized_loop_constructors(expr: Expr, expected: Array[String], 
         collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
       },
       ELetRec(name, value, body) => {
-        let body_vars = extend_constructor_var_types(var_types, name, None)
+        let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, None), name, value)
         collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, body_vars, fn_returns)
         collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
       },
@@ -3663,7 +3688,10 @@ fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gen
       infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
     },
     EReturn(inner) => infer_constructor_handler_arm_type_name(inner, expected, gens, struct_sets, var_types, fn_returns),
-    ELetRec(_, _, body) => infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, var_types, fn_returns),
+    ELetRec(name, value, body) => {
+      let body_vars = extend_local_fn_return(var_types, name, value)
+      infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
+    },
     EAssign(_, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
     EAssignOp(_, _, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
     ESeq(_, result) => infer_constructor_handler_arm_type_name(result, expected, gens, struct_sets, var_types, fn_returns),
@@ -3717,7 +3745,11 @@ fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gen
 }
 
 fn constructor_op_name_matches(name: String, op: String) -> Bool {
-  name == op || member_of(name) == member_of(op)
+  if String::contains(name, "::") && String::contains(op, "::") {
+    name == op
+  } else {
+    name == op || member_of(name) == member_of(op)
+  }
 }
 
 fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Option[String]], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
@@ -3732,6 +3764,11 @@ fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Optio
     ELetMut(name, val, body, _) => {
       collect_constructor_perform_payloads(val, op, out, gens, struct_sets, var_types, fn_returns)
       let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      collect_constructor_perform_payloads(body, op, out, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetRec(name, val, body) => {
+      let body_vars = extend_local_fn_return(var_types, name, val)
+      collect_constructor_perform_payloads(val, op, out, gens, struct_sets, body_vars, fn_returns)
       collect_constructor_perform_payloads(body, op, out, gens, struct_sets, body_vars, fn_returns)
     },
     EAssign(name, val, continuation) => {

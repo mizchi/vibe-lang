@@ -213,6 +213,11 @@ test "#2338: explicit IIFE returns recover the constructor witness" {
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
 }
 
+test "#2338: recursive local helper returns recover the constructor witness" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Array[Int] { [n] }; make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
 test "#2338: direct tuple projections recover the selected constructor" {
   let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map(([1], Some(2)).0, (x) -> { x + 1 }); () }\n")
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
@@ -240,6 +245,13 @@ test "#2338: handler payloads recover the thrown constructor" {
 
 test "#2338: handler payload collection carries lexical constructors" {
   let out = desugar_mappable_program("fn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(handle { let xs = [1]; throw(xs); [0] } with { Exception::Throw(xs) => xs }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: qualified effect payloads do not collide by member name" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\neffect Metric { Emit(Option[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { perform Log::Emit([1]); perform Metric::Emit(Some(2)); [0] } with { Log::Emit(xs) => xs; Metric::Emit(_) => [3] }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
   inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
 }
