@@ -10722,19 +10722,32 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let use_explicit = ntargs > 0 && ntargs == tplen
               let fresh_targs = array_empty()
               let mut c2 = c1
-              let mut tpi = 0
-              while tpi < tplen {
-                if use_explicit {
-                  // Resolve through the generic environment (same as param /
-                  // return annotations, ~line 3252): an explicit argument
-                  // naming an ENCLOSING fn's type parameter (`fn make[T](x:
-                  // T) -> Box[T] { Box[T]::{ v: x } }`) must become the
-                  // env-bound CtVar, not a rigid CtNamed("T") — otherwise the
-                  // construction's type loses its link to the quantified
-                  // param and `make(42).v` fails as `expected Int, got T`
-                  // (Codex review, PR #926).
-                  Array::push(fresh_targs, resolve_tparams_in(resolve_type_expr(Array::get(targs, tpi), defs), env))
-                } else {
+              if use_explicit {
+                // Resolve through the generic environment (same as param /
+                // return annotations, ~line 3252): an explicit argument
+                // naming an ENCLOSING fn's type parameter (`fn make[T](x:
+                // T) -> Box[T] { Box[T]::{ v: x } }`) must become the
+                // env-bound CtVar, not a rigid CtNamed("T") — otherwise the
+                // construction's type loses its link to the quantified
+                // param and `make(42).v` fails as `expected Int, got T`
+                // (Codex review, PR #926). Kinded parameters also reify a
+                // bare constructor argument (`Array` in `KBox[Array, Int]::{
+                // ... }`) the same way trait-bound constructor arguments do.
+                let resolved = array_empty()
+                let mut tpi = 0
+                while tpi < tplen {
+                  Array::push(resolved, resolve_tparams_in(resolve_type_expr(Array::get(targs, tpi), defs), env))
+                  tpi = tpi + 1
+                }
+                let reified = resolve_type_constructor_args(s_tparams, targs, resolved, defs, array_empty())
+                let mut ri = 0
+                while ri < Array::length(reified) {
+                  Array::push(fresh_targs, Array::get(reified, ri))
+                  ri = ri + 1
+                }
+              } else {
+                let mut tpi = 0
+                while tpi < tplen {
                   match fresh_var(c2) {
                     (tv, nc) => {
                       Array::push(fresh_targs, tv)
@@ -10742,8 +10755,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     },
                     _ => ()
                   }
+                  tpi = tpi + 1
                 }
-                tpi = tpi + 1
               }
               // Missing declared fields (absent from the literal).
               let mut mi = 0

@@ -3149,14 +3149,44 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
 /// rejected here). Unknown bases are skipped — imported effects are
 /// invisible here, the same permissive stance the containment checker
 /// takes.
-fn geff_arg_kind_arity(name: String) -> Int {
+fn geff_arg_kind_arity(name: String, ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String]) -> Int {
   match compiler_owned_type_arity(name) {
     Some(arity) => arity,
-    None => 0
+    None => {
+      let mut i = 0
+      let mut found = 0 - 1
+      while i < Array::length(ctor_names) {
+        if Array::get(ctor_names, i) == name {
+          found = Array::get(ctor_arities, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if found >= 0 {
+        found
+      } else {
+        let mut j = 0
+        let mut farity = 0 - 1
+        while j < Array::length(formal_keys) {
+          if type_param_name(Array::get(formal_keys, j)) == name {
+            farity = type_param_arity(Array::get(formal_keys, j))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        if farity >= 0 {
+          farity
+        } else {
+          0
+        }
+      }
+    }
   }
 }
 
-fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match row {
     None => (),
     Some(r) => {
@@ -3200,7 +3230,7 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
             } else if tpc > 1 {
               Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" declares ", String::concat(__to_string(tpc), " type parameters; a row item supports exactly one type argument for now")))))))
             } else if expected_kind > 0 {
-              let actual_kind = geff_arg_kind_arity(inner)
+              let actual_kind = geff_arg_kind_arity(inner, ctor_names, ctor_arities, formal_keys)
               if actual_kind != expected_kind {
                 Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" expects a constructor with ", String::concat(__to_string(expected_kind), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(actual_kind), " -- pass a bare constructor with the required arity")))))))))))
               } else {
@@ -3224,28 +3254,28 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
 /// in parameter/return position) and an EFn value's inline row + parameter
 /// annotations. Nested closure literals inside bodies are not walked (same
 /// coverage boundary as the effectset expansion pass).
-fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
     TyFn(params, ret, eff) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
       let mut i = 0
       while i < Array::length(params) {
-        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
         i = i + 1
       }
-      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
     },
     TyApp(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
         i = i + 1
       }
     },
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
         i = i + 1
       }
     },
@@ -3253,24 +3283,31 @@ fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Arr
   }
 }
 
-fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
-    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, ed_tparities, es_names, errors),
+    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors),
     None => ()
   }
 }
 
-fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_expr_formals(e: Expr) -> Array[String] {
   match e {
-    EFn(_, _, params, ret, eff, _) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+    EFn(tparams, _, _, _, _, _) => tparams,
+    _ => array_empty()
+  }
+}
+
+fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], errors: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, params, ret, eff, _) => {
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
       let mut i = 0
       while i < Array::length(params) {
         let (_, pty) = Array::get(params, i)
-        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
         i = i + 1
       }
-      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
     },
     _ => ()
   }
@@ -3281,6 +3318,8 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let ed_tpcounts = array_empty()
   let ed_tparities = array_empty()
   let es_names = array_empty()
+  let ctor_names = array_empty()
+  let ctor_arities = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -3295,6 +3334,18 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
         Array::push(ed_tparities, first_arity)
       },
       SEffectSet(_, esname, _) => Array::push(es_names, esname),
+      SStruct(_, sname, _, _, _, tparams) => {
+        Array::push(ctor_names, sname)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
+      SEnum(_, ename, tparams, _, _) => {
+        Array::push(ctor_names, ename)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
+      STypeAlias(_, aname, tparams, _) => {
+        Array::push(ctor_names, aname)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
       _ => ()
     }
     i = i + 1
@@ -3303,12 +3354,14 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   while j < Array::length(stmts) {
     match Array::get(stmts, j) {
       SLet(_, _, _, ty, body) => {
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+        let formals = geff_expr_formals(body)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
       },
       SLetMut(_, ty, body) => {
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, errors)
+        let formals = geff_expr_formals(body)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
       },
       _ => ()
     }
