@@ -452,33 +452,47 @@ export fn hkt_apply_ctor(head: Type, args: Array[Type]) -> Type {
   if Array::length(args) == 0 {
     head
   } else {
-    match head {
-      CtNamed(n, ha) => if n == "Array" && Array::length(ha) == 0 && Array::length(args) == 1 {
-        CtArray(Array::get(args, 0))
-      } else if n == "Option" && Array::length(ha) == 0 && Array::length(args) == 1 {
-        CtOption(Array::get(args, 0))
-      } else if n == hkt_app_name() {
-        let out = array_empty()
-        let mut i = 0
-        while i < Array::length(ha) {
-          Array::push(out, Array::get(ha, i))
-          i = i + 1
-        }
-        let mut j = 0
-        while j < Array::length(args) {
-          Array::push(out, Array::get(args, j))
-          j = j + 1
-        }
-        CtNamed(hkt_app_name(), out)
-      } else if String::starts_with(n, hkt_ctor_prefix()) && Array::length(ha) == 0 {
-        let ctor = n[String::length(hkt_ctor_prefix()): String::length(n)]
-        hkt_apply_ctor(CtNamed(ctor, array_empty()), args)
-      } else if Array::length(ha) == 0 {
-        if n == "Array" && Array::length(args) == 1 {
+    match try_apply_alias_constructor(head, args) {
+      Some(applied) => applied,
+      None => match head {
+        CtNamed(n, ha) => if n == "Array" && Array::length(ha) == 0 && Array::length(args) == 1 {
           CtArray(Array::get(args, 0))
-        } else if n == "Option" && Array::length(args) == 1 {
+        } else if n == "Option" && Array::length(ha) == 0 && Array::length(args) == 1 {
           CtOption(Array::get(args, 0))
-        } else if String::starts_with(n, "#hktformal.") {
+        } else if n == hkt_app_name() {
+          let out = array_empty()
+          let mut i = 0
+          while i < Array::length(ha) {
+            Array::push(out, Array::get(ha, i))
+            i = i + 1
+          }
+          let mut j = 0
+          while j < Array::length(args) {
+            Array::push(out, Array::get(args, j))
+            j = j + 1
+          }
+          CtNamed(hkt_app_name(), out)
+        } else if String::starts_with(n, hkt_ctor_prefix()) && Array::length(ha) == 0 {
+          let ctor = n[String::length(hkt_ctor_prefix()): String::length(n)]
+          hkt_apply_ctor(CtNamed(ctor, array_empty()), args)
+        } else if Array::length(ha) == 0 {
+          if n == "Array" && Array::length(args) == 1 {
+            CtArray(Array::get(args, 0))
+          } else if n == "Option" && Array::length(args) == 1 {
+            CtOption(Array::get(args, 0))
+          } else if String::starts_with(n, "#hktformal.") {
+            let all = array_empty()
+            Array::push(all, head)
+            let mut k = 0
+            while k < Array::length(args) {
+              Array::push(all, Array::get(args, k))
+              k = k + 1
+            }
+            CtNamed(hkt_app_name(), all)
+          } else {
+            CtNamed(n, args)
+          }
+        } else {
           let all = array_empty()
           Array::push(all, head)
           let mut k = 0
@@ -487,38 +501,27 @@ export fn hkt_apply_ctor(head: Type, args: Array[Type]) -> Type {
             k = k + 1
           }
           CtNamed(hkt_app_name(), all)
-        } else {
-          CtNamed(n, args)
+        },
+        CtVar(_) => {
+          let all = array_empty()
+          Array::push(all, head)
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(all, Array::get(args, k))
+            k = k + 1
+          }
+          CtNamed(hkt_app_name(), all)
+        },
+        _ => {
+          let all = array_empty()
+          Array::push(all, head)
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(all, Array::get(args, k))
+            k = k + 1
+          }
+          CtNamed(hkt_app_name(), all)
         }
-      } else {
-        let all = array_empty()
-        Array::push(all, head)
-        let mut k = 0
-        while k < Array::length(args) {
-          Array::push(all, Array::get(args, k))
-          k = k + 1
-        }
-        CtNamed(hkt_app_name(), all)
-      },
-      CtVar(_) => {
-        let all = array_empty()
-        Array::push(all, head)
-        let mut k = 0
-        while k < Array::length(args) {
-          Array::push(all, Array::get(args, k))
-          k = k + 1
-        }
-        CtNamed(hkt_app_name(), all)
-      },
-      _ => {
-        let all = array_empty()
-        Array::push(all, head)
-        let mut k = 0
-        while k < Array::length(args) {
-          Array::push(all, Array::get(args, k))
-          k = k + 1
-        }
-        CtNamed(hkt_app_name(), all)
       }
     }
   }
@@ -2257,26 +2260,71 @@ fn type_expr_shadowed_arity(shadow: Array[String], name: String) -> Int {
 /// their established structural nodes; nominal constructors return CtNamed.
 /// Only an unresolved variable head remains CtApplied.
 export fn apply_type_constructor(head: Type, args: Array[Type]) -> Type {
+  match try_apply_alias_constructor(head, args) {
+    Some(applied) => applied,
+    None => match head {
+      CtConstructor(name, arity) => if arity != Array::length(args) {
+        CtApplied(head, args)
+      } else if name == "Array" && arity == 1 {
+        CtArray(Array::get(args, 0))
+      } else if name == "Option" && arity == 1 {
+        CtOption(Array::get(args, 0))
+      } else {
+        CtNamed(name, args)
+      },
+      _ => CtApplied(head, args)
+    }
+  }
+}
+
+let alias_ctor_tag = "#alias_ctor"
+
+fn make_alias_constructor(params: Array[String], body: Type) -> Type {
+  let meta = array_empty()
+  Array::push(meta, type_clone(body))
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(meta, CtNamed(Array::get(params, i), array_empty()))
+    i = i + 1
+  }
+  CtApplied(CtNamed(alias_ctor_tag, array_empty()), meta)
+}
+
+fn apply_alias_constructor(head: Type, args: Array[Type]) -> Type {
   match head {
-    CtConstructor(name, arity) => if arity != Array::length(args) {
+    CtApplied(_, meta) => if Array::length(meta) == 0 {
       CtApplied(head, args)
-    } else if name == "Array" && arity == 1 {
-      CtArray(Array::get(args, 0))
-    } else if name == "Option" && arity == 1 {
-      CtOption(Array::get(args, 0))
     } else {
-      CtNamed(name, args)
+      let body = Array::get(meta, 0)
+      let params = array_empty()
+      let mut i = 1
+      while i < Array::length(meta) {
+        match Array::get(meta, i) {
+          CtNamed(n, _) => Array::push(params, n),
+          _ => ()
+        }
+        i = i + 1
+      }
+      if Array::length(params) == Array::length(args) {
+        resolve_type_alias_params(body, params, args)
+      } else {
+        CtApplied(head, args)
+      }
     },
     _ => CtApplied(head, args)
   }
 }
 
-fn alias_body_constructor(body: Type) -> Option[Type] {
-  match body {
-    CtArray(_) => Some(CtConstructor("Array", 1)),
-    CtOption(_) => Some(CtConstructor("Option", 1)),
-    CtNamed(n, args) => Some(CtConstructor(n, Array::length(args))),
-    CtConstructor(n, arity) => Some(CtConstructor(n, arity)),
+fn try_apply_alias_constructor(head: Type, args: Array[Type]) -> Option[Type] {
+  match head {
+    CtApplied(inner, _) => match inner {
+      CtNamed(n, ha) => if n == alias_ctor_tag && Array::length(ha) == 0 {
+        Some(apply_alias_constructor(head, args))
+      } else {
+        None
+      },
+      _ => None
+    },
     _ => None
   }
 }
@@ -2299,9 +2347,10 @@ fn reify_named_constructor(name: String, defs: Array[TypeDef], shadow: Array[Str
   } else {
     match find_typedef(defs, name) {
       Some(td) => match td {
-        TDAlias(_, _, body) => match alias_body_constructor(body) {
-          Some(ctor) => ctor,
-          None => named_constructor_or_resolved(name, defs, resolved)
+        TDAlias(_, alias_params, body) => if Array::length(alias_params) > 0 {
+          make_alias_constructor(alias_params, body)
+        } else {
+          named_constructor_or_resolved(name, defs, resolved)
         },
         _ => named_constructor_or_resolved(name, defs, resolved)
       },
