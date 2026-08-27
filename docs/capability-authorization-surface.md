@@ -235,10 +235,12 @@ fn main with Exception[IoError] allows Fs::Read[CacheDir]? + Stdout {
   const-fold DCE として実装される。「capability DCE」と「host satisfaction 検査」
   が `Entry.requires ⊆ ComposedHost.provides` に統合されるという review 文書の
   見立てを確定させる。
-- ランナー(viberun / node runner)は現在**無条件に全 host import を注入**して
-  いる。Optional の NotGranted lowering と preflight を実装するには、contract 駆動
-  の import 注入(BindingLock / grant table を読んで register する)への移行が
-  前提作業になる。
+- 非対話 compile は未解決 Optional を `NotGranted` へ固定し、operation と引数を
+  codegen 前に消す (#2236)。この経路は host import を必要とせず、linear / wasm-gc
+  で同じ lowering を使う。一方、ランナー(viberun / node runner)は現在も
+  **無条件に全 host import を注入**している。`Granted` / `Errored` を production
+  で選ぶには、contract 駆動の import 注入、BindingLock の解決表、失敗を
+  `Errored` に変換できる host ABI が残る。
 - `test {}` / `bench {}` ブロックは従来どおり ambient full authority(全 Optional
   = Granted 相当)を維持する。テストの権限を絞る話は本 ADR の対象外。
 
@@ -267,6 +269,10 @@ fn main with Exception[IoError] allows Fs::Read[CacheDir]? + Stdout {
    fixture。
 3. **`Attempt` + `perform?` 型付け**: strict grade-match。builtin operation への
    適用は retrofit Phase 1(暗黙 `Fs[Process::Root]`)が前提。
+   **#2236 で非対話 fallback lowering が landed**: 固定済み解決表を読む純粋 AST
+   pass を両 backend に接続し、表に値が無い場合は ADR の既定どおり
+   `NotGranted` にする。明示 `Granted` の AST lowering も pass 単体で固定済みだが、
+   production の表を作る 4/6 は未実装 (#2332)。
 4. **BindingLock `optional_resolution` + instantiate preflight**: ランナー作業
    (`runtime/vibe` launcher、viberun / node runner の contract 駆動 import 注入、
    TTY prompt、非 TTY デフォルト)。

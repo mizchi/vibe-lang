@@ -1,0 +1,189 @@
+//# `perform?` lowering (#2236)
+
+import @vibe/compiler/codegen/common_base {
+  lower_optional_performs, optional_perform_artifact_resolution
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+fn optional_program() -> String {
+  "fn main() -> Int with () allows Fs::read_file? {\n  match perform? Fs::read_file(\"missing\") {\n    NotGranted => 0,\n    Errored(_) => 1,\n    Granted(_) => 2\n  }\n}\n"
+}
+
+fn lowered_binding(resolution: Array[(String, String)]) -> Expr with Exception {
+  let stmts = parse_program(lex("fn main() -> Int with () allows Fs::read_file? {\n  let result = perform? Fs::read_file(\"x\")\n  0\n}\n"))
+  lower_optional_performs(stmts, resolution)
+  match Array::get(stmts, 0) {
+    SLet(_, _, "main", _, EFn(_, _, _, _, _, ELet("result", value, _, _))) => value,
+    _ => throw("expected the parsed main binding")
+  }
+}
+
+test "#2236: unresolved optional operation lowers to NotGranted" with Exception {
+  match lowered_binding([]) {
+    EIdent("$vibe_attempt_not_granted", _) => (),
+    _ => assert(false)
+  }
+}
+
+test "#2236: a granted operation converts host failure to Errored" with Exception {
+  match lowered_binding([("Fs::read_file", "Granted")]) {
+    EHandle(ECall(EIdent("$vibe_attempt_granted", _), granted_args, _), arms) => {
+      assert_eq(Array::length(granted_args), 1)
+      assert_eq(Array::length(arms), 1)
+      match Array::get(granted_args, 0) {
+        ECall(EIdent("Fs::read_file", _), operation_args, _) => {
+          assert_eq(Array::length(operation_args), 1)
+          match Array::get(operation_args, 0) {
+            EString("x") => (),
+            _ => assert(false)
+          }
+        },
+        _ => assert(false)
+      }
+      match Array::get(arms, 0) {
+        (PCtor("Exception::Throw", handler_pats), ECall(EIdent("$vibe_attempt_errored", _), errored_args, _)) => {
+          assert_eq(Array::length(handler_pats), 1)
+          assert_eq(Array::length(errored_args), 1)
+        },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "#2236: a provider-level denial covers its operations" with Exception {
+  match lowered_binding([("Fs", "NotGranted")]) {
+    EIdent("$vibe_attempt_not_granted", _) => (),
+    _ => assert(false)
+  }
+}
+
+fn optional_call() -> Expr {
+  ECall(EIdent("perform?", 0), [
+    ECall(EIdent("Fs::read_file", 0), [EString("x")], 0)
+  ], 0)
+}
+
+fn assert_ambient_granted(stmt: Stmt) -> Unit with Exception {
+  let stmts = [stmt]
+  let resolution = optional_perform_artifact_resolution(stmts, "__no_entry__", false, [
+  ])
+  lower_optional_performs(stmts, resolution)
+  let body = match Array::get(stmts, 0) {
+    STest(_, value) => value,
+    SBench(_, value) => value,
+    SExample(_, value) => value,
+    _ => throw("expected a test-like block")
+  }
+  match body {
+    EHandle(ECall(EIdent("$vibe_attempt_granted", _), args, _), _) => assert_eq(Array::length(args), 1),
+    _ => assert(false)
+  }
+}
+
+test "#2236 review: test, bench, and example optionals use ambient grants" with Exception {
+  assert_ambient_granted(STest("test", optional_call()))
+  assert_ambient_granted(SBench("bench", optional_call()))
+  assert_ambient_granted(SExample("example", optional_call()))
+}
+
+test "#2236 review: a test artifact grants optionals in reachable helpers" with Exception {
+  let stmts = [
+    SLet(false, false, "read_optional", None, EFn([], [], [], None, None, optional_call())),
+    STest("uses helper", ECall(EIdent("read_optional", 0), [], 0))
+  ]
+  let resolution = optional_perform_artifact_resolution(stmts, "__no_entry__", false, [
+  ])
+  lower_optional_performs(stmts, resolution)
+  match Array::get(stmts, 0) {
+    SLet(_, _, "read_optional", _, EFn(_, _, _, _, _, EHandle(ECall(EIdent("$vibe_attempt_granted", _), args, _), _))) => assert_eq(Array::length(args), 1),
+    _ => assert(false)
+  }
+}
+
+test "#2236 review: non-test artifacts keep the non-interactive default" with Exception {
+  let main_stmts = [
+    SLet(false, false, "main", None, EFn([], [], [], None, None, optional_call())),
+    STest("not part of this entry", ECall(EIdent("main", 0), [], 0))
+  ]
+  let library_stmts = [
+    SLet(false, false, "helper", None, EFn([], [], [], None, None, optional_call()))
+  ]
+  assert_eq(Array::length(optional_perform_artifact_resolution(main_stmts, "main", false, [
+  ])), 0)
+  assert_eq(Array::length(optional_perform_artifact_resolution(library_stmts, "__no_entry__", false, [
+  ])), 0)
+}
+
+test "#2236 review: GC-lowered test artifacts retain ambient authority" {
+  let stmts = [
+    SLet(false, false, "read_optional", None, EFn([], [], [], None, None, optional_call())),
+    SLet(false, false, "__test_uses helper", None, EFn([], [], [], None, None, ECall(EIdent("read_optional", 0), [
+    ], 0))),
+    SLet(true, false, "_start", None, EFn([], [], [], None, None, ECall(EIdent("__test_uses helper", 0), [
+    ], 0)))
+  ]
+  assert_eq(Array::length(optional_perform_artifact_resolution(stmts, "_start", true, [
+  ])), 1)
+}
+
+test "#2236 review: user __test_ names do not grant GC artifact authority" {
+  let stmts = [
+    SLet(false, false, "helper", None, EFn([], [], [], None, None, optional_call())),
+    SLet(false, false, "__test_marker", None, EFn([], [], [], None, None, EInt(0))),
+    SLet(true, false, "_start", None, EFn([], [], [], None, None, ECall(EIdent("helper", 0), [
+    ], 0)))
+  ]
+  assert_eq(Array::length(optional_perform_artifact_resolution(stmts, "_start", false, [
+  ])), 0)
+}
+
+test "#2236 review: source shadow of a registry operation is not lowered" {
+  let stmts = parse_program(lex("fn Fs::read_file(path: String) -> String { path }\nfn main() -> Int with () allows Fs::read_file? { let _ = perform? Fs::read_file(\"x\"); 0 }\n"))
+  let message = handle {
+    lower_optional_performs(stmts, [])
+    ""
+  } with { Exception::Throw(error) => error }
+  assert(String::contains(message, "source function"))
+  assert(String::contains(message, "not a capability operation"))
+}
+
+test "#2236: the linear backend compiles a well-graded perform?" with Exception {
+  let msg = handle {
+    let bytes = compile_source_wasi(optional_program(), "main")
+    if Bytes::length(bytes) > 8 {
+      ""
+    } else {
+      "wasm artifact is too short"
+    }
+  } with { Exception::Throw(error) => error }
+  assert_eq(msg, "")
+}
+
+test "#2236: the wasm-gc backend compiles a well-graded perform?" with Exception {
+  let msg = handle {
+    let bytes = compile_source_gc_only(optional_program(), "main")
+    if Bytes::length(bytes) > 8 {
+      ""
+    } else {
+      "wasm artifact is too short"
+    }
+  } with { Exception::Throw(error) => error }
+  assert_eq(msg, "")
+}

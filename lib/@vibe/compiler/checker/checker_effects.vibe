@@ -93,7 +93,7 @@ export enum EffectError {
   // diagnostic deliberately names the structural problem instead.
   EEEmptyHandle;
   EEPerformQuestionRequiresOptional(String, Int);
-  EEPerformQuestionUnlowered(String, Int)
+  EEPerformQuestionInvalidOperand(Int)
 }
 
 //# Functions
@@ -216,50 +216,8 @@ export fn effect_error_to_string(err: EffectError) -> String {
         body
       }
     },
-    // #2145: the grade is right and the checker types it as `Attempt`, but
-    // codegen cannot emit `perform?`. Reported from the same site as the
-    // grade error and mutually exclusive with it, so the sharper message wins
-    // by construction rather than by ordering.
-    EEPerformQuestionUnlowered(operation, off) => {
-      // An empty operation name means the operand was not a recognizable
-      // operation call (`perform? 1`). Those reach codegen too, so they get
-      // the same rejection minus the part that names an `allows` item
-      // (#2156 review).
-      //
-      // #2156 review: the named operation is always a CAPABILITY, and a
-      // capability is spelled as an ORDINARY CALL -- never as a `perform`
-      // (AGENTS.md "Effect classes and how operations are spelled";
-      // ADR-0084). This message used to say "use plain `perform`", which
-      // handed the reader `perform Fs::read_file(..)`: the exact spelling
-      // book/*/09_capabilities rules out a few lines below where it quotes
-      // this very diagnostic.
-      //
-      // There is deliberately no algebraic-operation branch. Reaching here
-      // means `decl_authorizes_optional_op` found the operation in `allows`,
-      // and `allows` admits capability effects ONLY -- an algebraic operation
-      // written there is rejected earlier with "`Ask::Get?` is not a
-      // capability effect, so it cannot appear in `allows`". A branch for it
-      // would be unreachable code that quietly gives non-registry
-      // capabilities the wrong advice, which is how the `perform` wording got
-      // here in the first place.
-      //
-      // #2156 review: the EDIT comes first. This message used to open with the
-      // tracker number and the checker/codegen split and defer the repair to
-      // the second sentence, which is the shape AGENTS.md rules out -- a
-      // reader (and the LLM reading for them) should not have to get past a
-      // pass boundary to find out what to type. The "why" and the issue
-      // number stay, at the end, where they answer "is this permanent?"
-      // without standing in front of the answer.
-      let tail = " `perform?` is not lowered yet: the checker types it as `Attempt[T, String]`, but code generation cannot emit it (#2145)."
-      let body = if String::length(operation) == 0 {
-        // #2156 review: the operand is not an operation call at all
-        // (`perform? 1`), so there is no `allows` item and no capability to
-        // name -- "make the authority required" is advice this program cannot
-        // act on. Say what `perform?` needs, or to drop it.
-        String::concat("`perform?` takes a capability-operation call, like `perform? Fs::read_file(path)`. Either call an operation here, or drop the `perform?` from this expression.", tail)
-      } else {
-        String::concat("drop the `?` from `allows ", String::concat(operation, String::concat("?` and call `", String::concat(operation, String::concat("(..)` directly -- a capability is an ordinary call, not a `perform` -- then handle the failure with `try`/`handle` instead of matching `Attempt`.", tail)))))
-      }
+    EEPerformQuestionInvalidOperand(off) => {
+      let body = "`perform?` takes a capability-operation call, like `perform? Fs::read_file(path)`. Either call an operation here, or drop `perform?` from this expression."
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
@@ -1785,7 +1743,6 @@ fn perform_question_op_name(arg: Expr) -> Option[String] {
       EIdent(op_name, _) => Some(op_name),
       _ => None
     },
-    EIdent(op_name, _) => Some(op_name),
     _ => None
   }
 }
@@ -2733,22 +2690,14 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             if name == "perform?" && Array::length(args) == 1 {
               match perform_question_op_name(Array::get(args, 0)) {
                 Some(op_name) => if decl_authorizes_optional_op(declared, op_name) {
-                  // The grade is right; the remaining problem is that codegen
-                  // does not lower `perform?` at all (#2145). This pass already
-                  // walks every expression and already stops on `perform?`, so
-                  // it costs nothing here -- and it carries `call_off`, which a
-                  // separate scan could not.
-                  Array::push(errors, EEPerformQuestionUnlowered(op_name, call_off))
+                  ()
                 } else {
                   Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
                 },
                 // The operand is not a recognizable operation call, as in
-                // `perform? 1`. It still reaches codegen, so it must still be
-                // rejected -- the syntax scan this replaced caught EVERY
-                // `perform?` regardless of operand, and dropping that made
-                // `vibe check` call such a file clean while the build died on
-                // "this is a bug in the compiler" (#2156 review).
-                None => Array::push(errors, EEPerformQuestionUnlowered("", call_off))
+                // `perform? 1`. Reject it here so malformed source never
+                // reaches the lowering pass as an internal compiler error.
+                None => Array::push(errors, EEPerformQuestionInvalidOperand(call_off))
               }
               match Array::get(args, 0) {
                 ECall(_, opargs, _) => {

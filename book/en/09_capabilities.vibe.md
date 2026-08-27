@@ -97,11 +97,11 @@ A `?` on an `allows` item marks it optional — the program can run whether
 or not the host granted it. The matching `perform? Fs::read_file("p")`
 gives back an `Attempt`: `Granted`, `NotGranted`, or `Errored`.
 
-The checker accepts this today. **Code generation does not, so the
-compiler rejects it** rather than building something that cannot run:
+The non-interactive compiler has no build/apply grant fact, so it freezes an
+unresolved optional capability to `NotGranted` before code generation. The
+operation and its arguments are not evaluated:
 
-```vibe skip
-// skip: rejected -- codegen does not lower `perform?` yet (#2145)
+```vibe run
 fn main() -> Int with () allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("config.json")
   match a {
@@ -112,16 +112,14 @@ fn main() -> Int with () allows Console + Fs::read_file? {
 }
 ```
 
-```
-line 2:11: drop the `?` from `allows Fs::read_file?` and call
-`Fs::read_file(..)` directly -- a capability is an ordinary call, not a
-`perform` -- then handle the failure with `try`/`handle` instead of matching
-`Attempt`. `perform?` is not lowered yet: the checker types it as
-`Attempt[T, String]`, but code generation cannot emit it (#2145).
+```output
+0
 ```
 
-`vibe check` says the same thing, so you find out before you build. Until
-it lands, make the capability required and call it the ordinary way.
+The frozen-resolution lowering is shared by the linear and wasm-gc backends.
+Wiring `--allow-*`, BindingLock, and interactive preflight into production is
+tracked in #2332; until then production compilation does not select `Granted`
+or `Errored`.
 
 ## Telling the two kinds apart
 

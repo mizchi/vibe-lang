@@ -28,6 +28,7 @@
 #   3 needle        substring of the diagnostic, for a rejecting row
 #   4 entry-status  ok | reject -- ONLY when the entry lane disagrees with 2
 #   5 entry-needle  substring of the entry lane's diagnostic, when 4 is reject
+#   6 entry-output  exact stdout from invoking a successful `main` artifact
 #
 # Columns 4-5 are the record of a divergence, so a row that names an entry
 # verdict equal to its no-entry verdict is itself an error: the annotation has
@@ -302,14 +303,14 @@ selftest() {
   return "$ok"
 }
 
-# Split one row into ROW[0..4]. NOT `IFS=$'\t' read`: a tab is IFS
+# Split one row into ROW[0..5]. NOT `IFS=$'\t' read`: a tab is IFS
 # whitespace, so bash collapses a run of them and `name<TAB>ok<TAB><TAB>reject`
 # hands `reject` to the NEEDLE field. That is invisible until a row has an
 # empty column 3 -- which the first recorded divergence has.
 split_row() { # <line>
   local line="$1" i=0 f
-  ROW=("" "" "" "" "")
-  while [ "$i" -lt 5 ]; do
+  ROW=("" "" "" "" "" "")
+  while [ "$i" -lt 6 ]; do
     case "$line" in
       *$'\t'*) f="${line%%$'\t'*}"; line="${line#*$'\t'}" ;;
       *) f="$line"; line="" ;;
@@ -337,6 +338,7 @@ while IFS= read -r line; do
   split_row "$line"
   name="${ROW[0]}"; status="${ROW[1]}"; needle="${ROW[2]}"
   estatus="${ROW[3]}"; eneedle="${ROW[4]}"
+  entry_output="${ROW[5]}"
   case "$name" in ''|'#'*) continue ;; esac
   case "$name" in "$PROBE_PREFIX"*)
     echo "[typecheck-fixtures] FAIL: '$name' collides with the self-test's reserved prefix" >&2
@@ -350,6 +352,19 @@ while IFS= read -r line; do
   esac
   if [ -n "$estatus" ]; then divergences=$((divergences + 1)); fi
   check_row "$name" "$status" "$needle" "$estatus" "$eneedle" || fail=1
+  if [ -n "$entry_output" ]; then
+    artifact="$WORK/entry/$name.wasm"
+    if [ ! -s "$artifact" ]; then
+      echo "[typecheck-fixtures] FAIL: $name records entry output but has no runnable main artifact" >&2
+      fail=1
+    else
+      actual_output="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$artifact" 2>&1 || true)"
+      if [ "$actual_output" != "$entry_output" ]; then
+        echo "[typecheck-fixtures] FAIL: $name main output '$actual_output' (want '$entry_output')" >&2
+        fail=1
+      fi
+    fi
+  fi
 done < "$TSV"
 
 if [ "$fail" -ne 0 ]; then

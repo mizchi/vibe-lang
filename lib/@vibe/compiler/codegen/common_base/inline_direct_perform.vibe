@@ -7,6 +7,7 @@ import @vibe/compiler/core {
   Type,
   TypeExpr,
   dce_keep_flags,
+  effect_row_emitted_text,
   expr_children,
   is_exception_effect_name,
   is_exception_throw_handler_name,
@@ -76,6 +77,240 @@ export fn inline_direct_performs(stmts: Array[Stmt]) -> Unit {
       SLet(exported, is_rec, name, ty, expr) => {
         let new_expr = idp_rewrite(expr, idp_empty_table())
         Array::set(stmts, i, SLet(exported, is_rec, name, ty, new_expr))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2236 / ADR-0088: lower optional capability calls against one frozen
+/// resolution table. Missing entries use the non-interactive default,
+/// `NotGranted`. A denied call is erased before its arguments are visited, so
+/// preparing an operation that will not run cannot itself trigger effects.
+fn opq_provider_name(operation: String) -> String {
+  let sep = String::index_of(operation, "::")
+  if sep < 0 {
+    operation
+  } else {
+    String::substring(operation, 0, sep)
+  }
+}
+
+fn opq_attempt_not_granted_name() -> String {
+  "$vibe_attempt_not_granted"
+}
+
+fn opq_attempt_errored_name() -> String {
+  "$vibe_attempt_errored"
+}
+
+fn opq_attempt_granted_name() -> String {
+  "$vibe_attempt_granted"
+}
+
+fn opq_collect_source_value_names(stmts: Array[Stmt], names: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => Array::push(names, name),
+      SLetMut(name, _, _) => Array::push(names, name),
+      SModule(_, _, body) => opq_collect_source_value_names(body, names),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn opq_source_value_exists(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(names) && !found {
+    found = Array::get(names, i) == name
+    i = i + 1
+  }
+  found
+}
+
+/// Spelling alone is not builtin provenance: a source declaration may shadow
+/// a registry operation with the same qualified name. The checker accepts the
+/// source call, so fail here before a denied branch can erase it or a granted
+/// branch can wrap it as an optional capability result.
+fn opq_require_registry_operation(source_names: Array[String], operation: String) -> Unit with Exception {
+  match lookup_registry_builtin(operation) {
+    Some(_) => if opq_source_value_exists(source_names, operation) {
+      throw(String::concat("`perform? ", String::concat(operation, "(..)` resolves to a source function, not a capability operation; rename the source function or call the capability under an unshadowed name")))
+    } else {
+      ()
+    },
+    None => throw(String::concat("`perform? ", String::concat(operation, "(..)` is not a registered capability operation")))
+  }
+}
+
+fn opq_resolution(resolution: Array[(String, String)], operation: String) -> String with Exception {
+  let provider = opq_provider_name(operation)
+  let mut default_status = "NotGranted"
+  let mut provider_status = ""
+  let mut exact_status = ""
+  let mut i = 0
+  while i < Array::length(resolution) {
+    let (name, status) = Array::get(resolution, i)
+    if status != "Granted" && status != "NotGranted" {
+      throw(String::concat("optional capability resolution for `", String::concat(name, String::concat("` must be `Granted` or `NotGranted`, got `", String::concat(status, "`")))))
+    } else if name == "*" {
+      default_status = status
+    } else if name == operation {
+      exact_status = status
+    } else if name == provider {
+      provider_status = status
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if exact_status != "" {
+    exact_status
+  } else if provider_status != "" {
+    provider_status
+  } else {
+    default_status
+  }
+}
+
+fn opq_contains_source_test_like(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      STest(_, _) => true,
+      SBench(_, _) => true,
+      SExample(_, _) => true,
+      SModule(_, _, body) => opq_contains_source_test_like(body),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Resolve authority once for the whole compiled artifact. A `__no_entry__`
+/// artifact containing test-like blocks has ambient full authority, including
+/// every top-level helper those blocks can reach. Other non-interactive
+/// artifacts keep the caller's fail-closed resolution table. The GC source
+/// pipeline passes `generated_test_artifact = true` from the actual STest /
+/// SBench lowering result; user-controlled `__test_` names carry no authority.
+export fn optional_perform_artifact_resolution(stmts: Array[Stmt], entry_name: String, generated_test_artifact: Bool, resolution: Array[(String, String)]) -> Array[(String, String)] {
+  let source_test_artifact = entry_name == "__no_entry__" && opq_contains_source_test_like(stmts)
+  let gc_lowered_test_artifact = entry_name == "_start" && generated_test_artifact
+  if source_test_artifact || gc_lowered_test_artifact {
+    [("*", "Granted")]
+  } else {
+    resolution
+  }
+}
+
+fn opq_expr_array(items: Array[Expr], resolution: Array[(String, String)], source_names: Array[String]) -> Array[Expr] with Exception {
+  for item in items {
+    opq_expr(item, resolution, source_names)
+  }
+}
+
+fn opq_pairs(items: Array[(String, Expr)], resolution: Array[(String, String)], source_names: Array[String]) -> Array[(String, Expr)] with Exception {
+  for item in items {
+    let (name, value) = item
+    (name, opq_expr(value, resolution, source_names))
+  }
+}
+
+fn opq_arms(items: Array[(Pat, Expr)], resolution: Array[(String, String)], source_names: Array[String]) -> Array[(Pat, Expr)] with Exception {
+  for item in items {
+    let (pat, body) = item
+    (pat, opq_expr(body, resolution, source_names))
+  }
+}
+
+fn opq_expr(e: Expr, resolution: Array[(String, String)], source_names: Array[String]) -> Expr with Exception {
+  match e {
+    ECall(EIdent("perform?", _), args, off) => if Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        ECall(EIdent(operation, op_ident_off), op_args, op_call_off) => {
+          opq_require_registry_operation(source_names, operation)
+          if opq_resolution(resolution, operation) == "Granted" {
+            let error_name = "$vibe_optional_error"
+            let call = ECall(EIdent(operation, op_ident_off), opq_expr_array(op_args, resolution, source_names), op_call_off)
+            EHandle(ECall(EIdent(opq_attempt_granted_name(), off), [call], off), [
+              (PCtor("Exception::Throw", [PBind(error_name)]), ECall(EIdent(opq_attempt_errored_name(), off), [
+                EIdent(error_name, off)
+              ], off))
+            ])
+          } else {
+            EIdent(opq_attempt_not_granted_name(), off)
+          }
+        },
+        _ => throw("`perform?` takes a capability-operation call, like `perform? Fs::read_file(path)`")
+      }
+    } else {
+      throw("`perform?` takes exactly one capability-operation call")
+    },
+    ECall(callee, args, off) => ECall(opq_expr(callee, resolution, source_names), opq_expr_array(args, resolution, source_names), off),
+    ETuple(items) => ETuple(opq_expr_array(items, resolution, source_names)),
+    EArray(items) => EArray(opq_expr_array(items, resolution, source_names)),
+    ERecord(name, fields, targs) => ERecord(name, opq_pairs(fields, resolution, source_names), targs),
+    EIf(cond, then_expr, else_expr) => EIf(opq_expr(cond, resolution, source_names), opq_expr(then_expr, resolution, source_names), opq_expr(else_expr, resolution, source_names)),
+    ELet(name, value, body, off) => ELet(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names), off),
+    ELetRec(name, value, body) => ELetRec(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names)),
+    ELetMut(name, value, body, off) => ELetMut(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names), off),
+    EAssign(name, value, body) => EAssign(name, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names)),
+    EAssignOp(name, op, value, body) => EAssignOp(name, op, opq_expr(value, resolution, source_names), opq_expr(body, resolution, source_names)),
+    ESeq(first, second) => ESeq(opq_expr(first, resolution, source_names), opq_expr(second, resolution, source_names)),
+    EMatch(scrutinee, arms) => EMatch(opq_expr(scrutinee, resolution, source_names), opq_arms(arms, resolution, source_names)),
+    EHandle(body, arms) => EHandle(opq_expr(body, resolution, source_names), opq_arms(arms, resolution, source_names)),
+    EWhile(cond, body) => EWhile(opq_expr(cond, resolution, source_names), opq_expr(body, resolution, source_names)),
+    ELoop(pairs, body) => ELoop(opq_pairs(pairs, resolution, source_names), opq_expr(body, resolution, source_names)),
+    EForIn(name, index, iterable, body) => EForIn(name, index, opq_expr(iterable, resolution, source_names), opq_expr(body, resolution, source_names)),
+    EBinOp(op, left, right) => EBinOp(op, opq_expr(left, resolution, source_names), opq_expr(right, resolution, source_names)),
+    EUnaryOp(op, value) => EUnaryOp(op, opq_expr(value, resolution, source_names)),
+    EFn(tparams, bounds, params, ret, eff, body) => {
+      let emitted_eff = match eff {
+        Some(row) => Some(effect_row_emitted_text(row)),
+        None => None
+      }
+      EFn(tparams, bounds, params, ret, emitted_eff, opq_expr(body, resolution, source_names))
+    },
+    EDot(object, field, start, end) => EDot(opq_expr(object, resolution, source_names), field, start, end),
+    ELabeledArg(kind, name, value) => ELabeledArg(kind, name, opq_expr(value, resolution, source_names)),
+    EReturn(value) => EReturn(opq_expr(value, resolution, source_names)),
+    EBreak(value) => match value {
+      Some(inner) => EBreak(Some(opq_expr(inner, resolution, source_names))),
+      None => e
+    },
+    EContinue(args) => EContinue(opq_expr_array(args, resolution, source_names)),
+    EMap(fields) => EMap(opq_pairs(fields, resolution, source_names)),
+    ESpread(value) => ESpread(opq_expr(value, resolution, source_names)),
+    _ => e
+  }
+}
+
+export fn lower_optional_performs(stmts: Array[Stmt], resolution: Array[(String, String)]) -> Unit with Exception {
+  let source_names = array_empty()
+  opq_collect_source_value_names(stmts, source_names)
+  lower_optional_performs_with_source_names(stmts, resolution, source_names)
+}
+
+fn lower_optional_performs_with_source_names(stmts: Array[Stmt], resolution: Array[(String, String)], source_names: Array[String]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, recursive, name, ty, value) => Array::set(stmts, i, SLet(exported, recursive, name, ty, opq_expr(value, resolution, source_names))),
+      SLetMut(name, ty, value) => Array::set(stmts, i, SLetMut(name, ty, opq_expr(value, resolution, source_names))),
+      STest(name, body) => Array::set(stmts, i, STest(name, opq_expr(body, resolution, source_names))),
+      SBench(name, body) => Array::set(stmts, i, SBench(name, opq_expr(body, resolution, source_names))),
+      SExample(name, body) => Array::set(stmts, i, SExample(name, opq_expr(body, resolution, source_names))),
+      SExpr(value) => Array::set(stmts, i, SExpr(opq_expr(value, resolution, source_names))),
+      SLetPat(pat, value) => Array::set(stmts, i, SLetPat(pat, opq_expr(value, resolution, source_names))),
+      SModule(exported, name, body) => {
+        lower_optional_performs_with_source_names(body, resolution, source_names)
+        Array::set(stmts, i, SModule(exported, name, body))
       },
       _ => ()
     }

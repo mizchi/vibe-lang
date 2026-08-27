@@ -63,18 +63,6 @@ handled body. Moving the `handle` into the function that performs works too.
 `-4611686018427387904` に wrap する。まだ `2^61-1` / 62-bit と書いてある
 文章は古い。
 
-## `perform?` は checker が拒否する
-
-`perform? Fs::read_file(p)` は `allows Fs::read_file?` の下で
-`Attempt[T, String]` と型付けされるが、codegen が lowering できないため
-checker が拒否する (#2145): *"`perform?` is not lowered yet"* と、直し方
-(`allows` の項目から `?` を落とし、`Fs::read_file(..)` を普通に呼ぶ) を
-名指しする。`allows` に載るのは capability だけで、capability は perform
-しない。
-
-`vibe check` も同じことを言うので、ビルド前に分かる。#2145 が着地する前は
-型検査を通ったあとで ICE になっていた。
-
 ## 文字列補間にはレンダラが要る
 
 `\{x}` で補間するユーザー struct には `derive(Show)` か
