@@ -3236,6 +3236,77 @@ fn infer_constructor_generic_call_type_name(name: String, args: Array[Expr], who
   }
 }
 
+/// Recover the result of a handler arm while treating `resume` as the handled
+/// continuation. Follow the result-bearing spine so a block or local binding
+/// around the resume call does not erase the body's constructor.
+fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match arm_body {
+    ECall(EIdent("resume", _), resume_args, _) => if Array::length(resume_args) == 1 {
+      Some(expected)
+    } else {
+      None
+    },
+    ELet(name, val, body, _) => {
+      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetMut(name, val, body, _) => {
+      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetRec(_, _, body) => infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, var_types, fn_returns),
+    EAssign(_, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
+    EAssignOp(_, _, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
+    ESeq(_, result) => infer_constructor_handler_arm_type_name(result, expected, gens, struct_sets, var_types, fn_returns),
+    EIf(_, then_branch, else_branch) => {
+      let then_constructor = infer_constructor_handler_arm_type_name(then_branch, expected, gens, struct_sets, var_types, fn_returns)
+      let else_constructor = infer_constructor_handler_arm_type_name(else_branch, expected, gens, struct_sets, var_types, fn_returns)
+      match then_constructor {
+        Some(name) => match else_constructor {
+          Some(other) => {
+            let same = name == other
+            if same {
+              Some(name)
+            } else {
+              None
+            }
+          },
+          None => None
+        },
+        None => None
+      }
+    },
+    EMatch(scrut, match_arms) => if Array::length(match_arms) == 0 {
+      None
+    } else {
+      let mut i = 0
+      let mut result = Some(expected)
+      while i < Array::length(match_arms) {
+        let (pat, body) = Array::get(match_arms, i)
+        let arm_vars = arm_binder_var_types_env(scrut, pat, var_types, struct_sets, fn_returns)
+        match infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, arm_vars, fn_returns) {
+          Some(actual) => {
+            let same = actual == expected
+            if same {
+              ()
+            } else {
+              result = None
+              i = Array::length(match_arms)
+            }
+          },
+          None => {
+            result = None
+            i = Array::length(match_arms)
+          }
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => infer_constructor_arg_type_name(arm_body, gens, struct_sets, var_types, fn_returns)
+  }
+}
+
 /// Recover a handled result only when the body and every handler arm agree.
 /// Handler patterns describe effects rather than the handled value, so their
 /// binders do not refine the result constructor.
@@ -3247,18 +3318,7 @@ fn infer_constructor_handle_type_name(body: Expr, arms: Array[(Pat, Expr)], gens
       let mut agrees = true
       while i < Array::length(arms) && agrees {
         let (_, arm_body) = Array::get(arms, i)
-        // A handler arm that resumes does not produce a replacement value:
-        // its result is the continuation of the handled body. Preserve the
-        // body's constructor instead of asking ordinary call inference to
-        // classify the keyword-like `resume` callee.
-        let arm_constructor = match arm_body {
-          ECall(EIdent("resume", _), resume_args, _) => if Array::length(resume_args) == 1 {
-            Some(expected)
-          } else {
-            None
-          },
-          _ => infer_constructor_arg_type_name(arm_body, gens, struct_sets, var_types, fn_returns)
-        }
+        let arm_constructor = infer_constructor_handler_arm_type_name(arm_body, expected, gens, struct_sets, var_types, fn_returns)
         match arm_constructor {
           Some(actual) => {
             let same = actual == expected
