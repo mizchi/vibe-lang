@@ -10,7 +10,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, hex_encode
 }
 
 import @vibe/compiler/loader {
@@ -334,4 +334,56 @@ test "persistent_module_header_cache_path: uses compiled-safe filename" {
   let path = persistent_module_header_cache_path("/tmp/vibe_compiler_persistent_module_header/main.vibe", compact_string_fingerprint("export let run: () -> Int = () -> { 1 }"))
   assert(String::index_of(path, ":") < 0)
   assert(String::starts_with(path, "_build/vibe_selfhost_module_header_"))
+}
+
+test "v4 facade cache treats malformed dependency paths as misses" {
+  let base_dir = "/tmp/vibe_facade_hex_miss_2338"
+  let dep_dir = String::concat(base_dir, "/dep")
+  let vpkg_path = String::concat(base_dir, "/index.vpkg")
+  let box_path = String::concat(base_dir, "/box.vibe")
+  let source_path = String::concat(dep_dir, "/source.vibe")
+  if Fs::exists(base_dir) {
+    Fs::remove(base_dir)
+  } else {
+    ()
+  }
+  Fs::mkdir_p(dep_dir)
+  Fs::write_bytes(vpkg_path, string_to_bytes("name = @vibetest/hexmiss2338\nversion = 0.0.1\ndeps = {}\n\ngenerated_hash =\n\ntype Box[T]\n"))
+  Fs::write_bytes(box_path, string_to_bytes("export ./dep/source.vibe { Box }\n"))
+  Fs::write_bytes(source_path, string_to_bytes("export type Box[T] = T\n"))
+  let first = handle {
+    let _ = collect_all_sources_fs(vpkg_path)
+    "ok"
+  } with { Exception::Throw(msg) => String::concat("err:", msg) }
+  inspect(first, content = "ok")
+  let needle = hex_encode(source_path)
+  let names = Fs::readdir("_build")
+  let mut cache_path = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if cache_path == "" && String::starts_with(name, "vibe_selfhost_contract_facade_") {
+      let path = String::concat("_build/", name)
+      if String::contains(Fs::read_file(path), needle) {
+        cache_path = path
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(cache_path != "")
+  let original = Fs::read_file(cache_path)
+  let at = String::index_of(original, needle)
+  assert(at >= 0)
+  let corrupted = String::concat(original[0: at], String::concat("zz", original[at + String::length(needle): String::length(original)]))
+  Fs::write_bytes(cache_path, string_to_bytes(corrupted))
+  let collected = handle {
+    let _ = collect_all_sources_fs(vpkg_path)
+    true
+  } with { Exception::Throw(_) => false }
+  Fs::write_bytes(cache_path, string_to_bytes(original))
+  assert(collected)
 }
