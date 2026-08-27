@@ -820,6 +820,11 @@ fn trait_operation_binding_exists(stmts: Array[Stmt], name: String) -> Bool {
       } else {
         ()
       },
+      SFnDecl(_, current, _, _, _) => if current == name {
+        found = true
+      } else {
+        ()
+      },
       _ => ()
     }
     i = i + 1
@@ -1643,7 +1648,9 @@ fn ctor_enum_of_name(fn_returns: Array[(String, String)], name: String) -> Optio
 /// arity).
 fn dtd_tuple_elem_type_name(obj: Expr, field: String, var_types: Array[(String, String)]) -> Option[String] {
   match obj {
-    EIdent(n, _) => match dtd_tuple_index_of(field) {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+      None
+    } else match dtd_tuple_index_of(field) {
       Some(idx) => {
         let parts = match lookup_var_type(var_types, tuple_shape_key(n)) {
           Some(sentinel) => tuple_shape_parts(sentinel),
@@ -3413,7 +3420,9 @@ fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String]
 /// callee's own constructor receiver back to its concrete argument instead.
 fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match arg {
-    EIdent(name, _) => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    EIdent(name, _) => if constructor_binding_is_masked(var_types, name) {
+      None
+    } else match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
       Some(head) => Some(head),
       None => match lookup_var_type(var_types, shape_key(name)) {
         Some(shape) => if String::starts_with(shape, "[") {
@@ -3423,6 +3432,18 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
         },
         None => None
       }
+    },
+    EReturn(inner) => infer_constructor_arg_type_name(inner, gens, struct_sets, var_types, fn_returns),
+    EDot(obj, field, _, _) => match dtd_tuple_index_of(field) {
+      Some(idx) => match obj {
+        ETuple(elems) => if idx >= 0 && idx < Array::length(elems) {
+          infer_constructor_arg_type_name(Array::get(elems, idx), gens, struct_sets, var_types, fn_returns)
+        } else {
+          None
+        },
+        _ => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+      },
+      None => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
     },
     ELet(name, val, body, _) => {
       let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
@@ -3552,7 +3573,7 @@ fn collect_parameterized_loop_constructors(expr: Expr, expected: Array[String], 
         let mut i = 0
         while i < Array::length(arms) && Array::get(valid, 0) {
           let (pat, arm_body) = Array::get(arms, i)
-          let arm_vars = mask_constructor_pat_binders(var_types, pat)
+          let arm_vars = constructor_handler_arm_var_types(body, pat, gens, struct_sets, var_types, fn_returns)
           collect_parameterized_loop_constructors(arm_body, expected, valid, gens, struct_sets, arm_vars, fn_returns)
           i = i + 1
         }
@@ -3641,6 +3662,7 @@ fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gen
       let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
     },
+    EReturn(inner) => infer_constructor_handler_arm_type_name(inner, expected, gens, struct_sets, var_types, fn_returns),
     ELetRec(_, _, body) => infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, var_types, fn_returns),
     EAssign(_, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
     EAssignOp(_, _, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
@@ -3694,9 +3716,120 @@ fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gen
   }
 }
 
+fn constructor_op_name_matches(name: String, op: String) -> Bool {
+  name == op || member_of(name) == member_of(op)
+}
+
+fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Expr]) -> Unit {
+  match expr {
+    EHandle(_, _) => (),
+    EFn(_, _, _, _, _, _) => (),
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(EIdent(op_name, _), oargs, _) => if constructor_op_name_matches(op_name, op) && Array::length(oargs) == 1 {
+              Array::push(out, Array::get(oargs, 0))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_constructor_perform_payloads(Array::get(args, i), op, out)
+        i = i + 1
+      }
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        collect_constructor_perform_payloads(Array::get(children, i), op, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn infer_constructor_perform_payload(body: Expr, op: String, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  let payloads = array_empty()
+  collect_constructor_perform_payloads(body, op, payloads)
+  if Array::length(payloads) == 0 {
+    None
+  } else {
+    let mut i = 1
+    let mut result = infer_constructor_arg_type_name(Array::get(payloads, 0), gens, struct_sets, var_types, fn_returns)
+    while i < Array::length(payloads) {
+      match result {
+        Some(expected) => match infer_constructor_arg_type_name(Array::get(payloads, i), gens, struct_sets, var_types, fn_returns) {
+          Some(actual) => if actual != expected {
+            result = None
+          } else {
+            ()
+          },
+          None => {
+            result = None
+          }
+        },
+        None => {
+          i = Array::length(payloads)
+        }
+      }
+      i = i + 1
+    }
+    result
+  }
+}
+
+fn constructor_handler_arm_var_types(body: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let masked = mask_constructor_pat_binders(var_types, pat)
+  match pat {
+    PCtor(cn, sub) => if Array::length(sub) == 1 {
+      match Array::get(sub, 0) {
+        PBind(name) => extend_constructor_var_types(masked, name, infer_constructor_perform_payload(body, cn, gens, struct_sets, var_types, fn_returns)),
+        _ => masked
+      }
+    } else {
+      masked
+    },
+    _ => masked
+  }
+}
+
+fn constructor_call_payload_var_types(scrut: Expr, cn: String, sub: Array[Pat], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Array[(String, String)]] {
+  match scrut {
+    ECall(EIdent(name, _), args, _) => if constructor_op_name_matches(name, cn) {
+      let mut acc = var_types
+      let mut i = 0
+      let n = Array::length(sub)
+      let an = Array::length(args)
+      while i < n && i < an {
+        match Array::get(sub, i) {
+          PBind(v) => {
+            acc = extend_constructor_var_types(acc, v, infer_constructor_arg_type_name(Array::get(args, i), gens, struct_sets, var_types, fn_returns))
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      Some(acc)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 /// Recover a handled result only when the body and every handler arm agree.
 /// Handler patterns describe effects rather than the handled value, so their
-/// binders do not refine the result constructor.
+/// binders do not refine the result constructor unless the arm returns a
+/// recovered operation payload.
 fn infer_constructor_handle_type_name(body: Expr, arms: Array[(Pat, Expr)], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns) {
     None => None,
@@ -3704,8 +3837,9 @@ fn infer_constructor_handle_type_name(body: Expr, arms: Array[(Pat, Expr)], gens
       let mut i = 0
       let mut agrees = true
       while i < Array::length(arms) && agrees {
-        let (_, arm_body) = Array::get(arms, i)
-        let arm_constructor = infer_constructor_handler_arm_type_name(arm_body, expected, gens, struct_sets, var_types, fn_returns)
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_vars = constructor_handler_arm_var_types(body, pat, gens, struct_sets, var_types, fn_returns)
+        let arm_constructor = infer_constructor_handler_arm_type_name(arm_body, expected, gens, struct_sets, arm_vars, fn_returns)
         match arm_constructor {
           Some(actual) => {
             let same = actual == expected
