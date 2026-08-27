@@ -1064,22 +1064,22 @@ export fn gc_add_hoisted_float_returning_names(stmts: Array[Stmt], before_names:
   }
 }
 
-export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int]) -> Bytes with Exception {
+export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int]) -> Bytes with Exception {
   handle {
-    compile_wasi_module_gc_impl(stmts, entry_name, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
+    compile_wasi_module_gc_impl(stmts, entry_name, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
   } with { Exception::Throw(err) => match gc_unresolved_import_message(err, stmts) {
     Some(better) => throw(better),
     None => throw(err)
   } }
 }
 
-fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int]) -> Bytes with Exception {
+fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int]) -> Bytes with Exception {
   // #805: inline-wasm fns are linear-backend only — reject before any work.
   gc_reject_inline_wasm(stmts)
   // ADR-0088 / #2236: the gc lane has its own lowering convergence point and
   // uses the same artifact-wide test authority or fail-closed default as the
   // linear lane.
-  let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, array_empty())
+  let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, generated_test_artifact, array_empty())
   lower_optional_performs(stmts, optional_resolution)
   gc_add_ref_twins(stmts)
   // #1015: `gc_to_string_is_wrapper` is a PARAMETER, not computed here --
@@ -1368,6 +1368,24 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
       ()
     }
     builtin_ctor_i = builtin_ctor_i + 1
+  }
+  // Optional-perform lowering uses compiler-owned names that source cannot
+  // spell. They retain Attempt's public representation even when user code
+  // declares constructors named NotGranted, Errored, or Granted.
+  let hidden_attempt_ctor_names = [
+    "$vibe_attempt_not_granted",
+    "$vibe_attempt_errored",
+    "$vibe_attempt_granted"
+  ]
+  let hidden_attempt_ctor_tags = [2, 3, 4]
+  let hidden_attempt_ctor_fields = [0, 1, 1]
+  let mut hidden_attempt_ctor_i = 0
+  while hidden_attempt_ctor_i < Array::length(hidden_attempt_ctor_names) {
+    Array::push(ctor_names_list, Array::get(hidden_attempt_ctor_names, hidden_attempt_ctor_i))
+    Array::push(ctor_tags_list, Array::get(hidden_attempt_ctor_tags, hidden_attempt_ctor_i))
+    Array::push(ctor_field_counts_list, Array::get(hidden_attempt_ctor_fields, hidden_attempt_ctor_i))
+    Array::push(ctor_type_names_list, "Attempt")
+    hidden_attempt_ctor_i = hidden_attempt_ctor_i + 1
   }
   let mut type_index = 1
   let mut ei2 = 0
@@ -2696,7 +2714,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   // #538: exception tag (id 13 section sits between memory and global).
   // #721-style gating: throw-free modules stay tag-free and run on engines
   // without the exceptions proposal.
-  if stmts_contain_exceptions(stmts) {
+  let gc_uses_exceptions = stmts_contain_exceptions(stmts)
+  if gc_uses_exceptions {
     let tag_content = bytebuf_new()
     leb128_encode_u32(tag_content, 1)
     bytebuf_push(tag_content, 0)
@@ -2763,6 +2782,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
     4
   } else {
     3
+  }) + (if gc_uses_exceptions {
+    2
+  } else {
+    0
   }))
   emit_name(export_content, "_start")
   bytebuf_push(export_content, 0)
@@ -2780,6 +2803,16 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, gc_to_str
   emit_name(export_content, "__heap_ptr")
   bytebuf_push(export_content, 3)
   leb128_encode_u32(export_content, 0)
+  if gc_uses_exceptions {
+    emit_name(export_content, "error")
+    bytebuf_push(export_content, 4)
+    leb128_encode_u32(export_content, 0)
+    emit_name(export_content, "__exception_throw_tag")
+    bytebuf_push(export_content, 4)
+    leb128_encode_u32(export_content, 0)
+  } else {
+    ()
+  }
   let mut bxe = 0
   while bxe < Array::length(block_export_names) {
     emit_name(export_content, Array::get(block_export_names, bxe))

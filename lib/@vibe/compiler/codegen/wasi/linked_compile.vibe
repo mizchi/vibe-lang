@@ -3486,7 +3486,7 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // keep ambient full authority across their reachable helpers; every other
     // non-interactive artifact freezes absent build/apply facts to NotGranted.
     // The pass accepts an explicit table for the launcher ladder.
-    let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, array_empty())
+    let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
     lower_optional_performs(stmts, optional_resolution)
     // #1947: merged FS programs are a fresh parse; check erased its own
     // array. Drop leftover `__try_none` markers before codegen.
@@ -3978,6 +3978,24 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
       ()
     }
     builtin_ctor_i = builtin_ctor_i + 1
+  }
+  // Optional-perform lowering uses compiler-owned names that source cannot
+  // spell. They retain Attempt's public representation even when user code
+  // declares constructors named NotGranted, Errored, or Granted.
+  let hidden_attempt_ctor_names = [
+    "$vibe_attempt_not_granted",
+    "$vibe_attempt_errored",
+    "$vibe_attempt_granted"
+  ]
+  let hidden_attempt_ctor_tags = [2, 3, 4]
+  let hidden_attempt_ctor_fields = [0, 1, 1]
+  let mut hidden_attempt_ctor_i = 0
+  while hidden_attempt_ctor_i < Array::length(hidden_attempt_ctor_names) {
+    Array::push(ctor_names_list, Array::get(hidden_attempt_ctor_names, hidden_attempt_ctor_i))
+    Array::push(ctor_tags_list, Array::get(hidden_attempt_ctor_tags, hidden_attempt_ctor_i))
+    Array::push(ctor_field_counts_list, Array::get(hidden_attempt_ctor_fields, hidden_attempt_ctor_i))
+    Array::push(ctor_type_names_list, "Attempt")
+    hidden_attempt_ctor_i = hidden_attempt_ctor_i + 1
   }
   // #1062: sparse `ctor_idx * 64 + field_idx` entries for Double/Float-typed
   // positional constructor fields (see CompileCtx.ctor_float_fields). Built
@@ -8254,13 +8272,15 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     bxi = bxi + 1
   }
   let export_content = bytebuf_new()
-  // #721: the "error" tag export exists only when the tag section does.
+  // #721: exception tag exports exist only when the tag section does. `error`
+  // is the entry-boundary tag; `__exception_throw_tag` is the language-level
+  // Exception::Throw tag used by handle expressions and host imports.
   let export_count = Array::length(all_export_names) + 1 +
   (if library_mode {
     0
   } else {
     1 + (if uses_exceptions {
-      1
+      2
     } else {
       0
     })
@@ -8284,6 +8304,9 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
       emit_name(export_content, "error")
       bytebuf_push(export_content, 4)
       leb128_encode_u32(export_content, 0)
+      emit_name(export_content, "__exception_throw_tag")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 2)
     } else {
       ()
     }
