@@ -84,9 +84,23 @@ import @vibe/compiler/contract {
   vpkg_types_decl_marker
 }
 
-fn exported_type_params_fs(path: String) -> Array[(String, Array[String])] with Exception + Fs {
+/// Collect the exported type kinds of one source boundary, following facade
+/// re-export chains until a declaration is reached. `visiting` makes a cycle
+/// an unresolved export instead of unbounded recursion; every visited source
+/// is fingerprinted so the contract-facade cache observes changes at any
+/// depth of the chain.
+fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
   let out = array_empty()
+  if contains_path(visiting, path) {
+    return out
+  } else {
+    ()
+  }
+  let visiting_mark = Array::length(visiting)
+  Array::push(visiting, path)
   let raw = Fs::read_file(path)
+  Array::push(dep_paths, path)
+  Array::push(dep_fingerprints, fingerprint_file_fs(path))
   if is_contract_ext(path) {
     let (_, blanked) = extract_require_pins(raw)
     let (_, opaques, extra) = parse_contract_program(lex(blanked))
@@ -116,7 +130,49 @@ fn exported_type_params_fs(path: String) -> Array[(String, Array[String])] with 
       }
       ti = ti + 1
     }
+    // Traits are valid opaque contract implementations too. The generic
+    // collector intentionally covers data/type definitions only, so retain
+    // trait constructor kinds explicitly for re-export conformance.
+    let mut trait_i = 0
+    while trait_i < Array::length(stmts) {
+      match Array::get(stmts, trait_i) {
+        STrait(exported, name, _, _, _, params) => if exported {
+          Array::push(out, (name, params))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      trait_i = trait_i + 1
+    }
+    let mut si = 0
+    while si < Array::length(stmts) {
+      match Array::get(stmts, si) {
+        SReExport(raw_path, items) => {
+          let resolved = resolve_path_fs(dir_of_path(path), raw_path)
+          let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, visiting)
+          let mut ii = 0
+          while ii < Array::length(items) {
+            let item = Array::get(items, ii)
+            match lookup_exported_type_params(source_types, item.name) {
+              Some(params) => {
+                let exported_name = match item.alias {
+                  Some(alias) => alias,
+                  None => item.name
+                }
+                Array::push(out, (exported_name, params))
+              },
+              None => ()
+            }
+            ii = ii + 1
+          }
+        },
+        _ => ()
+      }
+      si = si + 1
+    }
   }
+  Array::truncate(visiting, visiting_mark)
   out
 }
 
@@ -145,9 +201,8 @@ fn resolved_reexported_type_defs_fs(unit_path: String, stmts: Array[Stmt], dep_p
     match Array::get(stmts, i) {
       SReExport(raw_path, items) => {
         let resolved = resolve_path_fs(dir_of_path(unit_path), raw_path)
-        Array::push(dep_paths, resolved)
-        Array::push(dep_fingerprints, fingerprint_file_fs(resolved))
-        let source_types = exported_type_params_fs(resolved)
+        let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, [
+        ])
         let mut ii = 0
         while ii < Array::length(items) {
           let item = Array::get(items, ii)
@@ -2308,12 +2363,6 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
     let impl_ingested = ingest_source_text_fs(resolved, resolved_content)
     let impl_stmts = parse_program(lex(impl_ingested))
     Array::push(impl_units, (raw, impl_stmts))
-    let resolved_types = resolved_reexported_type_defs_fs(resolved, impl_stmts, reexport_dep_paths, reexport_dep_fingerprints)
-    let mut rti = 0
-    while rti < Array::length(resolved_types) {
-      Array::push(resolved_reexported_type_defs, Array::get(resolved_types, rti))
-      rti = rti + 1
-    }
     // #847: a raw resolving to ANOTHER package's own index.vibei/index.vibe
     // (a cross-package or nested-boundary reference, e.g. `import ../pkgb
     // { X }` written purely so the contract's own bodyless signatures
@@ -2331,6 +2380,15 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
     if is_boundary_unit {
       ()
     } else {
+      // Only local implementation units participate in this contract's type
+      // conformance. Imported package boundaries are dependencies, not
+      // alternate definitions of a same-spelled local opaque type.
+      let resolved_types = resolved_reexported_type_defs_fs(resolved, impl_stmts, reexport_dep_paths, reexport_dep_fingerprints)
+      let mut rti = 0
+      while rti < Array::length(resolved_types) {
+        Array::push(resolved_reexported_type_defs, Array::get(resolved_types, rti))
+        rti = rti + 1
+      }
       let mut si = 0
       while si < Array::length(impl_stmts) {
         Array::push(union_stmts, Array::get(impl_stmts, si))

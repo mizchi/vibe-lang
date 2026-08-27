@@ -3247,7 +3247,19 @@ fn infer_constructor_handle_type_name(body: Expr, arms: Array[(Pat, Expr)], gens
       let mut agrees = true
       while i < Array::length(arms) && agrees {
         let (_, arm_body) = Array::get(arms, i)
-        match infer_constructor_arg_type_name(arm_body, gens, struct_sets, var_types, fn_returns) {
+        // A handler arm that resumes does not produce a replacement value:
+        // its result is the continuation of the handled body. Preserve the
+        // body's constructor instead of asking ordinary call inference to
+        // classify the keyword-like `resume` callee.
+        let arm_constructor = match arm_body {
+          ECall(EIdent("resume", _), resume_args, _) => if Array::length(resume_args) == 1 {
+            Some(expected)
+          } else {
+            None
+          },
+          _ => infer_constructor_arg_type_name(arm_body, gens, struct_sets, var_types, fn_returns)
+        }
+        match arm_constructor {
           Some(actual) => {
             let same = actual == expected
             if !same {
