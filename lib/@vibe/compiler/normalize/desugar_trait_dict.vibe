@@ -3739,12 +3739,12 @@ fn collect_parameterized_loop_constructors(expr: Expr, expected: Array[String], 
       ELetMut("__loop_result", _, _, _) => (),
       ELet(name, value, body, _) => {
         collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, var_types, fn_returns)
-        let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns))
+        let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns)), name, value)
         collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
       },
       ELetMut(name, value, body, _) => {
         collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, var_types, fn_returns)
-        let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns))
+        let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns)), name, value)
         collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
       },
       ELetRec(name, value, body) => {
@@ -3849,11 +3849,11 @@ fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gen
       None
     },
     ELet(name, val, body, _) => {
-      let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
       infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
     },
     ELetMut(name, val, body, _) => {
-      let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
       infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
     },
     EReturn(inner) => infer_constructor_handler_arm_type_name(inner, expected, gens, struct_sets, var_types, fn_returns),
@@ -3927,12 +3927,12 @@ fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Optio
     EFn(_, _, _, _, _, _) => (),
     ELet(name, val, body, _) => {
       collect_constructor_perform_payloads(val, op, out, gens, struct_sets, var_types, fn_returns)
-      let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
       collect_constructor_perform_payloads(body, op, out, gens, struct_sets, body_vars, fn_returns)
     },
     ELetMut(name, val, body, _) => {
       collect_constructor_perform_payloads(val, op, out, gens, struct_sets, var_types, fn_returns)
-      let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
       collect_constructor_perform_payloads(body, op, out, gens, struct_sets, body_vars, fn_returns)
     },
     ELetRec(name, val, body) => {
@@ -9374,7 +9374,8 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
-      let body_vars = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars = extend_local_fn_return(body_vars3, name, val)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
