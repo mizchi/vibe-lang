@@ -29,6 +29,7 @@ import @vibe/compiler/core {
   is_exception_label,
   is_exception_throw_handler_name,
   is_exception_throw_operation,
+  is_hkt_app,
   registry_builtin_arity,
   registry_builtin_param_type,
   resolve_builtin,
@@ -37,6 +38,7 @@ import @vibe/compiler/core {
   subst_apply,
   subst_apply_except,
   subst_bounds_for,
+  subst_lookup,
   trait_method_sig_binders_deep,
   type_constructor_name,
   type_implements_trait,
@@ -395,6 +397,86 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
       ()
     }
     ai = ai + 1
+  }
+}
+
+fn push_unique_formal(name: String, formals: Array[String], out: Array[String]) -> Unit {
+  if string_array_has(formals, name) && !string_array_has(out, name) {
+    Array::push(out, name)
+  } else {
+    ()
+  }
+}
+
+fn collect_all_formals_in(te: TypeExpr, formals: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyName(n) => push_unique_formal(n, formals, out),
+    TyUnit => (),
+    TyApp(head, args) => {
+      push_unique_formal(head, formals, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_all_formals_in(Array::get(args, i), formals, out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_all_formals_in(Array::get(params, i), formals, out)
+        i = i + 1
+      }
+      collect_all_formals_in(ret, formals, out)
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_all_formals_in(Array::get(items, i), formals, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+/// Formals that participate in an HKT application (`F` and `A` in `F[A]`).
+/// Only those unbounded formals are rigid in the body. A plain `T` in
+/// `[T](x: T) -> T` stays a unification var so local annotations can still
+/// instantiate it (#2130).
+fn collect_hkt_related_formals(te: TypeExpr, formals: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyName(_) => (),
+    TyUnit => (),
+    TyApp(head, args) => {
+      if string_array_has(formals, head) {
+        push_unique_formal(head, formals, out)
+        let mut i = 0
+        while i < Array::length(args) {
+          collect_all_formals_in(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      } else {
+        let mut i = 0
+        while i < Array::length(args) {
+          collect_hkt_related_formals(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_hkt_related_formals(Array::get(params, i), formals, out)
+        i = i + 1
+      }
+      collect_hkt_related_formals(ret, formals, out)
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_hkt_related_formals(Array::get(items, i), formals, out)
+        i = i + 1
+      }
+    }
   }
 }
 
@@ -2857,23 +2939,9 @@ fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
   }
 }
 
-fn is_applied_named(ty: Type) -> Bool {
-  match ty {
-    CtNamed(_, args) => Array::length(args) > 0,
-    _ => false
-  }
-}
-
 fn is_nullary_named(ty: Type) -> Bool {
   match ty {
     CtNamed(_, args) => Array::length(args) == 0,
-    _ => false
-  }
-}
-
-fn is_skolem_named(ty: Type) -> Bool {
-  match ty {
-    CtNamed(n, args) => Array::length(args) == 0 && !String::starts_with(n, "#"),
     _ => false
   }
 }
@@ -2896,37 +2964,27 @@ fn skolem_vs_concrete(a: Type, b: Type) -> Bool {
   }
 }
 
-/// #2268: F[A] vs F[B] with rigid A, B, F[A] vs a concrete constructor, and
-/// unapplied rigid T vs a concrete type (`[T](x: T) -> T { 42 }`). CtNamed
-/// is kind 0 / non-ground, so the polymorphic tolerate branch would
-/// swallow these. Compiler-internal `#hkt` / `#ctor.*` names are not
-/// skolems. Struct construction binds fresh CtVars, so it is unaffected.
+/// #2268: F[A] vs F[B] with rigid A, B, and an HKT application vs a concrete
+/// constructor. Only `#hkt[...]` is a constructor parameter; FixedArray[Int]
+/// / alias heads must not be smashed onto Array. CtNamed is kind 0, so the
+/// polymorphic tolerate branch would otherwise swallow these.
 fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
   match expected {
-    CtNamed(en, ea) => if is_skolem_named(expected) {
-      match actual {
-        CtVar(_) => false,
-        CtUnknown => false,
-        CtNamed(an, aa) => Array::length(aa) == 0 && an != en && !String::starts_with(an, "#"),
-        _ => true
-      }
-    } else {
-      match actual {
-        CtNamed(an, aa) => en == an && Array::length(ea) > 0 && named_args_skolem_differ(ea, aa),
-        CtArray(_) => is_applied_named(expected),
-        CtOption(_) => is_applied_named(expected),
-        _ => false
-      }
+    CtNamed(en, ea) => match actual {
+      CtNamed(an, aa) => is_hkt_app(expected) && is_hkt_app(actual) && en == an && named_args_skolem_differ(ea, aa),
+      CtArray(_) => is_hkt_app(expected),
+      CtOption(_) => is_hkt_app(expected),
+      _ => false
     },
     CtArray(e) => match actual {
       CtArray(a) => skolem_vs_concrete(e, a),
-      _ => is_applied_named(actual) || is_skolem_named(actual)
+      _ => is_hkt_app(actual)
     },
     CtOption(e) => match actual {
       CtOption(a) => skolem_vs_concrete(e, a),
-      _ => is_applied_named(actual) || is_skolem_named(actual)
+      _ => is_hkt_app(actual)
     },
-    _ => is_skolem_named(actual) && !is_unresolved_head(expected)
+    _ => false
   }
 }
 
@@ -4943,6 +5001,11 @@ fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
       match env_lookup(env, name) {
         Some(t) => match t {
           CtVar(_) => hkt_apply_ctor(t, ra),
+          CtNamed(n, _) => if String::starts_with(n, "#hktformal.") {
+            hkt_apply_ctor(t, ra)
+          } else {
+            CtNamed(name, ra)
+          },
           _ => CtNamed(name, ra)
         },
         None => CtNamed(name, ra)
@@ -9651,6 +9714,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut s0 = s
       let mut c0 = c
       let tparam_ids = array_empty()
+      let hkt_related = array_empty()
+      let mut hki = 0
+      while hki < Array::length(params) {
+        match Array::get(params, hki) {
+          (_, Some(ste)) => collect_hkt_related_formals(ste, tparams, hkt_related),
+          _ => ()
+        }
+        hki = hki + 1
+      }
+      match ret_ty {
+        Some(srte) => collect_hkt_related_formals(srte, tparams, hkt_related),
+        None => ()
+      }
       let mut tpi = 0
       while tpi < tplen {
         let tpname = Array::get(tparams, tpi)
@@ -9674,11 +9750,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               s0
             } else subst_add_bound(s0, vid, bounds)
             let marker = String::concat(fapp_formal_marker_prefix, tpname)
-            // Unbounded formals are rigid in the body so F[A] is not
-            // assignable to F[B] (#2268). Trait-bounded formals stay
-            // unification vars so `C: Iterable` dispatch still finds C.
-            let body_ty = if Array::length(bounds) == 0 {
-              CtNamed(tpname, array_empty())
+            // HKT formals (`F`/`A` in `F[A]`) are rigid so F[A] is not
+            // assignable to F[B] or Array[Int]. Plain `T` and trait-bounded
+            // formals stay unification vars (#2130 local annotations, Iterable
+            // dispatch, region provenance).
+            let body_ty = if Array::length(bounds) == 0 && string_array_has(hkt_related, tpname) {
+              CtNamed(String::concat("#hktformal.", tpname), array_empty())
             } else {
               tv
             }
@@ -9881,16 +9958,38 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           enum_dependency_effect
         }
       }
-      let scheme_ret = match ret_ty {
-        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, tparams), scheme_env), tparam_ids),
-        None => subst_apply_except(s3, final_ret, tparam_ids)
+      let keep_ids = array_empty()
+      let mut ki0 = 0
+      while ki0 < Array::length(tparam_ids) {
+        let kid = Array::get(tparam_ids, ki0)
+        let still_free = match subst_lookup(s3, kid) {
+          Some(t) => !type_is_ground(t),
+          None => true
+        }
+        if still_free {
+          Array::push(keep_ids, kid)
+        } else {
+          ()
+        }
+        ki0 = ki0 + 1
+      }
+      let scheme_ret_raw = match ret_ty {
+        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, tparams), scheme_env), keep_ids),
+        None => subst_apply_except(s3, final_ret, keep_ids)
+      }
+      let scheme_ret = match scheme_ret_raw {
+        CtFn(ps, r, ann_eff) => match subst_apply_except(s3, final_ret, keep_ids) {
+          CtFn(_, _, inf_eff) => CtFn(ps, r, merge_provenance_row(ann_eff, inf_eff)),
+          _ => scheme_ret_raw
+        },
+        _ => scheme_ret_raw
       }
       let scheme_params = array_empty()
       let mut spi2 = 0
       while spi2 < plen {
         match Array::get(params, spi2) {
-          (_, Some(pte)) => Array::push(scheme_params, subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, tparams), scheme_env), tparam_ids)),
-          _ => Array::push(scheme_params, subst_apply_except(s3, Array::get(param_types, spi2), tparam_ids))
+          (_, Some(pte)) => Array::push(scheme_params, subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, tparams), scheme_env), keep_ids)),
+          _ => Array::push(scheme_params, subst_apply_except(s3, Array::get(param_types, spi2), keep_ids))
         }
         spi2 = spi2 + 1
       }
@@ -9914,7 +10013,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           vbi = vbi + 1
         }
-        (CtForAll(tparam_ids, var_bounds, subst_apply_except(s3, fn_ty, tparam_ids)), s3, c2)
+        (CtForAll(tparam_ids, var_bounds, subst_apply_except(s3, fn_ty, keep_ids)), s3, c2)
       }
     },
     EBreak(opt) => {
