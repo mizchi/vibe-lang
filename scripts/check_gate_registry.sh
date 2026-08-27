@@ -160,7 +160,8 @@ for lane in $GATE_LANES; do
 done
 
 # A lane step that COMPILES something and then checks the artifact
-# (`if [ ! -s .. ]`) must not let the compile itself end the lane: under
+# (`if [ ! -s .. ]`, or `if [ -s .. ]` for a step that expects the compile to
+# FAIL) must not let the compile itself end the lane: under
 # `set -e` a failing compiler invocation exits before the step's own `FAIL`
 # message, so the lane reports nothing but exit 1 and the reader is left
 # bisecting to find which step it was. `|| true` on the invocation hands the
@@ -181,7 +182,7 @@ for lane in $GATE_LANES; do
     }
     pending && $0 ~ /^[ \t]*$/ { next }
     pending {
-      if ($0 ~ /^[ \t]*if \[ ! -s /) {
+      if ($0 ~ /^[ \t]*if \[ (! )?-s /) {
         printf "[gate-registry] FAIL: %s:%d compiles then checks the artifact, but a failed compile aborts the lane before that check -- add `|| true`\n", script, pending > "/dev/stderr"
         bad = 1
       }

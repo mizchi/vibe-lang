@@ -3,13 +3,22 @@
 // library that scans bytes must write the scalar loop below by hand.
 //
 //   find_4k_simd_inline_wasm       hand-written v128 kernel (this file)
-//   find_4k_boxed_intrinsics       the same algorithm through the v128_* intrinsics
 //   find_4k_scalar                 the loop a library has to write today
 //   find_4k_String_index_of        the native scalar builtin, for scale
 //
-// The boxed lane is the one to watch: every v128_load / v128_eq_i8x16 heap-
-// allocates a 16-byte box, so the intrinsic surface allocates ~2 boxes per
-// 16 bytes scanned.
+// REJECTION EVIDENCE (#2342). A fourth lane ran the SAME algorithm through the
+// `v128_*` intrinsics. Measured here, 500 iters, mean:
+//
+//     find_4k_simd_inline_wasm      248 ns      0 B/op
+//     find_4k_String_index_of       352 ns      0 B/op
+//     find_4k_boxed_intrinsics     5564 ns   8048 B/op   <- 22x, and leaks
+//     find_4k_scalar              25001 ns      0 B/op
+//
+// Every v128_load / v128_eq_i8x16 heap-allocated a 16-byte box with no RC
+// header, so scanning 4 KiB allocated 8 KiB that nothing ever freed. That
+// measurement retired the 12 intrinsics, and the lane went with them -- it
+// cannot be rebuilt without them. `tests/gates/mid/run.sh` step 40 now asserts
+// the names stay unresolvable.
 
 fn simd_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int = wasm
 "(local $p i32) (local $i i32) (local $e i32) (local $m i32) (local $c i32)"
@@ -53,9 +62,6 @@ fn simd_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int = wasm
 ")"
 "local.get $r"
 
-fn ctz32(x: Int) -> Int = wasm
-"(i64.shl (i64.extend_i32_u (i32.ctz (i32.wrap_i64 (i64.shr_s (local.get $x) (i64.const 1))))) (i64.const 1))"
-
 fn scalar_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int {
   let mut i = from
   let mut r = -1
@@ -69,31 +75,6 @@ fn scalar_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int {
   }
   r
 }
-
-fn boxed_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int {
-  let nv = v128_splat_i8x16(needle)
-  let mut i = from
-  let mut r = -1
-  while i + 16 <= len {
-    let m = v128_bitmask_i8x16(v128_eq_i8x16(v128_load(hay, i), nv))
-    if m != 0 {
-      r = i + ctz32(m)
-      i = len
-    } else {
-      i = i + 16
-    }
-  }
-  while i < len {
-    if Bytes::get(hay, i) == needle {
-      r = i
-      i = len
-    } else {
-      i = i + 1
-    }
-  }
-  r
-}
-
 fn mkb(n: Int, at: Int) -> Bytes {
   let b = Bytes::new()
   let mut i = 0
@@ -122,9 +103,8 @@ let sink = [
   0
 ]
 
-test "the four lanes agree" {
+test "the three lanes agree" {
   assert_eq(simd_find(hay, 88, 0, 4096), 4000)
-  assert_eq(boxed_find(hay, 88, 0, 4096), 4000)
   assert_eq(scalar_find(hay, 88, 0, 4096), 4000)
   assert_eq(String::index_of(hay_s, "X"), 4000)
   assert_eq(simd_find(hay, 66, 0, 4096), -1)
@@ -133,10 +113,6 @@ test "the four lanes agree" {
 
 bench "find_4k_simd_inline_wasm" {
   Array::set(sink, 0, simd_find(hay, 88, 0, 4096))
-}
-
-bench "find_4k_boxed_intrinsics" {
-  Array::set(sink, 0, boxed_find(hay, 88, 0, 4096))
 }
 
 bench "find_4k_scalar" {

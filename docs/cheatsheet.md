@@ -1635,25 +1635,48 @@ From `@vibe/json` (`import @vibe/json { ... }`):
 `Json::is_null`, `Json::length`, `Json::keys`, `Json::stringify_lines`,
 `Json::parse_lines`.
 
-**Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
-`push` は償却 O(1)):
+**Bytes** (a mutable byte buffer in linear memory. Capacity doubles and grows
+via `memory.copy`, so `push` is amortised O(1)):
 
-| 関数 | 意味 | backend |
+| function | meaning | backend |
 |---|---|---|
-| `Bytes::new()` | 空バッファ (初期容量 64) | linear / gc |
-| `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | 長さ・要素 | linear / gc |
-| `Bytes::push(b, v)` | 1バイト追加 (償却 O(1)) | linear / gc |
-| `Bytes::append(dst, src)` | **一括連結。`memory.copy` 1発** | linear / gc |
-| `Bytes::concat(a, b)` | 新しいバッファを返す連結 | linear / gc |
-| `Bytes::slice(b, start, end)` | 部分列 | linear / gc |
-| `Bytes::blit(dst, src, dst_off, len)` | **範囲コピー。`memory.copy` 1発** | linear / gc |
-| `Bytes::fill(b, off, len)` | **範囲埋め。`memory.fill` 1発** | linear / gc |
-| `Bytes::from_array(a)` / `to_array(b)` | `Array[Int]` との変換 (**コピーが入る**) | linear / gc |
+| `Bytes::new()` | empty buffer (initial capacity 64) | linear / gc |
+| `Bytes::new(n)` | **zero-filled** buffer of length `n`. **linear only** (see below) | linear only |
+| `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | length, element access | linear / gc |
+| `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
+| `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
+| `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
+| `Bytes::slice(b, start, end)` | subsequence | linear / gc |
+| `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
+| `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
+| `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
 
-> バイト列を組み立てるループで `Bytes::push` を回すより、まとまった範囲は
-> `Bytes::append` / `Bytes::blit` に置き換えるほうが速い — どちらも
-> `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
-> するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
+> Replacing a `Bytes::push` loop with `Bytes::append` / `Bytes::blit` over a whole
+> range is faster — both lower to a single `memory.copy` instruction. Accumulating
+> into an `Array[Int]` and then calling `Bytes::from_array` costs one extra copy,
+> so write into a `Bytes` from the start.
+>
+> **`Bytes::fill` is NOT one of that group** (measured 2026-08-27). This table used
+> to describe it as `Bytes::fill(b, off, len)`, "range fill, one `memory.fill`".
+> Both halves were wrong: the parameters are `(b, value, count)`, the behaviour is
+> an **append** rather than an overwrite of a range, and the implementation is the
+> `bytes_push` loop in `gen_bytes_fill_body`
+> (`codegen/builtin_bodies/bodies_core_a2.vibe`) — a single body shared by the
+> linear and gc backends.
+>
+> **The one-argument `Bytes::new(n)` only works on the linear backend** (measured
+> 2026-08-27, [#2363](https://github.com/mizchi/vibe-lang/issues/2363)).
+> `compile_call.vibe` special-cases a one-argument `Bytes::new` and synthesises the
+> fill loop; `codegen/gc/backend_call.vibe` has no counterpart, and the registry
+> declares `Bytes::new` with `reg_p0()`, so on wasm-gc the argument is pushed and
+> then the zero-parameter runtime body is called. Measured on one self-contained
+> file, linear passes and gc **fails** — and it fails at run time, not at
+> validation, so the module is accepted by `wasmtime compile` first.
+>
+> The spelling that works on both backends is `Bytes::new()` +
+> `Bytes::fill(b, 0, n)`. Use it wherever portability matters; `MutMap`'s control
+> array uses it for exactly this reason (`lib/@vibe/core/hashmap.vibe`), and
+> `fixtures/bytes_alloc_backend_parity_test.vibe` pins it on both lanes.
 
 **SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
 the linear and GC backends):
@@ -1781,6 +1804,17 @@ from `@vibe/core`.
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
 `Double::floor`, `Double::ceil`.
+
+**Bits** (#2344): `Int::popcount`, `Int::ctz`, `Int::clz`, `Int::select1`.
+All four are **63-bit** answers, because an `Int` is a 63-bit two's complement
+value and not an i64 — so `Int::popcount(-1)` is 63, not 64, and the largest
+positive `Int` (2^62-1) tops out at bit 61, giving it a popcount of 62 and a
+`clz` of 1. The zero cases are defined rather than inherited from wasm (which
+answers 64): `Int::ctz(0)` and `Int::clz(0)` are both 63. `Int::select1(x, k)`
+gives the position of the `k`-th set bit counting from 0, or -1 when `x` has
+fewer than `k + 1` set bits — so `Int::select1(x, 0)` agrees with `Int::ctz(x)`
+for every non-zero `x`. `~` (bit-not) is still not a thing; spell it
+`x ^ mask`.
 
 **Conversion**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,

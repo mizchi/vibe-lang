@@ -168,7 +168,9 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_wrap_i64,
   emit_i64_add,
   emit_i64_and,
+  emit_i64_clz,
   emit_i64_const,
+  emit_i64_ctz,
   emit_i64_div_s,
   emit_i64_eq,
   emit_i64_eqz,
@@ -180,10 +182,12 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_mul,
   emit_i64_ne,
   emit_i64_or,
+  emit_i64_popcnt,
   emit_i64_reinterpret_f64,
   emit_i64_rem_s,
   emit_i64_shl,
   emit_i64_shr_s,
+  emit_i64_shr_u,
   emit_i64_sub,
   emit_i64_trunc_f64_s,
   emit_i64_xor,
@@ -1039,6 +1043,93 @@ export fn gen_double_to_int_body() -> Bytes {
   emit_i64_const(b, 0)
   emit_end(b)
   emit_end(b)
+  b
+}
+
+//# #2344: scalar bit primitives
+//
+// `Int` is a 63-bit two's complement value, NOT an i64, and on the RC lane it
+// arrives tagged as `n<<1`. Both facts change the answer, so each body untags
+// (RC only), normalises the 63-bit view, applies the wasm instruction, and
+// retags. `popcount(-1)` must be 63, not 64.
+//
+// All three are branch-free. The masks are built by arithmetic because a vibe
+// `Int` literal cannot spell 0x7FFF_FFFF_FFFF_FFFF or 0x8000_0000_0000_0000.
+
+/// Untag on the RC lane; a no-op on the bump lane, where `Int` is raw.
+fn emit_untag_int(b: Bytes, enable_rc: Bool) -> Unit {
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+}
+
+/// Retag on the RC lane; a no-op on the bump lane.
+fn emit_retag_int(b: Bytes, enable_rc: Bool) -> Unit {
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  } else {
+    ()
+  }
+}
+
+/// `Int::popcount(x)` — set bits in the 63-bit two's complement value.
+///
+/// Bit 63 of the untagged i64 is a copy of the sign bit, so a bare `i64.popcnt`
+/// would answer one too many for every negative input. Mask it off with
+/// `(-1 >>> 1)` = 0x7FFF_FFFF_FFFF_FFFF first, which leaves bits 0..62 — exactly
+/// the 63-bit view — so `popcount(-1)` is 63.
+export fn gen_int_popcount_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_untag_int(b, enable_rc)
+  emit_i64_const(b, 0 - 1)
+  emit_i64_const(b, 1)
+  emit_i64_shr_u(b)
+  emit_i64_and(b)
+  emit_i64_popcnt(b)
+  emit_retag_int(b, enable_rc)
+  b
+}
+
+/// `Int::ctz(x)` — trailing zeros, 63 for 0.
+///
+/// `i64.ctz` answers 64 for zero, which is outside the 63-bit width. Setting
+/// bit 63 first (`-1 << 63` = 0x8000_0000_0000_0000) makes zero answer 63 and
+/// leaves every other input alone, since a non-zero value's lowest set bit is
+/// below bit 63.
+export fn gen_int_ctz_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_untag_int(b, enable_rc)
+  emit_i64_const(b, 0 - 1)
+  emit_i64_const(b, 63)
+  emit_i64_shl(b)
+  emit_i64_or(b)
+  emit_i64_ctz(b)
+  emit_retag_int(b, enable_rc)
+  b
+}
+
+/// `Int::clz(x)` — leading zeros in the 63-bit view, 63 for 0.
+///
+/// Shifting left by one moves the 63-bit view's top bit (62) into the i64's top
+/// bit, so `i64.clz` of `x<<1` counts leading zeros of the 63-bit value. The
+/// `| 1` only decides the zero case: `clz(1)` is 63, and for any non-zero input
+/// a set low bit cannot change the leading-zero count.
+export fn gen_int_clz_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_untag_int(b, enable_rc)
+  emit_i64_const(b, 1)
+  emit_i64_shl(b)
+  emit_i64_const(b, 1)
+  emit_i64_or(b)
+  emit_i64_clz(b)
+  emit_retag_int(b, enable_rc)
   b
 }
 

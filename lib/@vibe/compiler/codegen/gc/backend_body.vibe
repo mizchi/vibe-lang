@@ -183,6 +183,9 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_slice_body,
   gen_bytes_to_array_body,
   gen_eq_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
   gen_region_arr_new_body,
   gen_region_bytes_new_body,
   gen_simd_scan_alnum_body,
@@ -1618,10 +1621,18 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // The two arena allocators are appended only when the module has a region
   // (see the push site near the end of the builtin table). They go LAST so
   // every `hbo + N` ordinal above keeps its meaning in both shapes.
+  //
+  // This count is fixed HERE, before any body is pushed, so it cannot be
+  // `Array::length(bodies)` -- it is stale by construction, exactly like the
+  // linear lane's max_builtin_func_idx. Adding a body without bumping it does
+  // not fail at codegen: the module fails wasm VALIDATION on a function index
+  // past the end. Written as base + arena so appending is one edit, not two.
+  // #2344 raised the base 48 -> 51 for Int::popcount / ctz / clz.
+  let gc_unconditional_body_count = 51
   let num_generated = if need_region_arena {
-    50
+    gc_unconditional_body_count + 2
   } else {
-    48
+    gc_unconditional_body_count
   }
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
@@ -1687,6 +1698,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
         "Array::set" => 10,
         "Double::to_int" => 11,
         "Int::to_double" => 12,
+        "Int::popcount" => 49,
+        "Int::ctz" => 50,
+        "Int::clz" => 51,
         "String::char_code_at" => 13,
         "String::from_char_code" => 14,
         "String::substring" => 15,
@@ -2110,6 +2124,14 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   push_gc_builtin(gen_array_value_copy_body(hbo + 7, hbo + 38), 0, 0, 3)
   push_gc_builtin(gen_simd_scan_string_special_body(false), 1, 3, 8)
   push_gc_builtin(gen_simd_scan_line_end_body(false), 1, 3, 8)
+  // #2344: the scalar bit primitives, appended per the #1733 append-only rule
+  // so no `hbo + N` above moves. Body ordinals are ONE-BASED (see the comment
+  // on region_arr_new_idx), so these are 49 / 50 / 51 and the match arms below
+  // say so. `false` = the gc lane is never RC, so the bodies skip the tag
+  // dance; no extra locals, type 3 is (i64) -> (i64).
+  push_gc_builtin(gen_int_popcount_body(false), 0, 0, 3)
+  push_gc_builtin(gen_int_ctz_body(false), 0, 0, 3)
+  push_gc_builtin(gen_int_clz_body(false), 0, 0, 3)
   // ADR-0090 (#1262) tier 2: the arena allocators, appended LAST and only
   // when the module has a region -- `num_generated` above counts them the
   // same way, so ordinals 0..48 (every `hbo + N` reference above) are

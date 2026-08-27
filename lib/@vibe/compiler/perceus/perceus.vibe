@@ -365,10 +365,6 @@ fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   out
 }
 
-fn is_v128_box_call(fname: String) -> Bool {
-  fname == "v128_load" || fname == "v128_splat_i8x16" || fname == "v128_eq_i8x16" || fname == "v128_le_u_i8x16" || fname == "v128_ge_u_i8x16" || fname == "v128_and" || fname == "v128_or" || fname == "v128_not"
-}
-
 fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
   // #1100: early-exit — this membership scan is one of the plan's hottest
   // loops and used to keep scanning the whole array after a hit.
@@ -919,15 +915,7 @@ fn is_scalar_expr(ctx: PCtx, e: Expr) -> Bool {
     EBool(_) => true,
     EFloat(_) => true,
     EUnit => true,
-    // #705: v128_load/splat/binary-op/not return a tagged pointer to a 16-byte
-    // box with NO rc header (type_id/refcount) -- see compile_call.vibe. The
-    // tag makes it look like a heap pointer to the runtime dup/drop guards
-    // (odd low bit), so planning a PaDup/PaDrop for a binding holding one would
-    // make those guards misread the v128 payload bytes as a refcount and
-    // corrupt it (or an adjacent allocation). Treat the binding as scalar
-    // (never dup/drop'd), matching the box's actual bump-only, never-freed
-    // lifetime under both backends.
-    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || is_v128_box_call(fname) || is_borrow_ret_fname(ctx, fname),
+    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || is_borrow_ret_fname(ctx, fname),
     _ => false
   }
 }
@@ -1284,16 +1272,7 @@ fn type_name_is_heap(n: String) -> Bool {
     let c0 = String::char_code_at(n, 0)
     if c0 < 'A' || c0 > 'Z' {
       false
-    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "V128" || n == "StdinStream" {
-      // #705: V128 is a tagged pointer to a 16-byte box (see compile_call.vibe
-      // v128_load/v128_splat_i8x16/etc), but the box has NO rc header
-      // (type_id/refcount) -- it's a bare payload written directly by
-      // v128.store. Treating it as heap would make Perceus emit __rc_dup /
-      // vibe_rc_drop calls that misread the v128 payload bytes as a type_id and
-      // refcount, corrupting the box (or freeing arbitrary memory at the
-      // implied "next"/size fields). Excluding it here keeps V128 boxes exactly
-      // as they behave under the bump backend: forward-only bump allocations
-      // that are simply never reclaimed, not memory-unsafe ones.
+    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "StdinStream" {
       false
     } else {
       true

@@ -321,6 +321,12 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("Array::set", CtFn(reg_p3(CtArray(reg_any()), CtInt, reg_any()), CtUnit, None), true, true, true),
   ("Double::to_int", CtFn(reg_p1(CtDouble), CtInt, None), true, true, true),
   ("Int::to_double", CtFn(reg_p1(CtInt), CtDouble, None), true, true, true),
+  // #2344: scalar bit primitives. Both lanes -- these are ordinary wasm
+  // instructions, not SIMD, and rank/select needs them far more than it needs
+  // a vector (bench/bench_simd_rank.vibe: i64.popcnt carries 344x of 438x).
+  ("Int::popcount", CtFn(reg_p1(CtInt), CtInt, None), true, true, true),
+  ("Int::ctz", CtFn(reg_p1(CtInt), CtInt, None), true, true, true),
+  ("Int::clz", CtFn(reg_p1(CtInt), CtInt, None), true, true, true),
   ("String::char_code_at", CtFn(reg_p2(CtString, CtInt), CtInt, None), true, true, true),
   ("String::from_char_code", CtFn(reg_p1(CtInt), CtString, None), true, true, true),
   ("String::substring", CtFn(reg_p3(CtString, CtInt, CtInt), CtString, None), true, true, true),
@@ -749,6 +755,13 @@ fn builtin_is_non_allocating(name: String) -> Bool {
   name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" ||
   // Comparison / logic primitives.
   name == "eq" || name == "not" || name == "str_lex_diff" || name == "__generic_rel_diff" ||
+  // #2344: bit primitives. Each body is local.get + i64 consts + shifts /
+  // and / or + one of popcnt / ctz / clz, over an UNBOXED Int -- no heap
+  // touched on any path. Omitting them made `builtin_allocates` default them
+  // to allocating, which REJECTED correct code: a `#zero_alloc` fn calling
+  // Int::popcount got "may allocate: call to 'Int::popcount' (not proven
+  // allocation-free)".
+  name == "Int::popcount" || name == "Int::ctz" || name == "Int::clz" ||
   // SIMD scanners that return an index.
   name == "simd_skip_ws" || name == "simd_scan_alnum" || name == "simd_scan_alnum_str" || name == "simd_scan_string_special_str" || name == "simd_scan_line_end_str" ||
   // Output and assertions: they consume, they do not produce.
