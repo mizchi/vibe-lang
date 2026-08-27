@@ -60,9 +60,9 @@ fast structure be quoted at its slowest call.
 **Transfers — export algorithms, not vector values.** jsimd deliberately does
 not export `v128`: "JavaScript cannot pass `v128` across the Wasm boundary, and
 copying is only worthwhile when one call performs enough work." vibe hit the
-same wall from the other side and has not yet drawn the same conclusion — see
-§3.1, where its `v128_*` intrinsics turn out to cost 22x the algorithm they
-exist to express.
+same wall from the other side and has since drawn the same conclusion: §3.1
+measured its `v128_*` intrinsics at 22x the algorithm they existed to express,
+and #2342 removed them.
 
 **Does NOT transfer — the baseline.** jsimd's rejections are measured against
 V8's `Map`, `Set`, typed arrays and `TextDecoder`: hand-tuned native code. A
@@ -103,7 +103,7 @@ since been **removed** (#2342).
 
 ## 3. Measured: four gaps
 
-### 3.1 The `V128` intrinsics are the wrong shape
+### 3.1 The `V128` intrinsics were the wrong shape (retired, #2342)
 
 `bench/bench_simd_bytes_find.vibe`, 4 KiB single-byte search, 500 iters:
 
@@ -174,8 +174,12 @@ $ vibe check probe.vibe        # fn f(x: Int) -> Int { let _ = int_ctz; 0 }
 line 1:31-38: unknown name: int_ctz
 ```
 
-(The `v128_*` block in the same file does resolve. The low-level block is
-compiler-internal, and the file's header comment does not say so.)
+Reachability is **per block**, and the file does not say which is which.
+Measured on the same compiler: `simd_skip_ws`, declared a few lines below in
+that same file, resolves clean — it has a row in `core/builtin_registry.vibe`,
+which is what the checker actually consults. The low-level block has no such
+row, so those names exist only as signatures. (The `v128_*` block was the other
+reachable example until #2342 retired it; §3.1.)
 
 **Proposal.** Add a small, stable, scalar bit surface on `Int`, lowered to the
 corresponding wasm opcode:
@@ -268,8 +272,9 @@ first, because that is where the measurements say the value is.
 
 ### Layer 0 — decide the SIMD surface (§3.1)
 
-Unbox `V128` or retire it. Independently, three inline-wasm gaps block kernels
-in library code:
+**Done: `V128` is retired** (#2342), leaving inline wasm as the one way to
+write a kernel. Independently, three inline-wasm gaps block kernels in library
+code:
 
 1. ~~**Out-of-range `i32.const` produces an invalid module with no
    diagnostic.**~~ **Fixed** (#2341). It used to be: `(i32.const 2654435761)` —
