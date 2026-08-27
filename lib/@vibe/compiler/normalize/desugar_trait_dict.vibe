@@ -786,6 +786,50 @@ fn trait_operation_params_have_carrier(params: Array[TypeExpr], name: String, st
   found
 }
 
+fn trait_operation_type_mentions(ty: TypeExpr, name: String) -> Bool {
+  match ty {
+    TyName(current) => current == name,
+    TyApp(head, args) => {
+      let mut found = head == name
+      let mut i = 0
+      while i < Array::length(args) && !found {
+        found = trait_operation_type_mentions(Array::get(args, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut found = trait_operation_type_mentions(ret, name)
+      let mut i = 0
+      while i < Array::length(params) && !found {
+        found = trait_operation_type_mentions(Array::get(params, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) && !found {
+        found = trait_operation_type_mentions(Array::get(items, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+fn trait_operation_surface_mentions(params: Array[TypeExpr], ret: TypeExpr, name: String) -> Bool {
+  let mut found = trait_operation_type_mentions(ret, name)
+  let mut i = 0
+  while i < Array::length(params) && !found {
+    found = trait_operation_type_mentions(Array::get(params, i), name)
+    i = i + 1
+  }
+  found
+}
+
 fn trait_operation_method_shadows(method_params: Array[String], name: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -931,6 +975,7 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
             let (method_params, method_bounds) = trait_operation_method_generics(method_gens, mi, method_name)
             let shadows_header = trait_operation_shadows_header(method_params, header_params)
             let uses_self = !shadows_header && trait_operation_params_have_carrier(raw_params, "Self", stmts)
+            let surface_mentions_self = trait_operation_surface_mentions(raw_params, raw_ret, "Self")
             let mut dispatch = if uses_self {
               self_param
             } else {
@@ -938,7 +983,11 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
             }
             let mut dispatch_key = dispatch
             let mut hi = 0
-            while hi < Array::length(header_params) && dispatch == "" && !shadows_header {
+            // A trait parameter can dispatch an operation whose entire surface
+            // is independent of the implementation target (`Mappable::map`).
+            // It must never stand in for `Self`: `impl Factory[Int] for Box`
+            // does not make `Int` the receiver of `Factory::build`.
+            while hi < Array::length(header_params) && dispatch == "" && !shadows_header && !surface_mentions_self {
               let candidate_key = Array::get(header_params, hi)
               let candidate = type_param_name(candidate_key)
               if trait_operation_params_have_carrier(raw_params, candidate, stmts) {
