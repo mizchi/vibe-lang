@@ -3988,37 +3988,37 @@ fn constructor_op_name_matches(name: String, op: String) -> Bool {
   }
 }
 
-fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Option[String]], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+fn collect_constructor_perform_payloads(expr: Expr, op: String, payload_index: Int, out: Array[Option[String]], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
   match expr {
     EHandle(_, _) => (),
     EFn(_, _, _, _, _, _) => (),
     ELet(name, val, body, _) => {
-      collect_constructor_perform_payloads(val, op, out, gens, struct_sets, var_types, fn_returns)
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
       let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
-      collect_constructor_perform_payloads(body, op, out, gens, struct_sets, body_vars, fn_returns)
+      collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
     },
     ELetMut(name, val, body, _) => {
-      collect_constructor_perform_payloads(val, op, out, gens, struct_sets, var_types, fn_returns)
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
       let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
-      collect_constructor_perform_payloads(body, op, out, gens, struct_sets, body_vars, fn_returns)
+      collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
     },
     ELetRec(name, val, body) => {
       let body_vars = extend_local_fn_return(var_types, name, val)
-      collect_constructor_perform_payloads(val, op, out, gens, struct_sets, body_vars, fn_returns)
-      collect_constructor_perform_payloads(body, op, out, gens, struct_sets, body_vars, fn_returns)
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
+      collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
     },
     EAssign(name, val, continuation) => {
-      collect_constructor_perform_payloads(val, op, out, gens, struct_sets, var_types, fn_returns)
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
       let continuation_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
-      collect_constructor_perform_payloads(continuation, op, out, gens, struct_sets, continuation_vars, fn_returns)
+      collect_constructor_perform_payloads(continuation, op, payload_index, out, gens, struct_sets, continuation_vars, fn_returns)
     },
     EMatch(scrut, arms) => {
-      collect_constructor_perform_payloads(scrut, op, out, gens, struct_sets, var_types, fn_returns)
+      collect_constructor_perform_payloads(scrut, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, body) = Array::get(arms, i)
         let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
-        collect_constructor_perform_payloads(body, op, out, gens, struct_sets, arm_vars, fn_returns)
+        collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, arm_vars, fn_returns)
         i = i + 1
       }
     },
@@ -4026,8 +4026,8 @@ fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Optio
       match callee {
         EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
           match Array::get(args, 0) {
-            ECall(EIdent(op_name, _), oargs, _) => if constructor_op_name_matches(op_name, op) && Array::length(oargs) == 1 {
-              Array::push(out, infer_constructor_arg_type_name(Array::get(oargs, 0), gens, struct_sets, var_types, fn_returns))
+            ECall(EIdent(op_name, _), oargs, _) => if constructor_op_name_matches(op_name, op) && payload_index >= 0 && payload_index < Array::length(oargs) {
+              Array::push(out, infer_constructor_arg_type_name(Array::get(oargs, payload_index), gens, struct_sets, var_types, fn_returns))
             } else {
               ()
             },
@@ -4040,7 +4040,7 @@ fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Optio
       }
       let mut i = 0
       while i < Array::length(args) {
-        collect_constructor_perform_payloads(Array::get(args, i), op, out, gens, struct_sets, var_types, fn_returns)
+        collect_constructor_perform_payloads(Array::get(args, i), op, payload_index, out, gens, struct_sets, var_types, fn_returns)
         i = i + 1
       }
     },
@@ -4048,16 +4048,16 @@ fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Optio
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        collect_constructor_perform_payloads(Array::get(children, i), op, out, gens, struct_sets, var_types, fn_returns)
+        collect_constructor_perform_payloads(Array::get(children, i), op, payload_index, out, gens, struct_sets, var_types, fn_returns)
         i = i + 1
       }
     }
   }
 }
 
-fn infer_constructor_perform_payload(body: Expr, op: String, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+fn infer_constructor_perform_payload(body: Expr, op: String, payload_index: Int, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   let payloads = array_empty()
-  collect_constructor_perform_payloads(body, op, payloads, gens, struct_sets, var_types, fn_returns)
+  collect_constructor_perform_payloads(body, op, payload_index, payloads, gens, struct_sets, var_types, fn_returns)
   if Array::length(payloads) == 0 {
     None
   } else {
@@ -4088,13 +4088,19 @@ fn infer_constructor_perform_payload(body: Expr, op: String, gens: Array[DictGen
 fn constructor_handler_arm_var_types(body: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let masked = mask_constructor_pat_binders(var_types, pat, fn_returns)
   match pat {
-    PCtor(cn, sub) => if Array::length(sub) == 1 {
-      match Array::get(sub, 0) {
-        PBind(name) => extend_constructor_var_types(masked, name, infer_constructor_perform_payload(body, cn, gens, struct_sets, var_types, fn_returns)),
-        _ => masked
+    PCtor(cn, sub) => {
+      let mut out = masked
+      let mut i = 0
+      while i < Array::length(sub) {
+        match Array::get(sub, i) {
+          PBind(name) => {
+            out = extend_constructor_var_types(out, name, infer_constructor_perform_payload(body, cn, i, gens, struct_sets, var_types, fn_returns))
+          },
+          _ => ()
+        }
+        i = i + 1
       }
-    } else {
-      masked
+      out
     },
     _ => masked
   }
