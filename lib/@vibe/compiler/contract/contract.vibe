@@ -527,6 +527,47 @@ fn collect_reexported_names(impl_stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
+/// Type-parameter kinds carried by a re-export whose source declaration is
+/// one of the implementation statements being checked. The public spelling
+/// is the alias when present, while the declaration lookup uses the source
+/// spelling from the re-export item.
+fn collect_reexported_type_defs(impl_stmts: Array[Stmt], type_defs: Array[(String, Bool, Array[String])]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(impl_stmts) {
+    match Array::get(impl_stmts, i) {
+      SReExport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          let exported_name = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if exported_name == item.name {
+            ()
+          } else {
+            let mut ti = 0
+            while ti < Array::length(type_defs) {
+              let (type_name, _, params) = Array::get(type_defs, ti)
+              if type_name == item.name {
+                Array::push(out, (exported_name, params))
+              } else {
+                ()
+              }
+              ti = ti + 1
+            }
+          }
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn array_contains_string(xs: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -703,7 +744,7 @@ fn ctr_expand_sig_row(sig: String, es_names: Array[String], es_members_list: Arr
 /// contract signature spelled with an effectset alias and an
 /// implementation spelled with its literal expansion compare as equal
 /// instead of a false "signature mismatch".
-export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt]) -> Array[String] {
+export fn check_contract_with_reexported_types(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt], resolved_reexported_type_defs: Array[(String, Array[String])]) -> Array[String] {
   let errors = array_empty()
   let (ctr_es_names, ctr_es_members_list) = ctr_es_collect_tables(contract_type_defs)
   let defs = collect_impl_fn_defs(impl_stmts)
@@ -793,12 +834,18 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     ei = ei + 1
   }
   let type_defs = collect_impl_type_defs(impl_stmts)
+  let reexported_type_defs = collect_reexported_type_defs(impl_stmts, type_defs)
+  let mut resolved_rti = 0
+  while resolved_rti < Array::length(resolved_reexported_type_defs) {
+    Array::push(reexported_type_defs, Array::get(resolved_reexported_type_defs, resolved_rti))
+    resolved_rti = resolved_rti + 1
+  }
   let mut oi = 0
   while oi < Array::length(opaque_names) {
     let (oname, oparams) = Array::get(opaque_names, oi)
-    // #847: same trust-at-face-value treatment as the fn-decl loop above —
-    // a re-exported name has no arity to compare, so it satisfies an opaque
-    // type declaration without an arity check (there is nothing to check).
+    // #847: a re-exported name satisfies the declaration, but an aliased
+    // source declaration present in this implementation set carries its
+    // parameter kinds into the same conformance check as a direct definition.
     // Compiler-provided types have no implementation sibling, but their
     // builtin parameter kinds are known and must match the retained contract
     // shape before the declaration can describe that builtin.
@@ -811,6 +858,22 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
       }
     }
     let mut ofound = array_contains_string(reexported, oname)
+    let mut rti = 0
+    while rti < Array::length(reexported_type_defs) {
+      let (rtname, rtparams) = Array::get(reexported_type_defs, rti)
+      if rtname == oname {
+        if Array::length(oparams) != Array::length(rtparams) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), re-exported implementation defines \{Array::length(rtparams)}")
+        } else if same_type_param_kinds(oparams, rtparams) {
+          ()
+        } else {
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, re-exported implementation defines \{render_type_params(rtparams)}")
+        }
+      } else {
+        ()
+      }
+      rti = rti + 1
+    }
     match builtin_params {
       Some(params) => {
         ofound = true
@@ -948,6 +1011,14 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     tfi = tfi + 1
   }
   errors
+}
+
+/// Pure conformance entry point for callers that have no filesystem-backed
+/// re-export metadata. The loader uses the richer entry point above after it
+/// resolves each re-export source.
+export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt]) -> Array[String] {
+  check_contract_with_reexported_types(decls, opaque_names, impl_stmts, contract_type_defs, [
+  ])
 }
 
 /// Classify a contract's non-declaration statements: implementation-file

@@ -1921,7 +1921,15 @@ fn anon_or_infer(val: Expr, struct_sets: Array[(String, Array[String])], var_typ
 fn anon_or_constructor_infer(val: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match anon_record_inferred(val, struct_sets) {
     Some(s) => Some(s),
-    None => infer_constructor_arg_type_name(val, gens, struct_sets, var_types, fn_returns)
+    // EHandle recovery exists for a constructor-polymorphic CALL RECEIVER.
+    // Do not publish its ordinary result head into the shared var_types table:
+    // that table also controls rendering, and an otherwise-untyped handled
+    // Bool historically stays erased there. A direct `map(handle { .. }, f)`
+    // still enters infer_constructor_arg_type_name from synth_dicts.
+    None => match val {
+      EHandle(_, _) => infer_arg_type_name(val, struct_sets, var_types, fn_returns),
+      _ => infer_constructor_arg_type_name(val, gens, struct_sets, var_types, fn_returns)
+    }
   }
 }
 
@@ -3156,6 +3164,7 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
     EAssignOp(_, _, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
     ESeq(_, result) => infer_constructor_arg_type_name(result, gens, struct_sets, var_types, fn_returns),
     EMatch(scrut, arms) => infer_constructor_match_arm_type_name(scrut, arms, gens, struct_sets, var_types, fn_returns),
+    EHandle(body, arms) => infer_constructor_handle_type_name(body, arms, gens, struct_sets, var_types, fn_returns),
     EIf(_, then_branch, else_branch) => {
       let then_constructor = infer_constructor_arg_type_name(then_branch, gens, struct_sets, var_types, fn_returns)
       let else_constructor = infer_constructor_arg_type_name(else_branch, gens, struct_sets, var_types, fn_returns)
@@ -3174,32 +3183,91 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
         None => None
       }
     },
-    ECall(EIdent(name, _), args, _) => match lookup_gen_entry(gens, name) {
-      Some(gen) => {
-        let mut i = 0
-        let mut result = None
-        while i < Array::length(gen.threaded) {
-          let (type_param, _, recv_idx_raw) = Array::get(gen.threaded, i)
-          if type_param == gen.return_constructor_param && is_constructor_recv_index(recv_idx_raw) {
-            let recv_idx = decode_constructor_recv_index(recv_idx_raw)
-            if recv_idx >= 0 && recv_idx < Array::length(args) {
-              result = infer_constructor_arg_type_name(Array::get(args, recv_idx), gens, struct_sets, var_types, fn_returns)
+    ECall(EIdent(name, _), args, _) => infer_constructor_generic_call_type_name(name, args, arg, gens, struct_sets, var_types, fn_returns),
+    ECall(EDot(obj, method, _, _), args, _) => {
+      let resolved = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+        Some(receiver) => {
+          let qualified = String::concat(receiver, String::concat("::", method))
+          if !struct_set_member(struct_sets, receiver, method) && fn_exists(fn_returns, qualified) {
+            Some(qualified)
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+      match resolved {
+        Some(name) => infer_constructor_generic_call_type_name(name, prepend_expr(obj, args), arg, gens, struct_sets, var_types, fn_returns),
+        None => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+      }
+    },
+    _ => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// Follow the constructor receiver recorded for a transformed generic call.
+/// `args` is already in the callee's declared order; method-style callers
+/// prepend their receiver before entering this helper.
+fn infer_constructor_generic_call_type_name(name: String, args: Array[Expr], whole: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match lookup_gen_entry(gens, name) {
+    Some(gen) => {
+      let mut i = 0
+      let mut result = None
+      while i < Array::length(gen.threaded) {
+        let (type_param, _, recv_idx_raw) = Array::get(gen.threaded, i)
+        if type_param == gen.return_constructor_param && is_constructor_recv_index(recv_idx_raw) {
+          let recv_idx = decode_constructor_recv_index(recv_idx_raw)
+          if recv_idx >= 0 && recv_idx < Array::length(args) {
+            result = infer_constructor_arg_type_name(Array::get(args, recv_idx), gens, struct_sets, var_types, fn_returns)
+          } else {
+            ()
+          }
+          i = Array::length(gen.threaded)
+        } else {
+          i = i + 1
+        }
+      }
+      match result {
+        Some(_) => result,
+        None => infer_arg_type_name(whole, struct_sets, var_types, fn_returns)
+      }
+    },
+    None => infer_arg_type_name(whole, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// Recover a handled result only when the body and every handler arm agree.
+/// Handler patterns describe effects rather than the handled value, so their
+/// binders do not refine the result constructor.
+fn infer_constructor_handle_type_name(body: Expr, arms: Array[(Pat, Expr)], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns) {
+    None => None,
+    Some(expected) => {
+      let mut i = 0
+      let mut agrees = true
+      while i < Array::length(arms) && agrees {
+        let (_, arm_body) = Array::get(arms, i)
+        match infer_constructor_arg_type_name(arm_body, gens, struct_sets, var_types, fn_returns) {
+          Some(actual) => {
+            let same = actual == expected
+            if !same {
+              agrees = false
             } else {
               ()
             }
-            i = Array::length(gen.threaded)
-          } else {
-            i = i + 1
+          },
+          None => {
+            agrees = false
           }
         }
-        match result {
-          Some(_) => result,
-          None => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
-        }
-      },
-      None => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
-    },
-    _ => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+        i = i + 1
+      }
+      if agrees {
+        Some(expected)
+      } else {
+        None
+      }
+    }
   }
 }
 
