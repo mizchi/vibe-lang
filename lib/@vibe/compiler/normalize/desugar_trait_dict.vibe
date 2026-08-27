@@ -2128,27 +2128,116 @@ fn decode_constructor_recv_index(idx: Int) -> Int {
   0 - 1000000 - idx
 }
 
-/// The constructor formal that owns a generic function's result, when the
-/// result is directly `F[A]`. Nested-call witness recovery must follow this
-/// formal's receiver rather than whichever constructor bound was declared
-/// first.
-fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)]) -> String {
-  match ret {
-    Some(TyApp(head, _)) => {
+fn constructor_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(params) && i < Array::length(args) {
+    if type_param_name(Array::get(params, i)) == name {
+      result = Some(Array::get(args, i))
+      i = Array::length(params)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn substitute_constructor_alias_target(target: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match target {
+    TyName(name) => match constructor_alias_arg(params, args, name) {
+      Some(arg) => arg,
+      None => target
+    },
+    TyApp(head, items) => {
+      let substituted_items = for item in items {
+        substitute_constructor_alias_target(item, params, args)
+      }
+      match constructor_alias_arg(params, args, head) {
+        Some(TyName(actual_head)) => TyApp(actual_head, substituted_items),
+        _ => TyApp(head, substituted_items)
+      }
+    },
+    TyFn(fn_params, result, effect) => TyFn(for param in fn_params {
+      substitute_constructor_alias_target(param, params, args)
+    }, substitute_constructor_alias_target(result, params, args), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_constructor_alias_target(item, params, args)
+    }),
+    TyUnit => target
+  }
+}
+
+/// Expand only the aliases needed to expose a generic result's outer
+/// constructor. The fuel bound makes cyclic aliases fail closed.
+fn expand_constructor_return_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ret
+  } else match ret {
+    TyName(head) => {
       let mut i = 0
-      let mut result = ""
-      while i < Array::length(threaded) {
-        let (type_param, _, recv_idx) = Array::get(threaded, i)
-        if type_param == head && is_constructor_recv_index(recv_idx) {
-          result = head
-          i = Array::length(threaded)
-        } else {
-          i = i + 1
+      let mut result = ret
+      let mut found = false
+      while i < Array::length(stmts) {
+        match Array::get(stmts, i) {
+          STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == 0 {
+            result = expand_constructor_return_alias(target, stmts, fuel - 1)
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
         }
+        i = i + 1
       }
       result
     },
-    _ => ""
+    TyApp(head, args) => {
+      let mut i = 0
+      let mut result = ret
+      let mut found = false
+      while i < Array::length(stmts) {
+        match Array::get(stmts, i) {
+          STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == Array::length(args) {
+            let expanded = substitute_constructor_alias_target(target, params, args)
+            result = expand_constructor_return_alias(expanded, stmts, fuel - 1)
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => ret
+  }
+}
+
+/// The constructor formal that owns a generic function's result, after
+/// expanding aliases such as `Apply[F, A] = F[A]`. Nested-call witness
+/// recovery must follow this formal's receiver rather than whichever
+/// constructor bound was declared first.
+fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)], stmts: Array[Stmt]) -> String {
+  match ret {
+    Some(raw_ret) => match expand_constructor_return_alias(raw_ret, stmts, Array::length(stmts) + 1) {
+      TyApp(head, _) => {
+        let mut i = 0
+        let mut result = ""
+        while i < Array::length(threaded) {
+          let (type_param, _, recv_idx) = Array::get(threaded, i)
+          if type_param == head && is_constructor_recv_index(recv_idx) {
+            result = head
+            i = Array::length(threaded)
+          } else {
+            i = i + 1
+          }
+        }
+        result
+      },
+      _ => ""
+    },
+    None => ""
   }
 }
 
@@ -2313,7 +2402,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
             bi = bi + 1
           }
           if Array::length(threaded) > 0 || is_impl_method {
-            let result_constructor = return_constructor_param(ret, threaded)
+            let result_constructor = return_constructor_param(ret, threaded, stmts)
             match impl_info {
               Some(info) => Array::push(out, DictGen::{
                 name: fname,
@@ -3019,6 +3108,14 @@ fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String]
 /// callee's own constructor receiver back to its concrete argument instead.
 fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match arg {
+    ELet(name, val, body, _) => {
+      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetMut(name, val, body, _) => {
+      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+    },
     EMatch(_, arms) => infer_constructor_match_arm_type_name(arms, gens, struct_sets, var_types, fn_returns),
     EIf(_, then_branch, else_branch) => {
       let then_constructor = infer_constructor_arg_type_name(then_branch, gens, struct_sets, var_types, fn_returns)
