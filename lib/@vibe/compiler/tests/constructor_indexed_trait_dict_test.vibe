@@ -1,5 +1,5 @@
 import @vibe/compiler/normalize {
-  desugar_trait_dicts
+  derive_trait_namespace_operations, desugar_trait_dicts
 }
 
 import @vibe/compiler/checker {
@@ -10,15 +10,19 @@ import @vibe/compiler/contract {
   check_contract, contract_surface_lines, parse_contract_program
 }
 
+import ./checker_parity_test_support.vibe {
+  check_source_error_message
+}
+
 import @vibe/compiler/syntax {
   lex, parse_program, print_program
 }
 
 fn desugared_constructor_map(check_first: Bool, with_calls: Bool) -> String with Exception {
   let source = if with_calls {
-    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] {\n  F::map(xs, f)\n}\ntest \"array\" { let a = [1, 2] |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(a, [4, 6]) }\ntest \"option\" { let o = Some(3) |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(o, Some(8)) }\n"
+    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\ntest \"array\" { let a = [1, 2] |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(a, [4, 6]) }\ntest \"option\" { let o = Some(3) |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(o, Some(8)) }\n"
   } else {
-    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\n\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] {\n  F::map(xs, f)\n}\n"
+    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\n"
   }
   let stmts = parse_program(lex(source))
   if check_first {
@@ -28,6 +32,17 @@ fn desugared_constructor_map(check_first: Bool, with_calls: Bool) -> String with
   }
   desugar_trait_dicts(stmts)
   print_program(stmts)
+}
+
+test "#2357: derived constructor operation preserves its kinded bound" {
+  let stmts = parse_program(lex("trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }"))
+  derive_trait_namespace_operations(stmts)
+  inspect(String::contains(print_program(stmts), "[F[_]: Mappable[F], A, B]"), content = "true")
+}
+
+test "#2357: deriving an operation does not bind its bare name" {
+  let source = "trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nlet operation = measure"
+  inspect(String::contains(check_source_error_message(source), "unknown name: measure"), content = "true")
 }
 
 test "#2338: constructor-indexed bounds lower through a witness dictionary" {
