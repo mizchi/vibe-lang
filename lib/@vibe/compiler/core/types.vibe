@@ -572,7 +572,7 @@ fn subst_apply_except_go(s: Subst, ty: Type, keep: Array[Int]) -> Type {
         Array::push(ps, subst_apply_except_go(s, Array::get(params, i), keep))
         i = i + 1
       }
-      CtFn(ps, subst_apply_except_go(s, ret, keep), effect_name)
+      CtFn(ps, subst_apply_except_go(s, ret, keep), resolve_effect_opt_preserving_open(s, effect_name))
     },
     CtArray(elem) => CtArray(subst_apply_except_go(s, elem, keep)),
     CtOption(elem) => CtOption(subst_apply_except_go(s, elem, keep)),
@@ -1604,6 +1604,45 @@ fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
         None
       } else {
         Some(String::join(resolved, ", "))
+      }
+    }
+  }
+}
+
+/// Apply the closed part of an effect substitution while publishing a generic
+/// scheme. A source binder can temporarily unify with a fresh inference row
+/// (`e -> $82`) while its body is checked; publishing `$82` loses the binder
+/// that `instantiate` must freshen at each call site. Preserve the original
+/// label for every still-open result, while retaining concrete labels learned
+/// beside it. A fully closed binding (`e -> Log`) is applied normally.
+fn resolve_effect_opt_preserving_open(s: Subst, eff: Option[String]) -> Option[String] {
+  match eff {
+    None => None,
+    Some(row) => {
+      let out = array_empty()
+      for raw in String::split(row, ",") {
+        let original = String::trim(raw)
+        match resolve_effect_opt(s, Some(original)) {
+          Some(resolved_row) => for resolved_raw in String::split(resolved_row, ",") {
+            let resolved = String::trim(resolved_raw)
+            let published = if is_effect_var_name(original) && is_effect_var_name(resolved) {
+              original
+            } else {
+              resolved
+            }
+            if String::length(published) > 0 && !string_array_contains(out, published) {
+              Array::push(out, published)
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
+      }
+      if Array::length(out) == 0 {
+        None
+      } else {
+        Some(String::join(out, ", "))
       }
     }
   }

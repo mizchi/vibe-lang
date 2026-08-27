@@ -4,6 +4,10 @@ import @vibe/compiler/checker {
   check_program
 }
 
+import @vibe/compiler/core {
+  Type, env_lookup
+}
+
 import @vibe/compiler/syntax {
   lex, parse_program
 }
@@ -124,6 +128,68 @@ test "identity Array[F[A]] as Array[F[B]] is rejected" {
   let src = "fn fake[F, A, B](x: Array[F[A]]) -> Array[F[B]] {\n  x\n}\nfn main { () }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "return type mismatch"))
+}
+
+test "identity F[Array[A]] as F[Array[B]] is rejected" {
+  let src = "fn fake[F, A, B](x: F[Array[A]]) -> F[Array[B]] {\n  x\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "mixed-kind across effect operations is rejected" {
+  let src = "effect Box[F] {\n  Put(F) -> Unit\n  Get() -> F[Int]\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "used both as a type and as a type constructor"))
+}
+
+test "mixed-kind across trait methods is rejected" {
+  let src = "trait Box[F] {\n  put(F) -> Unit\n  get() -> F[Int]\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "used both as a type and as a type constructor"))
+}
+
+test "mixed-kind across enum variants is rejected" {
+  let src = "enum Box[F] {\n  Raw(F);\n  Inner(F[Int])\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "used both as a type and as a type constructor"))
+}
+
+test "Self cannot be used as a type constructor" {
+  let src = "trait Box {\n  take(Self[Int]) -> Int\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "`Self` is a complete type"))
+}
+
+test "nested generic formals shadow outer kind markers" {
+  let src = "fn outer[F, A](x: F[A]) -> Int {\n  let inner = [F](y: F) -> Int {\n    let z: F = y\n    0\n  }\n  inner(1)\n}\nfn main { () }\n"
+  assert(checks(src))
+}
+
+test "applied trait formals fail closed before parameterized dispatch" {
+  let src = "trait Functor[F] {\n  fmap[A, B](Self, F[A], (A) -> B) -> F[B]\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "constructor parameter in trait method"))
+}
+
+test "alias-expanded HKT indices stay rigid" {
+  let src = "type Apply[F, A] = F[A]\nfn bad[F, A, B](x: Apply[F, A]) -> Apply[F, B] {\n  x\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "generic scheme applies a closed effect constraint" {
+  let src = "effect Log { Emit() -> Unit }\nfn narrow[T, e](f: (T) -> T with e) -> (T) -> T with Log {\n  f\n}\nfn main { () }\n"
+  let env = check_program(parse_program(lex(src)))
+  match env_lookup(env, "narrow") {
+    Some(CtForAll(_, _, CtFn(params, CtFn(_, _, Some(ret_effect)), _))) => match Array::get(params, 0) {
+      CtFn(_, _, Some(param_effect)) => {
+        assert(String::contains(param_effect, "Log"))
+        assert(String::contains(ret_effect, "Log"))
+      },
+      _ => assert(false)
+    },
+    _ => assert(false)
+  }
 }
 
 test "ascribing T to Box[Int] does not publish forall T" {
