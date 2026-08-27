@@ -68,6 +68,36 @@ test "#2338: parameterized loop break values select the outer constructor witnes
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
 }
 
+test "#2338: parameterized loop break values use lexical binding constructors" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { let xs = [i]; break xs }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: parameterized loop match binders use arm constructors" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { match [i] { xs => break xs } }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: handler result bindings mask unresolved outer constructors" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(handle { throw(\"fail\"); [0] } with { Exception::Throw(_) => { let xs = ((u) -> { [1] })(()); xs } }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
 test "#2338: applied trait dictionaries remain idempotently threaded" {
   let source = "trait Value[A] { value(Self) -> A }\nfn value[T: Value[Int]](item: T) -> Int { T::value(item) }\n"
   let stmts = parse_program(lex(source))

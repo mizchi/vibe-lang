@@ -3188,6 +3188,21 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
         None => None
       }
     },
+    ECall(EFn(_, _, params, _, _, body), args, _) => {
+      let mut body_vars = var_types
+      let mut i = 0
+      while i < Array::length(params) {
+        let (name, _) = Array::get(params, i)
+        let inferred = if i < Array::length(args) {
+          infer_constructor_arg_type_name(Array::get(args, i), gens, struct_sets, var_types, fn_returns)
+        } else {
+          None
+        }
+        body_vars = extend_constructor_var_types(body_vars, name, inferred)
+        i = i + 1
+      }
+      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+    },
     ECall(EIdent(name, _), args, _) => infer_constructor_generic_call_type_name(name, args, arg, gens, struct_sets, var_types, fn_returns),
     ECall(EDot(obj, method, _, _), args, _) => {
       let resolved = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
@@ -3235,9 +3250,45 @@ fn collect_parameterized_loop_constructors(expr: Expr, expected: Array[String], 
         collect_parameterized_loop_constructors(continuation, expected, valid, gens, struct_sets, var_types, fn_returns)
       },
       ELetMut("__loop_result", _, _, _) => (),
+      ELet(name, value, body, _) => {
+        collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns))
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
+      },
+      ELetMut(name, value, body, _) => {
+        collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns))
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
+      },
+      ELetRec(name, value, body) => {
+        let body_vars = extend_constructor_var_types(var_types, name, None)
+        collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, body_vars, fn_returns)
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
+      },
+      EMatch(scrut, arms) => {
+        collect_parameterized_loop_constructors(scrut, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let mut i = 0
+        while i < Array::length(arms) && Array::get(valid, 0) {
+          let (pat, body) = Array::get(arms, i)
+          let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
+          collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, arm_vars, fn_returns)
+          i = i + 1
+        }
+      },
+      EHandle(body, arms) => {
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let mut i = 0
+        while i < Array::length(arms) && Array::get(valid, 0) {
+          let (pat, arm_body) = Array::get(arms, i)
+          let arm_vars = mask_constructor_pat_binders(var_types, pat)
+          collect_parameterized_loop_constructors(arm_body, expected, valid, gens, struct_sets, arm_vars, fn_returns)
+          i = i + 1
+        }
+      },
       EFn(_, _, _, _, _, _) => (),
       ELoop(_, _) => (),
       EWhile(_, _) => (),
+      EForIn(_, _, _, _) => (),
       _ => {
         let children = expr_children(expr)
         let mut i = 0
@@ -3311,11 +3362,11 @@ fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gen
       None
     },
     ELet(name, val, body, _) => {
-      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
     },
     ELetMut(name, val, body, _) => {
-      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
     },
     ELetRec(_, _, body) => infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, var_types, fn_returns),
@@ -3347,7 +3398,7 @@ fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gen
       let mut result = Some(expected)
       while i < Array::length(match_arms) {
         let (pat, body) = Array::get(match_arms, i)
-        let arm_vars = arm_binder_var_types_env(scrut, pat, var_types, struct_sets, fn_returns)
+        let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
         match infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, arm_vars, fn_returns) {
           Some(actual) => {
             let same = actual == expected
@@ -3415,7 +3466,7 @@ fn infer_constructor_match_arm_type_name(scrut: Expr, arms: Array[(Pat, Expr)], 
     None
   } else {
     let (first_pat, first_body) = Array::get(arms, 0)
-    let first_vars = arm_binder_var_types_env(scrut, first_pat, var_types, struct_sets, fn_returns)
+    let first_vars = constructor_match_arm_var_types(scrut, first_pat, gens, struct_sets, var_types, fn_returns)
     match infer_constructor_arg_type_name(first_body, gens, struct_sets, first_vars, fn_returns) {
       None => None,
       Some(expected) => {
@@ -3423,7 +3474,7 @@ fn infer_constructor_match_arm_type_name(scrut: Expr, arms: Array[(Pat, Expr)], 
         let mut agrees = true
         while i < Array::length(arms) && agrees {
           let (pat, body) = Array::get(arms, i)
-          let arm_vars = arm_binder_var_types_env(scrut, pat, var_types, struct_sets, fn_returns)
+          let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
           match infer_constructor_arg_type_name(body, gens, struct_sets, arm_vars, fn_returns) {
             Some(actual) => {
               let same = actual == expected
@@ -6300,6 +6351,32 @@ fn extend_constructor_var_types(var_types: Array[(String, String)], name: String
     None => ()
   }
   out
+}
+
+/// Remove every name introduced by a pattern before adding any constructor
+/// evidence recoverable from its scrutinee. Unknown pattern payloads still
+/// shadow outer bindings; retaining them can select a stale witness.
+fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat) -> Array[(String, String)] {
+  let binders = empty_str_array()
+  collect_pat_binders(pat, binders)
+  let mut out = var_types
+  let mut i = 0
+  while i < Array::length(binders) {
+    out = extend_constructor_var_types(out, Array::get(binders, i), None)
+    i = i + 1
+  }
+  out
+}
+
+/// Build a match arm's constructor environment without retaining shadowed
+/// evidence. A bare binding receives the scrutinee constructor directly;
+/// structured patterns reuse the payload/shape recovery shared by lowering.
+fn constructor_match_arm_var_types(scrut: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let masked = mask_constructor_pat_binders(var_types, pat)
+  match pat {
+    PBind(name) => extend_constructor_var_types(masked, name, infer_constructor_arg_type_name(scrut, gens, struct_sets, var_types, fn_returns)),
+    _ => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
+  }
 }
 
 /// Extend the shared rewrite environment when the binding's type is known.
