@@ -34,10 +34,21 @@ run_number() {
 }
 
 echo "[test] installing into $VIBE_HOME"
-# Use the committed seed for speed/determinism; the launcher/runner path is what
-# we are testing, not a fresh compiler build.
+# Install the current checkout's distributable CLI, not the older bootstrap
+# seed. A language or contract grammar increment can make HEAD's stdlib
+# intentionally unreadable by that seed before the next independent bootstrap
+# bump; pairing the old compiler with the new stdlib would test an invalid
+# toolchain and fail during the installer's hash verification. CI may supply a
+# CLI it has already built; standalone runs use the canonical distribution
+# build (including its content-addressed cache).
+install_cli_wasm="${VIBE_INSTALL_TEST_CLI_WASM:-}"
+if [ -z "$install_cli_wasm" ]; then
+  echo "[test] building current distributable CLI for install"
+  install_cli_wasm="$(bash scripts/build_cli_wasm.sh "$WORK/vibe-cli.wasm")"
+fi
+[ -s "$install_cli_wasm" ] || { echo "FAIL: current distributable CLI was not built" >&2; exit 1; }
 bash install/install.sh \
-  --cli-wasm "$ROOT_DIR/bootstrap/seed/compiler.wasm" \
+  --cli-wasm "$install_cli_wasm" \
   >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }

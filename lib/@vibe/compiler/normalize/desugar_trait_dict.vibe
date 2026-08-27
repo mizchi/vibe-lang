@@ -1913,6 +1913,18 @@ fn anon_or_infer(val: Expr, struct_sets: Array[(String, Array[String])], var_typ
   }
 }
 
+/// Binding-time variant used after constructor-indexed generics are known.
+/// A call such as `map([1], f)` has the declared return head `F`, but the
+/// concrete constructor is recovered from the callee's `F[A]` receiver. Keep
+/// that answer on the local so a later, non-nested `map(ys, g)` can synthesize
+/// the same witness as a directly nested pipeline.
+fn anon_or_constructor_infer(val: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match anon_record_inferred(val, struct_sets) {
+    Some(s) => Some(s),
+    None => infer_constructor_arg_type_name(val, gens, struct_sets, var_types, fn_returns)
+  }
+}
+
 /// `binding.field` -> `__rec_field(binding, slot)` when `binding` is an
 /// anonymous-record binding (a `__anonrec:` var_types entry) that carries `field`.
 /// `robj` is the already-rewritten receiver. None leaves the EDot untouched (a
@@ -7877,7 +7889,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
@@ -7889,7 +7901,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
