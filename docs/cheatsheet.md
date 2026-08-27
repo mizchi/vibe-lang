@@ -1786,6 +1786,17 @@ from `@vibe/core`.
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
 `Double::floor`, `Double::ceil`.
 
+**Bits** (#2344): `Int::popcount`, `Int::ctz`, `Int::clz`, `Int::select1`.
+All four are **63-bit** answers, because an `Int` is a 63-bit two's complement
+value and not an i64 — so `Int::popcount(-1)` is 63, not 64, and the largest
+positive `Int` (2^62-1) tops out at bit 61, giving it a popcount of 62 and a
+`clz` of 1. The zero cases are defined rather than inherited from wasm (which
+answers 64): `Int::ctz(0)` and `Int::clz(0)` are both 63. `Int::select1(x, k)`
+gives the position of the `k`-th set bit counting from 0, or -1 when `x` has
+fewer than `k + 1` set bits — so `Int::select1(x, 0)` agrees with `Int::ctz(x)`
+for every non-zero `x`. `~` (bit-not) is still not a thing; spell it
+`x ^ mask`.
+
 **Conversion**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
 `__to_string: (Any) -> String`. **A bare `to_string` cannot be called** —

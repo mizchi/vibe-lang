@@ -187,8 +187,9 @@ which is what the checker actually consults. The low-level block has no such
 row, so those names exist only as signatures. (The `v128_*` block was the other
 reachable example until #2342 retired it; §3.1.)
 
-**Proposal.** Add a small, stable, scalar bit surface on `Int`, lowered to the
-corresponding wasm opcode:
+**Done** (#2344, slices A and B): a small, stable, scalar bit surface on `Int`,
+lowered to the corresponding wasm opcode. `~` (slice C) is a new operator
+rather than a builtin and is still open.
 
 ```
 Int::popcount(Int) -> Int      // i64.popcnt on the untagged value
@@ -197,11 +198,17 @@ Int::clz(Int) -> Int
 Int::select1(Int, Int) -> Int  // position of the k-th set bit, -1 if absent
 ```
 
-`~` (bit-not) is also still missing — `CLAUDE.md` tells readers to spell it
-`x ^ mask`, and measured, `~x` is a parse error ("unexpected token: ~"); it
-belongs in the same change. These four are cheap, they are
-tag-safe (untag, operate, retag), they work on both backends, and they unblock
-every bit-level structure in §4 without any SIMD at all.
+`Int::popcount` / `ctz` / `clz` are registry builtins on **both** lanes;
+`Int::select1` is a prelude function on top of them, since wasm has no select
+instruction to lower to. All are tag-safe (untag, operate, retag) and answer at
+the 63-bit width — `popcount(-1)` is 63, not 64 — with the zero cases defined
+rather than inherited. Together they unblock every bit-level structure in §4
+without any SIMD at all.
+
+`~` (bit-not) is still missing: `CLAUDE.md` tells readers to spell it
+`x ^ mask`, and measured, `~x` is a parse error ("unexpected token: ~"). It is
+a new **operator**, touching the lexer, parser and printer, so it is tracked as
+its own slice rather than bundled with a builtin addition.
 
 ### 3.3 There is no packed numeric buffer
 
@@ -304,8 +311,8 @@ code:
 
 ### Layer 1 — scalar bit primitives (§3.2)
 
-`Int::popcount` / `Int::ctz` / `Int::clz` / `Int::select1`, plus `~`. No SIMD,
-both backends, ~344x on rank.
+**Done** (#2344): `Int::popcount` / `Int::ctz` / `Int::clz` / `Int::select1`.
+No SIMD, both backends, ~344x on rank. `~` remains open as its own slice.
 
 ### Layer 2 — `Bytes` bulk kernels
 
