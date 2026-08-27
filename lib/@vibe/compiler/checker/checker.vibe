@@ -1396,6 +1396,77 @@ fn bind_trait_bound_self_reference(key: String, binder: String) -> String {
   }
 }
 
+fn trait_bound_vid_prefix() -> String {
+  "#tpvid."
+}
+
+fn bind_trait_bound_tparam_names(te: TypeExpr, tparams: Array[String], ids: Array[Int]) -> TypeExpr {
+  match te {
+    TyName(name) => if name == trait_bound_self_marker {
+      te
+    } else {
+      let mut i = 0
+      let mut out = te
+      while i < Array::length(tparams) && i < Array::length(ids) {
+        if type_param_name(Array::get(tparams, i)) == name {
+          out = TyName(String::concat(trait_bound_vid_prefix(), __to_string(Array::get(ids, i))))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(name, args) => TyApp(name, for arg in args {
+      bind_trait_bound_tparam_names(arg, tparams, ids)
+    }),
+    TyTuple(items) => TyTuple(for item in items {
+      bind_trait_bound_tparam_names(item, tparams, ids)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      bind_trait_bound_tparam_names(param, tparams, ids)
+    }, bind_trait_bound_tparam_names(ret, tparams, ids), effect),
+    TyUnit => TyUnit
+  }
+}
+
+fn bind_trait_bound_tparams(key: String, tparams: Array[String], ids: Array[Int]) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => trait_ref_key(bind_trait_bound_tparam_names(reference, tparams, ids)),
+    None => key
+  }
+}
+
+fn parse_trait_bound_vid(name: String) -> Option[Int] {
+  let prefix = trait_bound_vid_prefix()
+  if !String::starts_with(name, prefix) {
+    None
+  } else {
+    let rest = String::substring(name, String::length(prefix), String::length(name))
+    if String::length(rest) == 0 {
+      None
+    } else {
+      let mut i = 0
+      let mut n = 0
+      let mut ok = true
+      while i < String::length(rest) && ok {
+        let c = String::char_code_at(rest, i)
+        if c >= '0' && c <= '9' {
+          n = n * 10 + c - '0'
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(n)
+      } else {
+        None
+      }
+    }
+  }
+}
+
 fn replace_trait_bound_self_type(ty: Type, self_ty: Type) -> Type {
   match ty {
     CtNamed(name, args) => if name == trait_bound_self_marker {
@@ -1524,13 +1595,23 @@ fn trait_bound_type_expr(ty: Type) -> Option[TypeExpr] {
   }
 }
 
-export fn resolve_trait_bound_self_reference(key: String, self_ty: Type) -> String {
+fn resolve_trait_bound_arg_type(arg: TypeExpr, self_ty: Type, s: Subst) -> Type {
+  match arg {
+    TyName(name) => match parse_trait_bound_vid(name) {
+      Some(vid) => subst_apply(s, CtVar(vid)),
+      None => replace_trait_bound_self_type(resolve_type_expr(arg, array_empty()), self_ty)
+    },
+    _ => replace_trait_bound_self_type(resolve_type_expr(arg, array_empty()), self_ty)
+  }
+}
+
+export fn resolve_trait_bound_self_reference(key: String, self_ty: Type, s: Subst) -> String {
   match trait_ref_from_key(key) {
     Some(TyApp(name, args)) => {
       let mapped = array_empty()
       let mut ok = true
       for arg in args {
-        let resolved = replace_trait_bound_self_type(resolve_type_expr(arg, array_empty()), self_ty)
+        let resolved = resolve_trait_bound_arg_type(arg, self_ty, s)
         match trait_bound_type_expr(resolved) {
           Some(next) => Array::push(mapped, next),
           None => {
@@ -10493,12 +10574,6 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
               tbi = tbi + 1
             }
-            let owned_bounds = for bound in bounds {
-              bind_trait_bound_self_reference(bound, tpname)
-            }
-            s0 = if Array::length(owned_bounds) == 0 {
-              s0
-            } else subst_add_bound(s0, vid, owned_bounds)
             let marker = String::concat(fapp_formal_marker_prefix, tpname)
             // HKT formals (`F`/`A` in `F[A]`) are rigid so F[A] is not
             // assignable to F[B] or Array[Int]. Plain `T` and trait-bounded
@@ -10514,6 +10589,33 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             c0 = nc
           },
           _ => ()
+        }
+        tpi = tpi + 1
+      }
+      tpi = 0
+      while tpi < tplen {
+        let tpkey = Array::get(tparams, tpi)
+        let tpname = type_param_name(tpkey)
+        let vid = Array::get(tparam_ids, tpi)
+        let tblen = Array::length(tbounds)
+        let mut bounds = array_empty()
+        let mut tbi = 0
+        let mut found_bounds = false
+        while tbi < tblen {
+          let (bname, blist) = Array::get(tbounds, tbi)
+          if !found_bounds && bname == tpkey {
+            bounds = blist
+            found_bounds = true
+          }
+          tbi = tbi + 1
+        }
+        let owned_bounds = for bound in bounds {
+          bind_trait_bound_tparams(bind_trait_bound_self_reference(bound, tpname), tparams, tparam_ids)
+        }
+        s0 = if Array::length(owned_bounds) == 0 {
+          s0
+        } else {
+          subst_add_bound(s0, vid, owned_bounds)
         }
         tpi = tpi + 1
       }
