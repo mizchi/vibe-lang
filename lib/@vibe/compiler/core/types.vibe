@@ -73,7 +73,8 @@ export enum TypeDef {
 }
 
 /// Checker-internal authority for where a value binding was resolved.
-/// Persistent/public TypeEnv transport intentionally drops this payload.
+/// Module publication and persistent TypeEnv transport preserve this payload
+/// so semantic provenance survives facade and cache hops.
 export enum BindingOrigin {
   BindingOriginUnavailable;
   BindingOriginModuleExport(String, String);
@@ -1033,6 +1034,67 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
               done = true
             }
           }
+        } else {
+          cur = rest
+        }
+      }
+    }
+  }
+  result
+}
+
+/// Look up a binding without hiding a re-export-surface entry. Import
+/// projection uses this to carry the ultimate module/name provenance across a
+/// facade while ordinary value lookup continues to treat that entry as a
+/// local-scope blocker.
+export fn env_lookup_binding_including_surface(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, binding, rest) => if String::equals(n, name) {
+        result = Some(binding)
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) && !done {
+          let (n, binding) = Array::get(bindings, i)
+          if String::equals(n, name) {
+            result = Some(binding)
+            done = true
+          } else {
+            i = i + 1
+          }
+        }
+        done = true
+      },
+      EnvCached(names_sorted, types_sorted, rest) => {
+        let slot = bsearch_leftmost(names_sorted, name)
+        if slot >= 0 {
+          result = Some(Array::get(types_sorted, slot))
+          done = true
         } else {
           cur = rest
         }

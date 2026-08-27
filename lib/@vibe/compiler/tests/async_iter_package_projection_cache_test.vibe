@@ -43,3 +43,66 @@ test "mapped builtin AsyncIter requires Async through an aliased constructor imp
   } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "async iterator awaits every step"))
 }
+
+test "builtin AsyncIter constructors require Async without Array::iter" {
+  let path = "/tmp/vibe_async_iter_package_projection_cache_once_v2.vibe"
+  let source = "import @vibe/builtin { AsyncIter::once }\nfn main() -> Unit {\n  for y in AsyncIter::once(1) {\n    let _ = y\n  }\n  ()\n}\n"
+  Fs::write_bytes(path, string_to_bytes(source))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "async iterator awaits every step"))
+}
+
+test "imported AsyncIter parameters require Async without Array::iter" {
+  let path = "/tmp/vibe_async_iter_package_projection_cache_param_v1.vibe"
+  let source = "import @vibe/builtin { struct AsyncIter }\nfn drain(xs: AsyncIter[Int]) -> Unit {\n  for y in xs {\n    let _ = y\n  }\n  ()\n}\n"
+  Fs::write_bytes(path, string_to_bytes(source))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "async iterator awaits every step"))
+}
+
+test "mapped conditional AsyncIter inputs require Async" {
+  let path = "/tmp/vibe_async_iter_package_projection_cache_conditional_v1.vibe"
+  let source = "import @vibe/builtin { Array::iter, map, trait Mappable }\nfn main(flag: Bool) -> Unit {\n  let ys = map(if flag { Array::iter([1]) } else { Array::iter([2]) }, (x: Int) -> Int { x + 1 })\n  for y in ys {\n    let _ = y\n  }\n  ()\n}\n"
+  Fs::write_bytes(path, string_to_bytes(source))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "async iterator awaits every step"))
+}
+
+test "mapped match AsyncIter inputs require Async" {
+  let path = "/tmp/vibe_async_iter_package_projection_cache_match_v1.vibe"
+  let source = "import @vibe/builtin { Array::iter, map, trait Mappable }\nfn main(flag: Bool) -> Unit {\n  let ys = map(match flag { true => Array::iter([1]), false => Array::iter([2]) }, (x: Int) -> Int { x + 1 })\n  for y in ys {\n    let _ = y\n  }\n  ()\n}\n"
+  Fs::write_bytes(path, string_to_bytes(source))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "async iterator awaits every step"))
+}
+
+test "AsyncIter provenance survives a facade re-export" {
+  let base_dir = "/tmp/vibe_async_iter_package_projection_cache_reexport_v2"
+  let builtin_dir = String::concat(base_dir, "/@vibe/builtin")
+  Fs::mkdir_p(builtin_dir)
+  let provider_path = String::concat(builtin_dir, "/async_iter.vibe")
+  let facade_path = String::concat(base_dir, "/facade.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let provider = "export trait AsyncIterator[T] {\n  next(Self) -> Future[Option[(T, Self)]]\n}\nexport struct AsyncIter[T] {\n  pull: (Int) -> Option[(T, Int)];\n  state: Int\n}\nimpl AsyncIterator for AsyncIter {\n  next(self) -> Future[Option[(T, AsyncIter)]] {\n    Future::ready(None)\n  }\n}\nexport fn Array::iter[T](xs: Array[T]) -> AsyncIter[T] {\n  AsyncIter::{ pull: (_i) -> Option[(T, Int)] { None }, state: Array::length(xs) }\n}\n"
+  Fs::write_bytes(provider_path, string_to_bytes(provider))
+  Fs::write_bytes(facade_path, string_to_bytes("export ./@vibe/builtin/async_iter.vibe { Array::iter }\n"))
+  let source = "import ./facade.vibe { Array::iter }\nfn main() -> Unit {\n  for y in Array::iter([1, 2]) {\n    let _ = y\n  }\n  ()\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let msg = handle {
+    let _ = check_linked_file(main_path)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "async iterator awaits every step"))
+}

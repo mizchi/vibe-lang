@@ -14,7 +14,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  EnvValueBinding, Type, TypeDef, TypeEnv, TypeExpr, env_cache, env_value_binding
+  BindingOrigin, EnvValueBinding, Type, TypeDef, TypeEnv, TypeExpr, env_cache, env_value_binding, env_value_binding_with_origin
 }
 
 //# Functions
@@ -727,15 +727,69 @@ fn parse_type_defs(text: String, pos: Int) -> (Array[TypeDef], Int) with Excepti
   }
 }
 
+fn serialize_binding_origin(origin: BindingOrigin) -> String {
+  match origin {
+    BindingOriginUnavailable => "U",
+    BindingOriginModuleExport(path, name) => String::concat("M", String::concat(serialize_segment(path), serialize_segment(name))),
+    BindingOriginReExportSurface(path, name) => String::concat("R", String::concat(serialize_segment(path), serialize_segment(name)))
+  }
+}
+
+fn parse_binding_origin(text: String, pos: Int) -> (BindingOrigin, Int) with Exception {
+  if pos >= String::length(text) {
+    throw("invalid persistent binding origin")
+  } else {
+    match String::char_code_at(text, pos) {
+      'U' => (BindingOriginUnavailable, pos + 1),
+      'M' => {
+        let (path, after_path) = parse_segment(text, pos + 1)
+        let (name, next) = parse_segment(text, after_path)
+        (BindingOriginModuleExport(path, name), next)
+      },
+      'R' => {
+        let (path, after_path) = parse_segment(text, pos + 1)
+        let (name, next) = parse_segment(text, after_path)
+        (BindingOriginReExportSurface(path, name), next)
+      },
+      _ => throw("invalid persistent binding origin tag")
+    }
+  }
+}
+
 fn serialize_value_bindings(items: Array[(String, EnvValueBinding)]) -> String {
-  let plain = array_empty()
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, __to_string(Array::length(items)))
+  StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
     let (name, binding) = Array::get(items, i)
-    Array::push(plain, (name, binding.ty))
+    StringBuilder::push(buf, serialize_segment(name))
+    StringBuilder::push(buf, serialize_type(binding.ty))
+    StringBuilder::push(buf, serialize_binding_origin(binding.origin))
     i = i + 1
   }
-  serialize_bindings(plain)
+  StringBuilder::push(buf, "]")
+  StringBuilder::freeze(buf)
+}
+
+fn parse_value_bindings(text: String, pos: Int) -> (Array[(String, EnvValueBinding)], Int) with Exception {
+  let (count, start) = parse_count_header(text, pos, '[')
+  let items = array_empty()
+  let mut i = 0
+  let mut cursor = start
+  while i < count {
+    let (name, after_name) = parse_segment(text, cursor)
+    let (ty, after_ty) = parse_cached_type(text, after_name)
+    let (origin, next) = parse_binding_origin(text, after_ty)
+    Array::push(items, (name, env_value_binding_with_origin(ty, origin)))
+    cursor = next
+    i = i + 1
+  }
+  if cursor >= String::length(text) || String::char_code_at(text, cursor) != ']' {
+    throw("invalid persistent TypeEnv value bindings")
+  } else {
+    (items, cursor + 1)
+  }
 }
 
 fn serialize_bindings(items: Array[(String, Type)]) -> String {
@@ -779,6 +833,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
       StringBuilder::push(buf, "B")
       StringBuilder::push(buf, serialize_segment(name))
       StringBuilder::push(buf, serialize_type(binding.ty))
+      StringBuilder::push(buf, serialize_binding_origin(binding.origin))
       serialize_type_env_into(buf, rest)
     },
     // #1262: a `let mut` escape marker is function-local, so a published
@@ -872,8 +927,9 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
       'B' => {
         let (name, after_name) = parse_segment(text, pos + 1)
         let (ty, after_ty) = parse_cached_type(text, after_name)
-        let (rest, next) = parse_persistent_type_env_payload(text, after_ty)
-        (EnvBind(name, env_value_binding(ty), rest), next)
+        let (origin, after_origin) = parse_binding_origin(text, after_ty)
+        let (rest, next) = parse_persistent_type_env_payload(text, after_origin)
+        (EnvBind(name, env_value_binding_with_origin(ty, origin), rest), next)
       },
       'M' => {
         let (name, after_name) = parse_segment(text, pos + 1)
@@ -934,15 +990,8 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
         (EnvTypeDefs(defs, selectable, rest), next)
       },
       'L' => {
-        let (bindings, next) = parse_bindings(text, pos + 1)
-        let value_bindings = array_empty()
-        let mut i = 0
-        while i < Array::length(bindings) {
-          let (name, ty) = Array::get(bindings, i)
-          Array::push(value_bindings, (name, env_value_binding(ty)))
-          i = i + 1
-        }
-        (EnvFlat(value_bindings), next)
+        let (bindings, next) = parse_value_bindings(text, pos + 1)
+        (EnvFlat(bindings), next)
       },
       'C' => {
         let (names, after_names) = parse_string_array(text, pos + 1)
@@ -1021,23 +1070,24 @@ export fn load_persistent_dep_list(path: String, source: String) -> Option[Array
   }
 }
 
-/// Strict v8 module-interface wire format. It preserves declaration closure
+/// Strict v9 module-interface wire format. It preserves declaration closure,
+/// binding provenance,
 /// plus the distinct selected declaration surface. Older bytes are rejected
 /// rather than being misread as authority.
 export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Exception {
   let normalized = normalize_persistent_cache_text(text)
-  let header = "version\t8\nenv\t"
+  let header = "version\t9\nenv\t"
   let header_len = String::length(header)
   if String::length(normalized) < header_len || normalized[0: header_len] != header {
     None
   } else {
     let (payload, after_payload) = parse_segment(normalized, header_len)
     if after_payload + 1 != String::length(normalized) || String::char_code_at(normalized, after_payload) != '\n' {
-      throw("invalid persistent type env v8 envelope")
+      throw("invalid persistent type env v9 envelope")
     } else {
       let (env, end) = parse_persistent_type_env_payload(payload, 0)
       if end != String::length(payload) {
-        throw("invalid persistent type env v8 payload")
+        throw("invalid persistent type env v9 payload")
       } else {
         Some(env)
       }
@@ -1060,7 +1110,7 @@ export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with 
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
-  String::concat("version\t8\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
+  String::concat("version\t9\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
 }
 
 export fn load_persistent_leaf_fingerprint(path: String, source: String, typing_semantics_seed: String) -> Option[String] with Exception + Fs {
