@@ -36,6 +36,9 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_load,
   emit_i64_store,
   emit_rc_dup_inline,
+  emit_shadow_bump_seq,
+  emit_shadow_mark_freed,
+  emit_shadow_uaf_trap,
   emit_str_ref,
   expr_tag,
   get_arm_body,
@@ -672,13 +675,13 @@ fn emit_rc_free_push(b: Bytes, ptr_local: Int, bins_base: Int) -> Unit {
 /// disagree about what a dup does, including the VIBE_RC=shadow
 /// freed-block trap, which is baked in here per module instead of at every
 /// site.
-export fn gen_rc_dup_body(rc_shadow: Bool) -> Bytes {
+export fn gen_rc_dup_body(rc_shadow: Bool, uaf_abort_idx: Int, prefix_fat: Int) -> Bytes {
   let b = bytebuf_new()
-  emit_rc_dup_inline(b, 0, rc_shadow)
+  emit_rc_dup_inline(b, 0, rc_shadow, uaf_abort_idx, prefix_fat)
   b
 }
 
-export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int) -> Bytes {
+export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_abort_idx: Int, prefix_fat: Int) -> Bytes {
   let b = bytebuf_new()
   // not a heap pointer (even) → nothing to do
   emit_local_get(b, 0)
@@ -710,14 +713,18 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int) -> By
   // shadow byte says this block is already freed. For a freed block, vptr-4
   // is the free-list NEXT link, so a drop-of-freed would silently corrupt the
   // list (decrement the link) and usually return without reaching zero --
-  // the entry check is the only reliable place to catch it.
+  // the entry check is the only reliable place to catch it. #1987: name the
+  // current seq and the freeing seq instead of a bare unreachable.
   if rc_shadow {
+    emit_shadow_bump_seq(b)
     emit_local_get(b, 1)
     emit_i32_const(b, rc_shadow_base())
     emit_i32_add(b)
     emit_i32_load8_u(b, 0, 0)
     emit_if_void(b)
-    bytebuf_push(b, 0)
+    emit_shadow_uaf_trap(b, () -> {
+      emit_local_get(b, 1)
+    }, uaf_abort_idx, prefix_fat)
     emit_end(b)
   } else {
     ()
@@ -857,18 +864,18 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int) -> By
     emit_i32_add(b)
     emit_i32_load8_u(b, 0, 0)
     emit_if_void(b)
-    bytebuf_push(b, 0)
+    emit_shadow_uaf_trap(b, () -> {
+      emit_local_get(b, 5)
+    }, uaf_abort_idx, prefix_fat)
     emit_end(b)
   } else {
     ()
   }
-  // #715 recurrence guard (VIBE_RC=shadow): mark the grown buffer freed.
+  // #715 / #1987: mark the grown buffer freed and stamp the freeing seq.
   if rc_shadow {
-    emit_local_get(b, 5)
-    emit_i32_const(b, rc_shadow_base())
-    emit_i32_add(b)
-    emit_i32_const(b, 1)
-    emit_i32_store8(b, 0, 0)
+    emit_shadow_mark_freed(b, () -> {
+      emit_local_get(b, 5)
+    })
   } else {
     ()
   }
@@ -984,15 +991,12 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int) -> By
   emit_end(b)
   emit_end(b)
   emit_end(b)
-  // #715 recurrence guard (VIBE_RC=shadow): mark this block freed so a later
-  // dup-of-freed (emit_rc_dup_guarded) or drop-of-freed (entry check above)
-  // traps deterministically at the faulting operation.
+  // #715 / #1987: mark this block freed and stamp the freeing seq so a later
+  // dup-of-freed or drop-of-freed can name both ends.
   if rc_shadow {
-    emit_local_get(b, 1)
-    emit_i32_const(b, rc_shadow_base())
-    emit_i32_add(b)
-    emit_i32_const(b, 1)
-    emit_i32_store8(b, 0, 0)
+    emit_shadow_mark_freed(b, () -> {
+      emit_local_get(b, 1)
+    })
   } else {
     ()
   }
