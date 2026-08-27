@@ -1974,26 +1974,47 @@ fn empty_dict_binds() -> Array[(String, String, String, Array[String])] {
 /// checking, so a hand-written `x: DefaultDict[T]` annotation is an unknown
 /// type to the checker while the genuinely generated shape (re-checked or
 /// re-desugared downstream) matches exactly.
+fn type_expr_arrays_equal(left: Array[TypeExpr], right: Array[TypeExpr]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut equal = true
+    while i < Array::length(left) && equal {
+      equal = impl_target_key(Array::get(left, i)) == impl_target_key(Array::get(right, i))
+      i = i + 1
+    }
+    equal
+  }
+}
+
 fn already_threaded(bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])]) -> Bool {
   if Array::length(params) == 0 {
     false
   } else {
     let (pname, ann) = Array::get(params, 0)
     match ann {
-      Some(TyApp(dname, targs)) => if Array::length(targs) == 1 {
+      Some(TyApp(dname, targs)) => {
         let mut found = false
         let mut bi = 0
         while bi < Array::length(bounds) {
           let (tp, trait_list) = Array::get(bounds, bi)
           let tpname = type_param_name(tp)
-          let elem_is_tp = match Array::get(targs, 0) {
-            TyName(tn) => tn == tpname,
-            _ => false
-          }
           let mut ti = 0
           while ti < Array::length(trait_list) {
             let tr = Array::get(trait_list, ti)
-            if tr != "" && elem_is_tp && pname == dict_param_name(tr, tpname) && dname == dict_struct_name(tr) {
+            let trait_args = trait_ref_args(tr)
+            let args_match = if Array::length(trait_args) > 0 {
+              type_expr_arrays_equal(targs, trait_args)
+            } else if Array::length(targs) == 1 {
+              match Array::get(targs, 0) {
+                TyName(tn) => tn == tpname,
+                _ => false
+              }
+            } else {
+              false
+            }
+            if tr != "" && args_match && pname == dict_param_name(tr, tpname) && dname == dict_struct_name(tr) {
               found = true
               ti = Array::length(trait_list)
               bi = Array::length(bounds) - 1
@@ -2004,8 +2025,6 @@ fn already_threaded(bounds: Array[(String, Array[String])], params: Array[(Strin
           bi = bi + 1
         }
         found
-      } else {
-        false
       },
       _ => false
     }
@@ -3113,6 +3132,17 @@ fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String]
 /// callee's own constructor receiver back to its concrete argument instead.
 fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match arg {
+    EIdent(name, _) => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(head) => Some(head),
+      None => match lookup_var_type(var_types, shape_key(name)) {
+        Some(shape) => if String::starts_with(shape, "[") {
+          Some("Array")
+        } else {
+          None
+        },
+        None => None
+      }
+    },
     ELet(name, val, body, _) => {
       let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
@@ -3121,8 +3151,10 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
       let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
     },
+    EAssign(_, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
+    EAssignOp(_, _, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
     ESeq(_, result) => infer_constructor_arg_type_name(result, gens, struct_sets, var_types, fn_returns),
-    EMatch(_, arms) => infer_constructor_match_arm_type_name(arms, gens, struct_sets, var_types, fn_returns),
+    EMatch(scrut, arms) => infer_constructor_match_arm_type_name(scrut, arms, gens, struct_sets, var_types, fn_returns),
     EIf(_, then_branch, else_branch) => {
       let then_constructor = infer_constructor_arg_type_name(then_branch, gens, struct_sets, var_types, fn_returns)
       let else_constructor = infer_constructor_arg_type_name(else_branch, gens, struct_sets, var_types, fn_returns)
@@ -3173,19 +3205,21 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
 /// Recover a constructor from a typed match result only when every arm agrees.
 /// An empty match has no result witness, and one unresolved or differing arm
 /// makes the whole answer unknown rather than guessing a dictionary.
-fn infer_constructor_match_arm_type_name(arms: Array[(Pat, Expr)], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+fn infer_constructor_match_arm_type_name(scrut: Expr, arms: Array[(Pat, Expr)], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   if Array::length(arms) == 0 {
     None
   } else {
-    let (_, first_body) = Array::get(arms, 0)
-    match infer_constructor_arg_type_name(first_body, gens, struct_sets, var_types, fn_returns) {
+    let (first_pat, first_body) = Array::get(arms, 0)
+    let first_vars = arm_binder_var_types_env(scrut, first_pat, var_types, struct_sets, fn_returns)
+    match infer_constructor_arg_type_name(first_body, gens, struct_sets, first_vars, fn_returns) {
       None => None,
       Some(expected) => {
         let mut i = 1
         let mut agrees = true
         while i < Array::length(arms) && agrees {
-          let (_, body) = Array::get(arms, i)
-          match infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns) {
+          let (pat, body) = Array::get(arms, i)
+          let arm_vars = arm_binder_var_types_env(scrut, pat, var_types, struct_sets, fn_returns)
+          match infer_constructor_arg_type_name(body, gens, struct_sets, arm_vars, fn_returns) {
             Some(actual) => {
               let same = actual == expected
               if !same {
@@ -5115,6 +5149,69 @@ fn seed_ctor_payload(out: Array[(String, String)], pname: String, ctor: String, 
   }
 }
 
+fn constructor_formal_name_in(tparams: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) {
+    if type_param_name(Array::get(tparams, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Parameter seeding runs after `eq_known_types_reset` has collected this
+/// program's aliases. Expand only an annotation's alias spine, stopping at a
+/// locally bound constructor formal so a same-spelled global alias cannot
+/// capture `F` in `Apply[F, A]`.
+fn expand_seed_constructor_alias(ty: TypeExpr, tparams: Array[String], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ty
+  } else match ty {
+    TyName(head) => if constructor_formal_name_in(tparams, head) {
+      ty
+    } else {
+      let mut i = 0
+      let mut result = ty
+      let mut found = false
+      while i < Array::length(dtd_eq_type_aliases) {
+        let (name, params, target) = Array::get(dtd_eq_type_aliases, i)
+        if !found && name == head && Array::length(params) == 0 {
+          result = expand_seed_constructor_alias(target, tparams, fuel - 1)
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    TyApp(head, args) => if constructor_formal_name_in(tparams, head) {
+      ty
+    } else {
+      let mut i = 0
+      let mut result = ty
+      let mut found = false
+      while i < Array::length(dtd_eq_type_aliases) {
+        let (name, params, target) = Array::get(dtd_eq_type_aliases, i)
+        if !found && name == head && Array::length(params) == Array::length(args) {
+          let expanded = substitute_constructor_alias_target(target, params, args)
+          result = expand_seed_constructor_alias(expanded, tparams, fuel - 1)
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => ty
+  }
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -5161,7 +5258,12 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
       // left untracked, same conservative scope as the rest of
       // infer_arg_type_name.
       Some(TyApp(tn, targs)) => {
-        Array::push(out, (pname, tn))
+        let constructor_head = match expand_seed_constructor_alias(TyApp(tn, targs), tparams, Array::length(dtd_eq_type_aliases) + 1) {
+          TyApp(head, _) => head,
+          TyName(head) => head,
+          _ => tn
+        }
+        Array::push(out, (pname, constructor_head))
         if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
           Array::push(out, (impl_target_var_key(pname), impl_target_key(TyApp(tn, targs))))
         } else {
