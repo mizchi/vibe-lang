@@ -1633,40 +1633,48 @@ From `@vibe/json` (`import @vibe/json { ... }`):
 `Json::is_null`, `Json::length`, `Json::keys`, `Json::stringify_lines`,
 `Json::parse_lines`.
 
-**Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
-`push` は償却 O(1)):
+**Bytes** (a mutable byte buffer in linear memory. Capacity doubles and grows
+via `memory.copy`, so `push` is amortised O(1)):
 
-| 関数 | 意味 | backend |
+| function | meaning | backend |
 |---|---|---|
-| `Bytes::new()` | 空バッファ (初期容量 64) | linear / gc |
-| `Bytes::new(n)` | 長さ `n` の **ゼロ埋め**バッファ。**linear 専用** (下記) | linear のみ |
-| `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | 長さ・要素 | linear / gc |
-| `Bytes::push(b, v)` | 1バイト追加 (償却 O(1)) | linear / gc |
-| `Bytes::append(dst, src)` | **一括連結。`memory.copy` 1発** | linear / gc |
-| `Bytes::concat(a, b)` | 新しいバッファを返す連結 | linear / gc |
-| `Bytes::slice(b, start, end)` | 部分列 | linear / gc |
-| `Bytes::blit(dst, src, dst_off, len)` | **範囲コピー。`memory.copy` 1発** | linear / gc |
-| `Bytes::fill(b, value, count)` | `value` を `count` 個 **末尾に追加** (`push` ループ) | linear / gc |
-| `Bytes::from_array(a)` / `to_array(b)` | `Array[Int]` との変換 (**コピーが入る**) | linear / gc |
+| `Bytes::new()` | empty buffer (initial capacity 64) | linear / gc |
+| `Bytes::new(n)` | **zero-filled** buffer of length `n`. **linear only** (see below) | linear only |
+| `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | length, element access | linear / gc |
+| `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
+| `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
+| `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
+| `Bytes::slice(b, start, end)` | subsequence | linear / gc |
+| `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
+| `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
+| `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
 
-> バイト列を組み立てるループで `Bytes::push` を回すより、まとまった範囲は
-> `Bytes::append` / `Bytes::blit` に置き換えるほうが速い — どちらも
-> `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
-> するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
+> Replacing a `Bytes::push` loop with `Bytes::append` / `Bytes::blit` over a whole
+> range is faster — both lower to a single `memory.copy` instruction. Accumulating
+> into an `Array[Int]` and then calling `Bytes::from_array` costs one extra copy,
+> so write into a `Bytes` from the start.
 >
-> **`Bytes::fill` はこの仲間ではない** (実測 2026-08-27)。この表はかつて
-> `Bytes::fill(b, off, len)` を「範囲埋め。`memory.fill` 1発」と書いていたが、
-> 引数は `(b, value, count)` で、動作は範囲の上書きではなく**末尾への追加**、
-> 実装は `gen_bytes_fill_body` (`codegen/builtin_bodies/bodies_core_a2.vibe`)
-> の `bytes_push` ループで、linear / gc とも同じ本体を使う。
-> **`Bytes::new(n)` (1引数版) は linear backend でしか動かない** (実測
-> 2026-08-27)。`compile_call.vibe` が 1引数の `Bytes::new` に対して fill ループを
-> 合成するのに対し、`codegen/gc/backend_call.vibe` に対応する分岐が無く、wasm-gc
-> では引数を積んだまま 0引数の runtime body を呼ぶ。単一ファイルで実測すると
-> linear は pass、gc は **fail** する。両 backend で動く綴りは
-> `Bytes::new()` + `Bytes::fill(b, 0, n)` のほう (こちらは両方 pass)。
-> 移植性が要るコードは後者を使うこと — `MutMap` の control array がこの理由で
-> 後者を使っている (`lib/@vibe/core/hashmap.vibe`)。
+> **`Bytes::fill` is NOT one of that group** (measured 2026-08-27). This table used
+> to describe it as `Bytes::fill(b, off, len)`, "range fill, one `memory.fill`".
+> Both halves were wrong: the parameters are `(b, value, count)`, the behaviour is
+> an **append** rather than an overwrite of a range, and the implementation is the
+> `bytes_push` loop in `gen_bytes_fill_body`
+> (`codegen/builtin_bodies/bodies_core_a2.vibe`) — a single body shared by the
+> linear and gc backends.
+>
+> **The one-argument `Bytes::new(n)` only works on the linear backend** (measured
+> 2026-08-27, [#2363](https://github.com/mizchi/vibe-lang/issues/2363)).
+> `compile_call.vibe` special-cases a one-argument `Bytes::new` and synthesises the
+> fill loop; `codegen/gc/backend_call.vibe` has no counterpart, and the registry
+> declares `Bytes::new` with `reg_p0()`, so on wasm-gc the argument is pushed and
+> then the zero-parameter runtime body is called. Measured on one self-contained
+> file, linear passes and gc **fails** — and it fails at run time, not at
+> validation, so the module is accepted by `wasmtime compile` first.
+>
+> The spelling that works on both backends is `Bytes::new()` +
+> `Bytes::fill(b, 0, n)`. Use it wherever portability matters; `MutMap`'s control
+> array uses it for exactly this reason (`lib/@vibe/core/hashmap.vibe`), and
+> `fixtures/bytes_alloc_backend_parity_test.vibe` pins it on both lanes.
 
 **SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
 the linear and GC backends):
