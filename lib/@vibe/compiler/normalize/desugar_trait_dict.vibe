@@ -2071,17 +2071,22 @@ fn find_array_elem_recv_index(params: Array[(String, Option[TypeExpr])], tp: Str
 
 /// Index of the first parameter whose annotation applies constructor `tp`,
 /// for example `xs: F[A]` for a kinded `F[_]` binder.
-fn find_constructor_recv_index(params: Array[(String, Option[TypeExpr])], tp: String) -> Int {
+fn find_constructor_recv_index(params: Array[(String, Option[TypeExpr])], tp: String, stmts: Array[Stmt]) -> Int {
   let mut i = 0
   let mut idx = -1
   while i < Array::length(params) {
     let (_, ann) = Array::get(params, i)
     match ann {
-      Some(TyApp(head, _)) => if head == tp {
-        idx = i
-        i = Array::length(params)
-      } else {
-        i = i + 1
+      Some(raw_ann) => match expand_constructor_alias(raw_ann, stmts, Array::length(stmts) + 1) {
+        TyApp(head, _) => if head == tp {
+          idx = i
+          i = Array::length(params)
+        } else {
+          i = i + 1
+        },
+        _ => {
+          i = i + 1
+        }
       },
       _ => {
         i = i + 1
@@ -2167,9 +2172,9 @@ fn substitute_constructor_alias_target(target: TypeExpr, params: Array[String], 
   }
 }
 
-/// Expand only the aliases needed to expose a generic result's outer
-/// constructor. The fuel bound makes cyclic aliases fail closed.
-fn expand_constructor_return_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int) -> TypeExpr {
+/// Expand aliases until a constructor-bearing parameter or result exposes its
+/// outer constructor. The fuel bound makes cyclic aliases fail closed.
+fn expand_constructor_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int) -> TypeExpr {
   if fuel <= 0 {
     ret
   } else match ret {
@@ -2180,7 +2185,7 @@ fn expand_constructor_return_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int)
       while i < Array::length(stmts) {
         match Array::get(stmts, i) {
           STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == 0 {
-            result = expand_constructor_return_alias(target, stmts, fuel - 1)
+            result = expand_constructor_alias(target, stmts, fuel - 1)
             found = true
           } else {
             ()
@@ -2199,7 +2204,7 @@ fn expand_constructor_return_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int)
         match Array::get(stmts, i) {
           STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == Array::length(args) {
             let expanded = substitute_constructor_alias_target(target, params, args)
-            result = expand_constructor_return_alias(expanded, stmts, fuel - 1)
+            result = expand_constructor_alias(expanded, stmts, fuel - 1)
             found = true
           } else {
             ()
@@ -2220,7 +2225,7 @@ fn expand_constructor_return_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int)
 /// constructor bound was declared first.
 fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)], stmts: Array[Stmt]) -> String {
   match ret {
-    Some(raw_ret) => match expand_constructor_return_alias(raw_ret, stmts, Array::length(stmts) + 1) {
+    Some(raw_ret) => match expand_constructor_alias(raw_ret, stmts, Array::length(stmts) + 1) {
       TyApp(head, _) => {
         let mut i = 0
         let mut result = ""
@@ -2371,7 +2376,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
                     // dict is supplied when C's witness is built. Thread with -1.
                     Array::push(threaded, (tpname, tr, 0 - 1))
                   } else {
-                    let cidx = find_constructor_recv_index(params, tpname)
+                    let cidx = find_constructor_recv_index(params, tpname, stmts)
                     if cidx >= 0 {
                       Array::push(threaded, (tpname, tr, encode_constructor_recv_index(cidx)))
                     } else {
@@ -2497,7 +2502,7 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, bi)
             let tpname = type_param_name(tp)
-            let has_carrier = find_recv_index(params, tpname) >= 0 || find_constructor_recv_index(params, tpname) >= 0 || find_array_elem_recv_index(params, tpname) >= 0 || str_array_contains(gimpl_owners, qualified_head(fname))
+            let has_carrier = find_recv_index(params, tpname) >= 0 || find_constructor_recv_index(params, tpname, stmts) >= 0 || find_array_elem_recv_index(params, tpname) >= 0 || str_array_contains(gimpl_owners, qualified_head(fname))
             if has_carrier {
               ()
             } else {
@@ -3116,6 +3121,7 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
       let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
     },
+    ESeq(_, result) => infer_constructor_arg_type_name(result, gens, struct_sets, var_types, fn_returns),
     EMatch(_, arms) => infer_constructor_match_arm_type_name(arms, gens, struct_sets, var_types, fn_returns),
     EIf(_, then_branch, else_branch) => {
       let then_constructor = infer_constructor_arg_type_name(then_branch, gens, struct_sets, var_types, fn_returns)
