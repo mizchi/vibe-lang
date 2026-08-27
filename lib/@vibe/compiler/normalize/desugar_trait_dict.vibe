@@ -1948,7 +1948,11 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       EIdent("String::to_bytes", _) => Some("ByteStream"),
       EIdent(fname, _) => match lookup_var_type(var_types, local_fn_return_key(fname)) {
         Some(head) => Some(head),
-        None => ctor_enum_of_name(fn_returns, fname)
+        None => if constructor_binding_is_masked(var_types, fname) {
+          None
+        } else {
+          ctor_enum_of_name(fn_returns, fname)
+        }
       },
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
@@ -3941,6 +3945,16 @@ fn collect_constructor_perform_payloads(expr: Expr, op: String, out: Array[Optio
       let continuation_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       collect_constructor_perform_payloads(continuation, op, out, gens, struct_sets, continuation_vars, fn_returns)
     },
+    EMatch(scrut, arms) => {
+      collect_constructor_perform_payloads(scrut, op, out, gens, struct_sets, var_types, fn_returns)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
+        collect_constructor_perform_payloads(body, op, out, gens, struct_sets, arm_vars, fn_returns)
+        i = i + 1
+      }
+    },
     ECall(callee, args, _) => {
       match callee {
         EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
@@ -4005,7 +4019,7 @@ fn infer_constructor_perform_payload(body: Expr, op: String, gens: Array[DictGen
 }
 
 fn constructor_handler_arm_var_types(body: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let masked = mask_constructor_pat_binders(var_types, pat)
+  let masked = mask_constructor_pat_binders(var_types, pat, fn_returns)
   match pat {
     PCtor(cn, sub) => if Array::length(sub) == 1 {
       match Array::get(sub, 0) {
@@ -7001,7 +7015,8 @@ fn constructor_env_entry_belongs_to(entry_name: String, name: String) -> Bool {
   if entry_name == name || entry_name == constructor_mask_key(name) || entry_name == constructor_head_key(name) || entry_name == local_fn_return_key(name) {
     true
   } else {
-    false
+    let suffix = String::concat("$", name)
+    String::ends_with(entry_name, suffix) && (String::starts_with(entry_name, "__ctorpay$") || String::starts_with(entry_name, "__ctorpayi$"))
   }
 }
 
@@ -7050,7 +7065,7 @@ fn extend_constructor_var_types(var_types: Array[(String, String)], name: String
     } else {
       extend_var_types(var_types, name, Some(tname))
     },
-    None => if constructor_env_has_binding(var_types, name) {
+    None => if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) {
       let out = constructor_env_copy_without(var_types, name)
       Array::push(out, (constructor_mask_key(name), ""))
       out
@@ -7065,18 +7080,23 @@ fn extend_constructor_var_types(var_types: Array[(String, String)], name: String
 fn constructor_rewrite_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
   match inferred {
     Some(tname) => extend_constructor_var_types(var_types, name, Some(tname)),
-    None => if !constructor_env_has_binding(var_types, name) {
+    None => if !constructor_binding_has_evidence(var_types, name) && !constructor_env_has_binding(var_types, name) {
       var_types
     } else {
-      match lookup_var_type(var_types, name) {
-        Some(old) => {
-          let out = constructor_env_copy_without(var_types, name)
-          Array::push(out, (constructor_mask_key(name), ""))
-          Array::push(out, (name, old))
-          out
-        },
-        None => extend_constructor_var_types(var_types, name, None)
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        let entry = Array::get(var_types, i)
+        let (entry_name, _) = entry
+        if entry_name == constructor_mask_key(name) || entry_name == constructor_head_key(name) || entry_name == local_fn_return_key(name) {
+          ()
+        } else {
+          Array::push(out, entry)
+        }
+        i = i + 1
       }
+      Array::push(out, (constructor_mask_key(name), ""))
+      out
     }
   }
 }
@@ -7108,7 +7128,7 @@ fn result_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
 /// Remove every name introduced by a pattern before adding any constructor
 /// evidence recoverable from its scrutinee. Unknown pattern payloads still
 /// shadow outer bindings; retaining them can select a stale witness.
-fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat) -> Array[(String, String)] {
+fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat, fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let binders = empty_str_array()
   collect_pat_binders(pat, binders)
   if Array::length(binders) == 0 {
@@ -7117,7 +7137,8 @@ fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat) ->
     let mut needed = false
     let mut bi = 0
     while bi < Array::length(binders) {
-      if constructor_env_has_binding(var_types, Array::get(binders, bi)) {
+      let name = Array::get(binders, bi)
+      if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) || fn_return_type(fn_returns, name) != None {
         needed = true
       } else {
         ()
@@ -7148,6 +7169,16 @@ fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat) ->
         }
         i = i + 1
       }
+      let mut k = 0
+      while k < Array::length(binders) {
+        let name = Array::get(binders, k)
+        if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) || fn_return_type(fn_returns, name) != None {
+          Array::push(out, (constructor_mask_key(name), ""))
+        } else {
+          ()
+        }
+        k = k + 1
+      }
       out
     }
   }
@@ -7157,19 +7188,26 @@ fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat) ->
 /// evidence. A bare binding receives the scrutinee constructor directly;
 /// structured patterns reuse the payload/shape recovery shared by lowering.
 fn constructor_match_arm_var_types(scrut: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let masked = mask_constructor_pat_binders(var_types, pat, fn_returns)
   match pat {
-    PBind(name) => extend_constructor_var_types(var_types, name, infer_constructor_arg_type_name(scrut, gens, struct_sets, var_types, fn_returns)),
+    PBind(name) => {
+      let bound = extend_constructor_var_types(masked, name, infer_constructor_arg_type_name(scrut, gens, struct_sets, var_types, fn_returns))
+      let with_return = extend_local_fn_return(bound, name, scrut)
+      match lookup_var_type(with_return, local_fn_return_key(name)) {
+        Some(_) => with_return,
+        None => match scrut {
+          EFn(_, _, _, _, _, body) => extend_constructor_var_types(with_return, local_fn_return_key(name), infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns)),
+          _ => with_return
+        }
+      }
+    },
     PCtor(cn, sub) => {
-      let masked = mask_constructor_pat_binders(var_types, pat)
       match constructor_call_payload_var_types(scrut, cn, sub, gens, struct_sets, masked, fn_returns) {
         Some(env) => env,
         None => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
       }
     },
-    _ => {
-      let masked = mask_constructor_pat_binders(var_types, pat)
-      arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
-    }
+    _ => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
   }
 }
 

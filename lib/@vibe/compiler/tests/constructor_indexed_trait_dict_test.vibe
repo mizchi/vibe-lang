@@ -267,6 +267,18 @@ test "#2338: shadowing a recursive helper drops its return constructor" {
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
 }
 
+test "#2338: pattern binders mask top-level function return constructors" {
+  let out = desugar_mappable_program("fn make(n: Int) -> Array[Int] { [n] }\nfn probe() -> Unit { let _ = Mappable::map(match ((n) -> { Some(n) }) { make => make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: effect payload scans carry match-arm constructor bindings" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { match Some([1]) { Some(xs) => { perform Log::Emit(xs); [0] }, None => [0] } } with { Log::Emit(xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
 test "#2338: recursive helper return aliases expand to the constructor" {
   let out = desugar_mappable_program("type Items[A] = Array[A]\nfn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Items[Int] { [n] }; make(1) }, (x) -> { x + 1 }); () }\n")
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
