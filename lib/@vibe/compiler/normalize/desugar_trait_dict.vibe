@@ -354,6 +354,8 @@ fn dict_struct_name(trait_name: String) -> String {
 /// `Base` declared first the walk stops on `BaseDict` and the label happened
 /// to be right (Codex review on #2313, measured both orders).
 let dtd_synth_dict_fields: Array[(String, String, String)] = array_empty()
+let dtd_constructor_tracking = [false]
+let dtd_constructor_local_returns: Array[String] = empty_str_array()
 
 fn dtd_synth_dict_reset() -> Unit {
   Array::truncate(dtd_synth_dict_fields, 0)
@@ -2323,17 +2325,21 @@ fn constructor_return_head_of(ret: Option[TypeExpr], body: Expr) -> String {
 }
 
 fn extend_local_fn_return(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
-  let key = local_fn_return_key(name)
-  match value {
-    EFn(_, _, _, ret, _, body) => {
-      let head = constructor_return_head_of(ret, body)
-      if String::length(head) == 0 {
-        extend_constructor_var_types(var_types, key, None)
-      } else {
-        extend_constructor_var_types(var_types, key, Some(head))
-      }
-    },
-    _ => extend_constructor_var_types(var_types, key, None)
+  if !Array::get(dtd_constructor_tracking, 0) || !str_array_contains(dtd_constructor_local_returns, name) {
+    var_types
+  } else {
+    let key = local_fn_return_key(name)
+    match value {
+      EFn(_, _, _, ret, _, body) => {
+        let head = constructor_return_head_of(ret, body)
+        if String::length(head) == 0 {
+          extend_constructor_var_types(var_types, key, None)
+        } else {
+          extend_constructor_var_types(var_types, key, Some(head))
+        }
+      },
+      _ => extend_constructor_var_types(var_types, key, None)
+    }
   }
 }
 
@@ -4717,7 +4723,18 @@ fn constructor_binding_is_masked(var_types: Array[(String, String)], name: Strin
 }
 
 fn constructor_binding_has_evidence(var_types: Array[(String, String)], name: String) -> Bool {
-  lookup_var_type(var_types, name) != None || lookup_var_type(var_types, constructor_head_key(name)) != None || lookup_var_type(var_types, local_fn_return_key(name)) != None || lookup_var_type(var_types, shape_key(name)) != None || lookup_var_type(var_types, tuple_shape_key(name)) != None
+  let head_key = constructor_head_key(name)
+  let return_key = local_fn_return_key(name)
+  let value_shape_key = shape_key(name)
+  let tuple_key = tuple_shape_key(name)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(var_types) && !found {
+    let (entry_name, _) = Array::get(var_types, i)
+    found = entry_name == name || entry_name == head_key || entry_name == return_key || entry_name == value_shape_key || entry_name == tuple_key
+    i = i + 1
+  }
+  found
 }
 
 fn shape_is_composite(sh: String) -> Bool {
@@ -7128,13 +7145,111 @@ fn gen_uses_constructor_receiver(gen: DictGen) -> Bool {
 /// these values need extended constructor inference; block/match/handler results
 /// are inferred when they are used directly as witness receivers.
 fn result_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
-  match expr {
+  Array::get(dtd_constructor_tracking, 0) && match expr {
     ECall(EIdent(name, _), _, _) => match lookup_gen_entry(gens, name) {
       Some(gen) => gen_uses_constructor_receiver(gen),
       None => false
     },
     _ => false
   }
+}
+
+fn collect_constructor_receiver_names(expr: Expr) -> Unit {
+  match expr {
+    EIdent(name, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      ()
+    } else {
+      Array::push(dtd_constructor_local_returns, name)
+    },
+    _ => ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    collect_constructor_receiver_names(Array::get(children, i))
+    i = i + 1
+  }
+}
+
+fn record_constructor_receiver_names(gen: DictGen, args: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(gen.constructor_recvs) {
+    let (_, encoded_index) = Array::get(gen.constructor_recvs, i)
+    let index = decode_constructor_recv_index(encoded_index)
+    if index >= 0 && index < Array::length(args) {
+      collect_constructor_receiver_names(Array::get(args, index))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn expr_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
+  let here = match expr {
+    ECall(EIdent(name, _), args, _) => match lookup_gen_entry(gens, name) {
+      Some(gen) => if gen_uses_constructor_receiver(gen) {
+        record_constructor_receiver_names(gen, args)
+        true
+      } else {
+        false
+      },
+      None => false
+    },
+    _ => false
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  let mut found = here
+  while i < Array::length(children) {
+    if expr_uses_constructor_witness(Array::get(children, i), gens) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stmts_use_constructor_witness(stmts: Array[Stmt], gens: Array[DictGen]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    let current = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => expr_uses_constructor_witness(expr, gens),
+      SLetMut(_, _, expr) => expr_uses_constructor_witness(expr, gens),
+      SLetPat(_, expr) => expr_uses_constructor_witness(expr, gens),
+      STest(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SBench(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SExample(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SExpr(expr) => expr_uses_constructor_witness(expr, gens),
+      SFnDecl(_, _, expr, requires, ensures) => expr_uses_constructor_witness(expr, gens) || expr_list_uses_constructor_witness(requires, gens) || expr_list_uses_constructor_witness(ensures, gens),
+      SModule(_, _, body) => stmts_use_constructor_witness(body, gens),
+      _ => false
+    }
+    if current {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn expr_list_uses_constructor_witness(exprs: Array[Expr], gens: Array[DictGen]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if expr_uses_constructor_witness(Array::get(exprs, i), gens) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// Remove every name introduced by a pattern before adding any constructor
@@ -9353,7 +9468,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       } else {
         anon_or_infer(val, struct_sets, var_types, fn_returns)
       }
-      let inferred_vars = if inferred == None && constructor_binding_has_evidence(var_types, name) {
+      let inferred_vars = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
         constructor_rewrite_var_types(var_types, name, inferred)
       } else {
         extend_var_types(var_types, name, inferred)
@@ -9368,7 +9483,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => {
-      let rec_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, None), name, val)
+      let rec_vars = if Array::get(dtd_constructor_tracking, 0) {
+        extend_local_fn_return(extend_constructor_var_types(var_types, name, None), name, val)
+      } else {
+        var_types
+      }
       ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, rec_vars, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, rec_vars, fn_returns))
     },
     ELetMut(name, val, body, soff) => {
@@ -9378,7 +9497,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       } else {
         anon_or_infer(val, struct_sets, var_types, fn_returns)
       }
-      let inferred_vars = if inferred == None && constructor_binding_has_evidence(var_types, name) {
+      let inferred_vars = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
         constructor_rewrite_var_types(var_types, name, inferred)
       } else {
         extend_var_types(var_types, name, inferred)
@@ -17882,8 +18001,14 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   let fn_returns = collect_fn_returns(stmts)
   let gimpl_infos = collect_generic_impl_infos(stmts)
   let gens = build_gens(stmts, traits, gimpl_infos)
+  Array::truncate(dtd_constructor_local_returns, 0)
+  Array::set(dtd_constructor_tracking, 0, stmts_use_constructor_witness(stmts, gens))
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
-  let toplevel_vars = collect_toplevel_constructor_vars(stmts, gens, struct_sets, fn_returns)
+  let toplevel_vars = if Array::get(dtd_constructor_tracking, 0) {
+    collect_toplevel_constructor_vars(stmts, gens, struct_sets, fn_returns)
+  } else {
+    collect_toplevel_anon_records(stmts, struct_sets)
+  }
   // #1374: reset the exception-kind pass state. An already-declared cell means
   // an earlier run of this pass on this same program already wrapped every
   // throw, so the rewrite below stays off.
