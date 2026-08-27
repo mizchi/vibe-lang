@@ -7252,6 +7252,148 @@ fn expr_list_uses_constructor_witness(exprs: Array[Expr], gens: Array[DictGen]) 
   found
 }
 
+fn constructor_receiver_pattern_is_needed(pat: Pat) -> Bool {
+  let binders = empty_str_array()
+  collect_pat_binders(pat, binders)
+  let mut i = 0
+  let mut needed = false
+  while i < Array::length(binders) && !needed {
+    needed = str_array_contains(dtd_constructor_local_returns, Array::get(binders, i))
+    i = i + 1
+  }
+  needed
+}
+
+fn constructor_receiver_arms_need_scrutinee(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut needed = false
+  while i < Array::length(arms) && !needed {
+    let (pat, _) = Array::get(arms, i)
+    needed = constructor_receiver_pattern_is_needed(pat)
+    i = i + 1
+  }
+  needed
+}
+
+fn propagate_constructor_receiver_names_expr(expr: Expr) -> Unit {
+  match expr {
+    ELet(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    ELetRec(name, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    ELetMut(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EAssign(name, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EAssignOp(name, _, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EForIn(value_name, key_name, iter, _) => if str_array_contains(dtd_constructor_local_returns, value_name) || match key_name {
+      Some(name) => str_array_contains(dtd_constructor_local_returns, name),
+      None => false
+    } {
+      collect_constructor_receiver_names(iter)
+    } else {
+      ()
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (name, initial) = Array::get(params, i)
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(initial)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    EMatch(scrutinee, arms) => if constructor_receiver_arms_need_scrutinee(arms) {
+      collect_constructor_receiver_names(scrutinee)
+    } else {
+      ()
+    },
+    EHandle(body, arms) => if constructor_receiver_arms_need_scrutinee(arms) {
+      collect_constructor_receiver_names(body)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    propagate_constructor_receiver_names_expr(Array::get(children, i))
+    i = i + 1
+  }
+}
+
+fn propagate_constructor_receiver_names(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, expr) => {
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      SLetMut(name, _, expr) => {
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      SLetPat(pat, expr) => {
+        if constructor_receiver_pattern_is_needed(pat) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      STest(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SBench(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SExample(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SExpr(expr) => propagate_constructor_receiver_names_expr(expr),
+      SFnDecl(_, _, expr, requires, ensures) => {
+        propagate_constructor_receiver_names_expr(expr)
+        let mut ri = 0
+        while ri < Array::length(requires) {
+          propagate_constructor_receiver_names_expr(Array::get(requires, ri))
+          ri = ri + 1
+        }
+        let mut ei = 0
+        while ei < Array::length(ensures) {
+          propagate_constructor_receiver_names_expr(Array::get(ensures, ei))
+          ei = ei + 1
+        }
+      },
+      SModule(_, _, body) => propagate_constructor_receiver_names(body),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 /// Remove every name introduced by a pattern before adding any constructor
 /// evidence recoverable from its scrutinee. Unknown pattern payloads still
 /// shadow outer bindings; retaining them can select a stale witness.
@@ -18003,6 +18145,15 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   let gens = build_gens(stmts, traits, gimpl_infos)
   Array::truncate(dtd_constructor_local_returns, 0)
   Array::set(dtd_constructor_tracking, 0, stmts_use_constructor_witness(stmts, gens))
+  if Array::get(dtd_constructor_tracking, 0) {
+    let mut previous_count = -1
+    while previous_count != Array::length(dtd_constructor_local_returns) {
+      previous_count = Array::length(dtd_constructor_local_returns)
+      propagate_constructor_receiver_names(stmts)
+    }
+  } else {
+    ()
+  }
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
   let toplevel_vars = if Array::get(dtd_constructor_tracking, 0) {
     collect_toplevel_constructor_vars(stmts, gens, struct_sets, fn_returns)
