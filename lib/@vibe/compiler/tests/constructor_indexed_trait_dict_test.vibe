@@ -260,3 +260,37 @@ test "#2338: qualified effect payloads do not collide by member name" {
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
   inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
 }
+
+test "#2338: shadowing a recursive helper drops its return constructor" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Array[Int] { [n] }; let make = (n: Int) -> Option[Int] { Some(n) }; make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: recursive helper return aliases expand to the constructor" {
+  let out = desugar_mappable_program("type Items[A] = Array[A]\nfn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Items[Int] { [n] }; make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+fn desugar_checked_source(source: String) -> String {
+  handle {
+    let stmts = parse_program(lex(source))
+    let _ = check_program(stmts)
+    desugar_trait_dicts(stmts)
+    print_program(stmts)
+  } with { Exception::Throw(msg) => String::concat("THREW:", __to_string(msg)) }
+}
+
+test "#2338: applied bounds through aliases specialize to the constructor" {
+  let out = desugar_checked_source("type Apply[F[_], A] = F[A]\ntrait Accepts[A] { accept(A) -> Int }\nimpl Accepts[Array[Int]] for Array { accept(xs: Array[Int]) -> Int { Array::length(xs) } }\nfn accept[F[_]: Accepts[Apply[F, Int]]](xs: F[Int]) -> Int { F::accept(xs) }\nfn use_it() -> Int { accept([1]) }")
+  inspect(String::contains(out, "THREW:"), content = "false")
+  inspect(String::contains(out, "AcceptsDict[Array[Int]]"), content = "true")
+  inspect(String::contains(out, "F::accept("), content = "false")
+}
+
+test "#2338: sibling constructor formals specialize in witness bounds" {
+  let out = desugar_checked_source("trait Zip[F[_], G[_]] { pair[A](F[A], G[A]) -> Int }\nimpl Zip[Array, Option] for Array { pair(xs: Array[A], ys: Option[A]) -> Int { 0 } }\nfn go[F[_]: Zip[F, G], G[_], A](xs: F[A], ys: G[A]) -> Int { F::pair(xs, ys) }\nfn use_it() -> Int { go([1], Some(1)) }")
+  inspect(String::contains(out, "THREW:"), content = "false")
+  inspect(String::contains(out, "ZipDict[Array, Option]"), content = "true")
+  inspect(String::contains(out, "F::pair("), content = "false")
+}

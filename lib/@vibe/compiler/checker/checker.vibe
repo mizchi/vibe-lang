@@ -1400,24 +1400,35 @@ fn trait_bound_vid_prefix() -> String {
   "#tpvid."
 }
 
+fn bind_trait_bound_tparam_name(name: String, tparams: Array[String], ids: Array[Int]) -> String {
+  if name == trait_bound_self_marker {
+    name
+  } else {
+    let mut i = 0
+    let mut out = name
+    while i < Array::length(tparams) && i < Array::length(ids) {
+      if type_param_name(Array::get(tparams, i)) == name {
+        out = String::concat(trait_bound_vid_prefix(), __to_string(Array::get(ids, i)))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
 fn bind_trait_bound_tparam_names(te: TypeExpr, tparams: Array[String], ids: Array[Int]) -> TypeExpr {
   match te {
-    TyName(name) => if name == trait_bound_self_marker {
-      te
-    } else {
-      let mut i = 0
-      let mut out = te
-      while i < Array::length(tparams) && i < Array::length(ids) {
-        if type_param_name(Array::get(tparams, i)) == name {
-          out = TyName(String::concat(trait_bound_vid_prefix(), __to_string(Array::get(ids, i))))
-        } else {
-          ()
-        }
-        i = i + 1
+    TyName(name) => {
+      let bound = bind_trait_bound_tparam_name(name, tparams, ids)
+      if bound == name {
+        te
+      } else {
+        TyName(bound)
       }
-      out
     },
-    TyApp(name, args) => TyApp(name, for arg in args {
+    TyApp(name, args) => TyApp(bind_trait_bound_tparam_name(name, tparams, ids), for arg in args {
       bind_trait_bound_tparam_names(arg, tparams, ids)
     }),
     TyTuple(items) => TyTuple(for item in items {
@@ -1595,23 +1606,29 @@ fn trait_bound_type_expr(ty: Type) -> Option[TypeExpr] {
   }
 }
 
-fn resolve_trait_bound_arg_type(arg: TypeExpr, self_ty: Type, s: Subst) -> Type {
+fn resolve_trait_bound_arg_type(arg: TypeExpr, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> Type {
   match arg {
     TyName(name) => match parse_trait_bound_vid(name) {
       Some(vid) => subst_apply(s, CtVar(vid)),
-      None => replace_trait_bound_self_type(resolve_type_expr(arg, array_empty()), self_ty)
+      None => replace_trait_bound_self_type(resolve_type_expr(arg, defs), self_ty)
     },
-    _ => replace_trait_bound_self_type(resolve_type_expr(arg, array_empty()), self_ty)
+    TyApp(name, args) => match parse_trait_bound_vid(name) {
+      Some(vid) => hkt_apply_ctor(subst_apply(s, CtVar(vid)), for nested in args {
+        resolve_trait_bound_arg_type(nested, self_ty, s, defs)
+      }),
+      None => replace_trait_bound_self_type(resolve_type_expr(arg, defs), self_ty)
+    },
+    _ => replace_trait_bound_self_type(resolve_type_expr(arg, defs), self_ty)
   }
 }
 
-export fn resolve_trait_bound_self_reference(key: String, self_ty: Type, s: Subst) -> String {
+export fn resolve_trait_bound_self_reference(key: String, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> String {
   match trait_ref_from_key(key) {
     Some(TyApp(name, args)) => {
       let mapped = array_empty()
       let mut ok = true
       for arg in args {
-        let resolved = resolve_trait_bound_arg_type(arg, self_ty, s)
+        let resolved = resolve_trait_bound_arg_type(arg, self_ty, s, defs)
         match trait_bound_type_expr(resolved) {
           Some(next) => Array::push(mapped, next),
           None => {
