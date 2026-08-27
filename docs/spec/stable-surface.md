@@ -216,14 +216,16 @@ The stable symbols listed under "Key Builtins" in the
   **combinator layer (`Iterator::map` and friends) is not frozen** — it is
   retired by ADR-0099's two-layer split and has zero rows in the registry
   (measured: `Iterator::` 0 hits). The frozen constructor-polymorphic surface
-  is the Mappable trait and pipeline-first map function listed under
-  @vibe/builtin below; its shipped implementations are eager Array and Option
-  (ADR-0110). Container-specific
+  is the `Mappable` API listed under @vibe/builtin below; its shipped
+  implementations are eager Array and Option (ADR-0110). Container-specific
   `Array::map` / `Array::filter` / `Array::fold` remain available but cannot be frozen
   as first-class values; see Array above.
 - **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), the
-  `Mappable[F[_]]` trait and `map` function (ADR-0110), and the `let*` railway
-  bind. `Result::and_then` **cannot be frozen** — `Result` was
+  `Mappable[F[_]]` trait and its pipeline-first operation (ADR-0110), and the
+  `let*` railway bind. `Mappable::map` is **not frozen as a no-import prelude
+  symbol**: it is frozen as an imported `@vibe/builtin` API by `index.vpkg`,
+  and `import @vibe/builtin { trait Mappable }` makes it visible without a
+  separate operation import. `Result::and_then` **cannot be frozen** — `Result` was
   removed from the language in #1324, and `Result::` has zero registry rows.
   `tap` / `tap_some` moved to `@vibe/console` in #2102 (`tap_ok` / `tap_err`
   were removed in #1324).

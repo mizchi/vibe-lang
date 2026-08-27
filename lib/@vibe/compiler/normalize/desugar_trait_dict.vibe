@@ -1924,7 +1924,8 @@ fn anon_or_constructor_infer(val: Expr, gens: Array[DictGen], struct_sets: Array
     // EHandle recovery exists for a constructor-polymorphic CALL RECEIVER.
     // Do not publish its ordinary result head into the shared var_types table:
     // that table also controls rendering, and an otherwise-untyped handled
-    // Bool historically stays erased there. A direct `map(handle { .. }, f)`
+    // Bool historically stays erased there. A direct
+    // `Mappable::map(handle { .. }, f)`
     // still enters infer_constructor_arg_type_name from synth_dicts.
     None => match val {
       EHandle(_, _) => infer_arg_type_name(val, struct_sets, var_types, fn_returns),
@@ -3152,12 +3153,16 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
       }
     },
     ELet(name, val, body, _) => {
-      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
       infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
     },
     ELetMut(name, val, body, _) => {
-      let body_vars = extend_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
-      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+      if name == "__loop_result" {
+        infer_parameterized_loop_constructor(body, gens, struct_sets, var_types, fn_returns)
+      } else {
+        let body_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+        infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+      }
     },
     ELetRec(_, _, body) => infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns),
     EAssign(_, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
@@ -3202,6 +3207,65 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
       }
     },
     _ => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// Collect the constructor assigned by the parser's parameterized-loop
+/// lowering. Every reachable `break value` must resolve to the same
+/// constructor; one unknown or disagreement leaves dictionary selection
+/// unresolved. Nested control scopes are boundaries because they own their
+/// own break/loop result, and a nested `__loop_result` binding shadows this
+/// synthetic slot.
+fn collect_parameterized_loop_constructors(expr: Expr, expected: Array[String], valid: Array[Bool], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+  if !Array::get(valid, 0) {
+    ()
+  } else {
+    match expr {
+      EAssign("__loop_result", value, continuation) => {
+        match infer_constructor_arg_type_name(value, gens, struct_sets, var_types, fn_returns) {
+          Some(actual) => if Array::length(expected) == 0 {
+            Array::push(expected, actual)
+          } else if Array::get(expected, 0) != actual {
+            Array::set(valid, 0, false)
+          } else {
+            ()
+          },
+          None => Array::set(valid, 0, false)
+        }
+        collect_parameterized_loop_constructors(continuation, expected, valid, gens, struct_sets, var_types, fn_returns)
+      },
+      ELetMut("__loop_result", _, _, _) => (),
+      EFn(_, _, _, _, _, _) => (),
+      ELoop(_, _) => (),
+      EWhile(_, _) => (),
+      _ => {
+        let children = expr_children(expr)
+        let mut i = 0
+        while i < Array::length(children) && Array::get(valid, 0) {
+          collect_parameterized_loop_constructors(Array::get(children, i), expected, valid, gens, struct_sets, var_types, fn_returns)
+          i = i + 1
+        }
+      }
+    }
+  }
+}
+
+/// Recognize only the exact result-bearing spine emitted by
+/// `parse_loop_primary`: `while ...; __loop_result`. Starting at the while
+/// body avoids confusing a nested while's assignments with this loop.
+fn infer_parameterized_loop_constructor(body: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match body {
+    ESeq(EWhile(_, loop_body), EIdent("__loop_result", _)) => {
+      let expected = empty_str_array()
+      let valid = [true]
+      collect_parameterized_loop_constructors(loop_body, expected, valid, gens, struct_sets, var_types, fn_returns)
+      if Array::get(valid, 0) && Array::length(expected) == 1 {
+        Some(Array::get(expected, 0))
+      } else {
+        None
+      }
+    },
+    _ => None
   }
 }
 
@@ -6215,9 +6279,32 @@ fn railway_bind_payload_type(val: Expr, struct_sets: Array[(String, Array[String
   }
 }
 
-/// Extend the local var-type environment with `name` when its bound value's
-/// type was inferable. A fresh array (copy) is returned so sibling scopes do not
-/// see the binding.
+/// Constructor recovery has a stricter shadowing contract than the shared
+/// rewrite environment: an unresolved inner binding must still mask both the
+/// nominal and shape evidence carried by an outer binding of the same name.
+fn extend_constructor_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(var_types) {
+    let entry = Array::get(var_types, i)
+    let (entry_name, _) = entry
+    if entry_name != name && entry_name != shape_key(name) {
+      Array::push(out, entry)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  match inferred {
+    Some(tname) => Array::push(out, (name, tname)),
+    None => ()
+  }
+  out
+}
+
+/// Extend the shared rewrite environment when the binding's type is known.
+/// Unknown bindings retain the historical best-effort environment because
+/// shape/rendering consumers have separate conservative fallbacks.
 fn extend_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
   match inferred {
     Some(tname) => {

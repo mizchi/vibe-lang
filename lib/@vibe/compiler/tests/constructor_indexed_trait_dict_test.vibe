@@ -16,9 +16,9 @@ import @vibe/compiler/syntax {
 
 fn desugared_constructor_map(check_first: Bool, with_calls: Bool) -> String with Exception {
   let source = if with_calls {
-    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] {\n  F::map(xs, f)\n}\ntest \"array\" { let a = [1, 2] |> map((x) -> { x + 1 }) |> map((x) -> { x * 2 }); assert_eq(a, [4, 6]) }\ntest \"option\" { let o = Some(3) |> map((x) -> { x + 1 }) |> map((x) -> { x * 2 }); assert_eq(o, Some(8)) }\n"
+    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] {\n  F::map(xs, f)\n}\ntest \"array\" { let a = [1, 2] |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(a, [4, 6]) }\ntest \"option\" { let o = Some(3) |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(o, Some(8)) }\n"
   } else {
-    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\n\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] {\n  F::map(xs, f)\n}\n"
+    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\n\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] {\n  F::map(xs, f)\n}\n"
   }
   let stmts = parse_program(lex(source))
   if check_first {
@@ -47,7 +47,25 @@ test "#2338: checked constructor-indexed bounds still lower through a witness di
 test "#2338: concrete constructor calls synthesize applied witnesses" {
   let out = desugared_constructor_map(false, true)
   inspect(String::contains(out, "F::map(xs, f)"), content = "false")
-  inspect(String::contains(out, "map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: unresolved shadows do not reuse an outer constructor witness" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = [1]; let _ = Mappable::map({ let xs = ((x) -> { x })(Some(3)); xs }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: parameterized loop break values select the outer constructor witness" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let _ = Mappable::map(loop (i = 0) { let _ = loop (j = 0) { break Some(j) }; break [i] }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
 }
 
 test "#2338: applied trait dictionaries remain idempotently threaded" {
@@ -62,7 +80,7 @@ test "#2338: applied trait dictionaries remain idempotently threaded" {
 }
 
 test "#2338: opaque contract types retain constructor parameter arity" {
-  let (_, opaques, _) = parse_contract_program(lex("opaque type Mappable[F[_]]\nfn map[F[_]: Mappable[F], A](xs: F[A]) -> F[A]\n"))
+  let (_, opaques, _) = parse_contract_program(lex("opaque type Mappable[F[_]]\nfn Mappable::map[F[_]: Mappable[F], A](xs: F[A]) -> F[A]\n"))
   inspect(contract_surface_lines([], opaques, []), content = "[opaque Mappable[_[_]]]")
 }
 

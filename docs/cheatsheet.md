@@ -541,14 +541,18 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 (`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
 `Array::map(xs, (v) -> v * 2)`.
 
-The constructor-indexed `map` is the canonical container-preserving pipeline
-combinator (ADR-0110):
+The constructor-indexed `Mappable::map` is the canonical container-preserving
+pipeline combinator (ADR-0110). Trait operations remain in the trait namespace
+instead of becoming bare top-level functions; importing the trait also makes
+its namespaced operations visible:
 
 ```vibe
-import @vibe/builtin { trait Mappable, map }
+import @vibe/builtin { trait Mappable }
 
-let arrays = [1, 2] |> map((x) -> { x + 1 }) |> map((x) -> { x * 2 })
-let option = Some(3) |> map((x) -> { x + 1 })
+let arrays = [1, 2]
+  |> Mappable::map((x) -> { x + 1 })
+  |> Mappable::map((x) -> { x * 2 })
+let option = Some(3) |> Mappable::map((x) -> { x + 1 })
 ```
 
 `Mappable[Array]` lowers to eager `Array::map`; `Mappable[Option]` preserves
