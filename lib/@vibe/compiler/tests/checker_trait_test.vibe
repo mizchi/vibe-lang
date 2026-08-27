@@ -4,18 +4,28 @@ import @vibe/compiler/checker {
   check_bounds_satisfied, register_builtin_traits, satisfies_bound, validate_impl_no_overlap, validate_supers_defined
 }
 
+import @vibe/ast {
+  TypeExpr
+}
+
 import @vibe/core {
   array_empty
 }
 
 import @vibe/compiler/core {
-  Subst, Type, TypeEnv, trait_defined, trait_supers, type_implements_trait
+  Subst, Type, TypeEnv, overlapping_impl_target_for, trait_defined, trait_supers, type_implements_trait
 }
 
 //# Functions
 
 fn no_type_args() -> Array[Type] {
   array_empty()
+}
+
+fn measured_trait_env() -> TypeEnv {
+  EnvTraitDef("Measured", [], false, [
+    ("measure", [TyName("Self")], TyName("Int"))
+  ], EnvEmpty, [], [])
 }
 
 //# Misc
@@ -128,6 +138,54 @@ test "two different CtNamed types dont overlap for same trait" {
 test "String implements Eq from builtins so overlap is detected" {
   let env = register_builtin_traits(EnvEmpty)
   assert(not(validate_impl_no_overlap(env, "Eq", CtString)))
+}
+
+test "impl overlap preserves repeated generic target constraints" {
+  let t = CtNamed("T", no_type_args())
+  let pair_tt = CtNamed("Pair", [t, t])
+  let env = EnvTraitImplGen("Measured", ["T"], array_empty(), pair_tt, EnvEmpty)
+  let pair_int_int = CtNamed("Pair", [CtInt, CtInt])
+  let pair_int_string = CtNamed("Pair", [CtInt, CtString])
+  match overlapping_impl_target_for(env, "Measured", array_empty(), pair_int_int) {
+    Some(_) => (),
+    None => assert(false)
+  }
+  match overlapping_impl_target_for(env, "Measured", array_empty(), pair_int_string) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "impl overlap does not use expression coercions" {
+  let t = CtNamed("T", no_type_args())
+  let u = CtNamed("U", no_type_args())
+  let existing = CtNamed("Pair", [t, CtChar])
+  let candidate = CtNamed("Pair", [u, CtInt])
+  let env = EnvTraitImplGen("Measured", ["T"], array_empty(), existing, EnvEmpty)
+  match overlapping_impl_target_for(env, "Measured", ["U"], candidate) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "generic impl targets bind formals nested in tuples" {
+  let env = measured_trait_env()
+  let t = CtNamed("T", no_type_args())
+  let target = CtNamed("Box", [CtTuple([t, CtInt])])
+  let env2 = EnvTraitImplGen("Measured", ["T"], array_empty(), target, env)
+  let resolved = CtNamed("Box", [CtTuple([CtString, CtInt])])
+  assert(type_implements_trait(env2, SubstEmpty, resolved, "Measured"))
+}
+
+test "generic impl targets bind formals nested in function types" {
+  let env = measured_trait_env()
+  let t = CtNamed("T", no_type_args())
+  let target = CtNamed("Box", [CtFn([t], CtInt, Some("Fs"))])
+  let env2 = EnvTraitImplGen("Measured", ["T"], array_empty(), target, env)
+  let matching = CtNamed("Box", [CtFn([CtString], CtInt, Some("Fs"))])
+  let different_effect = CtNamed("Box", [CtFn([CtString], CtInt, Some("Env"))])
+  assert(type_implements_trait(env2, SubstEmpty, matching, "Measured"))
+  assert(not(type_implements_trait(env2, SubstEmpty, different_effect, "Measured")))
 }
 
 test "i64 implements Add after registration" {

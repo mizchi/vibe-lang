@@ -18,6 +18,10 @@ import @vibe/compiler/core {
   trait_method_sig_binders_deep
 }
 
+import @vibe/ast {
+  impl_applied_target_key, impl_method_owner, impl_specialized_method_binding_name, impl_target_from_key, impl_target_head, impl_target_key
+}
+
 import @vibe/core {
   array_empty
 }
@@ -59,6 +63,21 @@ enum StoredLabeledArgBinderAuthorityNormalization {
 
 export struct LabeledArgBinderAuthorityNormalization {
   stored: StoredLabeledArgBinderAuthorityNormalization
+}
+
+struct GenericImplInfo {
+  owner: String;
+  trait_name: String;
+  type_params: Array[String];
+  target: TypeExpr
+}
+
+struct DictGen {
+  name: String;
+  threaded: Array[(String, String, Int)];
+  impl_trait: String;
+  impl_params: Array[String];
+  impl_target: Option[TypeExpr]
 }
 
 fn paired_poison(poisoned: Array[Bool]) -> Unit {
@@ -528,15 +547,15 @@ fn lookup_method_gen(table: Array[(String, Array[(String, Array[String], Array[(
   result
 }
 
-/// Map each impl's target type to the trait it implements
-/// (`impl Tr for C` -> (C, Tr)). A type may implement several traits; the first
-/// matching trait that declares the method is used at lookup time.
+/// Map each impl method owner to the trait it implements. Concrete applied
+/// targets have a specialization-specific internal owner; generic and bare
+/// targets keep their constructor owner.
 fn collect_impl_trait_map(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImpl(_, _, trait_name, type_name) => Array::push(out, (type_name, trait_name)),
+      SImpl(tparams, _, trait_name, target) => Array::push(out, (impl_method_owner(tparams, trait_name, target), trait_name)),
       _ => ()
     }
     i = i + 1
@@ -2026,16 +2045,16 @@ fn qualified_head(name: String) -> String {
   }
 }
 
-/// Type names of bounded generic impls (`impl [T: Bound] Trait for C`). Their
-/// methods (`C::m`) carry the bound `T` even though it appears nested in the
+/// Method owners of bounded generic impls (`impl [T: Bound] Trait for C[T]`).
+/// Their methods carry the bound `T` even though it appears nested in the
 /// receiver (`self: C[T]`), so they must be threaded a witness dict (the normal
 /// "type param is a direct parameter" rule misses them).
-fn collect_generic_impl_types(stmts: Array[Stmt]) -> Array[String] {
+fn collect_generic_impl_owners(stmts: Array[Stmt]) -> Array[String] {
   let out = empty_str_array()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImpl(tparams, tbounds, _, type_name) => if Array::length(tparams) > 0 {
+      SImpl(tparams, tbounds, trait_name, target) => if Array::length(tparams) > 0 {
         let mut has_bound = false
         let mut bi = 0
         while bi < Array::length(tbounds) {
@@ -2052,7 +2071,7 @@ fn collect_generic_impl_types(stmts: Array[Stmt]) -> Array[String] {
           bi = bi + 1
         }
         if has_bound {
-          Array::push(out, type_name)
+          Array::push(out, impl_method_owner(tparams, trait_name, target))
         } else {
           ()
         }
@@ -2064,7 +2083,50 @@ fn collect_generic_impl_types(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gimpl_types: Array[String]) -> Array[(String, Array[(String, String, Int)])] {
+fn collect_generic_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
+  let out = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, _, trait_name, target) => if Array::length(tparams) > 0 {
+        let dispatch_target = match target {
+          TyName(name) => TyApp(name, for tparam in tparams {
+            TyName(tparam)
+          }),
+          _ => target
+        }
+        Array::push(out, GenericImplInfo::{
+          owner: impl_method_owner(tparams, trait_name, target),
+          trait_name,
+          type_params: tparams,
+          target: dispatch_target
+        })
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn generic_impl_info_for_owner(infos: Array[GenericImplInfo], owner: String) -> Option[GenericImplInfo] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(infos) {
+    let info = Array::get(infos, i)
+    if info.owner == owner {
+      result = Some(info)
+      i = Array::length(infos)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gimpl_infos: Array[GenericImplInfo]) -> Array[DictGen] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -2073,6 +2135,11 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
         EFn(_, bounds, params, _, _, _) => if already_threaded(bounds, params) {
           ()
         } else {
+          let impl_info = generic_impl_info_for_owner(gimpl_infos, qualified_head(fname))
+          let is_impl_method = match impl_info {
+            Some(_) => true,
+            None => false
+          }
           let threaded = empty_threaded()
           let mut bi = 0
           while bi < Array::length(bounds) {
@@ -2085,7 +2152,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
                   let ridx = find_recv_index(params, tp)
                   if ridx >= 0 {
                     Array::push(threaded, (tp, tr, ridx))
-                  } else if str_array_contains(gimpl_types, qualified_head(fname)) {
+                  } else if is_impl_method {
                     // bounded generic-impl method: T is nested in `self: C[T]`,
                     // so there is no inferable receiver argument — the witness
                     // dict is supplied when C's witness is built. Thread with -1.
@@ -2116,8 +2183,23 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
             }
             bi = bi + 1
           }
-          if Array::length(threaded) > 0 {
-            Array::push(out, (fname, threaded))
+          if Array::length(threaded) > 0 || is_impl_method {
+            match impl_info {
+              Some(info) => Array::push(out, DictGen::{
+                name: fname,
+                threaded,
+                impl_trait: info.trait_name,
+                impl_params: info.type_params,
+                impl_target: Some(info.target)
+              }),
+              None => Array::push(out, DictGen::{
+                name: fname,
+                threaded,
+                impl_trait: "",
+                impl_params: [],
+                impl_target: None
+              })
+            }
           } else {
             ()
           }
@@ -2142,7 +2224,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
 /// that ability purely from the signature: a parameter of type `T`
 /// (find_recv_index), a parameter of type `Array[T]`
 /// (find_array_elem_recv_index, #1199), or the function being a bounded
-/// generic-impl method (collect_generic_impl_types — its dict arrives with the
+/// generic-impl method (collect_generic_impl_owners — its dict arrives with the
 /// impl witness instead). A bounded generic with NONE of those is never
 /// registered in `gens`, its body is never rewritten, and `T::m` reaches
 /// codegen unresolved. This function is the checker-facing mirror of exactly
@@ -2158,7 +2240,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
 /// bound.
 export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
   let out = empty_str_array()
-  let gimpl_types = collect_generic_impl_types(stmts)
+  let gimpl_owners = collect_generic_impl_owners(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -2193,7 +2275,7 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
           let mut bi = 0
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, bi)
-            let has_carrier = find_recv_index(params, tp) >= 0 || find_array_elem_recv_index(params, tp) >= 0 || str_array_contains(gimpl_types, qualified_head(fname))
+            let has_carrier = find_recv_index(params, tp) >= 0 || find_array_elem_recv_index(params, tp) >= 0 || str_array_contains(gimpl_owners, qualified_head(fname))
             if has_carrier {
               ()
             } else {
@@ -2257,19 +2339,202 @@ fn push_undispatchable_refs(e: Expr, fname: String, tp: String, trait_list: Arra
   }
 }
 
-fn lookup_gen(gens: Array[(String, Array[(String, String, Int)])], name: String) -> Option[Array[(String, String, Int)]] {
+fn lookup_gen_entry(gens: Array[DictGen], name: String) -> Option[DictGen] {
   let mut i = 0
   let mut result = None
   while i < Array::length(gens) {
-    let (gname, threaded) = Array::get(gens, i)
-    if gname == name {
-      result = Some(threaded)
+    let gen = Array::get(gens, i)
+    if gen.name == name {
+      result = Some(gen)
       i = Array::length(gens)
     } else {
       i = i + 1
     }
   }
   result
+}
+
+fn lookup_gen(gens: Array[DictGen], name: String) -> Option[Array[(String, String, Int)]] {
+  match lookup_gen_entry(gens, name) {
+    Some(gen) => Some(gen.threaded),
+    None => None
+  }
+}
+
+fn impl_pattern_binding(bindings: Array[(String, TypeExpr)], name: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(bindings) {
+    let (bound_name, bound_type) = Array::get(bindings, i)
+    if bound_name == name {
+      result = Some(bound_type)
+      i = Array::length(bindings)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn impl_pattern_param(params: Array[String], name: String) -> Bool {
+  str_array_contains(params, name)
+}
+
+fn impl_target_pattern_matches(pattern: TypeExpr, actual: TypeExpr, params: Array[String], bindings: Array[(String, TypeExpr)]) -> Bool {
+  match pattern {
+    TyName(name) => if impl_pattern_param(params, name) {
+      match impl_pattern_binding(bindings, name) {
+        Some(bound) => impl_target_key(bound) == impl_target_key(actual),
+        None => {
+          Array::push(bindings, (name, actual))
+          true
+        }
+      }
+    } else {
+      match actual {
+        TyName(actual_name) => name == actual_name,
+        _ => false
+      }
+    },
+    TyApp(name, args) => match actual {
+      TyApp(actual_name, actual_args) => if name == actual_name && Array::length(args) == Array::length(actual_args) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(args) && ok {
+          ok = impl_target_pattern_matches(Array::get(args, i), Array::get(actual_args, i), params, bindings)
+          i = i + 1
+        }
+        ok
+      } else {
+        false
+      },
+      _ => false
+    },
+    TyFn(fn_params, ret, effect) => match actual {
+      TyFn(actual_params, actual_ret, actual_effect) => if effect == actual_effect && Array::length(fn_params) == Array::length(actual_params) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(fn_params) && ok {
+          ok = impl_target_pattern_matches(Array::get(fn_params, i), Array::get(actual_params, i), params, bindings)
+          i = i + 1
+        }
+        ok && impl_target_pattern_matches(ret, actual_ret, params, bindings)
+      } else {
+        false
+      },
+      _ => false
+    },
+    TyTuple(items) => match actual {
+      TyTuple(actual_items) => if Array::length(items) == Array::length(actual_items) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(items) && ok {
+          ok = impl_target_pattern_matches(Array::get(items, i), Array::get(actual_items, i), params, bindings)
+          i = i + 1
+        }
+        ok
+      } else {
+        false
+      },
+      _ => false
+    },
+    TyUnit => match actual {
+      TyUnit => true,
+      _ => false
+    }
+  }
+}
+
+/// Whether erasing this target's arguments leaves a sound match for every
+/// application of its constructor head. This is limited to a permutation of
+/// the impl formals: constrained or repeated patterns must retain their full
+/// applied target before they can dispatch.
+fn generic_impl_target_is_total(target: TypeExpr, params: Array[String]) -> Bool {
+  match target {
+    TyApp(_, args) => if Array::length(args) != Array::length(params) {
+      false
+    } else {
+      let seen = empty_str_array()
+      let mut i = 0
+      let mut total = true
+      while i < Array::length(args) && total {
+        match Array::get(args, i) {
+          TyName(name) => if impl_pattern_param(params, name) && !str_array_contains(seen, name) {
+            Array::push(seen, name)
+          } else {
+            total = false
+          },
+          _ => {
+            total = false
+          }
+        }
+        i = i + 1
+      }
+      total && Array::length(seen) == Array::length(params)
+    },
+    _ => false
+  }
+}
+
+fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name: String, method: String, actual: TypeExpr) -> Option[String] {
+  let mut i = 0
+  let mut result = None
+  let mut erased_result = None
+  let mut erased_count = 0
+  while i < Array::length(gens) {
+    let gen = Array::get(gens, i)
+    let bindings = []
+    if gen.impl_trait == trait_name && impl_target_head(match gen.impl_target {
+      Some(target) => target,
+      None => TyName("")
+    }) == cname && String::ends_with(gen.name, String::concat("::", method)) {
+      match gen.impl_target {
+        Some(target) => if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) {
+          result = Some(gen.name)
+          i = Array::length(gens)
+        } else {
+          match actual {
+            TyName(actual_head) => if actual_head == cname && generic_impl_target_is_total(target, gen.impl_params) {
+              erased_result = Some(gen.name)
+              erased_count = erased_count + 1
+            } else (),
+            _ => ()
+          }
+          i = i + 1
+        },
+        None => {
+          i = i + 1
+        }
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  match result {
+    Some(_) => result,
+    None => if erased_count == 1 {
+      erased_result
+    } else {
+      None
+    }
+  }
+}
+
+fn generic_impl_bound_target(gens: Array[DictGen], method_name: String, type_param: String, actual: TypeExpr) -> Option[TypeExpr] {
+  match lookup_gen_entry(gens, method_name) {
+    Some(gen) => match gen.impl_target {
+      Some(target) => {
+        let bindings = []
+        if impl_target_pattern_matches(target, actual, gen.impl_params, bindings) {
+          impl_pattern_binding(bindings, type_param)
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    None => None
+  }
 }
 
 /// Find the dict parameter to dispatch a `head::member` call against, given the
@@ -2327,6 +2592,107 @@ fn first_array_elem(e: Expr) -> Option[Expr] {
   }
 }
 
+fn impl_target_var_key(name: String) -> String {
+  String::concat("$impl_target$", name)
+}
+
+fn impl_target_fn_key(name: String) -> String {
+  String::concat("$impl_return$", name)
+}
+
+fn infer_impl_target_expr(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match dtd_ascribed_type(arg) {
+    Some(ascribed) => Some(ascribed),
+    None => match arg {
+      EInt(_) => Some(TyName("Int")),
+      EBool(_) => Some(TyName("Bool")),
+      EString(_) => Some(TyName("String")),
+      EFloat(_) => Some(TyName("Double")),
+      EArray(items) => if Array::length(items) == 0 {
+        None
+      } else {
+        match infer_impl_target_expr(Array::get(items, 0), struct_sets, var_types, fn_returns) {
+          Some(elem_type) => {
+            let mut i = 1
+            let mut same = true
+            while i < Array::length(items) && same {
+              same = match infer_impl_target_expr(Array::get(items, i), struct_sets, var_types, fn_returns) {
+                Some(next) => impl_target_key(next) == impl_target_key(elem_type),
+                None => false
+              }
+              i = i + 1
+            }
+            if same {
+              Some(TyApp("Array", [elem_type]))
+            } else {
+              None
+            }
+          },
+          None => None
+        }
+      },
+      ERecord(name, _, type_args) => if name != "" {
+        if Array::length(type_args) > 0 {
+          Some(TyApp(name, type_args))
+        } else {
+          Some(TyName(name))
+        }
+      } else {
+        None
+      },
+      EIdent(name, _) => match lookup_var_type(var_types, impl_target_var_key(name)) {
+        Some(key) => impl_target_from_key(key),
+        None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+          Some(head) => Some(TyName(head)),
+          None => None
+        }
+      },
+      ECall(EIdent("Some", _), args, _) => if Array::length(args) == 1 {
+        match infer_impl_target_expr(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          Some(payload) => Some(TyApp("Option", [payload])),
+          None => None
+        }
+      } else {
+        None
+      },
+      ECall(EIdent(name, _), _, _) => match fn_return_type(fn_returns, impl_target_fn_key(name)) {
+        Some(key) => impl_target_from_key(key),
+        None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+          Some(head) => Some(TyName(head)),
+          None => None
+        }
+      },
+      _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        Some(head) => Some(TyName(head)),
+        None => None
+      }
+    }
+  }
+}
+
+fn infer_impl_target_key(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match infer_impl_target_expr(arg, struct_sets, var_types, fn_returns) {
+    Some(target) => Some(impl_target_key(target)),
+    None => None
+  }
+}
+
+fn bind_impl_target_key(var_types: Array[(String, String)], name: String, value: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match infer_impl_target_key(value, struct_sets, var_types, fn_returns) {
+    Some(key) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        Array::push(out, Array::get(var_types, i))
+        i = i + 1
+      }
+      Array::push(out, (impl_target_var_key(name), key))
+      out
+    },
+    None => var_types
+  }
+}
+
 /// Build the witness `ERecord` for a concrete type `cname` implementing
 /// `trait_name`. Codegen resolves it to the dict struct structurally by field
 /// names.
@@ -2341,7 +2707,8 @@ fn first_array_elem(e: Expr) -> Option[Expr] {
 /// type / dict cannot be determined the whole witness fails to build (returns
 /// None), so the call is left unrewritten (a loud arity error, never a silent
 /// miscompile).
-fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[(String, Array[(String, String, Int)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Expr) -> Option[Expr] {
+fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] {
+  let cname = impl_target_head(actual_target)
   match lookup_trait_sigs(traits, trait_name) {
     Some(sigs) => {
       let mnames = method_names_of_sigs(sigs)
@@ -2350,7 +2717,14 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
       let mut failed = false
       while mi < Array::length(mnames) {
         let m = Array::get(mnames, mi)
-        let qm = String::concat(cname, String::concat("::", m))
+        let plain_qm = String::concat(cname, String::concat("::", m))
+        let specialized_qm = impl_specialized_method_binding_name(cname, trait_name, impl_target_key(actual_target), m)
+        let qm = if specialized_qm != "" && fn_exists(fn_returns, specialized_qm) {
+          specialized_qm
+        } else match matching_generic_impl_method(gens, cname, trait_name, m, actual_target) {
+          Some(generic_qm) => generic_qm,
+          None => plain_qm
+        }
         if not(fn_exists(fn_returns, qm)) {
           // #1445: the SYNTHETIC `Show` witness is total. A type with no
           // `C::to_string` renders through the ADR-0058 heuristic -- exactly
@@ -2369,41 +2743,45 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
           }
         } else {
           match lookup_gen(gens, qm) {
-            Some(threaded) => {
-              // `qm` is a bounded generic-impl method: supply its element dict(s).
-              match first_array_elem(arg_expr) {
-                Some(elem) => match infer_arg_type_name(elem, struct_sets, var_types, fn_returns) {
-                  Some(en) => {
-                    let callargs = empty_expr_array()
-                    let mut bi = 0
-                    let mut subok = true
-                    while bi < Array::length(threaded) {
-                      let (_, btrait, _) = Array::get(threaded, bi)
-                      match build_concrete_dict(en, btrait, traits, gens, struct_sets, var_types, fn_returns, elem) {
-                        Some(sd) => Array::push(callargs, sd),
-                        None => {
-                          subok = false
-                        }
-                      }
-                      bi = bi + 1
-                    }
-                    if subok {
-                      Array::push(callargs, EIdent("__w", -1))
-                      let closure = EFn(empty_str_array(), array_empty(), Array::slice([
-                        ("__w", None)
-                      ], 0, 1), None, None, ECall(EIdent(qm, -1), callargs, -1))
-                      Array::push(recfields, (m, closure))
-                    } else {
-                      failed = true
+            Some(threaded) => if Array::length(threaded) == 0 {
+              Array::push(recfields, (m, EIdent(qm, -1)))
+            } else {
+              let callargs = empty_expr_array()
+              let mut bi = 0
+              let mut subok = true
+              while bi < Array::length(threaded) {
+                let (type_param, btrait, _) = Array::get(threaded, bi)
+                let nested_target = match generic_impl_bound_target(gens, qm, type_param, actual_target) {
+                  Some(target) => Some(target),
+                  None => match arg_expr {
+                    Some(value) => match first_array_elem(value) {
+                      Some(elem) => infer_impl_target_expr(elem, struct_sets, var_types, fn_returns),
+                      None => None
+                    },
+                    None => None
+                  }
+                }
+                match nested_target {
+                  Some(target) => match build_concrete_dict_for_target(target, btrait, traits, gens, struct_sets, var_types, fn_returns, None) {
+                    Some(sd) => Array::push(callargs, sd),
+                    None => {
+                      subok = false
                     }
                   },
                   None => {
-                    failed = true
+                    subok = false
                   }
-                },
-                None => {
-                  failed = true
                 }
+                bi = bi + 1
+              }
+              if subok {
+                Array::push(callargs, EIdent("__w", -1))
+                let closure = EFn(empty_str_array(), array_empty(), Array::slice([
+                  ("__w", None)
+                ], 0, 1), None, None, ECall(EIdent(qm, -1), callargs, -1))
+                Array::push(recfields, (m, closure))
+              } else {
+                failed = true
               }
             },
             None => Array::push(recfields, (m, EIdent(qm, -1)))
@@ -2419,6 +2797,14 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
     },
     None => None
   }
+}
+
+fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Expr) -> Option[Expr] {
+  let target = match infer_impl_target_expr(arg_expr, struct_sets, var_types, fn_returns) {
+    Some(inferred) => inferred,
+    None => TyName(cname)
+  }
+  build_concrete_dict_for_target(target, trait_name, traits, gens, struct_sets, var_types, fn_returns, Some(arg_expr))
 }
 
 /// Synthesize the witness dictionaries for a call to a transformed generic, or
@@ -2448,7 +2834,7 @@ fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String]
 /// receiver type is syntactically known) or by forwarding the caller's own dict
 /// parameter (the receiver is a type parameter bound by the same trait in the
 /// enclosing generic — the generic->generic case).
-fn synth_dicts(threaded: Array[(String, String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[(String, Array[(String, String, Int)])]) -> Option[Array[Expr]] {
+fn synth_dicts(threaded: Array[(String, String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0
@@ -2474,10 +2860,20 @@ fn synth_dicts(threaded: Array[(String, String, Int)], orig_args: Array[Expr], t
       match inferred {
         Some(nm) => match find_dict_for_trait(dict_binds, nm, trait_name) {
           Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
-          None => match build_concrete_dict(nm, trait_name, traits, gens, struct_sets, var_types, fn_returns, recv_arg) {
-            Some(dict) => Array::push(dicts, dict),
-            None => {
-              ok = false
+          None => {
+            let target = if is_elem_recv {
+              // The receiver carries `Array[T]`, but this witness is for T.
+              // Do not let the richer whole-receiver target override `nm`.
+              TyName(nm)
+            } else match infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns) {
+              Some(inferred) => inferred,
+              None => TyName(nm)
+            }
+            match build_concrete_dict_for_target(target, trait_name, traits, gens, struct_sets, var_types, fn_returns, Some(recv_arg)) {
+              Some(dict) => Array::push(dicts, dict),
+              None => {
+                ok = false
+              }
             }
           }
         },
@@ -3919,7 +4315,8 @@ fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]
 /// The same binding-site records `rewrite_expr` makes at an `ELet`/`ELetMut`,
 /// so the walk above reads names the way the comparison site will.
 fn bound_var_types(var_types: Array[(String, String)], n: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let base = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
+  let inferred = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
+  let base = bind_impl_target_key(inferred, n, val, struct_sets, fn_returns)
   eq_shape_bind(bind_shapes(base, n, val, struct_sets, fn_returns), n, val, struct_sets, fn_returns)
 }
 
@@ -4327,10 +4724,9 @@ fn seed_ctor_payload(out: Array[(String, String)], pname: String, ctor: String, 
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
-/// made at use time against the in-scope dict bindings. `tparams` is retained for
-/// signature compatibility but no longer filters (both kinds are tracked).
+/// made at use time against the in-scope dict bindings. Both kinds are tracked;
+/// `tparams` prevents a same-spelled formal from expanding through a global alias.
 fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[String], base: Array[(String, String)]) -> Array[(String, String)] {
-  let _ = tparams
   let out = array_empty()
   let mut b = 0
   while b < Array::length(base) {
@@ -4372,6 +4768,11 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
       // infer_arg_type_name.
       Some(TyApp(tn, targs)) => {
         Array::push(out, (pname, tn))
+        if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
+          Array::push(out, (impl_target_var_key(pname), impl_target_key(TyApp(tn, targs))))
+        } else {
+          ()
+        }
         // Equality needs the complete annotation, not only its head. Keep the
         // recursive shape for every monomorphic aggregate parameter so nested
         // Array/Option/Result paths do not fall back to word identity.
@@ -4597,6 +4998,17 @@ fn collect_fn_eq_return_shape(out: Array[(String, String)], fname: String, tpara
   }
 }
 
+fn collect_fn_impl_return_key(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr]) -> Unit {
+  match ret {
+    Some(te) => if !ty_mentions_name_in(te, tparams) {
+      Array::push(out, (impl_target_fn_key(fname), impl_target_key(te)))
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
 fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
@@ -4615,6 +5027,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             head
           }
           Array::push(out, (fname, head2))
+          collect_fn_impl_return_key(out, fname, tparams, ret)
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
         _ => ()
@@ -4634,6 +5047,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             head
           }
           Array::push(out, (fname, head2))
+          collect_fn_impl_return_key(out, fname, tparams, ret)
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
         _ => ()
@@ -6113,13 +6527,13 @@ fn show_tmp_name() -> String {
 /// Render one sub-expression by re-entering the interpolation rewrite on a
 /// synthetic `__to_string(sub)`, so a nested wrapper or a derive(Show) value
 /// inside one is rendered too.
-fn interp_render_sub(sub: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn interp_render_sub(sub: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   rewrite_expr(ECall(EIdent("__to_string", -1), Array::slice([sub], 0, 1), -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
 }
 
 /// `open_s ++ e0 ++ sep ++ e1 ++ .. ++ close_s`, each element rendered.
 /// (`open` is a reserved word in vibe, hence the suffixed names.)
-fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let mut acc = EString(open_s)
   let mut i = 0
   while i < Array::length(items) {
@@ -6147,7 +6561,7 @@ fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String,
 /// falling to the pointer heuristic. An element whose type was not inferable
 /// at the binding site carries an empty entry and simply renders through the
 /// ordinary `__to_string`, exactly as it does today.
-fn interp_expand_var_tuple(name: String, elem_types: Array[String], derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn interp_expand_var_tuple(name: String, elem_types: Array[String], derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let n = Array::length(elem_types)
   let pats = array_empty()
   let binders = empty_str_array()
@@ -6196,7 +6610,7 @@ fn interp_expand_var_tuple(name: String, elem_types: Array[String], derived_only
 /// -- `infer_arg_type_name` already resolves that shape through
 /// `array_elem_type_of`, so a `derive(Show)` element renders structurally
 /// without any extra plumbing here.
-fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let iv = String::concat(show_tmp_name(), "_i")
   let av = String::concat(show_tmp_name(), "_acc")
   let elem_piece = interp_render_sub(ECall(EIdent("Array::get", -1), Array::slice([
@@ -6219,7 +6633,7 @@ fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[(String
 /// re-evaluated; the array case binds each element to a name inside the loop,
 /// which is what lets a NESTED composite element recurse (an element reached
 /// as `Array::get(a, i)` has no name for `var_types` to key on).
-fn interp_render_shaped(sub: Expr, sh: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn interp_render_shaped(sub: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   if shape_is_composite(sh) {
     interp_expand_shape(sub, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   } else if String::length(sh) == 0 {
@@ -6235,7 +6649,7 @@ fn interp_render_shaped(sub: Expr, sh: String, derived_only: Bool, gens: Array[(
 /// #1445 (#139): the tuple / array expansion for a composite shape. Supersedes
 /// interp_expand_var_tuple / interp_expand_var_array for anything that nests;
 /// those two stay for the shapes recorded by the older sentinels alone.
-fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   if String::starts_with(sh, "(") {
     let parts = shape_split(shape_inner(sh))
     let n = Array::length(parts)
@@ -6291,7 +6705,7 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
 }
 
 /// `ctor_name(<rendered payload>)`.
-fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   concat2(EString(String::concat(ctor, "(")), concat2(interp_render_sub(payload, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")")))
 }
 
@@ -6317,7 +6731,7 @@ fn interp_ctor_arm_var_types(arg: Expr, ctor: String, binder: String, var_types:
   arm_binder_var_types(arg, PCtor(ctor, Array::slice([PBind(binder)], 0, 1)), var_types)
 }
 
-fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   if head == "Option" {
     let v = show_tmp_name()
     let vt_some = interp_ctor_arm_var_types(arg, "Some", v, var_types)
@@ -6357,7 +6771,7 @@ fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String])], va
 
 /// The structural rendering for an interpolated wrapper value, or None when
 /// this pass has no shape to work from and the `__to_string` call must stand.
-fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
     Some(h) => h,
     None => ""
@@ -6375,7 +6789,7 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[(String, Array[(Stri
   }
 }
 
-fn interp_expand_local(arg: Expr, head: String, derived_only: Bool, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+fn interp_expand_local(arg: Expr, head: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
   match arg {
     ETuple(items) => Some(interp_join(items, "(", ", ", ")", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EArray(items) => Some(interp_join(items, "[", ", ", "]", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -6770,7 +7184,7 @@ fn assert_eq_concat(a: Expr, b: Expr) -> Expr {
 /// Render one `assert_eq` operand. Reuses the throw-site renderer
 /// (`derived_only`) so a missing Show becomes `<unprintable>` instead of a
 /// pointer decimal or a compile error.
-fn assert_eq_render(arg: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn assert_eq_render(arg: Expr, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let target = interp_show_target(arg, true, struct_sets, var_types, fn_returns)
   if target != "" {
     ECall(EIdent(target, -1), Array::slice([arg], 0, 1), -1)
@@ -6804,7 +7218,7 @@ fn assert_eq_render(arg: Expr, gens: Array[(String, Array[(String, String, Int)]
   }
 }
 
-fn lower_assert_eq(args: Array[Expr], call_off: Int, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn lower_assert_eq(args: Array[Expr], call_off: Int, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   let a2 = rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   let b2 = rewrite_expr(Array::get(args, 1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
   let an = dinsp_fresh_name("__assert_eq_actual", a2, b2)
@@ -6861,7 +7275,7 @@ fn lower_assert_eq(args: Array[Expr], call_off: Int, gens: Array[(String, Array[
 /// threading applies everywhere a transformed generic is called. `var_types`
 /// tracks locals/params whose concrete type is known, for call-site dict
 /// synthesis when the receiver is a variable.
-fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match expr {
     EIdent(name, off) => match split_qualified(name) {
       Some(parts) => {
@@ -7243,7 +7657,8 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       // #2157: an unannotated `let xs = []` reads its element type off the
@@ -7254,7 +7669,8 @@ fn rewrite_expr(expr: Expr, gens: Array[(String, Array[(String, String, Int)])],
     ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let body_vars0 = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       let body_vars = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
@@ -7665,7 +8081,7 @@ fn thread_dict_params(threaded: Array[(String, String, Int)], params: Array[(Str
 /// lowers `record{}.field` dot access — without this it inherited the exact
 /// same "only resolves within a single top-level statement's own expression
 /// tree" gap.
-fn rewrite_stmt(stmt: Stmt, gens: Array[(String, Array[(String, String, Int)])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)]) -> Stmt with Exception {
+fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)]) -> Stmt with Exception {
   let no_binds = empty_dict_binds()
   // #1392: which top-level binding's body is about to be walked, so the
   // interpolation rewrite can decline to make `T::to_string` call itself.
@@ -15686,8 +16102,8 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   inject_trait_method_generics_with(stmts, traits)
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
-  let gimpl_types = collect_generic_impl_types(stmts)
-  let gens = build_gens(stmts, traits, gimpl_types)
+  let gimpl_infos = collect_generic_impl_infos(stmts)
+  let gens = build_gens(stmts, traits, gimpl_infos)
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
   let toplevel_vars = collect_toplevel_anon_records(stmts, struct_sets)
   // #1374: reset the exception-kind pass state. An already-declared cell means

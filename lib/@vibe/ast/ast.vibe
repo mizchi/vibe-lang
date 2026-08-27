@@ -4,3 +4,256 @@
 // suppresses sibling auto-discovery (test files beside the contract must
 // not join the facade).
 
+export fn impl_target_head(target: TypeExpr) -> String {
+  match target {
+    TyName(name) => name,
+    TyApp(name, _) => name,
+    _ => ""
+  }
+}
+
+fn impl_encode_name(name: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < String::length(name) {
+    out = String::concat(out, String::concat(Int::to_string(String::char_code_at(name, i)), "_"))
+    i = i + 1
+  }
+  out
+}
+
+export fn impl_target_key(target: TypeExpr) -> String {
+  match target {
+    TyName(name) => String::concat("N", String::concat(impl_encode_name(name), "Z")),
+    TyApp(name, args) => {
+      let keys = []
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(keys, impl_target_key(Array::get(args, i)))
+        i = i + 1
+      }
+      impl_applied_target_key(name, keys)
+    },
+    TyFn(params, ret, effect) => {
+      let mut out = "F"
+      let mut i = 0
+      while i < Array::length(params) {
+        out = String::concat(out, impl_target_key(Array::get(params, i)))
+        i = i + 1
+      }
+      let effect_key = match effect {
+        None => "E0",
+        Some(name) => String::concat("E1", String::concat(impl_encode_name(name), "Z"))
+      }
+      String::concat(out, String::concat("T", String::concat(impl_target_key(ret), String::concat(effect_key, "R"))))
+    },
+    TyTuple(items) => {
+      let mut out = "P"
+      let mut i = 0
+      while i < Array::length(items) {
+        out = String::concat(out, impl_target_key(Array::get(items, i)))
+        i = i + 1
+      }
+      String::concat(out, "R")
+    },
+    TyUnit => "U"
+  }
+}
+
+fn impl_decode_name(key: String, pos: Int, terminator: Int) -> Option[(String, Int)] {
+  let mut out = ""
+  let mut p = pos
+  let mut valid = true
+  while p < String::length(key) && String::char_code_at(key, p) != terminator && valid {
+    let mut code = 0
+    let mut digits = 0
+    while p < String::length(key) && String::char_code_at(key, p) >= '0' && String::char_code_at(key, p) <= '9' {
+      code = code * 10 + String::char_code_at(key, p) - '0'
+      digits = digits + 1
+      p = p + 1
+    }
+    if digits == 0 || p >= String::length(key) || String::char_code_at(key, p) != '_' {
+      valid = false
+    } else {
+      out = String::concat(out, String::from_char_code(code))
+      p = p + 1
+    }
+  }
+  if valid && p < String::length(key) && String::char_code_at(key, p) == terminator {
+    Some((out, p + 1))
+  } else {
+    None
+  }
+}
+
+fn impl_target_from_key_at(key: String, pos: Int) -> Option[(TypeExpr, Int)] {
+  if pos >= String::length(key) {
+    None
+  } else {
+    match String::char_code_at(key, pos) {
+      'N' => match impl_decode_name(key, pos + 1, 'Z') {
+        Some(decoded) => {
+          let (name, next) = decoded
+          Some((TyName(name), next))
+        },
+        None => None
+      },
+      'A' => match impl_decode_name(key, pos + 1, 'L') {
+        Some(decoded) => {
+          let (name, after_name) = decoded
+          let args = []
+          let mut p = after_name
+          let mut valid = true
+          while p < String::length(key) && String::char_code_at(key, p) != 'R' && valid {
+            match impl_target_from_key_at(key, p) {
+              Some(parsed) => {
+                let (arg, next) = parsed
+                Array::push(args, arg)
+                p = next
+              },
+              None => {
+                valid = false
+              }
+            }
+          }
+          if valid && p < String::length(key) && String::char_code_at(key, p) == 'R' {
+            Some((TyApp(name, args), p + 1))
+          } else {
+            None
+          }
+        },
+        None => None
+      },
+      'F' => {
+        let params = []
+        let mut p = pos + 1
+        let mut valid = true
+        while p < String::length(key) && String::char_code_at(key, p) != 'T' && valid {
+          match impl_target_from_key_at(key, p) {
+            Some(parsed) => {
+              let (param, next) = parsed
+              Array::push(params, param)
+              p = next
+            },
+            None => {
+              valid = false
+            }
+          }
+        }
+        if !valid || p >= String::length(key) || String::char_code_at(key, p) != 'T' {
+          None
+        } else {
+          match impl_target_from_key_at(key, p + 1) {
+            Some(parsed_ret) => {
+              let (ret, after_ret) = parsed_ret
+              if after_ret + 1 >= String::length(key) || String::char_code_at(key, after_ret) != 'E' {
+                None
+              } else {
+                let effect_tag = String::char_code_at(key, after_ret + 1)
+                let effect_and_pos = if effect_tag == '0' {
+                  Some((None, after_ret + 2))
+                } else if effect_tag == '1' {
+                  match impl_decode_name(key, after_ret + 2, 'Z') {
+                    Some(decoded_effect) => {
+                      let (effect_name, after_effect) = decoded_effect
+                      Some((Some(effect_name), after_effect))
+                    },
+                    None => None
+                  }
+                } else {
+                  None
+                }
+                match effect_and_pos {
+                  Some(ep) => {
+                    let (effect, after_effect) = ep
+                    if after_effect < String::length(key) && String::char_code_at(key, after_effect) == 'R' {
+                      Some((TyFn(params, ret, effect), after_effect + 1))
+                    } else {
+                      None
+                    }
+                  },
+                  None => None
+                }
+              }
+            },
+            None => None
+          }
+        }
+      },
+      'P' => {
+        let items = []
+        let mut p = pos + 1
+        let mut valid = true
+        while p < String::length(key) && String::char_code_at(key, p) != 'R' && valid {
+          match impl_target_from_key_at(key, p) {
+            Some(parsed) => {
+              let (item, next) = parsed
+              Array::push(items, item)
+              p = next
+            },
+            None => {
+              valid = false
+            }
+          }
+        }
+        if valid && p < String::length(key) && String::char_code_at(key, p) == 'R' {
+          Some((TyTuple(items), p + 1))
+        } else {
+          None
+        }
+      },
+      'U' => Some((TyUnit, pos + 1)),
+      _ => None
+    }
+  }
+}
+
+export fn impl_target_from_key(key: String) -> Option[TypeExpr] {
+  match impl_target_from_key_at(key, 0) {
+    Some(parsed) => {
+      let (target, next) = parsed
+      if next == String::length(key) {
+        Some(target)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+export fn impl_applied_target_key(head: String, arg_keys: Array[String]) -> String {
+  let mut out = String::concat("A", String::concat(impl_encode_name(head), "L"))
+  let mut i = 0
+  while i < Array::length(arg_keys) {
+    out = String::concat(out, Array::get(arg_keys, i))
+    i = i + 1
+  }
+  String::concat(out, "R")
+}
+
+export fn impl_specialized_method_binding_name(head: String, trait_name: String, target_key: String, method: String) -> String {
+  let owner = String::concat(head, String::concat("$impl$", String::concat(impl_encode_name(trait_name), String::concat("$", target_key))))
+  String::concat(owner, String::concat("::", method))
+}
+
+export fn impl_method_owner(tparams: Array[String], trait_name: String, target: TypeExpr) -> String {
+  let head = impl_target_head(target)
+  match target {
+    TyApp(_, _) => String::concat(head, String::concat("$impl$", String::concat(impl_encode_name(trait_name), String::concat("$", impl_target_key(target))))),
+    _ => head
+  }
+}
+
+export fn impl_method_binding_name(tparams: Array[String], trait_name: String, target: TypeExpr, method: String) -> String {
+  String::concat(impl_method_owner(tparams, trait_name, target), String::concat("::", method))
+}
+
+export fn impl_method_owner_head(owner: String) -> String {
+  let sep = String::index_of(owner, "$impl$")
+  if sep < 0 {
+    owner
+  } else {
+    String::substring(owner, 0, sep)
+  }
+}
