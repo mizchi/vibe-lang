@@ -751,44 +751,44 @@ fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits
   }
 }
 
-fn trait_operation_type_mentions(ty: TypeExpr, name: String) -> Bool {
+/// Whether a value parameter can carry the witness for `name` through the
+/// dictionary lowerer's supported receiver shapes. Keep this aligned with
+/// find_recv_index / find_constructor_recv_index / find_array_elem_recv_index:
+/// a nested occurrence (for example `(Int) -> Self`) is not recoverable.
+fn trait_operation_type_is_carrier(ty: TypeExpr, name: String) -> Bool {
   match ty {
     TyName(current) => current == name,
     TyApp(head, args) => if head == name {
       true
+    } else if head == "Array" && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        TyName(current) => current == name,
+        _ => false
+      }
     } else {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(args) && !found {
-        found = trait_operation_type_mentions(Array::get(args, i), name); i = i + 1
-      }
-      found
+      false
     },
-    TyFn(params, ret, _) => {
-      let mut i = 0
-      let mut found = trait_operation_type_mentions(ret, name)
-      while i < Array::length(params) && !found {
-        found = trait_operation_type_mentions(Array::get(params, i), name); i = i + 1
-      }
-      found
-    },
-    TyTuple(items) => {
-      let mut i = 0
-      let mut found = false
-      while i < Array::length(items) && !found {
-        found = trait_operation_type_mentions(Array::get(items, i), name); i = i + 1
-      }
-      found
-    },
+    TyFn(_, _, _) => false,
+    TyTuple(_) => false,
     TyUnit => false
   }
 }
 
-fn trait_operation_params_mention(params: Array[TypeExpr], name: String) -> Bool {
+fn trait_operation_params_have_carrier(params: Array[TypeExpr], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(params) && !found {
-    found = trait_operation_type_mentions(Array::get(params, i), name); i = i + 1
+    found = trait_operation_type_is_carrier(Array::get(params, i), name); i = i + 1
+  }
+  found
+}
+
+fn trait_operation_method_shadows(method_params: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(method_params) && !found {
+    found = type_param_name(Array::get(method_params, i)) == name
+    i = i + 1
   }
   found
 }
@@ -915,7 +915,8 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
           let operation_name = String::concat(trait_name, String::concat("::", method_name))
           if !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_dict_already_materialized(stmts, trait_name) {
             let self_param = String::concat("__trait_operation_self_", String::concat(trait_name, String::concat("_", method_name)))
-            let uses_self = trait_operation_params_mention(raw_params, "Self")
+            let (method_params, method_bounds) = trait_operation_method_generics(method_gens, mi, method_name)
+            let uses_self = trait_operation_params_have_carrier(raw_params, "Self")
             let mut dispatch = if uses_self {
               self_param
             } else {
@@ -926,7 +927,7 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
             while hi < Array::length(header_params) && dispatch == "" {
               let candidate_key = Array::get(header_params, hi)
               let candidate = type_param_name(candidate_key)
-              if trait_operation_params_mention(raw_params, candidate) {
+              if !trait_operation_method_shadows(method_params, candidate) && trait_operation_params_have_carrier(raw_params, candidate) {
                 dispatch = candidate; dispatch_key = candidate_key
               } else {
                 ()
@@ -935,7 +936,6 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
             }
             if dispatch != "" {
               let synthetic_off = 2000000000 - i * 1000 - mi * 10
-              let (method_params, method_bounds) = trait_operation_method_generics(method_gens, mi, method_name)
               let extra_params = if uses_self {
                 [self_param]
               } else {
