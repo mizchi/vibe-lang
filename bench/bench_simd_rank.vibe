@@ -1,0 +1,110 @@
+// rank1 over a 32 Kibit bitmap: the core primitive of every succinct structure
+// (rank/select bit vector, wavelet matrix, FM-index). See
+// docs/simd-data-structures.md.
+//
+// The point of this file is that the win is NOT SIMD. `i64.popcnt` -- one
+// scalar instruction vibe does not expose to library code -- carries almost
+// all of it; widening the load to v128 adds ~15%, and `i8x16.popcnt` with a
+// horizontal sum adds nothing.
+
+fn scalar_rank(b: Bytes, nbits: Int) -> Int {
+  let mut i = 0
+  let mut c = 0
+  while i < nbits {
+    let byte = Bytes::get(b, i / 8)
+    if (byte >> (i % 8)) & 1 == 1 {
+      c = c + 1
+    }
+    i = i + 1
+  }
+  c
+}
+
+/// 8 bytes per iteration, one `i64.popcnt`.
+fn popcnt_rank(b: Bytes, nbits: Int) -> Int = wasm
+"(local $p i32) (local $i i32) (local $e i32) (local $c i64)"
+"local.get $b i32.wrap_i64 i32.load offset=8 local.set $p"
+"local.get $nbits i64.const 1 i64.shr_s i32.wrap_i64 i32.const 3 i32.shr_u local.set $e"
+"(block $done"
+"  (loop $w"
+"    (br_if $done (i32.gt_s (i32.add (local.get $i) (i32.const 8)) (local.get $e)))"
+"    (local.set $c (i64.add (local.get $c) (i64.popcnt (i64.load align=1 (i32.add (local.get $p) (local.get $i))))))"
+"    (local.set $i (i32.add (local.get $i) (i32.const 8)))"
+"    (br $w)"
+"  )"
+")"
+"(i64.shl (local.get $c) (i64.const 1))"
+
+/// 16 bytes per iteration: one v128 load, two scalar popcounts on the lanes.
+fn simd_rank_lanes(b: Bytes, nbits: Int) -> Int = wasm
+"(local $p i32) (local $i i32) (local $e i32) (local $c i64) (local $v v128)"
+"local.get $b i32.wrap_i64 i32.load offset=8 local.set $p"
+"local.get $nbits i64.const 1 i64.shr_s i32.wrap_i64 i32.const 3 i32.shr_u local.set $e"
+"(block $done"
+"  (loop $w"
+"    (br_if $done (i32.gt_s (i32.add (local.get $i) (i32.const 16)) (local.get $e)))"
+"    (local.set $v (v128.load align=1 (i32.add (local.get $p) (local.get $i))))"
+"    (local.set $c (i64.add (local.get $c) (i64.add (i64.popcnt (i64x2.extract_lane 0 (local.get $v))) (i64.popcnt (i64x2.extract_lane 1 (local.get $v))))))"
+"    (local.set $i (i32.add (local.get $i) (i32.const 16)))"
+"    (br $w)"
+"  )"
+")"
+"(i64.shl (local.get $c) (i64.const 1))"
+
+/// 16 bytes per iteration, `i8x16.popcnt` plus the 0x01..01 multiply trick to
+/// sum the 16 lane counts (each <= 8, so the byte sum <= 128 cannot overflow).
+fn simd_rank_popcnt16(b: Bytes, nbits: Int) -> Int = wasm
+"(local $p i32) (local $i i32) (local $e i32) (local $c i64) (local $v v128)"
+"local.get $b i32.wrap_i64 i32.load offset=8 local.set $p"
+"local.get $nbits i64.const 1 i64.shr_s i32.wrap_i64 i32.const 3 i32.shr_u local.set $e"
+"(block $done"
+"  (loop $w"
+"    (br_if $done (i32.gt_s (i32.add (local.get $i) (i32.const 16)) (local.get $e)))"
+"    (local.set $v (i8x16.popcnt (v128.load align=1 (i32.add (local.get $p) (local.get $i)))))"
+"    (local.set $c (i64.add (local.get $c) (i64.add"
+"       (i64.shr_u (i64.mul (i64x2.extract_lane 0 (local.get $v)) (i64.const 0x0101010101010101)) (i64.const 56))"
+"       (i64.shr_u (i64.mul (i64x2.extract_lane 1 (local.get $v)) (i64.const 0x0101010101010101)) (i64.const 56)))))"
+"    (local.set $i (i32.add (local.get $i) (i32.const 16)))"
+"    (br $w)"
+"  )"
+")"
+"(i64.shl (local.get $c) (i64.const 1))"
+
+fn mkbits(n: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, (i * 37) % 256)
+    i = i + 1
+  }
+  b
+}
+
+let bits = mkbits(4096)
+
+let sink = [
+  0
+]
+
+test "every rank lane agrees" {
+  assert_eq(scalar_rank(bits, 32768), 16384)
+  assert_eq(popcnt_rank(bits, 32768), 16384)
+  assert_eq(simd_rank_lanes(bits, 32768), 16384)
+  assert_eq(simd_rank_popcnt16(bits, 32768), 16384)
+}
+
+bench "rank_32kbit_scalar_vibe" {
+  Array::set(sink, 0, scalar_rank(bits, 32768))
+}
+
+bench "rank_32kbit_i64_popcnt" {
+  Array::set(sink, 0, popcnt_rank(bits, 32768))
+}
+
+bench "rank_32kbit_v128load_2xpopcnt" {
+  Array::set(sink, 0, simd_rank_lanes(bits, 32768))
+}
+
+bench "rank_32kbit_i8x16popcnt_hsum" {
+  Array::set(sink, 0, simd_rank_popcnt16(bits, 32768))
+}

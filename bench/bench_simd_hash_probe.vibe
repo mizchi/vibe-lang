@@ -1,0 +1,320 @@
+// SwissTable-shaped frozen Int-key set (1-byte control array + i32 key column,
+// group-of-16 SIMD probe) vs the stdlib MutMap[Int, Int].
+//
+// NOT apples to apples: MutMap is generic over K/V with closed-over hash/eq and
+// Option-wrapped slots; this is a monomorphic frozen SET of non-negative Ints
+// with a different hash and a group-of-16 probe. At least eight things differ at
+// once, so the MutMap-vs-frozen ratio is AGGREGATE HEADROOM and cannot be split
+// between them. The three frozen lanes are controlled against each other and are
+// where the readable numbers are:
+//
+//   lookup_4k_simd_frozen_set             loop inside the kernel
+//   ..._point_api_packed_queries          loop in vibe, SAME query storage
+//   ..._point_api                         loop in vibe, queries in Array[Int]
+//
+// first vs second isolates the call boundary; second vs third isolates the
+// query representation.
+//
+// One inline-wasm friction is visible in the source and is part of the finding
+// (docs/simd-data-structures.md, Layer 0, #2348): the kernel cannot call another
+// vibe fn, so `cap`, the group mask and the hash constant are spelled twice --
+// once in vibe, once as literals inside the WAT.
+//
+// The WAT spells the hash constant -1640531535 where vibe spells it 2654435761.
+// Same bit pattern, 0x9E3779B1. That is NOT the old #2341 workaround, which this
+// PR fixed -- both spellings of an `iN` immediate are accepted now, per the text
+// format's `iN ::= n:uN | i:sN`. It is because `vibe test` compiles with the
+// COMMITTED SEED by default (CLAUDE.md, "Which compiler answered?"), and the seed
+// predates the fix: measured, `(i32.const -1640531535)` here makes this whole file
+// FAIL under `scripts/vibe_test.sh` until the next bootstrap bump. The regression
+// for both spellings lives in lib/@vibe/compiler/tests/inline_wasm_test.vibe,
+// which tests the assembler through the checkout's own source and so answers for
+// the compiler being changed rather than for whichever one ran the file.
+
+import @vibe/core {
+  MutMap, MutMap::has, MutMap::new_int, MutMap::set
+}
+
+let cap = 8192
+
+let empty_ctrl = 128
+
+fn mix(k: Int) -> Int {
+  (k * 2654435761) & 4294967295
+}
+
+fn h1_of(k: Int) -> Int {
+  ((mix(k) >> 16) & (cap - 1)) & (cap - 16)
+}
+
+fn h2_of(k: Int) -> Int {
+  mix(k) & 127
+}
+
+fn put_i32(b: Bytes, i: Int, v: Int) -> Unit {
+  Bytes::set(b, i * 4, v & 255)
+  Bytes::set(b, i * 4 + 1, (v >> 8) & 255)
+  Bytes::set(b, i * 4 + 2, (v >> 16) & 255)
+  Bytes::set(b, i * 4 + 3, (v >> 24) & 255)
+}
+
+fn zeros(n: Int, fill: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, fill)
+    i = i + 1
+  }
+  b
+}
+
+/// Build the frozen table: ctrl[cap] bytes, keys[cap] i32.
+fn build(keys: Array[Int]) -> (Bytes, Bytes) {
+  let ctrl = zeros(cap, empty_ctrl)
+  let kcol = zeros(cap * 4, 0)
+  let n = Array::length(keys)
+  let mut i = 0
+  while i < n {
+    let k = Array::get(keys, i)
+    let mut g = h1_of(k)
+    let mut placed = false
+    while !placed {
+      let mut j = 0
+      while j < 16 && !placed {
+        if Bytes::get(ctrl, g + j) == empty_ctrl {
+          Bytes::set(ctrl, g + j, h2_of(k))
+          put_i32(kcol, g + j, k)
+          placed = true
+        } else {
+          j = j + 1
+        }
+      }
+      if !placed {
+        g = (g + 16) & (cap - 16)
+      }
+    }
+    i = i + 1
+  }
+  (ctrl, kcol)
+}
+
+/// Bulk membership: how many of the nq i32 queries are present.
+fn simd_count_hits(ctrl: Bytes, kcol: Bytes, qs: Bytes, nq: Int) -> Int = wasm
+"(local $cp i32) (local $kp i32) (local $qp i32) (local $q i32) (local $n i32)"
+"(local $k i32) (local $h i32) (local $g i32) (local $m i32) (local $me i32)"
+"(local $j i32) (local $hits i32) (local $found i32) (local $stop i32)"
+"(local $v v128) (local $f v128)"
+"local.get $ctrl i32.wrap_i64 i32.load offset=8 local.set $cp"
+"local.get $kcol i32.wrap_i64 i32.load offset=8 local.set $kp"
+"local.get $qs i32.wrap_i64 i32.load offset=8 local.set $qp"
+"local.get $nq i64.const 1 i64.shr_s i32.wrap_i64 local.set $n"
+"(block $alldone"
+"  (loop $each"
+"    (br_if $alldone (i32.ge_s (local.get $q) (local.get $n)))"
+"    (local.set $k (i32.load align=1 (i32.add (local.get $qp) (i32.shl (local.get $q) (i32.const 2)))))"
+"    (local.set $h (i32.mul (local.get $k) (i32.const -1640531535)))"
+"    (local.set $g (i32.and (i32.and (i32.shr_u (local.get $h) (i32.const 16)) (i32.const 8191)) (i32.const 8176)))"
+"    (local.set $f (i8x16.splat (i32.and (local.get $h) (i32.const 127))))"
+"    (local.set $stop (i32.const 0))"
+"    (block $qdone"
+"      (loop $group"
+"        (local.set $v (v128.load align=1 (i32.add (local.get $cp) (local.get $g))))"
+"        (local.set $m (i8x16.bitmask (i8x16.eq (local.get $v) (local.get $f))))"
+"        (block $cands"
+"          (loop $cand"
+"            (br_if $cands (i32.eqz (local.get $m)))"
+"            (local.set $j (i32.ctz (local.get $m)))"
+"            (if (i32.eq (i32.load align=1 (i32.add (local.get $kp) (i32.shl (i32.add (local.get $g) (local.get $j)) (i32.const 2)))) (local.get $k))"
+"              (then"
+"                (local.set $hits (i32.add (local.get $hits) (i32.const 1)))"
+"                (br $qdone)"
+"              )"
+"            )"
+"            (local.set $m (i32.and (local.get $m) (i32.sub (local.get $m) (i32.const 1))))"
+"            (br $cand)"
+"          )"
+"        )"
+"        (local.set $me (i8x16.bitmask (i8x16.eq (local.get $v) (i8x16.splat (i32.const 128)))))"
+"        (br_if $qdone (i32.ne (local.get $me) (i32.const 0)))"
+"        (local.set $g (i32.and (i32.add (local.get $g) (i32.const 16)) (i32.const 8176)))"
+"        (br $group)"
+"      )"
+"    )"
+"    (local.set $q (i32.add (local.get $q) (i32.const 1)))"
+"    (br $each)"
+"  )"
+")"
+"(i64.shl (i64.extend_i32_s (local.get $hits)) (i64.const 1))"
+
+
+/// Point API: one lookup per call, driven from a vibe loop.
+fn simd_has(ctrl: Bytes, kcol: Bytes, k: Int) -> Int = wasm
+"(local $cp i32) (local $kp i32) (local $kk i32) (local $h i32) (local $g i32)"
+"(local $m i32) (local $me i32) (local $j i32) (local $hit i32)"
+"(local $v v128) (local $f v128)"
+"local.get $ctrl i32.wrap_i64 i32.load offset=8 local.set $cp"
+"local.get $kcol i32.wrap_i64 i32.load offset=8 local.set $kp"
+"local.get $k i64.const 1 i64.shr_s i32.wrap_i64 local.set $kk"
+"(local.set $h (i32.mul (local.get $kk) (i32.const -1640531535)))"
+"(local.set $g (i32.and (i32.and (i32.shr_u (local.get $h) (i32.const 16)) (i32.const 8191)) (i32.const 8176)))"
+"(local.set $f (i8x16.splat (i32.and (local.get $h) (i32.const 127))))"
+"(block $qdone"
+"  (loop $group"
+"    (local.set $v (v128.load align=1 (i32.add (local.get $cp) (local.get $g))))"
+"    (local.set $m (i8x16.bitmask (i8x16.eq (local.get $v) (local.get $f))))"
+"    (block $cands"
+"      (loop $cand"
+"        (br_if $cands (i32.eqz (local.get $m)))"
+"        (local.set $j (i32.ctz (local.get $m)))"
+"        (if (i32.eq (i32.load align=1 (i32.add (local.get $kp) (i32.shl (i32.add (local.get $g) (local.get $j)) (i32.const 2)))) (local.get $kk))"
+"          (then (local.set $hit (i32.const 1)) (br $qdone))"
+"        )"
+"        (local.set $m (i32.and (local.get $m) (i32.sub (local.get $m) (i32.const 1))))"
+"        (br $cand)"
+"      )"
+"    )"
+"    (local.set $me (i8x16.bitmask (i8x16.eq (local.get $v) (i8x16.splat (i32.const 128)))))"
+"    (br_if $qdone (i32.ne (local.get $me) (i32.const 0)))"
+"    (local.set $g (i32.and (i32.add (local.get $g) (i32.const 16)) (i32.const 8176)))"
+"    (br $group)"
+"  )"
+")"
+"(i64.shl (i64.extend_i32_s (local.get $hit)) (i64.const 1))"
+
+/// Point API over the SAME packed query column the bulk kernel reads, so the
+/// only remaining difference is where the loop lives. `simd_has` below reads
+/// its key from an `Array[Int]` instead, which is a second variable -- Codex
+/// caught the two being compared as if it were one (PR #2339).
+fn simd_has_at(ctrl: Bytes, kcol: Bytes, qs: Bytes, i: Int) -> Int = wasm
+"(local $cp i32) (local $kp i32) (local $kk i32) (local $h i32) (local $g i32)"
+"(local $m i32) (local $me i32) (local $j i32) (local $hit i32)"
+"(local $v v128) (local $f v128)"
+"local.get $ctrl i32.wrap_i64 i32.load offset=8 local.set $cp"
+"local.get $kcol i32.wrap_i64 i32.load offset=8 local.set $kp"
+"local.get $qs i32.wrap_i64 i32.load offset=8"
+"local.get $i i64.const 1 i64.shr_s i32.wrap_i64 i32.const 2 i32.shl i32.add"
+"i32.load align=1 local.set $kk"
+"(local.set $h (i32.mul (local.get $kk) (i32.const -1640531535)))"
+"(local.set $g (i32.and (i32.and (i32.shr_u (local.get $h) (i32.const 16)) (i32.const 8191)) (i32.const 8176)))"
+"(local.set $f (i8x16.splat (i32.and (local.get $h) (i32.const 127))))"
+"(block $qdone"
+"  (loop $group"
+"    (local.set $v (v128.load align=1 (i32.add (local.get $cp) (local.get $g))))"
+"    (local.set $m (i8x16.bitmask (i8x16.eq (local.get $v) (local.get $f))))"
+"    (block $cands"
+"      (loop $cand"
+"        (br_if $cands (i32.eqz (local.get $m)))"
+"        (local.set $j (i32.ctz (local.get $m)))"
+"        (if (i32.eq (i32.load align=1 (i32.add (local.get $kp) (i32.shl (i32.add (local.get $g) (local.get $j)) (i32.const 2)))) (local.get $kk))"
+"          (then (local.set $hit (i32.const 1)) (br $qdone))"
+"        )"
+"        (local.set $m (i32.and (local.get $m) (i32.sub (local.get $m) (i32.const 1))))"
+"        (br $cand)"
+"      )"
+"    )"
+"    (local.set $me (i8x16.bitmask (i8x16.eq (local.get $v) (i8x16.splat (i32.const 128)))))"
+"    (br_if $qdone (i32.ne (local.get $me) (i32.const 0)))"
+"    (local.set $g (i32.and (i32.add (local.get $g) (i32.const 16)) (i32.const 8176)))"
+"    (br $group)"
+"  )"
+")"
+"(i64.shl (i64.extend_i32_s (local.get $hit)) (i64.const 1))"
+
+fn point_count_hits_packed(ctrl: Bytes, kcol: Bytes, qs: Bytes, nq: Int) -> Int {
+  let mut i = 0
+  let mut hits = 0
+  while i < nq {
+    hits = hits + simd_has_at(ctrl, kcol, qs, i)
+    i = i + 1
+  }
+  hits
+}
+
+fn point_count_hits(ctrl: Bytes, kcol: Bytes, qs: Array[Int]) -> Int {
+  let n = Array::length(qs)
+  let mut i = 0
+  let mut hits = 0
+  while i < n {
+    hits = hits + simd_has(ctrl, kcol, Array::get(qs, i))
+    i = i + 1
+  }
+  hits
+}
+
+fn mk_keys(n: Int) -> Array[Int] {
+  let xs: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(xs, i * 7 + 3)
+    i = i + 1
+  }
+  xs
+}
+
+fn mk_queries(n: Int) -> Array[Int] {
+  let xs: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(xs, if i % 2 == 0 { i * 7 + 3 } else { i * 7 + 4 })
+    i = i + 1
+  }
+  xs
+}
+
+fn qcol(xs: Array[Int]) -> Bytes {
+  let n = Array::length(xs)
+  let b = zeros(n * 4, 0)
+  let mut i = 0
+  while i < n {
+    put_i32(b, i, Array::get(xs, i))
+    i = i + 1
+  }
+  b
+}
+
+fn mutmap_of(keys: Array[Int]) -> MutMap[Int, Int] {
+  let m: MutMap[Int, Int] = MutMap::new_int()
+  let n = Array::length(keys)
+  let mut i = 0
+  while i < n {
+    MutMap::set(m, Array::get(keys, i), 1)
+    i = i + 1
+  }
+  m
+}
+
+fn mutmap_count_hits(m: MutMap[Int, Int], qs: Array[Int]) -> Int {
+  let n = Array::length(qs)
+  let mut i = 0
+  let mut hits = 0
+  while i < n {
+    if MutMap::has(m, Array::get(qs, i)) {
+      hits = hits + 1
+    }
+    i = i + 1
+  }
+  hits
+}
+
+let keys = mk_keys(4000)
+let queries = mk_queries(4000)
+let table = build(keys)
+let ctrl = table.0
+let kcol = table.1
+let qbytes = qcol(queries)
+let mm = mutmap_of(keys)
+let sink = [
+  0
+]
+
+test "both agree" {
+  assert_eq(simd_count_hits(ctrl, kcol, qbytes, 4000), 2000)
+  assert_eq(mutmap_count_hits(mm, queries), 2000)
+  assert_eq(point_count_hits(ctrl, kcol, queries), 2000)
+  assert_eq(point_count_hits_packed(ctrl, kcol, qbytes, 4000), 2000)
+}
+
+bench "lookup_4k_simd_frozen_set" { Array::set(sink, 0, simd_count_hits(ctrl, kcol, qbytes, 4000)) }
+bench "lookup_4k_stdlib_mutmap" { Array::set(sink, 0, mutmap_count_hits(mm, queries)) }
+bench "lookup_4k_simd_point_api" { Array::set(sink, 0, point_count_hits(ctrl, kcol, queries)) }
+bench "lookup_4k_simd_point_api_packed_queries" { Array::set(sink, 0, point_count_hits_packed(ctrl, kcol, qbytes, 4000)) }

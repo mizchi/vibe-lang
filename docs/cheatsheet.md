@@ -2032,6 +2032,15 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   locals index past the params + closure-env slot. v128 locals are what let
   a kernel keep vector state across instructions (e.g. the BLAKE3 compress
   in `lib/@vibe/blake3/simd.vibe`).
+- **Integer immediates** accept BOTH spellings the text format defines
+  (`iN ::= n:uN | i:sN`), so `(i32.const 2654435761)` and
+  `(i32.const -1640531535)` are the same instruction. Out of range for the
+  instruction's width — or longer than a vibe `Int` — is a **located error**
+  from `vibe check`, not a truncation and not a module that only fails at load
+  (#2341). NOTE until the next bootstrap bump: the committed seed predates this,
+  and `vibe test` compiles with the seed by default, so inside `lib/**` and
+  anything run through `scripts/vibe_test.sh` keep spelling an out-of-signed-range
+  i32 immediate the signed way.
 - **WAT text**: ordinary string literal(s) — the lexer has no raw/multiline
   strings; adjacent literals after `= wasm` are joined with newlines. `;;`
   line and `(; ;)` block comments work inside the text.
