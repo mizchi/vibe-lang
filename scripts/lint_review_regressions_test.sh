@@ -557,4 +557,32 @@ if ! grep -q '__preexisting_new' "$TMP_ROOT/preexisting-gone.out"; then
 fi
 git -C "$TMP_ROOT" reset -q --hard HEAD
 
+# --- the marker must be in the SNAPSHOT, not just the working tree ----------
+# Candidates come from `git diff --cached`, so the suppression has to be read
+# from the index too. Reading $PROJECT_ROOT instead let a developer stage an
+# unsuppressed binder and add the marker as an UNSTAGED edit: the lint passed
+# while the committed snapshot still violated it -- certifying something
+# untrue, which is worse than a false positive.
+git -C "$TMP_ROOT" reset -q --hard HEAD
+cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'SNAPEOF'
+fn staged_only(e: Expr) -> Expr {
+  ELet("__staged_only", e, e, -1)
+}
+SNAPEOF
+git -C "$TMP_ROOT" add .
+# the marker exists ONLY in the working tree, never staged
+perl -0pi -e 's/(  ELet\("__staged_only", e, e, -1\)\n)/$1  \/\/ review-lint: allow-fixed-synthetic-name\n/' \
+  "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe"
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$TMP_ROOT/snap.out" 2>&1; then
+  echo "review-regressions lint self-test: an UNSTAGED marker must not suppress a STAGED binder" >&2
+  cat "$TMP_ROOT/snap.out" >&2
+  exit 1
+fi
+if ! grep -q '__staged_only' "$TMP_ROOT/snap.out"; then
+  echo "review-regressions lint self-test: snapshot case reported the wrong binder" >&2
+  cat "$TMP_ROOT/snap.out" >&2
+  exit 1
+fi
+git -C "$TMP_ROOT" reset -q --hard HEAD
+
 echo "review-regressions lint self-test: ok"

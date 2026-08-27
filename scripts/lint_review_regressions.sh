@@ -231,13 +231,16 @@ else
       cand_rest="${candidate#*:}"
       cand_line="${cand_rest%%:*}"
       # `pkf run fmt` moves a trailing marker onto the following line, so the
-      # suppression is one line BELOW the binder. Read it from the file, which
-      # sees pre-existing markers as well as newly added ones. Never the line
-      # above: that would let one marker cover two adjacent binders.
-      next_line=""
-      if [ -f "$PROJECT_ROOT/$cand_path" ]; then
-        next_line="$(sed -n "$((cand_line + 1))p" "$PROJECT_ROOT/$cand_path" 2>/dev/null || true)"
-      fi
+      # suppression is one line BELOW the binder. Read it from the SAME
+      # SNAPSHOT the candidates came from -- `git show "$SHOW_REF:path"`, the
+      # index when linting `--cached` and HEAD in range mode, exactly what the
+      # AST tier materializes. Reading `$PROJECT_ROOT` instead would read the
+      # working tree, and a marker added as an UNSTAGED edit would then
+      # suppress a staged binder: the lint would pass while the committed
+      # snapshot still violates it. Never the line above: that would let one
+      # marker cover two adjacent binders.
+      next_line="$(git -C "$PROJECT_ROOT" show "$SHOW_REF:$cand_path" 2>/dev/null \
+        | sed -n "$((cand_line + 1))p" || true)"
       case "$next_line" in
         *"review-lint: allow-fixed-synthetic-name"*) ;;
         *) printf '%s\n' "$candidate" ;;
