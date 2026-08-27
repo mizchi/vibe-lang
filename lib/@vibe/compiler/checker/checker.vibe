@@ -1372,7 +1372,11 @@ fn bind_trait_bound_self_type_expr(te: TypeExpr, binder: String) -> TypeExpr {
     } else {
       te
     },
-    TyApp(name, args) => TyApp(name, for arg in args {
+    TyApp(name, args) => TyApp(if name == binder {
+      trait_bound_self_marker
+    } else {
+      name
+    }, for arg in args {
       bind_trait_bound_self_type_expr(arg, binder)
     }),
     TyTuple(items) => TyTuple(for item in items {
@@ -1394,8 +1398,14 @@ fn bind_trait_bound_self_reference(key: String, binder: String) -> String {
 
 fn replace_trait_bound_self_type(ty: Type, self_ty: Type) -> Type {
   match ty {
-    CtNamed(name, args) => if name == trait_bound_self_marker && Array::length(args) == 0 {
-      self_ty
+    CtNamed(name, args) => if name == trait_bound_self_marker {
+      if Array::length(args) == 0 {
+        self_ty
+      } else {
+        apply_type_constructor(self_ty, for arg in args {
+          replace_trait_bound_self_type(arg, self_ty)
+        })
+      }
     } else {
       CtNamed(name, for arg in args {
         replace_trait_bound_self_type(arg, self_ty)
