@@ -6899,46 +6899,91 @@ fn railway_bind_payload_type(val: Expr, struct_sets: Array[(String, Array[String
   }
 }
 
-fn constructor_env_entry_belongs_to(entry_name: String, name: String) -> Bool {
-  if entry_name == name || entry_name == shape_key(name) || entry_name == tuple_shape_key(name) || entry_name == eq_shape_key(name) || entry_name == array_elem_key(name) || entry_name == impl_target_var_key(name) || entry_name == impl_target_fn_key(name) || entry_name == constructor_mask_key(name) || entry_name == local_fn_return_key(name) {
+fn constructor_env_entry_belongs_to(entry_name: String, name: String, suffix: String) -> Bool {
+  if entry_name == name {
     true
+  } else if !String::ends_with(entry_name, suffix) {
+    false
   } else {
-    let suffix = String::concat("$", name)
-    String::ends_with(entry_name, suffix) && (String::starts_with(entry_name, "__ctorpay$") || String::starts_with(entry_name, "__ctorpayi$"))
+    String::starts_with(entry_name, "__shape$") || String::starts_with(entry_name, "__tupshape$") || String::starts_with(entry_name, "__eqshape$") || String::starts_with(entry_name, "__arrelem$") || String::starts_with(entry_name, "$impl_target$") || String::starts_with(entry_name, "$impl_return$") || String::starts_with(entry_name, "__ctormask$") || String::starts_with(entry_name, "__local_fn_return$") || String::starts_with(entry_name, "__ctorpay$") || String::starts_with(entry_name, "__ctorpayi$")
   }
 }
 
-/// Constructor recovery has a stricter shadowing contract than the shared
-/// rewrite environment: an unresolved inner binding must still mask both the
-/// nominal and every per-binding sentinel carried by an outer binding of the
-/// same name.
-fn extend_constructor_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+fn constructor_env_has_binding(var_types: Array[(String, String)], name: String) -> Bool {
+  let suffix = String::concat("$", name)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(var_types) && !found {
+    let (entry_name, _) = Array::get(var_types, i)
+    if constructor_env_entry_belongs_to(entry_name, name, suffix) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn constructor_env_copy_without(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
+  let suffix = String::concat("$", name)
   let out = array_empty()
   let mut i = 0
   while i < Array::length(var_types) {
     let entry = Array::get(var_types, i)
     let (entry_name, _) = entry
-    if constructor_env_entry_belongs_to(entry_name, name) {
+    if constructor_env_entry_belongs_to(entry_name, name, suffix) {
       ()
     } else {
       Array::push(out, entry)
     }
     i = i + 1
   }
-  match inferred {
-    Some(tname) => Array::push(out, (name, tname)),
-    None => Array::push(out, (constructor_mask_key(name), ""))
-  }
   out
+}
+
+/// Constructor recovery has a stricter shadowing contract than the shared
+/// rewrite environment: an unresolved inner binding must still mask both the
+/// nominal and every per-binding sentinel carried by an outer binding of the
+/// same name. A fresh name has nothing to mask, so reuse the parent array —
+/// copying on every `let` of a large function is what moved selfcompile heap
+/// +27% on the constructor-witness branch.
+fn extend_constructor_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => if constructor_env_has_binding(var_types, name) {
+      let out = constructor_env_copy_without(var_types, name)
+      Array::push(out, (name, tname))
+      out
+    } else {
+      extend_var_types(var_types, name, Some(tname))
+    },
+    None => if constructor_env_has_binding(var_types, name) {
+      let out = constructor_env_copy_without(var_types, name)
+      Array::push(out, (constructor_mask_key(name), ""))
+      out
+    } else {
+      var_types
+    }
+  }
 }
 
 /// Shared rewrite env keeps a historical name fallback for rendering; constructor
 /// recovery still sees the mask so a stale outer witness cannot be selected.
 fn constructor_rewrite_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
-  let ctor_vars = extend_constructor_var_types(var_types, name, inferred)
   match inferred {
-    Some(_) => ctor_vars,
-    None => extend_var_types(ctor_vars, name, lookup_var_type(var_types, name))
+    Some(tname) => extend_constructor_var_types(var_types, name, Some(tname)),
+    None => if !constructor_env_has_binding(var_types, name) {
+      var_types
+    } else {
+      match lookup_var_type(var_types, name) {
+        Some(old) => {
+          let out = constructor_env_copy_without(var_types, name)
+          Array::push(out, (constructor_mask_key(name), ""))
+          Array::push(out, (name, old))
+          out
+        },
+        None => extend_constructor_var_types(var_types, name, None)
+      }
+    }
   }
 }
 
@@ -6948,27 +6993,71 @@ fn constructor_rewrite_var_types(var_types: Array[(String, String)], name: Strin
 fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat) -> Array[(String, String)] {
   let binders = empty_str_array()
   collect_pat_binders(pat, binders)
-  let mut out = var_types
-  let mut i = 0
-  while i < Array::length(binders) {
-    out = extend_constructor_var_types(out, Array::get(binders, i), None)
-    i = i + 1
+  if Array::length(binders) == 0 {
+    var_types
+  } else {
+    let mut needed = false
+    let mut bi = 0
+    while bi < Array::length(binders) {
+      if constructor_env_has_binding(var_types, Array::get(binders, bi)) {
+        needed = true
+      } else {
+        ()
+      }
+      bi = bi + 1
+    }
+    if !needed {
+      var_types
+    } else {
+      let suffixes = empty_str_array()
+      let mut si = 0
+      while si < Array::length(binders) {
+        Array::push(suffixes, String::concat("$", Array::get(binders, si)))
+        si = si + 1
+      }
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        let entry = Array::get(var_types, i)
+        let (entry_name, _) = entry
+        let mut drop = false
+        let mut j = 0
+        while j < Array::length(binders) && !drop {
+          if constructor_env_entry_belongs_to(entry_name, Array::get(binders, j), Array::get(suffixes, j)) {
+            drop = true
+          } else {
+            j = j + 1
+          }
+        }
+        if drop {
+          ()
+        } else {
+          Array::push(out, entry)
+        }
+        i = i + 1
+      }
+      out
+    }
   }
-  out
 }
 
 /// Build a match arm's constructor environment without retaining shadowed
 /// evidence. A bare binding receives the scrutinee constructor directly;
 /// structured patterns reuse the payload/shape recovery shared by lowering.
 fn constructor_match_arm_var_types(scrut: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let masked = mask_constructor_pat_binders(var_types, pat)
   match pat {
-    PBind(name) => extend_constructor_var_types(masked, name, infer_constructor_arg_type_name(scrut, gens, struct_sets, var_types, fn_returns)),
-    PCtor(cn, sub) => match constructor_call_payload_var_types(scrut, cn, sub, gens, struct_sets, masked, fn_returns) {
-      Some(env) => env,
-      None => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
+    PBind(name) => extend_constructor_var_types(var_types, name, infer_constructor_arg_type_name(scrut, gens, struct_sets, var_types, fn_returns)),
+    PCtor(cn, sub) => {
+      let masked = mask_constructor_pat_binders(var_types, pat)
+      match constructor_call_payload_var_types(scrut, cn, sub, gens, struct_sets, masked, fn_returns) {
+        Some(env) => env,
+        None => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
+      }
     },
-    _ => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
+    _ => {
+      let masked = mask_constructor_pat_binders(var_types, pat)
+      arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
+    }
   }
 }
 
