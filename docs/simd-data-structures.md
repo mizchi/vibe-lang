@@ -114,14 +114,20 @@ since been **removed** (#2342).
 | same algorithm through `v128_*` intrinsics | 5564 | **8048** | 22x |
 | vibe-level scalar loop over `Bytes::get` | 25001 | 0 | 101x |
 
-The intrinsic lane runs the *identical algorithm* as the kernel lane and is 22x
-slower, because each `v128_load` / `v128_eq_i8x16` / `v128_and` returns a tagged
-pointer to a freshly bump-allocated 16-byte box (`codegen/expr/compile_call.vibe`,
-`perceus/perceus.vibe:922-930,1287-1294` — the boxes deliberately carry no RC
-header, so they are never reclaimed). Scanning 4096 bytes allocates 8 KiB. The compiler's
-own fused builtins avoid this by never letting the vector become a value; the
-comment in `compile_call.vibe:2065` says so outright ("NO heap boxing — the
-per-op boxed v128 intrinsics would bump-allocate 16 bytes each and leak").
+The intrinsic lane ran the *identical algorithm* as the kernel lane and was 22x
+slower, because each `v128_load` / `v128_eq_i8x16` / `v128_and` returned a
+tagged pointer to a freshly bump-allocated 16-byte box. The box deliberately
+carried no RC header — Perceus had to classify these values as scalar, since a
+dup/drop would have misread the vector's payload bytes as a refcount — which
+also meant nothing ever reclaimed one. Scanning 4096 bytes allocated 8 KiB. The
+compiler's own fused builtins avoid this by never letting the vector become a
+value at all.
+
+(No line citations here on purpose. This paragraph described code that #2342
+deleted, and the ranges it used to cite now land on pattern environments and
+closure ownership — pointing a reader at unrelated current code is worse than
+pointing at nothing. `git log` is the archive; the same rule the `docs/` policy
+in `CLAUDE.md` states for whole documents applies to a line number inside one.)
 
 So the intrinsics were documented, type-checked, reachable from user code, and
 wrong to use. They never gave a wrong answer, so this was not a P0 by the triage
