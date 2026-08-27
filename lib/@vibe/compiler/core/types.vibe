@@ -1190,6 +1190,27 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
   }
 }
 
+/// Return the declaration payload retained for an imported trait. The value
+/// namespace is derived from this authority, so importing a trait does not
+/// need to import each `Trait::operation` as a separate value.
+export fn trait_definition(env: TypeEnv, name: String) -> Option[(Array[String], Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(String, Array[String], Array[(String, Array[String])])])] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => trait_definition(rest, name),
+    EnvTraitDef(tname, supers, _, methods, rest, params, method_gens) => if tname == trait_ref_name(name) {
+      Some((supers, methods, params, method_gens))
+    } else {
+      trait_definition(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => trait_definition(rest, name),
+    EnvMutCell(_, _, rest) => trait_definition(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_definition(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_definition(rest, name),
+    EnvFlat(_) => None,
+    EnvCached(_, _, rest) => trait_definition(rest, name)
+  }
+}
+
 /// The type formals in scope for one trait method's declared signature: the
 /// trait header's own params (`trait Iter[T]`) followed by that method's own
 /// generics (`map[U](Self, (T) -> U)`). Anything in this list is a binder, not
@@ -2695,9 +2716,15 @@ fn remap_trait_bound_vid_expr(te: TypeExpr, id_map: Array[(Int, Int)]) -> TypeEx
       Some(old_id) => TyName(String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0)))),
       None => te
     },
-    TyApp(name, args) => TyApp(name, for arg in args {
-      remap_trait_bound_vid_expr(arg, id_map)
-    }),
+    TyApp(name, args) => {
+      let head = match parse_trait_bound_vid(name) {
+        Some(old_id) => String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0))),
+        None => name
+      }
+      TyApp(head, for arg in args {
+        remap_trait_bound_vid_expr(arg, id_map)
+      })
+    },
     TyTuple(items) => TyTuple(for item in items {
       remap_trait_bound_vid_expr(item, id_map)
     }),

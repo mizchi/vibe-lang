@@ -1206,6 +1206,61 @@ test "exact dep projection gives explicit trait aliases precedence over selected
   assert(imported_forall_bound_label(trait_first, "accept") == "Local")
 }
 
+test "trait imports derive qualified operations without exposing bare names" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Measurable }\nlet answer = Measurable::measure(42)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Measurable::measure") != None, content = "true")
+  inspect(env_lookup(checked, "measure") == None, content = "true")
+  let bare_error = handle {
+    let bare_source = "import ./dep.vibe { trait Measurable }\nlet answer = measure(42)"
+    let bare_env = projected_import_env_for_test(bare_source, "workspace/main.vibe", [
+      dep_path
+    ], [(dep_path, dep_env)])
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", bare_source), bare_env)
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(bare_error != "")
+}
+
+test "trait import aliases derive operations under the local namespace" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Measurable as Metric }\nlet answer = Metric::measure(42)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Metric::measure") != None, content = "true")
+}
+
+test "trait-only re-exports preserve derived qualified operations" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let facade_path = "workspace/facade.vibe"
+  let facade_source = "export ./dep.vibe { trait Measurable }"
+  let facade_stmts = parse_program_with_path(facade_path, facade_source)
+  let facade_import_env = projected_import_env_for_test(facade_source, facade_path, [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let facade_checked = check_program_with_projected_import_env_result(facade_stmts, facade_import_env).final_env
+  let facade_public = checked_module_public_env(facade_stmts, facade_checked)
+  inspect(env_lookup(facade_public, "Measurable::measure") == None, content = "true")
+  let main_source = "import ./facade.vibe { trait Measurable }\nlet answer = Measurable::measure(42)"
+  let main_env = projected_import_env_for_test(main_source, "workspace/main.vibe", [
+    facade_path
+  ], [(facade_path, facade_public)])
+  let main_checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", main_source), main_env).final_env
+  inspect(env_lookup(main_checked, "Measurable::measure") != None, content = "true")
+}
+
 test "applied trait impl projection preserves explicit trait aliases" {
   let dep_path = "workspace/dep.vibe"
   let source_ref = trait_ref_key(TyApp("Value", [TyName("Int")]))

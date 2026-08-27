@@ -288,6 +288,15 @@ test "#2338: applied bounds through aliases specialize to the constructor" {
   inspect(String::contains(out, "F::accept("), content = "false")
 }
 
+test "#2338: constructor tracking preserves structural equality bindings" {
+  let source = "enum Item { Item(Int) }\nfn same() -> Bool { let a: Item = Item(1); let b: Item = Item(1); a == b }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Item::equals(a, b)"), content = "true")
+}
+
 test "#2338: sibling constructor formals specialize in witness bounds" {
   let out = desugar_checked_source("trait Zip[F[_], G[_]] { pair[A](F[A], G[A]) -> Int }\nimpl Zip[Array, Option] for Array { pair(xs: Array[A], ys: Option[A]) -> Int { 0 } }\nfn go[F[_]: Zip[F, G], G[_], A](xs: F[A], ys: G[A]) -> Int { F::pair(xs, ys) }\nfn use_it() -> Int { go([1], Some(1)) }")
   inspect(String::contains(out, "THREW:"), content = "false")
@@ -300,4 +309,14 @@ test "derived enum == through annotated Array::get still calls T::equals" {
   inspect(String::contains(out, "THREW:"), content = "false")
   inspect(String::contains(out, "Tok::equals(a"), content = "true")
   inspect(String::contains(out, "__arr_equals__"), content = "false")
+}
+
+test "#2338: sibling applied constructor heads instantiate in bounds" {
+  let source = "trait Zip[F[_], G] { pair[A](F[A], G) -> Int }\nimpl Zip[Array, Option[Int]] for Array { pair(xs: Array[A], ys: Option[Int]) -> Int { 0 } }\nfn go[F[_]: Zip[F, G[Int]], G[_], A](xs: F[A], ys: G[Int]) -> Int { F::pair(xs, ys) }\nfn use_it() -> Int { go([1], Some(1)) }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "#2338: sibling constructors resolve beneath concrete bound heads" {
+  let source = "struct Holder[A] { value: A }\ntrait Accepts[A] { accept(Int) -> Int }\nimpl Accepts[Holder[Option]] for Array { accept(x: Int) -> Int { x } }\nfn go[F[_]: Accepts[Holder[G]], G[_], A](xs: F[A], ys: G[A]) -> Int { 0 }\nfn use_it() -> Int { go([1], Some(1)) }"
+  inspect(check_source_error_message(source), "")
 }

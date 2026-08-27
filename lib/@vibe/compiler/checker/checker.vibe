@@ -1606,19 +1606,78 @@ fn trait_bound_type_expr(ty: Type) -> Option[TypeExpr] {
   }
 }
 
-fn resolve_trait_bound_arg_type(arg: TypeExpr, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> Type {
+fn resolve_trait_bound_arg_expr(arg: TypeExpr, self_ty: Type, s: Subst, defs: Array[TypeDef]) -> Option[TypeExpr] {
   match arg {
-    TyName(name) => match parse_trait_bound_vid(name) {
-      Some(vid) => subst_apply(s, CtVar(vid)),
-      None => replace_trait_bound_self_type(resolve_type_expr(arg, defs), self_ty)
+    TyName(name) => if name == trait_bound_self_marker {
+      trait_bound_type_expr(self_ty)
+    } else match parse_trait_bound_vid(name) {
+      Some(vid) => trait_bound_type_expr(subst_apply(s, CtVar(vid))),
+      None => trait_bound_type_expr(replace_trait_bound_self_type(resolve_type_expr(arg, defs), self_ty))
     },
-    TyApp(name, args) => match parse_trait_bound_vid(name) {
-      Some(vid) => hkt_apply_ctor(subst_apply(s, CtVar(vid)), for nested in args {
-        resolve_trait_bound_arg_type(nested, self_ty, s, defs)
-      }),
-      None => replace_trait_bound_self_type(resolve_type_expr(arg, defs), self_ty)
+    TyApp(name, args) => {
+      let resolved_head = if name == trait_bound_self_marker {
+        trait_bound_type_expr(self_ty)
+      } else match parse_trait_bound_vid(name) {
+        Some(vid) => trait_bound_type_expr(subst_apply(s, CtVar(vid))),
+        None => Some(TyName(name))
+      }
+      let mapped = array_empty()
+      let mut ok = true
+      for nested in args {
+        match resolve_trait_bound_arg_expr(nested, self_ty, s, defs) {
+          Some(next) => Array::push(mapped, next),
+          None => {
+            ok = false
+          }
+        }
+      }
+      match resolved_head {
+        Some(TyName(head)) => if ok {
+          trait_bound_type_expr(replace_trait_bound_self_type(resolve_type_expr(TyApp(head, mapped), defs), self_ty))
+        } else {
+          None
+        },
+        _ => None
+      }
     },
-    _ => replace_trait_bound_self_type(resolve_type_expr(arg, defs), self_ty)
+    TyTuple(items) => {
+      let mapped = array_empty()
+      let mut ok = true
+      for item in items {
+        match resolve_trait_bound_arg_expr(item, self_ty, s, defs) {
+          Some(next) => Array::push(mapped, next),
+          None => {
+            ok = false
+          }
+        }
+      }
+      if ok {
+        Some(TyTuple(mapped))
+      } else {
+        None
+      }
+    },
+    TyFn(params, ret, effect) => {
+      let mapped = array_empty()
+      let mut ok = true
+      for param in params {
+        match resolve_trait_bound_arg_expr(param, self_ty, s, defs) {
+          Some(next) => Array::push(mapped, next),
+          None => {
+            ok = false
+          }
+        }
+      }
+      match resolve_trait_bound_arg_expr(ret, self_ty, s, defs) {
+        Some(next_ret) => if ok {
+          Some(TyFn(mapped, next_ret, effect))
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    TyUnit => Some(TyUnit)
   }
 }
 
@@ -1628,8 +1687,7 @@ export fn resolve_trait_bound_self_reference(key: String, self_ty: Type, s: Subs
       let mapped = array_empty()
       let mut ok = true
       for arg in args {
-        let resolved = resolve_trait_bound_arg_type(arg, self_ty, s, defs)
-        match trait_bound_type_expr(resolved) {
+        match resolve_trait_bound_arg_expr(arg, self_ty, s, defs) {
           Some(next) => Array::push(mapped, next),
           None => {
             ok = false
