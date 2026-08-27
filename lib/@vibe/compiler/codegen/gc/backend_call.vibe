@@ -74,6 +74,7 @@ import @vibe/compiler/codegen/common_base {
   region_try_body_ld,
   resolve_func,
   resolve_local,
+  sized_bytes_new_expr,
   struct_field_candidates,
   struct_field_dispatch_cases
 }
@@ -2080,6 +2081,26 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           emit_i64_const(buf, 0)
         }
         nl
+      }
+      // review-lint: allow-gc-direct-abi-unlisted
+      else if fname == "Bytes::new" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
+        // Bytes::new(n): length-n zero-filled buffer. The runtime bytes_new
+        // takes NO operands, so the generic path emits `n` and then calls the
+        // zero-parameter body anyway, stranding the argument. This lane had no
+        // counterpart to the linear lane's synthesis, which made the
+        // one-argument overload linear-only -- clean under `vibe check` on both
+        // lanes, past `wasmtime compile`, failing at run time on one (#2363).
+        // The synthesis is SHARED now (common_base/sized_bytes_new_expr.vibe),
+        // so this arm and the linear one are the same single call and cannot
+        // drift apart again.
+        //
+        // The guard is gc_name_is_user_defined, NOT `!source_is_bound`: on this
+        // backend the generated builtin BODIES live in ctx.func_table, so
+        // `source_is_bound` is true for every builtin and the `!source_is_bound`
+        // arms further up are reachable only for region-surface names that have
+        // no body (MutList::/MutBytes::). Guarding this arm that way compiled,
+        // linked, and simply never fired -- measured, not reasoned.
+        ce(buf, sized_bytes_new_expr(Array::get(args, 0)), local_names, next_local, ld)
       }
       else if fname == "eq" && !gc_name_is_user_defined(ctx, local_names, fname) {
         // #2309 (Codex review on #2312): unconditional until now, so a program

@@ -1641,7 +1641,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | function | meaning | backend |
 |---|---|---|
 | `Bytes::new()` | empty buffer (initial capacity 64) | linear / gc |
-| `Bytes::new(n)` | **zero-filled** buffer of length `n`. **linear only** (see below) | linear only |
+| `Bytes::new(n)` | **zero-filled** buffer of length `n` | linear / gc |
 | `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | length, element access | linear / gc |
 | `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
@@ -1664,19 +1664,19 @@ via `memory.copy`, so `push` is amortised O(1)):
 > (`codegen/builtin_bodies/bodies_core_a2.vibe`) — a single body shared by the
 > linear and gc backends.
 >
-> **The one-argument `Bytes::new(n)` only works on the linear backend** (measured
-> 2026-08-27, [#2363](https://github.com/mizchi/vibe-lang/issues/2363)).
-> `compile_call.vibe` special-cases a one-argument `Bytes::new` and synthesises the
-> fill loop; `codegen/gc/backend_call.vibe` has no counterpart, and the registry
-> declares `Bytes::new` with `reg_p0()`, so on wasm-gc the argument is pushed and
-> then the zero-parameter runtime body is called. Measured on one self-contained
-> file, linear passes and gc **fails** — and it fails at run time, not at
-> validation, so the module is accepted by `wasmtime compile` first.
+> **The one-argument `Bytes::new(n)` used to be linear-only** and is not any
+> more (#2363, fixed 2026-08-27). `compile_call.vibe` special-cases a
+> one-argument `Bytes::new` and synthesises `new()` plus a zero-push loop;
+> `codegen/gc/backend_call.vibe` had no counterpart, and the registry declares
+> `Bytes::new` with `reg_p0()`, so on wasm-gc the argument was pushed and the
+> zero-parameter runtime body called anyway. It type-checked on both lanes,
+> passed `wasmtime compile`, and failed at run time on one of them. The gc call
+> path now carries the same synthesis, and
+> `fixtures/bytes_alloc_backend_parity_test.vibe` pins both spellings on both
+> lanes.
 >
-> The spelling that works on both backends is `Bytes::new()` +
-> `Bytes::fill(b, 0, n)`. Use it wherever portability matters; `MutMap`'s control
-> array uses it for exactly this reason (`lib/@vibe/core/hashmap.vibe`), and
-> `fixtures/bytes_alloc_backend_parity_test.vibe` pins it on both lanes.
+> `Bytes::new()` + `Bytes::fill(b, 0, n)` remains equivalent and is what
+> `MutMap`'s control array uses (`lib/@vibe/core/hashmap.vibe`).
 
 **SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
 the linear and GC backends):
