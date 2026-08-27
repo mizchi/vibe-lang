@@ -85,6 +85,7 @@ struct GenericImplInfo {
 struct DictGen {
   name: String;
   threaded: Array[(String, String, Int)];
+  return_constructor_param: String;
   impl_trait: String;
   impl_params: Array[String];
   impl_target: Option[TypeExpr]
@@ -2115,6 +2116,30 @@ fn decode_constructor_recv_index(idx: Int) -> Int {
   0 - 1000000 - idx
 }
 
+/// The constructor formal that owns a generic function's result, when the
+/// result is directly `F[A]`. Nested-call witness recovery must follow this
+/// formal's receiver rather than whichever constructor bound was declared
+/// first.
+fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)]) -> String {
+  match ret {
+    Some(TyApp(head, _)) => {
+      let mut i = 0
+      let mut result = ""
+      while i < Array::length(threaded) {
+        let (type_param, _, recv_idx) = Array::get(threaded, i)
+        if type_param == head && is_constructor_recv_index(recv_idx) {
+          result = head
+          i = Array::length(threaded)
+        } else {
+          i = i + 1
+        }
+      }
+      result
+    },
+    _ => ""
+  }
+}
+
 /// Build the registry of top-level generics that need dictionary threading:
 /// each is a (function name, threaded-bounds) pair. A bound is threaded only
 /// when its trait is method-bearing and the type parameter appears directly as
@@ -2218,7 +2243,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, bounds, params, _, _, _) => if already_threaded(bounds, params) {
+        EFn(_, bounds, params, ret, _, _) => if already_threaded(bounds, params) {
           ()
         } else {
           let impl_info = generic_impl_info_for_owner(gimpl_infos, qualified_head(fname))
@@ -2276,10 +2301,12 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
             bi = bi + 1
           }
           if Array::length(threaded) > 0 || is_impl_method {
+            let result_constructor = return_constructor_param(ret, threaded)
             match impl_info {
               Some(info) => Array::push(out, DictGen::{
                 name: fname,
                 threaded,
+                return_constructor_param: result_constructor,
                 impl_trait: info.trait_name,
                 impl_params: info.type_params,
                 impl_target: Some(info.target)
@@ -2287,6 +2314,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
               None => Array::push(out, DictGen::{
                 name: fname,
                 threaded,
+                return_constructor_param: result_constructor,
                 impl_trait: "",
                 impl_params: [],
                 impl_target: None
@@ -2979,20 +3007,20 @@ fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String]
 /// callee's own constructor receiver back to its concrete argument instead.
 fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match arg {
-    ECall(EIdent(name, _), args, _) => match lookup_gen(gens, name) {
-      Some(threaded) => {
+    ECall(EIdent(name, _), args, _) => match lookup_gen_entry(gens, name) {
+      Some(gen) => {
         let mut i = 0
         let mut result = None
-        while i < Array::length(threaded) {
-          let (_, _, recv_idx_raw) = Array::get(threaded, i)
-          if is_constructor_recv_index(recv_idx_raw) {
+        while i < Array::length(gen.threaded) {
+          let (type_param, _, recv_idx_raw) = Array::get(gen.threaded, i)
+          if type_param == gen.return_constructor_param && is_constructor_recv_index(recv_idx_raw) {
             let recv_idx = decode_constructor_recv_index(recv_idx_raw)
             if recv_idx >= 0 && recv_idx < Array::length(args) {
               result = infer_constructor_arg_type_name(Array::get(args, recv_idx), gens, struct_sets, var_types, fn_returns)
             } else {
               ()
             }
-            i = Array::length(threaded)
+            i = Array::length(gen.threaded)
           } else {
             i = i + 1
           }

@@ -142,9 +142,9 @@ fn push_contract_decl(decls: Array[(String, String)], decl_at: Array[Int], name:
 }
 
 /// Parse the optional parameter list of an opaque contract type. The contract
-/// surface stores only the outer arity; kind syntax inside each binder remains
-/// in the source declaration and is validated by ordinary type uses such as
-/// `F[A]` in the accompanying function signatures.
+/// surface stores only the outer arity, but the source still follows the same
+/// constructor-kind grammar as ordinary binders: one or more comma-separated
+/// `_` placeholders.
 fn parse_opaque_type_params(tokens: Array[Token], pos: Int, name: String) -> (Int, Int) with Exception {
   match peek(tokens, pos) {
     TLBracket => {
@@ -158,20 +158,29 @@ fn parse_opaque_type_params(tokens: Array[Token], pos: Int, name: String) -> (In
             p = p + 1
             match peek(tokens, p) {
               TLBracket => {
-                let mut depth = 1
                 p = p + 1
-                while depth > 0 {
+                let mut kind_done = false
+                while !kind_done {
                   match peek(tokens, p) {
-                    TLBracket => {
-                      depth = depth + 1
+                    TIdent(hole) => if hole == "_" {
+                      p = p + 1
+                      match peek(tokens, p) {
+                        TComma => {
+                          p = p + 1
+                        },
+                        TRBracket => {
+                          p = p + 1
+                          kind_done = true
+                        },
+                        _ => throw("expected ',' or ']' after '_' in opaque type `\{name}` constructor parameter")
+                      }
+                    } else {
+                      throw("opaque type `\{name}` constructor parameters contain only '_' placeholders")
                     },
-                    TRBracket => {
-                      depth = depth - 1
-                    },
-                    TEof => throw("unterminated kind parameter list on opaque type `\{name}`"),
-                    _ => ()
+                    TRBracket => throw("opaque type `\{name}` constructor parameter needs at least one '_' placeholder"),
+                    TEof => throw("unterminated constructor parameter on opaque type `\{name}`"),
+                    _ => throw("expected '_' in opaque type `\{name}` constructor parameter")
                   }
-                  p = p + 1
                 }
               },
               _ => ()
