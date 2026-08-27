@@ -3238,14 +3238,14 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
       let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
       let rigid_applied_conflict = rigid_applied_mismatch(expected_zonked, actual_zonked)
-      // Raw `expected` (before this subst) must itself be fully concrete:
-      // an imported generic can leak a sibling param through the flat env
-      // and make `expected_zonked` look concrete (#981 list_zip). A body
-      // that instantiated `T := Box[Int]` publishes that named type, and
-      // `f(1)` is then Box vs Int — `type_is_ground` is false for every
-      // `CtNamed`, so without this gate the call is tolerated.
-      let concrete_conflict = type_fully_concrete(expected) && type_fully_concrete(actual_zonked)
-      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (concrete_conflict && !structural) {
+      // A body that instantiated `T := Box[Int]` publishes that named type,
+      // and `f(1)` is then Box vs Int. `type_is_ground` is false for every
+      // `CtNamed` and `head_kind` of a named type is 0, so the existing
+      // gates tolerate it. Restrict to fully-concrete named vs a builtin
+      // scalar: Array vs FixedArray (zlib Huffman) is a different pair and
+      // stays on the historical tolerate path.
+      let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
+      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (named_vs_scalar && !structural) {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
         s
       } else if structural {
@@ -3504,6 +3504,26 @@ fn type_fully_concrete(t: Type) -> Bool {
       ok
     },
     _ => true
+  }
+}
+
+fn is_builtin_scalar(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    _ => false
+  }
+}
+
+fn is_fully_concrete_named(t: Type) -> Bool {
+  match t {
+    CtNamed(_, _) => type_fully_concrete(t),
+    _ => false
   }
 }
 
