@@ -2271,6 +2271,45 @@ export fn apply_type_constructor(head: Type, args: Array[Type]) -> Type {
   }
 }
 
+fn alias_body_constructor(body: Type) -> Option[Type] {
+  match body {
+    CtArray(_) => Some(CtConstructor("Array", 1)),
+    CtOption(_) => Some(CtConstructor("Option", 1)),
+    CtNamed(n, args) => Some(CtConstructor(n, Array::length(args))),
+    CtConstructor(n, arity) => Some(CtConstructor(n, arity)),
+    _ => None
+  }
+}
+
+fn named_constructor_or_resolved(name: String, defs: Array[TypeDef], resolved: Type) -> Type {
+  match declared_type_constructor_arity(defs, name) {
+    Some(arity) => if arity > 0 {
+      CtConstructor(name, arity)
+    } else {
+      resolved
+    },
+    None => resolved
+  }
+}
+
+fn reify_named_constructor(name: String, defs: Array[TypeDef], shadow: Array[String], resolved: Type) -> Type {
+  let shadow_arity = type_expr_shadowed_arity(shadow, name)
+  if shadow_arity > 0 {
+    resolved
+  } else {
+    match find_typedef(defs, name) {
+      Some(td) => match td {
+        TDAlias(_, _, body) => match alias_body_constructor(body) {
+          Some(ctor) => ctor,
+          None => named_constructor_or_resolved(name, defs, resolved)
+        },
+        _ => named_constructor_or_resolved(name, defs, resolved)
+      },
+      None => named_constructor_or_resolved(name, defs, resolved)
+    }
+  }
+}
+
 fn type_def_params(td: TypeDef) -> Array[String] {
   match td {
     TDEnum(_, params, _) => params,
@@ -2298,28 +2337,16 @@ fn declared_type_constructor_arity(defs: Array[TypeDef], name: String) -> Option
 /// receiving type parameter. A shadowed constructor variable stays nominal so
 /// checker binding can replace its head with a CtVar; concrete constructors
 /// carry their declared arity explicitly across alias substitution and caches.
-fn resolve_type_constructor_args(params: Array[String], source_args: Array[TypeExpr], resolved_args: Array[Type], defs: Array[TypeDef], shadow: Array[String]) -> Array[Type] {
+/// Parameterized aliases expand to the constructor of their body (`Vec` for
+/// `type Vec[T] = Array[T]` becomes Array) rather than a nominal head.
+export fn resolve_type_constructor_args(params: Array[String], source_args: Array[TypeExpr], resolved_args: Array[Type], defs: Array[TypeDef], shadow: Array[String]) -> Array[Type] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(resolved_args) {
     let resolved = Array::get(resolved_args, i)
     if i < Array::length(params) && type_param_arity(Array::get(params, i)) > 0 && i < Array::length(source_args) {
       match Array::get(source_args, i) {
-        TyName(name) => {
-          let shadow_arity = type_expr_shadowed_arity(shadow, name)
-          if shadow_arity > 0 {
-            Array::push(out, resolved)
-          } else {
-            match declared_type_constructor_arity(defs, name) {
-              Some(arity) => if arity > 0 {
-                Array::push(out, CtConstructor(name, arity))
-              } else {
-                Array::push(out, resolved)
-              },
-              None => Array::push(out, resolved)
-            }
-          }
-        },
+        TyName(name) => Array::push(out, reify_named_constructor(name, defs, shadow, resolved)),
         _ => Array::push(out, resolved)
       }
     } else {
@@ -2357,11 +2384,18 @@ export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], sh
       let raw_args = for a in args {
         resolve_type_expr_core_shadowed(a, defs, shadow)
       }
-      if name == "Array" && Array::length(raw_args) == 1 {
+      if type_expr_name_is_shadowed(shadow, name) {
+        let arity = type_expr_shadowed_arity(shadow, name)
+        if arity > 0 {
+          CtApplied(CtNamed(name, array_empty()), raw_args)
+        } else {
+          CtNamed(name, raw_args)
+        }
+      } else if name == "Array" && Array::length(raw_args) == 1 {
         CtArray(Array::get(raw_args, 0))
       } else if name == "Option" && Array::length(raw_args) == 1 {
         CtOption(Array::get(raw_args, 0))
-      } else if name == "StringMap" && Array::length(raw_args) == 1 && !type_expr_name_is_shadowed(shadow, name) {
+      } else if name == "StringMap" && Array::length(raw_args) == 1 {
         // #2263: the concrete name for the builtin map, which is String-keyed
         // (`Map[K, V]`'s generality is not implemented and the name is
         // reserved for it). Resolved here rather than declared as a prelude
@@ -2377,13 +2411,6 @@ export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], sh
             _ => CtNamed(name, raw_args)
           },
           None => CtNamed("Map", [CtString, Array::get(raw_args, 0)])
-        }
-      } else if type_expr_name_is_shadowed(shadow, name) {
-        let arity = type_expr_shadowed_arity(shadow, name)
-        if arity > 0 {
-          CtApplied(CtNamed(name, array_empty()), raw_args)
-        } else {
-          CtNamed(name, raw_args)
         }
       } else {
         match find_typedef(defs, name) {

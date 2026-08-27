@@ -97,3 +97,38 @@ test "constructor heads participate in occurs checks" {
     None => assert(false)
   }
 }
+
+test "an alias constructor expands instead of becoming nominal" {
+  let source = "type Vec[T] = Array[T]\ntype Apply[F[_], A] = F[A]\nfn keep(x: Apply[Vec, Int]) -> Vec[Int] { x }\nfn keep_array(x: Apply[Vec, Int]) -> Array[Int] { x }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded Option formal shadows the builtin Option" {
+  let source = "fn id[Option[_], A](x: Option[A]) -> Option[A] { x }\nfn use_it(xs: Array[Int]) -> Array[Int] { id(xs) }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded trait application rejects a complete type argument" {
+  let source = "trait Functor[F[_]] { }\nstruct X { v: Int }\nimpl Functor[Int] for X { }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "expects a constructor with 1 argument(s), but `Int` has 0"))
+}
+
+test "a kinded effect application rejects a complete type argument" {
+  let source = "effect Read[F[_]] {\n  Get() -> F[Int]\n}\nfn f() -> Int with Read[Int] {\n  0\n}"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "expects a constructor"))
+  assert(String::contains(message, "`Int`"))
+}
+
+test "a nested-kind constructor is not a flat arity-N argument" {
+  let source = "struct Higher[F[_], A] { value: A }\ntype Apply[C[_, _], X, Y] = C[X, Y]\nfn bad(x: Apply[Higher, Int, Int]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "Higher"))
+  assert(String::contains(message, "constructor"))
+}
+
+test "a kinded trait bound reifies Array as a constructor" {
+  let source = "trait Wrap[F[_]] { make(Self) -> F[Int] }\nfn wrap_it[T: Wrap[Array]](x: T) -> Array[Int] { T::make(x) }"
+  inspect(check_source_error_message(source), "")
+}

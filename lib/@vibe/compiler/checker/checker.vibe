@@ -18,6 +18,7 @@ import @vibe/compiler/core {
   env_cache_binding,
   env_has_reexport_surface_binding,
   env_lookup,
+  env_type_defs,
   exception_effect_kind,
   exception_effect_labels_equal,
   expr_children,
@@ -36,6 +37,7 @@ import @vibe/compiler/core {
   registry_builtin_param_type,
   resolve_builtin,
   resolve_type_alias_params,
+  resolve_type_constructor_args,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -976,19 +978,51 @@ fn type_def_formals(td: TypeDef) -> Array[String] {
   }
 }
 
-fn report_one_type_argument_kind(owner: String, formal: String, expected: Int, actual_expr: TypeExpr, defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
-  match declared_type_expr_kind_arity(actual_expr, defs, shadow) {
-    Some(actual) => if actual != expected {
-      let rendered = print_type_expr(actual_expr)
-      if expected == 0 {
-        Array::push(errors, "type parameter `\{formal}` of `\{owner}` expects a complete type, but `\{rendered}` is a constructor with \{actual} argument(s) in \{where_label} -- apply the constructor to concrete type arguments")
-      } else {
-        Array::push(errors, "type parameter `\{formal}` of `\{owner}` expects a constructor with \{expected} argument(s), but `\{rendered}` has \{actual} in \{where_label} -- pass a bare constructor with the required arity")
-      }
+fn type_params_have_nested_kind(params: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    if type_param_arity(Array::get(params, i)) > 0 {
+      found = true
     } else {
       ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn type_expr_has_nested_kind(te: TypeExpr, defs: Array[TypeDef]) -> Bool {
+  match te {
+    TyName(name) => {
+      match find_typedef(defs, name) {
+        Some(td) => type_params_have_nested_kind(type_def_formals(td)),
+        None => false
+      }
     },
-    None => ()
+    _ => false
+  }
+}
+
+fn report_one_type_argument_kind(owner: String, formal: String, expected: Int, actual_expr: TypeExpr, defs: Array[TypeDef], shadow: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  let rendered = print_type_expr(actual_expr)
+  if expected > 0 && type_expr_has_nested_kind(actual_expr, defs) {
+    Array::push(errors, "type parameter `\{formal}` of `\{owner}` expects a constructor with \{expected} argument(s), but `\{rendered}` has nested constructor parameters and is not a flat constructor in \{where_label} -- pass a constructor whose parameters are complete types")
+  } else {
+    match declared_type_expr_kind_arity(actual_expr, defs, shadow) {
+      Some(actual) => {
+        if actual != expected {
+          if expected == 0 {
+            Array::push(errors, "type parameter `\{formal}` of `\{owner}` expects a complete type, but `\{rendered}` is a constructor with \{actual} argument(s) in \{where_label} -- apply the constructor to concrete type arguments")
+          } else {
+            Array::push(errors, "type parameter `\{formal}` of `\{owner}` expects a constructor with \{expected} argument(s), but `\{rendered}` has \{actual} in \{where_label} -- pass a bare constructor with the required arity")
+          }
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
   }
 }
 
@@ -1301,10 +1335,11 @@ fn replace_trait_bound_vars_from_env(ty: Type, env: TypeEnv) -> Type {
   }
 }
 
-fn resolve_trait_bound_args(args: Array[TypeExpr], env: TypeEnv, defs: Array[TypeDef]) -> Array[Type] {
-  for arg in args {
+fn resolve_trait_bound_args(args: Array[TypeExpr], env: TypeEnv, defs: Array[TypeDef], params: Array[String]) -> Array[Type] {
+  let resolved = for arg in args {
     replace_trait_bound_vars_from_env(resolve_type_expr(arg, defs), env)
   }
+  resolve_type_constructor_args(params, args, resolved, defs, array_empty())
 }
 
 fn trait_bound_param_names(binders: Array[String], count: Int) -> Array[String] {
@@ -1328,12 +1363,19 @@ export fn validate_trait_reference(env: TypeEnv, key: String, context: String, e
   let display = trait_reference_display(key)
   let args = trait_ref_args(key)
   match trait_decl_params(env, key) {
-    Some(params) => if Array::length(args) > 0 && Array::length(args) != Array::length(params) {
-      let counts = String::concat(__to_string(Array::length(params)), String::concat(" type argument(s), got ", __to_string(Array::length(args))))
-      let site = String::concat(" in ", String::concat(context, String::concat(" `", String::concat(display, "`"))))
-      Array::push(errors, String::concat("trait `", String::concat(trait_ref_name(key), String::concat("` expects ", String::concat(counts, site)))))
-    } else {
-      ()
+    Some(params) => {
+      if Array::length(args) > 0 && Array::length(args) != Array::length(params) {
+        let counts = String::concat(__to_string(Array::length(params)), String::concat(" type argument(s), got ", __to_string(Array::length(args))))
+        let site = String::concat(" in ", String::concat(context, String::concat(" `", String::concat(display, "`"))))
+        Array::push(errors, String::concat("trait `", String::concat(trait_ref_name(key), String::concat("` expects ", String::concat(counts, site)))))
+      } else {
+        let defs = env_type_defs(env)
+        let mut i = 0
+        while i < Array::length(args) && i < Array::length(params) {
+          report_one_type_argument_kind(trait_ref_name(key), type_param_name(Array::get(params, i)), type_param_arity(Array::get(params, i)), Array::get(args, i), defs, array_empty(), context, errors)
+          i = i + 1
+        }
+      }
     },
     None => ()
   }
@@ -1376,7 +1418,11 @@ fn resolve_trait_method_ident(name: String, env: TypeEnv, defs: Array[TypeDef], 
                   // `trait Boxed[T] { unwrap(Self) -> T }`.
                   let (params_te, ret_te, binders) = sig
                   let param_names = trait_bound_param_names(binders, Array::length(trait_args))
-                  let resolved_trait_args = resolve_trait_bound_args(trait_args, env, defs)
+                  let trait_params = match trait_decl_params(env, trait_key) {
+                    Some(ps) => ps,
+                    None => array_empty()
+                  }
+                  let resolved_trait_args = resolve_trait_bound_args(trait_args, env, defs, trait_params)
                   let resolved_params = for pte in params_te {
                     relax_unknown_named(subst_type_params(subst_self_in_type(resolve_type_expr_shadowed(pte, defs, binders), self_ty), param_names, resolved_trait_args), defs)
                   }

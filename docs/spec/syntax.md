@@ -705,9 +705,11 @@ Rules:
 - `i32`, `f32`, and `f64` are aliases for `Int`, `Float`, and `Double` in type
   positions.
 - Function effects appear after return type: `-> T with Effect`.
-- A type-constructor parameter declares its arity with underscore slots:
-  `F[_]` has one input and `F[_, _]` has two. An unannotated parameter such as
-  `T` is a complete type and cannot appear as the head of `T[A]`.
+- A type-constructor parameter may declare its arity with underscore slots:
+  `F[_]` has one input and `F[_, _]` has two, and those forms are
+  arity-enforced at each application. An unannotated parameter such as `F`
+  may still appear as the head of `F[A]` (the kernel spelling from arity-1
+  HKT); `F[_]` is the extra, arity-checked surface, not a requirement.
 - Effect row variables such as `with e` are accepted in polymorphic
   higher-order signatures.
 - The effect row has one spelling, plus one for the empty row:
