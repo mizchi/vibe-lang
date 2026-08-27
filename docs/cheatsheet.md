@@ -1644,20 +1644,28 @@ From `@vibe/json` (`import @vibe/json { ... }`):
 
 | 関数 | 意味 | backend |
 |---|---|---|
-| `Bytes::new()` | 空バッファ (初期容量 64) | linear / gc |
+| `Bytes::new()` / `Bytes::new(n)` | 空バッファ (初期容量 64) / 長さ `n` の **ゼロ埋め**バッファ | linear / gc |
 | `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | 長さ・要素 | linear / gc |
 | `Bytes::push(b, v)` | 1バイト追加 (償却 O(1)) | linear / gc |
 | `Bytes::append(dst, src)` | **一括連結。`memory.copy` 1発** | linear / gc |
 | `Bytes::concat(a, b)` | 新しいバッファを返す連結 | linear / gc |
 | `Bytes::slice(b, start, end)` | 部分列 | linear / gc |
 | `Bytes::blit(dst, src, dst_off, len)` | **範囲コピー。`memory.copy` 1発** | linear / gc |
-| `Bytes::fill(b, off, len)` | **範囲埋め。`memory.fill` 1発** | linear / gc |
+| `Bytes::fill(b, value, count)` | `value` を `count` 個 **末尾に追加** (`push` ループ) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | `Array[Int]` との変換 (**コピーが入る**) | linear / gc |
 
 > バイト列を組み立てるループで `Bytes::push` を回すより、まとまった範囲は
 > `Bytes::append` / `Bytes::blit` に置き換えるほうが速い — どちらも
 > `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
 > するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
+>
+> **`Bytes::fill` はこの仲間ではない** (実測 2026-08-27)。この表はかつて
+> `Bytes::fill(b, off, len)` を「範囲埋め。`memory.fill` 1発」と書いていたが、
+> 引数は `(b, value, count)` で、動作は範囲の上書きではなく**末尾への追加**、
+> 実装は `gen_bytes_fill_body` (`codegen/builtin_bodies/bodies_core_a2.vibe`)
+> の `bytes_push` ループで、linear / gc とも同じ本体を使う。
+> `Bytes::new()` に `fill(b, 0, n)` して長さ `n` のバッファを作ることはできるが、
+> ゼロ埋めなら `Bytes::new(n)` のほうが速い。
 
 **SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
 the linear and GC backends):

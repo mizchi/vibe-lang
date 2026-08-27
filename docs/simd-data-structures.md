@@ -267,14 +267,50 @@ the readable numbers are: same table, same probe, same hash. Loop-in-kernel vs
 loop-in-vibe is **1.32x**; moving the queries from an `Array[Int]` to the packed
 column is another **1.84x**.
 
-The case for changing `MutMap` is therefore structural, not measured here.
-`lib/@vibe/core/hashmap.vibe` stores slot state as `Array[Int]` — one tagged
-i64, **8 bytes per slot**, for a value with three possible states. A SwissTable
-control byte is 1 byte and carries a 7-bit fingerprint as well, so one
-`v128.load` covers 16 slots where `Array[Int]` covers 2, and the fingerprint
-skips most of the `eq_fn` indirect calls. Even with no SIMD, that is an 8x cut
-in probe-metadata traffic. What it is *worth* is [#2346](https://github.com/mizchi/vibe-lang/issues/2346)'s
-job to measure, with the rest of `MutMap` held fixed.
+The case for changing `MutMap` was therefore structural, not measured here —
+so [#2346](https://github.com/mizchi/vibe-lang/issues/2346) measured it, with
+the rest of `MutMap` held fixed. It landed: `state: Array[Int]` (one tagged
+i64, **8 bytes per slot**, for a value with three possible states) is now
+`ctrl: Bytes`, one byte per slot, carrying a 7-bit fingerprint of the key's
+hash. `bench/bench_mutmap_probe.vibe` touches only MutMap's public API, so the
+same source measures both representations; best-of-3, alternating A/B/A/B so
+machine drift cannot produce the result:
+
+| lane | before (ns) | after (ns) | |
+| :--- | ---: | ---: | ---: |
+| `get` hit, sequential keys (**zero-collision control**) | 219950 | 215684 | 1.02x |
+| `get` hit, random keys | 327233 | 306711 | **1.07x** |
+| `get` miss, random keys | 720554 | 705474 | 1.02x |
+| `get` hit, half the entries deleted | 514431 | 480477 | **1.07x** |
+| `get` hit, `String` keys | 634086 | 525831 | **1.21x** |
+| `get` miss, `String` keys | 938037 | 749352 | **1.25x** |
+| build 5000 entries | 1689725 | 1605349 | **1.05x** |
+
+Build also allocates 11% less (910496 -> 811008 B/op): the control arrays are
+an eighth of their former size, across the whole rehash history.
+
+The shape of the result is the point, more than its size. The win tracks **the
+cost of the compare that the fingerprint skips** — largest on `String` keys
+(1.21x / 1.25x, where the skipped call is `eq_string`), modest on `Int` keys
+(1.07x, where `eq_int` is nearly free), and a wash on the sequential-key
+control lane, which is exactly right: `hash_int` is the identity below 2^33, so
+a table keyed 0..N-1 has no collisions at all and there is nothing for a
+fingerprint to filter. A lane that showed a large win *there* would have been
+evidence of a broken measurement, not of a fast table.
+
+Two things had to be got right for the number to mean anything, and both were
+initially wrong:
+
+- **The fingerprint cannot come from the low bits of the hash.** The home slot
+  is `h % cap`, so for a power-of-two capacity, two keys that collide already
+  agree on exactly those bits — `h & 0x7f` would be identical for every key in
+  a chain and would filter nothing. `ctrl_tag` folds the high bits down first.
+- **Naming the control constants cost more than the fingerprint saved.** The
+  first implementation had `ctrl_empty()` / `ctrl_tomb()` / `is_occupied(c)`
+  helpers where the original compared against literals `0`/`1`/`2`. Measured,
+  that turned a 1.05x build into a 0.94x *regression* and halved the String
+  win; a zero-argument constant function in the innermost probe loop is not
+  free. The constants are spelled as literals with a comment instead.
 
 ## 4. Proposal: five layers, bottom-up
 
@@ -387,12 +423,13 @@ FrozenIntMap[V]
 with bulk entry points (`contains_many`, `get_many`) as the documented contract
 and point access as a convenience that is explicitly *not* in the contract.
 
-Separately and independently of any of this: **change `MutMap`'s `state:
-Array[Int]` to a `Bytes` control array carrying a 7-bit fingerprint.** It is a
-local change to one file, it needs no new language surface, and it cuts
-probe-metadata traffic 8x with the fingerprint skipping most `eq_fn` calls. It
-is the cheapest change proposed here by a wide margin — but §3.4 does not price
-it, so it ships with its own before/after bench or not at all.
+Separately and independently of any of this, and now **done** (#2346):
+`MutMap`'s `state: Array[Int]` is a `Bytes` control array carrying a 7-bit
+fingerprint. One file, no new language surface, and it shipped with the
+before/after bench §3.4 demanded — 1.02x to 1.25x depending on how expensive
+the key compare it skips is, plus 11% less allocation on build. It remains the
+cheapest change proposed here by a wide margin, and `MutSet` got it for free by
+being a thin wrapper over `MutMap`.
 
 ## 5. Admission policy
 
