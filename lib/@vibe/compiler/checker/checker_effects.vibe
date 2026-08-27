@@ -657,6 +657,20 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
   }
 }
 
+/// The public constructor is the package-stable evidence available after
+/// `@vibe/builtin` projection hides its private `AsyncIterator` trait. Require
+/// the imported signature as well as the nominal head: a user-defined struct
+/// that happens to be named `AsyncIter` must remain an ordinary sync value.
+fn afe_has_builtin_async_iter_constructor(env: TypeEnv) -> Bool {
+  match env_lookup(env, "Array::iter") {
+    Some(t) => match afe_call_result_head(t, array_empty(), env, afe_no_locals()) {
+      Some(head) => head == "AsyncIter",
+      None => false
+    },
+    None => false
+  }
+}
+
 /// The iterand's type name when driving it with `for` awaits each step,
 /// otherwise None. Named so the diagnostic can point at `<T>::next`.
 fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
@@ -668,6 +682,8 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) 
     // parks once per byte, so the enclosing row must carry `Async` for exactly
     // the reason #1358 gave for trait-based async iterators.
     Some(tn) => if tn == "HostStream" || type_name_has_async_iterator_impl(env, tn) {
+      Some(tn)
+    } else if tn == "AsyncIter" && afe_has_builtin_async_iter_constructor(env) {
       Some(tn)
     } else {
       None

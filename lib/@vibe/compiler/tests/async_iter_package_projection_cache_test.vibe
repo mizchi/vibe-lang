@@ -1,0 +1,34 @@
+import ../cli_support.vibe {
+  check_linked_file
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let mut i = 0
+  while i < String::length(s) {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+/// #2355 review: package projection deliberately hides the private
+/// `AsyncIterator` trait from consumers. The async-effect checker must still
+/// recognise the public `AsyncIter` returned through constructor-polymorphic
+/// `map`; otherwise `for` injects an await only after checking and a row-free
+/// function is accepted. This file gets the unit runner's private cache root,
+/// so the real package projection is always built by the compiler under test.
+test "mapped builtin AsyncIter requires Async after package projection" {
+  let path = "/tmp/vibe_async_iter_package_projection_cache_v1.vibe"
+  let source = "import @vibe/builtin { Array::iter, map, trait Mappable }\nfn main() -> Unit {\n  let ys = map(Array::iter([1, 2]), (x: Int) -> Int { x + 1 })\n  for y in ys {\n    let _ = y\n  }\n  ()\n}\n"
+  Fs::write_bytes(path, string_to_bytes(source))
+  let msg = handle {
+    let _ = check_linked_file(path)
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "async iterator awaits every step"))
+}
