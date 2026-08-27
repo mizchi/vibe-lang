@@ -2142,6 +2142,15 @@ async function main() {
   let instanceRef = null;
   // Also store globally for error handler (see catch block)
 
+  function throwVibeHostError(message) {
+    const tag = instanceRef?.exports?.__exception_throw_tag;
+    if (tag instanceof WebAssembly.Tag) {
+      const payload = encodeHostString(instanceRef, message);
+      throw new WebAssembly.Exception(tag, [payload]);
+    }
+    throw new Error(message);
+  }
+
   const debugImports = process.env.VIBE_DEBUG_IMPORTS === "1";
   const fallbackModule = new Proxy(
     {},
@@ -2535,7 +2544,7 @@ async function main() {
           }
           return encodeHostString(instanceRef, content);
         } catch (e) {
-          throw new Error(`fs_read_file failed for '${filePath}': ${e.message}`);
+          throwVibeHostError(`fs_read_file failed for '${filePath}': ${e.message}`);
         }
       },
       // #632: read a file as raw bytes into a guest Bytes value. The exact

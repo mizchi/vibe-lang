@@ -45,7 +45,7 @@ What is enforced today, measured 2026-08-24:
 | surface | how it is gated |
 | --- | --- |
 | wasm-gc backend | opt-in env var (`VIBE_BACKEND=gc` and friends) |
-| `perform?` | the checker rejects it, naming the edit that fixes it |
+| `perform?` | compiles against a frozen resolution; unresolved non-interactive optionals become `NotGranted` |
 | SIMD | the package does not resolve |
 | **ADR-0068 concurrency** | **`import @vibe/concurrent` is rejected by `vibe check` AND by `vibe build`; `VIBE_UNSTABLE=1` allows it** |
 

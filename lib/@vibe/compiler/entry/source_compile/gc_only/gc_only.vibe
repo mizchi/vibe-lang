@@ -281,10 +281,11 @@ fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit {
 /// `test "name" { body }` becomes `let __test_name = () -> { body; 0 }`,
 /// and when the requested entry does not exist (the `vibe test` sentinel
 /// path) a `_start` running every test/bench function in order is
-/// synthesized at the AST level. Returns the effective entry name. This is
+/// synthesized at the AST level. Returns the effective entry name and whether
+/// it is a compiler-generated test artifact. This is
 /// what lets `VIBE_TEST_BACKEND=gc bash scripts/vibe_test.sh file` run a
 /// *_test.vibe on the wasm-gc backend under wasmtime.
-fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> String with Exception {
+fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool) with Exception {
   let empty_tp = array_empty()
   let empty_bounds = array_empty()
   let empty_params = array_empty()
@@ -311,7 +312,7 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> String with E
     i = i + 1
   }
   if has_entry || Array::length(test_fn_names) == 0 {
-    entry_name
+    (entry_name, false)
   } else {
     // Synthesize `_start` calling each test/bench fn in declaration order.
     let mut body = EInt(0)
@@ -321,7 +322,7 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> String with E
       ti = ti - 1
     }
     Array::push(stmts, SLet(true, false, "_start", None, EFn(empty_tp, empty_bounds, empty_params, None, None, body)))
-    "_start"
+    ("_start", true)
   }
 }
 
@@ -348,7 +349,7 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   // node this erases. #2107 closed the second half in the checker instead:
   // `lowered_test_ambient_effects` recognizes these two prefixes, so the
   // grant survives the lowering without changing what CODEGEN sees.
-  let effective_entry = lower_test_blocks_gc(stmts, entry_name)
+  let (effective_entry, generated_test_artifact) = lower_test_blocks_gc(stmts, entry_name)
   let (checked, gc_float_call_offsets) = match check_program_double_call_result_observation(stmts) {
     Some(observation) => observation,
     None => throw("internal compiler error: incomplete GC call-result type observation")
@@ -376,5 +377,5 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   // pre-erasure snapshot. Add only those generated declarations; ordinary
   // declarations must keep the binder-aware pre-erasure answer.
   gc_add_hoisted_float_returning_names(stmts, gc_pre_hoist_fn_names, gc_float_ret_fn_names)
-  compile_wasi_module_gc(stmts, effective_entry, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
+  compile_wasi_module_gc(stmts, effective_entry, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
 }

@@ -201,6 +201,8 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   lookup_ctor,
+  lower_optional_performs,
+  optional_perform_artifact_resolution,
   rc_shadow_reserve,
   region_exn_tag_linear,
   region_max_depth,
@@ -208,6 +210,7 @@ import @vibe/compiler/codegen/common_base {
   resolve_func,
   resolve_local,
   rewrite_self_tail_calls,
+  source_declares_constructor,
   suspend_cps_pass,
   ty_head_names_formal,
   wrap_entry_exception_boundary
@@ -3478,6 +3481,13 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
     // (nothing named `inspect` survives it), same as desugar_labeled_args's
     // check-then-codegen double run.
     desugar_inspect_calls(stmts)
+    // ADR-0088 / #2236: resolve the optional-capability surface before any
+    // effect or builtin analysis sees the `perform?` marker. Test artifacts
+    // keep ambient full authority across their reachable helpers; every other
+    // non-interactive artifact freezes absent build/apply facts to NotGranted.
+    // The pass accepts an explicit table for the launcher ladder.
+    let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
+    lower_optional_performs(stmts, optional_resolution)
     // #1947: merged FS programs are a fresh parse; check erased its own
     // array. Drop leftover `__try_none` markers before codegen.
     erase_railway_origin_markers(stmts)
@@ -3945,17 +3955,48 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     i = i + 1
   }
   let ctor_names_list = lc_fresh_string_array()
-  Array::push(ctor_names_list, "None")
-  Array::push(ctor_names_list, "Some")
   let ctor_tags_list = lc_fresh_int_array()
-  Array::push(ctor_tags_list, 0)
-  Array::push(ctor_tags_list, 1)
   let ctor_field_counts_list = lc_fresh_int_array()
-  Array::push(ctor_field_counts_list, 0)
-  Array::push(ctor_field_counts_list, 1)
   let ctor_type_names_list = lc_fresh_string_array()
-  Array::push(ctor_type_names_list, "Option")
-  Array::push(ctor_type_names_list, "Option")
+  // Option and Attempt are checker-owned, so their constructors must exist in
+  // single-file codegen without an explicit @vibe/core enum declaration.
+  // They are fallbacks: a same-named source constructor keeps lexical
+  // precedence and its real payload layout.
+  let builtin_ctor_names = ["None", "Some", "NotGranted", "Errored", "Granted"]
+  let builtin_ctor_tags = [0, 1, 2, 3, 4]
+  let builtin_ctor_fields = [0, 1, 0, 1, 1]
+  let builtin_ctor_types = ["Option", "Option", "Attempt", "Attempt", "Attempt"]
+  let mut builtin_ctor_i = 0
+  while builtin_ctor_i < Array::length(builtin_ctor_names) {
+    let builtin_ctor_name = Array::get(builtin_ctor_names, builtin_ctor_i)
+    if !source_declares_constructor(stmts, builtin_ctor_name) {
+      Array::push(ctor_names_list, builtin_ctor_name)
+      Array::push(ctor_tags_list, Array::get(builtin_ctor_tags, builtin_ctor_i))
+      Array::push(ctor_field_counts_list, Array::get(builtin_ctor_fields, builtin_ctor_i))
+      Array::push(ctor_type_names_list, Array::get(builtin_ctor_types, builtin_ctor_i))
+    } else {
+      ()
+    }
+    builtin_ctor_i = builtin_ctor_i + 1
+  }
+  // Optional-perform lowering uses compiler-owned names that source cannot
+  // spell. They retain Attempt's public representation even when user code
+  // declares constructors named NotGranted, Errored, or Granted.
+  let hidden_attempt_ctor_names = [
+    "$vibe_attempt_not_granted",
+    "$vibe_attempt_errored",
+    "$vibe_attempt_granted"
+  ]
+  let hidden_attempt_ctor_tags = [2, 3, 4]
+  let hidden_attempt_ctor_fields = [0, 1, 1]
+  let mut hidden_attempt_ctor_i = 0
+  while hidden_attempt_ctor_i < Array::length(hidden_attempt_ctor_names) {
+    Array::push(ctor_names_list, Array::get(hidden_attempt_ctor_names, hidden_attempt_ctor_i))
+    Array::push(ctor_tags_list, Array::get(hidden_attempt_ctor_tags, hidden_attempt_ctor_i))
+    Array::push(ctor_field_counts_list, Array::get(hidden_attempt_ctor_fields, hidden_attempt_ctor_i))
+    Array::push(ctor_type_names_list, "Attempt")
+    hidden_attempt_ctor_i = hidden_attempt_ctor_i + 1
+  }
   // #1062: sparse `ctor_idx * 64 + field_idx` entries for Double/Float-typed
   // positional constructor fields (see CompileCtx.ctor_float_fields). Built
   // alongside ctor_names_list/ctor_field_counts_list above so ctor_idx here
@@ -8231,13 +8272,15 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     bxi = bxi + 1
   }
   let export_content = bytebuf_new()
-  // #721: the "error" tag export exists only when the tag section does.
+  // #721: exception tag exports exist only when the tag section does. `error`
+  // is the entry-boundary tag; `__exception_throw_tag` is the language-level
+  // Exception::Throw tag used by handle expressions and host imports.
   let export_count = Array::length(all_export_names) + 1 +
   (if library_mode {
     0
   } else {
     1 + (if uses_exceptions {
-      1
+      2
     } else {
       0
     })
@@ -8261,6 +8304,9 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
       emit_name(export_content, "error")
       bytebuf_push(export_content, 4)
       leb128_encode_u32(export_content, 0)
+      emit_name(export_content, "__exception_throw_tag")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 2)
     } else {
       ()
     }
