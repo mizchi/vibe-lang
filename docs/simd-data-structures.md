@@ -101,7 +101,7 @@ rejects it).
 sat between the two and belonged to neither. It is measured in §3.1 and has
 since been **removed** (#2342).
 
-## 3. Measured: four gaps
+## 3. Measured: four gaps, two of them now closed
 
 ### 3.1 The `V128` intrinsics were the wrong shape (retired, #2342)
 
@@ -152,7 +152,7 @@ a new analysis pass and a new diagnostic class for it. Retiring is also jsimd's
 own answer: "the package intentionally exports algorithms rather than raw
 `v128` values".
 
-### 3.2 The bit primitives are missing, and they matter more than SIMD
+### 3.2 The bit primitives matter more than SIMD (added, #2344)
 
 `bench/bench_simd_rank.vibe`, rank1 over 32 Kibit, 500 iters:
 
@@ -168,11 +168,11 @@ is one scalar instruction**; widening the load to `v128` adds 27%, and the
 dedicated `i8x16.popcnt` adds nothing at all. rank/select, and therefore every
 succinct structure built on it, is a *popcount* story, not a SIMD story.
 
-And vibe does not expose popcount. `declarations.vibe` has a
-`//# WASM intrinsics (low-level)` block of ~50 names (`i32_eqz`, `i32_load8_u`,
-`int_ctz`, `f32_sqrt`, …) described as the "Single Source of Truth for all
-builtin function signatures" — measured, **none of them resolve from user
-code**:
+vibe had no popcount when this was measured, and `declarations.vibe` looked
+like it did: its `//# WASM intrinsics (low-level)` block declares ~50 names
+(`i32_eqz`, `i32_load8_u`, `int_ctz`, `f32_sqrt`, …) under a header calling the
+file the "Single Source of Truth for all builtin function signatures". Measured,
+**none of them resolve from user code**, and that is still true:
 
 ```
 $ vibe check probe.vibe        # fn f(x: Int) -> Int { let _ = int_ctz; 0 }
@@ -186,9 +186,9 @@ which is what the checker actually consults. The low-level block has no such
 row, so those names exist only as signatures. (The `v128_*` block was the other
 reachable example until #2342 retired it; §3.1.)
 
-**Done** (#2344, slices A and B): a small, stable, scalar bit surface on `Int`,
-lowered to the corresponding wasm opcode. `~` (slice C) is a new operator
-rather than a builtin and is still open.
+So the surface #2344 added is a designed one on `Int`, lowered to the
+corresponding wasm opcode — not those raw names un-hidden (#2343 covers the
+declarations that still overstate themselves):
 
 ```
 Int::popcount(Int) -> Int      // i64.popcnt on the untagged value
@@ -282,7 +282,7 @@ Each layer is useful on its own and each is a precondition for the next. The
 ordering is deliberate — it puts the cheapest and least SIMD-dependent work
 first, because that is where the measurements say the value is.
 
-### Layer 0 — decide the SIMD surface (§3.1)
+### Layer 0 — the SIMD surface (decided, §3.1)
 
 **Done: `V128` is retired** (#2342), leaving inline wasm as the one way to
 write a kernel. Independently, three inline-wasm gaps block kernels in library
