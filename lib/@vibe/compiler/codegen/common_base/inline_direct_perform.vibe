@@ -137,13 +137,24 @@ fn opq_source_value_exists(names: Array[String], name: String) -> Bool {
 /// source call, so fail here before a denied branch can erase it or a granted
 /// branch can wrap it as an optional capability result.
 fn opq_require_registry_operation(source_names: Array[String], operation: String) -> Unit with Exception {
-  match lookup_registry_builtin(operation) {
-    Some(_) => if opq_source_value_exists(source_names, operation) {
+  // `Fs::readdir` is the one checker-visible capability surface that is not a
+  // func-table registry row: compile_call lowers it to the registered
+  // `vibe_fs_read_dir_raw` import plus String::split. Keep provenance aligned
+  // with that explicit surface-to-host lowering.
+  let registered = if operation == "Fs::readdir" {
+    true
+  } else match lookup_registry_builtin(operation) {
+    Some(_) => true,
+    None => false
+  }
+  if registered {
+    if opq_source_value_exists(source_names, operation) {
       throw(String::concat("`perform? ", String::concat(operation, "(..)` resolves to a source function, not a capability operation; rename the source function or call the capability under an unshadowed name")))
     } else {
       ()
-    },
-    None => throw(String::concat("`perform? ", String::concat(operation, "(..)` is not a registered capability operation")))
+    }
+  } else {
+    throw(String::concat("`perform? ", String::concat(operation, "(..)` is not a registered capability operation")))
   }
 }
 
