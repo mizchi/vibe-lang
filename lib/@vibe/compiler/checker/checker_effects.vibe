@@ -1,6 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
+  BindingOrigin,
   Expr,
   Pat,
   Stmt,
@@ -12,7 +13,9 @@ import @vibe/compiler/core {
   effect_row_allows_text,
   effect_row_emitted_text,
   entry_cache_safe_effects,
+  env_flat_bindings,
   env_lookup,
+  env_lookup_binding,
   exception_effect_labels_equal,
   exception_kinds_compatible,
   exception_label_kind,
@@ -662,13 +665,31 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
 /// the imported signature as well as the nominal head: a user-defined struct
 /// that happens to be named `AsyncIter` must remain an ordinary sync value.
 fn afe_has_builtin_async_iter_constructor(env: TypeEnv) -> Bool {
-  match env_lookup(env, "Array::iter") {
-    Some(t) => match afe_call_result_head(t, array_empty(), env, afe_no_locals()) {
-      Some(head) => head == "AsyncIter",
-      None => false
-    },
-    None => false
+  let bindings = env_flat_bindings(env)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bindings) && !found {
+    let (local_name, _) = Array::get(bindings, i)
+    match env_lookup_binding(env, local_name) {
+      Some(binding) => {
+        let is_builtin_constructor = match binding.origin {
+          BindingOriginModuleExport(path, source_name) => source_name == "Array::iter" && String::ends_with(path, "@vibe/builtin/index.vpkg"),
+          _ => false
+        }
+        if is_builtin_constructor {
+          found = match afe_call_result_head(binding.ty, array_empty(), env, afe_no_locals()) {
+            Some(head) => head == "AsyncIter",
+            None => false
+          }
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    i = i + 1
   }
+  found
 }
 
 /// The iterand's type name when driving it with `for` awaits each step,
