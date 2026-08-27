@@ -195,28 +195,18 @@ else
   # branch merges main, the AST backend above takes over automatically.
   violations="$(printf '%s\n' "$diff" \
   | awk '
-      # A binder is allowed by a marker on its OWN line or on the line AFTER
-      # it, matching is_allowed() in review_lint.vibex -- `pkf run fmt` moves a
-      # trailing comment onto the next line, so the documented form never
-      # survives in lib/**. Resolving one line late is what the `pending` state
-      # is for. Deliberately NOT the line before: that direction would let one
-      # marker cover two adjacent binders. Keep these two tiers in step; a
-      # bootstrap checkout with no stage2 runs THIS one, and a mismatch means
-      # code that commits with a stage2 and is rejected without one.
-      function flush_pending() {
-        if (pending) {
-          printf "%s:%d:%s\n", p_path, p_line, p_text
-          pending = 0
-        }
-      }
+      # Emit a CANDIDATE for every added binder whose own line carries no
+      # marker. The next-line case is settled below against the physical file,
+      # not against the diff -- a marker that already existed is unchanged
+      # context and never appears in `git diff --unified=0`, so deciding it
+      # here would reject a binder whose suppression is sitting one line down.
+      # That is the shape is_allowed() reads, and the two tiers have to agree.
       /^\+\+\+ / {
-        flush_pending()
         path = $2
         sub(/^[^\/]*\//, "", path)
         next
       }
       /^@@ / {
-        flush_pending()
         if (match($0, /\+[0-9]+/)) {
           line = substr($0, RSTART + 1, RLENGTH - 1) + 0
         }
@@ -224,28 +214,35 @@ else
       }
       /^\+/ && !/^\+\+\+/ {
         text = substr($0, 2)
-        marked = text ~ /review-lint: allow-fixed-synthetic-name/
-        if (pending) {
-          if (marked) {
-            pending = 0
-          } else {
-            flush_pending()
-          }
-        }
         in_transform = path ~ /^lib\/@vibe\/compiler\/(normalize|codegen|loader)\/.*\.vibe$/
         is_binder = in_transform && (text ~ /E(Let|LetMut|LetRec)\("__[A-Za-z0-9_]+"/ \
           || text ~ /PBind\("__[A-Za-z0-9_]+"/ \
           || text ~ /SLet\([^)]*"__[A-Za-z0-9_]+"/)
+        marked = text ~ /review-lint: allow-fixed-synthetic-name/
         if (is_binder && !marked) {
-          pending = 1
-          p_path = path
-          p_line = line
-          p_text = text
+          printf "%s:%d:%s\n", path, line, text
         }
         line++
       }
-      END { flush_pending() }
-    ')"
+    ' \
+  | while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      cand_path="${candidate%%:*}"
+      cand_rest="${candidate#*:}"
+      cand_line="${cand_rest%%:*}"
+      # `pkf run fmt` moves a trailing marker onto the following line, so the
+      # suppression is one line BELOW the binder. Read it from the file, which
+      # sees pre-existing markers as well as newly added ones. Never the line
+      # above: that would let one marker cover two adjacent binders.
+      next_line=""
+      if [ -f "$PROJECT_ROOT/$cand_path" ]; then
+        next_line="$(sed -n "$((cand_line + 1))p" "$PROJECT_ROOT/$cand_path" 2>/dev/null || true)"
+      fi
+      case "$next_line" in
+        *"review-lint: allow-fixed-synthetic-name"*) ;;
+        *) printf '%s\n' "$candidate" ;;
+      esac
+    done)"
 fi
 
 if [ -n "$violations" ] || [ "$ast_tool_error" -eq 1 ]; then

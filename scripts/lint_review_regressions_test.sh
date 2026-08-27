@@ -512,4 +512,49 @@ if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
   exit 1
 fi
 
+
+# --- an EDITED binder whose marker already existed (#2366 review, 2nd round) --
+# The fallback reads a diff, and `git diff --unified=0` shows only changed
+# lines. A marker that was already there is unchanged context and never appears
+# in it. Resolving the suppression from the DIFF therefore rejected a binder
+# whose marker is sitting one line below it in the file -- while is_allowed(),
+# which reads the file, accepted the same staged source. The fallback reads the
+# physical next line now, so both tiers answer the same question.
+git -C "$TMP_ROOT" reset -q HEAD -- .
+git -C "$TMP_ROOT" restore .
+cat >> "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe" <<'EDITEOF'
+fn preexisting(e: Expr) -> Expr {
+  ELet("__preexisting_old", e, e, -1)
+  // review-lint: allow-fixed-synthetic-name -- committed before the edit
+}
+EDITEOF
+git -C "$TMP_ROOT" add .
+git -C "$TMP_ROOT" -c user.email=selftest@example.com -c user.name=selftest commit -qm "marker committed"
+
+# rename the binder, leaving the marker line untouched
+sed -i.bak 's/__preexisting_old/__preexisting_new/' "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe"
+rm -f "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe.bak"
+git -C "$TMP_ROOT" add .
+if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$TMP_ROOT/preexisting.out" 2>&1; then
+  echo "review-regressions lint self-test: an UNCHANGED next-line marker must still suppress" >&2
+  cat "$TMP_ROOT/preexisting.out" >&2
+  exit 1
+fi
+
+# and deleting that marker must bring the violation back
+sed -i.bak '/review-lint: allow-fixed-synthetic-name -- committed before the edit/d' "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe"
+rm -f "$TMP_ROOT/lib/@vibe/compiler/normalize/pass.vibe.bak"
+git -C "$TMP_ROOT" add .
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" "$CHECK_SCRIPT" >"$TMP_ROOT/preexisting-gone.out" 2>&1; then
+  echo "review-regressions lint self-test: deleting the marker must re-report the binder" >&2
+  cat "$TMP_ROOT/preexisting-gone.out" >&2
+  exit 1
+fi
+if ! grep -q '__preexisting_new' "$TMP_ROOT/preexisting-gone.out"; then
+  echo "review-regressions lint self-test: wrong binder reported after marker deletion" >&2
+  cat "$TMP_ROOT/preexisting-gone.out" >&2
+  exit 1
+fi
+git -C "$TMP_ROOT" reset -q --hard HEAD
+
 echo "review-regressions lint self-test: ok"
