@@ -1301,51 +1301,31 @@ export fn gen_string_contains_body(enable_rc: Bool, string_index_of_idx: Int) ->
 /// packed). Locals (all i32, meta 8/0): 2=hay_len 3=ndl_len 4=i 5=hay_ptr
 /// 6=ndl_ptr 7=first_byte 8=limit (= hay_len - ndl_len, last valid start)
 /// 9=chunk_limit (window phase bound; 0 when the range is under 16 starts).
-export fn gen_string_index_of_body(enable_rc: Bool, str_len_idx: Int, str_substring_idx: Int, str_eq_idx: Int) -> Bytes {
-  let _ = str_substring_idx
-  let b = bytebuf_new()
-  emit_local_get(b, 0)
-  emit_call(b, str_len_idx)
-  // ADR-0055: String::length is value-world (tagged) under RC; untag both
-  // lengths for raw arithmetic, tag the returned index back at the exits.
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 2)
-  emit_local_get(b, 1)
-  emit_call(b, str_len_idx)
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shr_s(b)
-  }
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
-  emit_local_get(b, 3)
-  emit_local_get(b, 2)
-  emit_i32_gt_u(b)
-  emit_if_i64(b)
-  emit_i64_const(b, -1)
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shl(b)
-  }
-  emit_else(b)
-  emit_local_get(b, 0)
-  emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 5)
-  emit_local_get(b, 1)
-  emit_i64_const(b, 32)
-  emit_i64_shr_s(b)
-  emit_i32_wrap_i64(b)
-  emit_local_set(b, 6)
-  emit_local_get(b, 2)
-  emit_local_get(b, 3)
-  emit_i32_sub(b)
-  emit_local_set(b, 8)
+/// #2345: the windowed substring search, emitted over four i32 locals that the
+/// CALLER has already populated:
+///
+///   local 2  haystack length      local 5  haystack data pointer
+///   local 3  needle length        local 6  needle data pointer
+///   local 8  last valid start (hay_len - ndl_len)
+///
+/// and locals 4 / 7 / 9 as scratch. That is the whole interface: everything
+/// above this point is unpacking a handle, and every byte below it is
+/// representation-independent. `String` reaches those locals from a packed
+/// `(ptr << 32) | len` fat value; `Bytes` reaches the same locals from a heap
+/// handle (`i32.load offset=8` for the data, `offset=4` for the length), which
+/// is why the search itself can be shared even though the two types have
+/// nothing else in common.
+///
+/// Extracted as PURE CODE MOTION -- byte-for-byte the emitter calls that were
+/// inline in gen_string_index_of_body -- so `String::index_of`'s emitted bytes
+/// are unchanged, which is the property that makes the extraction safe to
+/// believe. The SIMD window (splat the needle's first byte, scan 16 bytes with
+/// i8x16.eq + v128.any_true, skip the whole window when no candidate byte is
+/// present, scalar full-match only on candidate windows) lives here now, so a
+/// second caller gets it rather than reimplementing it. ADR-0054 measured that
+/// window at ~5.1x over the scalar baseline; a Bytes search written without it
+/// would be the slow one.
+fn emit_windowed_substring_search(b: Bytes, enable_rc: Bool, str_eq_idx: Int) -> Unit {
   emit_block_i64(b)
   emit_local_get(b, 3)
   emit_i32_eqz(b)
@@ -1441,6 +1421,54 @@ export fn gen_string_index_of_body(enable_rc: Bool, str_len_idx: Int, str_substr
   }
   emit_end(b)
   emit_end(b)
+}
+
+export fn gen_string_index_of_body(enable_rc: Bool, str_len_idx: Int, str_substring_idx: Int, str_eq_idx: Int) -> Bytes {
+  let _ = str_substring_idx
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_call(b, str_len_idx)
+  // ADR-0055: String::length is value-world (tagged) under RC; untag both
+  // lengths for raw arithmetic, tag the returned index back at the exits.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_local_get(b, 2)
+  emit_i32_gt_u(b)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 5)
+  emit_local_get(b, 1)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 6)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_sub(b)
+  emit_local_set(b, 8)
+  emit_windowed_substring_search(b, enable_rc, str_eq_idx)
   b
 }
 

@@ -1,0 +1,51 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+/// #2363: `Bytes::new(n)` -> a length-n zero-filled buffer, synthesized as
+/// ordinary AST and lowered through each backend's `ce` (same technique as
+/// int_parse_expr / double_to_string_expr).
+///
+/// SHARED ON PURPOSE, and that is the point of the file. The runtime
+/// `bytes_new` takes NO operands -- the registry declares it `reg_p0()` -- so a
+/// backend that lets the generic call path emit `n` and then call it anyway
+/// strands the argument on the value stack. The linear lane synthesized this
+/// inline and the wasm-gc lane had no counterpart, which made the one-argument
+/// overload LINEAR-ONLY: it type-checked on both lanes, the emitted module
+/// passed `wasmtime compile`, and it failed at run time on one of them, with
+/// nothing in the source naming a backend.
+///
+/// Two hand-written lowerings of one overload is what let those lanes drift, so
+/// there is exactly one now and each backend's arm is a single call to it. A
+/// future backend gets the behaviour by calling this, not by reimplementing it.
+///
+/// Pinned on both lanes by fixtures/bytes_alloc_backend_parity_test.vibe.
+export fn sized_bytes_new_expr(n_expr: Expr) -> Expr {
+  let n = EIdent("__bn_n", -1)
+  let b = EIdent("__bn_b", -1)
+  let i = EIdent("__bn_i", -1)
+  let push = ECall(EIdent("Bytes::push", -1), [b, EInt(0)], -1)
+  let step = EAssign("__bn_i", EBinOp("+", i, EInt(1)), EUnit)
+  let fill = EWhile(EBinOp("<", i, n), ESeq(push, step))
+  let ret = ESeq(fill, b)
+  let mk = ECall(EIdent("Bytes::new", -1), array_empty(), -1)
+  let z = EInt(0)
+  // The three binders below are FIXED, and match the linear lane exactly.
+  // Gensyming here would reintroduce per-lane divergence, which is the bug
+  // this file exists to prevent. `__bn_*` is reserved-prefix and cannot
+  // collide with a user binding.
+  let body = ELetMut("__bn_i", z, ret, -1)
+  // review-lint: allow-fixed-synthetic-name -- matches linear
+  let alloc = ELet("__bn_b", mk, body, -1)
+  // review-lint: allow-fixed-synthetic-name -- matches linear
+  ELet("__bn_n", n_expr, alloc, -1)
+  // review-lint: allow-fixed-synthetic-name -- matches linear
+}

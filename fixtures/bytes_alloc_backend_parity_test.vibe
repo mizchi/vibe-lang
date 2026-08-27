@@ -1,27 +1,33 @@
-// `Bytes::new() + Bytes::fill` is the zero-filled-buffer spelling that works on
-// BOTH backends. Deliberately free of imports and prelude dependencies so the
-// wasm-gc lane -- which compiles one file as self-contained -- can run it:
+// Zero-filled `Bytes` allocation must mean the same thing on both backends.
+// Deliberately free of imports and prelude dependencies so the wasm-gc lane --
+// which compiles one file as self-contained -- can run it:
 //
 //   vibe test fixtures/bytes_alloc_backend_parity_test.vibe
 //   VIBE_TEST_BACKEND=gc vibe test fixtures/bytes_alloc_backend_parity_test.vibe
 //
-// WHY THIS EXISTS. `MutMap`'s control array (#2346) needs a zero-filled buffer
-// of a runtime length. The obvious spelling is the one-argument `Bytes::new(cap)`
-// overload, and it is a trap: `compile_call.vibe` synthesises a fill loop for it,
-// `codegen/gc/backend_call.vibe` has no counterpart, so on wasm-gc the argument is
-// emitted and then the ZERO-parameter runtime body is called. Measured on a
-// single self-contained file, `Bytes::new(8)` passes on linear and FAILS on gc,
-// while the spelling below passes on both -- so the failure is specific to the
-// overload, not to sized buffers.
+// Registered in the enforced gc lists (tests/gates/mid/run.sh step 40h8,
+// .github/workflows/ci.yml, scripts/test_gc_selfbuild.sh) -- without that it
+// would run on linear only and assert backend parity while never testing it.
 //
-// This fixture pins the spelling that works. It cannot pin the one that does
-// not, because a test that must fail on one backend is not expressible here;
-// that gap is tracked as its own compiler issue.
+// WHY THIS EXISTS. `MutMap`'s control array (#2346) needs a zero-filled buffer
+// of a runtime length. Both spellings below produce one, and until #2363 they
+// did NOT agree across backends: the one-argument `Bytes::new(n)` overload was
+// synthesised into `new()` + a zero-push loop by the linear lane only, so on
+// wasm-gc the argument was pushed and the ZERO-parameter runtime body called
+// anyway. It type-checked on both lanes and failed on one, past validation, at
+// run time. #2363 gave the gc call path the same synthesis; this fixture pins
+// BOTH spellings on BOTH lanes so they cannot diverge again.
 
+/// The portable spelling: worked on both lanes even before #2363.
 fn alloc_zeroed(n: Int) -> Bytes {
   let b = Bytes::new()
   Bytes::fill(b, 0, n)
   b
+}
+
+/// The one-argument overload: linear-only until #2363, both lanes after it.
+fn alloc_sized(n: Int) -> Bytes {
+  Bytes::new(n)
 }
 
 test "zero-filled Bytes of a runtime length, on either backend" {
@@ -52,4 +58,29 @@ test "a control-byte encoding survives the round trip" {
   assert_eq(Bytes::get(b, 1), 1)
   assert_eq(Bytes::get(b, 2), 128)
   assert_eq(Bytes::get(b, 3), 255)
+}
+
+test "the sized overload allocates the same buffer (#2363)" {
+  let b = alloc_sized(8)
+  assert_eq(Bytes::length(b), 8)
+  assert_eq(Bytes::get(b, 0), 0)
+  assert_eq(Bytes::get(b, 7), 0)
+  Bytes::set(b, 3, 200)
+  assert_eq(Bytes::get(b, 3), 200)
+  assert_eq(Bytes::get(b, 4), 0)
+}
+
+test "both spellings agree, element for element" {
+  let a = alloc_zeroed(16)
+  let b = alloc_sized(16)
+  assert_eq(Bytes::length(a), Bytes::length(b))
+  let mut i = 0
+  let mut same = true
+  while i < 16 {
+    if Bytes::get(a, i) != Bytes::get(b, i) {
+      same = false
+    }
+    i = i + 1
+  }
+  assert_eq(same, true)
 }

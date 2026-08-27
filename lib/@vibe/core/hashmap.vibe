@@ -70,16 +70,20 @@ export struct MutMap[K, V] {
 ///   >= 128   occupied, low 7 bits = fingerprint (see `ctrl_tag`)
 ///
 /// EMPTY is 0 so that allocating a table needs no separate initialisation pass.
-/// This is `Bytes::new()` + `Bytes::fill`, NOT the sized `Bytes::new(cap)`
-/// overload, which is **linear-backend only**: `compile_call.vibe` synthesises
-/// the fill loop for a one-argument `Bytes::new`, and `codegen/gc/backend_call.vibe`
-/// has no counterpart, so on wasm-gc the argument is emitted and then the
-/// zero-parameter runtime body is called. Measured on a self-contained file,
-/// `Bytes::new(n)` passes on linear and FAILS on gc, while this spelling passes
-/// on both. Tracked as its own compiler gap; until it is closed, MutMap must not
-/// use the sized overload, since a `MutMap` reached on the gc lane would break
-/// for a reason nothing in this file mentions. Tracked as #2363; the both-lane
-/// spelling is pinned by fixtures/bytes_alloc_backend_parity_test.vibe.
+/// This is `Bytes::new()` + `Bytes::fill`, not the one-argument `Bytes::new(cap)`
+/// overload. The overload was LINEAR-ONLY when this was written -- the gc call
+/// path had no counterpart to the linear lane's synthesis, so it type-checked
+/// on both lanes and failed at run time on one (#2363).
+///
+/// #2363 is FIXED: `codegen/gc/backend_call.vibe` now carries the same
+/// synthesis, and both spellings are pinned on both lanes by
+/// `fixtures/bytes_alloc_backend_parity_test.vibe`. This still does not use the
+/// overload, because the COMMITTED SEED predates the fix and `vibe test` /
+/// `vibe fmt` compile `lib/**` with the seed (CLAUDE.md, "Which compiler
+/// answered?"). Switching here before the next bootstrap bump would break the
+/// gc lane for a reason that is already fixed in the source. Worth revisiting
+/// after the bump: measured, the overload is worth about 2% on table build
+/// (1.033x -> 1.053x against the pre-#2346 baseline), and nothing else.
 fn alloc_ctrl(cap: Int) -> Bytes {
   let b = Bytes::new()
   Bytes::fill(b, 0, cap)
