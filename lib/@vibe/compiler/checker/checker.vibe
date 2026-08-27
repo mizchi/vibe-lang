@@ -368,6 +368,83 @@ export fn formal_application_error(fname: String, where_label: String) -> String
   String::concat(String::concat(String::concat(String::concat("type parameter `", fname), "` is used both as a type and as a type constructor in "), where_label), " -- a constructor parameter is written only applied (`F[A]`), a type parameter only unapplied (`F`). Split them, or use one kind everywhere")
 }
 
+fn formal_arity_error(fname: String, nargs: Int, where_label: String) -> String {
+  String::concat(String::concat(String::concat(String::concat(String::concat("type parameter `", fname), "` is applied to "), String::concat(__to_string(nargs), " type arguments in ")), where_label), " -- a constructor parameter takes one argument (`F[A]`)")
+}
+
+fn collect_formal_arity_errors(te: TypeExpr, is_formal: (String) -> Bool, where_label: String, errors: Array[String], seen: Array[String]) -> Unit {
+  match te {
+    TyName(_) => (),
+    TyUnit => (),
+    TyApp(head, args) => {
+      if is_formal(head) {
+        let n = Array::length(args)
+        if n != 1 && !string_array_has(seen, head) {
+          Array::push(seen, head)
+          Array::push(errors, formal_arity_error(head, n, where_label))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_formal_arity_errors(Array::get(args, i), is_formal, where_label, errors, seen)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_formal_arity_errors(Array::get(params, i), is_formal, where_label, errors, seen)
+        i = i + 1
+      }
+      collect_formal_arity_errors(ret, is_formal, where_label, errors, seen)
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_formal_arity_errors(Array::get(items, i), is_formal, where_label, errors, seen)
+        i = i + 1
+      }
+    }
+  }
+}
+
+/// Mixed-kind and arity-1 across one or more TypeExprs that belong to the
+/// same declaration (fn signature, struct fields, one effect op, one trait
+/// method, one enum variant). Per-TypeExpr reporting misses `raw: F` next
+/// to `inner: F[Int]`.
+export fn report_formal_applications_across(tes: Array[TypeExpr], formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  let applied_formals = array_empty()
+  let unapplied_formals = array_empty()
+  let is_formal = (head) -> {
+    string_array_has(formals, head)
+  }
+  let mut ti = 0
+  while ti < Array::length(tes) {
+    collect_formal_kind_uses(Array::get(tes, ti), is_formal, applied_formals, unapplied_formals)
+    ti = ti + 1
+  }
+  let mut ai = 0
+  while ai < Array::length(applied_formals) {
+    let fname = Array::get(applied_formals, ai)
+    if string_array_has(unapplied_formals, fname) {
+      Array::push(errors, formal_application_error(fname, where_label))
+    } else {
+      ()
+    }
+    ai = ai + 1
+  }
+  let seen_arity = array_empty()
+  ti = 0
+  while ti < Array::length(tes) {
+    collect_formal_arity_errors(Array::get(tes, ti), is_formal, where_label, errors, seen_arity)
+    ti = ti + 1
+  }
+}
+
 /// #2268: the reporting face of `collect_formal_applications_by`. `formals`
 /// must be the declaration's OWN type binders -- never the merged shadow
 /// `report_unknown_type_names` takes, which also carries deferred
@@ -382,24 +459,9 @@ export fn formal_application_error(fname: String, where_label: String) -> String
 /// covered separately through the `fapp_formal_marker_prefix` markers the
 /// EFn arm binds (Codex round 5), which are also binder provenance.
 export fn report_formal_applications(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
-  let applied_formals = array_empty()
-  let unapplied_formals = array_empty()
-  // Bound to a let rather than written inline: vibe fmt's guard refuses a
-  // multiline closure literal in a non-final argument slot (#2271).
-  let is_formal = (head) -> {
-    string_array_has(formals, head)
-  }
-  collect_formal_kind_uses(te, is_formal, applied_formals, unapplied_formals)
-  let mut ai = 0
-  while ai < Array::length(applied_formals) {
-    let fname = Array::get(applied_formals, ai)
-    if string_array_has(unapplied_formals, fname) {
-      Array::push(errors, formal_application_error(fname, where_label))
-    } else {
-      ()
-    }
-    ai = ai + 1
-  }
+  let tes = array_empty()
+  Array::push(tes, te)
+  report_formal_applications_across(tes, formals, where_label, errors)
 }
 
 /// Mixed-kind across a local-let annotation and the enclosing signature.
@@ -415,6 +477,7 @@ fn report_mixed_kind_let_annotation(te: TypeExpr, env: TypeEnv, where_label: Str
     }
   }
   collect_formal_kind_uses(te, is_formal, applied, unapplied)
+  collect_formal_arity_errors(te, is_formal, where_label, errors, array_empty())
   let mut i = 0
   while i < Array::length(applied) {
     let fname = Array::get(applied, i)
