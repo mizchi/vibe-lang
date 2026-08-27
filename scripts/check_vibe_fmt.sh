@@ -60,6 +60,22 @@ fi
 # every co-sharded file then reports "shard produced no report".
 # Tradeoff: a stale allowlist entry (one that would now pass --check) is
 # no longer detected; entries are few and reviewed by hand.
+# A file `git ls-files` reports but the worktree does not have (a deletion that
+# was never staged) is handed to the formatter as a missing path, and it takes
+# its WHOLE SHARD down: every co-sharded file then reports "shard produced no
+# report (crashed before writing output)". Measured on a `rm` without `git rm`
+# of one checker file -- 57 files reported, none of them the cause. Name the
+# real one instead; the batch cannot.
+missing=()
+for f in "${files[@]}"; do
+  [ -e "$f" ] || missing+=("$f")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo "vibe-fmt lint: tracked file(s) missing from the worktree -- stage the deletion (\`git rm\`) or restore the file:" >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  exit 1
+fi
+
 checked_files=()
 known_debt=0
 for f in "${files[@]}"; do

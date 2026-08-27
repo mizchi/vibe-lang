@@ -308,7 +308,11 @@ that.
   separate feature; they were absorbed into L1 of this resolution ladder.
 - **`_start` capability declarations and the top-level effect rule**
   (ADR-0041/0042, `proposed`).
-- **The SIMD API** (`spec/simd-api-design.md`).
+- **The SIMD API** (`spec/simd-api-design.md`): the fused scan builtins
+  (`simd_scan_line_end_str` and friends) and inline wasm as the way to write a
+  kernel. The `V128` value type and its 12 `v128_*` intrinsics were **removed**
+  in #2342 — measured at 22x an inline-wasm kernel with an unreclaimable
+  16-byte box per operation — so nothing here promises them.
 - **Line-granularity debugger stepping and call-site hover** (span-arc):
   function-granularity stepping and typed hover are stable; line-granularity
   stepping and arbitrary-expression watch are a future extension.

@@ -97,9 +97,9 @@ makes a SIMD data-structure library possible in *library* code —
 benches here is written this way. It is linear-backend only (the wasm-gc backend
 rejects it).
 
-**The `V128` intrinsic surface** (`v128_load`, `v128_eq_i8x16`, … — 12 names in
-`builtins/declarations.vibe`, typed in `checker/builtins_simd.vibe`) sits between the two and belongs to neither. It is
-measured in §3.1.
+**The `V128` intrinsic surface** (`v128_load`, `v128_eq_i8x16`, … — 12 names)
+sat between the two and belonged to neither. It is measured in §3.1 and has
+since been **removed** (#2342).
 
 ## 3. Measured: four gaps
 
@@ -123,28 +123,29 @@ own fused builtins avoid this by never letting the vector become a value; the
 comment in `compile_call.vibe:2065` says so outright ("NO heap boxing — the
 per-op boxed v128 intrinsics would bump-allocate 16 bytes each and leak").
 
-So the intrinsics are documented, type-checked, reachable from user code, and
-wrong to use. They never give a wrong answer, so this is not a P0 by the triage
+So the intrinsics were documented, type-checked, reachable from user code, and
+wrong to use. They never gave a wrong answer, so this was not a P0 by the triage
 rules — but it is the shape the design policy cares about for a different
-reason: the surface reads as the supported way to write SIMD, and taking it
-costs 22x and 2 bytes of unreclaimable heap per byte scanned. They have no
-caller in the tree except `fixtures/v128_intrinsics_test.vibe`.
+reason: the surface read as the supported way to write SIMD, and taking it cost
+22x and 2 bytes of unreclaimable heap per byte scanned. Nothing in the tree used
+them except their own fixture.
 
-**Proposal.** Pick one and write it down:
+**Resolved: retired** (#2342). The 12 names, the `CtNamed("V128", [])` type
+behind them, their checker lookup, their inline lowering, and the Perceus and
+gc-backend special cases they needed are gone — and so is the bench lane that
+measured them, which cannot be rebuilt without them; the numbers above are the
+rejection evidence, recorded in the bench file's header and in
+`docs/spec/simd-api-design.md` §4. `tests/gates/mid/run.sh` step 40 now asserts
+the names stay unresolvable, because a retired surface that quietly comes back
+is worse than one that never left.
 
-- **(a) Unbox them.** Keep `V128` a first-class type but require it to stay in
-  a wasm local: reject (with a located diagnostic) any `V128` that escapes a
-  function body, and lower non-escaping ones to a `v128` local. This is the same
-  shape as ADR-0090's `let mut` escape analysis, and `vibe escapes` already
-  exists as the CLI surface for that question.
-- **(b) Retire them.** Delete the 12 names, keep the fixture as a regression
-  for the emitters, and point the cheatsheet at inline wasm. This is jsimd's
-  answer ("export algorithms rather than raw `v128` values") and is much
-  cheaper.
-
-Either is fine. Leaving them as they are is not: a surface that is 22x slower
-than the thing it wraps is a trap for exactly the LLM-driven loop this repo
-optimizes for.
+The alternative was to keep `V128` and require it to stay in a wasm local —
+reject, with a located diagnostic, any value of that type that escapes a
+function body, the shape of ADR-0090's `let mut` escape analysis. That buys a
+composable vector type that inline wasm already provides at zero cost, and pays
+a new analysis pass and a new diagnostic class for it. Retiring is also jsimd's
+own answer: "the package intentionally exports algorithms rather than raw
+`v128` values".
 
 ### 3.2 The bit primitives are missing, and they matter more than SIMD
 
@@ -428,7 +429,7 @@ something that works today being broken.
 | :-- | :--- | :--- | :--- |
 | [#2340](https://github.com/mizchi/vibe-lang/issues/2340) | SIMD-first data-structure foundation (index) | `epic` | P2 |
 | [#2341](https://github.com/mizchi/vibe-lang/issues/2341) | inline wasm: out-of-range `i32.const` passes `vibe check`, fails at module load (§4/Layer 0) | `bug` | **P0** |
-| [#2342](https://github.com/mizchi/vibe-lang/issues/2342) | `V128` intrinsics heap-box every vector and never reclaim it — unbox or retire (§3.1) | `bug` `performance` | P1 |
+| [#2342](https://github.com/mizchi/vibe-lang/issues/2342) | `V128` intrinsics heap-box every vector and never reclaim it — **retired** (§3.1) | `bug` `performance` | P1 |
 | [#2343](https://github.com/mizchi/vibe-lang/issues/2343) | the low-level wasm intrinsic block in `declarations.vibe` does not resolve from user code (§3.2) | `bug` | P2 |
 | [#2344](https://github.com/mizchi/vibe-lang/issues/2344) | `Int::popcount` / `ctz` / `clz` / `select1`, and `~` (§3.2) | `enhancement` `blocker` | P2 |
 | [#2345](https://github.com/mizchi/vibe-lang/issues/2345) | `Bytes` search/compare/count kernels; route `String::*` through them (§4/Layer 2) | `enhancement` | P2 |
@@ -440,7 +441,7 @@ Layers 4 and 5 have no issue yet, deliberately: by §5 each needs a documented
 end-to-end workload that wins against a native builtin before it is written.
 
 The order falls out of the triage rules — #2341, then #2342, then #2344 (the
-`blocker`), then the rest. None of #2343 / #2344 / #2345 / #2346 waits on the
-#2342 decision. Of those, #2343, #2345 and #2346 need no new language surface
+`blocker`), then the rest. #2341 and #2342 are done. None of
+#2343 / #2344 / #2345 / #2346 waited on the #2342 decision. Of those, #2343, #2345 and #2346 need no new language surface
 at all; #2344 does — `Int::popcount` and friends are builtin additions, and `~`
 is a new operator, so it touches the lexer, the parser and the printer as well.
