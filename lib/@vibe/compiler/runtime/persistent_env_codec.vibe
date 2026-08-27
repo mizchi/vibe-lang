@@ -233,6 +233,30 @@ fn parse_cached_type(source: String, pos: Int) -> (Type, Int) with Exception {
         let (raw, next) = parse_segment(source, pos + 1)
         (CtVar(parse_int_strict(raw)), next)
       },
+      'J' => {
+        let (name, after_name) = parse_segment(source, pos + 1)
+        let (raw_arity, next) = parse_segment(source, after_name)
+        let arity = parse_int_strict(raw_arity)
+        if arity <= 0 {
+          throw("invalid persistent type constructor arity")
+        } else {
+          (CtConstructor(name, arity), next)
+        }
+      },
+      'P' => {
+        let (head_raw, after_head) = parse_segment(source, pos + 1)
+        let (head, head_end) = parse_cached_type(head_raw, 0)
+        if head_end != String::length(head_raw) {
+          throw("invalid persistent applied type head")
+        } else {
+          let (args, next) = parse_type_array(source, after_head)
+          if Array::length(args) == 0 {
+            throw("invalid persistent applied type arguments")
+          } else {
+            (CtApplied(head, args), next)
+          }
+        }
+      },
       'E' => {
         let (name, next) = parse_segment(source, pos + 1)
         (CtEnum(name), next)
@@ -316,6 +340,8 @@ fn serialize_type(ty: Type) -> String {
     CtBytes => "Y",
     CtUnknown => "X",
     CtVar(id) => String::concat("V", serialize_segment(__to_string(id))),
+    CtConstructor(name, arity) => String::concat("J", String::concat(serialize_segment(name), serialize_segment(__to_string(arity)))),
+    CtApplied(head, args) => String::concat("P", String::concat(serialize_segment(serialize_type(head)), serialize_type_array(args))),
     CtEnum(name) => String::concat("E", serialize_segment(name)),
     CtStruct(name) => String::concat("R", serialize_segment(name)),
     CtArray(elem) => String::concat("A", serialize_type(elem)),
@@ -995,23 +1021,23 @@ export fn load_persistent_dep_list(path: String, source: String) -> Option[Array
   }
 }
 
-/// Strict v6 module-interface wire format. It preserves declaration closure
+/// Strict v7 module-interface wire format. It preserves declaration closure
 /// plus the distinct selected declaration surface. Older bytes are rejected
 /// rather than being misread as authority.
 export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Exception {
   let normalized = normalize_persistent_cache_text(text)
-  let header = "version\t6\nenv\t"
+  let header = "version\t7\nenv\t"
   let header_len = String::length(header)
   if String::length(normalized) < header_len || normalized[0: header_len] != header {
     None
   } else {
     let (payload, after_payload) = parse_segment(normalized, header_len)
     if after_payload + 1 != String::length(normalized) || String::char_code_at(normalized, after_payload) != '\n' {
-      throw("invalid persistent type env v6 envelope")
+      throw("invalid persistent type env v7 envelope")
     } else {
       let (env, end) = parse_persistent_type_env_payload(payload, 0)
       if end != String::length(payload) {
-        throw("invalid persistent type env v6 payload")
+        throw("invalid persistent type env v7 payload")
       } else {
         Some(env)
       }
@@ -1034,7 +1060,7 @@ export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with 
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
-  String::concat("version\t6\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
+  String::concat("version\t7\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), "\n"))
 }
 
 export fn load_persistent_leaf_fingerprint(path: String, source: String, typing_semantics_seed: String) -> Option[String] with Exception + Fs {

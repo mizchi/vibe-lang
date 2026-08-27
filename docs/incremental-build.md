@@ -345,20 +345,22 @@ prove artifact equivalence.
 ## Trait generic provenance (bounded Phase 3)
 
 The in-memory parser and checker retain bare trait-header parameter names and
-positional method-generic rows for provenance. The header names append a sixth
+positional method-generic rows for provenance. Type-parameter keys also retain
+constructor arity (`F[_]`, `G[_, _]`) without changing the public source name.
+The header names append a sixth
 field to transparent `STrait`; checker-retained `EnvTraitDef` appends method
 rows seventh, without shifting its prior slots. This is an explicit source
-migration for positional consumers. Persistent TypeEnv v5 transports those
-trait definitions and method-generic rows, but remains a narrow environment
-transport, not a complete clean/warm typed artifact or lossless `CheckedProgram`
-claim.
+migration for positional consumers. Persistent TypeEnv v7 transports those
+trait definitions, method-generic rows, kinded constructors, and applied-type
+nodes, but remains a narrow environment transport, not a complete clean/warm
+typed artifact or lossless `CheckedProgram` claim.
 
 ## Dependency transport-environment typing reuse
 
-TDRE5 TypeEnv reuse is enabled by default for the `vibe check` filesystem
+TDRE7 TypeEnv reuse is enabled by default for the `vibe check` filesystem
 check-only lane. Build, codegen, LSP, and direct FS typecheck consumers remain
 conservative pending a compact exact-publication design: publishing the current
-exact TDRE5A/TDRE5W texts on a fresh selfcompile exceeds the signed 2 GiB guest
+exact TDRE7A/TDRE7W texts on a fresh selfcompile exceeds the signed 2 GiB guest
 heap boundary, while the conservative compile lane remains near 1.11 GB.
 `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` is the strict emergency opt-out for
 check-only reuse;
@@ -369,35 +371,36 @@ invalidation trace automatically forces reuse off so the trace stays
 observation-only. For compatibility, explicitly combining legacy `1` with an
 invalidation trace remains rejected.
 
-TDRE5 aliases the exact logical
+TDRE7 aliases the exact logical
 `ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,
 byte-exact owner source, the canonical effective typing-semantics seed (currently
 checked versus unchecked `Exception` rows), `resolution_env_seed()`, and every
-`(path, canonical TypeEnv-v5 transport text)` row in the exact ordered resolved
+`(path, canonical TypeEnv-v7 transport text)` row in the exact ordered resolved
 direct-dependency projection. The coordinator retains the full accumulated environment cache only
 for graph coordination and upsert; it projects each `deps` occurrence in order,
 preserves duplicate paths and first-match cache lookup, and fails closed if any
 resolved row is missing. The same projected array is passed to `check_module`
-and to TDRE5 lookup/publication, so ambient non-direct cache mutations are
-semantically irrelevant and avoid quadratic canonical serialization. TDRE5 does
+and to TDRE7 lookup/publication, so ambient non-direct cache mutations are
+semantically irrelevant and avoid quadratic canonical serialization. TDRE7 does
 not replace exact transport text with a compact fingerprint. It validates and
 republishes the decoded environment under the ordinary conservative fingerprint.
 It does not use the
-trace-only `vibe-module-interface:v2` observation as a production key, and
+trace-only `vibe-module-interface:v4` observation as a production key, and
 malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and targets
 fall back to a full check. The alias remains incompatible with the incremental
 invalidation trace lane so the two identities cannot be confused.
 
-The v5 TypeEnv codec round-trips every current `TypeEnv` variant, including
+The v7 TypeEnv codec round-trips every current `TypeEnv` variant, including
 trait definitions, impls, generic impl bounds, trait-header parameters,
-positional method-generic binders/bounds, and method `TypeExpr` metadata. The
+positional method-generic binders/bounds, kinded constructors, applied types,
+and method `TypeExpr` metadata. The
 checked-row cache isolation bumps the global persistent cache namespace from
-v18 to v19 and replaces TDRE4 aliases/witnesses with disjoint TDRE5 namespaces
-and `TDRE5A` / `TDRE5W` envelopes. Old entries are never reinterpreted. A
+v20 to v21 and replaces TDRE6 aliases/witnesses with disjoint TDRE7 namespaces
+and `TDRE7A` / `TDRE7W` envelopes. Old entries are never reinterpreted. A
 sidecar is still only an alias to a conservative
 TypeEnv commit, not a `CheckedProgram` or lossless typed-IR transport.
 
-A witness is published only after that module's canonical TypeEnv-v5 target and
+A witness is published only after that module's canonical TypeEnv-v7 target and
 when every direct dependency already has a validated witness for its conservative
 fingerprint. Alias and witness both bind the logical input, target conservative
 fingerprint, and exact canonical target text. Reuse reads the raw target,
@@ -848,13 +851,13 @@ The historical private-body observation is emitted under the explicit
 classification `private_dependency_edit_externally_unchanged`. That classifier
 fails closed unless `app` has exactly `library` as its sole direct dependency in
 both snapshots, the dependency's source and provisional token-stream
-implementation identities change, its interface-v2 identity does not change,
+implementation identities change, its interface-v4 identity does not change,
 and all of the consumer's own observed identities stay unchanged. The
-persistent TypeEnv-v5 transport result for the dependency is reported as a
+persistent TypeEnv-v7 transport result for the dependency is reported as a
 separate `changed`/`unchanged` observation rather than being treated as the
-exported interface. Production TDRE5 may reuse the unaffected consumer; the
+exported interface. Production TDRE7 may reuse the unaffected consumer; the
 shadow classifier remains observation-only and does not authorize that reuse.
-It does not change trace schema 6, cache namespace v19, TypeEnv-v5/TDRE5
+It does not change trace schema 6, cache namespace v21, TypeEnv-v7/TDRE7
 transport, production artifact reuse, or default-gate wiring.
 
 For this comparison, `source_fingerprint` is ingestion telemetry only;

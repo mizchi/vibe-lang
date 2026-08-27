@@ -34,6 +34,7 @@ import ./parser_base.vibe {
   parse_type,
   parse_type_alias_stmt,
   parse_type_impl,
+  parse_type_param_kind,
   peek,
   skip_braced_body,
   tk_name
@@ -147,12 +148,13 @@ fn parse_let_type_params(tokens: Array[Token], pos: Int, context: Option[ParserB
       },
       TIdent(name) => {
         binder_capture_source(context, name, p, p)
-        ArrayBuilder::push(names, name)
-        p = p + 1
+        let (param_key, after_kind) = parse_type_param_kind(tokens, p + 1, name)
+        ArrayBuilder::push(names, param_key)
+        p = after_kind
         match peek(tokens, p) {
           TColon => {
             let (bound_names, next) = parse_type_param_bound_names(tokens, p + 1)
-            ArrayBuilder::push(bounds, (name, bound_names))
+            ArrayBuilder::push(bounds, (param_key, bound_names))
             p = next
           },
           _ => ()
@@ -300,6 +302,13 @@ fn skip_generic_value_start(tokens: Array[Token], pos: Int) -> Int {
           },
           TColon => true,
           TComma => true,
+          // A constructor-kind binder starts with a nested `[_]`. Restrict
+          // this recognition to the underscore form so `[f[x], y]` remains an
+          // array literal in value position.
+          TLBracket => match peek(tokens, pos + 3) {
+            TIdent(hole) => hole == "_",
+            _ => false
+          },
           _ => false
         }
         if maybe_generic {

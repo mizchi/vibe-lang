@@ -26,7 +26,8 @@ import @vibe/ast {
   impl_target_head,
   impl_target_key,
   trait_ref_from_key,
-  trait_ref_name
+  trait_ref_name,
+  type_param_name
 }
 
 import @vibe/core {
@@ -8417,9 +8418,23 @@ fn subst_formals_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
   }
 }
 
+fn formals_contain_source_name(formals: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(formals) {
+    if type_param_name(Array::get(formals, i)) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn subst_formals_ty_body(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
   match ty {
-    TyName(n) => if str_array_contains(formals, n) {
+    TyName(n) => if formals_contain_source_name(formals, n) {
       TyName(mark_formal_name(n))
     } else {
       ty
@@ -8431,7 +8446,7 @@ fn subst_formals_ty_body(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
         Array::push(out, subst_formals_ty(Array::get(args, i), formals))
         i = i + 1
       }
-      if str_array_contains(formals, n) {
+      if formals_contain_source_name(formals, n) {
         TyApp(mark_formal_name(n), out)
       } else {
         TyApp(n, out)
@@ -9941,24 +9956,37 @@ fn gen_eq_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Arra
   SLet(false, false, qualified_name(tname, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body))
 }
 
+fn eq_subst_lookup(params: Array[String], args: Array[TypeExpr], n: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(params) && i < Array::length(args) {
+    if type_param_name(Array::get(params, i)) == type_param_name(n) {
+      found = Some(Array::get(args, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
   match ty {
-    TyName(n) => {
-      let mut i = 0
-      let mut out = ty
-      while i < Array::length(params) && i < Array::length(args) {
-        if Array::get(params, i) == n {
-          out = Array::get(args, i)
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      out
+    TyName(n) => match eq_subst_lookup(params, args, n) {
+      Some(arg) => arg,
+      None => ty
     },
-    TyApp(n, xs) => TyApp(n, for x in xs {
-      eq_subst_ty(x, params, args)
-    }),
+    TyApp(n, xs) => {
+      let subst_xs = for x in xs {
+        eq_subst_ty(x, params, args)
+      }
+      match eq_subst_lookup(params, args, n) {
+        Some(TyName(hn)) => TyApp(hn, subst_xs),
+        Some(TyApp(hn, _)) => TyApp(hn, subst_xs),
+        Some(_) => TyApp(n, subst_xs),
+        None => TyApp(n, subst_xs)
+      }
+    },
     TyFn(ps, result, effect) => TyFn(for p in ps {
       eq_subst_ty(p, params, args)
     }, eq_subst_ty(result, params, args), effect),
@@ -10700,6 +10728,18 @@ fn ty_to_eq_shape_expanded(t: TypeExpr) -> String {
   }
 }
 
+/// A constructor argument inside `{g:Head,...}`. Bare `Array`/`Map`/`Tuple`
+/// here are type constructors (`KBox[Array, Int]`), not complete values, so
+/// they must round-trip as `TyName` rather than the `__EqUnknown` marker
+/// `shape_to_eq_ty` uses for an element-free array binding.
+fn shape_to_eq_ctor_arg(sh: String) -> TypeExpr {
+  if sh == "Array" || sh == "Map" || sh == "Tuple" {
+    TyName(sh)
+  } else {
+    shape_to_eq_ty(sh)
+  }
+}
+
 /// A shape string back into the TypeExpr `eq_for_typed` dispatches on. An
 /// unknown position becomes the `__EqUnknown` marker (raw `==`, the status
 /// quo for that position). A bare "Option"/"Result" head keeps its
@@ -10752,7 +10792,7 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
       let args = empty_type_exprs()
       let mut i = 0
       while i + 1 < Array::length(parts) {
-        Array::push(args, shape_to_eq_ty(Array::get(parts, i + 1)))
+        Array::push(args, shape_to_eq_ctor_arg(Array::get(parts, i + 1)))
         i = i + 1
       }
       TyApp(Array::get(parts, 0), args)

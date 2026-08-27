@@ -4,6 +4,54 @@
 // suppresses sibling auto-discovery (test files beside the contract must
 // not join the facade).
 
+let type_param_kind_prefix = "$type_param$"
+
+/// Canonical AST key for a type parameter and its constructor arity.
+/// Arity-zero parameters keep their historical spelling so old artifacts and
+/// consumers remain readable. The prefix is not a source identifier, so an
+/// encoded constructor binder cannot collide with user code.
+export fn type_param_key(name: String, arity: Int) -> String {
+  if arity <= 0 {
+    name
+  } else {
+    String::concat(type_param_kind_prefix, String::concat(Int::to_string(arity), String::concat("$", name)))
+  }
+}
+
+fn type_param_kind_split(key: String) -> Option[(String, Int)] {
+  if !String::starts_with(key, type_param_kind_prefix) {
+    None
+  } else {
+    let mut pos = String::length(type_param_kind_prefix)
+    let mut arity = 0
+    let mut digits = 0
+    while pos < String::length(key) && String::char_code_at(key, pos) >= '0' && String::char_code_at(key, pos) <= '9' {
+      arity = arity * 10 + String::char_code_at(key, pos) - '0'
+      digits = digits + 1
+      pos = pos + 1
+    }
+    if digits == 0 || arity <= 0 || pos >= String::length(key) || String::char_code_at(key, pos) != '$' {
+      None
+    } else {
+      Some((String::substring(key, pos + 1, String::length(key)), arity))
+    }
+  }
+}
+
+export fn type_param_name(key: String) -> String {
+  match type_param_kind_split(key) {
+    Some(pair) => pair.0,
+    None => key
+  }
+}
+
+export fn type_param_arity(key: String) -> Int {
+  match type_param_kind_split(key) {
+    Some(pair) => pair.1,
+    None => 0
+  }
+}
+
 export fn impl_target_head(target: TypeExpr) -> String {
   match target {
     TyName(name) => name,
