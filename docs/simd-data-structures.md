@@ -140,8 +140,7 @@ them except their own fixture.
 behind them, their checker lookup, their inline lowering, and the Perceus and
 gc-backend special cases they needed are gone — and so is the bench lane that
 measured them, which cannot be rebuilt without them; the numbers above are the
-rejection evidence, recorded in the bench file's header and in
-`docs/spec/simd-api-design.md` §4. `tests/gates/mid/run.sh` step 40 now asserts
+rejection evidence, recorded here and in the bench file's header. `tests/gates/mid/run.sh` step 40 now asserts
 the names stay unresolvable, because a retired surface that quietly comes back
 is worse than one that never left.
 
