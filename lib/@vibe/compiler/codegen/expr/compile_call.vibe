@@ -2063,9 +2063,15 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // simd_skip_ws(src: Bytes, pos: Int, len: Int) -> Int returns the first
       // index >= pos that is NOT ASCII whitespace (' ' \t \n \r), or len if all
       // remaining bytes are whitespace. Scans 16 bytes at a time with the v128
-      // chunk kept on the operand stack (NO heap boxing — the per-op boxed v128
-      // intrinsics would bump-allocate 16 bytes each and leak), plus a scalar
-      // tail. Bytes layout (gen_bytes_get_body): [alloc@0][len@4][payload_ptr@8].
+      // chunk kept on the operand stack for the whole loop, plus a scalar tail.
+      // Bytes layout (gen_bytes_get_body): [alloc@0][len@4][payload_ptr@8].
+      //
+      // "On the operand stack" is the whole design, not an implementation
+      // detail: a lowering that lets the vector become a vibe VALUE has to give
+      // it a heap box, and #2342 retired the `v128_*` intrinsic surface for
+      // exactly that -- 16 unreclaimable bytes per operation, 22x slower than
+      // the same algorithm written as one kernel. Any fused scanner added here
+      // keeps this shape.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
       nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
