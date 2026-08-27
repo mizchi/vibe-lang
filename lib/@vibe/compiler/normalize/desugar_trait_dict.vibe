@@ -755,8 +755,9 @@ fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits
 /// dictionary lowerer's supported receiver shapes. Keep this aligned with
 /// find_recv_index / find_constructor_recv_index / find_array_elem_recv_index:
 /// a nested occurrence (for example `(Int) -> Self`) is not recoverable.
-fn trait_operation_type_is_carrier(ty: TypeExpr, name: String) -> Bool {
-  match ty {
+fn trait_operation_type_is_carrier(ty: TypeExpr, name: String, stmts: Array[Stmt]) -> Bool {
+  let expanded = expand_constructor_alias(ty, stmts, Array::length(stmts) + 1)
+  match expanded {
     TyName(current) => current == name,
     TyApp(head, args) => if head == name {
       true
@@ -774,11 +775,11 @@ fn trait_operation_type_is_carrier(ty: TypeExpr, name: String) -> Bool {
   }
 }
 
-fn trait_operation_params_have_carrier(params: Array[TypeExpr], name: String) -> Bool {
+fn trait_operation_params_have_carrier(params: Array[TypeExpr], name: String, stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(params) && !found {
-    found = trait_operation_type_is_carrier(Array::get(params, i), name); i = i + 1
+    found = trait_operation_type_is_carrier(Array::get(params, i), name, stmts); i = i + 1
   }
   found
 }
@@ -788,6 +789,16 @@ fn trait_operation_method_shadows(method_params: Array[String], name: String) ->
   let mut found = false
   while i < Array::length(method_params) && !found {
     found = type_param_name(Array::get(method_params, i)) == name
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_shadows_header(method_params: Array[String], header_params: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(header_params) && !found {
+    found = trait_operation_method_shadows(method_params, type_param_name(Array::get(header_params, i)))
     i = i + 1
   }
   found
@@ -916,7 +927,8 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
           if !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_dict_already_materialized(stmts, trait_name) {
             let self_param = String::concat("__trait_operation_self_", String::concat(trait_name, String::concat("_", method_name)))
             let (method_params, method_bounds) = trait_operation_method_generics(method_gens, mi, method_name)
-            let uses_self = trait_operation_params_have_carrier(raw_params, "Self")
+            let shadows_header = trait_operation_shadows_header(method_params, header_params)
+            let uses_self = !shadows_header && trait_operation_params_have_carrier(raw_params, "Self", stmts)
             let mut dispatch = if uses_self {
               self_param
             } else {
@@ -924,10 +936,10 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
             }
             let mut dispatch_key = dispatch
             let mut hi = 0
-            while hi < Array::length(header_params) && dispatch == "" {
+            while hi < Array::length(header_params) && dispatch == "" && !shadows_header {
               let candidate_key = Array::get(header_params, hi)
               let candidate = type_param_name(candidate_key)
-              if !trait_operation_method_shadows(method_params, candidate) && trait_operation_params_have_carrier(raw_params, candidate) {
+              if trait_operation_params_have_carrier(raw_params, candidate, stmts) {
                 dispatch = candidate; dispatch_key = candidate_key
               } else {
                 ()
