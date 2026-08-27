@@ -421,6 +421,316 @@ export fn fresh_var(c: Int) -> (Type, Int) {
   (CtVar(c), c + 1)
 }
 
+/// Applied constructor (`F[A]`). Head is args[0]; remaining slots are the
+/// type arguments. Zonked to `CtArray` / `CtOption` / `CtNamed` when the head
+/// is a known constructor (see `hkt_apply_ctor`).
+fn hkt_app_name() -> String {
+  "#hkt"
+}
+
+fn hkt_ctor_prefix() -> String {
+  "#ctor."
+}
+
+export fn is_hkt_app(ty: Type) -> Bool {
+  match ty {
+    CtNamed(name, args) => name == hkt_app_name() && Array::length(args) >= 1,
+    _ => false
+  }
+}
+
+export fn hkt_apply_ctor(head: Type, args: Array[Type]) -> Type {
+  if Array::length(args) == 0 {
+    head
+  } else {
+    match head {
+      CtNamed(n, ha) => if n == "Array" && Array::length(ha) == 0 && Array::length(args) == 1 {
+        CtArray(Array::get(args, 0))
+      } else if n == "Option" && Array::length(ha) == 0 && Array::length(args) == 1 {
+        CtOption(Array::get(args, 0))
+      } else if n == hkt_app_name() {
+        let out = array_empty()
+        let mut i = 0
+        while i < Array::length(ha) {
+          Array::push(out, Array::get(ha, i))
+          i = i + 1
+        }
+        let mut j = 0
+        while j < Array::length(args) {
+          Array::push(out, Array::get(args, j))
+          j = j + 1
+        }
+        CtNamed(hkt_app_name(), out)
+      } else if String::starts_with(n, hkt_ctor_prefix()) && Array::length(ha) == 0 {
+        let ctor = n[String::length(hkt_ctor_prefix()): String::length(n)]
+        hkt_apply_ctor(CtNamed(ctor, array_empty()), args)
+      } else if Array::length(ha) == 0 {
+        if n == "Array" && Array::length(args) == 1 {
+          CtArray(Array::get(args, 0))
+        } else if n == "Option" && Array::length(args) == 1 {
+          CtOption(Array::get(args, 0))
+        } else if String::starts_with(n, "#hktformal.") {
+          let all = array_empty()
+          Array::push(all, head)
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(all, Array::get(args, k))
+            k = k + 1
+          }
+          CtNamed(hkt_app_name(), all)
+        } else {
+          CtNamed(n, args)
+        }
+      } else {
+        let all = array_empty()
+        Array::push(all, head)
+        let mut k = 0
+        while k < Array::length(args) {
+          Array::push(all, Array::get(args, k))
+          k = k + 1
+        }
+        CtNamed(hkt_app_name(), all)
+      },
+      CtVar(_) => {
+        let all = array_empty()
+        Array::push(all, head)
+        let mut k = 0
+        while k < Array::length(args) {
+          Array::push(all, Array::get(args, k))
+          k = k + 1
+        }
+        CtNamed(hkt_app_name(), all)
+      },
+      _ => {
+        let all = array_empty()
+        Array::push(all, head)
+        let mut k = 0
+        while k < Array::length(args) {
+          Array::push(all, Array::get(args, k))
+          k = k + 1
+        }
+        CtNamed(hkt_app_name(), all)
+      }
+    }
+  }
+}
+
+fn hkt_ctor(name: String) -> Type {
+  CtNamed(String::concat(hkt_ctor_prefix(), name), array_empty())
+}
+
+fn zonk_hkt(ty: Type) -> Type {
+  match ty {
+    CtNamed(name, args) => if name == hkt_app_name() && Array::length(args) >= 1 {
+      let head = Array::get(args, 0)
+      let rest = array_empty()
+      let mut i = 1
+      while i < Array::length(args) {
+        Array::push(rest, Array::get(args, i))
+        i = i + 1
+      }
+      hkt_apply_ctor(head, rest)
+    } else {
+      ty
+    },
+    _ => ty
+  }
+}
+
+fn int_array_has_id(ids: Array[Int], id: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ids) {
+    if Array::get(ids, i) == id {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `subst_apply`, but `CtVar` ids in `keep` stay free. Used to keep an
+/// explicit constructor parameter `F` quantified while still zonking
+/// element variables the body solved.
+export fn subst_apply_except(s: Subst, ty: Type, keep: Array[Int]) -> Type {
+  subst_apply_except_go(s, ty, keep)
+}
+
+fn subst_apply_except_go(s: Subst, ty: Type, keep: Array[Int]) -> Type {
+  match ty {
+    CtVar(id) => if int_array_has_id(keep, id) {
+      CtVar(id)
+    } else {
+      subst_apply(s, ty)
+    },
+    CtFn(params, ret, effect_name) => {
+      let ps = array_empty()
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(ps, subst_apply_except_go(s, Array::get(params, i), keep))
+        i = i + 1
+      }
+      CtFn(ps, subst_apply_except_go(s, ret, keep), effect_name)
+    },
+    CtArray(elem) => CtArray(subst_apply_except_go(s, elem, keep)),
+    CtOption(elem) => CtOption(subst_apply_except_go(s, elem, keep)),
+    CtTuple(elems) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, subst_apply_except_go(s, Array::get(elems, i), keep))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtRecord(rfields) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(rfields) {
+        let (n, t) = Array::get(rfields, i)
+        Array::push(out, (n, subst_apply_except_go(s, t, keep)))
+        i = i + 1
+      }
+      CtRecord(out)
+    },
+    CtNamed(name, args) => {
+      let ra = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(ra, subst_apply_except_go(s, Array::get(args, i), keep))
+        i = i + 1
+      }
+      zonk_hkt(CtNamed(name, ra))
+    },
+    CtForAll(_, _, _) => ty,
+    _ => ty
+  }
+}
+
+fn unify_type_arrays(xs: Array[Type], ys: Array[Type], s: Subst) -> Option[Subst] {
+  if Array::length(xs) != Array::length(ys) {
+    None
+  } else {
+    let mut i = 0
+    let mut acc = s
+    let mut out = Some(s)
+    let mut done = false
+    while !done {
+      if i >= Array::length(xs) {
+        out = Some(acc)
+        done = true
+      } else {
+        match unify(Array::get(xs, i), Array::get(ys, i), acc) {
+          Some(s2) => {
+            acc = s2
+            i = i + 1
+          },
+          None => {
+            out = None
+            done = true
+          }
+        }
+      }
+    }
+    out
+  }
+}
+
+fn unify_hkt(ta: Type, tb: Type, s: Subst) -> Option[Subst] {
+  match tb {
+    CtVar(id) => if occurs_in(id, ta) {
+      None
+    } else {
+      Some(SubstBind(id, ta, s))
+    },
+    _ => match ta {
+      CtVar(id) => if occurs_in(id, tb) {
+        None
+      } else {
+        Some(SubstBind(id, tb, s))
+      },
+      _ => unify_hkt_ctors(ta, tb, s)
+    }
+  }
+}
+
+fn unify_hkt_ctors(ta: Type, tb: Type, s: Subst) -> Option[Subst] {
+  match ta {
+    CtNamed(an, aa) => if an == hkt_app_name() && Array::length(aa) >= 1 {
+      let a_head = Array::get(aa, 0)
+      let a_rest = array_empty()
+      let mut ai = 1
+      while ai < Array::length(aa) {
+        Array::push(a_rest, Array::get(aa, ai))
+        ai = ai + 1
+      }
+      match tb {
+        CtNamed(bn, ba) => if bn == hkt_app_name() && Array::length(ba) >= 1 {
+          unify_type_arrays(aa, ba, s)
+        } else if bn != hkt_app_name() {
+          match unify(a_head, hkt_ctor(bn), s) {
+            Some(s1) => unify_type_arrays(a_rest, ba, s1),
+            None => None
+          }
+        } else {
+          None
+        },
+        CtArray(e) => if Array::length(a_rest) == 1 {
+          match unify(a_head, hkt_ctor("Array"), s) {
+            Some(s1) => unify(Array::get(a_rest, 0), e, s1),
+            None => None
+          }
+        } else {
+          None
+        },
+        CtOption(e) => if Array::length(a_rest) == 1 {
+          match unify(a_head, hkt_ctor("Option"), s) {
+            Some(s1) => unify(Array::get(a_rest, 0), e, s1),
+            None => None
+          }
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    CtArray(e) => match tb {
+      CtNamed(bn, ba) => if bn == hkt_app_name() && Array::length(ba) == 2 {
+        match unify(hkt_ctor("Array"), Array::get(ba, 0), s) {
+          Some(s1) => unify(e, Array::get(ba, 1), s1),
+          None => None
+        }
+      } else {
+        None
+      },
+      _ => None
+    },
+    CtOption(e) => match tb {
+      CtNamed(bn, ba) => if bn == hkt_app_name() && Array::length(ba) == 2 {
+        match unify(hkt_ctor("Option"), Array::get(ba, 0), s) {
+          Some(s1) => unify(e, Array::get(ba, 1), s1),
+          None => None
+        }
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => match tb {
+      CtNamed(bn, ba) => if bn == hkt_app_name() && Array::length(ba) >= 1 {
+        unify_hkt(tb, ta, s)
+      } else {
+        None
+      },
+      _ => None
+    }
+  }
+}
+
 export fn occurs_in(id: Int, ty: Type) -> Bool {
   match ty {
     CtVar(vid) => (id == vid),
@@ -467,6 +777,19 @@ export fn occurs_in(id: Int, ty: Type) -> Bool {
       found
     },
     CtForAll(_, _, body) => occurs_in(id, body),
+    CtNamed(_, args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if occurs_in(id, Array::get(args, i)) {
+          found = true
+          i = Array::length(args)
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
     _ => false
   }
 }
@@ -1460,9 +1783,9 @@ export fn subst_apply(s: Subst, ty: Type) -> Type {
       let (rfn, rft) = rf
       (rfn, subst_apply(s, rft))
     }),
-    CtNamed(name, args) => CtNamed(name, for arg in args {
+    CtNamed(name, args) => zonk_hkt(CtNamed(name, for arg in args {
       subst_apply(s, arg)
-    }),
+    })),
     CtForAll(_, _, _) => ty,
     _ => ty
   }
@@ -1540,7 +1863,36 @@ export fn type_to_string(ty: Type) -> String {
     } else {
       name
     },
-    CtNamed(name, args) => if Array::length(args) == 0 {
+    CtNamed(name, args) => if name == hkt_app_name() && Array::length(args) >= 1 {
+      let z = zonk_hkt(ty)
+      match z {
+        CtNamed(n2, _) => if n2 == hkt_app_name() {
+          let head_s = type_to_string(Array::get(args, 0))
+          let parts = array_empty()
+          let mut pi = 1
+          while pi < Array::length(args) {
+            Array::push(parts, type_to_string(Array::get(args, pi)))
+            pi = pi + 1
+          }
+          let mut i = 0
+          let mut joined = ""
+          while i < Array::length(parts) {
+            joined = if i > 0 {
+              String::concat(joined, String::concat(", ", Array::get(parts, i)))
+            } else Array::get(parts, i)
+            i = i + 1
+          }
+          String::concat(head_s, String::concat("[", String::concat(joined, "]")))
+        } else {
+          type_to_string(z)
+        },
+        _ => type_to_string(z)
+      }
+    } else if String::starts_with(name, hkt_ctor_prefix()) {
+      name[String::length(hkt_ctor_prefix()): String::length(name)]
+    } else if String::starts_with(name, "#hktformal.") {
+      name[String::length("#hktformal."): String::length(name)]
+    } else if Array::length(args) == 0 {
       name
     } else {
       let parts = for arg in args {
@@ -1795,7 +2147,18 @@ export fn resolve_type_alias_params(ty: Type, params: Array[String], args: Array
         i = i + 1
       }
       if idx >= 0 && idx < Array::length(args) {
-        type_clone(Array::get(args, idx))
+        let replacement = type_clone(Array::get(args, idx))
+        if Array::length(targs) == 0 {
+          replacement
+        } else {
+          let ra = array_empty()
+          let mut ai = 0
+          while ai < Array::length(targs) {
+            Array::push(ra, resolve_type_alias_params(Array::get(targs, ai), params, args))
+            ai = ai + 1
+          }
+          hkt_apply_ctor(replacement, ra)
+        }
       } else {
         CtNamed(name, for a in targs {
           resolve_type_alias_params(a, params, args)
@@ -2809,32 +3172,15 @@ export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
   let tb = subst_apply(s, b)
   if types_equal(ta, tb) {
     Some(s)
-  }
-  else if char_int_compatible(ta, tb) {
+  } else if char_int_compatible(ta, tb) {
     Some(s)
-  }
-  // #1324: `CtUnknown` means "no information", so it is compatible with
-  // everything -- but it must never BIND a type variable to itself. This
-  // arm used to sit BELOW the two `CtVar` arms, so `unify(CtVar(T),
-  // CtUnknown)` recorded `T := CtUnknown` and erased T for good. That fires
-  // on any `fn f[T](..) -> T` whose body reaches `throw` in a T-typed
-  // position (`throw`'s own result is CtUnknown -- builtins_misc.vibe's
-  // lookup_throw), which is exactly the shape #1324 gives
-  // `TaskGroup::run` / `TaskHandle::join`. The declaration's generalized
-  // scheme then carries `CtUnknown` where `T` belongs, and checker.vibe's
-  // #1081 region-escape scan -- which asks whether the zonked body return
-  // still mentions this run call's rigid skolem -- silently saw
-  // `CtUnknown` and stopped rejecting real escapes
-  // (fixtures/err_region_escape_return.vibe compiled clean).
-  // Leaving the variable UNBOUND is strictly better on both counts: the
-  // var stays free to unify with the real type from another use site, and
-  // a type that was never learned stays unknown instead of masquerading as
-  // a known one.
-  else match ta {
+  } else match ta {
     CtUnknown => Some(s),
     _ => match tb {
       CtUnknown => Some(s),
-      _ => match ta {
+      _ => if is_hkt_app(ta) || is_hkt_app(tb) {
+        unify_hkt(ta, tb, s)
+      } else match ta {
         CtVar(id) => if occurs_in(id, tb) {
           None
         } else Some(SubstBind(id, tb, s)),
@@ -3239,21 +3585,25 @@ export fn collect_subst_bounds_pairs(s: Subst) -> Array[(Int, Array[String])] {
 }
 
 export fn generalize(s: Subst, ty: Type) -> Type {
-  let resolved = subst_apply(s, ty)
-  let tvars = collect_tvars(resolved)
-  if Array::length(tvars) == 0 {
-    resolved
-  }
-  else {
-    let bounds_pairs = collect_subst_bounds_pairs(s)
-    let var_bounds = array_empty()
-    for vid in tvars {
-      let bounds = int_bounds_lookup(bounds_pairs, vid, 0)
-      if Array::length(bounds) != 0 {
-        Array::push(var_bounds, (vid, bounds))
+  match ty {
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, subst_apply_except(s, body, vars)),
+    _ => {
+      let resolved = subst_apply(s, ty)
+      let tvars = collect_tvars(resolved)
+      if Array::length(tvars) == 0 {
+        resolved
+      } else {
+        let bounds_pairs = collect_subst_bounds_pairs(s)
+        let var_bounds = array_empty()
+        for vid in tvars {
+          let bounds = int_bounds_lookup(bounds_pairs, vid, 0)
+          if Array::length(bounds) != 0 {
+            Array::push(var_bounds, (vid, bounds))
+          }
+        }
+        CtForAll(tvars, var_bounds, resolved)
       }
     }
-    CtForAll(tvars, var_bounds, resolved)
   }
 }
 
@@ -3306,7 +3656,13 @@ export fn type_constructor_name(ty: Type) -> String {
   match ty {
     CtArray(_) => "Array",
     CtOption(_) => "Option",
-    CtNamed(n, _) => n,
+    CtNamed(n, args) => if n == hkt_app_name() && Array::length(args) >= 1 {
+      type_constructor_name(Array::get(args, 0))
+    } else if String::starts_with(n, hkt_ctor_prefix()) {
+      n[String::length(hkt_ctor_prefix()): String::length(n)]
+    } else {
+      n
+    },
     CtStruct(n) => n,
     CtEnum(n) => n,
     _ => ""
@@ -3351,7 +3707,17 @@ fn type_args_of(ty: Type) -> Array[Type] {
   match ty {
     CtArray(e) => Array::slice([e], 0, 1),
     CtOption(e) => Array::slice([e], 0, 1),
-    CtNamed(_, args) => args,
+    CtNamed(n, args) => if n == hkt_app_name() && Array::length(args) >= 1 {
+      let rest = array_empty()
+      let mut i = 1
+      while i < Array::length(args) {
+        Array::push(rest, Array::get(args, i))
+        i = i + 1
+      }
+      rest
+    } else {
+      args
+    },
     _ => array_empty()
   }
 }

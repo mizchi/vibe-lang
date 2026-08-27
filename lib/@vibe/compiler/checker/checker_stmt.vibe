@@ -78,6 +78,7 @@ import ./checker.vibe {
   preserve_generic_instantiation,
   reject_resume_outside_handler,
   report_formal_applications,
+  report_formal_applications_across,
   report_map_key_types,
   report_unknown_type_names,
   report_unknown_type_names_deferred_validation,
@@ -2389,9 +2390,6 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // #2125: an unknown name in a payload otherwise becomes a wildcard
             // `CtNamed` -- same hole as the annotation sites.
             report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
-            // #2268: formals are the enum's OWN params -- never the merged
-            // report shadow, whose deferred cross-package names are types.
-            report_formal_applications(Array::get(vtypes, ti), params, String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
             // #1512: `params` shadow `defs`, so the substitution below still
             // finds `CtNamed(<param>, [])` when an import bound that name.
             let named_vt = resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params)
@@ -2399,6 +2397,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             Array::push(resolved_vtypes, subst_type_params(named_vt, params, param_var_types))
             ti = ti + 1
           }
+          report_formal_applications_across(vtypes, params, String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
           Array::push(resolved_variants, (vname, resolved_vtypes))
           Array::push(published_variants, (vname, named_vtypes))
           vi = vi + 1
@@ -2574,6 +2573,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
         let resolved_fields = array_empty()
+        let field_tes = array_empty()
         // #2125: this struct's slot is already claimed before its own field
         // types are resolved, so a recursive occurrence resolves to
         // `CtStruct(name)`.
@@ -2590,13 +2590,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
           let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
           report_unknown_type_names_deferred_validation(ftype_expr, defs, report_shadow, env, array_empty(), struct_field_decl_label(name, fname), errors)
-          // #2268: formals are the struct's OWN tparams -- never
-          // `report_shadow`, whose deferred cross-package names (`Map` in a
-          // `.vpkg`-derived struct) are types, not formals; and not
-          // `dict_erased`, so a synthesized `<Trait>Dict` witness struct
-          // keeps today's accept-but-undispatchable behavior for a trait
-          // spelling its own formal applied.
-          report_formal_applications(ftype_expr, tparams, struct_field_decl_label(name, fname), errors)
+          Array::push(field_tes, ftype_expr)
           // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
           // param name resolves to a rigid `CtNamed(param, [])` because no
           // typedef/builtin claims it, which an import alias otherwise breaks.
@@ -2604,6 +2598,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
           Array::push(resolved_fields, (fname, ftype))
           fi = fi + 1
         }
+        // Mixed-kind is a property of the whole struct (`raw: F` next to
+        // `inner: F[Int]`), not of one field TypeExpr.
+        report_formal_applications_across(field_tes, tparams, String::concat(String::concat("struct `", name), "`"), errors)
         // #829: record the declared type params — a param name resolves above
         // to a rigid `CtNamed(param, [])` (no such typedef/builtin), which is
         // exactly what the checker's literal instantiation substitutes.
@@ -4002,39 +3999,11 @@ fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[
   }
 }
 
-/// #2268 (Codex on #2267, rounds 2-3): a formal application can hide in any
-/// declaration whose signatures are resolved WITHOUT passing through
-/// `report_unknown_type_names` -- a parameterized alias body
-/// (`type Apply[F, A] = F[A]`), a generic effect operation
-/// (`effect Bad[F, A] { Put(F[A]) -> Unit }`, #1340 registers eparams as
-/// rigid names and substitutes them wholesale), and a trait method signature
-/// (`trait Functor[F] { fmap[A, B](F[A], (A) -> B) -> F[B] }`, stored
-/// unchanged by the STrait arm). Each declaration's own params are the whole
-/// formal set -- none of these bodies has an enclosing formal scope -- so
-/// shadow membership is the whole test here.
+/// Mixed-kind only (`F` unapplied and `F[A]` applied on the same TypeExpr).
+/// Alias / effect / trait / struct-field `F[A]` is a well-kinded constructor
+/// use; `report_formal_applications` is the shared rule with fn signatures.
 fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
-  let hits = array_empty()
-  // Bound to a let rather than written inline: vibe fmt's guard refuses
-  // a multiline closure literal in a non-final argument slot (#2271).
-  let is_param = (head) -> {
-    let mut pi = 0
-    let mut found = false
-    while pi < Array::length(formals) {
-      if Array::get(formals, pi) == head {
-        found = true
-      } else {
-        ()
-      }
-      pi = pi + 1
-    }
-    found
-  }
-  collect_formal_applications_by(te, is_param, hits)
-  let mut hi = 0
-  while hi < Array::length(hits) {
-    Array::push(errors, formal_application_error(Array::get(hits, hi), where_label))
-    hi = hi + 1
-  }
+  report_formal_applications(te, formals, where_label, errors)
 }
 
 /// #2286: the label for a struct FIELD diagnostic.
@@ -4079,12 +4048,14 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
         let mut oi = 0
         while oi < Array::length(ops) {
           let (opname, opparams, opret) = Array::get(ops, oi)
+          let op_tes = array_empty()
           let mut pi = 0
           while pi < Array::length(opparams) {
-            fapp_report(Array::get(opparams, pi), eparams, fapp_decl_label(ename, opname), errors)
+            Array::push(op_tes, Array::get(opparams, pi))
             pi = pi + 1
           }
-          fapp_report(opret, eparams, fapp_decl_label(ename, opname), errors)
+          Array::push(op_tes, opret)
+          report_formal_applications_across(op_tes, eparams, fapp_decl_label(ename, opname), errors)
           oi = oi + 1
         }
       },
@@ -4116,12 +4087,14 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
             }
             gi = gi + 1
           }
+          let method_tes = array_empty()
           let mut pi = 0
           while pi < Array::length(mparams) {
-            fapp_report(Array::get(mparams, pi), formals, fapp_decl_label(tname, mname), errors)
+            Array::push(method_tes, Array::get(mparams, pi))
             pi = pi + 1
           }
-          fapp_report(mret, formals, fapp_decl_label(tname, mname), errors)
+          Array::push(method_tes, mret)
+          report_formal_applications_across(method_tes, formals, fapp_decl_label(tname, mname), errors)
           mi = mi + 1
         }
       },

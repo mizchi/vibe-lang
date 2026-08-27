@@ -1,0 +1,133 @@
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn checks(src: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+test "identity F[A] as F[B] is rejected" {
+  let src = "fn fake_map[F, A, B](x: F[A], f: (A) -> B) -> F[B] {\n  x\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "F[A] to F[A] identity is accepted" {
+  let src = "fn keep[F, A](xs: F[A]) -> F[A] {\n  xs\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(msg == "")
+}
+
+test "ascribing F[A] to Array[Int] is rejected" {
+  let src = "fn smash[F, A](xs: F[A]) -> Int {\n  let ys: Array[Int] = xs\n  1\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "binding type mismatch for a local let"))
+}
+
+test "ascribing F[A] to Option[Int] is rejected" {
+  let src = "fn smash[F, A](xs: F[A]) -> Int {\n  let ys: Option[Int] = xs\n  1\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "binding type mismatch for a local let"))
+}
+
+test "returning F[A] as Array[Int] is rejected" {
+  let src = "fn smash[F, A](xs: F[A]) -> Array[Int] {\n  xs\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "mixed-kind local let is rejected" {
+  let src = "fn g[F](x: F) -> Int {\n  let y: F[Int] = x\n  1\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "used both as a type and as a type constructor"))
+}
+
+test "local let F[A] ascription is accepted" {
+  let src = "fn keep[F, A](xs: F[A]) -> F[A] {\n  let ys: F[A] = xs\n  ys\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(msg == "")
+}
+
+test "ascribing F[A] to Box[Int] is rejected" {
+  let src = "struct Box[T] {\n  value: T\n}\nfn smash[F, A](xs: F[A]) -> Int {\n  let ys: Box[Int] = xs\n  1\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "binding type mismatch for a local let"))
+}
+
+test "returning F[A] as Box[Int] is rejected" {
+  let src = "struct Box[T] {\n  value: T\n}\nfn smash[F, A](xs: F[A]) -> Box[Int] {\n  xs\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "F[A] as F[Int] is rejected" {
+  let src = "fn smash[F, A](xs: F[A]) -> F[Int] {\n  xs\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "F[A] vs F[A, B] is rejected" {
+  let src = "fn smash[F, A, B](xs: F[A]) -> F[A, B] {\n  xs\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "applied to 2 type arguments"))
+}
+
+test "mixed-kind across struct fields is rejected" {
+  let src = "struct Holder[F] {\n  raw: F; inner: F[Int]\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "used both as a type and as a type constructor"))
+}
+
+test "mixed-kind across a trait method is rejected" {
+  let src = "trait Holder[F] {\n  wrap(F) -> F[Int]\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "used both as a type and as a type constructor"))
+}
+
+test "mixed-kind across an effect operation is rejected" {
+  let src = "effect Box[F] {\n  Put(F) -> F[Int]\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "used both as a type and as a type constructor"))
+}
+
+test "arity-2 constructor formal is rejected" {
+  let src = "fn bad[F, A, B](xs: F[A, B]) -> Int {\n  1\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "applied to 2 type arguments"))
+}
+
+test "identity F[A] as F[B] inside a tuple is rejected" {
+  let src = "fn fake[F, A, B](x: (F[A], Int)) -> (F[B], Int) {\n  x\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "identity Array[F[A]] as Array[F[B]] is rejected" {
+  let src = "fn fake[F, A, B](x: Array[F[A]]) -> Array[F[B]] {\n  x\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "return type mismatch"))
+}
+
+test "ascribing T to Box[Int] does not publish forall T" {
+  let src = "struct Box[T] {\n  value: T\n}\nfn f[T](x: T) -> T {\n  let y: Box[Int] = x\n  x\n}\nfn g() -> Unit {\n  let _ = f(1)\n}\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "argument type mismatch"))
+}
