@@ -179,6 +179,8 @@ let trait_erased_type_param_prefix: String = "__trait_erased_tp__"
 /// surface, without consulting value types (a VALUE binding whose type is a
 /// `CtVar` must never read as a formal -- round 4).
 let fapp_formal_marker_prefix: String = "__fapp_formal__"
+let fapp_applied_marker_prefix: String = "__fapp_applied__"
+let fapp_unapplied_marker_prefix: String = "__fapp_unapplied__"
 
 /// True when some entry of `methods` declares a method named `method_name`.
 fn trait_methods_declare(methods: Array[(String, Array[TypeExpr], TypeExpr)], method_name: String) -> Bool {
@@ -397,6 +399,53 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
       ()
     }
     ai = ai + 1
+  }
+}
+
+/// Mixed-kind across a local-let annotation and the enclosing signature.
+/// `report_formal_applications` only sees one TypeExpr; `let y: F[Int] = x`
+/// under `fn g[F](x: F)` is applied here and unapplied on the signature.
+fn report_mixed_kind_let_annotation(te: TypeExpr, env: TypeEnv, where_label: String, errors: Array[String]) -> Unit {
+  let applied = array_empty()
+  let unapplied = array_empty()
+  let is_formal = (head) -> {
+    match env_lookup(env, String::concat(fapp_formal_marker_prefix, head)) {
+      Some(_) => true,
+      None => false
+    }
+  }
+  collect_formal_kind_uses(te, is_formal, applied, unapplied)
+  let mut i = 0
+  while i < Array::length(applied) {
+    let fname = Array::get(applied, i)
+    let unapplied_in_sig = match env_lookup(env, String::concat(fapp_unapplied_marker_prefix, fname)) {
+      Some(_) => true,
+      None => false
+    }
+    if unapplied_in_sig || string_array_has(unapplied, fname) {
+      Array::push(errors, formal_application_error(fname, where_label))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(unapplied) {
+    let fname = Array::get(unapplied, i)
+    if string_array_has(applied, fname) {
+      ()
+    } else {
+      let applied_in_sig = match env_lookup(env, String::concat(fapp_applied_marker_prefix, fname)) {
+        Some(_) => true,
+        None => false
+      }
+      if applied_in_sig {
+        Array::push(errors, formal_application_error(fname, where_label))
+      } else {
+        ()
+      }
+    }
+    i = i + 1
   }
 }
 
@@ -866,7 +915,7 @@ fn report_unknown_type_names_only(te: TypeExpr, defs: Array[TypeDef], shadow: Ar
     let is_type_formal = match env_lookup(env, name) {
       Some(t) => match t {
         CtVar(_) => true,
-        CtNamed(bound_name, bargs) => bound_name == name && Array::length(bargs) == 0,
+        CtNamed(bound_name, bargs) => Array::length(bargs) == 0 && (bound_name == name || bound_name == String::concat("#hktformal.", name)),
         _ => false
       },
       None => false
@@ -2921,24 +2970,6 @@ fn nullary_named_differ(a: Type, b: Type) -> Bool {
   }
 }
 
-fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
-  if Array::length(ea) != Array::length(aa) {
-    false
-  } else {
-    let mut i = 0
-    let mut differ = false
-    while i < Array::length(ea) {
-      if nullary_named_differ(Array::get(ea, i), Array::get(aa, i)) {
-        differ = true
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    differ
-  }
-}
-
 fn is_nullary_named(ty: Type) -> Bool {
   match ty {
     CtNamed(_, args) => Array::length(args) == 0,
@@ -2964,27 +2995,65 @@ fn skolem_vs_concrete(a: Type, b: Type) -> Bool {
   }
 }
 
-/// #2268: F[A] vs F[B] with rigid A, B, and an HKT application vs a concrete
-/// constructor. Only `#hkt[...]` is a constructor parameter; FixedArray[Int]
-/// / alias heads must not be smashed onto Array. CtNamed is kind 0, so the
-/// polymorphic tolerate branch would otherwise swallow these.
+fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
+  if Array::length(ea) != Array::length(aa) {
+    true
+  } else {
+    let mut i = 0
+    let mut differ = false
+    while i < Array::length(ea) {
+      let e = Array::get(ea, i)
+      let a = Array::get(aa, i)
+      if skolem_vs_concrete(e, a) {
+        differ = true
+      } else if is_hkt_app(e) && is_hkt_app(a) {
+        match e {
+          CtNamed(_, ea2) => match a {
+            CtNamed(_, aa2) => if named_args_skolem_differ(ea2, aa2) {
+              differ = true
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    differ
+  }
+}
+
+/// Report `#hkt` vs `#hkt` with rigid args, and `#hkt` vs a resolved
+/// constructor. Call-site `F` is a unification var so this does not run there.
 fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
-  match expected {
-    CtNamed(en, ea) => match actual {
-      CtNamed(an, aa) => is_hkt_app(expected) && is_hkt_app(actual) && en == an && named_args_skolem_differ(ea, aa),
-      CtArray(_) => is_hkt_app(expected),
-      CtOption(_) => is_hkt_app(expected),
+  if is_hkt_app(expected) && is_hkt_app(actual) {
+    match expected {
+      CtNamed(en, ea) => match actual {
+        CtNamed(an, aa) => en == an && named_args_skolem_differ(ea, aa),
+        _ => false
+      },
       _ => false
-    },
-    CtArray(e) => match actual {
-      CtArray(a) => skolem_vs_concrete(e, a),
-      _ => is_hkt_app(actual)
-    },
-    CtOption(e) => match actual {
-      CtOption(a) => skolem_vs_concrete(e, a),
-      _ => is_hkt_app(actual)
-    },
-    _ => false
+    }
+  } else if is_hkt_app(expected) && !is_unresolved_head(actual) {
+    true
+  } else if is_hkt_app(actual) && !is_unresolved_head(expected) {
+    true
+  } else {
+    match expected {
+      CtArray(e) => match actual {
+        CtArray(a) => skolem_vs_concrete(e, a),
+        _ => false
+      },
+      CtOption(e) => match actual {
+        CtOption(a) => skolem_vs_concrete(e, a),
+        _ => false
+      },
+      _ => false
+    }
   }
 }
 
@@ -6667,7 +6736,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EString(_) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
-    EIdent(name, ident_off) => if String::starts_with(name, fapp_formal_marker_prefix) || String::starts_with(name, trait_erased_type_param_prefix) {
+    EIdent(name, ident_off) => if String::starts_with(name, "__fapp_") || String::starts_with(name, trait_erased_type_param_prefix) {
       // #2268 (Codex round 6 on #2267): both prefixes name compiler-internal
       // env markers bound with ordinary EnvBind. Letting source resolve one
       // as a value would check clean (the marker's CtUnit) and then die in
@@ -8531,25 +8600,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // formals of its own); the env is what knows the enclosing
             // declaration's, which is exactly the #2130 mapping above.
             report_unknown_type_names(ann_te, defs, array_empty(), env, array_empty(), "a local let annotation", errors)
-            // #2268 (Codex round 5): the enclosing EFn marked each declared
-            // formal (`fapp_formal_marker_prefix`), so binder provenance
-            // reaches this non-declaration site and `let y: F[Int] = x`
-            // rejects here too -- without the round-4 value-type misread.
-            let fapp_hits = array_empty()
-            let is_marked_formal = (head) -> {
-              match env_lookup(env, String::concat(fapp_formal_marker_prefix, head)) {
-                Some(_) => true,
-                None => false
-              }
-            }
-            collect_formal_applications_by(ann_te, is_marked_formal, fapp_hits)
-            let marked = array_empty()
-            let mut fapp_i = 0
-            while fapp_i < Array::length(fapp_hits) {
-              Array::push(marked, Array::get(fapp_hits, fapp_i))
-              fapp_i = fapp_i + 1
-            }
-            report_formal_applications(ann_te, marked, "a local let annotation", errors)
+            // Mixed-kind across this annotation and the enclosing signature
+            // (EFn binds `__fapp_applied__` / `__fapp_unapplied__` markers).
+            report_mixed_kind_let_annotation(ann_te, env, "a local let annotation", errors)
             let actual = subst_apply(ns0, at)
             // #981: `check_assignable` now runs the #844 same-name concrete
             // `CtNamed` check itself (its tolerate branch calls
@@ -9792,6 +9845,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else {
           ()
         }
+        tp_env = env_bind(tp_env, String::concat(fapp_applied_marker_prefix, sfn), CtUnit)
+        ski = ski + 1
+      }
+      ski = 0
+      while ski < Array::length(sig_unapplied) {
+        tp_env = env_bind(tp_env, String::concat(fapp_unapplied_marker_prefix, Array::get(sig_unapplied, ski)), CtUnit)
         ski = ski + 1
       }
       let plen = Array::length(params)
