@@ -747,22 +747,30 @@ fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits
 fn trait_operation_type_mentions(ty: TypeExpr, name: String) -> Bool {
   match ty {
     TyName(current) => current == name,
-    TyApp(head, args) => if head == name { true } else {
+    TyApp(head, args) => if head == name {
+      true
+    } else {
       let mut i = 0
       let mut found = false
-      while i < Array::length(args) && !found { found = trait_operation_type_mentions(Array::get(args, i), name); i = i + 1 }
+      while i < Array::length(args) && !found {
+        found = trait_operation_type_mentions(Array::get(args, i), name); i = i + 1
+      }
       found
     },
     TyFn(params, ret, _) => {
       let mut i = 0
       let mut found = trait_operation_type_mentions(ret, name)
-      while i < Array::length(params) && !found { found = trait_operation_type_mentions(Array::get(params, i), name); i = i + 1 }
+      while i < Array::length(params) && !found {
+        found = trait_operation_type_mentions(Array::get(params, i), name); i = i + 1
+      }
       found
     },
     TyTuple(items) => {
       let mut i = 0
       let mut found = false
-      while i < Array::length(items) && !found { found = trait_operation_type_mentions(Array::get(items, i), name); i = i + 1 }
+      while i < Array::length(items) && !found {
+        found = trait_operation_type_mentions(Array::get(items, i), name); i = i + 1
+      }
       found
     },
     TyUnit => false
@@ -772,16 +780,32 @@ fn trait_operation_type_mentions(ty: TypeExpr, name: String) -> Bool {
 fn trait_operation_params_mention(params: Array[TypeExpr], name: String) -> Bool {
   let mut i = 0
   let mut found = false
-  while i < Array::length(params) && !found { found = trait_operation_type_mentions(Array::get(params, i), name); i = i + 1 }
+  while i < Array::length(params) && !found {
+    found = trait_operation_type_mentions(Array::get(params, i), name); i = i + 1
+  }
   found
 }
 
 fn trait_operation_substitute_self(ty: TypeExpr, replacement: String) -> TypeExpr {
   match ty {
-    TyName(name) => if name == "Self" { TyName(replacement) } else { ty },
-    TyApp(head, args) => TyApp(if head == "Self" { replacement } else { head }, for arg in args { trait_operation_substitute_self(arg, replacement) }),
-    TyFn(params, ret, effect) => TyFn(for param in params { trait_operation_substitute_self(param, replacement) }, trait_operation_substitute_self(ret, replacement), effect),
-    TyTuple(items) => TyTuple(for item in items { trait_operation_substitute_self(item, replacement) }),
+    TyName(name) => if name == "Self" {
+      TyName(replacement)
+    } else {
+      ty
+    },
+    TyApp(head, args) => TyApp(if head == "Self" {
+      replacement
+    } else {
+      head
+    }, for arg in args {
+      trait_operation_substitute_self(arg, replacement)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      trait_operation_substitute_self(param, replacement)
+    }, trait_operation_substitute_self(ret, replacement), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      trait_operation_substitute_self(item, replacement)
+    }),
     TyUnit => TyUnit
   }
 }
@@ -790,7 +814,14 @@ fn trait_operation_binding_exists(stmts: Array[Stmt], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
-    match Array::get(stmts, i) { SLet(_, _, current, _, _) => if current == name { found = true } else { () }, _ => () }
+    match Array::get(stmts, i) {
+      SLet(_, _, current, _, _) => if current == name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
     i = i + 1
   }
   found
@@ -801,7 +832,14 @@ fn trait_operation_dict_already_materialized(stmts: Array[Stmt], trait_name: Str
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
-    match Array::get(stmts, i) { SStruct(_, name, _, _, _, _) => if name == dict_name { found = true } else { () }, _ => () }
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => if name == dict_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
     i = i + 1
   }
   found
@@ -810,18 +848,45 @@ fn trait_operation_dict_already_materialized(stmts: Array[Stmt], trait_name: Str
 fn trait_operation_method_generics(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], method_index: Int, method_name: String) -> (Array[String], Array[(String, Array[String])]) {
   if method_index < Array::length(method_gens) {
     let (source_name, params, bounds) = Array::get(method_gens, method_index)
-    if source_name == method_name { (params, bounds) } else { (array_empty(), array_empty()) }
-  } else { (array_empty(), array_empty()) }
+    if source_name == method_name {
+      (params, bounds)
+    } else {
+      (array_empty(), array_empty())
+    }
+  } else {
+    (array_empty(), array_empty())
+  }
 }
 
 fn trait_operation_bound_key(trait_name: String, header_params: Array[String]) -> String {
-  if Array::length(header_params) == 0 { trait_ref_key(TyName(trait_name)) } else { trait_ref_key(TyApp(trait_name, for param in header_params { TyName(type_param_name(param)) })) }
+  if Array::length(header_params) == 0 {
+    trait_ref_key(TyName(trait_name))
+  } else {
+    trait_ref_key(TyApp(trait_name, for param in header_params {
+      TyName(type_param_name(param))
+    }))
+  }
 }
 
 fn trait_operation_param_name(ty: TypeExpr, index: Int, dispatch: String) -> String {
   if index == 0 {
-    match ty { TyName(name) => if name == dispatch { "self" } else { "arg_0" }, TyApp(head, _) => if head == dispatch { "xs" } else { "arg_0" }, _ => "arg_0" }
-  } else match ty { TyFn(_, _, _) => "f", _ => String::concat("arg_", __to_string(index)) }
+    match ty {
+      TyName(name) => if name == dispatch {
+        "self"
+      } else {
+        "arg_0"
+      },
+      TyApp(head, _) => if head == dispatch {
+        "xs"
+      } else {
+        "arg_0"
+      },
+      _ => "arg_0"
+    }
+  } else match ty {
+    TyFn(_, _, _) => "f",
+    _ => String::concat("arg_", __to_string(index))
+  }
 }
 
 /// Derive public `Trait::operation` wrappers without introducing bare names.
@@ -839,21 +904,37 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
           if !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_dict_already_materialized(stmts, trait_name) {
             let self_param = String::concat("__trait_operation_self_", String::concat(trait_name, String::concat("_", method_name)))
             let uses_self = trait_operation_params_mention(raw_params, "Self")
-            let mut dispatch = if uses_self { self_param } else { "" }
+            let mut dispatch = if uses_self {
+              self_param
+            } else {
+              ""
+            }
             let mut dispatch_key = dispatch
             let mut hi = 0
             while hi < Array::length(header_params) && dispatch == "" {
               let candidate_key = Array::get(header_params, hi)
               let candidate = type_param_name(candidate_key)
-              if trait_operation_params_mention(raw_params, candidate) { dispatch = candidate; dispatch_key = candidate_key } else { () }
+              if trait_operation_params_mention(raw_params, candidate) {
+                dispatch = candidate; dispatch_key = candidate_key
+              } else {
+                ()
+              }
               hi = hi + 1
             }
             if dispatch != "" {
               let synthetic_off = 2000000000 - i * 1000 - mi * 10
               let (method_params, method_bounds) = trait_operation_method_generics(method_gens, mi, method_name)
-              let extra_params = if uses_self { [self_param] } else { array_empty() }
+              let extra_params = if uses_self {
+                [self_param]
+              } else {
+                array_empty()
+              }
               let type_params = Array::concat(Array::concat(header_params, method_params), extra_params)
-              let bounds = Array::concat(method_bounds, [(dispatch_key, [trait_operation_bound_key(trait_name, header_params)])])
+              let bounds = Array::concat(method_bounds, [
+                (dispatch_key, [
+                  trait_operation_bound_key(trait_name, header_params)
+                ])
+              ])
               let value_params = array_empty()
               let call_args = array_empty()
               let mut pi = 0
@@ -867,8 +948,12 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
               let ret = trait_operation_substitute_self(raw_ret, dispatch)
               let body = ECall(EIdent(String::concat(dispatch, String::concat("::", method_name)), synthetic_off), call_args, synthetic_off)
               Array::push(additions, SLet(exported, true, operation_name, None, EFn(type_params, bounds, value_params, Some(ret), None, body)))
-            } else { () }
-          } else { () }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
           mi = mi + 1
         }
       },
@@ -879,22 +964,56 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
   let mut insertion = 0
   let mut si = 0
   while si < original_len {
-    match Array::get(stmts, si) { STrait(_, _, _, _, _, _) => { insertion = si + 1 }, SImpl(_, _, _, _) => { insertion = si + 1 }, _ => () }
+    match Array::get(stmts, si) {
+      STrait(_, _, _, _, _, _) => {
+        insertion = si + 1
+      },
+      SImpl(_, _, _, _) => {
+        insertion = si + 1
+      },
+      _ => ()
+    }
     si = si + 1
   }
   while insertion < original_len {
-    match Array::get(stmts, insertion) { SLet(_, _, _, _, _) => { insertion = insertion + 1 }, SFnDecl(_, _, _, _, _) => { insertion = insertion + 1 }, _ => break }
+    match Array::get(stmts, insertion) {
+      SLet(_, _, _, _, _) => {
+        insertion = insertion + 1
+      },
+      SFnDecl(_, _, _, _, _) => {
+        insertion = insertion + 1
+      },
+      _ => break
+    }
   }
   let ordered = array_empty()
   si = 0
   while si < original_len {
-    if si == insertion { let mut ai = 0; while ai < Array::length(additions) { Array::push(ordered, Array::get(additions, ai)); ai = ai + 1 } } else { () }
+    if si == insertion {
+      let mut ai = 0; while ai < Array::length(additions) {
+        Array::push(ordered, Array::get(additions, ai)); ai = ai + 1
+      }
+    } else {
+      ()
+    }
     Array::push(ordered, Array::get(stmts, si))
     si = si + 1
   }
-  if insertion == original_len { let mut ai = 0; while ai < Array::length(additions) { Array::push(ordered, Array::get(additions, ai)); ai = ai + 1 } } else { () }
+  if insertion == original_len {
+    let mut ai = 0; while ai < Array::length(additions) {
+      Array::push(ordered, Array::get(additions, ai)); ai = ai + 1
+    }
+  } else {
+    ()
+  }
   let mut oi = 0
-  while oi < Array::length(ordered) { if oi < original_len { Array::set(stmts, oi, Array::get(ordered, oi)) } else { Array::push(stmts, Array::get(ordered, oi)) }; oi = oi + 1 }
+  while oi < Array::length(ordered) {
+    if oi < original_len {
+      Array::set(stmts, oi, Array::get(ordered, oi))
+    } else {
+      Array::push(stmts, Array::get(ordered, oi))
+    }; oi = oi + 1
+  }
 }
 
 fn inject_trait_method_generics_with(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
