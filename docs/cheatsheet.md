@@ -568,14 +568,13 @@ import @vibe/builtin {
   Array::iter,
   AsyncIter::collect,
   AsyncIter::filter,
-  map,
   trait Mappable
 }
 
 let values = [1, 2, 3, 4]
   |> Array::iter
   |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
-  |> map((x) -> { x * 10 })
+  |> Mappable::map((x) -> { x * 10 })
   |> AsyncIter::collect
 ```
 
