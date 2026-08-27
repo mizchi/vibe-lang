@@ -740,6 +740,10 @@ fn afe_array_elem_key(name: String) -> String {
   String::concat("__arrelem$", name)
 }
 
+fn afe_local_fn_return_key(name: String) -> String {
+  String::concat("__local_fn_return$", name)
+}
+
 fn afe_digit_index(field: String) -> Option[Int] {
   let n = String::length(field)
   if n == 0 {
@@ -919,9 +923,27 @@ fn afe_bind_shapes(locals: Array[(String, String)], name: String, val: Expr, env
   }
 }
 
+fn afe_fn_return_head(val: Expr, env: TypeEnv) -> Option[String] {
+  match val {
+    EFn(_, _, _, ret, _, _) => match ret {
+      Some(te) => match afe_texpr_head_name(te) {
+        Some(h) => Some(afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env))),
+        None => None
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn afe_bind_local_fn_return(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
+  afe_bind_local(locals, afe_local_fn_return_key(name), afe_fn_return_head(val, env))
+}
+
 fn afe_bind_value(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
   let with_head = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
-  afe_bind_shapes(with_head, name, val, env)
+  let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
+  afe_bind_shapes(with_fn, name, val, env)
 }
 
 fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
@@ -1003,6 +1025,13 @@ fn afe_ident_call_head(f: String, args: Array[Expr], env: TypeEnv, locals: Array
 }
 
 fn afe_ident_call_head_generic(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match afe_lookup_local(locals, afe_local_fn_return_key(f)) {
+    Some(head) => Some(head),
+    None => afe_ident_call_head_env(f, args, env, locals)
+  }
+}
+
+fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
   match env_lookup(env, f) {
     Some(callee_type) => match afe_call_result_head(callee_type, args, env, locals) {
       Some(head) => Some(afe_finish_call_head(head, env, f)),
@@ -1084,12 +1113,115 @@ fn afe_handler_arm_head(arm_body: Expr, expected: String, env: TypeEnv, locals: 
     },
     ELet(name, val, body, _) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
     ELetMut(name, val, body, _) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
-    ELetRec(_, _, body) => afe_handler_arm_head(body, expected, env, locals),
+    ELetRec(name, val, body) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
+    EReturn(inner) => afe_handler_arm_head(inner, expected, env, locals),
     EAssign(_, _, continuation) => afe_handler_arm_head(continuation, expected, env, locals),
     EAssignOp(_, _, _, continuation) => afe_handler_arm_head(continuation, expected, env, locals),
     ESeq(_, result) => afe_handler_arm_head(result, expected, env, locals),
     EIf(_, then_branch, else_branch) => afe_heads_agree(afe_handler_arm_head(then_branch, expected, env, locals), afe_handler_arm_head(else_branch, expected, env, locals)),
     _ => afe_expr_head_name(arm_body, env, locals)
+  }
+}
+
+fn afe_op_name_matches(name: String, op: String) -> Bool {
+  name == op || String::ends_with(name, String::concat("::", op)) || String::ends_with(op, String::concat("::", name))
+}
+
+fn afe_collect_perform_payloads(expr: Expr, op: String, env: TypeEnv, locals: Array[(String, String)], out: Array[Option[String]]) -> Unit {
+  match expr {
+    EHandle(_, _) => (),
+    EFn(_, _, _, _, _, _) => (),
+    ELet(name, val, body, _) => {
+      afe_collect_perform_payloads(val, op, env, locals, out)
+      afe_collect_perform_payloads(body, op, env, afe_bind_value(locals, name, val, env), out)
+    },
+    ELetMut(name, val, body, _) => {
+      afe_collect_perform_payloads(val, op, env, locals, out)
+      afe_collect_perform_payloads(body, op, env, afe_bind_value(locals, name, val, env), out)
+    },
+    ELetRec(name, val, body) => {
+      let rec_locals = afe_bind_value(locals, name, val, env)
+      afe_collect_perform_payloads(val, op, env, rec_locals, out)
+      afe_collect_perform_payloads(body, op, env, rec_locals, out)
+    },
+    EAssign(name, val, continuation) => {
+      afe_collect_perform_payloads(val, op, env, locals, out)
+      afe_collect_perform_payloads(continuation, op, env, afe_bind_value(locals, name, val, env), out)
+    },
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(EIdent(op_name, _), oargs, _) => if afe_op_name_matches(op_name, op) && Array::length(oargs) == 1 {
+              Array::push(out, afe_expr_head_name(Array::get(oargs, 0), env, locals))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        afe_collect_perform_payloads(Array::get(args, i), op, env, locals, out)
+        i = i + 1
+      }
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        afe_collect_perform_payloads(Array::get(children, i), op, env, locals, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn afe_perform_payload_head(body: Expr, op: String, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  let payloads = array_empty()
+  afe_collect_perform_payloads(body, op, env, locals, payloads)
+  if Array::length(payloads) == 0 {
+    None
+  } else {
+    let mut i = 1
+    let mut result = Array::get(payloads, 0)
+    while i < Array::length(payloads) {
+      match result {
+        Some(expected) => match Array::get(payloads, i) {
+          Some(actual) => if actual != expected {
+            result = None
+          } else {
+            ()
+          },
+          None => {
+            result = None
+          }
+        },
+        None => {
+          i = Array::length(payloads)
+        }
+      }
+      i = i + 1
+    }
+    result
+  }
+}
+
+fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+  match pat {
+    PCtor(cn, sub) => if Array::length(sub) == 1 {
+      match Array::get(sub, 0) {
+        PBind(name) => afe_bind_local(locals, name, afe_perform_payload_head(body, cn, env, locals)),
+        _ => locals
+      }
+    } else {
+      locals
+    },
+    _ => locals
   }
 }
 
@@ -1100,8 +1232,9 @@ fn afe_handle_head(body: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: A
       let mut i = 0
       let mut agrees = true
       while i < Array::length(arms) && agrees {
-        let (_, arm_body) = Array::get(arms, i)
-        match afe_handler_arm_head(arm_body, expected, env, locals) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_locals = afe_handler_arm_locals(body, pat, env, locals)
+        match afe_handler_arm_head(arm_body, expected, env, arm_locals) {
           Some(actual) => {
             let same = actual == expected
             if !same {
@@ -1308,6 +1441,7 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
       let rec_locals = afe_bind_value(locals, name, val, env)
       afe_expr_head_name(body, env, rec_locals)
     },
+    EReturn(inner) => afe_expr_head_name(inner, env, locals),
     EAssign(_, _, continuation) => afe_expr_head_name(continuation, env, locals),
     EAssignOp(_, _, _, continuation) => afe_expr_head_name(continuation, env, locals),
     ESeq(_, result) => afe_expr_head_name(result, env, locals),
