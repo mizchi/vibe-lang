@@ -1,0 +1,55 @@
+// `Bytes::new() + Bytes::fill` is the zero-filled-buffer spelling that works on
+// BOTH backends. Deliberately free of imports and prelude dependencies so the
+// wasm-gc lane -- which compiles one file as self-contained -- can run it:
+//
+//   vibe test fixtures/bytes_alloc_backend_parity_test.vibe
+//   VIBE_TEST_BACKEND=gc vibe test fixtures/bytes_alloc_backend_parity_test.vibe
+//
+// WHY THIS EXISTS. `MutMap`'s control array (#2346) needs a zero-filled buffer
+// of a runtime length. The obvious spelling is the one-argument `Bytes::new(cap)`
+// overload, and it is a trap: `compile_call.vibe` synthesises a fill loop for it,
+// `codegen/gc/backend_call.vibe` has no counterpart, so on wasm-gc the argument is
+// emitted and then the ZERO-parameter runtime body is called. Measured on a
+// single self-contained file, `Bytes::new(8)` passes on linear and FAILS on gc,
+// while the spelling below passes on both -- so the failure is specific to the
+// overload, not to sized buffers.
+//
+// This fixture pins the spelling that works. It cannot pin the one that does
+// not, because a test that must fail on one backend is not expressible here;
+// that gap is tracked as its own compiler issue.
+
+fn alloc_zeroed(n: Int) -> Bytes {
+  let b = Bytes::new()
+  Bytes::fill(b, 0, n)
+  b
+}
+
+test "zero-filled Bytes of a runtime length, on either backend" {
+  let n = 8
+  let b = alloc_zeroed(n)
+  assert_eq(Bytes::length(b), 8)
+  assert_eq(Bytes::get(b, 0), 0)
+  assert_eq(Bytes::get(b, 7), 0)
+}
+
+test "the buffer is writable across the whole range" {
+  let b = alloc_zeroed(16)
+  Bytes::set(b, 0, 128)
+  Bytes::set(b, 15, 255)
+  assert_eq(Bytes::get(b, 0), 128)
+  assert_eq(Bytes::get(b, 15), 255)
+  // untouched slots stay zero -- the fill really zeroed them
+  assert_eq(Bytes::get(b, 7), 0)
+}
+
+test "a control-byte encoding survives the round trip" {
+  // exactly what MutMap stores: 0 empty, 1 tombstone, >= 128 occupied
+  let b = alloc_zeroed(4)
+  Bytes::set(b, 1, 1)
+  Bytes::set(b, 2, 128)
+  Bytes::set(b, 3, 255)
+  assert_eq(Bytes::get(b, 0), 0)
+  assert_eq(Bytes::get(b, 1), 1)
+  assert_eq(Bytes::get(b, 2), 128)
+  assert_eq(Bytes::get(b, 3), 255)
+}

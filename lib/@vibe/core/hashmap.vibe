@@ -65,12 +65,25 @@ export struct MutMap[K, V] {
 /// constants: `ctrl_empty()` / `is_occupied(c)` helpers were measured first and
 /// cost more than the fingerprint saves, because they are a function call in
 /// the innermost probe loop. The encoding is
-///   0        empty      (`Bytes::new(cap)` is zero-filled, so allocating a
-///                        table is one call with no fill loop)
+///   0        empty
 ///   1        tombstone
 ///   >= 128   occupied, low 7 bits = fingerprint (see `ctrl_tag`)
+///
+/// EMPTY is 0 so that allocating a table needs no separate initialisation pass.
+/// This is `Bytes::new()` + `Bytes::fill`, NOT the sized `Bytes::new(cap)`
+/// overload, which is **linear-backend only**: `compile_call.vibe` synthesises
+/// the fill loop for a one-argument `Bytes::new`, and `codegen/gc/backend_call.vibe`
+/// has no counterpart, so on wasm-gc the argument is emitted and then the
+/// zero-parameter runtime body is called. Measured on a self-contained file,
+/// `Bytes::new(n)` passes on linear and FAILS on gc, while this spelling passes
+/// on both. Tracked as its own compiler gap; until it is closed, MutMap must not
+/// use the sized overload, since a `MutMap` reached on the gc lane would break
+/// for a reason nothing in this file mentions. Tracked as #2363; the both-lane
+/// spelling is pinned by fixtures/bytes_alloc_backend_parity_test.vibe.
 fn alloc_ctrl(cap: Int) -> Bytes {
-  Bytes::new(cap)
+  let b = Bytes::new()
+  Bytes::fill(b, 0, cap)
+  b
 }
 
 fn alloc_slots[T](cap: Int) -> Array[Option[T]] {

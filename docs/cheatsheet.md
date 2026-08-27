@@ -1638,7 +1638,8 @@ From `@vibe/json` (`import @vibe/json { ... }`):
 
 | 関数 | 意味 | backend |
 |---|---|---|
-| `Bytes::new()` / `Bytes::new(n)` | 空バッファ (初期容量 64) / 長さ `n` の **ゼロ埋め**バッファ | linear / gc |
+| `Bytes::new()` | 空バッファ (初期容量 64) | linear / gc |
+| `Bytes::new(n)` | 長さ `n` の **ゼロ埋め**バッファ。**linear 専用** (下記) | linear のみ |
 | `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | 長さ・要素 | linear / gc |
 | `Bytes::push(b, v)` | 1バイト追加 (償却 O(1)) | linear / gc |
 | `Bytes::append(dst, src)` | **一括連結。`memory.copy` 1発** | linear / gc |
@@ -1658,8 +1659,14 @@ From `@vibe/json` (`import @vibe/json { ... }`):
 > 引数は `(b, value, count)` で、動作は範囲の上書きではなく**末尾への追加**、
 > 実装は `gen_bytes_fill_body` (`codegen/builtin_bodies/bodies_core_a2.vibe`)
 > の `bytes_push` ループで、linear / gc とも同じ本体を使う。
-> `Bytes::new()` に `fill(b, 0, n)` して長さ `n` のバッファを作ることはできるが、
-> ゼロ埋めなら `Bytes::new(n)` のほうが速い。
+> **`Bytes::new(n)` (1引数版) は linear backend でしか動かない** (実測
+> 2026-08-27)。`compile_call.vibe` が 1引数の `Bytes::new` に対して fill ループを
+> 合成するのに対し、`codegen/gc/backend_call.vibe` に対応する分岐が無く、wasm-gc
+> では引数を積んだまま 0引数の runtime body を呼ぶ。単一ファイルで実測すると
+> linear は pass、gc は **fail** する。両 backend で動く綴りは
+> `Bytes::new()` + `Bytes::fill(b, 0, n)` のほう (こちらは両方 pass)。
+> 移植性が要るコードは後者を使うこと — `MutMap` の control array がこの理由で
+> 後者を使っている (`lib/@vibe/core/hashmap.vibe`)。
 
 **SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
 the linear and GC backends):
