@@ -93,6 +93,7 @@ export enum EffectError {
   // diagnostic deliberately names the structural problem instead.
   EEEmptyHandle;
   EEPerformQuestionRequiresOptional(String, Int);
+  EEPerformQuestionSourceShadow(String, Int);
   EEPerformQuestionInvalidOperand(Int)
 }
 
@@ -210,6 +211,14 @@ export fn effect_error_to_string(err: EffectError) -> String {
     EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect",
     EEPerformQuestionRequiresOptional(operation, off) => {
       let body = String::concat("`perform?` requires optional `allows ", String::concat(operation, "?`; write that grade, or use plain `perform`"))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
+    EEPerformQuestionSourceShadow(operation, off) => {
+      let body = String::concat("`perform? ", String::concat(operation, "(..)` resolves to a source function, not a capability operation; rename the source function or call the capability under an unshadowed name"))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
@@ -2689,10 +2698,15 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             let lexical_callee = lookup_fn_effs(ov_names, ov_effs, name)
             if name == "perform?" && Array::length(args) == 1 {
               match perform_question_op_name(Array::get(args, 0)) {
-                Some(op_name) => if decl_authorizes_optional_op(declared, op_name) {
-                  ()
-                } else {
-                  Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
+                Some(op_name) => {
+                  let lexical_operation = lookup_fn_effs(ov_names, ov_effs, op_name)
+                  if source_definition_shadows_builtin(op_name, lexical_operation, fn_names, fn_effs) {
+                    Array::push(errors, EEPerformQuestionSourceShadow(op_name, call_off))
+                  } else if decl_authorizes_optional_op(declared, op_name) {
+                    ()
+                  } else {
+                    Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
+                  }
                 },
                 // The operand is not a recognizable operation call, as in
                 // `perform? 1`. Reject it here so malformed source never

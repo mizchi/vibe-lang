@@ -1,7 +1,7 @@
 //# `perform?` lowering (#2236)
 
 import @vibe/compiler/codegen/common_base {
-  lower_optional_performs, optional_perform_artifact_resolution
+  append_hidden_attempt_constructors, lower_optional_performs, optional_perform_artifact_resolution
 }
 
 import @vibe/compiler/core {
@@ -162,6 +162,29 @@ test "#2236 review: source shadow of a registry operation is not lowered" {
   } with { Exception::Throw(error) => error }
   assert(String::contains(message, "source function"))
   assert(String::contains(message, "not a capability operation"))
+}
+
+test "#2236 review: checker-only Fs::readdir is valid capability provenance" {
+  let stmts = parse_program(lex("fn main() -> Int with () allows Fs::readdir? { let _ = perform? Fs::readdir(\"x\"); 0 }\n"))
+  let message = handle {
+    lower_optional_performs(stmts, [("Fs::readdir", "Granted")])
+    ""
+  } with { Exception::Throw(error) => error }
+  assert_eq(message, "")
+}
+
+test "#2236 review: hidden constructors reuse the linked Attempt representation" {
+  let names = ["Granted", "NotGranted", "Errored", "Granted"]
+  let tags = [7, 101, 102, 103]
+  let fields = [2, 0, 1, 1]
+  let types = ["Local", "Attempt", "Attempt", "Attempt"]
+  append_hidden_attempt_constructors(names, tags, fields, types)
+  assert_eq(Array::get(names, 4), "$vibe_attempt_not_granted")
+  assert_eq(Array::get(tags, 4), 101)
+  assert_eq(Array::get(names, 5), "$vibe_attempt_errored")
+  assert_eq(Array::get(tags, 5), 102)
+  assert_eq(Array::get(names, 6), "$vibe_attempt_granted")
+  assert_eq(Array::get(tags, 6), 103)
 }
 
 test "#2236: the linear backend compiles a well-graded perform?" with Exception {
