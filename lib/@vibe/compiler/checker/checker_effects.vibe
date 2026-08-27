@@ -857,7 +857,7 @@ fn afe_call_result_head(callee_type: Type, args: Array[Expr], env: TypeEnv, loca
 }
 
 fn afe_callee_is_builtin_async_iter(env: TypeEnv, name: String) -> Bool {
-  if afe_has_recorded_builtin_async_iter_import(name) || afe_is_async_iter_publication_name(name) {
+  if afe_has_recorded_builtin_async_iter_import(name) {
     true
   } else {
     match env_lookup_binding(env, name) {
@@ -927,6 +927,20 @@ fn afe_bind_value(locals: Array[(String, String)], name: String, val: Expr, env:
 fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
   match pat {
     PBind(name) => afe_bind_local(locals, name, afe_expr_head_name(scrut, env, locals)),
+    PCtor(cn, sub) => match scrut {
+      ECall(EIdent(name, _), args, _) => if name == cn || String::ends_with(name, String::concat("::", cn)) {
+        let mut acc = locals
+        let mut i = 0
+        while i < Array::length(sub) && i < Array::length(args) {
+          acc = afe_match_arm_locals(Array::get(args, i), Array::get(sub, i), env, acc)
+          i = i + 1
+        }
+        acc
+      } else {
+        locals
+      },
+      _ => locals
+    },
     _ => locals
   }
 }
@@ -1004,7 +1018,7 @@ fn afe_ident_call_head_generic(f: String, args: Array[Expr], env: TypeEnv, local
     _ => match lookup_builtin(f) {
       Some(callee_type) => match afe_call_result_head(callee_type, args, env, locals) {
         Some(head) => Some(afe_finish_call_head(head, env, f)),
-        None => if afe_has_recorded_builtin_async_iter_import(f) || afe_is_async_iter_publication_name(f) {
+        None => if afe_has_recorded_builtin_async_iter_import(f) {
           Some(afe_builtin_async_iter_head)
         } else {
           None
