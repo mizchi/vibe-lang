@@ -567,6 +567,59 @@ fn afe_lookup_field_type(struct_name: String, field: String) -> Option[String] {
   out
 }
 
+fn afe_applied_constructor_var(t: Type) -> Option[Int] {
+  match t {
+    CtApplied(CtVar(id), _) => Some(id),
+    _ => None
+  }
+}
+
+/// Recover the concrete head returned by a constructor-polymorphic call such
+/// as `map[F[_]](xs: F[A], ...) -> F[B]`. The checker type keeps the same
+/// constructor variable on the receiver and result, so follow that receiver
+/// back to its source expression instead of treating the abstract `F[B]` as
+/// an unknown head.
+fn afe_call_result_head(callee_type: Type, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match callee_type {
+    CtForAll(_, _, body) => afe_call_result_head(body, args, env, locals),
+    CtFn(params, ret, _) => match afe_type_head_name(ret) {
+      Some(head) => Some(head),
+      None => match afe_applied_constructor_var(ret) {
+        Some(result_var) => {
+          let mut i = 0
+          let mut result = None
+          while i < Array::length(params) && i < Array::length(args) {
+            match afe_applied_constructor_var(Array::get(params, i)) {
+              Some(param_var) => {
+                let same_constructor = param_var == result_var
+                if same_constructor {
+                  match afe_expr_head_name(Array::get(args, i), env, locals) {
+                    Some(head) => {
+                      result = Some(head)
+                      i = Array::length(params)
+                    },
+                    None => {
+                      i = i + 1
+                    }
+                  }
+                } else {
+                  i = i + 1
+                }
+              },
+              None => {
+                i = i + 1
+              }
+            }
+          }
+          result
+        },
+        None => None
+      }
+    },
+    _ => None
+  }
+}
+
 fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
   match e {
     EIdent(n, _) => match afe_lookup_local(locals, n) {
@@ -593,10 +646,10 @@ fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) ->
     // #1341: a BUILTIN callee (`host_stream_named("body")`) is absent from the
     // type env -- builtins resolve through lookup_builtin -- so the env lookup
     // alone left every direct-call iterand unclassified.
-    ECall(EIdent(f, _), _, _) => match env_lookup(env, f) {
-      Some(CtFn(_, ret, _)) => afe_type_head_name(ret),
+    ECall(EIdent(f, _), args, _) => match env_lookup(env, f) {
+      Some(callee_type) => afe_call_result_head(callee_type, args, env, locals),
       _ => match lookup_builtin(f) {
-        Some(CtFn(_, bret, _)) => afe_type_head_name(bret),
+        Some(callee_type) => afe_call_result_head(callee_type, args, env, locals),
         _ => None
       }
     },
