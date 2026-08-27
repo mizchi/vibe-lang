@@ -7,7 +7,7 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | Module | Test Count | Description |
 |--------|-----------:|-------------|
 | `builtin_traits.vibe` | 8 | Trait-oriented generic API (`Eq`/`Hash`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
-| `mappable.vibe` | 2 | Constructor-indexed `Mappable[F[_]]` and pipeline-first `Mappable::map` for Array and Option |
+| `mappable.vibe` | 3 | Constructor-indexed `Mappable[F[_]]` and pipeline-first `Mappable::map` for Array, Option, and AsyncIter |
 | `option.vibe` | 13 | Generic Option helpers (`is_some`, `unwrap_or`, `map_opt`, `map_or`, `or_else`, `equals`) |
 | `cmp.vibe` | 4 | Compare helpers (`int/float/double/string_compare`, `maximum/minimum`, `*_by`, `*_by_key`) |
 | `int.vibe` | 14 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
@@ -86,8 +86,9 @@ let option = Some(3) |> Mappable::map((x) -> { x + 1 })
 ```
 
 `Mappable[Array]` lowers to eager `Array::map`; `Mappable[Option]` preserves
-`Some`/`None`. The shared source spelling does not merge the eager Array layer
-with the pull-based AsyncIter layer (ADR-0099/0110).
+`Some`/`None`; `Mappable[AsyncIter]` preserves the pull layer. The shared source
+spelling does not merge the eager Array layer with the pull-based AsyncIter
+layer (ADR-0099/0110).
 
 `option.vibe` exposes these additional Option-specific helpers:
 

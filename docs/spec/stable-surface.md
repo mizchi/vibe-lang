@@ -217,7 +217,8 @@ The stable symbols listed under "Key Builtins" in the
   retired by ADR-0099's two-layer split and has zero rows in the registry
   (measured: `Iterator::` 0 hits). The frozen constructor-polymorphic surface
   is the `Mappable` API listed under @vibe/builtin below; its shipped
-  implementations are eager Array and Option (ADR-0110). Container-specific
+  implementations are eager Array, Option, and pull `AsyncIter` (ADR-0110,
+  ADR-0099). Container-specific
   `Array::map` / `Array::filter` / `Array::fold` remain available but cannot be frozen
   as first-class values; see Array above.
 - **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), the
