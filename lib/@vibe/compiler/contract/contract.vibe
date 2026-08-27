@@ -796,21 +796,34 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
   let mut oi = 0
   while oi < Array::length(opaque_names) {
     let (oname, oparams) = Array::get(opaque_names, oi)
-    let oarity = Array::length(oparams)
     // #847: same trust-at-face-value treatment as the fn-decl loop above —
     // a re-exported name has no arity to compare, so it satisfies an opaque
     // type declaration without an arity check (there is nothing to check).
-    // Compiler-provided types likewise have no implementation sibling. The
-    // contract declaration itself is the explicit package authority.
-    let builtin_arity = if oname == "Option" {
-      1
+    // Compiler-provided types have no implementation sibling, but their
+    // builtin parameter kinds are known and must match the retained contract
+    // shape before the declaration can describe that builtin.
+    let builtin_params = if oname == "Option" {
+      Some(["T"])
     } else {
-      0
+      match resolve_builtin(oname) {
+        Some(_) => Some([]),
+        None => None
+      }
     }
-    let mut ofound = array_contains_string(reexported, oname) || (match resolve_builtin(oname) {
-      Some(_) => builtin_arity == oarity,
-      None => oname == "Option" && oarity == 1
-    })
+    let mut ofound = array_contains_string(reexported, oname)
+    match builtin_params {
+      Some(params) => {
+        ofound = true
+        if Array::length(oparams) != Array::length(params) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), builtin defines \{Array::length(params)}")
+        } else if !same_type_param_kinds(oparams, params) {
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, builtin defines \{render_type_params(params)}")
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
     let mut ti = 0
     while ti < Array::length(type_defs) {
       let (tname, texported, tparams) = Array::get(type_defs, ti)
