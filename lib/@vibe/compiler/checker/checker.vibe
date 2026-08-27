@@ -3023,20 +3023,24 @@ fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
 /// be reported here (EXCEPT a concrete covariant row drop — see
 /// `effect_row_dropped` above, #939). Returns the (possibly extended)
 /// substitution.
-fn nullary_named_differ(a: Type, b: Type) -> Bool {
-  match a {
-    CtNamed(an, aa) => match b {
-      CtNamed(bn, ba) => Array::length(aa) == 0 && Array::length(ba) == 0 && an != bn,
-      _ => false
-    },
+fn is_hkt_skolem(ty: Type) -> Bool {
+  match ty {
+    CtNamed(n, args) => String::starts_with(n, "#hktformal.") && Array::length(args) == 0,
     _ => false
   }
 }
 
-fn is_nullary_named(ty: Type) -> Bool {
-  match ty {
-    CtNamed(_, args) => Array::length(args) == 0,
-    _ => false
+fn hkt_skolem_differ(a: Type, b: Type) -> Bool {
+  if is_hkt_skolem(a) && is_hkt_skolem(b) {
+    match a {
+      CtNamed(an, _) => match b {
+        CtNamed(bn, _) => an != bn,
+        _ => false
+      },
+      _ => false
+    }
+  } else {
+    false
   }
 }
 
@@ -3049,12 +3053,16 @@ fn is_unresolved_head(ty: Type) -> Bool {
 }
 
 fn skolem_vs_concrete(a: Type, b: Type) -> Bool {
-  if is_nullary_named(a) && !is_nullary_named(b) && !is_unresolved_head(b) {
+  // Only `#hktformal.*` is a rigid constructor/index. A nullary `CtNamed`
+  // is also an unresolved alias (`MyAlias`) and a region token (`r`);
+  // treating those as skolems rejects `fn a() -> Int { rows }` when
+  // `rows: MyAlias` is declared later.
+  if is_hkt_skolem(a) && !is_hkt_skolem(b) && !is_unresolved_head(b) {
     true
-  } else if is_nullary_named(b) && !is_nullary_named(a) && !is_unresolved_head(a) {
+  } else if is_hkt_skolem(b) && !is_hkt_skolem(a) && !is_unresolved_head(a) {
     true
   } else {
-    nullary_named_differ(a, b)
+    hkt_skolem_differ(a, b)
   }
 }
 
@@ -3091,9 +3099,13 @@ fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
 }
 
 /// Report `#hkt` vs `#hkt` with rigid args, and `#hkt` vs a resolved
-/// constructor. Call-site `F` is a unification var so this does not run there.
+/// constructor. Recurses into tuple / fn / Array / Option / same-name
+/// `CtNamed` `#hkt` args so nested identity-as-map is not tolerated.
+/// Call-site `F` is a unification var so this does not run there.
 fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
-  if is_hkt_app(expected) && is_hkt_app(actual) {
+  if skolem_vs_concrete(expected, actual) {
+    true
+  } else if is_hkt_app(expected) && is_hkt_app(actual) {
     match expected {
       CtNamed(en, ea) => match actual {
         CtNamed(an, aa) => en == an && named_args_skolem_differ(ea, aa),
@@ -3108,11 +3120,71 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
   } else {
     match expected {
       CtArray(e) => match actual {
-        CtArray(a) => skolem_vs_concrete(e, a),
+        CtArray(a) => rigid_applied_mismatch(e, a),
         _ => false
       },
       CtOption(e) => match actual {
-        CtOption(a) => skolem_vs_concrete(e, a),
+        CtOption(a) => rigid_applied_mismatch(e, a),
+        _ => false
+      },
+      CtTuple(ees) => match actual {
+        CtTuple(aes) => if Array::length(ees) != Array::length(aes) {
+          false
+        } else {
+          let mut i = 0
+          let mut differ = false
+          while i < Array::length(ees) {
+            if rigid_applied_mismatch(Array::get(ees, i), Array::get(aes, i)) {
+              differ = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          differ
+        },
+        _ => false
+      },
+      CtFn(eps, eret, _) => match actual {
+        CtFn(aps, aret, _) => if Array::length(eps) != Array::length(aps) {
+          false
+        } else {
+          let mut i = 0
+          let mut differ = rigid_applied_mismatch(eret, aret)
+          while i < Array::length(eps) {
+            if rigid_applied_mismatch(Array::get(eps, i), Array::get(aps, i)) {
+              differ = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          differ
+        },
+        _ => false
+      },
+      CtNamed(en, ea) => match actual {
+        CtNamed(an, aa) => if en != an {
+          false
+        } else if Array::length(ea) != Array::length(aa) {
+          false
+        } else {
+          // Only walk `#hkt` arguments. Walking every arg would compare
+          // region tokens (`r` vs `#region_1`) inside MutList.
+          let mut i = 0
+          let mut differ = false
+          while i < Array::length(ea) {
+            let e = Array::get(ea, i)
+            let a = Array::get(aa, i)
+            if (is_hkt_app(e) || is_hkt_app(a)) && rigid_applied_mismatch(e, a) {
+              differ = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          differ
+        },
         _ => false
       },
       _ => false
@@ -3166,7 +3238,14 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
       let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
       let rigid_applied_conflict = rigid_applied_mismatch(expected_zonked, actual_zonked)
-      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict {
+      // Raw `expected` (before this subst) must itself be fully concrete:
+      // an imported generic can leak a sibling param through the flat env
+      // and make `expected_zonked` look concrete (#981 list_zip). A body
+      // that instantiated `T := Box[Int]` publishes that named type, and
+      // `f(1)` is then Box vs Int — `type_is_ground` is false for every
+      // `CtNamed`, so without this gate the call is tolerated.
+      let concrete_conflict = type_fully_concrete(expected) && type_fully_concrete(actual_zonked)
+      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (concrete_conflict && !structural) {
         Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
         s
       } else if structural {
@@ -10084,8 +10163,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut ki0 = 0
       while ki0 < Array::length(tparam_ids) {
         let kid = Array::get(tparam_ids, ki0)
+        // Keep only still-open bindings. `type_is_ground` is false for every
+        // `CtNamed`, so it would leave `T := Box[Int]` quantified and `f(1)`
+        // would typecheck. `type_fully_concrete` zonks that and still keeps
+        // a nullary `#ctor.Array` / `#hktformal.F` / unbound vars. HKT
+        // constructor params are rigid in the body and simply unbound in s3.
         let still_free = match subst_lookup(s3, kid) {
-          Some(t) => !type_is_ground(t),
+          Some(t) => !type_fully_concrete(t),
           None => true
         }
         if still_free {
