@@ -3019,6 +3019,7 @@ fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String]
 /// callee's own constructor receiver back to its concrete argument instead.
 fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match arg {
+    EMatch(_, arms) => infer_constructor_match_arm_type_name(arms, gens, struct_sets, var_types, fn_returns),
     EIf(_, then_branch, else_branch) => {
       let then_constructor = infer_constructor_arg_type_name(then_branch, gens, struct_sets, var_types, fn_returns)
       let else_constructor = infer_constructor_arg_type_name(else_branch, gens, struct_sets, var_types, fn_returns)
@@ -3063,6 +3064,46 @@ fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets:
       None => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
     },
     _ => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// Recover a constructor from a typed match result only when every arm agrees.
+/// An empty match has no result witness, and one unresolved or differing arm
+/// makes the whole answer unknown rather than guessing a dictionary.
+fn infer_constructor_match_arm_type_name(arms: Array[(Pat, Expr)], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  if Array::length(arms) == 0 {
+    None
+  } else {
+    let (_, first_body) = Array::get(arms, 0)
+    match infer_constructor_arg_type_name(first_body, gens, struct_sets, var_types, fn_returns) {
+      None => None,
+      Some(expected) => {
+        let mut i = 1
+        let mut agrees = true
+        while i < Array::length(arms) && agrees {
+          let (_, body) = Array::get(arms, i)
+          match infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns) {
+            Some(actual) => {
+              let same = actual == expected
+              if !same {
+                agrees = false
+              } else {
+                ()
+              }
+            },
+            None => {
+              agrees = false
+            }
+          }
+          i = i + 1
+        }
+        if agrees {
+          Some(expected)
+        } else {
+          None
+        }
+      }
+    }
   }
 }
 
