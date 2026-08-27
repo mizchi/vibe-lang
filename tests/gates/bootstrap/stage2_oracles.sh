@@ -6,12 +6,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "[compiler-gate] selfhost split CLI core"
-# The RC compile of the full split CLI currently finishes at ~63,351 wasm
-# pages. On hosted x86_64 runners a late memory.grow can fail under host
-# pressure and the following write traps as an OOB even though the same
-# byte-identical stage2 completes elsewhere. Reserve the measured wasm32
-# address-space requirement up front for this one build only; test_cli_core
-# deliberately does not pass it to the smaller consumer invocations.
+# On a clean Linux checkout, header discovery for this import graph retains
+# about 1.03 GB and the cold RC path traps before codegen. build_cli_core first
+# warms the source-fingerprinted header cache, reducing that phase to about
+# 189 MB. The subsequent compile still peaks at about 4.18 GB, so reserve its
+# measured wasm32 space up front for this build only; test_cli_core deliberately
+# does not pass it to the smaller consumer invocations.
 VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" \
   VIBE_CLI_CORE_BUILD_PRE_GROW_PAGES=65000 \
   VIBE_RC=1 \
