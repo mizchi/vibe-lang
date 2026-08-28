@@ -398,13 +398,41 @@ Against `find_4k_native_scalar` (§1) `Bytes::index_of` is ~11x; against
 `String::index_of` it is ~1.7x, which measures specialisation — a single byte
 needs no needle span verified through `str_eq` — not SIMD.
 
-**Routing is the open half.** `String` has been a byte string since ADR-0098,
-so `String::count` / `split` / `replace` should go through these kernels rather
-than keep a second implementation. Those three are the ones that matter:
-ADR-0054 already made `String::index_of` / `equals` / `starts_with` /
-`ends_with` SIMD, while `count` / `replace` / `replace_all` are library
-functions in `@vibe/builtin` — i.e. exactly the hand-written loop this layer
-replaces, on a surface that already has callers.
+**Routing is done, and the obstacle was not the one this section predicted.**
+The plan was a `String::index_of_from(s, sub, start)` builtin for
+`String::count` / `replace_all` / `split` to call, on the theory that scanning
+a suffix would otherwise copy the tail once per match. Two measurements
+retired it:
+
+- **`String::substring` does not copy.** On the linear lane it returns
+  `((ptr + start) << 32) | (len - start)` — a second fat value into the same
+  buffer (`gen_str_substring_body`) — so `s[start: len]` is a view, and
+  `String::index_of(s[start: len], sub)` already *is* `index_of_from` at zero
+  allocation. `String::split` over 512 / 1024 / 2048 lines costs 23.3 / 45.5 /
+  92.3 µs: linear, never the quadratic shape the suffix-copy theory predicted.
+- **The library's scalar loops were not a second implementation — they were
+  displacing the first.** A top-level `fn` replaces a same-named builtin
+  program-wide ([#2378](https://github.com/mizchi/vibe-lang/issues/2378)), so
+  `lib/@vibe/builtin/string.vibe`'s `String::index_of` / `contains` / `split` /
+  `starts_with` / `ends_with` / `last_index_of` took over the SIMD builtins for
+  every program importing *any* name from that package. `import @vibe/builtin
+  { String::trim }` alone cost a sparse `String::index_of` 0.8 µs → 174 µs
+  (~218×), and turned `String::split(s, "")` from a hard trap into `[s]`.
+
+So the routing was subtraction: the six re-implementations are deleted, and
+`count` / `replace` / `replace_all` reach the window search because nothing
+shadows it any more. Measured net of haystack construction
+(`bench/bench_string_scan_routing.vibe`, p50):
+
+| | before | after | |
+|---|---:|---:|---:|
+| `String::count`, match every 11 B | 186 µs | 70.8 µs | 2.6× |
+| `String::count`, one match in 22 KiB | 180 µs | 2.2 µs | **82×** |
+| `String::replace_all`, dense | 309 µs | 164 µs | 1.9× |
+
+Dense is bounded by per-match loop overhead, which no scanner removes; sparse
+is the scan itself. `scripts/check_builtin_shadowing.sh` fails the build if
+`lib/**` grows a new shadow.
 
 **Tail slack is still undecided.** A kernel wants to over-read its tail:
 guaranteeing at least 15 bytes of readable slack past `len` would let every

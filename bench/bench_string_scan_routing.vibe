@@ -1,0 +1,64 @@
+// The library string scanners, before and after they were routed through the
+// SIMD `String::index_of` builtin (ADR-0054) instead of walking candidate
+// positions one byte at a time.
+//
+// `String::count` / `String::replace` / `String::replace_all` are library
+// functions in `@vibe/builtin`; `String::index_of` is a builtin. The bridge is
+// `string_index_of_from`, which is now one builtin call over a zero-copy
+// suffix view -- `String::substring` returns ((ptr + start) << 32) | (len -
+// start) into the same buffer, so seeding the scan allocates nothing.
+//
+// Measured p50 on stage2 of 3725175, 20 iters, NET of the matching build_*
+// block (the haystack construction is charged to every block):
+//
+//   block                before    after   speedup
+//   count_dense           186 us   70.8 us    2.6x
+//   count_sparse          180 us    2.2 us     82x
+//   replace_all_dense     309 us    164 us     1.9x
+//
+// Dense (a match every 11 bytes) is bounded by per-match loop overhead, which
+// no scanner removes; sparse (one match in 22 KiB) is the scan itself, and is
+// where the window search replaces ~22000 single-byte comparisons.
+import @vibe/builtin { String::count, String::replace_all }
+
+// Doubling, so building the haystack stays O(n) and does not swamp the
+// measurement the way a per-line concat loop would.
+fn dup(s: String, k: Int) -> String {
+  let mut acc = s
+  let mut i = 0
+  while i < k {
+    acc = String::concat(acc, acc)
+    i = i + 1
+  }
+  acc
+}
+
+// 2048 lines, 22 KiB: a newline every 11 bytes.
+fn dense_text() -> String {
+  dup("abcdefghij\n", 11)
+}
+
+// The same 22 KiB with one "NEEDLE" at the very end.
+fn sparse_text() -> String {
+  String::concat(dup("abcdefghij\n", 11), "NEEDLE")
+}
+
+bench "build_dense" {
+  String::length(dense_text())
+}
+
+bench "build_sparse" {
+  String::length(sparse_text())
+}
+
+bench "count_dense" {
+  String::count(dense_text(), "\n")
+}
+
+bench "count_sparse" {
+  String::count(sparse_text(), "NEEDLE")
+}
+
+bench "replace_all_dense" {
+  String::length(String::replace_all(dense_text(), "\n", "!"))
+}

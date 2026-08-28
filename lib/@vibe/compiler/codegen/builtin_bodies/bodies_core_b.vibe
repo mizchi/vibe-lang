@@ -922,6 +922,34 @@ export fn gen_string_split_body(enable_rc: Bool, arr_new_idx: Int, arr_push_idx:
   }
   emit_i32_wrap_i64(b)
   emit_local_set(b, 3)
+  // An EMPTY separator used to spin forever: `String::index_of(suffix, "")`
+  // answers 0 at every cursor, so the loop pushed an empty part and advanced
+  // by `idx + sep_len` == 0. It ended in "memory access out of bounds" inside
+  // __rt_arr_push once the array outgrew the heap. `[s]` is the answer the
+  // scalar `String::split` in lib/@vibe/builtin/string.vibe has always given
+  // for this case; the two now agree instead of one of them dying.
+  emit_local_get(b, 3)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 0)
+  emit_i32_const(b, 0)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_local_get(b, 2)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_call(b, str_substring_idx)
+  emit_call(b, arr_push_idx)
+  emit_local_get(b, 6)
+  emit_return(b)
+  emit_end(b)
   emit_i32_const(b, 0)
   emit_local_set(b, 4)
   emit_block_void(b)

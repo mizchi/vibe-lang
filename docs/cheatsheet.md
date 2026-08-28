@@ -1883,6 +1883,7 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 | `String::from_byte` | `(Int) -> String` (deprecated alias `String::from_char_code` — `vibe check` warns per use, including inside `\{...}` interpolations, #2203) |
 | `String::equals` | `(String, String) -> Bool` |
 | `String::split` / `String::join` | `(String, String) -> Array[String]` / `(Array[String], String) -> String` |
+| | `String::split(s, "")` is `[s]` — an empty separator does not split into bytes (#2378; it used to run out of memory) |
 | `String::contains` | `(String, String) -> Bool` |
 | `String::index_of` / `String::last_index_of` | `(String, String) -> Int` |
 | `String::starts_with` / `String::ends_with` | `(String, String) -> Bool` |
@@ -2229,6 +2230,40 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### A library `fn` replaces a same-named builtin PROGRAM-WIDE
+
+A top-level definition wins over a builtin of the same name, and the scope of
+that win is the whole linked program -- not the file, not the import list.
+Measured (2026-08-28), three files:
+
+```vibe skip
+// dep.vibe
+export fn String::index_of(s: String, sub: String) -> Int { -999 }
+export fn unrelated_helper(n: Int) -> Int { n + 1 }
+
+// caller.vibe -- imports ONLY unrelated_helper, never String::index_of
+import ./dep.vibe { unrelated_helper }
+test "t" {
+  inspect(String::index_of("hello world", "world"), "")   // -999, not 6
+}
+```
+
+Drop the `import` line and the same expression answers `6`. Nothing is
+reported either way, so the two readings of one source are indistinguishable
+without running it.
+
+This is not hypothetical: until #2378 `lib/@vibe/builtin/string.vibe` carried
+scalar re-implementations of six SIMD builtins, so `import @vibe/builtin {
+String::trim }` -- one unrelated name -- replaced `String::index_of`,
+`String::contains`, `String::split`, `String::starts_with`,
+`String::ends_with` and `String::last_index_of` everywhere in the importing
+program. A sparse `String::index_of` over a 22 KiB haystack cost **0.8 us
+without that import and 174 us with it (~218x)**, and `String::split(s, "")`
+changed from a hard trap into `[s]`. Those definitions are gone;
+`scripts/check_builtin_shadowing.sh` fails the build if `lib/**` grows a new
+one (`scripts/builtin_shadowing_allowlist.txt` records the entries that
+predate the gate and shrinks only).
 
 ### A `handle` that type-checks can still fail to compile
 
