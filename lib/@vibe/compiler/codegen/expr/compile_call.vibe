@@ -32,6 +32,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
+  map_iter_get_checked_expr,
   packed_lines_to_array_expr
 }
 
@@ -1036,7 +1037,7 @@ export fn cc_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
 /// arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
 /// drops it, so the dup would leak; #704). Other argument positions are owning.
 fn cc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
 /// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
@@ -1390,6 +1391,8 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     ce(buf, mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
   } else if is_eident(callee) && frozen_array_conversion_copy(get_eident_name(callee)) != "" && Array::length(args) == 1 && func_table_index_of(ctx.func_table, get_eident_name(callee)) >= 0 && !array_contains_str(local_names, get_eident_name(callee)) {
     ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && get_eident_name(callee) == "Map::iter_get" && Array::length(args) == 2 && func_table_index_of(ctx.func_table, "Map::iter_get") < 0 && !array_contains_str(local_names, "Map::iter_get") {
+    ce(buf, map_iter_get_checked_expr(Array::get(args, 0), Array::get(args, 1)), local_names, next_local, ctx, ld)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }

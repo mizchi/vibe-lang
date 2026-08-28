@@ -1,0 +1,38 @@
+import @vibe/compiler/runtime {
+  db_grouped_merged_source, db_merged_source, db_new
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
+test "grouped runtime merge keeps an aliased Iterator separate from a local canonical helper" {
+  let source = "import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local = Iterator::map([1], (x: Int) -> Int { x })\nlet standard = Iter::map([1], (x: Int) -> Int { x })"
+  let (merged, _, _) = db_grouped_merged_source(db_new(), [
+    ("main", [("main.vibe", source)])
+  ])
+  assert(String::contains(merged, "__local_trait_Iterator::map"))
+  assert(String::contains(merged, "__local_trait_Iterator::map_exp_main_vibe ="))
+  assert(String::contains(merged, "local = __local_trait_Iterator::map"))
+  assert(String::contains(merged, "standard = Iter::map"))
+}
+
+test "filesystem source groups preserve Iterator alias ownership" {
+  let groups = collect_source_groups_fs("fixtures/iterator_alias_local_namespace_test.vibe")
+  let (merged, _, _) = db_grouped_merged_source(db_new(), groups)
+  assert(String::contains(merged, "__local_trait_Iterator::map"))
+  assert(String::contains(merged, "__local_trait_Iterator::map_exp_fixtures_iterator_alias_local_namespace_test_vibe ="))
+  assert(String::contains(merged, "local = __local_trait_Iterator::map"))
+  assert(String::contains(merged, "standard = Iter::map"))
+}
+
+test "runtime merge keeps an aliased Iterator separate from a local canonical helper" {
+  let source = "import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local = Iterator::map([1], (x: Int) -> Int { x })\nlet standard = Iter::map([1], (x: Int) -> Int { x })"
+  let (merged, _, _) = db_merged_source(db_new(), "main.vibe", [
+    ("main.vibe", source)
+  ])
+  assert(String::contains(merged, "__local_trait_Iterator::map"))
+  assert(String::contains(merged, "__local_trait_Iterator::map_exp_main_vibe ="))
+  assert(String::contains(merged, "local = __local_trait_Iterator::map"))
+  assert(String::contains(merged, "standard = Iter::map"))
+}

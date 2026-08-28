@@ -2,11 +2,13 @@
 
 import @vibe/compiler/core {
   append_import_alias_rewritten_non_import_stmts,
+  apply_export_renames_stmts,
   build_export_rename_plan,
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
   collect_import_value_renames,
-  namespace_exported_name
+  namespace_exported_name,
+  trait_import_local_operation_renames
 }
 
 import @vibe/ast {
@@ -17,9 +19,13 @@ import @vibe/compiler/syntax {
   lex, parse_program, print_program
 }
 
+import @vibe/compiler/codegen {
+  desugar_trait_dicts
+}
+
 //# Misc
 
-test "standard Iterator provenance is recorded only without a local helper" {
+test "standard Iterator provenance is scoped to its local import namespace" {
   let imported = parse_program(lex("import @vibe/builtin { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
   match Array::get(imported, 0) {
     SImport(path, items) => {
@@ -40,7 +46,49 @@ test "standard Iterator provenance is recorded only without a local helper" {
   inspect(Array::length(builtin_iterator_namespace_markers(shadowed)), "0")
   let aliased = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nlet answer = Iter::map([1], (x: Int) -> Int { x })"))
   let alias_markers = builtin_iterator_namespace_markers(aliased)
-  inspect(builtin_iterator_namespace_from_marker(Array::get(alias_markers, 0)), "Some(Iterator)")
+  inspect(builtin_iterator_namespace_from_marker(Array::get(alias_markers, 0)), "Some(Iter)")
+  let alias_with_canonical_helper = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"))
+  inspect(Array::length(builtin_iterator_namespace_markers(alias_with_canonical_helper)), "1")
+  let alias_with_local_helper = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iter::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"))
+  inspect(Array::length(builtin_iterator_namespace_markers(alias_with_local_helper)), "0")
+  let collision_renames = trait_import_local_operation_renames(alias_with_canonical_helper, "/virtual/main.vibe")
+  inspect(Array::length(collision_renames), "1")
+  let (source_name, private_name) = Array::get(collision_renames, 0)
+  inspect(source_name, "Iterator::map")
+  assert(private_name != source_name)
+  assert(!String::starts_with(private_name, "Iterator::"))
+  let collision_rewritten = print_program(apply_export_renames_stmts(alias_with_canonical_helper, collision_renames))
+  assert(String::contains(collision_rewritten, String::concat(private_name, " =")))
+}
+
+test "a materialized aliased trait operation keeps its local namespace" {
+  let stmts = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iter::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { xs }\nlet standard = Iter::map([1], (x: Int) -> Int { x })\nlet canonical = Iterator::map([1], (x: Int) -> Int { x })"))
+  let out = Array::slice(stmts, 0, 0)
+  append_import_alias_rewritten_non_import_stmts(out, stmts)
+  let printed = print_program(out)
+  assert(String::contains(printed, "standard = Iter::map"))
+  assert(String::contains(printed, "canonical = Iterator::map"))
+}
+
+test "provider-local operation separation applies to every trait alias" {
+  let source = parse_program(lex("import ./traits.vibe { trait Reducible as R }\nfn Reducible::reduce(xs: Array[Int]) -> Int { Array::length(xs) }\nfn R::reduce(xs: Array[Int]) -> Int { Array::length(xs) }"))
+  let renames = trait_import_local_operation_renames(source, "/virtual/main.vibe")
+  inspect(Array::length(renames), "1")
+  let (original, private_name) = Array::get(renames, 0)
+  inspect(original, "Reducible::reduce")
+  assert(String::starts_with(private_name, "__local_trait_Reducible::reduce"))
+}
+
+test "Iterator intrinsic provenance does not cross into a renamed local namespace" {
+  let source = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local = Iterator::map([1, 2], (x: Int) -> Int { x + 1 })\nlet standard = Iter::map([1, 2], (x: Int) -> Int { x + 1 })"))
+  let renamed = apply_export_renames_stmts(source, trait_import_local_operation_renames(source, "/virtual/main.vibe"))
+  inspect(handle {
+    desugar_trait_dicts(renamed)
+    "ok"
+  } with { Exception::Throw(msg) => msg }, "ok")
+  let printed = print_program(renamed)
+  inspect(String::contains(printed, "local = __local_trait_Iterator::map_exp__virtual_main_vibe"), "true")
+  inspect(String::contains(printed, "standard = Array::map"), "true")
 }
 
 test "append import alias rewrite resolves import aliases" {

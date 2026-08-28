@@ -38,6 +38,11 @@ fn iterator_namespace_operation(name: String, namespace: String) -> Bool {
   name == String::concat(namespace, "::map") || name == String::concat(namespace, "::filter") || name == String::concat(namespace, "::fold") || name == String::concat(namespace, "::find") || name == String::concat(namespace, "::any") || name == String::concat(namespace, "::all")
 }
 
+fn trait_namespace_operation(name: String, namespace: String) -> Bool {
+  let prefix = String::concat(namespace, "::")
+  String::starts_with(name, prefix) && String::length(name) > String::length(prefix)
+}
+
 fn stmts_define_iterator_namespace_operation(stmts: Array[Stmt], namespace: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -74,10 +79,16 @@ export fn builtin_iterator_namespace_markers(stmts: Array[Stmt]) -> Array[String
               Some(alias) => alias,
               None => item.name
             }
+            // Trait-alias value namespaces remain local (`Iter::*`); only type
+            // occurrences canonicalize to the provider. Therefore a local
+            // canonical `Iterator::*` helper is independent and cannot block
+            // provenance for the imported alias.
             if !stmts_define_iterator_namespace_operation(stmts, local) {
-              // Import-alias rewriting canonicalizes `Iter::map` back to the
-              // provider's `Iterator::map` before dictionary desugaring.
-              Array::push(out, String::concat(builtin_iterator_origin_marker_prefix(), item.name))
+              // Imported trait-operation wrappers keep the local namespace:
+              // `trait Iterator as Iter` materializes `Iter::map`. Recording
+              // the local spelling keeps optimization scoped to that wrapper
+              // and cannot authorize a distinct local `Iterator::map`.
+              Array::push(out, String::concat(builtin_iterator_origin_marker_prefix(), local))
             } else {
               ()
             }
@@ -104,6 +115,72 @@ export fn builtin_iterator_namespace_from_marker(marker: String) -> Option[Strin
   } else {
     None
   }
+}
+
+/// Private renames for source-local provider helpers when the same source
+/// imports that provider trait under an alias. The merged program also
+/// contains the provider helper; keeping both under `Provider::operation`
+/// would make the wasm function table's first match decide semantics. The
+/// imported trait owns `Local::*`, while a separately declared `Provider::*`
+/// remains an ordinary local namespace for every trait, not only Iterator.
+export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String) -> Array[(String, String)] {
+  let namespaces = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          if explicit_trait {
+            match item.alias {
+              Some(alias) => if alias != item.name && !string_array_contains(namespaces, item.name) {
+                Array::push(namespaces, item.name)
+              } else {
+                ()
+              },
+              None => ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = empty_aliases()
+  i = 0
+  while i < Array::length(stmts) {
+    let name = match Array::get(stmts, i) {
+      SLet(_, _, bound, _, _) => bound,
+      SFnDecl(_, bound, _, _, _) => bound,
+      _ => ""
+    }
+    let mut ni = 0
+    let mut collides = false
+    while ni < Array::length(namespaces) && !collides {
+      collides = trait_namespace_operation(name, Array::get(namespaces, ni))
+      ni = ni + 1
+    }
+    if collides {
+      // Keep the private spelling outside the provider namespace. Later
+      // normalization may recognize that namespace as a trait or intrinsic
+      // surface, so a path suffix alone is not a sufficient fence.
+      let private_name = namespace_exported_name(path, String::concat("__local_trait_", name))
+      Array::push(out, (name, private_name))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 fn string_array_contains(items: Array[String], target: String) -> Bool {
@@ -639,9 +716,17 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
     expr
   } else {
     let head = String::substring(name, 0, qi)
-    match MutMap::get(am.idx, head) {
-      Some(original) => EIdent(String::concat(original, String::substring(name, qi, String::length(name))), -1),
-      None => expr
+    if MutMap::has(am.idx, String::concat(head, "::__vibe_trait_namespace_alias")) {
+      // An explicit `trait Provider as Local` import owns value names under
+      // `Local::*`. Unlike a type/constructor reference, `Local::method`
+      // must stay local so trait namespace helpers remain distinct from a
+      // separately declared `Provider::method`.
+      expr
+    } else {
+      match MutMap::get(am.idx, head) {
+        Some(original) => EIdent(String::concat(original, String::substring(name, qi, String::length(name))), -1),
+        None => expr
+      }
     }
   }
 }
@@ -1078,6 +1163,51 @@ export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String,
   while oi < Array::length(owner_aliases) {
     Array::push(combined, Array::get(owner_aliases, oi))
     oi = oi + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    match Array::get(stmts, ti) {
+      SImport(_, items) => {
+        let mut tj = 0
+        while tj < Array::length(items) {
+          let item = Array::get(items, tj)
+          match (item.kind, item.alias) {
+            (Some(ImportTrait), Some(alias)) => Array::push(combined, (String::concat(alias, "::__vibe_trait_namespace_alias"), alias)),
+            _ => ()
+          }
+          tj = tj + 1
+        }
+      },
+      _ => ()
+    }
+    ti = ti + 1
+  }
+  // Explicit trait imports materialize local namespace wrappers such as
+  // `Iter::map`. They are real value bindings, not type references to rewrite
+  // back to `Iterator::map`. Add exact self-mappings before walking bodies so
+  // those calls remain local while ordinary `Iter` type occurrences and
+  // unbound qualified constructors still canonicalize through the head alias.
+  let mut bi = 0
+  while bi < Array::length(stmts) {
+    let bound_name = match Array::get(stmts, bi) {
+      SLet(_, _, name, _, _) => name,
+      SLetMut(name, _, _) => name,
+      SExternLet(name, _) => name,
+      SFnDecl(_, name, _, _, _) => name,
+      _ => ""
+    }
+    let qi = String::index_of(bound_name, "::")
+    if qi > 0 {
+      let head = String::substring(bound_name, 0, qi)
+      if lookup_alias(aliases, head) is Some(_) {
+        Array::push(combined, (bound_name, bound_name))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    bi = bi + 1
   }
   let am = aliasidx_build(combined)
   let imported = for stmt in stmts {
@@ -2514,6 +2644,17 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
             None => name
           }
           SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, am))
+        },
+        SFnDecl(exported, name, body, requires, ensures) => {
+          let next_name = match MutMap::get(am.idx, name) {
+            Some(renamed) => renamed,
+            None => name
+          }
+          SFnDecl(exported, next_name, rewrite_alias_expr_ix(body, am), for requirement in requires {
+            rewrite_alias_expr_ix(requirement, am)
+          }, for guarantee in ensures {
+            rewrite_alias_expr_ix(guarantee, am)
+          })
         },
         SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, am)),
         SExport(items) => SExport(for item in items {

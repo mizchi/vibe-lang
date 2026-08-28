@@ -1627,7 +1627,7 @@ export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
 /// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
 /// in sync with is_borrow_arg0_call in perceus/index.vibe.
 export fn md_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
 fn md_max(a: Int, b: Int) -> Int {
@@ -4055,6 +4055,25 @@ export fn packed_lines_to_array_expr(raw_call: Expr, tmp_name: String) -> Expr {
     EInt(0),
     EInt(0)
   ], -1), ECall(EIdent("String::split", -1), [EIdent(tmp_name, -1), newline], -1)), -1)
+}
+
+/// Checked direct access to a Map's insertion-order key slot.
+///
+/// `Map::__iter_get_unchecked` is deliberately absent from the source-level
+/// builtin lookup. Only codegen synthesizes it, after binding both arguments
+/// once and proving the index is in range. The failing arm uses ordinary
+/// `Array::get` so the observable trap remains the same on both backends.
+export fn map_iter_get_checked_expr(map_expr: Expr, index_expr: Expr) -> Expr {
+  let map_tmp = "__map_iter_get_map"
+  let index_tmp = "__map_iter_get_index"
+  let map_ref = EIdent(map_tmp, -1)
+  let index_ref = EIdent(index_tmp, -1)
+  let out_of_bounds = EBinOp("||", EBinOp("<", index_ref, EInt(0)), EBinOp(">=", index_ref, ECall(EIdent("Map::size", -1), [
+    map_ref
+  ], -1)))
+  let trap = ECall(EIdent("Array::get", -1), [EArray([EInt(0)]), EInt(1)], -1)
+  let load = ECall(EIdent("Map::__iter_get_unchecked", -1), [map_ref, index_ref], -1)
+  ELet(map_tmp, map_expr, ELet(index_tmp, index_expr, EIf(out_of_bounds, trap, load), -1), -1)
 }
 
 /// ADR-0090 (#1262): the region copy-out exits, shared by both backends.
