@@ -186,8 +186,10 @@ Matching is on the **AST**, so newlines, indentation and comments cannot affect
 it. Both the pattern and the file go through the *same* parser, which means
 they get the same desugaring. Measured on the current parser:
 
-- `xs |> map(f)` and `map(xs, f)` are the same AST and match each other;
-- `xs.map(f)` keeps its `EDot` callee and matches only the method spelling.
+- `xs |> transform(f)` and `transform(xs, f)` are the same AST and match each
+  other;
+- `xs.transform(f)` keeps its `EDot` callee and matches only the method
+  spelling.
 
 Structural matching keeps the method form separate on purpose. The
 resolved-name filter below closes the **alias** half of that gap (`It::map` and

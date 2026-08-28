@@ -22,7 +22,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/loader {
-  load_or_parse_module_header_fs
+  ingest_source_text_fs, load_or_parse_module_header_fs
 }
 
 //# Functions
@@ -129,6 +129,120 @@ test "plain-file import stays unvalidated (non-boundary shape)" {
   write_cold(main_path, main_source)
   let msg = header_error_for(main_path, main_source)
   assert(msg == "")
+}
+
+test "re-exported opaque types retain constructor kinds during conformance (#2338)" {
+  let base_dir = "/tmp/vibe_compiler_contract_reexport_constructor_kind_2338_v2"
+  let source_dir = String::concat(base_dir, "/source")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(source_dir)
+  Fs::mkdir_p(parent_dir)
+  let source_contract_path = String::concat(source_dir, "/index.vpkg")
+  write_cold(source_contract_path, "opaque type Container[F[_]]\n")
+  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../source { Container }\n")
+  let contract_path = String::concat(parent_dir, "/index.vpkg")
+  let initial_msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(initial_msg, content = "")
+  write_cold(source_contract_path, "opaque type Container[F]\n")
+  let msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(String::contains(msg, "kind mismatch"), content = "true")
+}
+
+test "re-exported opaque kinds resolve through facade chains (#2338)" {
+  let base_dir = "/tmp/vibe_compiler_contract_reexport_constructor_kind_chain_2338_v3"
+  let source_dir = String::concat(base_dir, "/source")
+  let facade_dir = String::concat(base_dir, "/facade")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(source_dir)
+  Fs::mkdir_p(facade_dir)
+  Fs::mkdir_p(parent_dir)
+  let source_contract_path = String::concat(source_dir, "/index.vpkg")
+  write_cold(source_contract_path, "opaque type Container[F[_]]\n")
+  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  write_cold(String::concat(facade_dir, "/index.vibe"), "export ../source { Container as InternalContainer }\nexport ../source { Container }\n")
+  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../facade { Container }\n")
+  let contract_path = String::concat(parent_dir, "/index.vpkg")
+  let initial_msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(initial_msg, content = "")
+  write_cold(source_contract_path, "opaque type Container[F]\n")
+  let msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(String::contains(msg, "kind mismatch"), content = "true")
+}
+
+test "imported boundaries do not participate in local kind conformance (#2338)" {
+  let base_dir = "/tmp/vibe_compiler_contract_imported_boundary_kind_2338_v2"
+  let foreign_dir = String::concat(base_dir, "/foreign")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(foreign_dir)
+  Fs::mkdir_p(parent_dir)
+  write_cold(String::concat(foreign_dir, "/index.vpkg"), "opaque type Container[F]\n")
+  write_cold(String::concat(foreign_dir, "/impl.vibe"), "export type Container[F] = F\n")
+  write_cold(String::concat(parent_dir, "/index.vpkg"), "import ../foreign { Container }\nopaque type Container[F[_]]\n")
+  write_cold(String::concat(parent_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  let contract_path = String::concat(parent_dir, "/index.vpkg")
+  let msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(msg, content = "")
+}
+
+test "cyclic re-export chains fail closed without recursing forever (#2338)" {
+  let base_dir = "/tmp/vibe_compiler_contract_reexport_kind_cycle_2338"
+  let left_dir = String::concat(base_dir, "/left")
+  let right_dir = String::concat(base_dir, "/right")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(left_dir)
+  Fs::mkdir_p(right_dir)
+  Fs::mkdir_p(parent_dir)
+  write_cold(String::concat(left_dir, "/index.vibe"), "export ../right { Container }\n")
+  write_cold(String::concat(right_dir, "/index.vibe"), "export ../left { Container }\n")
+  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../left { Container }\n")
+  let contract_path = String::concat(parent_dir, "/index.vpkg")
+  let msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(String::contains(msg, "has no implementation"), content = "true")
+}
+
+test "re-exported traits retain constructor kinds during conformance (#2338)" {
+  let base_dir = "/tmp/vibe_compiler_contract_reexport_trait_kind_2338"
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(base_dir)
+  Fs::mkdir_p(parent_dir)
+  let source_path = String::concat(base_dir, "/source.vibe")
+  write_cold(source_path, "export trait Mappable[F[_]] {}\n")
+  write_cold(String::concat(parent_dir, "/index.vpkg"), "opaque type Mappable[F[_]]\n")
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../source.vibe { Mappable }\n")
+  let contract_path = String::concat(parent_dir, "/index.vpkg")
+  let initial_msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(initial_msg, content = "")
+  write_cold(source_path, "export trait Mappable[F] {}\n")
+  let msg = handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+  inspect(String::contains(msg, "kind mismatch"), content = "true")
 }
 
 test "index.vibe facade stays unvalidated (leaky legacy shape, #716)" {

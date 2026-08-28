@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   namespace_rename_originals_reset,
   sort_perm_by_names,
   str_lt,
+  trait_definition,
   trait_method_sig_binders_deep
 }
 
@@ -25,8 +26,11 @@ import @vibe/ast {
   impl_target_from_key,
   impl_target_head,
   impl_target_key,
+  trait_ref_args,
   trait_ref_from_key,
+  trait_ref_key,
   trait_ref_name,
+  type_param_arity,
   type_param_name
 }
 
@@ -83,9 +87,11 @@ struct GenericImplInfo {
 struct DictGen {
   name: String;
   threaded: Array[(String, String, Int)];
+  return_constructor_param: String;
   impl_trait: String;
   impl_params: Array[String];
-  impl_target: Option[TypeExpr]
+  impl_target: Option[TypeExpr];
+  constructor_recvs: Array[(String, Int)]
 }
 
 fn paired_poison(poisoned: Array[Bool]) -> Unit {
@@ -260,6 +266,10 @@ fn empty_fn_returns() -> Array[(String, String)] {
   array_empty()
 }
 
+fn local_fn_return_key(name: String) -> String {
+  String::concat("__local_fn_return$", name)
+}
+
 /// #886: empty explicit-type-argument list for constructed ERecord nodes
 /// (dict witnesses / trait defaults never carry explicit struct type args).
 fn empty_ty_args() -> Array[TypeExpr] {
@@ -344,6 +354,8 @@ fn dict_struct_name(trait_name: String) -> String {
 /// `Base` declared first the walk stops on `BaseDict` and the label happened
 /// to be right (Codex review on #2313, measured both orders).
 let dtd_synth_dict_fields: Array[(String, String, String)] = array_empty()
+let dtd_constructor_tracking = [false]
+let dtd_constructor_local_returns: Array[String] = empty_str_array()
 
 fn dtd_synth_dict_reset() -> Unit {
   Array::truncate(dtd_synth_dict_fields, 0)
@@ -397,6 +409,37 @@ fn collect_method_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String, Ar
     i = i + 1
   }
   out
+}
+
+/// Trait header parameters keyed by the source trait name. Dictionary structs
+/// mirror these binders so a field such as `F[A]` remains well-kinded after
+/// the trait declaration itself has been erased.
+fn collect_trait_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, _, tparams) => Array::push(out, (tname, tparams)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn lookup_trait_type_params(entries: Array[(String, Array[String])], trait_name: String) -> Array[String] {
+  let mut i = 0
+  let mut result = empty_str_array()
+  while i < Array::length(entries) {
+    let (name, params) = Array::get(entries, i)
+    if name == trait_ref_name(trait_name) {
+      result = params
+      i = Array::length(entries)
+    } else {
+      i = i + 1
+    }
+  }
+  result
 }
 
 /// #1445 原因2 (#1392 slice 3): the SYNTHETIC `Show` witness trait.
@@ -707,6 +750,425 @@ fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits
     inject_method_generics_reporting_change(stmts, impl_map, method_gen_table, traits)
   } else {
     false
+  }
+}
+
+/// Whether a value parameter can carry the witness for `name` through the
+/// dictionary lowerer's supported receiver shapes. Keep this aligned with
+/// find_recv_index / find_constructor_recv_index / find_array_elem_recv_index:
+/// a nested occurrence (for example `(Int) -> Self`) is not recoverable.
+fn trait_operation_type_is_carrier(ty: TypeExpr, name: String, stmts: Array[Stmt]) -> Bool {
+  let expanded = expand_constructor_alias(ty, stmts, Array::length(stmts) + 1)
+  match expanded {
+    TyName(current) => current == name,
+    TyApp(head, args) => if head == name {
+      true
+    } else if head == "Array" && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        TyName(current) => current == name,
+        _ => false
+      }
+    } else {
+      false
+    },
+    TyFn(_, _, _) => false,
+    TyTuple(_) => false,
+    TyUnit => false
+  }
+}
+
+fn trait_operation_params_have_carrier(params: Array[TypeExpr], name: String, stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    found = trait_operation_type_is_carrier(Array::get(params, i), name, stmts); i = i + 1
+  }
+  found
+}
+
+fn trait_operation_type_mentions(ty: TypeExpr, name: String) -> Bool {
+  match ty {
+    TyName(current) => current == name,
+    TyApp(head, args) => {
+      let mut found = head == name
+      let mut i = 0
+      while i < Array::length(args) && !found {
+        found = trait_operation_type_mentions(Array::get(args, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut found = trait_operation_type_mentions(ret, name)
+      let mut i = 0
+      while i < Array::length(params) && !found {
+        found = trait_operation_type_mentions(Array::get(params, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) && !found {
+        found = trait_operation_type_mentions(Array::get(items, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+fn trait_operation_surface_mentions(params: Array[TypeExpr], ret: TypeExpr, name: String) -> Bool {
+  let mut found = trait_operation_type_mentions(ret, name)
+  let mut i = 0
+  while i < Array::length(params) && !found {
+    found = trait_operation_type_mentions(Array::get(params, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_method_shadows(method_params: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(method_params) && !found {
+    found = type_param_name(Array::get(method_params, i)) == name
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_fresh_self_param(base: String, header_params: Array[String], method_params: Array[String]) -> String {
+  let mut candidate = base
+  let mut suffix = 1
+  while trait_operation_method_shadows(header_params, candidate) || trait_operation_method_shadows(method_params, candidate) {
+    candidate = String::concat(base, String::concat("_", __to_string(suffix)))
+    suffix = suffix + 1
+  }
+  candidate
+}
+
+fn trait_operation_shadows_header(method_params: Array[String], header_params: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(header_params) && !found {
+    found = trait_operation_method_shadows(method_params, type_param_name(Array::get(header_params, i)))
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_substitute_self(ty: TypeExpr, replacement: String) -> TypeExpr {
+  match ty {
+    TyName(name) => if name == "Self" {
+      TyName(replacement)
+    } else {
+      ty
+    },
+    TyApp(head, args) => TyApp(if head == "Self" {
+      replacement
+    } else {
+      head
+    }, for arg in args {
+      trait_operation_substitute_self(arg, replacement)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      trait_operation_substitute_self(param, replacement)
+    }, trait_operation_substitute_self(ret, replacement), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      trait_operation_substitute_self(item, replacement)
+    }),
+    TyUnit => TyUnit
+  }
+}
+
+fn trait_operation_binding_exists(stmts: Array[Stmt], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, current, _, _) => if current == name {
+        found = true
+      } else {
+        ()
+      },
+      SFnDecl(_, current, _, _, _) => if current == name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_dict_already_materialized(stmts: Array[Stmt], trait_name: String) -> Bool {
+  let dict_name = String::concat(trait_name, "Dict")
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => if name == dict_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_method_generics(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], method_index: Int, method_name: String) -> (Array[String], Array[(String, Array[String])]) {
+  if method_index < Array::length(method_gens) {
+    let (source_name, params, bounds) = Array::get(method_gens, method_index)
+    if source_name == method_name {
+      (params, bounds)
+    } else {
+      (array_empty(), array_empty())
+    }
+  } else {
+    (array_empty(), array_empty())
+  }
+}
+
+fn trait_operation_bound_key(trait_name: String, header_params: Array[String]) -> String {
+  if Array::length(header_params) == 0 {
+    trait_ref_key(TyName(trait_name))
+  } else {
+    trait_ref_key(TyApp(trait_name, for param in header_params {
+      TyName(type_param_name(param))
+    }))
+  }
+}
+
+fn trait_operation_param_name(ty: TypeExpr, index: Int, dispatch: String) -> String {
+  if index == 0 {
+    match ty {
+      TyName(name) => if name == dispatch {
+        "self"
+      } else {
+        "arg_0"
+      },
+      TyApp(head, _) => if head == dispatch {
+        "xs"
+      } else {
+        "arg_0"
+      },
+      _ => "arg_0"
+    }
+  } else match ty {
+    TyFn(_, _, _) => String::concat("f_", __to_string(index)),
+    _ => String::concat("arg_", __to_string(index))
+  }
+}
+
+/// Derive public `Trait::operation` wrappers without introducing bare names.
+export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
+  let additions = array_empty()
+  let original_len = Array::length(stmts)
+  let mut i = 0
+  while i < original_len {
+    match Array::get(stmts, i) {
+      STrait(exported, trait_name, _, methods, method_gens, header_params) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (method_name, raw_params, raw_ret) = Array::get(methods, mi)
+          let operation_name = String::concat(trait_name, String::concat("::", method_name))
+          if !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_dict_already_materialized(stmts, trait_name) {
+            let (method_params, method_bounds) = trait_operation_method_generics(method_gens, mi, method_name)
+            let self_param = trait_operation_fresh_self_param(String::concat("__trait_operation_self_", String::concat(trait_name, String::concat("_", method_name))), header_params, method_params)
+            let shadows_header = trait_operation_shadows_header(method_params, header_params)
+            let uses_self = !shadows_header && trait_operation_params_have_carrier(raw_params, "Self", stmts)
+            let surface_mentions_self = trait_operation_surface_mentions(raw_params, raw_ret, "Self")
+            let mut dispatch = if uses_self {
+              self_param
+            } else {
+              ""
+            }
+            let mut dispatch_key = dispatch
+            let mut hi = 0
+            // A trait parameter can dispatch an operation whose entire surface
+            // is independent of the implementation target (`Mappable::map`).
+            // It must never stand in for `Self`: `impl Factory[Int] for Box`
+            // does not make `Int` the receiver of `Factory::build`.
+            while hi < Array::length(header_params) && dispatch == "" && !shadows_header && !surface_mentions_self {
+              let candidate_key = Array::get(header_params, hi)
+              let candidate = type_param_name(candidate_key)
+              if trait_operation_params_have_carrier(raw_params, candidate, stmts) {
+                dispatch = candidate; dispatch_key = candidate_key
+              } else {
+                ()
+              }
+              hi = hi + 1
+            }
+            if dispatch != "" {
+              let synthetic_off = 2000000000 - i * 1000 - mi * 10
+              let extra_params = if uses_self {
+                [self_param]
+              } else {
+                array_empty()
+              }
+              let type_params = Array::concat(Array::concat(header_params, method_params), extra_params)
+              let bounds = Array::concat(method_bounds, [
+                (dispatch_key, [
+                  trait_operation_bound_key(trait_name, header_params)
+                ])
+              ])
+              let value_params = array_empty()
+              let call_args = array_empty()
+              let mut pi = 0
+              while pi < Array::length(raw_params) {
+                let param_ty = trait_operation_substitute_self(Array::get(raw_params, pi), dispatch)
+                let param_name = trait_operation_param_name(param_ty, pi, dispatch)
+                Array::push(value_params, (param_name, Some(param_ty)))
+                Array::push(call_args, EIdent(param_name, synthetic_off + pi + 1))
+                pi = pi + 1
+              }
+              let ret = trait_operation_substitute_self(raw_ret, dispatch)
+              let body = ECall(EIdent(String::concat(dispatch, String::concat("::", method_name)), synthetic_off), call_args, synthetic_off)
+              Array::push(additions, SLet(exported, true, operation_name, None, EFn(type_params, bounds, value_params, Some(ret), None, body)))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          mi = mi + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut insertion = 0
+  let mut si = 0
+  while si < original_len {
+    match Array::get(stmts, si) {
+      STrait(_, _, _, _, _, _) => {
+        insertion = si + 1
+      },
+      SImpl(_, _, _, _) => {
+        insertion = si + 1
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  while insertion < original_len {
+    match Array::get(stmts, insertion) {
+      SLet(_, _, _, _, _) => {
+        insertion = insertion + 1
+      },
+      SFnDecl(_, _, _, _, _) => {
+        insertion = insertion + 1
+      },
+      _ => break
+    }
+  }
+  let ordered = array_empty()
+  si = 0
+  while si < original_len {
+    if si == insertion {
+      let mut ai = 0; while ai < Array::length(additions) {
+        Array::push(ordered, Array::get(additions, ai)); ai = ai + 1
+      }
+    } else {
+      ()
+    }
+    Array::push(ordered, Array::get(stmts, si))
+    si = si + 1
+  }
+  if insertion == original_len {
+    let mut ai = 0; while ai < Array::length(additions) {
+      Array::push(ordered, Array::get(additions, ai)); ai = ai + 1
+    }
+  } else {
+    ()
+  }
+  let mut oi = 0
+  while oi < Array::length(ordered) {
+    if oi < original_len {
+      Array::set(stmts, oi, Array::get(ordered, oi))
+    } else {
+      Array::push(stmts, Array::get(ordered, oi))
+    }; oi = oi + 1
+  }
+}
+
+fn imported_trait_operation_additions(items: Array[ImportItem], env: TypeEnv, stmts: Array[Stmt], additions: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    let local_name = match item.alias {
+      Some(alias) => alias,
+      None => item.name
+    }
+    match trait_definition(env, local_name) {
+      Some((supers, methods, params, method_gens)) => {
+        let probe = [
+          STrait(false, local_name, supers, methods, method_gens, params)
+        ]
+        derive_trait_namespace_operations(probe)
+        let mut pi = 1
+        while pi < Array::length(probe) {
+          match Array::get(probe, pi) {
+            SLet(_, _, operation_name, _, _) => if !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_binding_exists(additions, operation_name) {
+              Array::push(additions, Array::get(probe, pi))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          pi = pi + 1
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Materialize non-exported `Trait::operation` wrappers from the trait
+/// declarations selected by this module's imports. The trait is the authority:
+/// callers import only `trait Trait`, while bare operation names stay absent.
+export fn derive_imported_trait_namespace_operations(stmts: Array[Stmt], env: TypeEnv) -> Unit {
+  let additions = array_empty()
+  let original_len = Array::length(stmts)
+  let mut i = 0
+  while i < original_len {
+    match Array::get(stmts, i) {
+      SImport(_, items) => imported_trait_operation_additions(items, env, stmts, additions),
+      SReExport(_, items) => imported_trait_operation_additions(items, env, stmts, additions),
+      SModule(_, _, body) => derive_imported_trait_namespace_operations(body, env),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let ordered = array_empty()
+  let mut ai = 0
+  while ai < Array::length(additions) {
+    Array::push(ordered, Array::get(additions, ai))
+    ai = ai + 1
+  }
+  i = 0
+  while i < original_len {
+    Array::push(ordered, Array::get(stmts, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(ordered) {
+    if i < original_len {
+      Array::set(stmts, i, Array::get(ordered, i))
+    } else {
+      Array::push(stmts, Array::get(ordered, i))
+    }
+    i = i + 1
   }
 }
 
@@ -1190,7 +1652,7 @@ fn collect_struct_field_sets(stmts: Array[Stmt]) -> Array[(String, Array[String]
 /// Build the witness struct `TrDict { m: (Self) -> R; ... }` for a trait. The
 /// `Self` placeholder in the signatures stays verbatim — struct type params are
 /// erased, so the field-access typing is structural (proven in spike G-3).
-fn make_dict_struct_stmt(trait_name: String, sigs: Array[(String, Array[TypeExpr], TypeExpr)]) -> Stmt {
+fn make_dict_struct_stmt(trait_name: String, sigs: Array[(String, Array[TypeExpr], TypeExpr)], tparams: Array[String]) -> Stmt {
   let fields = array_empty()
   let mut i = 0
   while i < Array::length(sigs) {
@@ -1198,7 +1660,7 @@ fn make_dict_struct_stmt(trait_name: String, sigs: Array[(String, Array[TypeExpr
     Array::push(fields, (mname, TyFn(params, ret, None)))
     i = i + 1
   }
-  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array(), empty_str_array(), empty_str_array())
+  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array(), empty_str_array(), tparams)
 }
 
 /// Two field-name sets describe the same struct shape when they have equal
@@ -1337,7 +1799,9 @@ fn ctor_enum_of_name(fn_returns: Array[(String, String)], name: String) -> Optio
 /// arity).
 fn dtd_tuple_elem_type_name(obj: Expr, field: String, var_types: Array[(String, String)]) -> Option[String] {
   match obj {
-    EIdent(n, _) => match dtd_tuple_index_of(field) {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+      None
+    } else match dtd_tuple_index_of(field) {
       Some(idx) => {
         let parts = match lookup_var_type(var_types, tuple_shape_key(n)) {
           Some(sentinel) => tuple_shape_parts(sentinel),
@@ -1555,7 +2019,14 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       // the pull-closure loop (#822: the pull desugar called the stream value
       // as a closure — call_indirect on an array pointer = table OOB trap).
       EIdent("String::to_bytes", _) => Some("ByteStream"),
-      EIdent(fname, _) => ctor_enum_of_name(fn_returns, fname),
+      EIdent(fname, _) => match lookup_var_type(var_types, local_fn_return_key(fname)) {
+        Some(head) => Some(head),
+        None => if constructor_binding_is_masked(var_types, fname) {
+          None
+        } else {
+          ctor_enum_of_name(fn_returns, fname)
+        }
+      },
       // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
       // recover the operand's type head from the annotation so an annotated
       // `let a: Option[Int] = None` records `a -> "Option"` for `==` dispatch.
@@ -1879,6 +2350,58 @@ fn anon_or_infer(val: Expr, struct_sets: Array[(String, Array[String])], var_typ
   }
 }
 
+/// Binding-time variant used after constructor-indexed generics are known.
+/// A call such as `map([1], f)` has the declared return head `F`, but the
+/// concrete constructor is recovered from the callee's `F[A]` receiver. Keep
+/// that answer on the local so a later, non-nested `map(ys, g)` can synthesize
+/// the same witness as a directly nested pipeline.
+fn anon_or_constructor_infer(val: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match anon_record_inferred(val, struct_sets) {
+    Some(s) => Some(s),
+    // EHandle recovery exists for a constructor-polymorphic CALL RECEIVER.
+    // Do not publish its ordinary result head into the shared var_types table:
+    // that table also controls rendering, and an otherwise-untyped handled
+    // Bool historically stays erased there. A direct
+    // `Mappable::map(handle { .. }, f)`
+    // still enters infer_constructor_arg_type_name from synth_dicts.
+    None => match val {
+      EHandle(_, _) => infer_arg_type_name(val, struct_sets, var_types, fn_returns),
+      _ => infer_constructor_arg_type_name(val, gens, struct_sets, var_types, fn_returns)
+    }
+  }
+}
+
+fn constructor_return_head_of(ret: Option[TypeExpr], body: Expr) -> String {
+  match ret {
+    Some(te) => match eq_expand_alias_ty(te) {
+      TyName(n) => n,
+      TyApp(n, _) => n,
+      TyFn(_, _, _) => fn_type_return_head(),
+      _ => ""
+    },
+    None => fn_return_head_of(ret, body)
+  }
+}
+
+fn extend_local_fn_return(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
+  if !Array::get(dtd_constructor_tracking, 0) || !str_array_contains(dtd_constructor_local_returns, name) {
+    var_types
+  } else {
+    let key = local_fn_return_key(name)
+    match value {
+      EFn(_, _, _, ret, _, body) => {
+        let head = constructor_return_head_of(ret, body)
+        if String::length(head) == 0 {
+          extend_constructor_var_types(var_types, key, None)
+        } else {
+          extend_constructor_var_types(var_types, key, Some(head))
+        }
+      },
+      _ => extend_constructor_var_types(var_types, key, None)
+    }
+  }
+}
+
 /// `binding.field` -> `__rec_field(binding, slot)` when `binding` is an
 /// anonymous-record binding (a `__anonrec:` var_types entry) that carries `field`.
 /// `robj` is the already-rewritten receiver. None leaves the EDot untouched (a
@@ -1928,25 +2451,47 @@ fn empty_dict_binds() -> Array[(String, String, String, Array[String])] {
 /// checking, so a hand-written `x: DefaultDict[T]` annotation is an unknown
 /// type to the checker while the genuinely generated shape (re-checked or
 /// re-desugared downstream) matches exactly.
+fn type_expr_arrays_equal(left: Array[TypeExpr], right: Array[TypeExpr]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut equal = true
+    while i < Array::length(left) && equal {
+      equal = impl_target_key(Array::get(left, i)) == impl_target_key(Array::get(right, i))
+      i = i + 1
+    }
+    equal
+  }
+}
+
 fn already_threaded(bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])]) -> Bool {
   if Array::length(params) == 0 {
     false
   } else {
     let (pname, ann) = Array::get(params, 0)
     match ann {
-      Some(TyApp(dname, targs)) => if Array::length(targs) == 1 {
+      Some(TyApp(dname, targs)) => {
         let mut found = false
         let mut bi = 0
         while bi < Array::length(bounds) {
           let (tp, trait_list) = Array::get(bounds, bi)
-          let elem_is_tp = match Array::get(targs, 0) {
-            TyName(tn) => tn == tp,
-            _ => false
-          }
+          let tpname = type_param_name(tp)
           let mut ti = 0
           while ti < Array::length(trait_list) {
             let tr = Array::get(trait_list, ti)
-            if tr != "" && elem_is_tp && pname == dict_param_name(tr, tp) && dname == dict_struct_name(tr) {
+            let trait_args = trait_ref_args(tr)
+            let args_match = if Array::length(trait_args) > 0 {
+              type_expr_arrays_equal(targs, trait_args)
+            } else if Array::length(targs) == 1 {
+              match Array::get(targs, 0) {
+                TyName(tn) => tn == tpname,
+                _ => false
+              }
+            } else {
+              false
+            }
+            if tr != "" && args_match && pname == dict_param_name(tr, tpname) && dname == dict_struct_name(tr) {
               found = true
               ti = Array::length(trait_list)
               bi = Array::length(bounds) - 1
@@ -1957,8 +2502,6 @@ fn already_threaded(bounds: Array[(String, Array[String])], params: Array[(Strin
           bi = bi + 1
         }
         found
-      } else {
-        false
       },
       _ => false
     }
@@ -2022,6 +2565,33 @@ fn find_array_elem_recv_index(params: Array[(String, Option[TypeExpr])], tp: Str
   idx
 }
 
+/// Index of the first parameter whose annotation applies constructor `tp`,
+/// for example `xs: F[A]` for a kinded `F[_]` binder.
+fn find_constructor_recv_index(params: Array[(String, Option[TypeExpr])], tp: String, stmts: Array[Stmt]) -> Int {
+  let mut i = 0
+  let mut idx = -1
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(raw_ann) => match expand_constructor_alias(raw_ann, stmts, Array::length(stmts) + 1) {
+        TyApp(head, _) => if head == tp {
+          idx = i
+          i = Array::length(params)
+        } else {
+          i = i + 1
+        },
+        _ => {
+          i = i + 1
+        }
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  idx
+}
+
 /// #1199 bug 1: `threaded`'s recv_idx field packs TWO distinct receiver kinds
 /// into one Int rather than widening the tuple everywhere it's threaded
 /// (9 call sites across this file): `idx >= 0` is a DIRECT receiver
@@ -2037,11 +2607,139 @@ fn encode_array_elem_recv_index(idx: Int) -> Int {
 }
 
 fn is_array_elem_recv_index(idx: Int) -> Bool {
-  idx <= (0 - 2)
+  idx <= (0 - 2) && idx > (0 - 1000000)
 }
 
 fn decode_array_elem_recv_index(idx: Int) -> Int {
   0 - idx - 2
+}
+
+/// Constructor receivers use a disjoint negative range. `-1` remains the
+/// generic-impl sentinel and the small negative range remains Array-element
+/// receivers for compatibility with the existing packed representation.
+fn encode_constructor_recv_index(idx: Int) -> Int {
+  0 - 1000000 - idx
+}
+
+fn is_constructor_recv_index(idx: Int) -> Bool {
+  idx <= (0 - 1000000)
+}
+
+fn decode_constructor_recv_index(idx: Int) -> Int {
+  0 - 1000000 - idx
+}
+
+fn constructor_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(params) && i < Array::length(args) {
+    if type_param_name(Array::get(params, i)) == name {
+      result = Some(Array::get(args, i))
+      i = Array::length(params)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn substitute_constructor_alias_target(target: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match target {
+    TyName(name) => match constructor_alias_arg(params, args, name) {
+      Some(arg) => arg,
+      None => target
+    },
+    TyApp(head, items) => {
+      let substituted_items = for item in items {
+        substitute_constructor_alias_target(item, params, args)
+      }
+      match constructor_alias_arg(params, args, head) {
+        Some(TyName(actual_head)) => TyApp(actual_head, substituted_items),
+        _ => TyApp(head, substituted_items)
+      }
+    },
+    TyFn(fn_params, result, effect) => TyFn(for param in fn_params {
+      substitute_constructor_alias_target(param, params, args)
+    }, substitute_constructor_alias_target(result, params, args), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_constructor_alias_target(item, params, args)
+    }),
+    TyUnit => target
+  }
+}
+
+/// Expand aliases until a constructor-bearing parameter or result exposes its
+/// outer constructor. The fuel bound makes cyclic aliases fail closed.
+fn expand_constructor_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ret
+  } else match ret {
+    TyName(head) => {
+      let mut i = 0
+      let mut result = ret
+      let mut found = false
+      while i < Array::length(stmts) {
+        match Array::get(stmts, i) {
+          STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == 0 {
+            result = expand_constructor_alias(target, stmts, fuel - 1)
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    TyApp(head, args) => {
+      let mut i = 0
+      let mut result = ret
+      let mut found = false
+      while i < Array::length(stmts) {
+        match Array::get(stmts, i) {
+          STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == Array::length(args) {
+            let expanded = substitute_constructor_alias_target(target, params, args)
+            result = expand_constructor_alias(expanded, stmts, fuel - 1)
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => ret
+  }
+}
+
+/// The constructor formal that owns a generic function's result, after
+/// expanding aliases such as `Apply[F, A] = F[A]`. Nested-call witness
+/// recovery must follow this formal's receiver rather than whichever
+/// constructor bound was declared first.
+fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)], stmts: Array[Stmt]) -> String {
+  match ret {
+    Some(raw_ret) => match expand_constructor_alias(raw_ret, stmts, Array::length(stmts) + 1) {
+      TyApp(head, _) => {
+        let mut i = 0
+        let mut result = ""
+        while i < Array::length(threaded) {
+          let (type_param, _, recv_idx) = Array::get(threaded, i)
+          if type_param == head && is_constructor_recv_index(recv_idx) {
+            result = head
+            i = Array::length(threaded)
+          } else {
+            i = i + 1
+          }
+        }
+        result
+      },
+      _ => ""
+    },
+    None => ""
+  }
 }
 
 /// Build the registry of top-level generics that need dictionary threading:
@@ -2147,7 +2845,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(_, bounds, params, _, _, _) => if already_threaded(bounds, params) {
+        EFn(tparams, bounds, params, ret, _, _) => if already_threaded(bounds, params) {
           ()
         } else {
           let impl_info = generic_impl_info_for_owner(gimpl_infos, qualified_head(fname))
@@ -2155,40 +2853,47 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
             Some(_) => true,
             None => false
           }
+          let constructor_recvs = collect_constructor_recvs(tparams, params, stmts)
           let threaded = empty_threaded()
           let mut bi = 0
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, bi)
+            let tpname = type_param_name(tp)
             let mut ti = 0
             while ti < Array::length(trait_list) {
               let tr = Array::get(trait_list, ti)
               match lookup_trait_sigs(traits, tr) {
                 Some(_) => {
-                  let ridx = find_recv_index(params, tp)
+                  let ridx = find_recv_index(params, tpname)
                   if ridx >= 0 {
-                    Array::push(threaded, (tp, tr, ridx))
+                    Array::push(threaded, (tpname, tr, ridx))
                   } else if is_impl_method {
                     // bounded generic-impl method: T is nested in `self: C[T]`,
                     // so there is no inferable receiver argument — the witness
                     // dict is supplied when C's witness is built. Thread with -1.
-                    Array::push(threaded, (tp, tr, 0 - 1))
+                    Array::push(threaded, (tpname, tr, 0 - 1))
                   } else {
-                    // #1199 bug 1: T may still appear, just wrapped one level
-                    // in an `Array[T]` param (`fn f[T: Hash](xs: Array[T])`)
-                    // rather than bare `x: T` -- find_recv_index alone missed
-                    // this, so f was silently left un-threaded: no dict param
-                    // on its own signature, `no_binds` for its body (see
-                    // rewrite_stmt's `lookup_gen` miss), and any Hash-bounded
-                    // call inside f on a value pulled out of `xs` had no dict
-                    // to forward, however it was written -- synth_dicts fails
-                    // and the call site was emitted short its dict arg
-                    // (invalid wasm), not merely "less generic than it could
-                    // be" as the direct-receiver miss would read.
-                    let widx = find_array_elem_recv_index(params, tp)
-                    if widx >= 0 {
-                      Array::push(threaded, (tp, tr, encode_array_elem_recv_index(widx)))
+                    let cidx = find_constructor_recv_index(params, tpname, stmts)
+                    if cidx >= 0 {
+                      Array::push(threaded, (tpname, tr, encode_constructor_recv_index(cidx)))
                     } else {
-                      ()
+                      // #1199 bug 1: T may still appear, just wrapped one level
+                      // in an `Array[T]` param (`fn f[T: Hash](xs: Array[T])`)
+                      // rather than bare `x: T` -- find_recv_index alone missed
+                      // this, so f was silently left un-threaded: no dict param
+                      // on its own signature, `no_binds` for its body (see
+                      // rewrite_stmt's `lookup_gen` miss), and any Hash-bounded
+                      // call inside f on a value pulled out of `xs` had no dict
+                      // to forward, however it was written -- synth_dicts fails
+                      // and the call site was emitted short its dict arg
+                      // (invalid wasm), not merely "less generic than it could
+                      // be" as the direct-receiver miss would read.
+                      let widx = find_array_elem_recv_index(params, tpname)
+                      if widx >= 0 {
+                        Array::push(threaded, (tpname, tr, encode_array_elem_recv_index(widx)))
+                      } else {
+                        ()
+                      }
                     }
                   }
                 },
@@ -2199,20 +2904,25 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
             bi = bi + 1
           }
           if Array::length(threaded) > 0 || is_impl_method {
+            let result_constructor = return_constructor_param(ret, threaded, stmts)
             match impl_info {
               Some(info) => Array::push(out, DictGen::{
                 name: fname,
                 threaded,
+                return_constructor_param: result_constructor,
                 impl_trait: info.trait_name,
                 impl_params: info.type_params,
-                impl_target: Some(info.target)
+                impl_target: Some(info.target),
+                constructor_recvs
               }),
               None => Array::push(out, DictGen::{
                 name: fname,
                 threaded,
+                return_constructor_param: result_constructor,
                 impl_trait: "",
                 impl_params: [],
-                impl_target: None
+                impl_target: None,
+                constructor_recvs
               })
             }
           } else {
@@ -2290,11 +3000,12 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
           let mut bi = 0
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, bi)
-            let has_carrier = find_recv_index(params, tp) >= 0 || find_array_elem_recv_index(params, tp) >= 0 || str_array_contains(gimpl_owners, qualified_head(fname))
+            let tpname = type_param_name(tp)
+            let has_carrier = find_recv_index(params, tpname) >= 0 || find_constructor_recv_index(params, tpname, stmts) >= 0 || find_array_elem_recv_index(params, tpname) >= 0 || str_array_contains(gimpl_owners, qualified_head(fname))
             if has_carrier {
               ()
             } else {
-              push_undispatchable_refs(fbody, fname, tp, trait_list, env, out)
+              push_undispatchable_refs(fbody, fname, tpname, trait_list, env, out)
             }
             bi = bi + 1
           }
@@ -2603,6 +3314,103 @@ fn find_dict_for_trait(dict_binds: Array[(String, String, String, Array[String])
   result
 }
 
+fn collect_constructor_recvs(tparams: Array[String], params: Array[(String, Option[TypeExpr])], stmts: Array[Stmt]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(tparams) {
+    let tp = Array::get(tparams, i)
+    if type_param_arity(tp) > 0 {
+      let name = type_param_name(tp)
+      let cidx = find_constructor_recv_index(params, name, stmts)
+      if cidx >= 0 {
+        Array::push(out, (name, encode_constructor_recv_index(cidx)))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn constructor_substs_from_recvs(recvs: Array[(String, Int)], orig_args: Array[Expr], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(recvs) {
+    let (formal, recv_idx_raw) = Array::get(recvs, i)
+    if is_constructor_recv_index(recv_idx_raw) {
+      let recv_idx = decode_constructor_recv_index(recv_idx_raw)
+      if recv_idx >= 0 && recv_idx < Array::length(orig_args) {
+        match infer_constructor_arg_type_name(Array::get(orig_args, recv_idx), gens, struct_sets, var_types, fn_returns) {
+          Some(actual) => Array::push(out, (formal, actual)),
+          None => ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn push_constructor_subst(substs: Array[(String, String)], formal: String, actual: String) -> Unit {
+  Array::push(substs, (formal, actual))
+}
+
+fn replace_trait_constructor_arg(te: TypeExpr, formal: String, actual: String) -> TypeExpr {
+  match te {
+    TyName(name) => if name == formal {
+      TyName(actual)
+    } else {
+      te
+    },
+    TyApp(name, args) => TyApp(if name == formal {
+      actual
+    } else {
+      name
+    }, for arg in args {
+      replace_trait_constructor_arg(arg, formal, actual)
+    }),
+    TyTuple(items) => TyTuple(for item in items {
+      replace_trait_constructor_arg(item, formal, actual)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      replace_trait_constructor_arg(param, formal, actual)
+    }, replace_trait_constructor_arg(ret, formal, actual), effect),
+    TyUnit => TyUnit
+  }
+}
+
+/// Resolve constructor formals in an applied bound (`Mappable[F]` ->
+/// `Mappable[Array]`, `Accepts[Apply[F, Int]]` -> `Accepts[Array[Int]]`)
+/// once call-site receivers identify them.
+fn specialize_trait_constructors(trait_name: String, substs: Array[(String, String)]) -> String {
+  match trait_ref_from_key(trait_name) {
+    Some(reference) => {
+      let mut out = reference
+      let mut i = 0
+      while i < Array::length(substs) {
+        let (formal, actual) = Array::get(substs, i)
+        out = replace_trait_constructor_arg(out, formal, actual)
+        i = i + 1
+      }
+      trait_ref_key(eq_expand_alias_ty(out))
+    },
+    None => trait_name
+  }
+}
+
+fn specialize_trait_constructor(trait_name: String, formal: String, actual: String) -> String {
+  let substs = array_empty()
+  Array::push(substs, (formal, actual))
+  specialize_trait_constructors(trait_name, substs)
+}
+
 /// #1445: `(__w) -> String { __to_string(__w) }` -- the total fallback member
 /// of a synthetic `Show` witness (see synthetic_show_sigs). Same closure shape
 /// build_concrete_dict already synthesizes for a bounded generic-impl method.
@@ -2823,7 +3631,12 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
       if failed {
         None
       } else {
-        Some(ERecord("", recfields, empty_ty_args()))
+        let dict_args = trait_ref_args(trait_name)
+        if Array::length(dict_args) > 0 {
+          Some(ERecord(dict_struct_name(trait_name), recfields, dict_args))
+        } else {
+          Some(ERecord("", recfields, empty_ty_args()))
+        }
       }
     },
     None => None
@@ -2860,50 +3673,772 @@ fn infer_arg_elem_type_name(arg: Expr, struct_sets: Array[(String, Array[String]
   }
 }
 
+/// Recover the concrete constructor carried through a nested generic call.
+/// A pipeline chain parses as `map(map([..], f), g)`: the inner call's
+/// declared return head is the formal `F`, so ordinary return-type inference
+/// cannot tell the outer call that the value is still an Array. Follow the
+/// callee's own constructor receiver back to its concrete argument instead.
+fn infer_constructor_arg_type_name(arg: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match arg {
+    EIdent(name, _) => if constructor_binding_is_masked(var_types, name) {
+      None
+    } else match lookup_var_type(var_types, constructor_head_key(name)) {
+      Some(head) => Some(head),
+      None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        Some(head) => Some(head),
+        None => match lookup_var_type(var_types, shape_key(name)) {
+          Some(shape) => if String::starts_with(shape, "[") {
+            Some("Array")
+          } else {
+            None
+          },
+          None => None
+        }
+      }
+    },
+    EReturn(inner) => infer_constructor_arg_type_name(inner, gens, struct_sets, var_types, fn_returns),
+    EDot(obj, field, _, _) => match obj {
+      EIdent(name, _) => if constructor_binding_is_masked(var_types, name) {
+        None
+      } else {
+        infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+      },
+      ETuple(elems) => match dtd_tuple_index_of(field) {
+        Some(idx) => if idx >= 0 && idx < Array::length(elems) {
+          infer_constructor_arg_type_name(Array::get(elems, idx), gens, struct_sets, var_types, fn_returns)
+        } else {
+          None
+        },
+        None => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+      },
+      _ => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+    },
+    ELet(name, val, body, _) => {
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
+      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetMut(name, val, body, _) => {
+      if name == "__loop_result" {
+        infer_parameterized_loop_constructor(body, gens, struct_sets, var_types, fn_returns)
+      } else {
+        let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
+        infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+      }
+    },
+    ELetRec(name, value, body) => {
+      let body_vars = extend_local_fn_return(var_types, name, value)
+      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+    },
+    EAssign(_, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
+    EAssignOp(_, _, _, continuation) => infer_constructor_arg_type_name(continuation, gens, struct_sets, var_types, fn_returns),
+    ESeq(_, result) => infer_constructor_arg_type_name(result, gens, struct_sets, var_types, fn_returns),
+    EMatch(scrut, arms) => infer_constructor_match_arm_type_name(scrut, arms, gens, struct_sets, var_types, fn_returns),
+    EHandle(body, arms) => infer_constructor_handle_type_name(body, arms, gens, struct_sets, var_types, fn_returns),
+    EIf(_, then_branch, else_branch) => {
+      let then_constructor = infer_constructor_arg_type_name(then_branch, gens, struct_sets, var_types, fn_returns)
+      let else_constructor = infer_constructor_arg_type_name(else_branch, gens, struct_sets, var_types, fn_returns)
+      match then_constructor {
+        Some(name) => match else_constructor {
+          Some(other) => {
+            let branches_agree = name == other
+            if branches_agree {
+              Some(name)
+            } else {
+              None
+            }
+          },
+          None => None
+        },
+        None => None
+      }
+    },
+    ECall(EFn(_, _, params, _, _, body), args, _) => {
+      let mut body_vars = var_types
+      let mut i = 0
+      while i < Array::length(params) {
+        let (name, _) = Array::get(params, i)
+        let inferred = if i < Array::length(args) {
+          infer_constructor_arg_type_name(Array::get(args, i), gens, struct_sets, var_types, fn_returns)
+        } else {
+          None
+        }
+        body_vars = extend_constructor_var_types(body_vars, name, inferred)
+        i = i + 1
+      }
+      infer_constructor_arg_type_name(body, gens, struct_sets, body_vars, fn_returns)
+    },
+    ECall(EIdent(name, _), args, _) => infer_constructor_generic_call_type_name(name, args, arg, gens, struct_sets, var_types, fn_returns),
+    ECall(EDot(obj, method, _, _), args, _) => {
+      let resolved = match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+        Some(receiver) => {
+          let qualified = String::concat(receiver, String::concat("::", method))
+          if !struct_set_member(struct_sets, receiver, method) && fn_exists(fn_returns, qualified) {
+            Some(qualified)
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+      match resolved {
+        Some(name) => infer_constructor_generic_call_type_name(name, prepend_expr(obj, args), arg, gens, struct_sets, var_types, fn_returns),
+        None => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+      }
+    },
+    _ => infer_arg_type_name(arg, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// Collect the constructor assigned by the parser's parameterized-loop
+/// lowering. Every reachable `break value` must resolve to the same
+/// constructor; one unknown or disagreement leaves dictionary selection
+/// unresolved. Nested control scopes are boundaries because they own their
+/// own break/loop result, and a nested `__loop_result` binding shadows this
+/// synthetic slot.
+fn collect_parameterized_loop_constructors(expr: Expr, expected: Array[String], valid: Array[Bool], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+  if !Array::get(valid, 0) {
+    ()
+  } else {
+    match expr {
+      EAssign("__loop_result", value, continuation) => {
+        match infer_constructor_arg_type_name(value, gens, struct_sets, var_types, fn_returns) {
+          Some(actual) => if Array::length(expected) == 0 {
+            Array::push(expected, actual)
+          } else if Array::get(expected, 0) != actual {
+            Array::set(valid, 0, false)
+          } else {
+            ()
+          },
+          None => Array::set(valid, 0, false)
+        }
+        collect_parameterized_loop_constructors(continuation, expected, valid, gens, struct_sets, var_types, fn_returns)
+      },
+      ELetMut("__loop_result", _, _, _) => (),
+      ELet(name, value, body, _) => {
+        collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns)), name, value)
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
+      },
+      ELetMut(name, value, body, _) => {
+        collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(value, gens, struct_sets, var_types, fn_returns)), name, value)
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
+      },
+      ELetRec(name, value, body) => {
+        let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, None), name, value)
+        collect_parameterized_loop_constructors(value, expected, valid, gens, struct_sets, body_vars, fn_returns)
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, body_vars, fn_returns)
+      },
+      EMatch(scrut, arms) => {
+        collect_parameterized_loop_constructors(scrut, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let mut i = 0
+        while i < Array::length(arms) && Array::get(valid, 0) {
+          let (pat, body) = Array::get(arms, i)
+          let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
+          collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, arm_vars, fn_returns)
+          i = i + 1
+        }
+      },
+      EHandle(body, arms) => {
+        collect_parameterized_loop_constructors(body, expected, valid, gens, struct_sets, var_types, fn_returns)
+        let mut i = 0
+        while i < Array::length(arms) && Array::get(valid, 0) {
+          let (pat, arm_body) = Array::get(arms, i)
+          let arm_vars = constructor_handler_arm_var_types(body, pat, gens, struct_sets, var_types, fn_returns)
+          collect_parameterized_loop_constructors(arm_body, expected, valid, gens, struct_sets, arm_vars, fn_returns)
+          i = i + 1
+        }
+      },
+      EFn(_, _, _, _, _, _) => (),
+      ELoop(_, _) => (),
+      EWhile(_, _) => (),
+      EForIn(_, _, _, _) => (),
+      _ => {
+        let children = expr_children(expr)
+        let mut i = 0
+        while i < Array::length(children) && Array::get(valid, 0) {
+          collect_parameterized_loop_constructors(Array::get(children, i), expected, valid, gens, struct_sets, var_types, fn_returns)
+          i = i + 1
+        }
+      }
+    }
+  }
+}
+
+/// Recognize only the exact result-bearing spine emitted by
+/// `parse_loop_primary`: `while ...; __loop_result`. Starting at the while
+/// body avoids confusing a nested while's assignments with this loop.
+fn infer_parameterized_loop_constructor(body: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match body {
+    ESeq(EWhile(_, loop_body), EIdent("__loop_result", _)) => {
+      let expected = empty_str_array()
+      let valid = [true]
+      collect_parameterized_loop_constructors(loop_body, expected, valid, gens, struct_sets, var_types, fn_returns)
+      if Array::get(valid, 0) && Array::length(expected) == 1 {
+        Some(Array::get(expected, 0))
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+/// Follow the constructor receiver recorded for a transformed generic call.
+/// `args` is already in the callee's declared order; method-style callers
+/// prepend their receiver before entering this helper.
+fn infer_constructor_generic_call_type_name(name: String, args: Array[Expr], whole: Expr, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match lookup_gen_entry(gens, name) {
+    Some(gen) => {
+      let mut i = 0
+      let mut result = None
+      while i < Array::length(gen.threaded) {
+        let (type_param, _, recv_idx_raw) = Array::get(gen.threaded, i)
+        if type_param == gen.return_constructor_param && is_constructor_recv_index(recv_idx_raw) {
+          let recv_idx = decode_constructor_recv_index(recv_idx_raw)
+          if recv_idx >= 0 && recv_idx < Array::length(args) {
+            result = infer_constructor_arg_type_name(Array::get(args, recv_idx), gens, struct_sets, var_types, fn_returns)
+          } else {
+            ()
+          }
+          i = Array::length(gen.threaded)
+        } else {
+          i = i + 1
+        }
+      }
+      match result {
+        Some(_) => result,
+        None => infer_arg_type_name(whole, struct_sets, var_types, fn_returns)
+      }
+    },
+    None => infer_arg_type_name(whole, struct_sets, var_types, fn_returns)
+  }
+}
+
+/// Recover the result of a handler arm while treating `resume` as the handled
+/// continuation. Follow the result-bearing spine so a block or local binding
+/// around the resume call does not erase the body's constructor.
+fn infer_constructor_handler_arm_type_name(arm_body: Expr, expected: String, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match arm_body {
+    ECall(EIdent("resume", _), resume_args, _) => if Array::length(resume_args) == 1 {
+      Some(expected)
+    } else {
+      None
+    },
+    ELet(name, val, body, _) => {
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
+      infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetMut(name, val, body, _) => {
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
+      infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
+    },
+    EReturn(inner) => infer_constructor_handler_arm_type_name(inner, expected, gens, struct_sets, var_types, fn_returns),
+    ELetRec(name, value, body) => {
+      let body_vars = extend_local_fn_return(var_types, name, value)
+      infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, body_vars, fn_returns)
+    },
+    EAssign(_, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
+    EAssignOp(_, _, _, continuation) => infer_constructor_handler_arm_type_name(continuation, expected, gens, struct_sets, var_types, fn_returns),
+    ESeq(_, result) => infer_constructor_handler_arm_type_name(result, expected, gens, struct_sets, var_types, fn_returns),
+    EIf(_, then_branch, else_branch) => {
+      let then_constructor = infer_constructor_handler_arm_type_name(then_branch, expected, gens, struct_sets, var_types, fn_returns)
+      let else_constructor = infer_constructor_handler_arm_type_name(else_branch, expected, gens, struct_sets, var_types, fn_returns)
+      match then_constructor {
+        Some(name) => match else_constructor {
+          Some(other) => {
+            let same = name == other
+            if same {
+              Some(name)
+            } else {
+              None
+            }
+          },
+          None => None
+        },
+        None => None
+      }
+    },
+    EMatch(scrut, match_arms) => if Array::length(match_arms) == 0 {
+      None
+    } else {
+      let mut i = 0
+      let mut result = Some(expected)
+      while i < Array::length(match_arms) {
+        let (pat, body) = Array::get(match_arms, i)
+        let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
+        match infer_constructor_handler_arm_type_name(body, expected, gens, struct_sets, arm_vars, fn_returns) {
+          Some(actual) => {
+            let same = actual == expected
+            if same {
+              ()
+            } else {
+              result = None
+              i = Array::length(match_arms)
+            }
+          },
+          None => {
+            result = None
+            i = Array::length(match_arms)
+          }
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => infer_constructor_arg_type_name(arm_body, gens, struct_sets, var_types, fn_returns)
+  }
+}
+
+fn constructor_op_name_matches(name: String, op: String) -> Bool {
+  if String::contains(name, "::") && String::contains(op, "::") {
+    name == op
+  } else {
+    name == op || member_of(name) == member_of(op)
+  }
+}
+
+fn constructor_handler_consumes_op(arms: Array[(Pat, Expr)], op: String) -> Bool {
+  let mut i = 0
+  let mut consumes = false
+  while i < Array::length(arms) && !consumes {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(name, _) => {
+        consumes = constructor_op_name_matches(name, op)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  consumes
+}
+
+// Direct calls can carry a performed constructor payload across a function
+// boundary. Handler lifting turns an immediately invoked effectful lambda into
+// exactly such a top-level helper before dictionary lowering, so retain the
+// callable bodies for the payload scan instead of treating the helper name as
+// opaque. The active stack makes recursive call graphs terminate.
+let dtd_constructor_callable_bodies: Array[(String, Array[String], Array[(String, Option[TypeExpr])], Expr)] = array_empty()
+let dtd_constructor_payload_call_stack: Array[String] = array_empty()
+
+fn collect_constructor_callable_bodies(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(tparams, _, params, _, _, body)) => {
+        Array::push(dtd_constructor_callable_bodies, (name, tparams, params, body))
+      },
+      SFnDecl(_, name, EFn(tparams, _, params, _, _, body), _, _) => {
+        Array::push(dtd_constructor_callable_bodies, (name, tparams, params, body))
+      },
+      SModule(_, _, body) => collect_constructor_callable_bodies(body),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn lookup_constructor_callable_body(name: String) -> Option[(Array[String], Array[(String, Option[TypeExpr])], Expr)] {
+  let mut i = Array::length(dtd_constructor_callable_bodies) - 1
+  let mut out = None
+  let mut found = false
+  let mut ambiguous = false
+  while i >= 0 {
+    let (current, tparams, params, body) = Array::get(dtd_constructor_callable_bodies, i)
+    if current == name {
+      if found {
+        ambiguous = true
+      } else {
+        out = Some((tparams, params, body))
+        found = true
+      }
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  if ambiguous {
+    None
+  } else {
+    out
+  }
+}
+
+fn constructor_payload_call_is_active(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(dtd_constructor_payload_call_stack) && !found {
+    found = Array::get(dtd_constructor_payload_call_stack, i) == name
+    i = i + 1
+  }
+  found
+}
+
+fn constructor_callable_body_var_types(tparams: Array[String], params: Array[(String, Option[TypeExpr])], args: Array[Expr], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let mut masked = var_types
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    masked = extend_constructor_var_types(masked, name, None)
+    i = i + 1
+  }
+  let mut body_vars = seed_var_types(params, tparams, masked)
+  i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    let inferred = if i < Array::length(args) {
+      infer_constructor_arg_type_name(Array::get(args, i), gens, struct_sets, var_types, fn_returns)
+    } else {
+      None
+    }
+    match inferred {
+      Some(head) => {
+        body_vars = extend_constructor_var_types(body_vars, name, Some(head))
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  body_vars
+}
+
+fn collect_constructor_perform_payloads(expr: Expr, op: String, payload_index: Int, out: Array[Option[String]], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      // A nested handler is a boundary only for operations it actually
+      // consumes. Unhandled operations propagate to the enclosing handler,
+      // so their constructor payload evidence must cross this scope too.
+      if constructor_handler_consumes_op(arms, op) {
+        ()
+      } else {
+        collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+      }
+      // Operations performed by a handler clause are outside the handled
+      // body and can still reach an enclosing handler.
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_vars = constructor_handler_arm_var_types(body, pat, gens, struct_sets, var_types, fn_returns)
+        collect_constructor_perform_payloads(arm_body, op, payload_index, out, gens, struct_sets, arm_vars, fn_returns)
+        i = i + 1
+      }
+    },
+    EFn(_, _, _, _, _, _) => (),
+    ELet(name, val, body, _) => {
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
+      collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetMut(name, val, body, _) => {
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+      let body_vars = extend_local_fn_return(extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)), name, val)
+      collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
+    },
+    ELetRec(name, val, body) => {
+      let body_vars = extend_local_fn_return(var_types, name, val)
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
+      collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
+    },
+    EAssign(name, val, continuation) => {
+      collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+      let continuation_vars = extend_constructor_var_types(var_types, name, anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns))
+      collect_constructor_perform_payloads(continuation, op, payload_index, out, gens, struct_sets, continuation_vars, fn_returns)
+    },
+    EMatch(scrut, arms) => {
+      collect_constructor_perform_payloads(scrut, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
+        collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, arm_vars, fn_returns)
+        i = i + 1
+      }
+    },
+    ECall(callee, args, _) => {
+      // A lambda in callee position executes now, so its performed operations
+      // can reach an enclosing handler. A standalone lambda remains a scope
+      // boundary, but treating an IIFE the same way loses the payload
+      // constructor used to seed that handler's pattern binders.
+      match callee {
+        EFn(tparams, _, params, _, _, body) => {
+          let body_vars = constructor_callable_body_var_types(tparams, params, args, gens, struct_sets, var_types, fn_returns)
+          collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
+        },
+        EIdent(name, _) => if name == "perform" || constructor_payload_call_is_active(name) {
+          ()
+        } else match lookup_constructor_callable_body(name) {
+          Some((tparams, params, body)) => {
+            let stack_len = Array::length(dtd_constructor_payload_call_stack)
+            Array::push(dtd_constructor_payload_call_stack, name)
+            let body_vars = constructor_callable_body_var_types(tparams, params, args, gens, struct_sets, var_types, fn_returns)
+            collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, body_vars, fn_returns)
+            Array::truncate(dtd_constructor_payload_call_stack, stack_len)
+          },
+          None => ()
+        },
+        _ => ()
+      }
+      match callee {
+        EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(EIdent(op_name, _), oargs, _) => if constructor_op_name_matches(op_name, op) && payload_index >= 0 && payload_index < Array::length(oargs) {
+              Array::push(out, infer_constructor_arg_type_name(Array::get(oargs, payload_index), gens, struct_sets, var_types, fn_returns))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_constructor_perform_payloads(Array::get(args, i), op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+        i = i + 1
+      }
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        collect_constructor_perform_payloads(Array::get(children, i), op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn infer_constructor_perform_payload(body: Expr, op: String, payload_index: Int, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  let payloads = array_empty()
+  Array::truncate(dtd_constructor_payload_call_stack, 0)
+  collect_constructor_perform_payloads(body, op, payload_index, payloads, gens, struct_sets, var_types, fn_returns)
+  if Array::length(payloads) == 0 {
+    None
+  } else {
+    let mut i = 1
+    let mut result = Array::get(payloads, 0)
+    while i < Array::length(payloads) {
+      match result {
+        Some(expected) => match Array::get(payloads, i) {
+          Some(actual) => if actual != expected {
+            result = None
+          } else {
+            ()
+          },
+          None => {
+            result = None
+          }
+        },
+        None => {
+          i = Array::length(payloads)
+        }
+      }
+      i = i + 1
+    }
+    result
+  }
+}
+
+fn constructor_handler_arm_var_types(body: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let masked = mask_constructor_pat_binders(var_types, pat, fn_returns)
+  match pat {
+    PCtor(cn, sub) => {
+      let mut out = masked
+      let mut i = 0
+      while i < Array::length(sub) {
+        match Array::get(sub, i) {
+          PBind(name) => {
+            out = extend_constructor_var_types(out, name, infer_constructor_perform_payload(body, cn, i, gens, struct_sets, var_types, fn_returns))
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    _ => masked
+  }
+}
+
+fn constructor_payload_pattern_var_types(value: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Array[(String, String)]] {
+  match pat {
+    PBind(name) => Some(extend_constructor_var_types(var_types, name, infer_constructor_arg_type_name(value, gens, struct_sets, var_types, fn_returns))),
+    PCtor(cn, sub) => match value {
+      ECall(EIdent(name, _), args, _) => if constructor_op_name_matches(name, cn) && Array::length(args) == Array::length(sub) {
+        let mut acc = var_types
+        let mut i = 0
+        let mut valid = true
+        while i < Array::length(sub) && valid {
+          match constructor_payload_pattern_var_types(Array::get(args, i), Array::get(sub, i), gens, struct_sets, acc, fn_returns) {
+            Some(next) => {
+              acc = next
+            },
+            None => {
+              valid = false
+            }
+          }
+          i = i + 1
+        }
+        if valid {
+          Some(acc)
+        } else {
+          None
+        }
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => Some(var_types)
+  }
+}
+
+fn constructor_call_payload_var_types(scrut: Expr, cn: String, sub: Array[Pat], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Array[(String, String)]] {
+  constructor_payload_pattern_var_types(scrut, PCtor(cn, sub), gens, struct_sets, var_types, fn_returns)
+}
+
+/// Recover a handled result only when the body and every handler arm agree.
+/// Handler patterns describe effects rather than the handled value, so their
+/// binders do not refine the result constructor unless the arm returns a
+/// recovered operation payload.
+fn infer_constructor_handle_type_name(body: Expr, arms: Array[(Pat, Expr)], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns) {
+    None => None,
+    Some(expected) => {
+      let mut i = 0
+      let mut agrees = true
+      while i < Array::length(arms) && agrees {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_vars = constructor_handler_arm_var_types(body, pat, gens, struct_sets, var_types, fn_returns)
+        let arm_constructor = infer_constructor_handler_arm_type_name(arm_body, expected, gens, struct_sets, arm_vars, fn_returns)
+        match arm_constructor {
+          Some(actual) => {
+            let same = actual == expected
+            if !same {
+              agrees = false
+            } else {
+              ()
+            }
+          },
+          None => {
+            agrees = false
+          }
+        }
+        i = i + 1
+      }
+      if agrees {
+        Some(expected)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// Recover a constructor from a typed match result only when every arm agrees.
+/// An empty match has no result witness, and one unresolved or differing arm
+/// makes the whole answer unknown rather than guessing a dictionary.
+fn infer_constructor_match_arm_type_name(scrut: Expr, arms: Array[(Pat, Expr)], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  if Array::length(arms) == 0 {
+    None
+  } else {
+    let (first_pat, first_body) = Array::get(arms, 0)
+    let first_vars = constructor_match_arm_var_types(scrut, first_pat, gens, struct_sets, var_types, fn_returns)
+    match infer_constructor_arg_type_name(first_body, gens, struct_sets, first_vars, fn_returns) {
+      None => None,
+      Some(expected) => {
+        let mut i = 1
+        let mut agrees = true
+        while i < Array::length(arms) && agrees {
+          let (pat, body) = Array::get(arms, i)
+          let arm_vars = constructor_match_arm_var_types(scrut, pat, gens, struct_sets, var_types, fn_returns)
+          match infer_constructor_arg_type_name(body, gens, struct_sets, arm_vars, fn_returns) {
+            Some(actual) => {
+              let same = actual == expected
+              if !same {
+                agrees = false
+              } else {
+                ()
+              }
+            },
+            None => {
+              agrees = false
+            }
+          }
+          i = i + 1
+        }
+        if agrees {
+          Some(expected)
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
 /// None when any receiver's witness cannot be determined (the call is then left
 /// unrewritten). Each bound is satisfied either by a concrete dict literal (the
 /// receiver type is syntactically known) or by forwarding the caller's own dict
 /// parameter (the receiver is a type parameter bound by the same trait in the
 /// enclosing generic — the generic->generic case).
-fn synth_dicts(threaded: Array[(String, String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] {
+fn synth_dicts(threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0
   while bi < Array::length(threaded) {
-    let (_, trait_name, recv_idx_raw) = Array::get(threaded, bi)
+    let (type_param, trait_name, recv_idx_raw) = Array::get(threaded, bi)
     // #1199 bug 1: decode the packed receiver kind (see
     // encode_array_elem_recv_index's doc comment) once, up front, so the rest
     // of this loop body works from a plain non-negative index + the right
     // inference function either way.
+    let is_constructor_recv = is_constructor_recv_index(recv_idx_raw)
     let is_elem_recv = is_array_elem_recv_index(recv_idx_raw)
-    let recv_idx = if is_elem_recv {
+    let recv_idx = if is_constructor_recv {
+      decode_constructor_recv_index(recv_idx_raw)
+    } else if is_elem_recv {
       decode_array_elem_recv_index(recv_idx_raw)
     } else {
       recv_idx_raw
     }
     if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) {
       let recv_arg = Array::get(orig_args, recv_idx)
-      let inferred = if is_elem_recv {
+      let inferred = if is_constructor_recv {
+        infer_constructor_arg_type_name(recv_arg, gens, struct_sets, var_types, fn_returns)
+      } else if is_elem_recv {
         infer_arg_elem_type_name(recv_arg, struct_sets, var_types, fn_returns)
       } else {
         infer_arg_type_name(recv_arg, struct_sets, var_types, fn_returns)
       }
       match inferred {
-        Some(nm) => match find_dict_for_trait(dict_binds, nm, trait_name) {
-          Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
-          None => {
-            let target = if is_elem_recv {
-              // The receiver carries `Array[T]`, but this witness is for T.
-              // Do not let the richer whole-receiver target override `nm`.
-              TyName(nm)
-            } else match infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns) {
-              Some(inferred) => inferred,
-              None => TyName(nm)
-            }
-            match build_concrete_dict_for_target(target, trait_name, traits, gens, struct_sets, var_types, fn_returns, Some(recv_arg)) {
-              Some(dict) => Array::push(dicts, dict),
-              None => {
-                ok = false
+        Some(nm) => {
+          let resolved_trait = if is_constructor_recv {
+            let substs = constructor_substs_from_recvs(constructor_recvs, orig_args, gens, struct_sets, var_types, fn_returns)
+            push_constructor_subst(substs, type_param, nm)
+            specialize_trait_constructors(trait_name, substs)
+          } else {
+            trait_name
+          }
+          match find_dict_for_trait(dict_binds, nm, resolved_trait) {
+            Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
+            None => {
+              let target = if is_elem_recv || is_constructor_recv {
+                // The receiver carries `Array[T]`, but this witness is for T.
+                // A constructor receiver similarly carries `F[A]`, while its
+                // witness target is the constructor F rather than F[A].
+                TyName(nm)
+              } else match infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns) {
+                Some(inferred) => inferred,
+                None => TyName(nm)
+              }
+              match build_concrete_dict_for_target(target, resolved_trait, traits, gens, struct_sets, var_types, fn_returns, Some(recv_arg)) {
+                Some(dict) => Array::push(dicts, dict),
+                None => {
+                  ok = false
+                }
               }
             }
           }
@@ -3382,6 +4917,36 @@ fn ctor_payload_bind(var_types: Array[(String, String)], name: String, val: Expr
 
 fn shape_key(pname: String) -> String {
   String::concat("__shape$", pname)
+}
+
+fn constructor_mask_key(pname: String) -> String {
+  String::concat("__ctormask$", pname)
+}
+
+fn constructor_head_key(pname: String) -> String {
+  String::concat("__ctorhead$", pname)
+}
+
+fn constructor_binding_is_masked(var_types: Array[(String, String)], name: String) -> Bool {
+  match lookup_var_type(var_types, constructor_mask_key(name)) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn constructor_binding_has_evidence(var_types: Array[(String, String)], name: String) -> Bool {
+  let head_key = constructor_head_key(name)
+  let return_key = local_fn_return_key(name)
+  let value_shape_key = shape_key(name)
+  let tuple_key = tuple_shape_key(name)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(var_types) && !found {
+    let (entry_name, _) = Array::get(var_types, i)
+    found = entry_name == name || entry_name == head_key || entry_name == return_key || entry_name == value_shape_key || entry_name == tuple_key
+    i = i + 1
+  }
+  found
 }
 
 fn shape_is_composite(sh: String) -> Bool {
@@ -4752,6 +6317,69 @@ fn seed_ctor_payload(out: Array[(String, String)], pname: String, ctor: String, 
   }
 }
 
+fn constructor_formal_name_in(tparams: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) {
+    if type_param_name(Array::get(tparams, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Parameter seeding runs after `eq_known_types_reset` has collected this
+/// program's aliases. Expand only an annotation's alias spine, stopping at a
+/// locally bound constructor formal so a same-spelled global alias cannot
+/// capture `F` in `Apply[F, A]`.
+fn expand_seed_constructor_alias(ty: TypeExpr, tparams: Array[String], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ty
+  } else match ty {
+    TyName(head) => if constructor_formal_name_in(tparams, head) {
+      ty
+    } else {
+      let mut i = 0
+      let mut result = ty
+      let mut found = false
+      while i < Array::length(dtd_eq_type_aliases) {
+        let (name, params, target) = Array::get(dtd_eq_type_aliases, i)
+        if !found && name == head && Array::length(params) == 0 {
+          result = expand_seed_constructor_alias(target, tparams, fuel - 1)
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    TyApp(head, args) => if constructor_formal_name_in(tparams, head) {
+      ty
+    } else {
+      let mut i = 0
+      let mut result = ty
+      let mut found = false
+      while i < Array::length(dtd_eq_type_aliases) {
+        let (name, params, target) = Array::get(dtd_eq_type_aliases, i)
+        if !found && name == head && Array::length(params) == Array::length(args) {
+          let expanded = substitute_constructor_alias_target(target, params, args)
+          result = expand_seed_constructor_alias(expanded, tparams, fuel - 1)
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => ty
+  }
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -4798,7 +6426,19 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
       // left untracked, same conservative scope as the rest of
       // infer_arg_type_name.
       Some(TyApp(tn, targs)) => {
+        let constructor_head = match expand_seed_constructor_alias(TyApp(tn, targs), tparams, Array::length(dtd_eq_type_aliases) + 1) {
+          TyApp(head, _) => head,
+          TyName(head) => head,
+          _ => tn
+        }
+        // Keep the exact annotation head for equality, rendering, and operator
+        // lowering. Constructor dispatch gets a dedicated canonical alias head.
         Array::push(out, (pname, tn))
+        if constructor_head != tn {
+          Array::push(out, (constructor_head_key(pname), constructor_head))
+        } else {
+          ()
+        }
         if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
           Array::push(out, (impl_target_var_key(pname), impl_target_key(TyApp(tn, targs))))
         } else {
@@ -5278,13 +6918,25 @@ fn fn_return_is_fn_type(fn_returns: Array[(String, String)], fname: String) -> B
 /// Nested loops shadow the `__iter_*` names correctly (ELetMut scoping). The
 /// optional index binding is not supported for iterators (first slice).
 ///
-/// `nextcall` is the expression yielding `Option[(T, Self)]` for the current
-/// cursor `__iter_cur`: a bare `C::next(__iter_cur)` for a sync iterator, or
-/// `await(C::next(__iter_cur))` (a `Future[Option[(T, Self)]]` unwrapped) for an
-/// async iterator under `for`.
-fn build_iter_for_with(name: String, nextcall: Expr, iter: Expr, body: Expr) -> Expr {
-  let some_arm = (PCtor("Some", [PTuple([PBind(name), PBind("__iter_rest")])]), EAssign("__iter_cur", EIdent("__iter_rest", -1), body))
-  let none_arm = (PCtor("None", array_empty()), EAssign("__iter_go", EBool(false), EUnit))
+/// `ctype` supplies the `C::next` namespace and `should_await` selects whether
+/// that call is wrapped in `await`. All internal binders are minted fresh
+/// against the iterand and body so user names that resemble lowering details
+/// cannot be captured.
+fn build_iter_for_with(name: String, ctype: String, should_await: Bool, iter: Expr, body: Expr) -> Expr {
+  let src_name = dinsp_fresh_name("__iter_src", iter, body)
+  let cur_name = dinsp_fresh_name("__iter_cur", iter, body)
+  let go_name = dinsp_fresh_name("__iter_go", iter, body)
+  let rest_name = dinsp_fresh_name("__iter_rest", iter, body)
+  let raw_next = ECall(EIdent(String::concat(ctype, "::next"), -1), [
+    EIdent(cur_name, -1)
+  ], -1)
+  let nextcall = if should_await {
+    ECall(EIdent("await", -1), [raw_next], -1)
+  } else {
+    raw_next
+  }
+  let some_arm = (PCtor("Some", [PTuple([PBind(name), PBind(rest_name)])]), EAssign(cur_name, EIdent(rest_name, -1), body))
+  let none_arm = (PCtor("None", array_empty()), EAssign(go_name, EBool(false), EUnit))
   let loop_body = EMatch(nextcall, [some_arm, none_arm])
   // Bind the iterand through an immutable `__iter_src` and initialize the
   // mutable cursor from that ident, rather than from `iter` directly. The
@@ -5293,15 +6945,11 @@ fn build_iter_for_with(name: String, nextcall: Expr, iter: Expr, body: Expr) -> 
   // `for x in Range::{..}`) made that consume-then-reassign double-free the
   // initial value under RC. Seeding from a stable binding mirrors the working
   // `let r = ..; for x in r` shape so the ownership accounting balances (#704).
-  ELet("__iter_src", iter, ELetMut("__iter_cur", EIdent("__iter_src", -1), ELetMut("__iter_go", EBool(true), EWhile(EIdent("__iter_go", -1), loop_body), -1), -1), -1)
-}
-
-fn next_call_for(ctype: String) -> Expr {
-  ECall(EIdent(String::concat(ctype, "::next"), -1), [EIdent("__iter_cur", -1)], -1)
+  ELet(src_name, iter, ELetMut(cur_name, EIdent(src_name, -1), ELetMut(go_name, EBool(true), EWhile(EIdent(go_name, -1), loop_body), -1), -1), -1)
 }
 
 fn build_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
-  build_iter_for_with(name, next_call_for(ctype), iter, body)
+  build_iter_for_with(name, ctype, false, iter, body)
 }
 
 /// #736: `for x in xs` over a USER type implementing the indexed Iterable
@@ -5323,20 +6971,23 @@ fn build_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
 /// the index): `for x, i in xs` binds `i` to the current `__iter_i`. The loop
 /// is a statement (no per-iteration result collection).
 fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter: Expr, body: Expr) -> Expr {
+  let src_name = dinsp_fresh_name("__iter_src", iter, body)
+  let len_name = dinsp_fresh_name("__iter_n", iter, body)
+  let index_name = dinsp_fresh_name("__iter_i", iter, body)
   let get_call = ECall(EIdent(String::concat(ctype, "::iter_get"), -1), [
-    EIdent("__iter_src", -1),
-    EIdent("__iter_i", -1)
+    EIdent(src_name, -1),
+    EIdent(index_name, -1)
   ], -1)
   let len_call = ECall(EIdent(String::concat(ctype, "::iter_length"), -1), [
-    EIdent("__iter_src", -1)
+    EIdent(src_name, -1)
   ], -1)
-  let incr = EAssign("__iter_i", EBinOp("+", EIdent("__iter_i", -1), EInt(1)), EUnit)
+  let incr = EAssign(index_name, EBinOp("+", EIdent(index_name, -1), EInt(1)), EUnit)
   let bound_body = match idx {
-    Some(iname) => ELet(iname, EIdent("__iter_i", -1), body, -1),
+    Some(iname) => ELet(iname, EIdent(index_name, -1), body, -1),
     None => body
   }
   let loop_body = ELet(name, get_call, ESeq(bound_body, incr), -1)
-  ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body), -1), -1), -1)
+  ELet(src_name, iter, ELet(len_name, len_call, ELetMut(index_name, EInt(0), EWhile(EBinOp("<", EIdent(index_name, -1), EIdent(len_name, -1)), loop_body), -1), -1), -1)
 }
 
 /// `for` over an async iterator type `C` whose
@@ -5369,17 +7020,16 @@ fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter
 /// re-iterable collection. Left unsupported rather than given a plausible
 /// wrong meaning.
 fn build_host_stream_for(name: String, iter: Expr, body: Expr) -> Expr {
-  let read_call = ECall(EIdent("host_stream_next", -1), [
-    EIdent("__hs_src", -1)
-  ], -1)
-  let advance = EAssign("__hs_b", read_call, EUnit)
-  let loop_body = ELet(name, EIdent("__hs_b", -1), ESeq(body, advance), -1)
-  ELet("__hs_src", iter, ELetMut("__hs_b", read_call, EWhile(EBinOp("<=", EInt(0), EIdent("__hs_b", -1)), loop_body), -1), -1)
+  let src_name = dinsp_fresh_name("__hs_src", iter, body)
+  let byte_name = dinsp_fresh_name("__hs_b", iter, body)
+  let read_call = ECall(EIdent("host_stream_next", -1), [EIdent(src_name, -1)], -1)
+  let advance = EAssign(byte_name, read_call, EUnit)
+  let loop_body = ELet(name, EIdent(byte_name, -1), ESeq(body, advance), -1)
+  ELet(src_name, iter, ELetMut(byte_name, read_call, EWhile(EBinOp("<=", EInt(0), EIdent(byte_name, -1)), loop_body), -1), -1)
 }
 
 fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
-  let awaited = ECall(EIdent("await", -1), [next_call_for(ctype)], -1)
-  build_iter_for_with(name, awaited, iter, body)
+  build_iter_for_with(name, ctype, true, iter, body)
 }
 
 /// `for x in pull { body }` over a pull closure `pull : () -> Option[T]`
@@ -5389,20 +7039,22 @@ fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> 
 /// `C::next` drives the iterator loop above; anything else — a pull closure or a
 /// call whose return type is unknown — falls back to this).
 fn build_pull_for_in(value_name: String, index_name: Option[String], iterable: Expr, body: Expr) -> Expr {
+  let continue_name = dinsp_fresh_name("__pull_continue", iterable, body)
+  let next_name = dinsp_fresh_name("__pull_next", iterable, body)
   let some_arm = match index_name {
     Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
     None => ESeq(body, EUnit)
   }
-  let loop_body = EMatch(ECall(EIdent("__pull_next", -1), array_empty(), -1), [
+  let loop_body = EMatch(ECall(EIdent(next_name, -1), array_empty(), -1), [
     (PCtor("Some", [PBind(value_name)]), some_arm),
-    (PCtor("None", array_empty()), EAssign("__pull_continue", EBool(false), EUnit))
+    (PCtor("None", array_empty()), EAssign(continue_name, EBool(false), EUnit))
   ])
-  let core_loop = ELetMut("__pull_continue", EBool(true), EWhile(EIdent("__pull_continue", -1), loop_body), -1)
+  let core_loop = ELetMut(continue_name, EBool(true), EWhile(EIdent(continue_name, -1), loop_body), -1)
   let with_index = match index_name {
     Some(ix) => ELetMut(ix, EInt(0), core_loop, -1),
     None => core_loop
   }
-  ELet("__pull_next", iterable, with_index, -1)
+  ELet(next_name, iterable, with_index, -1)
 }
 
 /// Does `fname`'s recorded return-type head indicate an async iterator
@@ -5609,9 +7261,460 @@ fn railway_bind_payload_type(val: Expr, struct_sets: Array[(String, Array[String
   }
 }
 
-/// Extend the local var-type environment with `name` when its bound value's
-/// type was inferable. A fresh array (copy) is returned so sibling scopes do not
-/// see the binding.
+fn constructor_env_entry_belongs_to(entry_name: String, name: String) -> Bool {
+  // This environment is shared with equality, rendering, tuple projection,
+  // array-element, and impl-target inference. Shadow only constructor-owned
+  // evidence here; those other consumers rebind their metadata in rewrite_expr.
+  if entry_name == name || entry_name == constructor_mask_key(name) || entry_name == constructor_head_key(name) || entry_name == local_fn_return_key(name) {
+    true
+  } else {
+    let suffix = String::concat("$", name)
+    String::ends_with(entry_name, suffix) && (String::starts_with(entry_name, "__ctorpay$") || String::starts_with(entry_name, "__ctorpayi$"))
+  }
+}
+
+fn constructor_env_has_binding(var_types: Array[(String, String)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(var_types) && !found {
+    let (entry_name, _) = Array::get(var_types, i)
+    if constructor_env_entry_belongs_to(entry_name, name) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn constructor_env_copy_without(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(var_types) {
+    let entry = Array::get(var_types, i)
+    let (entry_name, _) = entry
+    if constructor_env_entry_belongs_to(entry_name, name) {
+      ()
+    } else {
+      Array::push(out, entry)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Constructor recovery has a stricter shadowing contract than the shared
+/// rewrite environment: an unresolved inner binding must still mask both the
+/// nominal and every per-binding sentinel carried by an outer binding of the
+/// same name. A fresh name has nothing to mask, so reuse the parent array —
+/// copying on every `let` of a large function is what moved selfcompile heap
+/// +27% on the constructor-witness branch.
+fn extend_constructor_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => if constructor_env_has_binding(var_types, name) {
+      let out = constructor_env_copy_without(var_types, name)
+      Array::push(out, (name, tname))
+      out
+    } else {
+      extend_var_types(var_types, name, Some(tname))
+    },
+    None => if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) {
+      let out = constructor_env_copy_without(var_types, name)
+      Array::push(out, (constructor_mask_key(name), ""))
+      out
+    } else {
+      var_types
+    }
+  }
+}
+
+/// Shared rewrite env keeps a historical name fallback for rendering; constructor
+/// recovery still sees the mask so a stale outer witness cannot be selected.
+fn constructor_rewrite_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => extend_constructor_var_types(var_types, name, Some(tname)),
+    None => if !constructor_binding_has_evidence(var_types, name) && !constructor_env_has_binding(var_types, name) {
+      var_types
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        let entry = Array::get(var_types, i)
+        let (entry_name, _) = entry
+        if entry_name == constructor_mask_key(name) || entry_name == constructor_head_key(name) || entry_name == local_fn_return_key(name) {
+          ()
+        } else {
+          Array::push(out, entry)
+        }
+        i = i + 1
+      }
+      Array::push(out, (constructor_mask_key(name), ""))
+      out
+    }
+  }
+}
+
+fn constructor_for_body_var_types(iter: Expr, value_name: String, index_name: Option[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let value_vars = constructor_rewrite_var_types(var_types, value_name, infer_arg_elem_type_name(iter, struct_sets, var_types, fn_returns))
+  match index_name {
+    Some(name) => constructor_rewrite_var_types(value_vars, name, Some("Int")),
+    None => value_vars
+  }
+}
+
+fn gen_uses_constructor_receiver(gen: DictGen) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(gen.threaded) && !found {
+    let (_, _, recv_idx) = Array::get(gen.threaded, i)
+    found = is_constructor_recv_index(recv_idx)
+    i = i + 1
+  }
+  found
+}
+
+/// Whether a binding directly stores a constructor-indexed generic call. Only
+/// these values need extended constructor inference; block/match/handler results
+/// are inferred when they are used directly as witness receivers.
+fn result_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
+  Array::get(dtd_constructor_tracking, 0) && match expr {
+    ECall(EIdent(name, _), _, _) => match lookup_gen_entry(gens, name) {
+      Some(gen) => gen_uses_constructor_receiver(gen),
+      None => false
+    },
+    _ => false
+  }
+}
+
+fn collect_constructor_receiver_names(expr: Expr) -> Unit {
+  match expr {
+    EIdent(name, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      ()
+    } else {
+      Array::push(dtd_constructor_local_returns, name)
+    },
+    _ => ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    collect_constructor_receiver_names(Array::get(children, i))
+    i = i + 1
+  }
+}
+
+fn record_constructor_receiver_names(gen: DictGen, args: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(gen.constructor_recvs) {
+    let (_, encoded_index) = Array::get(gen.constructor_recvs, i)
+    let index = decode_constructor_recv_index(encoded_index)
+    if index >= 0 && index < Array::length(args) {
+      collect_constructor_receiver_names(Array::get(args, index))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn expr_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
+  let here = match expr {
+    ECall(EIdent(name, _), args, _) => match lookup_gen_entry(gens, name) {
+      Some(gen) => if gen_uses_constructor_receiver(gen) {
+        record_constructor_receiver_names(gen, args)
+        true
+      } else {
+        false
+      },
+      None => false
+    },
+    _ => false
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  let mut found = here
+  while i < Array::length(children) {
+    if expr_uses_constructor_witness(Array::get(children, i), gens) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn stmts_use_constructor_witness(stmts: Array[Stmt], gens: Array[DictGen]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    let current = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => expr_uses_constructor_witness(expr, gens),
+      SLetMut(_, _, expr) => expr_uses_constructor_witness(expr, gens),
+      SLetPat(_, expr) => expr_uses_constructor_witness(expr, gens),
+      STest(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SBench(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SExample(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SExpr(expr) => expr_uses_constructor_witness(expr, gens),
+      SFnDecl(_, _, expr, requires, ensures) => expr_uses_constructor_witness(expr, gens) || expr_list_uses_constructor_witness(requires, gens) || expr_list_uses_constructor_witness(ensures, gens),
+      SModule(_, _, body) => stmts_use_constructor_witness(body, gens),
+      _ => false
+    }
+    if current {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn expr_list_uses_constructor_witness(exprs: Array[Expr], gens: Array[DictGen]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if expr_uses_constructor_witness(Array::get(exprs, i), gens) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn constructor_receiver_pattern_is_needed(pat: Pat) -> Bool {
+  let binders = empty_str_array()
+  collect_pat_binders(pat, binders)
+  let mut i = 0
+  let mut needed = false
+  while i < Array::length(binders) && !needed {
+    needed = str_array_contains(dtd_constructor_local_returns, Array::get(binders, i))
+    i = i + 1
+  }
+  needed
+}
+
+fn constructor_receiver_arms_need_scrutinee(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut needed = false
+  while i < Array::length(arms) && !needed {
+    let (pat, _) = Array::get(arms, i)
+    needed = constructor_receiver_pattern_is_needed(pat)
+    i = i + 1
+  }
+  needed
+}
+
+fn propagate_constructor_receiver_names_expr(expr: Expr) -> Unit {
+  match expr {
+    ELet(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    ELetRec(name, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    ELetMut(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EAssign(name, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EAssignOp(name, _, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EForIn(value_name, key_name, iter, _) => if str_array_contains(dtd_constructor_local_returns, value_name) || match key_name {
+      Some(name) => str_array_contains(dtd_constructor_local_returns, name),
+      None => false
+    } {
+      collect_constructor_receiver_names(iter)
+    } else {
+      ()
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (name, initial) = Array::get(params, i)
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(initial)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    EMatch(scrutinee, arms) => if constructor_receiver_arms_need_scrutinee(arms) {
+      collect_constructor_receiver_names(scrutinee)
+    } else {
+      ()
+    },
+    EHandle(body, arms) => if constructor_receiver_arms_need_scrutinee(arms) {
+      collect_constructor_receiver_names(body)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    propagate_constructor_receiver_names_expr(Array::get(children, i))
+    i = i + 1
+  }
+}
+
+fn propagate_constructor_receiver_names(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, expr) => {
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      SLetMut(name, _, expr) => {
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      SLetPat(pat, expr) => {
+        if constructor_receiver_pattern_is_needed(pat) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      STest(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SBench(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SExample(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SExpr(expr) => propagate_constructor_receiver_names_expr(expr),
+      SFnDecl(_, _, expr, requires, ensures) => {
+        propagate_constructor_receiver_names_expr(expr)
+        let mut ri = 0
+        while ri < Array::length(requires) {
+          propagate_constructor_receiver_names_expr(Array::get(requires, ri))
+          ri = ri + 1
+        }
+        let mut ei = 0
+        while ei < Array::length(ensures) {
+          propagate_constructor_receiver_names_expr(Array::get(ensures, ei))
+          ei = ei + 1
+        }
+      },
+      SModule(_, _, body) => propagate_constructor_receiver_names(body),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Remove every name introduced by a pattern before adding any constructor
+/// evidence recoverable from its scrutinee. Unknown pattern payloads still
+/// shadow outer bindings; retaining them can select a stale witness.
+fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat, fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let binders = empty_str_array()
+  collect_pat_binders(pat, binders)
+  if Array::length(binders) == 0 {
+    var_types
+  } else {
+    let mut needed = false
+    let mut bi = 0
+    while bi < Array::length(binders) {
+      let name = Array::get(binders, bi)
+      if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) || fn_return_type(fn_returns, name) != None {
+        needed = true
+      } else {
+        ()
+      }
+      bi = bi + 1
+    }
+    if !needed {
+      var_types
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        let entry = Array::get(var_types, i)
+        let (entry_name, _) = entry
+        let mut drop = false
+        let mut j = 0
+        while j < Array::length(binders) && !drop {
+          if constructor_env_entry_belongs_to(entry_name, Array::get(binders, j)) {
+            drop = true
+          } else {
+            j = j + 1
+          }
+        }
+        if drop {
+          ()
+        } else {
+          Array::push(out, entry)
+        }
+        i = i + 1
+      }
+      let mut k = 0
+      while k < Array::length(binders) {
+        let name = Array::get(binders, k)
+        if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) || fn_return_type(fn_returns, name) != None {
+          Array::push(out, (constructor_mask_key(name), ""))
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      out
+    }
+  }
+}
+
+/// Build a match arm's constructor environment without retaining shadowed
+/// evidence. A bare binding receives the scrutinee constructor directly;
+/// structured patterns reuse the payload/shape recovery shared by lowering.
+fn constructor_match_arm_var_types(scrut: Expr, pat: Pat, gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let masked = mask_constructor_pat_binders(var_types, pat, fn_returns)
+  match pat {
+    PBind(name) => {
+      let bound = extend_constructor_var_types(masked, name, infer_constructor_arg_type_name(scrut, gens, struct_sets, var_types, fn_returns))
+      let with_return = extend_local_fn_return(bound, name, scrut)
+      match lookup_var_type(with_return, local_fn_return_key(name)) {
+        Some(_) => with_return,
+        None => match scrut {
+          EFn(_, _, _, _, _, body) => extend_constructor_var_types(with_return, local_fn_return_key(name), infer_constructor_arg_type_name(body, gens, struct_sets, var_types, fn_returns)),
+          _ => with_return
+        }
+      }
+    },
+    PCtor(cn, sub) => {
+      match constructor_call_payload_var_types(scrut, cn, sub, gens, struct_sets, masked, fn_returns) {
+        Some(env) => env,
+        None => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
+      }
+    },
+    _ => arm_binder_var_types_env(scrut, pat, masked, struct_sets, fn_returns)
+  }
+}
+
+/// Extend the shared rewrite environment when the binding's type is known.
+/// Unknown bindings retain the historical best-effort environment because
+/// shape/rendering consumers have separate conservative fallbacks.
 fn extend_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
   match inferred {
     Some(tname) => {
@@ -5961,6 +8064,52 @@ fn collect_toplevel_anon_records(stmts: Array[Stmt], struct_sets: Array[(String,
       SLet(_, _, name, _, val) => match anon_record_inferred(val, struct_sets) {
         Some(sentinel) => Array::push(out, (name, sentinel)),
         None => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn can_be_toplevel_constructor(name: String) -> Bool {
+  name != "Int" && name != "Bool" && name != "String" && name != "Double" && name != "Float" && name != "Unit" && name != "ByteStream"
+}
+
+fn collect_toplevel_constructor_vars(stmts: Array[Stmt], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let mut out = collect_toplevel_anon_records(stmts, struct_sets)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, val) => {
+        let inferred = if result_uses_constructor_witness(val, gens) {
+          anon_or_constructor_infer(val, gens, struct_sets, out, fn_returns)
+        } else {
+          anon_or_infer(val, struct_sets, out, fn_returns)
+        }
+        match inferred {
+          Some(inferred) => if can_be_toplevel_constructor(inferred) {
+            out = extend_constructor_var_types(out, name, Some(inferred))
+          } else {
+            ()
+          },
+          None => ()
+        }
+      },
+      SLetMut(name, _, val) => {
+        let inferred = if result_uses_constructor_witness(val, gens) {
+          anon_or_constructor_infer(val, gens, struct_sets, out, fn_returns)
+        } else {
+          anon_or_infer(val, struct_sets, out, fn_returns)
+        }
+        match inferred {
+          Some(inferred) => if can_be_toplevel_constructor(inferred) {
+            out = extend_constructor_var_types(out, name, Some(inferred))
+          } else {
+            ()
+          },
+          None => ()
+        }
       },
       _ => ()
     }
@@ -7563,8 +9712,8 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               }
               match as_method {
                 Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off),
-                None => match lookup_gen(gens, name) {
-                  Some(threaded) => match synth_dicts(threaded, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                None => match lookup_gen_entry(gens, name) {
+                  Some(gen) => match synth_dicts(gen.threaded, gen.constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                     Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
                     None => ECall(EIdent(name, coff), rwargs, off)
                   },
@@ -7636,8 +9785,8 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                   // dicts ahead of the rewritten receiver + args on success,
                   // falling back to the un-dicted call (same as the EIdent
                   // arm's own fallback) when synth_dicts can't resolve one.
-                  Some(qual) => match lookup_gen(gens, qual) {
-                    Some(threaded) => match synth_dicts(threaded, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                  Some(qual) => match lookup_gen_entry(gens, qual) {
+                    Some(gen) => match synth_dicts(gen.threaded, gen.constructor_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, prepend_expr(robj, rwargs)), off),
                       None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off)
                     },
@@ -7688,26 +9837,66 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
     EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ELet(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred = if result_uses_constructor_witness(val, gens) {
+        anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)
+      } else {
+        anon_or_infer(val, struct_sets, var_types, fn_returns)
+      }
+      let inferred_vars = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
+        constructor_rewrite_var_types(var_types, name, inferred)
+      } else {
+        extend_var_types(var_types, name, inferred)
+      }
       let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       // #2157: an unannotated `let xs = []` reads its element type off the
       // pushes in its own body, so it compares like the annotated form.
-      let body_vars = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars = extend_local_fn_return(body_vars3, name, val)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
-    ELetRec(name, val, body) => ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELetRec(name, val, body) => {
+      let rec_vars = if Array::get(dtd_constructor_tracking, 0) {
+        extend_local_fn_return(extend_constructor_var_types(var_types, name, None), name, val)
+      } else {
+        var_types
+      }
+      ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, rec_vars, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, rec_vars, fn_returns))
+    },
     ELetMut(name, val, body, soff) => {
       let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-      let inferred_vars = extend_var_types(var_types, name, anon_or_infer(val, struct_sets, var_types, fn_returns))
+      let inferred = if result_uses_constructor_witness(val, gens) {
+        anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)
+      } else {
+        anon_or_infer(val, struct_sets, var_types, fn_returns)
+      }
+      let inferred_vars = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
+        constructor_rewrite_var_types(var_types, name, inferred)
+      } else {
+        extend_var_types(var_types, name, inferred)
+      }
       let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
       let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
       let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
-      let body_vars = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars = extend_local_fn_return(body_vars3, name, val)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
-    EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EAssign(name, val, cont) => {
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let inferred = if result_uses_constructor_witness(val, gens) {
+        anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)
+      } else {
+        anon_or_infer(val, struct_sets, var_types, fn_returns)
+      }
+      let continuation_vars = if Array::get(dtd_constructor_tracking, 0) {
+        extend_local_fn_return(constructor_rewrite_var_types(var_types, name, inferred), name, val)
+      } else {
+        var_types
+      }
+      EAssign(name, new_val, rewrite_expr(cont, gens, traits, struct_sets, dict_binds, continuation_vars, fn_returns))
+    },
     EAssignOp(name, op, val, cont) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ESeq(a, b) => ESeq(rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EMatch(scrut, arms) => {
@@ -7721,7 +9910,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // known. When the scrutinee is a NAME whose payload type was recorded
         // (`ctor_payload_key`, from a parameter annotation or a let-bound
         // `Some(..)`), the arm's binder gets that type for its body.
-        let arm_vars = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
+        let arm_vars0 = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
+        let arm_vars = if Array::get(dtd_constructor_tracking, 0) {
+          constructor_match_arm_var_types(scrut, p, gens, struct_sets, arm_vars0, fn_returns)
+        } else {
+          arm_vars0
+        }
         Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
@@ -7732,7 +9926,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        let arm_vars = if Array::get(dtd_constructor_tracking, 0) {
+          constructor_handler_arm_var_types(scrut, p, gens, struct_sets, var_types, fn_returns)
+        } else {
+          var_types
+        }
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
@@ -7743,7 +9942,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
     }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EForIn(name, idx, iter, body) => {
-      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let body_vars = if Array::get(dtd_constructor_tracking, 0) {
+        constructor_for_body_var_types(iter, name, idx, struct_sets, var_types, fn_returns)
+      } else {
+        var_types
+      }
+      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
       // #1350: one surface, one classification. A plain `for x in e` is
       // iterator/iterable/array-classified only when a method-bearing trait is
       // present (without one there are no `impl ::next` methods to dispatch),
@@ -8091,7 +10295,12 @@ fn thread_dict_params(threaded: Array[(String, String, Int)], params: Array[(Str
   let mut i = 0
   while i < Array::length(threaded) {
     let (tp, trait_name, _) = Array::get(threaded, i)
-    let dty = TyApp(dict_struct_name(trait_name), [TyName(tp)])
+    let trait_args = trait_ref_args(trait_name)
+    let dty = TyApp(dict_struct_name(trait_name), if Array::length(trait_args) > 0 {
+      trait_args
+    } else {
+      [TyName(tp)]
+    })
     Array::push(result, (dict_param_name(trait_name, tp), Some(dty)))
     i = i + 1
   }
@@ -8141,6 +10350,7 @@ fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, Array[(
       None => SLet(exp, isrec, fname, ann, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns))
     },
     SLetMut(name, ty, e) => SLetMut(name, ty, rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
+    SLetPat(pat, e) => SLetPat(pat, rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
     STest(name, body) => STest(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
     SBench(name, body) => SBench(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
     SExpr(e) => SExpr(rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
@@ -9275,11 +11485,25 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
 /// `Map` was the single outlier in that table until #2218 gave `eq_for_typed`
 /// a `Map` arm. It is admitted here for the same reason `Array` is: there is
 /// now a generated comparator that descends into it.
+fn eq_tparams_contain_name(tparams: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) && !found {
+    if type_param_name(Array::get(tparams, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Bool {
   // A field written as the owner's own parameter is not the same-spelled
   // alias, even when one exists in the program (#2281).
   match t {
-    TyName(n) => if str_array_contains(tparams, n) {
+    TyName(n) => if eq_tparams_contain_name(tparams, n) {
       true
     } else {
       eq_ty_field_is_content_comparable_expanded(eq_expand_alias_ty(t), tparams)
@@ -9290,7 +11514,7 @@ fn eq_ty_field_is_content_comparable(t: TypeExpr, tparams: Array[String]) -> Boo
 
 fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String]) -> Bool {
   match t {
-    TyName(n) => if str_array_contains(tparams, n) {
+    TyName(n) => if eq_tparams_contain_name(tparams, n) {
       // The owner's own type parameter is resolved by the concrete specialized
       // comparator, so it is not a declaration-level failure.
       true
@@ -9304,7 +11528,9 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
       false
     } else {
       let args_ok = eq_tys_all_content_comparable(args, tparams)
-      if head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 || head == "Map" && Array::length(args) == 2 || builtin_string_map_applied(head, args) {
+      if eq_tparams_contain_name(tparams, head) {
+        args_ok
+      } else if head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 || head == "Map" && Array::length(args) == 2 || builtin_string_map_applied(head, args) {
         // The heads `eq_for_typed` has a structural arm for. The arity is part
         // of the condition: a head applied to the wrong number of arguments is
         // not the builtin this admits.
@@ -9364,8 +11590,10 @@ fn generic_eq_formal_is_observed(head: String, formal: String, visiting: Array[S
 
 fn generic_eq_type_observes_formal(ty: TypeExpr, formal: String, visiting: Array[String]) -> Bool {
   match ty {
-    TyName(name) => name == formal,
-    TyApp(head, args) => if generic_eq_struct_declared(head) {
+    TyName(name) => name == formal || name == type_param_name(formal),
+    TyApp(head, args) => if head == type_param_name(formal) {
+      true
+    } else if generic_eq_struct_declared(head) {
       let mut observed = false
       let mut i = 0
       while i < Array::length(dtd_eq_generic_structs) {
@@ -14437,7 +16665,7 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       paired_expect_node(node, AuthorityExprFn, Array::length(type_params) + Array::length(params), 1, poisoned)
       let mut ti = 0
       while ti < Array::length(type_params) {
-        paired_expect_slot(node, ti, ExpressionFunctionTypeParameterBinder, Array::get(type_params, ti), poisoned)
+        paired_expect_slot(node, ti, ExpressionFunctionTypeParameterBinder, type_param_name(Array::get(type_params, ti)), poisoned)
         ti = ti + 1
       }
       let mark = Array::length(shadows)
@@ -14574,7 +16802,7 @@ fn relabel_stmt_paired(stmt: Stmt, tbl: Array[(String, Array[String])], node: Bi
       paired_expect_slot(node, 0, StatementTypeBinder, name, poisoned)
       let mut i = 0
       while i < Array::length(params) {
-        paired_expect_slot(node, i + 1, StatementTypeParameterBinder, Array::get(params, i), poisoned)
+        paired_expect_slot(node, i + 1, StatementTypeParameterBinder, type_param_name(Array::get(params, i)), poisoned)
         i = i + 1
       }
       stmt
@@ -16148,6 +18376,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // stale entries. A second run of this pass over the same program
   // regenerates nothing and never reads the table.
   namespace_rename_originals_reset()
+  derive_trait_namespace_operations(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
   // program declares no method-bearing trait `traits` is empty, the dict-passing
@@ -16160,6 +18389,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // the shims -- see program_wants_show_dict.
   collect_show_shims(stmts)
   let traits_raw = collect_method_traits_with_show(stmts)
+  let trait_type_params = collect_trait_type_params(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
   // Rank-1 method generics (#684): re-attach each trait method's `[X: Bound]`
@@ -16174,8 +18404,25 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   let fn_returns = collect_fn_returns(stmts)
   let gimpl_infos = collect_generic_impl_infos(stmts)
   let gens = build_gens(stmts, traits, gimpl_infos)
+  Array::truncate(dtd_constructor_local_returns, 0)
+  Array::truncate(dtd_constructor_callable_bodies, 0)
+  Array::set(dtd_constructor_tracking, 0, stmts_use_constructor_witness(stmts, gens))
+  if Array::get(dtd_constructor_tracking, 0) {
+    collect_constructor_callable_bodies(stmts)
+    let mut previous_count = -1
+    while previous_count != Array::length(dtd_constructor_local_returns) {
+      previous_count = Array::length(dtd_constructor_local_returns)
+      propagate_constructor_receiver_names(stmts)
+    }
+  } else {
+    ()
+  }
   // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
-  let toplevel_vars = collect_toplevel_anon_records(stmts, struct_sets)
+  let toplevel_vars = if Array::get(dtd_constructor_tracking, 0) {
+    collect_toplevel_constructor_vars(stmts, gens, struct_sets, fn_returns)
+  } else {
+    collect_toplevel_anon_records(stmts, struct_sets)
+  }
   // #1374: reset the exception-kind pass state. An already-declared cell means
   // an earlier run of this pass on this same program already wrapped every
   // throw, so the rewrite below stays off.
@@ -16232,7 +18479,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
           Array::push(dtd_synth_dict_fields, (dict_name, mname, lookup_str_pair(owners, mname, trait_name)))
           si = si + 1
         }
-        Array::push(stmts, make_dict_struct_stmt(trait_name, sigs))
+        Array::push(stmts, make_dict_struct_stmt(trait_name, sigs, lookup_trait_type_params(trait_type_params, trait_name)))
       }
       ti = ti + 1
     }

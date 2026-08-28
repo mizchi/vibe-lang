@@ -541,6 +541,28 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 (`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
 `Array::map(xs, (v) -> v * 2)`.
 
+Every method-bearing trait exposes its operations through the trait namespace:
+`Trait::operation(value, args)` or `value |> Trait::operation(args)`. The
+operation is derived from the trait declaration; no forwarding function is
+needed. Importing `trait Trait` also activates its exported `Trait::*`
+operations, but never introduces a bare `operation` binding.
+
+The constructor-indexed `Mappable::map` is one instance of this general rule
+and is the canonical container-preserving pipeline combinator (ADR-0110):
+
+```vibe
+import @vibe/builtin { trait Mappable }
+
+let arrays = [1, 2]
+  |> Mappable::map((x) -> { x + 1 })
+  |> Mappable::map((x) -> { x * 2 })
+let option = Some(3) |> Mappable::map((x) -> { x + 1 })
+```
+
+`Mappable[Array]` lowers to eager `Array::map`; `Mappable[Option]` preserves
+the Option shape. This shared spelling does not collapse ADR-0099's separate
+eager Array and pull AsyncIter implementation layers.
+
 **Method-style calls** (#736): `xs.length()` and `xs |> length` resolve to
 `List::length(xs)` when `xs`'s type is a USER type and the method is declared
 as a top-level fn in the **`Type::method` spelling** (`fn List::length(xs:
@@ -901,6 +923,29 @@ let optional: Apply[Option, Int] = Some(42)
 Kinded binders and applied types are preserved across package interfaces.
 Passing a complete type where a constructor is required is rejected with the
 expected and actual arities. Unkinded `F[A]` remains legal.
+
+Constructor parameters may carry applied trait bounds. `Mappable[F]` selects a
+witness for the constructor itself, while `F[A]` and `F[B]` remain ordinary
+applied value types:
+
+```vibe
+trait LocalMappable[F[_]] {
+  map[A, B](F[A], (A) -> B) -> F[B]
+}
+
+impl LocalMappable[Array] for Array {
+  map(xs: Array[A], f: (A) -> B) -> Array[B] {
+    Array::map(xs, f)
+  }
+}
+
+let mapped = LocalMappable::map([1, 2], (x) -> { x + 1 })
+```
+
+Missing or duplicate constructor instances are checker errors; an unresolved
+trait witness never reaches code generation. The implementation-side
+`F::map` spelling is internal dictionary dispatch; public calls use
+`LocalMappable::map`.
 
 <!-- doctest-skip: mixed-kind is deliberately rejected -->
 ```vibe skip

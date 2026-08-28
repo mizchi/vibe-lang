@@ -1574,7 +1574,7 @@ fn load_planned_module_source(rdb: RippleDb, path: String) -> (RippleDb, Option[
 ///
 /// Order and duplicate paths are preserved verbatim. lookup_env_cache's
 /// first-match rule is intentional: it is the same rule build_import_env uses,
-/// so a duplicate cache path cannot select one interface while TDRE7 keys a
+/// so a duplicate cache path cannot select one interface while TDRE8 keys a
 /// different one. A missing row is an infrastructure error, never EnvEmpty:
 /// continuing would let an unreadable dependency silently weaken checking.
 fn project_exact_dependency_envs(deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> Array[(String, TypeEnv)] with Exception {
@@ -1815,7 +1815,7 @@ fn collect_module_diagnostics() -> Bool {
 ///   5 current-source parse executions (ModuleJob parse memo misses)
 ///   6 checker executions
 ///   7 modules reused by conservative fingerprint authority
-///   8 modules reused by validated TDRE7 dependency transport authority
+///   8 modules reused by validated TDRE8 dependency transport authority
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
@@ -1839,10 +1839,10 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = []
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// TDRE7 aliases only an exact v7 decoded TypeEnv when every direct dependency
+// TDRE8 aliases only an exact v8 decoded TypeEnv when every direct dependency
 // transport environment is unchanged. It is not a CheckedProgram or typed-IR
-// transport; v7 retains kinded applications in the TypeEnv declaration, trait, and
-// impl chain. The empty cell is
+// transport; v8 retains kinded applications and constructor-bound self references
+// in the TypeEnv declaration, trait, and impl chain. The empty cell is
 // conservative for direct FS consumers. The CLI check-only lane explicitly
 // enables production reuse after validating its per-invocation policy; build,
 // codegen, and other FS consumers remain off pending compact publication.
@@ -2559,7 +2559,7 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// name the module itself imported -- so testing an import against it let
 /// `import ./dep.vibe { private_fn }` through to die in codegen. Dropping
 /// the non-exported bindings here, at the single point every publication
-/// path flows through (persistent store, env cache, worker env.out, TDRE7),
+/// path flows through (persistent store, env cache, worker env.out, TDRE8),
 /// makes the existing membership check in
 /// bind_import_names_from_cache_collecting the export test itself.
 ///
@@ -3033,7 +3033,7 @@ fn incremental_checked_env_identity(env: TypeEnv) -> String with Exception {
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
-/// A trace-only observation of the complete persistent TypeEnv v7 transport.
+/// A trace-only observation of the complete persistent TypeEnv v8 transport.
 /// The canonical cache-text bytes are the sole input. This is not a
 /// CheckedProgram, typed IR, exported interface, cache key, or reuse decision.
 fn incremental_persistent_type_env_transport_identity(env: TypeEnv) -> String {
@@ -3087,7 +3087,7 @@ fn incremental_trace_json_string(text: String) -> String {
 /// provisional canonical token-stream identity, not normalized typed IR.
 /// `checked_env_fingerprint` is a complete value-environment observation.
 /// `persistent_type_env_transport_fingerprint` observes only the complete
-/// persistent TypeEnv v7 transport, not a CheckedProgram, typed IR, exported
+/// persistent TypeEnv v8 transport, not a CheckedProgram, typed IR, exported
 /// interface, cache key, or reuse decision. `decision` records what this current TypeDb
 /// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
@@ -3152,7 +3152,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete persistent TypeEnv transport observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(persistent_type_env_transport_fingerprint))
-    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v7 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
+    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v8 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1
@@ -3287,14 +3287,14 @@ fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with E
   text
 }
 
-// TDRE7 is deliberately independent from the TypeEnv v7 envelope and from
-// every production artifact/cache identity. Both v7 envelopes use strict
+// TDRE8 is deliberately independent from the TypeEnv v8 envelope and from
+// every production artifact/cache identity. Both v8 envelopes use strict
 // decimal length-delimited fields and bind the logical checker input, target
-// conservative fingerprint, and exact canonical TypeEnv-v7 transport text.
+// conservative fingerprint, and exact canonical TypeEnv-v8 transport text.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
-let typing_dependency_env_reuse_alias_v7_tag = "TDRE7A"
-let typing_dependency_env_reuse_witness_v7_tag = "TDRE7W"
+let typing_dependency_env_reuse_alias_v8_tag = "TDRE8A"
+let typing_dependency_env_reuse_witness_v8_tag = "TDRE8W"
 
 fn typing_reuse_segment(text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
@@ -3361,11 +3361,11 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 /// source, effective typing semantics, resolution authority, and every resolved direct dependency row of
 /// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
 /// this table once with project_exact_dependency_envs and gives the same value
-/// to both check_module and TDRE7 lookup/publication, so ambient coordinator
+/// to both check_module and TDRE8 lookup/publication, so ambient coordinator
 /// cache rows are neither checker-visible nor part of this canonical text.
 fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v7")
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v8")
   StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
   StringBuilder::push(out, typing_reuse_segment(source))
   StringBuilder::push(out, typing_reuse_segment(semantics_seed))
@@ -3412,7 +3412,7 @@ fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(S
   if !Fs::exists(witness_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v7_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v8_tag) {
       Some((input_key, target_fingerprint, target_text)) =>
       if target_fingerprint != fingerprint {
         None
@@ -3434,7 +3434,7 @@ fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool
   }
 }
 
-/// Eligibility is transitively witnessed by successful canonical TypeEnv-v7
+/// Eligibility is transitively witnessed by successful canonical TypeEnv-v8
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
@@ -3453,7 +3453,7 @@ fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> 
 }
 
 fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Fs {
-  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v7_tag, input_key, fingerprint, target_text)
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v8_tag, input_key, fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
 }
 
@@ -3462,7 +3462,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
   if !Fs::exists(sidecar_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v7_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v8_tag) {
       Some((alias_input_key, target_fingerprint, target_text)) =>
       if alias_input_key != input_key {
         None
@@ -3489,7 +3489,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
 }
 
 fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Fs {
-  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v7_tag, input_key, target_fingerprint, target_text)
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v8_tag, input_key, target_fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 
@@ -4149,7 +4149,7 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
   // The final strings are trace-only interface, checked-value-env, and
-  // complete persistent TypeEnv v7 transport identities. They are computed
+  // complete persistent TypeEnv v8 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
   // inputs, and are empty unless the invalidation trace is enabled. The final
   // optional string is a canonical in-memory-only #1550 module artifact
@@ -4308,7 +4308,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
       // consumer of `Checked`'s env (env cache, persistent store, worker
-      // transport, TDRE7, trace identities) is a publication path. The full
+      // transport, TDRE8, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
       let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
       let interface_identity = if incremental_interface_trace_enabled() {
@@ -4368,7 +4368,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       throw(String::concat(job.path, ": type error"))
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, _) => {
-      // Serialize the TypeEnv once. Production-default TDRE7 publication binds
+      // Serialize the TypeEnv once. Production-default TDRE8 publication binds
       // the exact same text as the conservative target; serializing it a second
       // time materially inflates fresh selfcompile heap without adding evidence.
       let target_text = store_persistent_type_env(fingerprint, checked_env)
@@ -4643,7 +4643,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     },
     None => {
       // Keep the accumulated cache as coordinator state, but expose exactly the
-      // resolved dependency sequence to the checker and TDRE7. Construct this
+      // resolved dependency sequence to the checker and TDRE8. Construct this
       // once: lookup, check, and publication must describe the same value.
       let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
       let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
@@ -6022,7 +6022,7 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
 /// types module's source mapping: `stmt_at` carries the parser's token index and
 /// `starts` converts it to the contract's byte offset. The message itself names
 /// the field or payload, so the reported edit remains actionable.
-fn contract_type_shadow(stmts: Array[Stmt], type_defs: Array[Stmt], opaque_names: Array[(String, Int)]) -> Array[String] {
+fn contract_type_shadow(stmts: Array[Stmt], type_defs: Array[Stmt], opaque_names: Array[(String, Array[String])]) -> Array[String] {
   let out = contract_types_item_names(type_defs)
   let provenance = contract_type_provenance(stmts, opaque_names)
   let mut i = 0
@@ -6068,7 +6068,7 @@ fn contract_append_decl_errors(source: String, starts: Array[Int], stmt_at: Arra
   }
 }
 
-fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], opaque_names: Array[(String, Int)], type_defs: Array[Stmt]) -> Array[String] with Exception {
+fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> Array[String] with Exception {
   let out = array_empty()
   let derive_names = contract_derive_name_table(tokens, starts)
   let derive_taken = contract_taken_flags(derive_names)

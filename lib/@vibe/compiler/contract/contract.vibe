@@ -4,6 +4,10 @@ import @vibe/compiler/core {
   Expr, ImportItem, Stmt, TypeExpr, is_builtin_type_name, lookup_registry_builtin, resolve_builtin
 }
 
+import @vibe/ast {
+  type_param_arity, type_param_key, type_param_name
+}
+
 import @vibe/compiler/syntax {
   Token, offset_to_line_col, parse_fn_signature, parse_stmt, parse_type, peek, print_stmt, print_type_expr, tk_name
 }
@@ -116,9 +120,9 @@ fn fn_sig_text(tps: Array[String], tbs: Array[(String, Array[String])], params: 
 /// whose definition lives in an implementation file (#729 C-4). Everything
 /// else (implementation imports, transparent type definitions) parses as
 /// ordinary statements and is returned alongside.
-/// #739: opaque/bodyless type declarations carry (name, arity) so conformance
-/// can reject an impl whose type-parameter count differs and the semver
-/// surface can see `Box` -> `Box[T]` as a breaking change.
+/// #739/#2338: opaque/bodyless type declarations carry their canonical type
+/// parameter keys, including constructor arities. Conformance and semver can
+/// therefore see both `Box` -> `Box[T]` and `F[_]` -> `F[_, _]` as breaking.
 /// #2317: record a contract statement together with the token index it
 /// started at.
 ///
@@ -141,7 +145,74 @@ fn push_contract_decl(decls: Array[(String, String)], decl_at: Array[Int], name:
   Array::push(decl_at, at)
 }
 
-export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt]) with Exception {
+/// Parse the optional parameter list of a bodyless contract type. Each binder
+/// retains its constructor kind in the same canonical key used by the AST, so
+/// conformance and surface hashing can distinguish `F`, `F[_]`, and
+/// `F[_, _]` instead of collapsing all three to one outer parameter.
+fn parse_opaque_type_params(tokens: Array[Token], pos: Int, name: String) -> (Array[String], Int) with Exception {
+  match peek(tokens, pos) {
+    TLBracket => {
+      let mut p = pos + 1
+      let params = array_empty()
+      let mut done = false
+      while !done {
+        match peek(tokens, p) {
+          TIdent(param_name) => {
+            p = p + 1
+            let mut kind_arity = 0
+            match peek(tokens, p) {
+              TLBracket => {
+                p = p + 1
+                let mut kind_done = false
+                while !kind_done {
+                  match peek(tokens, p) {
+                    TIdent(hole) => if hole == "_" {
+                      kind_arity = kind_arity + 1
+                      p = p + 1
+                      match peek(tokens, p) {
+                        TComma => {
+                          p = p + 1
+                        },
+                        TRBracket => {
+                          p = p + 1
+                          kind_done = true
+                        },
+                        _ => throw("expected ',' or ']' after '_' in opaque type `\{name}` constructor parameter")
+                      }
+                    } else {
+                      throw("opaque type `\{name}` constructor parameters contain only '_' placeholders")
+                    },
+                    TRBracket => throw("opaque type `\{name}` constructor parameter needs at least one '_' placeholder"),
+                    TEof => throw("unterminated constructor parameter on opaque type `\{name}`"),
+                    _ => throw("expected '_' in opaque type `\{name}` constructor parameter")
+                  }
+                }
+              },
+              _ => ()
+            }
+            Array::push(params, type_param_key(param_name, kind_arity))
+            match peek(tokens, p) {
+              TComma => {
+                p = p + 1
+              },
+              TRBracket => {
+                p = p + 1
+                done = true
+              },
+              _ => throw("expected ',' or ']' in opaque type `\{name}` parameter list")
+            }
+          },
+          TRBracket => throw("opaque type `\{name}` requires at least one parameter inside '[]'"),
+          _ => throw("expected type parameter name in opaque type `\{name}`")
+        }
+      }
+      (params, p)
+    },
+    _ => ([], pos)
+  }
+}
+
+export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Exception {
   let (decls, opaques, stmts, _at, _dat) = parse_contract_program_spans(tokens)
   (decls, opaques, stmts)
 }
@@ -156,7 +227,7 @@ export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String
 /// it used to discard that. Recovering it by SEARCH was tried three times in
 /// the #2315 review and each attempt produced a predicate that could anchor on
 /// valid code, so the offset is carried instead.
-export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Int)], Array[Stmt], Array[Int], Array[Int]) with Exception {
+export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Array[String])], Array[Stmt], Array[Int], Array[Int]) with Exception {
   let decls = array_empty()
   let decl_at = array_empty()
   let opaques = array_empty()
@@ -181,7 +252,7 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
           _ => ""
         }
         let mut is_bodyless = false
-        let mut arity = 0
+        let mut params: Array[String] = []
         if tname == "" {
           ()
         } else {
@@ -189,36 +260,15 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
           let mut scan = la
           match peek(tokens, scan) {
             TLBracket => {
-              let mut depth = 1
-              // `[T, U]` — parameters at depth 1 are comma-separated (#739).
-              arity = 1
-              scan = scan + 1
-              while depth > 0 {
-                match peek(tokens, scan) {
-                  TLBracket => {
-                    depth = depth + 1
-                  },
-                  TRBracket => {
-                    depth = depth - 1
-                  },
-                  TComma => if depth == 1 {
-                    arity = arity + 1
-                  } else {
-                    ()
-                  },
-                  TEof => {
-                    depth = 0
-                  },
-                  _ => ()
-                }
-                scan = scan + 1
-              }
+              let parsed = parse_opaque_type_params(tokens, scan, tname)
+              params = parsed.0
+              scan = parsed.1
             },
             _ => ()
           }
           match peek(tokens, scan) {
             TEq => {
-              arity = 0
+              params = []
             },
             _ => {
               is_bodyless = true
@@ -227,7 +277,7 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
           }
         }
         if is_bodyless {
-          Array::push(opaques, (tname, arity))
+          Array::push(opaques, (tname, params))
           pos = la
         } else {
           let (stmt, next) = parse_stmt(tokens, [], pos)
@@ -266,12 +316,9 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
         match peek(tokens, pos + 1) {
           TType => match peek(tokens, pos + 2) {
             TIdent(oname) => {
-              match peek(tokens, pos + 3) {
-                TLBracket => throw("opaque type '\{oname}': type parameters are not yet supported (#729)"),
-                _ => ()
-              }
-              Array::push(opaques, (oname, 0))
-              pos = pos + 3
+              let (params, next) = parse_opaque_type_params(tokens, pos + 3, oname)
+              Array::push(opaques, (oname, params))
+              pos = next
             },
             _ => throw("expected type name after 'opaque type'")
           },
@@ -382,27 +429,93 @@ export fn collect_impl_fn_defs(stmts: Array[Stmt]) -> Array[(String, Option[Stri
 /// Collect (name, exported) for every top-level type definition (struct /
 /// enum / type alias / suberror) — the shapes an `opaque type` declaration
 /// can be implemented by.
-/// #739: the third element is the implementation's type-parameter count, so
-/// conformance can compare it against the contract's declared arity.
-/// Suberrors carry no type parameters in the AST — arity 0. Structs DO
+/// #739/#2338: the third element is the implementation's canonical type
+/// parameter list, so conformance compares both outer arity and constructor
+/// kinds. Suberrors carry no type parameters in the AST. Structs DO
 /// (#829 gave SStruct a trailing tparams field, `struct S[T] { ... }`) —
 /// this used to be hardcoded to 0 for every struct, which forced every
 /// generic-struct package's contract to under-declare its arity as 0 (see
 /// e.g. the #841 packages' now-stale "arity 0" workaround NOTEs).
-export fn collect_impl_type_defs(stmts: Array[Stmt]) -> Array[(String, Bool, Int)] {
+export fn collect_impl_type_defs(stmts: Array[Stmt]) -> Array[(String, Bool, Array[String])] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SStruct(exported, name, _, _, _, tparams) => Array::push(out, (name, exported, Array::length(tparams))),
-      SEnum(exported, name, tparams, _, _) => Array::push(out, (name, exported, Array::length(tparams))),
-      STypeAlias(exported, name, tparams, _) => Array::push(out, (name, exported, Array::length(tparams))),
-      SSuberror(exported, name, _) => Array::push(out, (name, exported, 0)),
+      SStruct(exported, name, _, _, _, tparams) => Array::push(out, (name, exported, tparams)),
+      SEnum(exported, name, tparams, _, _) => Array::push(out, (name, exported, tparams)),
+      STypeAlias(exported, name, tparams, _) => Array::push(out, (name, exported, tparams)),
+      SSuberror(exported, name, _) => Array::push(out, (name, exported, [])),
       _ => ()
     }
     i = i + 1
   }
   out
+}
+
+fn same_type_param_kinds(left: Array[String], right: Array[String]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) && same {
+      if type_param_arity(Array::get(left, i)) != type_param_arity(Array::get(right, i)) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn render_type_param(param: String) -> String {
+  let arity = type_param_arity(param)
+  if arity == 0 {
+    type_param_name(param)
+  } else {
+    let holes = array_empty()
+    let mut i = 0
+    while i < arity {
+      Array::push(holes, "_")
+      i = i + 1
+    }
+    "\{type_param_name(param)}[\{String::join(holes, ", ")}]"
+  }
+}
+
+fn render_type_params(params: Array[String]) -> String {
+  let rendered = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(rendered, render_type_param(Array::get(params, i)))
+    i = i + 1
+  }
+  "[\{String::join(rendered, ", ")}]"
+}
+
+/// Canonical kind-only rendering for API identity. Binder spellings are not
+/// observable: `F[_]` and `G[_]` occupy the same positional constructor slot.
+fn render_type_param_kinds(params: Array[String]) -> String {
+  let rendered = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let arity = type_param_arity(Array::get(params, i))
+    if arity == 0 {
+      Array::push(rendered, "_")
+    } else {
+      let holes = array_empty()
+      let mut hi = 0
+      while hi < arity {
+        Array::push(holes, "_")
+        hi = hi + 1
+      }
+      Array::push(rendered, "_[\{String::join(holes, ", ")}]")
+    }
+    i = i + 1
+  }
+  "[\{String::join(rendered, ", ")}]"
 }
 
 /// #847: names an impl file brings into the package's export surface via
@@ -427,6 +540,47 @@ fn collect_reexported_names(impl_stmts: Array[Stmt]) -> Array[String] {
             None => rname
           }
           Array::push(out, exported_name)
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Type-parameter kinds carried by a re-export whose source declaration is
+/// one of the implementation statements being checked. The public spelling
+/// is the alias when present, while the declaration lookup uses the source
+/// spelling from the re-export item.
+fn collect_reexported_type_defs(impl_stmts: Array[Stmt], type_defs: Array[(String, Bool, Array[String])]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(impl_stmts) {
+    match Array::get(impl_stmts, i) {
+      SReExport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          let exported_name = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if exported_name == item.name {
+            ()
+          } else {
+            let mut ti = 0
+            while ti < Array::length(type_defs) {
+              let (type_name, _, params) = Array::get(type_defs, ti)
+              if type_name == item.name {
+                Array::push(out, (exported_name, params))
+              } else {
+                ()
+              }
+              ti = ti + 1
+            }
+          }
           ii = ii + 1
         }
       },
@@ -613,7 +767,7 @@ fn ctr_expand_sig_row(sig: String, es_names: Array[String], es_members_list: Arr
 /// contract signature spelled with an effectset alias and an
 /// implementation spelled with its literal expansion compare as equal
 /// instead of a false "signature mismatch".
-export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Int)], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt]) -> Array[String] {
+export fn check_contract_with_reexported_types(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt], resolved_reexported_type_defs: Array[(String, Array[String])]) -> Array[String] {
   let errors = array_empty()
   let (ctr_es_names, ctr_es_members_list) = ctr_es_collect_tables(contract_type_defs)
   let defs = collect_impl_fn_defs(impl_stmts)
@@ -703,26 +857,67 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     ei = ei + 1
   }
   let type_defs = collect_impl_type_defs(impl_stmts)
+  let reexported_type_defs = collect_reexported_type_defs(impl_stmts, type_defs)
+  let mut resolved_rti = 0
+  while resolved_rti < Array::length(resolved_reexported_type_defs) {
+    Array::push(reexported_type_defs, Array::get(resolved_reexported_type_defs, resolved_rti))
+    resolved_rti = resolved_rti + 1
+  }
   let mut oi = 0
   while oi < Array::length(opaque_names) {
-    let (oname, oarity) = Array::get(opaque_names, oi)
-    // #847: same trust-at-face-value treatment as the fn-decl loop above —
-    // a re-exported name has no arity to compare, so it satisfies an opaque
-    // type declaration without an arity check (there is nothing to check).
-    // Compiler-provided types likewise have no implementation sibling. The
-    // contract declaration itself is the explicit package authority.
-    let builtin_arity = if oname == "Option" {
-      1
+    let (oname, oparams) = Array::get(opaque_names, oi)
+    // #847: a re-exported name satisfies the declaration, but an aliased
+    // source declaration present in this implementation set carries its
+    // parameter kinds into the same conformance check as a direct definition.
+    // Compiler-provided types have no implementation sibling, but their
+    // builtin parameter kinds are known and must match the retained contract
+    // shape before the declaration can describe that builtin.
+    let builtin_params = if oname == "Option" {
+      Some(["T"])
     } else {
-      0
+      match resolve_builtin(oname) {
+        Some(_) => Some([]),
+        None => None
+      }
     }
-    let mut ofound = array_contains_string(reexported, oname) || (match resolve_builtin(oname) {
-      Some(_) => builtin_arity == oarity,
-      None => oname == "Option" && oarity == 1
-    })
+    // A re-export proves that a name is present, but not that its constructor
+    // kind matches this opaque declaration. Count it as an implementation only
+    // after the loader (or the local statement set) resolves kind metadata.
+    // Missing and cyclic facade chains therefore fail closed.
+    let mut ofound = Array::length(oparams) == 0 && array_contains_string(reexported, oname)
+    let mut rti = 0
+    while rti < Array::length(reexported_type_defs) {
+      let (rtname, rtparams) = Array::get(reexported_type_defs, rti)
+      if rtname == oname {
+        ofound = true
+        if Array::length(oparams) != Array::length(rtparams) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), re-exported implementation defines \{Array::length(rtparams)}")
+        } else if same_type_param_kinds(oparams, rtparams) {
+          ()
+        } else {
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, re-exported implementation defines \{render_type_params(rtparams)}")
+        }
+      } else {
+        ()
+      }
+      rti = rti + 1
+    }
+    match builtin_params {
+      Some(params) => {
+        ofound = true
+        if Array::length(oparams) != Array::length(params) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), builtin defines \{Array::length(params)}")
+        } else if !same_type_param_kinds(oparams, params) {
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, builtin defines \{render_type_params(params)}")
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
     let mut ti = 0
     while ti < Array::length(type_defs) {
-      let (tname, texported, tarity) = Array::get(type_defs, ti)
+      let (tname, texported, tparams) = Array::get(type_defs, ti)
       if tname == oname {
         ofound = true
         if texported {
@@ -732,10 +927,12 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
         }
         // #739: the contract's declared type-parameter count is part of the
         // surface — `type Box[T]` is not satisfied by a nullary `enum Box`.
-        if tarity == oarity {
+        if Array::length(oparams) != Array::length(tparams) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), implementation defines \{Array::length(tparams)}")
+        } else if same_type_param_kinds(oparams, tparams) {
           ()
         } else {
-          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{oarity} type parameter(s), implementation defines \{tarity}")
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, implementation defines \{render_type_params(tparams)}")
         }
       } else ()
       ti = ti + 1
@@ -842,6 +1039,14 @@ export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(St
     tfi = tfi + 1
   }
   errors
+}
+
+/// Pure conformance entry point for callers that have no filesystem-backed
+/// re-export metadata. The loader uses the richer entry point above after it
+/// resolves each re-export source.
+export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt]) -> Array[String] {
+  check_contract_with_reexported_types(decls, opaque_names, impl_stmts, contract_type_defs, [
+  ])
 }
 
 /// Classify a contract's non-declaration statements: implementation-file
@@ -1263,11 +1468,12 @@ export fn contract_imported_type_names(extra: Array[Stmt]) -> Array[(String, Int
 /// lane and the single-buffer diagnostic lane (#2317). Keeping the merge here
 /// prevents an imported kind or alias from becoming a wildcard in one lane and
 /// an unknown name in the other.
-export fn contract_type_provenance(extra: Array[Stmt], opaque_names: Array[(String, Int)]) -> Array[(String, Int)] {
+export fn contract_type_provenance(extra: Array[Stmt], opaque_names: Array[(String, Array[String])]) -> Array[(String, Int)] {
   let out = array_empty()
   let mut oi = 0
   while oi < Array::length(opaque_names) {
-    Array::push(out, Array::get(opaque_names, oi))
+    let (name, params) = Array::get(opaque_names, oi)
+    Array::push(out, (name, Array::length(params)))
     oi = oi + 1
   }
   let imported = contract_imported_type_names(extra)
@@ -1653,7 +1859,7 @@ export fn contract_directory_shared_import_prefix_text(stmts: Array[Stmt]) -> St
 /// source, so everything downstream of the loader (type db, merge plan,
 /// codegen) needs no .vibei awareness — it rides the #716 re-export
 /// machinery unchanged.
-export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
+export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
   let lines = array_empty()
   // #1840: when the loader materialized a types module, the facade
   // RE-EXPORTS the type family from it instead of defining it verbatim —
@@ -1692,7 +1898,8 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
   let builtin_exports = array_empty()
   let mut boi = 0
   while boi < Array::length(opaque_names) {
-    let (oname, oarity) = Array::get(opaque_names, boi)
+    let (oname, oparams) = Array::get(opaque_names, boi)
+    let oarity = Array::length(oparams)
     let expected_arity = if oname == "Option" {
       1
     } else {
@@ -1878,7 +2085,7 @@ fn sorted_strings(items: Array[String]) -> Array[String] {
   out
 }
 
-export fn contract_hash(fn_decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt]) -> String {
+export fn contract_hash(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
   let canon = String::join(sorted_strings(contract_surface_lines(fn_decls, opaque_names, type_defs)), "\n")
   "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
 }
@@ -2560,7 +2767,7 @@ fn str_in(arr: Array[String], target: String) -> Bool {
 
 /// Canonical per-declaration lines for a contract surface (shared by
 /// contract_hash and the change classifier, so they can never disagree).
-export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names: Array[(String, Int)], type_defs: Array[Stmt]) -> Array[String] {
+export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> Array[String] {
   let lines = array_empty()
   let mut i = 0
   while i < Array::length(fn_decls) {
@@ -2570,14 +2777,13 @@ export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names
   }
   let mut oi = 0
   while oi < Array::length(opaque_names) {
-    let (oname, oarity) = Array::get(opaque_names, oi)
-    // #739: arity is part of the surface — `Box` -> `Box[T]` must classify
-    // as a MAJOR change. Zero-arity keeps the historical `opaque X` line so
-    // existing contract hashes only move for parameterized types.
-    let oline = if oarity == 0 {
+    let (oname, oparams) = Array::get(opaque_names, oi)
+    // The full kind signature is part of the surface. Zero-parameter types
+    // keep the historical line so unrelated contract hashes do not move.
+    let oline = if Array::length(oparams) == 0 {
       "opaque \{oname}"
     } else {
-      "opaque \{oname}[\{oarity}]"
+      "opaque \{oname}\{render_type_param_kinds(oparams)}"
     }
     Array::push(lines, oline)
     oi = oi + 1

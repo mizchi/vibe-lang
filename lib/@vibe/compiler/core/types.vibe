@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_from_key, trait_ref_name, type_param_arity, type_param_name
+  trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./exception_effect.vibe {
@@ -1187,6 +1187,27 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
     EnvTypeDefs(_, _, rest) => trait_supers(rest, name),
     EnvFlat(_) => empty,
     EnvCached(_, _, rest) => trait_supers(rest, name)
+  }
+}
+
+/// Return the declaration payload retained for an imported trait. The value
+/// namespace is derived from this authority, so importing a trait does not
+/// need to import each `Trait::operation` as a separate value.
+export fn trait_definition(env: TypeEnv, name: String) -> Option[(Array[String], Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(String, Array[String], Array[(String, Array[String])])])] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => trait_definition(rest, name),
+    EnvTraitDef(tname, supers, _, methods, rest, params, method_gens) => if tname == trait_ref_name(name) {
+      Some((supers, methods, params, method_gens))
+    } else {
+      trait_definition(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => trait_definition(rest, name),
+    EnvMutCell(_, _, rest) => trait_definition(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_definition(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_definition(rest, name),
+    EnvFlat(_) => None,
+    EnvCached(_, _, rest) => trait_definition(rest, name)
   }
 }
 
@@ -2655,6 +2676,72 @@ fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
   }
 }
 
+fn trait_bound_vid_prefix() -> String {
+  "#tpvid."
+}
+
+fn parse_trait_bound_vid(name: String) -> Option[Int] {
+  let prefix = trait_bound_vid_prefix()
+  if !String::starts_with(name, prefix) {
+    None
+  } else {
+    let rest = String::substring(name, String::length(prefix), String::length(name))
+    if String::length(rest) == 0 {
+      None
+    } else {
+      let mut i = 0
+      let mut n = 0
+      let mut ok = true
+      while i < String::length(rest) && ok {
+        let c = String::char_code_at(rest, i)
+        if c >= '0' && c <= '9' {
+          n = n * 10 + c - '0'
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(n)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn remap_trait_bound_vid_expr(te: TypeExpr, id_map: Array[(Int, Int)]) -> TypeExpr {
+  match te {
+    TyName(name) => match parse_trait_bound_vid(name) {
+      Some(old_id) => TyName(String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0)))),
+      None => te
+    },
+    TyApp(name, args) => {
+      let head = match parse_trait_bound_vid(name) {
+        Some(old_id) => String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0))),
+        None => name
+      }
+      TyApp(head, for arg in args {
+        remap_trait_bound_vid_expr(arg, id_map)
+      })
+    },
+    TyTuple(items) => TyTuple(for item in items {
+      remap_trait_bound_vid_expr(item, id_map)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      remap_trait_bound_vid_expr(param, id_map)
+    }, remap_trait_bound_vid_expr(ret, id_map), effect),
+    TyUnit => TyUnit
+  }
+}
+
+fn remap_trait_bound_vids(key: String, id_map: Array[(Int, Int)]) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => trait_ref_key(remap_trait_bound_vid_expr(reference, id_map)),
+    None => key
+  }
+}
+
 export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
@@ -2696,7 +2783,10 @@ export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String]
       for var_bound in var_bounds {
         let (old_id, bounds) = var_bound
         let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
-        Array::push(new_bounds, (new_id, bounds))
+        let remapped = for bound in bounds {
+          remap_trait_bound_vids(bound, id_map2)
+        }
+        Array::push(new_bounds, (new_id, remapped))
       };
       let inst_body = subst_apply(inst_s, body)
       // #626 criterion 4: freshen the scheme's effect variables so each use site

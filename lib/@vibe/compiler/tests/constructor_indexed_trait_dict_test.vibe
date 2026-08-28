@@ -1,0 +1,467 @@
+import @vibe/compiler/normalize {
+  derive_trait_namespace_operations, desugar_trait_dicts
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/contract {
+  check_contract, contract_surface_lines, parse_contract_program
+}
+
+import ./checker_parity_test_support.vibe {
+  check_source_error_message
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+fn desugared_constructor_map(check_first: Bool, with_calls: Bool) -> String with Exception {
+  let source = if with_calls {
+    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\ntest \"array\" { let a = [1, 2] |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(a, [4, 6]) }\ntest \"option\" { let o = Some(3) |> Mappable::map((x) -> { x + 1 }) |> Mappable::map((x) -> { x * 2 }); assert_eq(o, Some(8)) }\n"
+  } else {
+    "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\n"
+  }
+  let stmts = parse_program(lex(source))
+  if check_first {
+    let _ = check_program(stmts)
+  } else {
+    ()
+  }
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
+test "#2357: derived constructor operation preserves its kinded bound" {
+  let stmts = parse_program(lex("trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }"))
+  derive_trait_namespace_operations(stmts)
+  inspect(String::contains(print_program(stmts), "[F[_]: Mappable[F], A, B]"), content = "true")
+}
+
+test "#2357: deriving an operation does not bind its bare name" {
+  let source = "trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nlet operation = measure"
+  inspect(String::contains(check_source_error_message(source), "unknown name: measure"), content = "true")
+}
+
+test "#2357: namespace operations require a recoverable witness carrier" {
+  let stmts = parse_program(lex("trait Factory { build((Int) -> Self) -> Self }"))
+  derive_trait_namespace_operations(stmts)
+  inspect(String::contains(print_program(stmts), "Factory::build"), content = "false")
+}
+
+test "#2357: a trait argument carrier does not stand in for Self" {
+  let source = "struct Box { value: Int }\ntrait Factory[A] { build(A) -> Self }\nimpl Factory[Int] for Box { build(value: Int) -> Box { Box::{ value } } }"
+  let stmts = parse_program(lex(source))
+  derive_trait_namespace_operations(stmts)
+  inspect(String::contains(print_program(stmts), "Factory::build"), content = "false")
+}
+
+test "#2357: method generics shadow same-named trait generics" {
+  let stmts = parse_program(lex("trait Scoped[A] { project[A: Eq](A) -> A }"))
+  derive_trait_namespace_operations(stmts)
+  inspect(String::contains(print_program(stmts), "Scoped::project"), content = "false")
+}
+
+test "#2357: any shadowed trait generic prevents namespace derivation" {
+  let stmts = parse_program(lex("trait Scoped[A, B] { project[A](B, A) -> B }"))
+  derive_trait_namespace_operations(stmts)
+  inspect(String::contains(print_program(stmts), "Scoped::project"), content = "false")
+}
+
+test "#2357: transparent aliases preserve namespace operation carriers" {
+  let source = "type Apply[F[_], A] = F[A]\ntrait Mappable[F[_]] { map[A](Apply[F, A]) -> F[A] }"
+  let stmts = parse_program(lex(source))
+  derive_trait_namespace_operations(stmts)
+  inspect(String::contains(print_program(stmts), "Mappable::map"), content = "true")
+}
+
+test "#2357: derived Self binders avoid trait type parameters" {
+  let source = "trait Scoped[__trait_operation_self_Scoped_project] { project(Self, __trait_operation_self_Scoped_project) -> Self }"
+  let stmts = parse_program(lex(source))
+  derive_trait_namespace_operations(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "__trait_operation_self_Scoped_project_1"), content = "true")
+  inspect(check_source_error_message(out), "")
+}
+
+test "#2357: derived Self binders avoid method type parameters" {
+  let source = "trait Scoped { project[__trait_operation_self_Scoped_project](Self, __trait_operation_self_Scoped_project) -> Self }"
+  let stmts = parse_program(lex(source))
+  derive_trait_namespace_operations(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "__trait_operation_self_Scoped_project_1"), content = "true")
+  inspect(check_source_error_message(out), "")
+}
+
+test "#2338: constructor-indexed bounds lower through a witness dictionary" {
+  let out = desugared_constructor_map(false, false)
+  inspect(String::contains(out, "__dict_"), content = "true")
+  inspect(String::contains(out, "F::map("), content = "false")
+  inspect(String::contains(out, ".map(xs, f_1)"), content = "true")
+}
+
+test "#2338: checked constructor-indexed bounds still lower through a witness dictionary" {
+  let out = desugared_constructor_map(true, false)
+  inspect(String::contains(out, "__dict_"), content = "true")
+  inspect(String::contains(out, "F::map("), content = "false")
+  inspect(String::contains(out, ".map(xs, f_1)"), content = "true")
+}
+
+test "#2338: concrete constructor calls synthesize applied witnesses" {
+  let out = desugared_constructor_map(false, true)
+  inspect(String::contains(out, "F::map("), content = "false")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: unresolved shadows do not reuse an outer constructor witness" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = [1]; let _ = Mappable::map({ let xs = ((x) -> { x })(Some(3)); xs }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: parameterized loop break values select the outer constructor witness" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let _ = Mappable::map(loop (i = 0) { let _ = loop (j = 0) { break Some(j) }; break [i] }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: parameterized loop break values use lexical binding constructors" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { let xs = [i]; break xs }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: parameterized loop match binders use arm constructors" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { match [i] { xs => break xs } }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: handler result bindings mask unresolved outer constructors" {
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(handle { throw(\"fail\"); [0] } with { Exception::Throw(_) => { let xs = ((u) -> { [1] })(()); xs } }, (x) -> { x + 1 }); () }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: applied trait dictionaries remain idempotently threaded" {
+  let source = "trait Value[A] { value(Self) -> A }\nfn value[T: Value[Int]](item: T) -> Int { T::value(item) }\n"
+  let stmts = parse_program(lex(source))
+  desugar_trait_dicts(stmts)
+  desugar_trait_dicts(stmts)
+  match Array::get(stmts, 1) {
+    SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => inspect(Array::length(params), content = "2"),
+    _ => assert(false)
+  }
+}
+
+test "#2338: opaque contract types retain constructor parameter arity" {
+  let (_, opaques, _) = parse_contract_program(lex("opaque type Mappable[F[_]]\nfn Mappable::map[F[_]: Mappable[F], A](xs: F[A]) -> F[A]\n"))
+  inspect(contract_surface_lines([], opaques, []), content = "[opaque Mappable[_[_]]]")
+}
+
+test "#2338: opaque contract surfaces distinguish constructor kinds" {
+  let (_, unary, _) = parse_contract_program(lex("opaque type Container[F[_]]"))
+  let (_, binary, _) = parse_contract_program(lex("opaque type Container[F[_, _]]"))
+  inspect(contract_surface_lines([], unary, []), content = "[opaque Container[_[_]]]")
+  inspect(contract_surface_lines([], binary, []), content = "[opaque Container[_[_, _]]]")
+  inspect(contract_surface_lines([], unary, []) == contract_surface_lines([], binary, [
+  ]), content = "false")
+}
+
+test "#2338: opaque contract surfaces ignore binder alpha-renaming" {
+  let (_, left, _) = parse_contract_program(lex("opaque type Container[F[_], A]"))
+  let (_, right, _) = parse_contract_program(lex("opaque type Container[G[_], B]"))
+  inspect(contract_surface_lines([], left, []) == contract_surface_lines([], right, [
+  ]), content = "true")
+}
+
+test "#2338: opaque conformance compares constructor kinds" {
+  let (_, unary, _) = parse_contract_program(lex("opaque type Container[F[_]]"))
+  let implementation = parse_program(lex("export struct Container[F[_, _]] { value: Int }"))
+  let errors = check_contract([], unary, implementation, [])
+  inspect(String::contains(__to_string(errors), "kind mismatch"), content = "true")
+}
+
+test "#2338: builtin opaque conformance compares constructor kinds" {
+  let (_, wrong_option, _) = parse_contract_program(lex("opaque type Option[F[_]]"))
+  let errors = check_contract([], wrong_option, [], [])
+  inspect(String::contains(__to_string(errors), "kind mismatch"), content = "true")
+}
+
+test "#2338: re-exported opaque conformance compares constructor kinds" {
+  let (_, unary, _) = parse_contract_program(lex("opaque type Container[F[_]]"))
+  let implementation = parse_program(lex("type Source[F] = F\nexport ./source.vibe { Source as Container }"))
+  let errors = check_contract([], unary, implementation, [])
+  inspect(String::contains(__to_string(errors), "kind mismatch"), content = "true")
+}
+
+test "#2338: opaque constructor parameters reject non-placeholder kinds" {
+  let concrete_failed = handle {
+    let _ = parse_contract_program(lex("opaque type Bad[F[Int]]"))
+    false
+  } with { Exception::Throw(_) => true }
+  let empty_failed = handle {
+    let _ = parse_contract_program(lex("opaque type Bad[F[]]"))
+    false
+  } with { Exception::Throw(_) => true }
+  inspect(if concrete_failed {
+    "rejected"
+  } else {
+    "accepted"
+  }, content = "rejected")
+  inspect(if empty_failed {
+    "rejected"
+  } else {
+    "accepted"
+  }, content = "rejected")
+}
+
+fn mappable_program(body: String) -> String {
+  String::concat("trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\n", body)
+}
+
+fn desugar_mappable_program(body: String) -> String with Exception {
+  let stmts = parse_program(lex(mappable_program(body)))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
+test "#2338: top-level constructor bindings preserve the recovered witness" {
+  let out = desugar_mappable_program("fn inc(x: Int) -> Int { x + 1 }\nfn dbl(x: Int) -> Int { x * 2 }\nlet xs = Mappable::map([1], inc)\nlet ys = Mappable::map(xs, dbl)\n")
+  inspect(String::contains(out, "Mappable::map(xs, dbl)"), content = "false")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: assignments publish constructor evidence to their continuation" {
+  let stmts = parse_program(lex(mappable_program("fn probe() -> Unit { let id = (x) -> { x }; let mut xs = id([0]); xs = [1]; let _ = Mappable::map(xs, (x) -> { x + 1 }); () }\n")))
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(xs"), content = "false")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: unresolved local results do not reuse an outer constructor witness" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let xs = [1]; let identity = (x) -> { x }; let xs = identity(Some(3)); let _ = Mappable::map(xs, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: explicit IIFE returns recover the constructor witness" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map((() -> Array[Int] { return [1] })(), (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: recursive local helper returns recover the constructor witness" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Array[Int] { [n] }; make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: every constructor call records its local helper receiver" {
+  let body = "fn first() -> Unit { let _ = Mappable::map({ let rec make_array = (n: Int) -> Array[Int] { [n] }; make_array(1) }, (x) -> { x + 1 }); () }\nfn second() -> Unit { let _ = Mappable::map({ let rec make_option = (n: Int) -> Option[Int] { Some(n) }; make_option(1) }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(body)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
+}
+
+test "#2338: receiver aliases retain their local helper constructor" {
+  let body = "fn probe() -> Unit { let base = 1; let rec make = (n: Int) -> Array[Int] { if n == 0 { [base] } else { make(n - 1) } }; let xs = make(1); let _ = Mappable::map(xs, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(body)
+  inspect(String::contains(out, "Mappable::map(xs"), content = "false")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: direct tuple projections recover the selected constructor" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map(([1], Some(2)).0, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: shadowed tuple shapes do not keep outer constructor evidence" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let x = (Some(0), 0); let identity = (x) -> { x }; let x = identity(([1], 0)); let _ = Mappable::map(x.0, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: constructor payloads recover from a direct constructor scrutinee" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map(match Some([1]) { Some(xs) => xs, None => [] }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: nested constructor payload patterns recover their binders" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map(match Some(Some([1])) { Some(Some(xs)) => xs, _ => [] }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: handler payloads recover the thrown constructor" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map(handle { throw([0]); [1] } with { Exception::Throw(xs) => xs }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "sibling constructor formals in applied trait bounds instantiate" {
+  let source = "trait Zip[F[_], G[_]] { pair[A](F[A], G[A]) -> Int }\nimpl Zip[Array, Option] for Array { pair(xs: Array[A], ys: Option[A]) -> Int { 0 } }\nfn go[F[_]: Zip[F, G], G[_], A](xs: F[A], ys: G[A]) -> Int { F::pair(xs, ys) }\nfn use_it() -> Int { go([1], Some(1)) }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "#2338: handler payload collection carries lexical constructors" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(handle { let xs = [1]; throw(xs); [0] } with { Exception::Throw(xs) => xs }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: qualified effect payloads do not collide by member name" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\neffect Metric { Emit(Option[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { perform Log::Emit([1]); perform Metric::Emit(Some(2)); [0] } with { Log::Emit(xs) => xs; Metric::Emit(_) => [3] }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: multi-argument effect payloads recover matching binders" {
+  let source = "effect Log { Emit(Int, Array[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { perform Log::Emit(0, [1]); [0] } with { Log::Emit(_, xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: effect payload scans cross unrelated nested handlers" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\neffect Metric { Tick(Int) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { handle { perform Log::Emit([1]); [0] } with { Metric::Tick(_) => [2] } } with { Log::Emit(xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: handler payload binders select their own constructor witnesses" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let xs = Some(0); let _ = handle { perform Log::Emit([1]); () } with { Log::Emit(xs) => { let _ = Mappable::map(xs, (x) -> { x + 1 }); () } }; () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: top-level pattern initializers rewrite constructor witness calls" {
+  let source = "fn inc(x: Int) -> Int { x + 1 }\nlet (xs, n) = (Mappable::map([1], inc), 0)\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: effect payload scans enter immediately invoked lambdas" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { (() -> Unit { perform Log::Emit([1]); () })(); [0] } with { Log::Emit(xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: effect payload scans bind immediately invoked lambda parameters" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { ((items: Array[Int]) -> Unit { perform Log::Emit(items); () })([1]); [0] } with { Log::Emit(xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: shadowing a recursive helper drops its return constructor" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Array[Int] { [n] }; let make = (n: Int) -> Option[Int] { Some(n) }; make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: pattern binders mask top-level function return constructors" {
+  let out = desugar_mappable_program("fn make(n: Int) -> Array[Int] { [n] }\nfn probe() -> Unit { let _ = Mappable::map(match ((n) -> { Some(n) }) { make => make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: effect payload scans carry match-arm constructor bindings" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { match Some([1]) { Some(xs) => { perform Log::Emit(xs); [0] }, None => [0] } } with { Log::Emit(xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: mutable local helper returns recover the constructor witness" {
+  let out = desugar_mappable_program("fn make(n: Int) -> Array[Int] { [n] }\nfn probe() -> Unit { let mut make = (n: Int) -> Option[Int] { Some(n) }; let _ = Mappable::map(make(1), (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "false")
+}
+
+test "#2338: loop scans carry local helper return constructors" {
+  let out = desugar_mappable_program("fn make(n: Int) -> Option[Int] { Some(n) }\nfn probe() -> Unit { let _ = Mappable::map(loop (i = 0) { let make = (n: Int) -> Array[Int] { [n] }; break make(i) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: for binders replace stale outer constructor evidence" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let xs = Some(0); for xs in [[1]] { let _ = Mappable::map(xs, (x) -> { x + 1 }) }; () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: match binders replace stale outer constructor evidence" {
+  let out = desugar_mappable_program("fn probe() -> Unit { let xs = Some(0); let _ = match [1] { xs => Mappable::map(xs, (x) -> { x + 1 }) }; () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: recursive helper return aliases expand to the constructor" {
+  let out = desugar_mappable_program("type Items[A] = Array[A]\nfn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Items[Int] { [n] }; make(1) }, (x) -> { x + 1 }); () }\n")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+fn desugar_checked_source(source: String) -> String {
+  handle {
+    let stmts = parse_program(lex(source))
+    let _ = check_program(stmts)
+    desugar_trait_dicts(stmts)
+    print_program(stmts)
+  } with { Exception::Throw(msg) => String::concat("THREW:", __to_string(msg)) }
+}
+
+test "#2338: applied bounds through aliases specialize to the constructor" {
+  let out = desugar_checked_source("type Apply[F[_], A] = F[A]\ntrait Accepts[A] { accept(A) -> Int }\nimpl Accepts[Array[Int]] for Array { accept(xs: Array[Int]) -> Int { Array::length(xs) } }\nfn accept[F[_]: Accepts[Apply[F, Int]]](xs: F[Int]) -> Int { F::accept(xs) }\nfn use_it() -> Int { accept([1]) }")
+  inspect(String::contains(out, "THREW:"), content = "false")
+  inspect(String::contains(out, "AcceptsDict[Array[Int]]"), content = "true")
+  inspect(String::contains(out, "F::accept("), content = "false")
+}
+
+test "#2338: constructor tracking preserves structural equality bindings" {
+  let source = "enum Item { Item(Int) }\nfn same() -> Bool { let a: Item = Item(1); let b: Item = Item(1); a == b }\n"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Item::equals(a, b)"), content = "true")
+}
+
+test "#2338: sibling constructor formals specialize in witness bounds" {
+  let out = desugar_checked_source("trait Zip[F[_], G[_]] { pair[A](F[A], G[A]) -> Int }\nimpl Zip[Array, Option] for Array { pair(xs: Array[A], ys: Option[A]) -> Int { 0 } }\nfn go[F[_]: Zip[F, G], G[_], A](xs: F[A], ys: G[A]) -> Int { F::pair(xs, ys) }\nfn use_it() -> Int { go([1], Some(1)) }")
+  inspect(String::contains(out, "THREW:"), content = "false")
+  inspect(String::contains(out, "ZipDict[Array, Option]"), content = "true")
+  inspect(String::contains(out, "F::pair("), content = "false")
+}
+
+test "derived enum == through annotated Array::get still calls T::equals" {
+  let out = desugar_checked_source("enum Tok { A(String); B }\nfn eq_it() -> Bool {\n  let vs = [A(\"s\")]\n  let same = [A(\"s\")]\n  let a: Tok = Array::get(vs, 0)\n  let b: Tok = Array::get(same, 0)\n  a == b\n}")
+  inspect(String::contains(out, "THREW:"), content = "false")
+  inspect(String::contains(out, "Tok::equals(a"), content = "true")
+  inspect(String::contains(out, "__arr_equals__"), content = "false")
+}
+
+test "#2338: sibling applied constructor heads instantiate in bounds" {
+  let source = "trait Zip[F[_], G] { pair[A](F[A], G) -> Int }\nimpl Zip[Array, Option[Int]] for Array { pair(xs: Array[A], ys: Option[Int]) -> Int { 0 } }\nfn go[F[_]: Zip[F, G[Int]], G[_], A](xs: F[A], ys: G[Int]) -> Int { F::pair(xs, ys) }\nfn use_it() -> Int { go([1], Some(1)) }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "#2338: sibling constructors resolve beneath concrete bound heads" {
+  let source = "struct Holder[A] { value: A }\ntrait Accepts[A] { accept(Int) -> Int }\nimpl Accepts[Holder[Option]] for Array { accept(x: Int) -> Int { x } }\nfn go[F[_]: Accepts[Holder[G]], G[_], A](xs: F[A], ys: G[A]) -> Int { 0 }\nfn use_it() -> Int { go([1], Some(1)) }"
+  inspect(check_source_error_message(source), "")
+}

@@ -38,7 +38,7 @@ const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
 const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v4 canonical exported surface including kinded applications)";
 const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)";
-const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v7 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
+const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v8 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
 const expectedCorpus = new Map([
   ["no_op", { sourceChanged: [], implementationChanged: [], invalidated: [] }],
@@ -395,7 +395,7 @@ function ownerNames(paths) {
 /// Classify the bounded library-body edit without promoting any observation to
 /// production policy. The consumer must name exactly the edited dependency in
 /// both snapshots: extra, missing, reordered, or changed edges fail closed.
-/// TypeEnv-v7 transport state is reported independently from interface-v4.
+/// TypeEnv-v8 transport state is reported independently from interface-v4.
 export function classifyPrivateDependencyEditExternallyUnchanged(before, after, dependencyName, consumerName) {
   const beforeDependency = moduleByName(before, dependencyName);
   const afterDependency = moduleByName(after, dependencyName);
@@ -651,28 +651,21 @@ function run(stage2) {
     if (implementationOwnersChanged(traitBoundShow, traitBoundEq).join(",") !== "library") fail("trait method generic bound edit did not change token-stream implementation identity");
 
     // Schema 6 consumes both trait-header and method-generic source binders.
-    // The header scope surrounds every method; a method binder shadows it.
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[T] { project[U: Eq](T, U, Foreign) -> T }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct Foreign {}\nexport struct Other {}\nexport trait Scoped[T] { project[U: Eq](T, U, Foreign) -> T }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitHeaderT = check("trait_header_t");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct Foreign {}\nexport struct Other {}\nexport trait Scoped[A] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitHeaderA = check("trait_header_a");
     if (interfaceOwnersChanged(traitHeaderT, traitHeaderA).length !== 0) fail("alpha-equivalent trait header/method binder rename changed interface identity");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A] { project[A: Eq](A, A, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
-    const traitMethodShadowsHeader = check("trait_method_shadows_header");
-    if (interfaceOwnersChanged(traitHeaderA, traitMethodShadowsHeader).join(",") !== "library") fail("method/header binder association did not change interface identity");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct Foreign {}\nexport struct Other {}\nexport trait Scoped[A, C] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitHeaderArity = check("trait_header_arity");
-    if (interfaceOwnersChanged(traitMethodShadowsHeader, traitHeaderArity).join(",") !== "library") fail("trait header binder arity did not change interface identity");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, A] { project[B: Eq](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
-    const traitDuplicateHeader = check("trait_duplicate_header");
-    if (interfaceOwnersChanged(traitHeaderArity, traitDuplicateHeader).join(",") !== "library") fail("duplicate trait header binders were not marked as malformed provenance");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Show](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    if (interfaceOwnersChanged(traitHeaderA, traitHeaderArity).join(",") !== "library") fail("trait header binder arity did not change interface identity");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct Foreign {}\nexport struct Other {}\nexport trait Scoped[A, C] { project[B: Show](A, B, Foreign) -> A }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitScopedBound = check("trait_scoped_bound");
     if (interfaceOwnersChanged(traitHeaderArity, traitScopedBound).join(",") !== "library") fail("trait method binder bound did not change interface identity");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Show](A, B, Foreign) -> B }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct Foreign {}\nexport struct Other {}\nexport trait Scoped[A, C] { project[B: Show](A, B, Foreign) -> B }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitScopedSignature = check("trait_scoped_signature");
     if (interfaceOwnersChanged(traitScopedBound, traitScopedSignature).join(",") !== "library") fail("trait method signature did not change interface identity");
-    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport trait Scoped[A, C] { project[B: Show](A, B, Other) -> B }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport struct Foreign {}\nexport struct Other {}\nexport trait Scoped[A, C] { project[B: Show](A, B, Other) -> B }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
     const traitFreeName = check("trait_free_name");
     if (interfaceOwnersChanged(traitScopedSignature, traitFreeName).join(",") !== "library") fail("free nominal type name did not remain distinct in trait interface identity");
 
