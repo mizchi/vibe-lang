@@ -76,7 +76,7 @@ fi
 
 # --- Case 2: allowlisting that same definition makes it pass ---------------
 # Proves the allowlist is actually consulted, not merely present.
-echo "$tmp/lib1/pkg/shadow.vibe String::index_of" > "$tmp/allow_one.txt"
+echo "$tmp/lib1/pkg/shadow.vibe String::index_of fn" > "$tmp/allow_one.txt"
 run_gate "$tmp/lib1" "$tmp/allow_one.txt"
 if [ "$rc" -ne 0 ]; then
   bad "case 2: an allowlisted shadow should pass, got exit $rc"
@@ -86,8 +86,8 @@ else
 fi
 
 # --- Case 3: a stale allowlist entry is rejected ---------------------------
-printf '%s\n' "$tmp/lib1/pkg/shadow.vibe String::index_of" \
-              "lib/@vibe/nowhere/gone.vibe String::split" > "$tmp/allow_stale.txt"
+printf '%s\n' "$tmp/lib1/pkg/shadow.vibe String::index_of fn" \
+              "lib/@vibe/nowhere/gone.vibe String::split fn" > "$tmp/allow_stale.txt"
 run_gate "$tmp/lib1" "$tmp/allow_stale.txt"
 if [ "$rc" -eq 0 ]; then
   bad "case 3: a stale allowlist entry was NOT rejected"
@@ -123,6 +123,83 @@ elif ! printf '%s\n' "$out" | grep -q 'Array::length'; then
   echo "$out" | sed 's/^/    /' >&2
 else
   note "case 5 ok: a second, unrelated builtin name is caught"
+fi
+
+# --- Case 6: a declaration that FOLLOWS a closer on the same line ------------
+# `} fn collect_...` and `] let parse_...` both occur in lib/. An anchored
+# ^(export )?fn regex misses them in silence.
+mkdir -p "$tmp/lib6/pkg"
+cat > "$tmp/lib6/pkg/ok.vibe" <<'VEOF'
+export fn totally_unrelated_helper(n: Int) -> Int {
+  n + 1
+}
+VEOF
+run_gate "$tmp/lib6" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 6 control: a lib root with no shadow should pass, got exit $rc"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 6 control ok"
+fi
+cat > "$tmp/lib6/pkg/closer.vibe" <<'VEOF'
+export fn wrapper() -> Int {
+  1
+} fn String::last_index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+run_gate "$tmp/lib6" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 6: a declaration after a closing brace was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::last_index_of'; then
+  bad "case 6: the finding does not name String::last_index_of:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 6 ok: declaration after a closer is caught"
+fi
+
+# --- Case 7: a VALUE alias binds the name too -------------------------------
+# lib/@vibe/fs/fs.vibe uses `export let Fs::exists = exists` deliberately; the
+# ratchet has to see the form so a later conversion to a fn is visible.
+mkdir -p "$tmp/lib7/pkg"
+cat > "$tmp/lib7/pkg/alias.vibe" <<'VEOF'
+fn my_impl(s: String, sub: String) -> Bool {
+  false
+}
+
+export let String::contains = my_impl
+VEOF
+run_gate "$tmp/lib7" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 7: a value-alias shadow was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::contains let'; then
+  bad "case 7: the finding does not record the let form:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 7 ok: value alias caught and recorded as let"
+fi
+
+# --- Case 8: an unclassifiable column-0 line FAILS, it is not skipped -------
+# A lexical scan that skips what it cannot read is indistinguishable from a
+# clean tree, so the scanner must stop instead (#2248).
+mkdir -p "$tmp/lib8/pkg"
+cat > "$tmp/lib8/pkg/weird.vibe" <<'VEOF'
+export fn ordinary() -> Int {
+  1
+}
+
+gizmo Whatsit {
+  x: Int
+}
+VEOF
+run_gate "$tmp/lib8" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 8: an unknown column-0 declaration keyword was silently skipped"
+elif ! printf '%s\n' "$out" | grep -q 'could not classify'; then
+  bad "case 8: rejected, but not for the unreadable reason:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 8 ok: unclassifiable line stops the gate"
 fi
 
 if [ "$fail" -ne 0 ]; then

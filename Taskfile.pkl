@@ -357,10 +357,35 @@ local lintTrackedExperimentNames = new Task {
   cmd = "bash scripts/lint_tracked_experiment_names.sh"
   cache = false
 }
-local checkBuiltinShadowing =
-  scriptTask("check-builtin-shadowing", "scripts/check_builtin_shadowing.sh")
-local testCheckBuiltinShadowing =
-  scriptTask("test-check-builtin-shadowing", "scripts/check_builtin_shadowing_test.sh")
+// NOT scriptTask: the allowlist is an input and `scriptSources` globs only
+// scripts/**/*.{sh,mjs,vibex}. Adding a shadow under lib/ does move the key
+// (vibeSources), but editing ONLY the allowlist -- dropping an entry the tree
+// still needs, or leaving a stale one -- would not, and a cached "ok" would
+// replay over a question nobody re-asked. Same shape as checkDocPathCitations
+// and lintArchitectureDebt above. The self-test runs the real gate against the
+// real tree and the real allowlist in its control case, so it needs the same
+// inputs.
+local checkBuiltinShadowing = new Task {
+  name = "check-builtin-shadowing"
+  description = "lib/** must not define a name the builtin registry already owns"
+  cmd = "bash scripts/check_builtin_shadowing.sh"
+  inputs {
+    ...vibeSources
+    "scripts/check_builtin_shadowing.sh"
+    "scripts/builtin_shadowing_allowlist.txt"
+  }
+}
+local testCheckBuiltinShadowing = new Task {
+  name = "test-check-builtin-shadowing"
+  description = "self-test for the builtin-shadowing gate (mutated trees, must FAIL)"
+  cmd = "bash scripts/check_builtin_shadowing_test.sh"
+  inputs {
+    ...vibeSources
+    "scripts/check_builtin_shadowing.sh"
+    "scripts/check_builtin_shadowing_test.sh"
+    "scripts/builtin_shadowing_allowlist.txt"
+  }
+}
 local checkGatePortability =
   scriptTask("check-gate-portability", "scripts/check_gate_portability.sh")
 local testCheckGatePortability =

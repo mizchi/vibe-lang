@@ -73,21 +73,97 @@ if [ ! -s "$tmp/files.txt" ]; then
 fi
 
 : > "$tmp/defs.txt"
+: > "$tmp/unreadable.txt"
+# Top-level declarations, read line by line. This is a LEXICAL scan, and the
+# hazard with those is the one they cannot see: a shape not encoded by the
+# pattern is missed in silence, and a silent miss is indistinguishable from a
+# clean tree (#2248).
+#
+# `vibe grep` cannot host this rule -- it rejects `fn` outright ("`fn` starts a
+# DECLARATION, and a pattern must be a single EXPRESSION"), and points at `vibe
+# symbols`, which is AST-derived and exact. Measured 2026-08-28: `vibe symbols`
+# costs ~1.08 s per file with no batch mode (extra file arguments are ignored,
+# a directory is refused), so the 966 files under lib/ would take ~17 minutes.
+# A filter sound enough to preserve the answer -- any file containing a
+# registry name anywhere -- keeps 889 of them. That is not a gate. Filed as
+# #2381 (no batch mode; extra arguments are also accepted and ignored).
+#
+# So the scan stays lexical and is made unable to miss QUIETLY instead. Every
+# column-0 line is classified, and anything the scanner cannot classify is a
+# FAILURE, not a skip. A new declaration keyword, or a shape this does not
+# encode, stops the gate and says so.
+#
+# The forms that matter start at column 0, optionally after a closing brace on
+# the same line (`} fn collect_...` and `] let parse_...` both occur in lib/),
+# and optionally behind `export`.
 while IFS= read -r f; do
   awk -v path="$f" '
-    match($0, /^(export )?fn [A-Za-z_][A-Za-z0-9_:]*[ \t]*[(\[]/) {
-      s = $0
-      sub(/^(export )?fn[ \t]+/, "", s)
-      sub(/[ \t]*[(\[].*$/, "", s)
-      print path " " s
+    # Column 0 only; indented lines are inside a declaration.
+    /^[ \t]/ { next }
+    /^[ \t]*$/ { next }
+    {
+      line = $0
+      # A declaration may follow closers on the same line.
+      sub(/^[})\]]+[ \t]*/, "", line)
+      if (line ~ /^\/\//) next          # comment
+      if (line ~ /^#/) next             # attribute (#deprecated, #zero_alloc)
+      if (line == "") next              # the line was only closers
+      # Trailing clauses of the declaration that just closed, not a new one:
+      # `} derive (Show)`, `} with { Exception::Throw(_) => ... }`.
+      if (line ~ /^(derive|with)[ \t({]/) next
+      # Not a word start -> continuation of a multi-line string literal etc.
+      if (line !~ /^[A-Za-z_]/) next
+
+      sub(/^export[ \t]+/, "", line)
+      if (line == "") next
+      if (line !~ /^[A-Za-z_]/) next
+
+      # Binds a callable name in the value namespace.
+      if (match(line, /^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+/)) {
+        kw = substr(line, 1, RLENGTH)
+        rest = substr(line, RLENGTH + 1)
+        if (match(rest, /^[A-Za-z_][A-Za-z0-9_:]*/)) {
+          name = substr(rest, RSTART, RLENGTH)
+          form = (kw ~ /fn/) ? "fn" : "let"
+          print path " " name " " form
+        } else {
+          print path ":" FNR " cannot read the bound name from: " $0 > "/dev/stderr"
+          print "unreadable"
+        }
+        next
+      }
+
+      # Declaration keywords that bind no callable value name.
+      if (line ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)[ \t({"]/) next
+      if (line ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)$/) next
+      if (line ~ /^export[ \t]*[{(]/) next
+
+      print path ":" FNR " unclassified column-0 declaration: " $0 > "/dev/stderr"
+      print "unreadable"
     }
-  ' "$f" >> "$tmp/defs.txt"
+  ' "$f" 2>> "$tmp/unreadable_detail.txt" | while IFS= read -r out; do
+      if [ "$out" = "unreadable" ]; then
+        echo "x" >> "$tmp/unreadable.txt"
+      else
+        echo "$out" >> "$tmp/defs.txt"
+      fi
+    done
 done < "$tmp/files.txt"
+
+if [ -s "$tmp/unreadable.txt" ]; then
+  echo "check_builtin_shadowing: FAIL -- the scanner could not classify some column-0 lines:" >&2
+  cat "$tmp/unreadable_detail.txt" >&2
+  echo "" >&2
+  echo "  A lexical scan that skips what it cannot read is indistinguishable from" >&2
+  echo "  a clean tree. Teach the classifier the new shape (and add a case to" >&2
+  echo "  scripts/check_builtin_shadowing_test.sh) rather than widening the skip." >&2
+  exit 1
+fi
 
 # The allowlist is `<path> <name>` with an optional `#` comment; blank lines
 # and full-line comments are ignored.
 if [ -f "$ALLOWLIST" ]; then
-  awk '{ sub(/#.*$/, ""); if (NF >= 2) print $1 " " $2 }' "$ALLOWLIST" > "$tmp/allowed.txt"
+  awk '{ sub(/#.*$/, ""); if (NF >= 3) print $1 " " $2 " " $3 }' "$ALLOWLIST" > "$tmp/allowed.txt"
 else
   : > "$tmp/allowed.txt"
 fi
