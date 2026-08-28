@@ -183,6 +183,65 @@ export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String)
   out
 }
 
+fn builtin_iterator_serialized_boundary_path() -> String {
+  "@vibe/compiler/internal/iterator_boundary"
+}
+
+/// A parseable carrier for Iterator provenance across source-text caches.
+/// Ordinary in-memory merges use `SReExportSourceBoundary`; the printer drops
+/// that internal node, so TypeDb/group caches need this reserved synthetic
+/// import until the merged source is parsed for codegen.
+export fn builtin_iterator_serialized_boundary(stmts: Array[Stmt]) -> Stmt {
+  builtin_iterator_serialized_boundary_from_markers(builtin_iterator_namespace_markers(stmts))
+}
+
+export fn builtin_iterator_serialized_boundary_from_markers(markers: Array[String]) -> Stmt {
+  let items: Array[ImportItem] = array_empty()
+  let mut i = 0
+  while i < Array::length(markers) {
+    match builtin_iterator_namespace_from_marker(Array::get(markers, i)) {
+      Some(namespace) => Array::push(items, ImportItem::{
+        kind: Some(ImportTrait),
+        name: "Iterator",
+        alias: Some(namespace)
+      }),
+      None => ()
+    }
+    i = i + 1
+  }
+  SImport(builtin_iterator_serialized_boundary_path(), items)
+}
+
+/// Recover marker payload from the reserved source-text cache carrier.
+export fn builtin_iterator_serialized_boundary_markers(stmt: Stmt) -> Option[Array[String]] {
+  match stmt {
+    SImport(path, items) => if path == builtin_iterator_serialized_boundary_path() {
+      let markers = empty_strings()
+      let mut i = 0
+      while i < Array::length(items) {
+        let item = Array::get(items, i)
+        match item.kind {
+          Some(ImportTrait) => if item.name == "Iterator" {
+            let namespace = match item.alias {
+              Some(alias) => alias,
+              None => item.name
+            }
+            Array::push(markers, String::concat(builtin_iterator_origin_marker_prefix(), namespace))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      Some(markers)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
 fn string_array_contains(items: Array[String], target: String) -> Bool {
   let mut i = 0
   let mut found = false

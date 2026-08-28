@@ -26,6 +26,7 @@ import @vibe/compiler/core {
   append_import_alias_rewritten_non_import_stmts_with_renames,
   apply_export_renames_stmts,
   build_export_rename_plan,
+  builtin_iterator_namespace_markers,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
@@ -340,6 +341,7 @@ fn build_merged_stmts_inline(sources: Array[(String, String)]) -> Array[Stmt] wi
     let path = Array::get(file_paths, si)
     let stmts = Array::get(file_stmts, si)
     let is_entry_source = si == source_count - 1
+    Array::push(merged, SReExportSourceBoundary(builtin_iterator_namespace_markers(stmts), array_empty()))
     let collision_renamed = apply_export_renames_stmts(stmts, trait_import_local_operation_renames(stmts, path))
     let export_renamed = if is_entry_source {
       collision_renamed
@@ -368,17 +370,35 @@ export fn closure_ordered_source_count(main_source: String, main_path: String, s
   Array::length(collect_inline_sources_ordered(main_path, main_source, sources))
 }
 
+fn count_executable_merge_stmts(stmts: Array[Stmt]) -> Int {
+  let mut count = 0
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExportSourceBoundary(_, _) => (),
+      _ => count = count + 1
+    }
+    i = i + 1
+  }
+  count
+}
+
+/// The import-resolved in-memory merge used by closure-source compilation.
+/// Source boundary metadata remains present so diagnostics and optimizer
+/// inspection observe the same AST consumed by codegen.
+export fn closure_merged_stmts(main_source: String, main_path: String, sources: Array[(String, String)]) -> Array[Stmt] with Exception {
+  build_merged_stmts_inline(collect_inline_sources_ordered(main_path, main_source, sources))
+}
+
 export fn closure_merged_stmt_count(main_source: String, main_path: String, sources: Array[(String, String)]) -> Int with Exception {
-  let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
-  let merged_stmts = build_merged_stmts_inline(ordered_sources)
-  Array::length(merged_stmts)
+  count_executable_merge_stmts(closure_merged_stmts(main_source, main_path, sources))
 }
 
 export fn closure_pruned_stmt_count(main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> Int with Exception {
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
   let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-  Array::length(pruned_stmts)
+  count_executable_merge_stmts(pruned_stmts)
 }
 
 export fn source_group_pruned_stmt_count(db: TypeDb, main_source: String, main_path: String, source_groups: Array[(String, Array[(String, String)])], entry_name: String) -> Int with Exception {
@@ -387,7 +407,7 @@ export fn source_group_pruned_stmt_count(db: TypeDb, main_source: String, main_p
   let _ = db
   let merged_stmts = build_merged_stmts_inline(ordered_sources)
   let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-  Array::length(pruned_stmts)
+  count_executable_merge_stmts(pruned_stmts)
 }
 
 export fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with Exception {

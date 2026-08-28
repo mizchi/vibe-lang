@@ -1,9 +1,56 @@
 import @vibe/compiler/runtime {
-  db_grouped_merged_source, db_merged_source, db_new
+  db_grouped_merged_source, db_merged_source, db_module_source, db_new
 }
 
 import @vibe/compiler/loader {
   collect_source_groups_fs
+}
+
+import @vibe/compiler/codegen {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+fn desugar_serialized_iterator_provenance(merged: String) -> String with Exception {
+  assert(String::contains(merged, "@vibe/compiler/internal/iterator_boundary"))
+  let stmts = parse_program(lex(merged))
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
+fn assert_serialized_iterator_provenance(merged: String) -> Unit with Exception {
+  assert(String::contains(desugar_serialized_iterator_provenance(merged), "Array::map"))
+}
+
+test "runtime merges preserve Iterator optimization provenance" {
+  let source = "import @vibe/builtin { trait Iterator }\nfn mapped(xs: Array[Int]) -> Array[Int] { Iterator::map(xs, (x: Int) -> Int { x + 1 }) }"
+  let (merged, fingerprint, merged_db) = db_merged_source(db_new(), "main.vibe", [
+    ("main.vibe", source)
+  ])
+  assert_serialized_iterator_provenance(merged)
+  let (module_source, _) = db_module_source(merged_db, fingerprint, merged)
+  assert_serialized_iterator_provenance(module_source)
+  let (grouped, grouped_fingerprint, grouped_db) = db_grouped_merged_source(db_new(), [
+    ("main", [("main.vibe", source)])
+  ])
+  assert_serialized_iterator_provenance(grouped)
+  let (grouped_module_source, _) = db_module_source(grouped_db, grouped_fingerprint, grouped)
+  assert_serialized_iterator_provenance(grouped_module_source)
+}
+
+test "serialized Iterator provenance resets at every source boundary" {
+  let imported = "import @vibe/builtin { trait Iterator }\nlet imported_map = Iterator::map([1], (x: Int) -> Int { x + 1 })"
+  let local = "fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local_map = Iterator::map([1], (x: Int) -> Int { x + 1 })"
+  let (merged, _, _) = db_merged_source(db_new(), "main.vibe", [
+    ("dep.vibe", imported),
+    ("main.vibe", local)
+  ])
+  let rewritten = desugar_serialized_iterator_provenance(merged)
+  assert(String::contains(rewritten, "imported_map_dep_dep_vibe = Array::map"))
+  assert(String::contains(rewritten, "local_map = Iterator::map"))
 }
 
 test "grouped runtime merge keeps an aliased Iterator separate from a local canonical helper" {

@@ -6,6 +6,8 @@ import @vibe/compiler/core {
   build_export_rename_plan,
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
+  builtin_iterator_serialized_boundary,
+  builtin_iterator_serialized_boundary_markers,
   collect_import_value_renames,
   namespace_exported_name,
   trait_import_local_operation_renames
@@ -59,6 +61,26 @@ test "standard Iterator provenance is scoped to its local import namespace" {
   assert(!String::starts_with(private_name, "Iterator::"))
   let collision_rewritten = print_program(apply_export_renames_stmts(alias_with_canonical_helper, collision_renames))
   assert(String::contains(collision_rewritten, String::concat(private_name, " =")))
+}
+
+test "Iterator provenance cache carrier roundtrips through source text" {
+  let imported = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }"))
+  let serialized = print_program([
+    builtin_iterator_serialized_boundary(imported)
+  ])
+  let reparsed = parse_program(lex(serialized))
+  match builtin_iterator_serialized_boundary_markers(Array::get(reparsed, 0)) {
+    Some(markers) => {
+      inspect(Array::length(markers), "1")
+      inspect(builtin_iterator_namespace_from_marker(Array::get(markers, 0)), "Some(Iter)")
+    },
+    None => assert(false)
+  }
+  let no_imports = parse_program(lex("let value = 1"))
+  match builtin_iterator_serialized_boundary_markers(builtin_iterator_serialized_boundary(no_imports)) {
+    Some(markers) => inspect(Array::length(markers), "0"),
+    None => assert(false)
+  }
 }
 
 test "a materialized aliased trait operation keeps its local namespace" {

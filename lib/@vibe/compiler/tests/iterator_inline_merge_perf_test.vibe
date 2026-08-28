@@ -1,0 +1,24 @@
+import @vibe/compiler/entry/compiler/fs_compile {
+  closure_merged_stmts
+}
+
+import @vibe/compiler/codegen {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  print_program
+}
+
+fn builtin_sources() -> Array[(String, String)] {
+  [("@vibe/builtin.vibe", "export trait Iterator[T]")]
+}
+
+test "inline Iterator map devirtualizes before codegen" {
+  let iterator_source = "import @vibe/builtin { trait Iterator }\nfn _start() -> Int { Array::length(Iterator::map([1, 2, 3], (x: Int) -> Int { x + 1 })) }"
+  let through_iterator = closure_merged_stmts(iterator_source, "main.vibe", builtin_sources())
+  desugar_trait_dicts(through_iterator)
+  let rewritten = print_program(through_iterator)
+  assert(String::contains(rewritten, "Array::map"))
+  assert(!String::contains(rewritten, "Iterator::map"))
+}
