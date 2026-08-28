@@ -2276,9 +2276,13 @@ against a library `fn` of the same name that some other file in the program
 happened to define. The answers can differ too, not just the speed:
 `String::split(s, "")` trapped on one and returned `[s]` on the other.
 
-`scripts/check_builtin_shadowing.sh` fails the build if `lib/**` declares a
-name the builtin registry owns. The exemptions that predate it are pinned
-inside that script, so widening the set takes a diff to the checker itself.
+Nothing enforces this yet, which is what #2378 is for. A lexical scan cannot:
+`fn r#String::index_of` defines `String::index_of` and reads as `r`,
+`#deprecated fn X::y` puts the declaration off column zero, and `fn` and its
+name may sit on separate lines — each of those was a silent miss in a scanner
+built for exactly this rule. Deciding what a declaration binds is the
+compiler's job.
+
 A compiler-provided name can still be published from a package without
 defining it — a bodyless declaration on the export surface, the shape
 `String::utf8_length` uses — so `import @vibe/builtin { String::split }`

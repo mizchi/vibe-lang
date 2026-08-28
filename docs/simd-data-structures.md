@@ -419,8 +419,8 @@ program, including at call sites in files that never imported it
 re-implementation in a library is therefore not a second implementation
 alongside the kernel — it *is* the one that runs, for every dependent.
 Measured: `import @vibe/builtin { String::trim }` alone moved a sparse
-`String::index_of` from 0.8 µs to 174 µs (~218×).
-`scripts/check_builtin_shadowing.sh` fails the build on a new one.
+`String::index_of` from 0.8 µs to 174 µs (~218×). #2378 is where the
+diagnostic for it belongs.
 
 Cost of the routing, net of haystack construction
 (`bench/bench_string_scan_routing.vibe`, p50):
