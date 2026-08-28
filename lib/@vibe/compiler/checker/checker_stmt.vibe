@@ -105,6 +105,7 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/normalize {
+  collect_trait_namespace_conflict_errors,
   collect_undispatchable_trait_method_errors,
   derive_imported_trait_namespace_operations,
   derive_trait_namespace_operations,
@@ -5128,6 +5129,9 @@ fn refresh_completed_type_env(env: TypeEnv, defs: Array[TypeDef], from: Int, to:
 }
 
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  push_error_strings(collect_trait_namespace_conflict_errors(stmts, EnvEmpty), frozen_errors)
   derive_trait_namespace_operations(stmts)
   // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
   // to impl free functions before checking, so `X::method` in an impl body
@@ -5139,8 +5143,6 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // sentinels (the codegen-time desugar runs later, but the FS-compile path
   // type-checks first). In-place, idempotent, inert without `let*`/`?`.
   desugar_railway_binds(stmts)
-  let errors = ArrayBuilder::new()
-  let frozen_errors = ArrayBuilder::freeze(errors)
   canonicalize_stdin_provider_type_import_heads(stmts)
   collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
   // #1455 step 3: the `Enum::Variant` pattern qualifiers the parser folded into
@@ -5591,14 +5593,15 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
     _ => {
+      let errors = ArrayBuilder::new()
+      let frozen_errors = ArrayBuilder::freeze(errors)
+      push_error_strings(collect_trait_namespace_conflict_errors(stmts, initial_env), frozen_errors)
       derive_imported_trait_namespace_operations(stmts, initial_env)
       derive_trait_namespace_operations(stmts)
       inject_trait_method_generics(stmts)
       // #635: lower `let*`/`?` railway sentinels before checking (see
       // check_program). This path checks each imported/entry file pre-codegen.
       desugar_railway_binds(stmts)
-      let errors = ArrayBuilder::new()
-      let frozen_errors = ArrayBuilder::freeze(errors)
       check_import_kinds(stmts, initial_env, frozen_errors)
       canonicalize_stdin_provider_type_import_heads(stmts)
       collect_stdin_provider_direct_call_errors(stmts, frozen_errors)

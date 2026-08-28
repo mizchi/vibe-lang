@@ -545,7 +545,9 @@ Every method-bearing trait exposes its operations through the trait namespace:
 `Trait::operation(value, args)` or `value |> Trait::operation(args)`. The
 operation is derived from the trait declaration; no forwarding function is
 needed. Importing `trait Trait` also activates its exported `Trait::*`
-operations, but never introduces a bare `operation` binding.
+operations, but never introduces a bare `operation` binding. A subtrait exposes
+inherited methods through its own namespace as well. These generated operation
+names are reserved: a source declaration cannot replace `Trait::operation`.
 
 The constructor-indexed `Mappable::map` is one instance of this general rule
 and is the canonical container-preserving pipeline combinator (ADR-0110):
