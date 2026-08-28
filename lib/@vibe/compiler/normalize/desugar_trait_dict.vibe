@@ -7185,6 +7185,14 @@ fn constructor_rewrite_var_types(var_types: Array[(String, String)], name: Strin
   }
 }
 
+fn constructor_for_body_var_types(iter: Expr, value_name: String, index_name: Option[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let value_vars = constructor_rewrite_var_types(var_types, value_name, infer_arg_elem_type_name(iter, struct_sets, var_types, fn_returns))
+  match index_name {
+    Some(name) => constructor_rewrite_var_types(value_vars, name, Some("Int")),
+    None => value_vars
+  }
+}
+
 fn gen_uses_constructor_receiver(gen: DictGen) -> Bool {
   let mut i = 0
   let mut found = false
@@ -9720,7 +9728,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // known. When the scrutinee is a NAME whose payload type was recorded
         // (`ctor_payload_key`, from a parameter annotation or a let-bound
         // `Some(..)`), the arm's binder gets that type for its body.
-        let arm_vars = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
+        let arm_vars0 = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
+        let arm_vars = if Array::get(dtd_constructor_tracking, 0) {
+          constructor_match_arm_var_types(scrut, p, gens, struct_sets, arm_vars0, fn_returns)
+        } else {
+          arm_vars0
+        }
         Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
@@ -9742,7 +9755,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
     }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EForIn(name, idx, iter, body) => {
-      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let body_vars = if Array::get(dtd_constructor_tracking, 0) {
+        constructor_for_body_var_types(iter, name, idx, struct_sets, var_types, fn_returns)
+      } else {
+        var_types
+      }
+      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
       // #1350: one surface, one classification. A plain `for x in e` is
       // iterator/iterable/array-classified only when a method-bearing trait is
       // present (without one there are no `impl ::next` methods to dispatch),
