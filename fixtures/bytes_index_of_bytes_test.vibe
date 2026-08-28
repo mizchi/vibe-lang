@@ -1,0 +1,72 @@
+// `Bytes::index_of_bytes` (#2345 step 2) -- the SAME windowed search as
+// `String::index_of`, reached through a Bytes prologue instead of a String one.
+//
+// Import-free on purpose so the wasm-gc lane, which compiles one file as
+// self-contained, can run it:
+//
+//   vibe test fixtures/bytes_index_of_bytes_test.vibe
+//   VIBE_TEST_BACKEND=gc vibe test fixtures/bytes_index_of_bytes_test.vibe
+//
+// THE NAME IS THE SUBSTRING ONE ON PURPOSE. docs/simd-data-structures.md
+// Layer 2 reserves `Bytes::index_of(Bytes, Int)` for single-byte search and
+// `Bytes::index_of_bytes(Bytes, Bytes)` for substring search. Only the second
+// is implemented here; the single-byte form takes an `Int` needle, which this
+// loop cannot consume, so it is a separate body and not made free by sharing.
+//
+// The last block is the one that matters most: it asserts Bytes and String
+// agree ON THE SAME INPUTS. They share the search loop, so a divergence there
+// means the prologue populated the locals wrongly -- the only part that
+// differs between the two, and the only thing this step could break.
+//
+// The 16-byte cases are not decoration either. The loop skips a whole window
+// when no candidate byte is present, so a needle landing exactly on a window
+// boundary, or past several empty windows, exercises the skip path rather
+// than the scalar tail.
+
+fn mk(s: String) -> Bytes {
+  let b = Bytes::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, String::char_code_at(s, i))
+    i = i + 1
+  }
+  b
+}
+
+test "Bytes::index_of_bytes finds a substring" {
+  inspect(Bytes::index_of_bytes(mk("hello world"), mk("world")), "6")
+  inspect(Bytes::index_of_bytes(mk("hello world"), mk("hello")), "0")
+  inspect(Bytes::index_of_bytes(mk("hello world"), mk("zzz")), "-1")
+}
+
+test "Bytes::index_of_bytes edge cases" {
+  // an empty needle matches at 0
+  inspect(Bytes::index_of_bytes(mk("abc"), mk("")), "0")
+  // a needle longer than the haystack cannot match
+  inspect(Bytes::index_of_bytes(mk("ab"), mk("abc")), "-1")
+  // a match at the very last position
+  inspect(Bytes::index_of_bytes(mk("abcdef"), mk("f")), "5")
+  // an empty haystack
+  inspect(Bytes::index_of_bytes(mk(""), mk("a")), "-1")
+}
+
+test "Bytes::index_of_bytes across the 16-byte SIMD window boundary" {
+  let hay = mk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")
+  inspect(Bytes::index_of_bytes(hay, mk("b")), "32")
+  let hay2 = mk("xxxxxxxxxxxxxxxxNEEDLExxxx")
+  inspect(Bytes::index_of_bytes(hay2, mk("NEEDLE")), "16")
+}
+
+// Pinning both sides to the SAME literal, rather than asserting the two calls
+// are equal to each other, is deliberate and is the stronger of the two: an
+// equality assertion passes when both lanes are wrong in the same way, which
+// is exactly the failure a shared search loop makes likely.
+test "Bytes::index_of_bytes agrees with String::index_of" {
+  inspect(Bytes::index_of_bytes(mk("abcabcabc"), mk("cab")), "2")
+  inspect(String::index_of("abcabcabc", "cab"), "2")
+  inspect(Bytes::index_of_bytes(mk("mississippi"), mk("issi")), "1")
+  inspect(String::index_of("mississippi", "issi"), "1")
+  inspect(Bytes::index_of_bytes(mk("aaa"), mk("aab")), "-1")
+  inspect(String::index_of("aaa", "aab"), "-1")
+}

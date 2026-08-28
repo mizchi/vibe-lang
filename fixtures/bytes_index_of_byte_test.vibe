@@ -1,0 +1,117 @@
+// `Bytes::index_of(hay, byte)` -- the single-byte SIMD search (#2345).
+//
+// Import-free on purpose so the wasm-gc lane, which compiles one file as
+// self-contained, can run it:
+//
+//   vibe test fixtures/bytes_index_of_byte_test.vibe
+//   VIBE_TEST_BACKEND=gc vibe test fixtures/bytes_index_of_byte_test.vibe
+//
+// This is a DIFFERENT builtin from `Bytes::index_of_bytes`, not a special case
+// of it. The needle is an `Int`, so there is no needle span to hand to
+// `str_eq`; the substring loop compares spans and cannot serve this shape.
+// `docs/simd-data-structures.md` reserves the two names for exactly this
+// reason.
+//
+// The last block is the one that matters most. The kernel processes complete
+// 16-byte chunks with `v128` and hands the first chunk reporting ANY match to
+// a scalar loop, so every bug this body can have is an off-by-one at a chunk
+// boundary or in the tail -- and a fixture with a handful of hand-picked
+// lengths tests exactly the offsets its author thought of. So the last block
+// sweeps every length up to 40 and every needle position within it, and
+// compares against a scalar oracle written here in vibe.
+//
+// The oracle is INDEPENDENT of the kernel (a `Bytes::get` loop, not a second
+// call into the builtin), which is what makes agreement evidence rather than
+// tautology. The blocks above still pin absolute answers, so a systematically
+// wrong pair cannot agree its way to green.
+
+fn mk(s: String) -> Bytes {
+  let b = Bytes::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, String::char_code_at(s, i))
+    i = i + 1
+  }
+  b
+}
+
+/// The oracle: the loop a library writes today, and the one #2345 exists to
+/// replace. Deliberately not clever.
+fn scan(hay: Bytes, needle: Int) -> Int {
+  let n = Bytes::length(hay)
+  let mut i = 0
+  let mut found = -1
+  while i < n {
+    if found < 0 && Bytes::get(hay, i) == needle {
+      found = i
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn buf(len: Int, at: Int, needle: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < len {
+    if i == at {
+      Bytes::push(b, needle)
+    } else {
+      Bytes::push(b, 97)
+    }
+    i = i + 1
+  }
+  b
+}
+
+test "Bytes::index_of finds a byte" {
+  inspect(Bytes::index_of(mk("hello world"), 111), "4")
+  inspect(Bytes::index_of(mk("hello world"), 104), "0")
+  inspect(Bytes::index_of(mk("hello world"), 100), "10")
+  inspect(Bytes::index_of(mk("hello world"), 122), "-1")
+}
+
+test "Bytes::index_of edge cases" {
+  // an empty haystack has nothing to find
+  inspect(Bytes::index_of(mk(""), 97), "-1")
+  // a needle outside 0..255 never matches. i8x16.splat takes the low 8 bits,
+  // so the vector phase can flag a chunk for 300 as if it were 44 -- but it
+  // only ever hands over to the scalar loop, which compares the full value.
+  inspect(Bytes::index_of(mk("a,b"), 300), "-1")
+  inspect(Bytes::index_of(mk("abc"), 0 - 1), "-1")
+  // the first occurrence, not any occurrence
+  inspect(Bytes::index_of(mk("abcabc"), 98), "1")
+}
+
+test "Bytes::index_of across the 16-byte chunk boundary" {
+  // past two whole chunks: the vector phase runs twice with no match
+  inspect(Bytes::index_of(buf(40, 32, 122), 122), "32")
+  // the last byte of the first chunk, and the first of the second
+  inspect(Bytes::index_of(buf(40, 15, 122), 122), "15")
+  inspect(Bytes::index_of(buf(40, 16, 122), 122), "16")
+  // in the scalar tail of a length that is not a multiple of 16
+  inspect(Bytes::index_of(buf(20, 19, 122), 122), "19")
+  // a length shorter than one chunk never enters the vector phase
+  inspect(Bytes::index_of(buf(9, 8, 122), 122), "8")
+}
+
+test "Bytes::index_of agrees with a scalar oracle at every length and offset" {
+  let mut mismatches = 0
+  let mut len = 0
+  while len <= 40 {
+    let mut at = 0
+    while at <= len {
+      // at == len places the needle nowhere, so the answer is -1
+      let h = buf(len, at, 122)
+      if Bytes::index_of(h, 122) != scan(h, 122) {
+        mismatches = mismatches + 1
+      }
+      at = at + 1
+    }
+    len = len + 1
+  }
+  inspect(mismatches, "0")
+  // and the sweep really ran, so "0 mismatches" is not "0 comparisons"
+  inspect(len, "41")
+}

@@ -1735,6 +1735,11 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
 | `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
 | `Bytes::slice(b, start, end)` | subsequence | linear / gc |
+| `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
+| `Bytes::last_index_of(hay, byte)` | last index holding `byte`, or `-1`. Same scan, downwards | linear / gc |
+| `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
+| `Bytes::compare(a, b)` | lexicographic order: `-1` / `0` / `1`, by **unsigned** byte value | linear / gc |
+| `Bytes::index_of_bytes(hay, needle)` | first index of the `needle` **subsequence**, or `-1`. An empty needle answers `0` | linear / gc |
 | `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
@@ -1743,6 +1748,45 @@ via `memory.copy`, so `push` is amortised O(1)):
 > range is faster — both lower to a single `memory.copy` instruction. Accumulating
 > into an `Array[Int]` and then calling `Bytes::from_array` costs one extra copy,
 > so write into a `Bytes` from the start.
+>
+> **`Bytes::index_of` and `Bytes::index_of_bytes` are two builtins, not one
+> with two spellings** (#2345). `index_of` takes an `Int` needle and finds a
+> single byte; `index_of_bytes` takes a `Bytes` needle and finds a subsequence.
+> They cannot be merged: the substring loop compares a needle *span* through
+> `str_eq`, and a byte is not a span, so each has its own body. A needle
+> outside `0..255` answers `-1`.
+>
+> All three single-byte searches answer for a needle outside `0..255`: `-1`,
+> `-1`, and `0`. `count` needs a guard in its body to do so and the other two do
+> not, which is worth knowing if you write a fourth: `i8x16.splat` keeps only
+> the low 8 bits, so the vector mask for `300` is the mask for `,`. `index_of`
+> and `last_index_of` use that mask only to pick where a scalar loop starts,
+> and that loop compares the full value — the mask can cost a scan, never
+> change an answer. `count` reads the mask AS the answer (`popcnt`), so it
+> checks the needle's range up front instead.
+>
+> `Bytes::compare` orders by **unsigned** byte value, so `0x80` is greater than
+> `0x7F`, and a common prefix falls through to the lengths — `"ab" < "abc"`.
+> That second part is what makes it lexicographic rather than a memcmp. There
+> is still no `Bytes < Bytes`: the operator is a type error and `compare` is
+> the way to order byte strings.
+>
+> Against a 4 KiB buffer (`bench/bench_simd_bytes_find.vibe`, p50):
+> `Bytes::index_of` 216 ns, a **native scalar byte loop** 2413 ns, the
+> hand-written `Bytes::get` loop it replaces 23600 ns, `String::index_of`
+> 365 ns. So **11× over scalar native** — that is what the SIMD earns — and
+> ~109× over the loop a library had to write.
+>
+> `String::index_of` is **not** the scalar baseline: it goes through the same
+> windowed v128 scan (`emit_windowed_substring_search`). The 1.7× against it
+> measures specialisation — a single byte needs no needle span verified through
+> `str_eq` — not SIMD.
+>
+> `Bytes::index_of_bytes` runs the SAME windowed search as `String::index_of`
+> (ADR-0054): a 16-byte SIMD scan for the needle's first byte, then the SIMD
+> `str_eq` on each candidate. The two differ only in how they unpack their
+> arguments — `String` is a packed `(ptr << 32) | len`, `Bytes` is a heap handle
+> whose length is at offset 4 and data pointer at offset 8.
 >
 > **`Bytes::fill` is NOT one of that group** (measured 2026-08-27). This table used
 > to describe it as `Bytes::fill(b, off, len)`, "range fill, one `memory.fill`".

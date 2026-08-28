@@ -71,23 +71,39 @@ orders of magnitude slower (§3.1 measures 6.1 ns per byte scanned). So a
 structure jsimd rejected can still win handily in vibe — and that is a trap,
 not an opportunity: winning against a vibe loop proves nothing except that the
 loop was never the right implementation. **The honest baseline for anything
-proposed here is a native scalar builtin implemented in the compiler**, and
-against that baseline the margins collapse: `String::index_of` (native, scalar)
-runs a 4 KiB search in 352 ns where a hand-written SIMD kernel takes 248 ns —
-1.4x, not 100x.
+proposed here is a native scalar builtin implemented in the compiler**, not a
+vibe loop.
+
+That baseline is `find_4k_native_scalar` in
+`bench/bench_simd_bytes_find.vibe`: a byte loop in inline wasm, native and
+scalar, compiled the way the kernels are. Measured on 4 KiB, p50,
+`Bytes::index_of` is **~11x** it — and ~109x the vibe loop.
+
+**`String::index_of` is not a scalar baseline**, despite the name suggesting a
+plain builtin: `gen_string_index_of_body` calls
+`emit_windowed_substring_search`, a v128 scan (ADR-0054). Comparing a kernel
+against it measures specialisation, not SIMD. The ~11x is the number a SIMD
+kernel has to earn; the ~109x only proves the vibe loop was never the right
+implementation.
 
 ## 2. Where vibe's SIMD support actually is
 
 Two unrelated mechanisms exist today, and they are very far apart in quality.
 
 **Fused builtins written in the compiler** (`codegen/builtin_bodies/`,
-`codegen/expr/compile_call.vibe`). Five exist: `simd_skip_ws`,
-`simd_scan_alnum`, `simd_scan_alnum_str`, `simd_scan_string_special_str`,
-`simd_scan_line_end_str`. They keep the `v128` on the operand stack for the
-whole loop and are fast. Two of the five have a production caller
-(`lib/@vibe/parser/lexer.vibe:653,750`); the other three have only fixtures.
-This mechanism works, but every kernel costs a compiler change, a registry row,
-and a per-lane index arm — it does not scale to a data-structure library.
+`codegen/expr/compile_call.vibe`). Nine exist. Five are lexer-shaped scans with
+their needle baked in: `simd_skip_ws`, `simd_scan_alnum`, `simd_scan_alnum_str`,
+`simd_scan_string_special_str`, `simd_scan_line_end_str`. Four are the Layer 2
+`Bytes` searches this document proposed, landed in #2372: `Bytes::index_of`,
+`Bytes::last_index_of`, `Bytes::count`, `Bytes::index_of_bytes`. They keep the
+`v128` on the operand stack for the whole loop and are fast.
+
+Every kernel costs a compiler change, a registry row, a per-lane index arm, and
+a name in each of several hand-maintained declaration lists that nothing points
+at — two effect-lowering allowlists, four borrow-arg0 masks, a `.vpkg` contract
+(#2373). **This does not scale to a data-structure library**: adding four
+builtins meant editing eleven places, and every one that was missed was caught
+by a human rather than by a gate.
 
 **Inline wasm** (`fn f(b: Bytes, n: Int) -> Int = wasm "..."`, #805/ADR-0072).
 A ~600-line WAT assembler with the full integer/float/SIMD opcode set, `v128`
@@ -107,12 +123,18 @@ since been **removed** (#2342).
 
 `bench/bench_simd_bytes_find.vibe`, 4 KiB single-byte search, 500 iters:
 
+The intrinsic lane no longer exists; this table is the evidence that retired
+it (`bench/bench_simd_bytes_find.vibe`, 500 iters, mean, at the time):
+
 | lane | ns/op (mean) | B/op | vs. best |
 | :--- | ---: | ---: | ---: |
 | inline-wasm SIMD kernel | **248** | **0** | 1.0x |
-| native `String::index_of` (scalar builtin) | 352 | 0 | 1.4x |
+| `String::index_of` (a SIMD builtin — see §1) | 352 | 0 | 1.4x |
 | same algorithm through `v128_*` intrinsics | 5564 | **8048** | 22x |
 | vibe-level scalar loop over `Bytes::get` | 25001 | 0 | 101x |
+
+Current numbers, including the native scalar baseline, are in that file's
+header.
 
 The intrinsic lane ran the *identical algorithm* as the kernel lane and was 22x
 slower, because each `v128_load` / `v128_eq_i8x16` / `v128_and` returned a
@@ -351,31 +373,46 @@ No SIMD, both backends, ~344x on rank. `~` remains open as its own slice.
 
 ### Layer 2 — `Bytes` bulk kernels
 
-`Bytes` today has `get`/`set`/`push`/`slice`/`concat`/`fill`/`blit` and
-structural `==`. It has **no search, no ordering, no counting** — so any library
-that scans bytes writes the 6.1 ns/byte loop from §3.1 by hand. This is jsimd's
-best-measured group (4.9–18.1x) and the one moonbitlang/core already covers with
-the patterns jsimd inventories in its `CORE_PATTERNS.md`:
+**Landed** in #2372, on both backends:
 
 ```
 Bytes::index_of(Bytes, Int) -> Int              // single byte
-Bytes::index_of_bytes(Bytes, Bytes) -> Int      // first/last-byte SIMD prefilter,
-                                                // then verify the middle
 Bytes::last_index_of(Bytes, Int) -> Int
 Bytes::count(Bytes, Int) -> Int
+Bytes::index_of_bytes(Bytes, Bytes) -> Int      // substring; calls String::index_of
+```
+
+```
 Bytes::compare(Bytes, Bytes) -> Int             // lexicographic, first differing lane
 ```
 
-Two design notes. `String` is a byte string since ADR-0098, so
-`String::index_of` / `contains` / `split` / `starts_with` should route through
-the same kernels rather than keeping a second scalar implementation — that is
-where the 1.4x of §3.1 gets collected, across a surface that already has
-callers. And a kernel wants to over-read its tail: guaranteeing at
-least 15 bytes of readable slack past `len` would let every kernel drop its
-scalar tail loop. Today's block is `[alloc@0][len@4][data@8]` with capacity
-seeded at 64 and doubling, always a multiple of 8
+The whole layer is served.
+
+`Bytes < Bytes` remains a type error — the operator was never the ask,
+`Bytes::compare` is how byte strings are ordered. A library no longer writes
+the 6.1 ns/byte loop by hand.
+Measured on a 4 KiB buffer (`bench/bench_simd_bytes_find.vibe`, p50): that loop
+is 23600 ns and `Bytes::index_of` is 216 ns.
+
+Against `find_4k_native_scalar` (§1) `Bytes::index_of` is ~11x; against
+`String::index_of` it is ~1.7x, which measures specialisation — a single byte
+needs no needle span verified through `str_eq` — not SIMD.
+
+**Routing is the open half.** `String` has been a byte string since ADR-0098,
+so `String::count` / `split` / `replace` should go through these kernels rather
+than keep a second implementation. Those three are the ones that matter:
+ADR-0054 already made `String::index_of` / `equals` / `starts_with` /
+`ends_with` SIMD, while `count` / `replace` / `replace_all` are library
+functions in `@vibe/builtin` — i.e. exactly the hand-written loop this layer
+replaces, on a surface that already has callers.
+
+**Tail slack is still undecided.** A kernel wants to over-read its tail:
+guaranteeing at least 15 bytes of readable slack past `len` would let every
+kernel drop its scalar tail loop. Today's block is `[alloc@0][len@4][data@8]`
+with capacity seeded at 64 and doubling, always a multiple of 8
 (`gen_bytes_push_body`) — so the slack is 0..7 bytes and a 16-byte tail load
-can read past the block.
+can read past the block. The four landed kernels all keep a scalar tail
+instead, so none of them depends on this being resolved.
 
 ### Layer 3 — packed columns (§3.3)
 

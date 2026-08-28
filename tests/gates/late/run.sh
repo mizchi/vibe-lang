@@ -1275,6 +1275,16 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # concat, not the loop.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_for_builtin_iterand_suspend_test.vibe
+# #2345: the same allowlist, the same failure mode, a new name.
+# `Bytes::index_of_bytes` is the Bytes-prologue half of the windowed substring
+# search `String::index_of` already reaches, and scps_named_call_ok consults
+# the list by exact name with no registry fallback -- so without the entry a
+# handle body calling it is refused naming the call. LINEAR only: a
+# suspend-class arm captures `resume` as a value and the gc backend does not
+# lower that, so a gc run of this shape proves nothing here. The fixture
+# carries `String::index_of` as its own control.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_suspend_bytes_index_of_bytes_test.vibe
 # #1714 P0: the callee-return proof reads the module's TOP-LEVEL statements, so
 # a local binding spelling the same name made it answer about the wrong
 # function -- lowering a String iterand to the indexed ARRAY form, which
