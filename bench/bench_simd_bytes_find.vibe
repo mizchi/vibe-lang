@@ -1,10 +1,36 @@
 // Byte search over `Bytes`, four ways (#536 follow-up; see
-// docs/simd-data-structures.md). `Bytes` has no native search builtin, so a
-// library that scans bytes must write the scalar loop below by hand.
+// docs/simd-data-structures.md).
 //
+//   find_4k_Bytes_index_of         the native builtin (#2345)
 //   find_4k_simd_inline_wasm       hand-written v128 kernel (this file)
-//   find_4k_scalar                 the loop a library has to write today
-//   find_4k_String_index_of        the native scalar builtin, for scale
+//   find_4k_scalar                 the loop a library HAD to write before it
+//   find_4k_String_index_of        the native String search, for scale
+//
+// This file used to open by saying `Bytes` has "no native search builtin, so a
+// library that scans bytes must write the scalar loop below by hand". #2345
+// landed `Bytes::index_of`, so both clauses are past tense, and the file's job
+// changed with them: it is no longer evidence that the builtin is missing, it
+// is the measurement of what replacing the loop bought. The hand-written
+// kernel stays as the bound the builtin is measured against.
+//
+// Measured 2026-08-28, 1000 iters, three runs. Read the p50 column: the mean
+// on this runner moves by ~40% between runs on the same binary, and the p50
+// does not.
+//
+//     find_4k_Bytes_index_of        234 / 234 / 234 ns p50    0 B/op
+//     find_4k_simd_inline_wasm      238 / 342 / 294 ns p50    0 B/op
+//     find_4k_String_index_of       369 / 368 / 370 ns p50    0 B/op
+//     find_4k_scalar              22454 / 22451 / 22450 ns    0 B/op
+//
+// So the builtin is 96x the loop a library had to write, 1.6x the native
+// SCALAR search over the same 4 KiB, and at least as fast as the hand-written
+// v128 kernel -- the one lane whose p50 moves between runs is the hand-written
+// one, so "at least as fast" is as strong a claim as this data supports.
+//
+// The 96x is the number that justifies the builtin existing. The 1.6x is the
+// one that has to justify the SIMD code specifically, and it is the smaller
+// claim on purpose (#2345's baseline discipline: the baseline is the native
+// builtin, not the vibe loop).
 //
 // REJECTION EVIDENCE (#2342). A fourth lane ran the SAME algorithm through the
 // `v128_*` intrinsics. Measured here, 500 iters, mean:
@@ -79,7 +105,11 @@ fn mkb(n: Int, at: Int) -> Bytes {
   let b = Bytes::new()
   let mut i = 0
   while i < n {
-    Bytes::push(b, if i == at { 88 } else { 97 })
+    Bytes::push(b, if i == at {
+      88
+    } else {
+      97
+    })
     i = i + 1
   }
   b
@@ -89,7 +119,11 @@ fn mks(n: Int, at: Int) -> String {
   let sb = StringBuilder::new()
   let mut i = 0
   while i < n {
-    StringBuilder::push(sb, if i == at { "X" } else { "a" })
+    StringBuilder::push(sb, if i == at {
+      "X"
+    } else {
+      "a"
+    })
     i = i + 1
   }
   StringBuilder::freeze(sb)
@@ -99,16 +133,20 @@ let hay = mkb(4096, 4000)
 
 let hay_s = mks(4096, 4000)
 
-let sink = [
-  0
-]
+let sink = [0]
 
-test "the three lanes agree" {
+test "the four lanes agree" {
+  assert_eq(Bytes::index_of(hay, 88), 4000)
+  assert_eq(Bytes::index_of(hay, 66), -1)
   assert_eq(simd_find(hay, 88, 0, 4096), 4000)
   assert_eq(scalar_find(hay, 88, 0, 4096), 4000)
   assert_eq(String::index_of(hay_s, "X"), 4000)
   assert_eq(simd_find(hay, 66, 0, 4096), -1)
   assert_eq(scalar_find(hay, 66, 0, 4096), -1)
+}
+
+bench "find_4k_Bytes_index_of" {
+  Array::set(sink, 0, Bytes::index_of(hay, 88))
 }
 
 bench "find_4k_simd_inline_wasm" {

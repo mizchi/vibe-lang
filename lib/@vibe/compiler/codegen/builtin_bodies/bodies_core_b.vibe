@@ -191,6 +191,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_sub,
   emit_i64_trunc_f64_s,
   emit_i64_xor,
+  emit_i8x16_bitmask,
   emit_i8x16_eq,
   emit_i8x16_splat,
   emit_if_i64,
@@ -1499,6 +1500,120 @@ export fn gen_string_index_of_body(enable_rc: Bool, str_len_idx: Int, str_substr
 ///
 /// Returns a tagged -1 when the needle is longer than the haystack, matching
 /// the String contract; the empty-needle case is handled inside the loop.
+/// `Bytes::index_of(hay, byte)` -- the SINGLE-BYTE search (#2345). Returns the
+/// smallest index holding `byte`, or -1.
+///
+/// It is a separate body from `Bytes::index_of_bytes` rather than a special
+/// case of it, and that is the whole reason the surface has two names: this
+/// needle is an `Int`, so there is no needle SPAN to hand to `str_eq`. The
+/// substring loop compares spans, so it cannot serve this shape at all.
+///
+/// The kernel is `gen_simd_scan_line_end_body`'s (bodies_core_a2.vibe), which
+/// is the same search with LF hardcoded: complete 16-byte chunks go through
+/// `v128.load` + `i8x16.splat` + `i8x16.eq` + `i8x16.bitmask`, and the first
+/// chunk that reports ANY match hands over to the exact scalar loop, which
+/// also covers the final partial chunk. Two differences: the needle is a
+/// runtime local instead of a constant 10, and absence answers -1 instead of
+/// `len`.
+///
+/// A needle outside 0..255 answers -1, and does so correctly rather than by
+/// accident: `i8x16.splat` takes the low 8 bits, so the vector phase can
+/// report a candidate chunk for (say) 300 as if it were 44 -- but it only ever
+/// hands over to the scalar loop, which compares the full i64 and never
+/// matches. The vector phase can cost a scan; it cannot change an answer.
+///
+/// The handle loads are the same ones `gen_bytes_get_body` does and are
+/// deliberately NOT untagged: a `Bytes` handle is a raw pointer in the value
+/// world, and only `Int` carries the `n << 1` tag -- which is why the NEEDLE
+/// is untagged here and the haystack is not.
+///
+///   locals: i32 { 2: addr } ; i64 { 3: i, 4: len, 5: needle }
+export fn gen_bytes_index_of_byte_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 2)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 4)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_set(b, 5)
+  emit_i64_const(b, 0)
+  emit_local_set(b, 3)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_get(b, 4)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_eq(b)
+  emit_i8x16_bitmask(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 5)
+  emit_i64_eq(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i64_eq(b)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_local_get(b, 3)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_end(b)
+  b
+}
+
 /// `Bytes::index_of_bytes(hay, needle)` -- the substring search, over two heap
 /// handles instead of two String fat values.
 ///

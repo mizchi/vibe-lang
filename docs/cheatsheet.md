@@ -1733,6 +1733,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
 | `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
 | `Bytes::slice(b, start, end)` | subsequence | linear / gc |
+| `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
 | `Bytes::index_of_bytes(hay, needle)` | first index of the `needle` **subsequence**, or `-1`. An empty needle answers `0` | linear / gc |
 | `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
@@ -1743,13 +1744,21 @@ via `memory.copy`, so `push` is amortised O(1)):
 > into an `Array[Int]` and then calling `Bytes::from_array` costs one extra copy,
 > so write into a `Bytes` from the start.
 >
-> **`Bytes::index_of_bytes` takes a `Bytes` needle, and there is no
-> `Bytes::index_of` yet** (#2345). The name is spelled the long way on purpose:
-> `docs/simd-data-structures.md` reserves `Bytes::index_of(Bytes, Int)` for
-> single-byte search, whose needle is an `Int`. That is a separate body with a
-> different scan — the substring loop compares a needle *span*, so it cannot
-> consume a byte — and it is not implemented, nor are `last_index_of` / `count`
-> / `compare`. Calling any of them today is `unknown name`.
+> **`Bytes::index_of` and `Bytes::index_of_bytes` are two builtins, not one
+> with two spellings** (#2345). `index_of` takes an `Int` needle and finds a
+> single byte; `index_of_bytes` takes a `Bytes` needle and finds a subsequence.
+> They cannot be merged: the substring loop compares a needle *span* through
+> `str_eq`, and a byte is not a span, so each has its own body. A needle
+> outside `0..255` answers `-1`.
+>
+> `Bytes::last_index_of` / `count` / `compare` are still unimplemented —
+> measured, calling one is `unknown name`.
+>
+> Against a 4 KiB buffer, `Bytes::index_of` measures **96× the hand-written
+> `Bytes::get` loop** it replaces and 1.6× the native scalar `String::index_of`
+> (`bench/bench_simd_bytes_find.vibe` records the runs). The first number is
+> why the builtin exists; the second is the one the SIMD code itself has to
+> earn.
 >
 > `Bytes::index_of_bytes` runs the SAME windowed search as `String::index_of`
 > (ADR-0054): a 16-byte SIMD scan for the needle's first byte, then the SIMD
