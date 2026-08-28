@@ -53,9 +53,14 @@ test "#2357: a manual binding cannot replace a derived trait operation" {
   inspect(check_source_error_message(source), "remove declaration `Measurable::measure`: trait operations are generated from `trait Measurable`")
 }
 
-test "#2357: the generated forwarding shape remains idempotent" {
+test "#2357: a source forwarding wrapper does not masquerade as generated" {
   let source = "trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nfn Measurable::measure[T: Measurable](value: T) -> Int { T::measure(value) }\nlet answer = Measurable::measure(42)"
-  inspect(check_source_error_message(source), "")
+  inspect(check_source_error_message(source), "remove declaration `Measurable::measure`: trait operations are generated from `trait Measurable`")
+}
+
+test "#2357: additional bounds cannot masquerade as a generated operation" {
+  let source = "trait Extra {}\ntrait Measurable { measure(Self) -> Int }\nimpl Extra for Int {}\nimpl Measurable for Int { measure(self) -> Int { self } }\nfn Measurable::measure[T: Measurable + Extra](value: T) -> Int { T::measure(value) }\nlet answer = Measurable::measure(42)"
+  inspect(check_source_error_message(source), "remove declaration `Measurable::measure`: trait operations are generated from `trait Measurable`")
 }
 
 test "#2357: a subtrait namespace includes inherited operations" {
@@ -168,7 +173,7 @@ test "#2338: concrete constructor calls synthesize applied witnesses" {
 }
 
 test "#2338: unresolved shadows do not reuse an outer constructor witness" {
-  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = [1]; let _ = Mappable::map({ let xs = ((x) -> { x })(Some(3)); xs }, (x) -> { x + 1 }); () }\n"
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = [1]; let _ = Mappable::map({ let xs = ((x) -> { x })(Some(3)); xs }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
   let _ = check_program(stmts)
   desugar_trait_dicts(stmts)
@@ -177,7 +182,7 @@ test "#2338: unresolved shadows do not reuse an outer constructor witness" {
 }
 
 test "#2338: parameterized loop break values select the outer constructor witness" {
-  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let _ = Mappable::map(loop (i = 0) { let _ = loop (j = 0) { break Some(j) }; break [i] }, (x) -> { x + 1 }); () }\n"
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nfn probe() -> Unit { let _ = Mappable::map(loop (i = 0) { let _ = loop (j = 0) { break Some(j) }; break [i] }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
   let _ = check_program(stmts)
   desugar_trait_dicts(stmts)
@@ -186,7 +191,7 @@ test "#2338: parameterized loop break values select the outer constructor witnes
 }
 
 test "#2338: parameterized loop break values use lexical binding constructors" {
-  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { let xs = [i]; break xs }, (x) -> { x + 1 }); () }\n"
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { let xs = [i]; break xs }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
   let _ = check_program(stmts)
   desugar_trait_dicts(stmts)
@@ -196,7 +201,7 @@ test "#2338: parameterized loop break values use lexical binding constructors" {
 }
 
 test "#2338: parameterized loop match binders use arm constructors" {
-  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { match [i] { xs => break xs } }, (x) -> { x + 1 }); () }\n"
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(loop (i = 0) { match [i] { xs => break xs } }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
   let _ = check_program(stmts)
   desugar_trait_dicts(stmts)
@@ -206,7 +211,7 @@ test "#2338: parameterized loop match binders use arm constructors" {
 }
 
 test "#2338: handler result bindings mask unresolved outer constructors" {
-  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(handle { throw(\"fail\"); [0] } with { Exception::Throw(_) => { let xs = ((u) -> { [1] })(()); xs } }, (x) -> { x + 1 }); () }\n"
+  let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = Some(0); let _ = Mappable::map(handle { throw(\"fail\"); [0] } with { Exception::Throw(_) => { let xs = ((u) -> { [1] })(()); xs } }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))
   let _ = check_program(stmts)
   desugar_trait_dicts(stmts)
@@ -289,7 +294,7 @@ test "#2338: opaque constructor parameters reject non-placeholder kinds" {
 }
 
 fn mappable_program(body: String) -> String {
-  String::concat("trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn Mappable::map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\n", body)
+  String::concat("trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\n", body)
 }
 
 fn desugar_mappable_program(body: String) -> String with Exception {

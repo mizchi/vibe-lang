@@ -3,6 +3,7 @@
 import @vibe/compiler/core {
   Expr,
   ImportItem,
+  ImportKind,
   Pat,
   Stmt,
   TypeEnv,
@@ -1015,10 +1016,98 @@ fn trait_operation_desugared_forwarding_bound(bounds: Array[(String, Array[Strin
   found
 }
 
+fn trait_operation_has_generated_offset(offset: Int) -> Bool {
+  offset >= 1900000000
+}
+
+fn trait_operation_type_option_equal(left: Option[TypeExpr], right: Option[TypeExpr]) -> Bool {
+  match (left, right) {
+    (Some(a), Some(b)) => impl_target_key(a) == impl_target_key(b),
+    (None, None) => true,
+    _ => false
+  }
+}
+
+fn trait_operation_string_option_equal(left: Option[String], right: Option[String]) -> Bool {
+  match (left, right) {
+    (Some(a), Some(b)) => a == b,
+    (None, None) => true,
+    _ => false
+  }
+}
+
+fn trait_operation_bounds_equal(left: Array[(String, Array[String])], right: Array[(String, Array[String])]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) && same {
+      let (left_name, left_refs) = Array::get(left, i)
+      let (right_name, right_refs) = Array::get(right, i)
+      same = left_name == right_name && str_arrays_equal(left_refs, right_refs)
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn trait_operation_params_equal(left: Array[(String, Option[TypeExpr])], right: Array[(String, Option[TypeExpr])]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) && same {
+      let (left_name, left_type) = Array::get(left, i)
+      let (right_name, right_type) = Array::get(right, i)
+      same = left_name == right_name && trait_operation_type_option_equal(left_type, right_type)
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn trait_operation_call_equal(left: Expr, right: Expr) -> Bool {
+  match (left, right) {
+    (ECall(EIdent(left_callee, _), left_args, _), ECall(EIdent(right_callee, _), right_args, _)) => left_callee == right_callee && {
+      if Array::length(left_args) != Array::length(right_args) {
+        false
+      } else {
+        let mut i = 0
+        let mut same = true
+        while i < Array::length(left_args) && same {
+          match (Array::get(left_args, i), Array::get(right_args, i)) {
+            (EIdent(left_name, _), EIdent(right_name, _)) => {
+              same = left_name == right_name
+            },
+            _ => {
+              same = false
+            }
+          }
+          i = i + 1
+        }
+        same
+      }
+    },
+    _ => false
+  }
+}
+
+fn trait_operation_matches_expected_binding(stmt: Stmt, expected: Option[Stmt]) -> Bool {
+  match expected {
+    Some(SLet(expected_exported, true, expected_name, None, EFn(expected_type_params, expected_bounds, expected_params, expected_ret, expected_effect, expected_body))) => match stmt {
+      SLet(exported, true, name, None, EFn(type_params, bounds, params, ret, effect, body)) => exported == expected_exported && name == expected_name && str_arrays_equal(type_params, expected_type_params) && trait_operation_bounds_equal(bounds, expected_bounds) && trait_operation_params_equal(params, expected_params) && trait_operation_type_option_equal(ret, expected_ret) && trait_operation_string_option_equal(effect, expected_effect) && trait_operation_call_equal(body, expected_body),
+      _ => false
+    },
+    _ => false
+  }
+}
+
 fn trait_operation_is_derived_binding(stmt: Stmt, operation_name: String, trait_name: String, method_name: String) -> Bool {
   match stmt {
-    SLet(_, true, name, None, EFn(_, bounds, params, _, _, ECall(EIdent(callee, _), args, _))) => name == operation_name && trait_operation_forwarding_bound(bounds, callee, trait_name, method_name) && trait_operation_forwarding_args(params, args),
-    SLet(_, true, name, None, EFn(_, bounds, params, _, _, ECall(EDot(EIdent(dict_name, _), called_method, _, _), args, _))) => name == operation_name && called_method == method_name && Array::length(params) > 0 && {
+    SLet(_, true, name, None, EFn(_, bounds, params, _, _, ECall(EIdent(callee, _), args, call_off))) => name == operation_name && trait_operation_has_generated_offset(call_off) && trait_operation_forwarding_bound(bounds, callee, trait_name, method_name) && trait_operation_forwarding_args(params, args),
+    SLet(_, true, name, None, EFn(_, bounds, params, _, _, ECall(EDot(EIdent(dict_name, _), called_method, _, _), args, call_off))) => name == operation_name && trait_operation_has_generated_offset(call_off) && called_method == method_name && Array::length(params) > 0 && {
       let (first_name, _) = Array::get(params, 0)
       first_name == dict_name && trait_operation_desugared_forwarding_bound(bounds, dict_name, trait_name) && trait_operation_desugared_forwarding_args(params, args)
     },
@@ -1026,13 +1115,51 @@ fn trait_operation_is_derived_binding(stmt: Stmt, operation_name: String, trait_
   }
 }
 
-fn trait_operation_manual_binding_exists(stmts: Array[Stmt], operation_name: String, trait_name: String, method_name: String) -> Bool {
+fn expected_trait_operation_binding(definition_stmts: Array[Stmt], operation_name: String) -> Option[Stmt] {
+  let probe = array_empty()
+  let mut i = 0
+  while i < Array::length(definition_stmts) {
+    match Array::get(definition_stmts, i) {
+      SLet(_, _, name, _, _) => if name == operation_name {
+        ()
+      } else {
+        Array::push(probe, Array::get(definition_stmts, i))
+      },
+      SFnDecl(_, name, _, _, _) => if name == operation_name {
+        ()
+      } else {
+        Array::push(probe, Array::get(definition_stmts, i))
+      },
+      _ => Array::push(probe, Array::get(definition_stmts, i))
+    }
+    i = i + 1
+  }
+  derive_trait_namespace_operations(probe)
+  let mut found = None
+  let mut done = false
+  i = 0
+  while i < Array::length(probe) && !done {
+    match Array::get(probe, i) {
+      SLet(_, _, name, _, _) => if name == operation_name {
+        found = Some(Array::get(probe, i))
+        done = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_manual_binding_exists(stmts: Array[Stmt], operation_name: String, trait_name: String, method_name: String, expected: Option[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SLet(_, _, name, _, _) => if name == operation_name && !trait_operation_is_derived_binding(stmt, operation_name, trait_name, method_name) {
+      SLet(_, _, name, _, _) => if name == operation_name && !trait_operation_is_derived_binding(stmt, operation_name, trait_name, method_name) && !trait_operation_matches_expected_binding(stmt, expected) {
         found = true
       } else {
         ()
@@ -1059,9 +1186,10 @@ fn trait_operation_manual_binding_exists(stmts: Array[Stmt], operation_name: Str
   found
 }
 
-fn trait_namespace_conflict_note(trait_name: String, method_name: String, stmts: Array[Stmt], errors: Array[String]) -> Unit {
+fn trait_namespace_conflict_note(trait_name: String, method_name: String, stmts: Array[Stmt], definition_stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let operation_name = String::concat(trait_name, String::concat("::", method_name))
-  if trait_operation_manual_binding_exists(stmts, operation_name, trait_name, method_name) {
+  let expected = expected_trait_operation_binding(definition_stmts, operation_name)
+  if trait_operation_manual_binding_exists(stmts, operation_name, trait_name, method_name, expected) {
     let message = String::concat("remove declaration `", String::concat(operation_name, String::concat("`: trait operations are generated from `trait ", String::concat(trait_name, "`"))))
     if !str_array_contains(errors, message) {
       Array::push(errors, message)
@@ -1099,27 +1227,38 @@ fn imported_trait_probe(env: TypeEnv, local_name: String) -> Array[Stmt] {
   probe
 }
 
+fn import_item_is_explicit_trait(item: ImportItem) -> Bool {
+  match item.kind {
+    Some(ImportTrait) => true,
+    _ => false
+  }
+}
+
 fn imported_trait_namespace_conflict_notes(items: Array[ImportItem], env: TypeEnv, stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(items) {
     let item = Array::get(items, i)
-    let local_name = match item.alias {
-      Some(alias) => alias,
-      None => item.name
-    }
-    let probe = imported_trait_probe(env, local_name)
-    let traits_raw = collect_namespace_traits(probe)
-    let traits = flatten_traits(traits_raw, collect_trait_supers(probe))
-    match lookup_trait_sigs(traits, local_name) {
-      Some(methods) => {
-        let mut mi = 0
-        while mi < Array::length(methods) {
-          let (method_name, _, _) = Array::get(methods, mi)
-          trait_namespace_conflict_note(local_name, method_name, stmts, errors)
-          mi = mi + 1
-        }
-      },
-      None => ()
+    if import_item_is_explicit_trait(item) {
+      let local_name = match item.alias {
+        Some(alias) => alias,
+        None => item.name
+      }
+      let probe = imported_trait_probe(env, local_name)
+      let traits_raw = collect_namespace_traits(probe)
+      let traits = flatten_traits(traits_raw, collect_trait_supers(probe))
+      match lookup_trait_sigs(traits, local_name) {
+        Some(methods) => {
+          let mut mi = 0
+          while mi < Array::length(methods) {
+            let (method_name, _, _) = Array::get(methods, mi)
+            trait_namespace_conflict_note(local_name, method_name, stmts, probe, errors)
+            mi = mi + 1
+          }
+        },
+        None => ()
+      }
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -1145,7 +1284,7 @@ export fn collect_trait_namespace_conflict_errors(stmts: Array[Stmt], env: TypeE
         let mut mi = 0
         while mi < Array::length(methods) {
           let (method_name, _, _) = Array::get(methods, mi)
-          trait_namespace_conflict_note(trait_name, method_name, stmts, errors)
+          trait_namespace_conflict_note(trait_name, method_name, stmts, stmts, errors)
           mi = mi + 1
         }
       },
@@ -1383,33 +1522,37 @@ fn imported_trait_operation_additions(items: Array[ImportItem], env: TypeEnv, st
   let mut i = 0
   while i < Array::length(items) {
     let item = Array::get(items, i)
-    let local_name = match item.alias {
-      Some(alias) => alias,
-      None => item.name
-    }
-    let probe = imported_trait_probe(env, local_name)
-    if Array::length(probe) > 0 {
-      let original_probe_len = Array::length(probe)
-      {
-        derive_trait_namespace_operations(probe)
-        let mut pi = original_probe_len
-        while pi < Array::length(probe) {
-          match Array::get(probe, pi) {
-            SLet(_, _, operation_name, _, _) => match split_qualified(operation_name) {
-              Some(parts) => {
-                let (operation_trait, _) = parts
-                if operation_trait == local_name && !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_binding_exists(additions, operation_name) {
-                  Array::push(additions, Array::get(probe, pi))
-                } else {
-                  ()
-                }
+    if import_item_is_explicit_trait(item) {
+      let local_name = match item.alias {
+        Some(alias) => alias,
+        None => item.name
+      }
+      let probe = imported_trait_probe(env, local_name)
+      if Array::length(probe) > 0 {
+        let original_probe_len = Array::length(probe)
+        {
+          derive_trait_namespace_operations(probe)
+          let mut pi = original_probe_len
+          while pi < Array::length(probe) {
+            match Array::get(probe, pi) {
+              SLet(_, _, operation_name, _, _) => match split_qualified(operation_name) {
+                Some(parts) => {
+                  let (operation_trait, _) = parts
+                  if operation_trait == local_name && !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_binding_exists(additions, operation_name) {
+                    Array::push(additions, Array::get(probe, pi))
+                  } else {
+                    ()
+                  }
+                },
+                None => ()
               },
-              None => ()
-            },
-            _ => ()
+              _ => ()
+            }
+            pi = pi + 1
           }
-          pi = pi + 1
         }
+      } else {
+        ()
       }
     } else {
       ()
