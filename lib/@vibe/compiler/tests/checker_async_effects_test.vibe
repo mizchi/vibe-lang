@@ -514,3 +514,27 @@ test "mapped multi-payload handler results require Async" {
   ])
   assert_mapped_requires_async(handled)
 }
+
+test "mapped IIFE-performed handler payloads require Async" {
+  let performed = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1)
+  ], -1)
+  let iife = ECall(EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Unit")), None, performed), array_empty(), -1)
+  let handled = EHandle(ESeq(iife, chan_literal()), [
+    (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
+  ])
+  assert_mapped_requires_async(handled)
+}
+
+test "mapped handler-arm payloads require Async inside the arm" {
+  let performed = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1)
+  ], -1)
+  let handled = EHandle(ESeq(performed, EUnit), [
+    (PCtor("Carry::Yield", [PBind("it")]), for_over(mapped_over(EIdent("it", -1))))
+  ])
+  let errors = check_async_effects_expr(handled, poly_map_env(), false)
+  assert(Array::length(errors) > 0)
+  let ok = check_async_effects_expr(handled, poly_map_env(), true)
+  assert(eq(Array::length(ok), 0))
+}

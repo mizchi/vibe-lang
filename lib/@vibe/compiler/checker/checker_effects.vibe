@@ -1204,6 +1204,24 @@ fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env:
         },
         _ => ()
       }
+      match callee {
+        EFn(_, _, params, _, _, body) => {
+          let mut body_locals = afe_bind_params(locals, params, env)
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (name, _) = Array::get(params, pi)
+            let inferred = if pi < Array::length(args) {
+              afe_expr_head_name(Array::get(args, pi), env, locals)
+            } else {
+              None
+            }
+            body_locals = afe_bind_local(body_locals, name, inferred)
+            pi = pi + 1
+          }
+          afe_collect_perform_payloads(body, op, payload_index, env, body_locals, out)
+        },
+        _ => ()
+      }
       let mut i = 0
       while i < Array::length(args) {
         afe_collect_perform_payloads(Array::get(args, i), op, payload_index, env, locals, out)
@@ -1580,8 +1598,8 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
       append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async || discharges_async, locals))
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, locals))
+        let (pat, arm_body) = Array::get(arms, ai)
+        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, afe_handler_arm_locals(body, pat, env, locals)))
         ai = ai + 1
       }
     },
