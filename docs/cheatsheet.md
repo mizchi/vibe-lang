@@ -2278,8 +2278,8 @@ declarations on the package surface. A sparse `String::index_of` over a 22 KiB h
 without that import and 174 us with it (~218x)**, and `String::split(s, "")`
 changed from a hard trap into `[s]`. Those definitions are gone;
 `scripts/check_builtin_shadowing.sh` fails the build if `lib/**` grows a new
-one (`scripts/builtin_shadowing_allowlist.txt` records the entries that
-predate the gate and shrinks only).
+one (the exemptions that predate the gate are pinned inside that script, so
+widening the set takes a diff to the checker itself).
 
 ### A `handle` that type-checks can still fail to compile
 

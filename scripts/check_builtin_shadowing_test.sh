@@ -11,7 +11,7 @@ cd "$ROOT_DIR"
 
 # The gate reads these; a value inherited from a shell profile or a
 # session-start hook would silently change what is under test (#2252).
-unset VIBE_SHADOW_LIB_ROOT VIBE_SHADOW_ALLOWLIST VIBE_SHADOW_EXPECTED || true
+unset VIBE_SHADOW_LIB_ROOT VIBE_SHADOW_ALLOWLIST || true
 
 GATE="scripts/check_builtin_shadowing.sh"
 tmp="$(mktemp -d)"
@@ -22,23 +22,17 @@ note() { echo "[shadow-gate-test] $*"; }
 bad() { echo "[shadow-gate-test] FAIL: $*" >&2; fail=$((fail + 1)); }
 
 run_gate() {
-  # $1 lib root, $2 allowlist, $3 expected-entries baseline (default: count the
-  # allowlist, so a case that is not about the ratchet is not perturbed by it).
+  # $1 lib root, $2 file standing in for the gate's pinned exemption set
   set +e
-  exp="${3:-}"
-  if [ -z "$exp" ]; then
-    exp="$(awk '{ sub(/#.*$/, ""); if (NF >= 3) n++ } END { print n + 0 }' "$2")"
-  fi
-  out="$(VIBE_SHADOW_LIB_ROOT="$1" VIBE_SHADOW_ALLOWLIST="$2" VIBE_SHADOW_EXPECTED="$exp" bash "$GATE" 2>&1)"
+  out="$(VIBE_SHADOW_LIB_ROOT="$1" VIBE_SHADOW_ALLOWLIST="$2" bash "$GATE" 2>&1)"
   rc=$?
   set -e
 }
 
 # --- Case 0: the real tree passes -----------------------------------------
-# No baseline argument: the gate uses its own pinned EXPECTED_ENTRIES, which
-# is the value under test here.
+# No override: the gate uses its own pinned set, which is what case 0 tests.
 set +e
-out="$(VIBE_SHADOW_LIB_ROOT=lib VIBE_SHADOW_ALLOWLIST=scripts/builtin_shadowing_allowlist.txt bash "$GATE" 2>&1)"
+out="$(VIBE_SHADOW_LIB_ROOT=lib bash "$GATE" 2>&1)"
 rc=$?
 set -e
 if [ "$rc" -ne 0 ]; then
@@ -264,40 +258,45 @@ else
   note "case 10 ok: a shadow trailing a closed test block is caught"
 fi
 
-# --- Case 11: the allowlist is shrink-only ---------------------------------
-# A PR that adds a shadowing definition AND its allowlist row leaves both the
-# `new` and `stale` sets empty, so without a pinned baseline the gate passes
-# and a program-wide override ships. Case 2 above is exactly that shape; here
-# the baseline is what stops it.
+# --- Case 11: a swap cannot manufacture exemption capacity -----------------
+# The count-based pin this replaced was a proxy: drop one legacy row, add a row
+# for a NEW shadow, and the count is unchanged, `new` and `stale` are both
+# empty, and the gate passes. Pinning IDENTITIES is what closes it -- reusing a
+# retired slot now leaves the new shadow unexempted.
 mkdir -p "$tmp/lib11/pkg"
-cat > "$tmp/lib11/pkg/shadow.vibe" <<'VEOF'
-export fn String::index_of(s: String, sub: String) -> Int {
-  -1
+cat > "$tmp/lib11/pkg/legacy.vibe" <<'VEOF'
+export fn String::trim(s: String) -> String {
+  s
 }
 VEOF
-echo "$tmp/lib11/pkg/shadow.vibe String::index_of fn" > "$tmp/allow_grown.txt"
-# Baseline 0: the row is an ADDITION relative to it.
-run_gate "$tmp/lib11" "$tmp/allow_grown.txt" 0
-if [ "$rc" -eq 0 ]; then
-  bad "case 11: a shadow exempted by a NEW allowlist row was accepted"
-elif ! printf '%s\n' "$out" | grep -q 'the allowlist grew'; then
-  bad "case 11: rejected, but not for the ratchet reason:"
+echo "$tmp/lib11/pkg/legacy.vibe String::trim fn" > "$tmp/allow_legacy.txt"
+run_gate "$tmp/lib11" "$tmp/allow_legacy.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 11 control: one exempted legacy shadow should pass, got exit $rc"
   echo "$out" | sed 's/^/    /' >&2
 else
-  note "case 11 ok: adding an allowlist row is rejected"
+  note "case 11 control ok: the legacy exemption holds"
 fi
 
-# --- Case 12: removing an entry must move the baseline down -----------------
-# Otherwise the headroom lets the list drift back up silently.
-run_gate "$tmp/lib11" "$tmp/allow_grown.txt" 5
+# The swap: retire the legacy shadow, introduce a different one, reuse the slot.
+rm "$tmp/lib11/pkg/legacy.vibe"
+cat > "$tmp/lib11/pkg/fresh.vibe" <<'VEOF'
+export fn String::split(s: String, sep: String) -> Array[String] {
+  []
+}
+VEOF
+echo "$tmp/lib11/pkg/fresh.vibe String::split fn" > "$tmp/allow_swapped.txt"
+# The set the gate is pinned to is still the legacy one.
+run_gate "$tmp/lib11" "$tmp/allow_legacy.txt"
 if [ "$rc" -eq 0 ]; then
-  bad "case 12: leftover baseline headroom was accepted"
-elif ! printf '%s\n' "$out" | grep -q 'the allowlist shrank'; then
-  bad "case 12: rejected, but not for the shrink reason:"
+  bad "case 11: a new shadow reusing a retired exemption slot was accepted"
+elif ! printf '%s\n' "$out" | grep -q 'String::split'; then
+  bad "case 11: the finding does not name String::split:"
   echo "$out" | sed 's/^/    /' >&2
 else
-  note "case 12 ok: stale headroom is rejected"
+  note "case 11 ok: a retired slot does not exempt a different shadow"
 fi
+
 
 if [ "$fail" -ne 0 ]; then
   echo "[shadow-gate-test] $fail case(s) failed" >&2

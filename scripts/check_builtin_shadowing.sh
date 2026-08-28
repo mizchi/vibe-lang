@@ -18,22 +18,79 @@
 # two behaviours, decided by an unrelated import.
 #
 # So: `lib/**` must not define a name the builtin registry already owns.
-# scripts/builtin_shadowing_allowlist.txt records the ones that predate this
-# gate. Entries may be REMOVED, never added.
+# The exemptions that predate this gate are pinned in baseline_entries()
+# below. Entries may be REMOVED, never added.
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 REGISTRY="lib/@vibe/compiler/core/builtin_registry.vibe"
-ALLOWLIST="${VIBE_SHADOW_ALLOWLIST:-scripts/builtin_shadowing_allowlist.txt}"
-# The allowlist is a RATCHET, and "entries may be removed, never added" is only
-# a comment unless something checks it: a PR that adds a shadowing definition
-# AND its allowlist row leaves both `new` and `stale` empty, so the gate passes
-# and a program-wide override ships. Pinning the count makes an addition
-# require editing this number too -- which is the reviewable act -- and makes a
-# removal move the baseline down instead of leaving headroom to drift back into.
-EXPECTED_ENTRIES="${VIBE_SHADOW_EXPECTED:-16}"
+# The exemption set lives HERE, in the checker, not in a data file beside it.
+#
+# A count-based pin was the first attempt and it was a proxy, not the property:
+# removing one legacy row while adding a row for a NEW shadow keeps the count
+# equal, leaves both the `new` and `stale` sets empty, and passes. Cleanup
+# became interchangeable capacity for a fresh program-wide override.
+#
+# Pinning the identities fixes that, and putting them in the checker is what
+# keeps them pinned -- an exemption cannot be widened by editing a .txt that
+# reads as routine; it takes a diff to this file, next to the reason it is
+# refused. That is a review-visibility guarantee, not a cryptographic one: no
+# lexical gate can stop someone who edits the gate. The point is that the edit
+# must be made, and shows up as one.
+#
+# Format: <path> <name> <form>. Removing an entry is the only ordinary change.
+#
+# SHAPE of the name decides whether an entry can surprise a dependent.
+# Measured 2026-08-28 on stage2 of 3725175, four names, each called both from
+# its own file and from an importer that imports only an unrelated name:
+#
+#   String::index_of  qualified   importer got the local definition
+#   String::trim      qualified   importer got the local definition
+#   eq                bare        importer got the BUILTIN
+#   not               bare        importer got the BUILTIN
+#
+# So a QUALIFIED (`X::y`) definition replaces the builtin for the whole linked
+# program; a bare one is contained to its own file. The bare rows are listed
+# because that containment is an observed property of today's resolver, not a
+# stated rule.
+#
+# FORM of the declaration matters too. `fn` participates in name-to-fn-def
+# resolution; a bare VALUE alias (`export let X::y = impl`) does not. Not a
+# guess -- lib/@vibe/fs/fs.vibe carries the four `let` rows because wrapper fns
+# there hijacked `perform Fs::<Op>` lowering into an arity-broken wasm call
+# (#897). Those rows exist so the ratchet notices a conversion to `fn`.
+baseline_entries() {
+  cat <<'PINNED'
+# qualified + fn: replaces the builtin program-wide. Both measured equivalent
+# to their builtins (20/20 answers, including tab/LF/CR/VT/FF padding and the
+# equality edge cases) and performance-neutral, so they are kept rather than
+# deleted alongside the six scalar search re-implementations, which were
+# neither.
+lib/@vibe/builtin/string.vibe String::equals fn
+lib/@vibe/builtin/string.vibe String::trim fn
+# qualified + let: value aliases, deliberately NOT fns (#897)
+lib/@vibe/fs/fs.vibe Fs::exists let
+lib/@vibe/fs/fs.vibe Fs::read_file let
+lib/@vibe/fs/fs.vibe Fs::stat_token let
+lib/@vibe/fs/fs.vibe Fs::write_file let
+# bare: contained to the defining file
+lib/@vibe/cache/cache.vibe __compact_fingerprint_hash fn
+lib/@vibe/compiler/core/polyfill.vibe __to_string fn
+lib/@vibe/compiler/entry/compiler/fs_compile/closure_order.vibe resolve_path fn
+lib/@vibe/console/io.vibe print fn
+lib/@vibe/console/io.vibe println fn
+lib/@vibe/module/path.vibe resolve_path fn
+lib/@vibe/parser/polyfill.vibe __to_string fn
+lib/@vibe/semver/semver.vibe eq fn
+lib/@vibex/shell/commands.vibe print fn
+lib/@vibex/shell/commands.vibe println fn
+PINNED
+}
+
+# Self-test hook ONLY: replace the pinned set with a file's contents.
+ALLOWLIST="${VIBE_SHADOW_ALLOWLIST:-}"
 LIB_ROOT="${VIBE_SHADOW_LIB_ROOT:-lib}"
 
 if [ ! -f "$REGISTRY" ]; then
@@ -175,13 +232,13 @@ if [ -s "$tmp/unreadable.txt" ]; then
   exit 1
 fi
 
-# The allowlist is `<path> <name>` with an optional `#` comment; blank lines
-# and full-line comments are ignored.
-if [ -f "$ALLOWLIST" ]; then
-  awk '{ sub(/#.*$/, ""); if (NF >= 3) print $1 " " $2 " " $3 }' "$ALLOWLIST" > "$tmp/allowed.txt"
+# Entries are `<path> <name> <form>` with optional `#` comments.
+if [ -n "$ALLOWLIST" ]; then
+  cat "$ALLOWLIST" > "$tmp/raw_allowed.txt"
 else
-  : > "$tmp/allowed.txt"
+  baseline_entries > "$tmp/raw_allowed.txt"
 fi
+awk '{ sub(/#.*$/, ""); if (NF >= 3) print $1 " " $2 " " $3 }' "$tmp/raw_allowed.txt" > "$tmp/allowed.txt"
 
 # hits = definitions whose name is a builtin (deduplicated in awk).
 #
@@ -228,31 +285,13 @@ if [ -s "$tmp/stale.txt" ]; then
     echo "  $line" >&2
   done < "$tmp/stale.txt"
   echo "" >&2
-  echo "  Delete these lines from $ALLOWLIST. The list ratchets down only." >&2
-  status=1
-fi
-
-allow_n="$(awk 'END { print NR }' "$tmp/allowed.txt")"
-if [ "$allow_n" -gt "$EXPECTED_ENTRIES" ]; then
-  echo "check_builtin_shadowing: FAIL -- the allowlist grew: $allow_n entries, baseline $EXPECTED_ENTRIES." >&2
-  echo "" >&2
-  echo "  The list is shrink-only. Do not exempt a new shadow: rename the" >&2
-  echo "  function, or delete it and let the builtin answer. If an addition is" >&2
-  echo "  genuinely unavoidable, raise EXPECTED_ENTRIES in this script in the" >&2
-  echo "  same commit and say why in the allowlist -- an exemption should cost" >&2
-  echo "  a deliberate, reviewable edit, not a silent line." >&2
-  status=1
-elif [ "$allow_n" -lt "$EXPECTED_ENTRIES" ]; then
-  echo "check_builtin_shadowing: FAIL -- the allowlist shrank to $allow_n, baseline $EXPECTED_ENTRIES." >&2
-  echo "" >&2
-  echo "  Good. Lower EXPECTED_ENTRIES to $allow_n in this script so the ratchet" >&2
-  echo "  holds the new position; otherwise the headroom lets it drift back." >&2
+  echo "  Delete these lines from baseline_entries() in this script." >&2
   status=1
 fi
 
 if [ "$status" -eq 0 ]; then
   hits_n="$(awk 'END { print NR }' "$tmp/hits.txt")"
-  echo "check_builtin_shadowing: ok ($hits_n allowlisted, 0 new, baseline $EXPECTED_ENTRIES)"
+  echo "check_builtin_shadowing: ok ($hits_n pinned exemptions, 0 new)"
 fi
 
 exit "$status"
