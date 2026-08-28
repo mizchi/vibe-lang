@@ -475,6 +475,40 @@ else
   note "case 15 control ok: a balanced file passes"
 fi
 
+# --- Case 16: an interpolation may contain blocks ---------------------------
+# A block\x27s braces inside `\{ ... }` are indistinguishable from the
+# interpolation\x27s own closer unless they are counted, so ending at the first
+# `}` reads the rest of the string as top-level code.
+mkdir -p "$tmp/lib16/pkg"
+cat > "$tmp/lib16/pkg/braced.vibe" <<'VEOF'
+let s = "x \{if true { "ok" } else { "fn String::split" }} y"
+VEOF
+run_gate "$tmp/lib16" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 16a: text inside a braced interpolation was reported as a declaration"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 16a ok: blocks inside an interpolation stay inside it"
+fi
+
+cat > "$tmp/lib16/pkg/braced.vibe" <<'VEOF'
+let s = "x \{if true { "ok" } else { "no" }} y" fn String::index_of(a: String, b: String) -> Int {
+  -1
+}
+VEOF
+if ! grep -q "fn String::index_of" "$tmp/lib16/pkg/braced.vibe"; then
+  bad "case 16b: the fixture does not contain the declaration it is testing"
+fi
+run_gate "$tmp/lib16" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 16b: a shadow after a braced interpolation was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
+  bad "case 16b: the finding does not name String::index_of:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 16b ok: a declaration after a braced interpolation is caught"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "[shadow-gate-test] $fail case(s) failed" >&2
   exit 1

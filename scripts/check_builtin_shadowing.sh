@@ -200,6 +200,12 @@ while IFS= read -r f; do
           }
           continue
         }
+        # Inside an interpolation, a block\x27s braces are indistinguishable from
+        # the interpolation\x27s own closer, so they have to be counted:
+        # `"x \{if true { "ok" } else { "fn String::split" }} y"` ended the
+        # interpolation at the FIRST `}` and read the second branch as
+        # top-level code.
+        if (top == "I" && c == "{") { stack = stack "I"; continue }
         if (top == "I" && c == "}") { stack = substr(stack, 1, d - 1); continue }
         if (d == 0 && c == "/" && substr(s, i + 1, 1) == "/") break
         if (d == 0 && c == "#" && substr(s, i + 1, 1) == "|") break
