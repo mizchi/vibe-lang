@@ -32,6 +32,7 @@ import @vibe/compiler/core {
   path_set_add,
   path_set_contains,
   path_set_new,
+  reject_user_iterator_serialized_boundaries,
   resolve_import_path,
   resolve_import_path_candidates,
   resolve_import_path_probe,
@@ -1517,6 +1518,14 @@ fn record_unstable_candidate(path: String, ingested: String) -> Unit {
 }
 
 export fn ingest_source_text_fs(path: String, raw: String) -> String with Exception + Fs {
+  // The serialized Iterator boundary is a trusted carrier only after sources
+  // have been merged. Keep the common path allocation- and parse-free; a
+  // comment mentioning the prefix pays one parse but remains accepted.
+  if String::contains(raw, "@vibe/compiler/internal/iterator_boundary") {
+    reject_user_iterator_serialized_boundaries(parse_program(lex(raw)))
+  } else {
+    ()
+  }
   let (_, pin_blanked) = extract_require_pins(raw)
   let ingested = if is_contract_ext(path) {
     if String::starts_with(pin_blanked, contract_facade_marker) {

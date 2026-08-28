@@ -29,7 +29,6 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
-  map_iter_get_checked_expr,
   packed_lines_to_array_expr,
   region_mutbytes_exit_copy,
   region_mutlist_exit_copy
@@ -595,6 +594,52 @@ fn gc_name_is_user_defined(ctx: CompileCtxGc, local_names: Array[String], name: 
   find_local_slot(local_names, name) >= 0 || func_table_user_index_of(ctx.func_table, name, ctx.num_user_funcs) >= 0
 }
 
+/// wasm-gc counterpart of the linear checked Map key-slot load. Bounds and
+/// trapping are emitted directly so source bindings cannot intercept them.
+fn gc_compile_map_iter_get_checked(buf: Bytes, map_expr: Expr, index_expr: Expr, local_names: Array[String], next_local: Int, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  let map_l = next_local
+  let index_l = next_local + 1
+  let len_l = next_local + 2
+  Array::push(local_names, "[gc-temp]__map_iter_get_map")
+  Array::push(local_names, "[gc-temp]__map_iter_get_index")
+  Array::push(local_names, "[gc-temp]__map_iter_get_len")
+  let mut nl = next_local + 3
+  nl = ce(buf, map_expr, local_names, nl, ld)
+  emit_local_set(buf, map_l)
+  nl = ce(buf, index_expr, local_names, nl, ld)
+  emit_local_set(buf, index_l)
+  emit_local_get(buf, map_l)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, map_l)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, len_l)
+  emit_local_get(buf, index_l)
+  emit_i64_const(buf, 0)
+  emit_i64_lt_s(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  emit_local_get(buf, index_l)
+  emit_local_get(buf, len_l)
+  emit_i64_ge_s(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, index_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 8)
+  nl
+}
+
 fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   match callee {
     EIdent(source_name, _) => {
@@ -767,7 +812,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         ()
       }
       if !source_is_bound && fname == "Map::iter_get" && Array::length(args) == 2 {
-        return ce(buf, map_iter_get_checked_expr(Array::get(args, 0), Array::get(args, 1)), local_names, next_local, ld)
+        return gc_compile_map_iter_get_checked(buf, Array::get(args, 0), Array::get(args, 1), local_names, next_local, ld, ce)
       } else {
         ()
       }

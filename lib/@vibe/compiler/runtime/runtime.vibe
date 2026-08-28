@@ -26,11 +26,13 @@ import @vibe/compiler/core {
   namespace_private_value_stmts,
   namespace_rename_originals_reset,
   record_namespace_rename_originals_for_file,
+  reject_user_iterator_serialized_boundaries,
   resolve_import_path,
   resolve_import_path_candidates,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep,
-  trait_import_local_operation_renames
+  trait_import_local_operation_renames,
+  trait_import_local_operation_renames_preserving_exports
 }
 
 import @vibe/core {
@@ -643,7 +645,9 @@ fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Arra
   while si < Array::length(sources) {
     let (path, source) = Array::get(sources, si)
     Array::push(file_paths, path)
-    Array::push(file_stmts, parse_program_with_path(path, source))
+    let stmts = parse_program_with_path(path, source)
+    reject_user_iterator_serialized_boundaries(stmts)
+    Array::push(file_stmts, stmts)
     si = si + 1
   }
   (file_paths, file_stmts)
@@ -670,7 +674,12 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
     }
     let (boundary_locals, _) = merged_source_boundary_names(stmts)
     Array::push(merged, builtin_iterator_serialized_boundary_from_markers(boundary_locals))
-    let collision_renamed = apply_export_renames_stmts(stmts, trait_import_local_operation_renames(stmts, path))
+    let collision_renames = if is_entry_source {
+      trait_import_local_operation_renames_preserving_exports(stmts, path)
+    } else {
+      trait_import_local_operation_renames(stmts, path)
+    }
+    let collision_renamed = apply_export_renames_stmts(stmts, collision_renames)
     let export_renamed = if is_entry_source {
       collision_renamed
     } else {

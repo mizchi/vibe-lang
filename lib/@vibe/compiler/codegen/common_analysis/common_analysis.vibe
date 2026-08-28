@@ -4057,40 +4057,6 @@ export fn packed_lines_to_array_expr(raw_call: Expr, tmp_name: String) -> Expr {
   ], -1), ECall(EIdent("String::split", -1), [EIdent(tmp_name, -1), newline], -1)), -1)
 }
 
-/// Checked direct access to a Map's insertion-order key slot.
-///
-/// `Map::__iter_get_unchecked` is deliberately absent from the source-level
-/// builtin lookup. Only codegen synthesizes it, after binding both arguments
-/// once and proving the index is in range. The failing arm uses ordinary
-/// `Array::get` so the observable trap remains the same on both backends.
-fn map_iter_get_fresh_temp(base: String, mentioned: Array[String], reserved: String) -> String {
-  let mut candidate = base
-  while candidate == reserved || array_contains_str(mentioned, candidate) {
-    candidate = String::concat(candidate, "_")
-  }
-  candidate
-}
-
-export fn map_iter_get_checked_expr(map_expr: Expr, index_expr: Expr) -> Expr {
-  // The arguments move underneath the synthesized lets, so only their free
-  // names can be captured. Scan each argument once and share the result when
-  // minting both deterministic temporaries.
-  let mentioned = common_analysis_fresh_string_array()
-  let empty_names = common_analysis_fresh_string_array()
-  let _ = collect_free_vars_expr(map_expr, empty_names, empty_names, mentioned)
-  let _ = collect_free_vars_expr(index_expr, empty_names, empty_names, mentioned)
-  let map_tmp = map_iter_get_fresh_temp("__map_iter_get_map", mentioned, "")
-  let index_tmp = map_iter_get_fresh_temp("__map_iter_get_index", mentioned, map_tmp)
-  let map_ref = EIdent(map_tmp, -1)
-  let index_ref = EIdent(index_tmp, -1)
-  let out_of_bounds = EBinOp("||", EBinOp("<", index_ref, EInt(0)), EBinOp(">=", index_ref, ECall(EIdent("Map::size", -1), [
-    map_ref
-  ], -1)))
-  let trap = ECall(EIdent("Array::get", -1), [EArray([EInt(0)]), EInt(1)], -1)
-  let load = ECall(EIdent("Map::__iter_get_unchecked", -1), [map_ref, index_ref], -1)
-  ELet(map_tmp, map_expr, ELet(index_tmp, index_expr, EIf(out_of_bounds, trap, load), -1), -1)
-}
-
 /// ADR-0090 (#1262): the region copy-out exits, shared by both backends.
 ///
 /// `MutList::freeze` / `MutList::to_array` must COPY, not alias. Two reasons,

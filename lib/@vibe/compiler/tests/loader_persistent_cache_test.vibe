@@ -14,7 +14,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/loader {
-  collect_all_sources_fs, collect_source_groups_fs, load_or_parse_module_header_fs, load_persistent_source_group_fingerprint_if_valid
+  collect_all_sources_fs,
+  collect_source_groups_fs,
+  ingest_source_text_fs,
+  load_or_parse_module_header_fs,
+  load_persistent_source_group_fingerprint_if_valid
 }
 
 //# Functions
@@ -286,6 +290,15 @@ test "load_or_parse_module_header_fs: Iterator provenance carrier is not a depen
   inspect(Array::length(deps), "0")
   inspect(Array::length(exports), "1")
   inspect(Array::get(exports, 0), "_start")
+}
+
+test "ingest_source_text_fs: users cannot forge Iterator provenance carriers" {
+  let source = "import @vibe/compiler/internal/iterator_boundary { trait Iterator as Local }\nexport let _start: () -> Int = () -> { 0 }"
+  let message = handle {
+    let _ = ingest_source_text_fs("/tmp/forged_iterator_boundary.vibe", source)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(message, "remove reserved compiler import `@vibe/compiler/internal/iterator_boundary`: this path is generated internally and cannot be imported by source files")
 }
 
 test "load_or_parse_module_header_fs: package dep re-resolves when store copy vanishes (#801)" {

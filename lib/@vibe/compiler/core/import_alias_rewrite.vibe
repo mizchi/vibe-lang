@@ -50,6 +50,22 @@ fn stmts_define_iterator_namespace_operation(stmts: Array[Stmt], namespace: Stri
     found = match Array::get(stmts, i) {
       SLet(_, _, name, _, _) => iterator_namespace_operation(name, namespace),
       SFnDecl(_, name, _, _, _) => iterator_namespace_operation(name, namespace),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        false
+      } else {
+        let mut j = 0
+        let mut imported = false
+        while j < Array::length(items) && !imported {
+          let item = Array::get(items, j)
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          imported = iterator_namespace_operation(local, namespace)
+          j = j + 1
+        }
+        imported
+      },
       _ => false
     }
     i = i + 1
@@ -233,6 +249,25 @@ export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String)
   out
 }
 
+/// Entry exports are part of the final wasm/library ABI. Keep their original
+/// qualified spelling while retaining collision renames for private helpers.
+export fn trait_import_local_operation_renames_preserving_exports(stmts: Array[Stmt], path: String) -> Array[(String, String)] {
+  let renames = trait_import_local_operation_renames(stmts, path)
+  let exported = collect_exported_value_names(stmts)
+  let out = empty_aliases()
+  let mut i = 0
+  while i < Array::length(renames) {
+    let rename = Array::get(renames, i)
+    if !string_array_contains(exported, rename.0) {
+      Array::push(out, rename)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn builtin_iterator_serialized_boundary_path() -> String {
   "@vibe/compiler/internal/iterator_boundary"
 }
@@ -326,6 +361,35 @@ fn builtin_iterator_serialized_boundary_payload_prefix() -> String {
 /// but must not resolve it as a package dependency.
 export fn is_builtin_iterator_serialized_boundary_path(path: String) -> Bool {
   path == builtin_iterator_serialized_boundary_path() || String::starts_with(path, builtin_iterator_serialized_boundary_payload_prefix())
+}
+
+fn stmt_has_user_iterator_serialized_boundary(stmt: Stmt) -> Bool {
+  match stmt {
+    SImport(path, _) => is_builtin_iterator_serialized_boundary_path(path),
+    SModule(_, _, body) => stmts_have_user_iterator_serialized_boundary(body),
+    _ => false
+  }
+}
+
+fn stmts_have_user_iterator_serialized_boundary(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = stmt_has_user_iterator_serialized_boundary(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+/// Reject the source-spellable form of an internal provenance carrier.
+/// Generated merged-source caches are parsed after the user-source boundary
+/// and intentionally do not call this guard.
+export fn reject_user_iterator_serialized_boundaries(stmts: Array[Stmt]) -> Unit with Exception {
+  if stmts_have_user_iterator_serialized_boundary(stmts) {
+    throw("remove reserved compiler import `@vibe/compiler/internal/iterator_boundary`: this path is generated internally and cannot be imported by source files")
+  } else {
+    ()
+  }
 }
 
 /// A parseable carrier for Iterator provenance across source-text caches.

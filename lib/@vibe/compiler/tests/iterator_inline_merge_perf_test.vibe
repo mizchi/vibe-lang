@@ -45,3 +45,32 @@ test "inline merge publishes renamed provider-qualified trait helpers" {
   assert(String::contains(rewritten, "__local_trait_Iterator::map_exp_dep_vibe ="))
   assert(String::contains(rewritten, "Array::get(__local_trait_Iterator::map_exp_dep_vibe("))
 }
+
+test "entry exports keep their qualified trait helper ABI" {
+  let main_source = "import @vibe/builtin { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nfn _start() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x }), 0) + Array::length(Iter::map([1], (x: Int) -> Int { x })) }"
+  let standard_source = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], f: (Int) -> Int) -> Array[Int] { Array::map(xs, f) }"
+  let merged = closure_merged_stmts(main_source, "main.vibe", [
+    ("@vibe/builtin.vibe", standard_source)
+  ])
+  let before_desugar = print_program(merged)
+  assert(String::contains(before_desugar, "export let rec Iterator::map ="))
+  assert(!String::contains(before_desugar, "__local_trait_Iterator::map"))
+  desugar_trait_dicts(merged)
+  let rewritten = print_program(merged)
+  assert(String::contains(rewritten, "Iterator::map([1]"))
+  assert(String::contains(rewritten, "Array::map([1]"))
+}
+
+test "a custom imported Iterator helper blocks intrinsic rewriting" {
+  let custom_source = "export fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"
+  let main_source = "import @vibe/builtin { trait Iterator }\nimport ./custom.vibe { Iterator::map }\nfn _start() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x }), 0) }"
+  let merged = closure_merged_stmts(main_source, "main.vibe", [
+    ("@vibe/builtin.vibe", "export trait Iterator[T]"),
+    ("custom.vibe", custom_source)
+  ])
+  desugar_trait_dicts(merged)
+  let rewritten = print_program(merged)
+  assert(!String::contains(rewritten, "Array::map([1]"))
+  assert(String::contains(rewritten, "Iterator::map([1]"))
+  assert(String::contains(rewritten, "Iterator::map = (xs: Array[Int]"))
+}

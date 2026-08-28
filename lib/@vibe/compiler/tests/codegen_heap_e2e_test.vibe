@@ -54,6 +54,22 @@ fn assert_result_all_backends(src: String, entry: String, label: String, expecte
   0
 }
 
+fn run_one_traps(bytes: Bytes, entry: String, label: String) -> Int with Fs + Process {
+  let path = "/tmp/_heap_e2e_" + label + ".wasm"
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines("wasmtime run -W exceptions=y,gc=y --invoke " + entry + " " + path + " 0 >/dev/null 2>&1 && echo unexpected || echo trapped")
+  assert(Array::length(out) == 1)
+  assert(Array::get(out, 0) == "trapped")
+  0
+}
+
+fn assert_traps_all_backends(src: String, entry: String, label: String) -> Int with Exception + Fs + Process {
+  run_one_traps(compile_wasi(src, entry), entry, label)
+  run_one_traps(compile_wasi_rc(src, entry), entry, label + "_rc")
+  run_one_traps(compile_wasi_gc(src, entry), entry, label + "_gc")
+  0
+}
+
 //# Misc
 
 test "heap e2e: compact fingerprint bridge does not capture user prefix names" {
@@ -69,6 +85,16 @@ test "heap e2e: captured let mut lambda reassignment then call" {
 test "#2236 review: local constructors shadow compiler-owned Attempt names" {
   let src = "enum Local { NotGranted(Int) }\nfn main() -> Int {\n  let candidate = NotGranted(7)\n  let overwrite = [41, 42]\n  let _keep = Array::length(overwrite)\n  match candidate {\n    NotGranted(value) => value\n  }\n}\n"
   assert_result_all_backends(src, "main", "local_not_granted_constructor", "7")
+}
+
+test "#2379 review: Map iterator bounds ignore a source Map::size" {
+  let src = "fn Map::size[K, V](_m: Map[K, V]) -> Int { 100 }\nfn main() -> String {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::iter_get(m, 50)\n}\n"
+  assert_traps_all_backends(src, "main", "map_iter_get_size_shadow")
+}
+
+test "#2379 review: Map iterator bounds ignore a source Array::get" {
+  let src = "fn Array::get(_xs: Array[String], _index: Int) -> String { \"shadow\" }\nfn main() -> String {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::iter_get(m, 50)\n}\n"
+  assert_traps_all_backends(src, "main", "map_iter_get_array_get_shadow")
 }
 
 // #1967: `continue` in a collecting `for-in` used to `br` to the loop
