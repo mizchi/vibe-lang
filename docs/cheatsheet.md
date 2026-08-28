@@ -2231,11 +2231,11 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
 
-### A library `fn` replaces a same-named builtin PROGRAM-WIDE
+### A library `fn X::y` replaces a same-named builtin PROGRAM-WIDE
 
-A top-level definition wins over a builtin of the same name, and the scope of
-that win is the whole linked program -- not the file, not the import list.
-Measured (2026-08-28), three files:
+A top-level definition wins over a builtin of the same name. For a **qualified**
+name (`X::y`) the scope of that win is the whole linked program -- not the file,
+not the import list. Measured (2026-08-28), three files:
 
 ```vibe skip
 // dep.vibe
@@ -2252,6 +2252,21 @@ test "t" {
 Drop the `import` line and the same expression answers `6`. Nothing is
 reported either way, so the two readings of one source are indistinguishable
 without running it.
+
+A **bare** name is contained to its own file. Measured the same way, four
+names, each called both from its defining file and from an importer that
+imports only an unrelated name:
+
+| definition | shape | what the importer got |
+|---|---|---|
+| `String::index_of` | qualified | the local definition |
+| `String::trim` | qualified | the local definition |
+| `eq` | bare | the builtin |
+| `not` | bare | the builtin |
+
+So redefining `eq` or `println` in a package does not reach that package's
+users. Treat that as today's behaviour rather than a rule: it is an observed
+property of the resolver, and #2378 is where the intended one gets decided.
 
 This is not hypothetical: until #2378 `lib/@vibe/builtin/string.vibe` carried
 scalar re-implementations of six SIMD builtins, so `import @vibe/builtin {

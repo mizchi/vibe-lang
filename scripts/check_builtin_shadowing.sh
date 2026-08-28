@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# A top-level `fn X` in the shipped library replaces the builtin named X for
-# the WHOLE linked program -- including at call sites in files that never
+# A top-level `fn X::y` in the shipped library replaces the builtin named X::y
+# for the WHOLE linked program -- including at call sites in files that never
 # imported it, and in programs that only imported some unrelated name from the
 # same package. Nothing diagnoses it.
+#
+# A BARE name (`eq`, `not`, `println`) is contained to its own file. Measured
+# 2026-08-28 on four names; the split is recorded in the allowlist. The gate
+# reports both shapes because that containment is an observed property of
+# today's resolver rather than a stated rule, but only the qualified ones can
+# surprise a dependent.
 #
 # Measured (2026-08-28, stage2 of 3725175): with
 # `import @vibe/builtin { String::trim }` and nothing else, a sparse
@@ -116,9 +122,12 @@ if [ -s "$tmp/new.txt" ]; then
     echo "  $line" >&2
   done < "$tmp/new.txt"
   echo "" >&2
-  echo "  Rename the function, or delete it and let the builtin answer. A caller" >&2
-  echo "  that imports ANY name from the same package inherits this override at" >&2
-  echo "  every call site in its program, with no diagnostic." >&2
+  echo "" >&2
+  echo "  Rename the function, or delete it and let the builtin answer. For a" >&2
+  echo "  QUALIFIED name (X::y), a caller that imports ANY name from the same" >&2
+  echo "  package inherits this override at every call site in its program, with" >&2
+  echo "  no diagnostic. A bare name is contained to its own file today, but that" >&2
+  echo "  is an observed property of the resolver, not a promise." >&2
   status=1
 fi
 
