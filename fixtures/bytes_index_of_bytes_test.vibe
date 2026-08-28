@@ -1,0 +1,65 @@
+// `Bytes::index_of_bytes` (#2345 step 2) -- the SAME windowed search as
+// `String::index_of`, reached through a Bytes prologue instead of a String one.
+//
+// Import-free on purpose so the wasm-gc lane, which compiles one file as
+// self-contained, can run it:
+//
+//   vibe test fixtures/bytes_index_of_bytes_test.vibe
+//   VIBE_TEST_BACKEND=gc vibe test fixtures/bytes_index_of_bytes_test.vibe
+//
+// THE NAME IS THE SUBSTRING ONE ON PURPOSE. docs/simd-data-structures.md
+// Layer 2 reserves `Bytes::index_of(Bytes, Int)` for single-byte search and
+// `Bytes::index_of_bytes(Bytes, Bytes)` for substring search. Only the second
+// is implemented here; the single-byte form takes an `Int` needle, which this
+// loop cannot consume, so it is a separate body and not made free by sharing.
+//
+// The last block is the one that matters most: it asserts Bytes and String
+// agree ON THE SAME INPUTS. They share the search loop, so a divergence there
+// means the prologue populated the locals wrongly -- the only part that
+// differs between the two, and the only thing this step could break.
+//
+// The 16-byte cases are not decoration either. The loop skips a whole window
+// when no candidate byte is present, so a needle landing exactly on a window
+// boundary, or past several empty windows, exercises the skip path rather
+// than the scalar tail.
+
+fn mk(s: String) -> Bytes {
+  let b = Bytes::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, String::char_code_at(s, i))
+    i = i + 1
+  }
+  b
+}
+
+test "Bytes::index_of_bytes finds a substring" {
+  assert_eq(Bytes::index_of_bytes(mk("hello world"), mk("world")), 6)
+  assert_eq(Bytes::index_of_bytes(mk("hello world"), mk("hello")), 0)
+  assert_eq(Bytes::index_of_bytes(mk("hello world"), mk("zzz")), -1)
+}
+
+test "Bytes::index_of_bytes edge cases" {
+  // an empty needle matches at 0
+  assert_eq(Bytes::index_of_bytes(mk("abc"), mk("")), 0)
+  // a needle longer than the haystack cannot match
+  assert_eq(Bytes::index_of_bytes(mk("ab"), mk("abc")), -1)
+  // a match at the very last position
+  assert_eq(Bytes::index_of_bytes(mk("abcdef"), mk("f")), 5)
+  // an empty haystack
+  assert_eq(Bytes::index_of_bytes(mk(""), mk("a")), -1)
+}
+
+test "Bytes::index_of_bytes across the 16-byte SIMD window boundary" {
+  let hay = mk("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")
+  assert_eq(Bytes::index_of_bytes(hay, mk("b")), 32)
+  let hay2 = mk("xxxxxxxxxxxxxxxxNEEDLExxxx")
+  assert_eq(Bytes::index_of_bytes(hay2, mk("NEEDLE")), 16)
+}
+
+test "Bytes::index_of_bytes agrees with String::index_of" {
+  assert_eq(Bytes::index_of_bytes(mk("abcabcabc"), mk("cab")), String::index_of("abcabcabc", "cab"))
+  assert_eq(Bytes::index_of_bytes(mk("mississippi"), mk("issi")), String::index_of("mississippi", "issi"))
+  assert_eq(Bytes::index_of_bytes(mk("aaa"), mk("aab")), String::index_of("aaa", "aab"))
+}
