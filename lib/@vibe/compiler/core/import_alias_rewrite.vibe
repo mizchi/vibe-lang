@@ -13,7 +13,7 @@ import @vibe/ast {
 }
 
 import ./module_graph_path.vibe {
-  dir_of_path, resolve_import_path_candidates
+  dir_of_path, is_contract_ext, resolve_import_path_candidates
 }
 
 //# Functions
@@ -135,6 +135,49 @@ export fn builtin_iterator_namespace_from_marker(marker: String) -> Option[Strin
     Some(String::substring(marker, String::length(prefix), String::length(marker)))
   } else {
     None
+  }
+}
+
+/// Add the unique post-link namespaces of standard Iterator operations to a
+/// source boundary. Provider helpers are named
+/// `Iterator_exp_<provider>::operation`, so the established namespace marker
+/// path can authorize devirtualization without guessing a path from the call.
+export fn append_builtin_iterator_operation_markers(markers: Array[String], renames: Array[(String, String)]) -> Unit {
+  let namespaces = empty_strings()
+  let mut mi = 0
+  while mi < Array::length(markers) {
+    match builtin_iterator_namespace_from_marker(Array::get(markers, mi)) {
+      Some(namespace) => Array::push(namespaces, namespace),
+      None => ()
+    }
+    mi = mi + 1
+  }
+  let mut ri = 0
+  while ri < Array::length(renames) {
+    let (local, resolved) = Array::get(renames, ri)
+    let split = String::index_of(local, "::")
+    if split > 0 {
+      let namespace = String::substring(local, 0, split)
+      if string_array_contains(namespaces, namespace) && iterator_namespace_operation(local, namespace) {
+        let resolved_split = String::index_of(resolved, "::")
+        if resolved_split > 0 {
+          let resolved_namespace = String::substring(resolved, 0, resolved_split)
+          let namespace_marker = String::concat(builtin_iterator_origin_marker_prefix(), resolved_namespace)
+          if !string_array_contains(markers, namespace_marker) {
+            Array::push(markers, namespace_marker)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    ri = ri + 1
   }
 }
 
@@ -2419,16 +2462,48 @@ export fn namespace_exported_name(path: String, name: String) -> String {
   String::concat(name, String::concat("_exp_", sanitize_namespace_path(path)))
 }
 
-/// Top-level VALUE defs this file exports under a bare (unqualified) name:
-/// `export let f` plus a plain `let f` listed in an `export { ... }` block.
-/// Excludes qualified `Type::method` lets (dispatched globally by receiver
-/// type), `let mut` globals (an `EAssign` target is a plain string the
-/// expression rewriter cannot rename), and extern lets (host import names).
+/// Trait operations keep the operation as the qualified member after export
+/// namespacing (`Iterator_exp_<provider>::map`). This gives each provider an
+/// unambiguous namespace while preserving the operation spelling consumed by
+/// trait dispatch and intrinsic devirtualization.
+fn namespace_exported_def_name(path: String, name: String) -> String {
+  let split = String::index_of(name, "::")
+  if split > 0 {
+    let namespace = String::substring(name, 0, split)
+    let operation = String::substring(name, split + 2, String::length(name))
+    String::concat(namespace, String::concat("_exp_", String::concat(sanitize_namespace_path(path), String::concat("::", operation))))
+  } else {
+    namespace_exported_name(path, name)
+  }
+}
+
+fn append_export_def_name(out: Array[String], extern_names: Array[String], trait_names: Array[String], name: String) -> Unit {
+  let qi = String::index_of(name, "::")
+  let trait_owned = if qi > 0 {
+    string_array_contains(trait_names, String::substring(name, 0, qi))
+  } else {
+    false
+  }
+  if (qi < 0 || trait_owned) && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
+    Array::push(out, name)
+  } else {
+    ()
+  }
+}
+
+/// Top-level VALUE defs this file exports under a bare name, plus qualified
+/// helpers owned by a trait declared in the same file. Ordinary
+/// `Type::method` lets remain global receiver dispatch, but `Trait::operation`
+/// travels with an explicit trait import and therefore needs the same unique
+/// provider spelling as a bare export. This is what lets an entry publish its
+/// own `Trait::operation` ABI without racing the imported provider's helper in
+/// the flattened function table.
 export fn collect_export_def_value_names(stmts: Array[Stmt]) -> Array[String] {
   let extern_names = empty_strings()
   let let_names = empty_strings()
   let exported_lets = empty_strings()
   let export_items = empty_strings()
+  let trait_names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -2448,28 +2523,22 @@ export fn collect_export_def_value_names(stmts: Array[Stmt]) -> Array[String] {
           j = j + 1
         }
       },
+      STrait(_, name, _, _, _, _) => Array::push(trait_names, name),
       _ => ()
     }
     i = i + 1
   }
   let out = empty_strings()
-  let push_def_name: (String) -> Unit = (name) -> {
-    if String::index_of(name, "::") < 0 && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
-      Array::push(out, name)
-    } else {
-      ()
-    }
-  }
   let mut k = 0
   while k < Array::length(exported_lets) {
-    push_def_name(Array::get(exported_lets, k))
+    append_export_def_name(out, extern_names, trait_names, Array::get(exported_lets, k))
     k = k + 1
   }
   let mut m = 0
   while m < Array::length(export_items) {
     let name = Array::get(export_items, m)
     if string_array_contains(let_names, name) {
-      push_def_name(name)
+      append_export_def_name(out, extern_names, trait_names, name)
     } else {
       ()
     }
@@ -2711,7 +2780,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         if excluded {
           ()
         } else {
-          let mangled = namespace_exported_name(path, name)
+          let mangled = namespace_exported_def_name(path, name)
           Array::push(rename_paths, path)
           Array::push(rename_names, name)
           Array::push(rename_mangled, mangled)
@@ -2836,6 +2905,40 @@ export fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String {
   StringBuilder::freeze(buf)
 }
 
+fn append_imported_trait_operation_renames(plan: ExportRenamePlan, target: String, item: ImportItem, locally_visible: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit {
+  let is_trait = match item.kind {
+    Some(ImportTrait) => true,
+    _ => false
+  }
+  if is_trait && locally_visible {
+    let local_head = match item.alias {
+      Some(alias) => alias,
+      None => item.name
+    }
+    let source_prefix = String::concat(item.name, "::")
+    let mut i = 0
+    while i < Array::length(plan.rename_paths) {
+      let source_name = Array::get(plan.rename_names, i)
+      let source_path = Array::get(plan.rename_paths, i)
+      let same_provider = source_path == target || (is_contract_ext(target) && dir_of_path(source_path) == dir_of_path(target))
+      if same_provider && String::starts_with(source_name, source_prefix) {
+        let local_name = String::concat(local_head, String::substring(source_name, String::length(item.name), String::length(source_name)))
+        if !string_array_contains(locals_seen, local_name) {
+          Array::push(locals_seen, local_name)
+          Array::push(out, (local_name, Array::get(plan.rename_mangled, i)))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
 fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Array[ImportItem], plain_reexports_only: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit {
   let mut j = Array::length(items) - 1
   while j >= 0 {
@@ -2854,6 +2957,7 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
     } else {
       true
     }
+    append_imported_trait_operation_renames(plan, target, item, locally_visible, out, locals_seen)
     if !string_array_contains(locals_seen, local) {
       // Walk bindings newest-first. Even a target that stays bare claims the
       // spelling and prevents an older import from supplying a stale rename.
@@ -2889,6 +2993,24 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
   if Array::length(rename_paths) == 0 {
     out
   } else {
+    // A source-local qualified helper owns its exact spelling. In particular,
+    // `import { trait Iterator }` plus a local `Iterator::map` intentionally
+    // blocks the imported operation, while an aliased `Iter::map` remains a
+    // distinct provider-owned spelling.
+    let mut li = 0
+    while li < Array::length(stmts) {
+      let local_name = match Array::get(stmts, li) {
+        SLet(_, _, name, _, _) => name,
+        SFnDecl(_, name, _, _, _) => name,
+        _ => ""
+      }
+      if String::index_of(local_name, "::") > 0 && !string_array_contains(locals_seen, local_name) {
+        Array::push(locals_seen, local_name)
+      } else {
+        ()
+      }
+      li = li + 1
+    }
     let base_dir = dir_of_path(path)
     // `build_import_env_collecting` prepends bindings as it walks source
     // order, so the last statement wins. Visit in reverse and retain only the

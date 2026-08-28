@@ -4,6 +4,14 @@ import ./codegen_test_support.vibe {
   compile_wasi, compile_wasi_gc, compile_wasi_rc
 }
 
+import @vibe/compiler/entry/compiler/fs_compile {
+  closure_merged_stmts
+}
+
+import @vibe/compiler/syntax {
+  print_program
+}
+
 //# Functions
 
 fn run_one(bytes: Bytes, entry: String, label: String, expected: String) -> Int with Fs + Process {
@@ -95,6 +103,20 @@ test "#2379 review: Map iterator bounds ignore a source Map::size" {
 test "#2379 review: Map iterator bounds ignore a source Array::get" {
   let src = "fn Array::get(_xs: Array[String], _index: Int) -> String { \"shadow\" }\nfn main() -> String {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::iter_get(m, 50)\n}\n"
   assert_traps_all_backends(src, "main", "map_iter_get_array_get_shadow")
+}
+
+test "#2379 review: a bound unchecked Map helper is not an intrinsic" {
+  let src = "fn Map::__iter_get_unchecked(_map: Int, _index: Int) -> Int { 42 }\nfn main() -> Int { Map::__iter_get_unchecked(1, 0) }\n"
+  assert_result_all_backends(src, "main", "bound_map_iter_get_unchecked", "42")
+}
+
+test "#2379 review: an entry Iterator export wins over its aliased provider" {
+  let entry = "import ./provider.vibe { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nfn main() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x }), 0) + Array::length(Iter::map([1], (x: Int) -> Int { x })) }"
+  let provider = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], f: (Int) -> Int) -> Array[Int] { Array::map(xs, f) }"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("provider.vibe", provider)
+  ])
+  assert_result_all_backends(print_program(merged), "main", "entry_iterator_export", "78")
 }
 
 // #1967: `continue` in a collecting `for-in` used to `br` to the loop

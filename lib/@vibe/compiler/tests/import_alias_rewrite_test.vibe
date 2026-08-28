@@ -1,14 +1,18 @@
 //# Imports
 
 import @vibe/compiler/core {
+  append_builtin_iterator_operation_markers,
   append_import_alias_rewritten_non_import_stmts,
   apply_export_renames_stmts,
   build_export_rename_plan,
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary,
+  builtin_iterator_serialized_boundary_from_markers,
   builtin_iterator_serialized_boundary_markers,
+  collect_export_def_value_names,
   collect_import_value_renames,
+  export_plan_renames_for,
   namespace_exported_name,
   trait_import_local_operation_renames
 }
@@ -156,6 +160,51 @@ test "Iterator intrinsic provenance does not cross into a renamed local namespac
   let printed = print_program(renamed)
   inspect(String::contains(printed, "local = __local_trait_Iterator::map_exp__virtual_main_vibe"), "true")
   inspect(String::contains(printed, "standard = Array::map"), "true")
+}
+
+test "trait imports resolve provider operations to unique flattened names" {
+  let provider = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::map[T, C: Iterator[T]](xs: C, f: (T) -> T) -> Array[T] { [f(C::iter_get(xs, 0))] }"))
+  assert(Array::length(collect_export_def_value_names(provider)) == 1)
+  let entry = parse_program(lex("import ./provider.vibe { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet standard = Iter::map([1], (x: Int) -> Int { x })\nlet local = Iterator::map([1], (x: Int) -> Int { x })"))
+  let plan = build_export_rename_plan(["provider.vibe", "main.vibe"], [
+    provider,
+    entry
+  ], "main.vibe")
+  let provider_renames = export_plan_renames_for(plan, "provider.vibe")
+  inspect(Array::length(provider_renames), "1")
+  let (provider_name, provider_unique) = Array::get(provider_renames, 0)
+  inspect(provider_name, "Iterator::map")
+  assert(provider_unique != provider_name)
+  let imported = collect_import_value_renames(plan, "main.vibe", entry)
+  inspect(Array::length(imported), "1")
+  inspect(Array::get(imported, 0).0, "Iter::map")
+  inspect(Array::get(imported, 0).1, provider_unique)
+  let standard_import = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }"))
+  let markers = builtin_iterator_namespace_markers(standard_import)
+  append_builtin_iterator_operation_markers(markers, [
+    ("Iter::map", provider_unique)
+  ])
+  inspect(Array::length(markers), "2")
+  inspect(builtin_iterator_namespace_from_marker(Array::get(markers, 1)), String::concat("Some(", String::concat(String::substring(provider_unique, 0, String::index_of(provider_unique, "::")), ")")))
+  let serialized = print_program([
+    builtin_iterator_serialized_boundary_from_markers(markers)
+  ])
+  let optimized = parse_program(lex(String::concat(serialized, String::concat("let answer = ", String::concat(provider_unique, "(loop (i = 0) { let xs = [i]; break xs }, (x: Int) -> Int { x + 1 })")))))
+  desugar_trait_dicts(optimized)
+  assert(String::contains(print_program(optimized), "answer = Array::map"))
+}
+
+test "provider operation projection is trait-generic" {
+  let provider = parse_program(lex("export trait Reducible[T]\nexport fn Reducible::reduce[T, C: Reducible[T]](_xs: C) -> Int { 1 }"))
+  let entry = parse_program(lex("import ./provider.vibe { trait Reducible as R }\nlet answer = R::reduce([1])"))
+  let plan = build_export_rename_plan(["provider.vibe", "main.vibe"], [
+    provider,
+    entry
+  ], "main.vibe")
+  let imported = collect_import_value_renames(plan, "main.vibe", entry)
+  inspect(Array::length(imported), "1")
+  inspect(Array::get(imported, 0).0, "R::reduce")
+  assert(String::ends_with(Array::get(imported, 0).1, "::reduce"))
 }
 
 test "append import alias rewrite resolves import aliases" {
