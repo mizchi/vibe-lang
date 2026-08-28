@@ -569,6 +569,63 @@ else
   note "case 17 ok: an unparsed registry row stops the gate"
 fi
 
+# --- Case 18: a declaration that wraps after its keyword --------------------
+# `fn` on one line and the name on the next is ONE declaration to the parser,
+# and a per-line scan sees neither half. Refusing the shape is the answer here
+# rather than accumulating tokens across lines: the gate must not be able to
+# miss a shadow quietly, and it does not have to be able to read every legal
+# formatting of one.
+mkdir -p "$tmp/lib18/pkg"
+cat > "$tmp/lib18/pkg/wrapped.vibe" <<'VEOF'
+fn
+String::index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+run_gate "$tmp/lib18" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 18: a declaration wrapped after its keyword passed unseen"
+elif ! printf '%s\n' "$out" | grep -q 'declaration keyword ends a line'; then
+  bad "case 18: rejected, but not for the wrapped reason:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 18 ok: a wrapped declaration is refused, not skipped"
+fi
+
+# The control: the same declaration on one line is CAUGHT (not merely refused),
+# so the case discriminates between the two outcomes.
+cat > "$tmp/lib18/pkg/wrapped.vibe" <<'VEOF'
+fn String::index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+run_gate "$tmp/lib18" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 18 control: the flat declaration was not caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
+  bad "case 18 control: the finding does not name String::index_of:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 18 control ok: the flat form is caught by name"
+fi
+
+# And ordinary code whose comments merely END on such a keyword is inert --
+# 51 lines in lib/ do exactly that.
+cat > "$tmp/lib18/pkg/wrapped.vibe" <<'VEOF'
+// destructuring via let
+/// nested generics, tuples, fn
+export fn ordinary(n: Int) -> Int {
+  n + 1
+}
+VEOF
+run_gate "$tmp/lib18" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 18b: a comment ending on a keyword was treated as a wrapped declaration"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 18b ok: comments ending on a keyword are inert"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "[shadow-gate-test] $fail case(s) failed" >&2
   exit 1

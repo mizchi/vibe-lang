@@ -285,6 +285,15 @@ while IFS= read -r f; do
           i += RLENGTH - 1
         }
       }
+
+      # A declaration may wrap after its keyword -- `fn` on one line and
+      # `String::index_of(...)` on the next is ONE declaration to the parser,
+      # and this per-line scan sees neither half. Rather than accumulate tokens
+      # across lines (a lexer, one more time), refuse the shape: code that ends
+      # on a bare declaration keyword at depth 0 is something this cannot read.
+      if (depth == 0 && line ~ /(^|[^A-Za-z0-9_:])(fn|let|export|rec)[ \t]*$/) {
+        print "WRAPPED " path ":" FNR
+      }
     }
     # Depth that does not return to 0 means the scanner lost track of the
     # delimiters -- a stripper bug, or a form it does not know. Everything
@@ -298,6 +307,19 @@ while IFS= read -r f; do
     }
   ' "$f" >> "$tmp/defs.txt"
 done < "$tmp/files.txt"
+
+if grep -q "^WRAPPED " "$tmp/defs.txt" 2>/dev/null; then
+  echo "check_builtin_shadowing: FAIL -- a declaration keyword ends a line:" >&2
+  grep "^WRAPPED " "$tmp/defs.txt" | while IFS= read -r wline; do
+    echo "  $wline" >&2
+  done
+  echo "" >&2
+  echo "  The parser reads the keyword and the name on the next line as ONE" >&2
+  echo "  declaration; this scan is per line and sees neither half, so a shadow" >&2
+  echo "  written that way would pass unseen. Put the keyword and the name on" >&2
+  echo "  the same line." >&2
+  exit 1
+fi
 
 if grep -q "^DRIFT " "$tmp/defs.txt" 2>/dev/null; then
   echo "check_builtin_shadowing: FAIL -- brace depth did not return to zero:" >&2
