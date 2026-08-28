@@ -340,6 +340,50 @@ else
   note "case 12b ok: a declaration after a string is still caught"
 fi
 
+# --- Case 13: a character literal is not a string opener -------------------
+# `Char` is a real type and `let quote = \x27"\x27` is valid source. A bare quote
+# scan mistakes that `"` for a string opener and swallows the rest of the line,
+# so a declaration sharing it disappears -- the gate answered `ok`.
+mkdir -p "$tmp/lib13/pkg"
+# A quoted heredoc, so the apostrophes land literally. `printf '%s' "\x27"`
+# writes the four characters, not a quote -- the red test caught that on its
+# first run, which is the point of asserting the mutation landed.
+cat > "$tmp/lib13/pkg/charlit.vibe" <<'VEOF'
+let quote = '"' fn String::index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+if ! grep -q "fn String::index_of" "$tmp/lib13/pkg/charlit.vibe"; then
+  bad "case 13: the fixture does not contain the declaration it is testing"
+fi
+run_gate "$tmp/lib13" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 13: a shadow after a char literal containing a quote was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
+  bad "case 13: the finding does not name String::index_of:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 13 ok: a char literal does not swallow the line"
+fi
+
+# An apostrophe in ordinary positions must not start a char literal that eats
+# the rest of the file\x27s meaning either.
+cat > "$tmp/lib13/pkg/charlit.vibe" <<'VEOF'
+let tick = 'x'
+let msg = "it's fine"
+
+export fn ordinary(n: Int) -> Int {
+  n + 1
+} // don't write fn String::split here
+VEOF
+run_gate "$tmp/lib13" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 13b: ordinary apostrophes produced a finding"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 13b ok: apostrophes in char literals, strings and comments are inert"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "[shadow-gate-test] $fail case(s) failed" >&2
   exit 1

@@ -168,19 +168,27 @@ while IFS= read -r f; do
     # or a trailing `// ... let String::contains ...` is reported as a
     # program-wide override -- a false FAIL on a required gate, from a file
     # that declares only `diagnostic`.
-    function strip_trivia(s,   out, i, c, n, in_str) {
+    # `Char` is a real type and `let c: Char = \x27"\x27` is valid source, so a
+    # bare quote scan mistakes the char literal\x27s `"` for a string opener and
+    # swallows the rest of the line -- including a declaration sharing it.
+    # `#|` opens a raw string that runs to end of line (no escape processing),
+    # so from here it behaves like a comment.
+    function strip_trivia(s,   out, i, c, n, mode) {
       out = ""
-      in_str = 0
+      mode = ""                                   # "", "str", or "char"
       n = length(s)
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
-        if (in_str) {
+        if (mode != "") {
           if (c == "\\") { i++; continue }        # escape: skip the next char
-          if (c == "\"") { in_str = 0 }
-          continue                                # string bodies contribute nothing
+          if (mode == "str" && c == "\"") { mode = "" }
+          else if (mode == "char" && c == "\x27") { mode = "" }
+          continue                                # literal bodies contribute nothing
         }
-        if (c == "\"") { in_str = 1; continue }
+        if (c == "\"") { mode = "str"; continue }
+        if (c == "\x27") { mode = "char"; continue }
         if (c == "/" && substr(s, i + 1, 1) == "/") { break }   # line comment
+        if (c == "#" && substr(s, i + 1, 1) == "|") { break }   # raw string to EOL
         out = out c
       }
       return out
