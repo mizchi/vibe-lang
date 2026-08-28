@@ -63,6 +63,22 @@ test "#2357: a subtrait namespace includes inherited operations" {
   inspect(check_source_error_message(source), "")
 }
 
+test "#2357: an inherited-only subtrait materializes a witness dictionary" {
+  let source = "trait Measurable { measure(Self) -> Int }\ntrait InheritedOnly: Measurable {}\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl InheritedOnly for Int {}\nlet answer = InheritedOnly::measure(42)"
+  let stmts = parse_program(lex(source))
+  let _ = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "struct InheritedOnlyDict"), content = "true")
+  inspect(String::contains(out, "__trait_operation_self_InheritedOnly_measure::measure"), content = "false")
+}
+
+test "#2357: a pure marker trait does not materialize a dictionary" {
+  let stmts = parse_program(lex("trait Marker {}\nimpl Marker for Int {}"))
+  desugar_trait_dicts(stmts)
+  inspect(String::contains(print_program(stmts), "MarkerDict"), content = "false")
+}
+
 test "#2357: inherited namespace operations preserve method generics" {
   let source = "trait Converter { convert[A](Self, A) -> A }\ntrait Sized: Converter { bump(Self) -> Int }\nimpl Converter for Int { convert(self: Int, value) -> A { let _ = self; value } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }\nlet answer: String = Sized::convert(20, \"ok\")"
   inspect(check_source_error_message(source), "")

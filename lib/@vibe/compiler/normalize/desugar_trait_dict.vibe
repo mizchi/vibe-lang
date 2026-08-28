@@ -395,29 +395,32 @@ fn dict_param_name(trait_name: String, tparam: String) -> String {
   String::concat("__dict_", String::concat(trait_ref_name(trait_name), String::concat(applied, String::concat("_", tparam))))
 }
 
-/// Collect method-bearing traits (name -> signatures). Marker-only traits
-/// (no method signatures) are skipped, which is what keeps this pass inert on
-/// existing code.
+/// Collect traits whose flattened signature contains at least one method.
+/// A marker-only trait stays inert, while `trait Child: Parent` is retained
+/// when `Parent` contributes a method to the child's witness dictionary.
 fn collect_method_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
+  let declared = collect_namespace_traits(stmts)
+  let flattened = flatten_traits(declared, collect_trait_supers(stmts))
   let out = array_empty()
   let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STrait(_, tname, _, methods, _, _) => if Array::length(methods) > 0 {
-        Array::push(out, (tname, methods))
+  while i < Array::length(declared) {
+    let (trait_name, declared_methods) = Array::get(declared, i)
+    match lookup_trait_sigs(flattened, trait_name) {
+      Some(methods) => if Array::length(methods) > 0 {
+        Array::push(out, (trait_name, declared_methods))
       } else {
         ()
       },
-      _ => ()
+      None => ()
     }
     i = i + 1
   }
   out
 }
 
-/// Collect trait signatures for namespace derivation. Unlike the dictionary
-/// pass's method-bearing-only table, this retains a subtrait with no methods of
-/// its own so `trait Child: Parent` can still expose `Child::parent_method`.
+/// Collect every declared trait signature. Namespace derivation and dictionary
+/// eligibility both need this complete graph to see methods inherited through
+/// a subtrait that declares no methods of its own.
 fn collect_namespace_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
   let out = array_empty()
   let mut i = 0
