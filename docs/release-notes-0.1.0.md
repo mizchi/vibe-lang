@@ -58,7 +58,7 @@ read, and every feature below is one the compiler itself depends on.
 - **Pipeline combinators are constructor-polymorphic** (ADR-0110). Kinded
   parameters such as `F[_]` support applied types `F[A]`, and
   `xs |> Mappable::map(f)` dispatches through `Mappable[F]`. The shipped instances cover
-  eager Array and Option; cross-package contracts and both codegen backends are
+  eager Array, Option, and pull `AsyncIter`; cross-package contracts and both codegen backends are
   covered by executable fixtures.
 - Other additions: generic struct type parameters, trait bounds in package
   contracts, `derive(Eq)`, conditional impls, `is` expressions, `loop` /

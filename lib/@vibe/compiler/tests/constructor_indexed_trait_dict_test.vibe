@@ -465,3 +465,12 @@ test "#2338: sibling constructors resolve beneath concrete bound heads" {
   let source = "struct Holder[A] { value: A }\ntrait Accepts[A] { accept(Int) -> Int }\nimpl Accepts[Holder[Option]] for Array { accept(x: Int) -> Int { x } }\nfn go[F[_]: Accepts[Holder[G]], G[_], A](xs: F[A], ys: G[A]) -> Int { 0 }\nfn use_it() -> Int { go([1], Some(1)) }"
   inspect(check_source_error_message(source), "")
 }
+
+test "Array::iter does not replace builtin Array for-loop lowering" {
+  let source = "trait Probe { probe(Self) -> Int }\nstruct Pull[T] { state: Int }\nfn Pull::next[T](self: Pull[T]) -> Option[(T, Pull[T])] { None }\nfn Array::iter[T](xs: Array[T]) -> Pull[T] { Pull::{ state: Array::length(xs) } }\nfn sum(xs: Array[Int]) -> Int { let mut total = 0; for x in xs { total = total + x }; total }"
+  let stmts = parse_program(lex(source))
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  assert(String::contains(out, "for x in xs"))
+  assert(!String::contains(out, "Pull::next(__iter_cur)"))
+}

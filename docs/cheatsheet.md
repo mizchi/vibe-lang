@@ -560,8 +560,28 @@ let option = Some(3) |> Mappable::map((x) -> { x + 1 })
 ```
 
 `Mappable[Array]` lowers to eager `Array::map`; `Mappable[Option]` preserves
-the Option shape. This shared spelling does not collapse ADR-0099's separate
-eager Array and pull AsyncIter implementation layers.
+the Option shape. `AsyncIter` is the separate pull layer (ADR-0099), entered
+explicitly with `Array::iter`:
+
+```vibe
+import @vibe/builtin {
+  Array::iter,
+  AsyncIter::collect,
+  AsyncIter::filter,
+  trait Mappable
+}
+
+let values = [1, 2, 3, 4]
+  |> Array::iter
+  |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
+  |> Mappable::map((x) -> { x * 10 })
+  |> AsyncIter::collect
+```
+
+`AsyncIter::map`, `filter`, `take`, and `take_while` are lazy. `collect`,
+`fold`, `count`, `find`, `any`, and `all` are terminals and carry `Async`.
+A plain `for x in array` remains an eager Array loop; importing
+`Array::iter` does not change it implicitly.
 
 **Method-style calls** (#736): `xs.length()` and `xs |> length` resolve to
 `List::length(xs)` when `xs`'s type is a USER type and the method is declared
@@ -1465,7 +1485,7 @@ let r = handle {
 let/seq/tail/分岐 tail に直接現れる必要がある。**let 連鎖 (brace block
 文や文位置の async-iterator `for` の脱糖出力) が文の途中 (sequence HEAD)
 に立つ形は、split が継続 spine へ float して受理する** (#1536 (a) v3,
-ADR-0076 追記42 — `async_iter_collect` / `_fold` / `_count` が suspend
+ADR-0076 追記42 — `AsyncIter::collect` / `AsyncIter::fold` / `AsyncIter::count` が suspend
 body から呼べるのはこれ)。**`if` condition / `match` scrutinee が direct
 perform・concrete needing call・CPS-local call そのものなら、fresh let へ
 一回評価してから selection する形も可** (追記44)。同じ direct 形そのものは
@@ -1488,7 +1508,7 @@ short-circuit、呼び出し引数等の compound、`return` / `break` / `contin
 「concrete row が対象 effect を含まない関数」、そして **row-free な
 closure param 経由の呼び出しのうち、その関数の全 by-name call site が
 perform を含まない closure literal (または委譲元の同様に証明済みの
-param) を渡すと静的に証明できるもの** (#1536 (a) — `async_iter_find`
+param) を渡すと静的に証明できるもの** (#1536 (a) — `AsyncIter::find`
 の `pred(v)` がこの形。1 site でも perform する literal を渡すと従来
 どおり reject)。**`while` / `loop` の中の perform も可** (#1230/#1536 —
 ループは step を返す再帰クロージャになる。`break` / `continue` を持つ本体も

@@ -306,6 +306,10 @@ fn str_array_contains(arr: Array[String], val: String) -> Bool {
   found
 }
 
+fn is_residual_eager_for_type(name: String) -> Bool {
+  str_array_contains(["Array", "String", "Map"], name)
+}
+
 /// Split a qualified `Head::member` into Some((head, member)) on the FIRST `::`.
 fn split_qualified(name: String) -> Option[(String, String)] {
   let idx = String::index_of(name, "::")
@@ -7208,7 +7212,13 @@ fn for_iterand_off_marker(iter: Expr) -> String {
 /// reasoning, now applied to the single surface).
 fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
-    Some(tn) => if tn == "HostStream" {
+    Some(tn) => if is_residual_eager_for_type(tn) {
+      // These eager builtins own the residual EForIn lowering. A public
+      // conversion such as `Array::iter(xs) -> AsyncIter[T]` must only run
+      // when it is called explicitly; its mere presence must not change every
+      // `for x in xs` into the named `C::iter` protocol.
+      classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+    } else if tn == "HostStream" {
       build_host_stream_for(name, riter, rbody)
     } else if fn_exists(fn_returns, String::concat(tn, "::next")) {
       if fn_return_is_future(fn_returns, String::concat(tn, "::next")) {

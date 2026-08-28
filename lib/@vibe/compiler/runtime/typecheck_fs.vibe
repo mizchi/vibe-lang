@@ -54,7 +54,9 @@ import @vibe/compiler/core {
   env_bind_with_origin,
   env_flat_bindings,
   env_lookup,
+  env_lookup_binding_including_surface,
   env_lookup_flat,
+  env_preserve_type_definition_origins,
   env_selectable_type_defs,
   env_type_defs,
   env_value_binding,
@@ -277,15 +279,26 @@ fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String
 /// coincidence) but "unknown name: Json::string" for the other 8 of the
 /// 11 documented accessors. The bundle-merge lane resolves these by name
 /// against the merged unit and never had the gap; only this FS lane did.
-fn selected_module_binding_origin(resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
+fn selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
+  // Preserve an ultimate module origin already carried by a facade binding.
+  // Replacing it with `resolved` at every import hop loses semantic provenance
+  // such as the canonical @vibe/builtin AsyncIter constructors.
+  let (path, original_name) = match env_lookup_binding_including_surface(dep_env, source_name) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(origin_path, origin_name) => (origin_path, origin_name),
+      BindingOriginReExportSurface(origin_path, origin_name) => (origin_path, origin_name),
+      BindingOriginUnavailable => (resolved, source_name)
+    },
+    None => (resolved, source_name)
+  }
   if reexport_surface_only {
-    BindingOriginReExportSurface(resolved, source_name)
+    BindingOriginReExportSurface(path, original_name)
   } else {
-    BindingOriginModuleExport(resolved, source_name)
+    BindingOriginModuleExport(path, original_name)
   }
 }
 
-fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
+fn bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
   let qual_prefix = String::concat(enum_name, "::")
   let mut out = acc
   // #1908: the dep's flat bindings can carry a name twice — the authoritative
@@ -308,7 +321,7 @@ fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings
         ()
       } else {
         Array::push(seen, candidate_name)
-        out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(resolved, candidate_name, reexport_surface_only))
+        out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(dep_env, resolved, candidate_name, reexport_surface_only))
       }
     }
     i = i + 1
@@ -1068,7 +1081,7 @@ fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[ImportItem], tail
       }
       i = i + 1
     }
-    EnvTypeDefs(defs, selectable, tail)
+    env_preserve_type_definition_origins(EnvTypeDefs(defs, selectable, tail), dep_env)
   }
 }
 
@@ -1209,6 +1222,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       // and the parser records no local binder for it (#2287).
       let surface_only_item = reexport_surface_only && alias != None
       let imported_ty = env_lookup_flat(dep_bindings, name)
+      let binding_origin = selected_module_binding_origin(dep_env, resolved, name, surface_only_item)
       let ty = match imported_ty {
         Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
         None => {
@@ -1224,21 +1238,21 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         }
       }
       let with_name = match imported_ty {
-        Some(_) => env_bind_with_origin(nacc, bound_name, ty, selected_module_binding_origin(resolved, name, surface_only_item)),
-        None => if surface_only_item && (contains_str(dep_selectable_type_defs, name) || trait_defined(dep_env, name)) {
+        Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
+        None => if contains_str(dep_selectable_type_defs, name) || trait_defined(dep_env, name) {
           // Declaration aliases travel in the separate publication projection
-          // below. Retain only an origin marker here so checker diagnostics can
-          // distinguish this claimed-but-nonlocal spelling from an unrelated
-          // unknown declaration; env_lookup deliberately hides the marker.
-          env_bind_with_origin(nacc, bound_name, ty, selected_module_binding_origin(resolved, name, true))
+          // below. Retain the declaration's origin on its existing unknown
+          // value-space marker so semantic checks can distinguish a projected
+          // builtin type from an unrelated same-named local declaration.
+          env_bind_with_origin(nacc, bound_name, ty, binding_origin)
         } else {
           env_bind(nacc, bound_name, ty)
         }
       }
       let with_companions = match ty {
-        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, resolved, dep_bindings, enum_name, trait_mappings, surface_only_item),
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, enum_name, trait_mappings, surface_only_item),
         _ => if starts_with_upper(name) {
-          bind_enum_constructor_companions(with_name, resolved, dep_bindings, name, trait_mappings, surface_only_item)
+          bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, name, trait_mappings, surface_only_item)
         } else {
           with_name
         }
@@ -1574,7 +1588,7 @@ fn load_planned_module_source(rdb: RippleDb, path: String) -> (RippleDb, Option[
 ///
 /// Order and duplicate paths are preserved verbatim. lookup_env_cache's
 /// first-match rule is intentional: it is the same rule build_import_env uses,
-/// so a duplicate cache path cannot select one interface while TDRE8 keys a
+/// so a duplicate cache path cannot select one interface while TDRE9 keys a
 /// different one. A missing row is an infrastructure error, never EnvEmpty:
 /// continuing would let an unreadable dependency silently weaken checking.
 fn project_exact_dependency_envs(deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> Array[(String, TypeEnv)] with Exception {
@@ -1815,7 +1829,7 @@ fn collect_module_diagnostics() -> Bool {
 ///   5 current-source parse executions (ModuleJob parse memo misses)
 ///   6 checker executions
 ///   7 modules reused by conservative fingerprint authority
-///   8 modules reused by validated TDRE8 dependency transport authority
+///   8 modules reused by validated TDRE9 dependency transport authority
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
@@ -1839,9 +1853,10 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = []
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// TDRE8 aliases only an exact v8 decoded TypeEnv when every direct dependency
+// TDRE9 aliases only an exact v9 decoded TypeEnv when every direct dependency
 // transport environment is unchanged. It is not a CheckedProgram or typed-IR
-// transport; v8 retains kinded applications and constructor-bound self references
+// transport; v9 retains kinded applications, constructor-bound self references,
+// and binding provenance
 // in the TypeEnv declaration, trait, and impl chain. The empty cell is
 // conservative for direct FS consumers. The CLI check-only lane explicitly
 // enables production reuse after validating its per-invocation policy; build,
@@ -2559,7 +2574,7 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// name the module itself imported -- so testing an import against it let
 /// `import ./dep.vibe { private_fn }` through to die in codegen. Dropping
 /// the non-exported bindings here, at the single point every publication
-/// path flows through (persistent store, env cache, worker env.out, TDRE8),
+/// path flows through (persistent store, env cache, worker env.out, TDRE9),
 /// makes the existing membership check in
 /// bind_import_names_from_cache_collecting the export test itself.
 ///
@@ -2570,13 +2585,13 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// Trait definitions and implementations are published only for the selected
 /// trait surface. EnvCached wrappers are rebuilt from the restricted chain
 /// (their arrays are acceleration state, same rule as the serializer's).
-fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, all_defs: Array[TypeDef]) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
-        EnvBind(name, env_value_binding(binding.ty), restricted)
+        EnvBind(name, binding, restricted)
       } else {
         restricted
       }
@@ -2584,9 +2599,9 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     // #1262: `let mut` escape markers are function-local, so a module's export
     // surface never carries one. Drop it with its scope rather than inventing
     // a rule for publishing mutability across a boundary.
-    EnvMutCell(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest),
+    EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs),
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(trait_surface, name) >= 0 {
         EnvTraitDef(name, supers, is_auto, methods, restricted, params, method_gens)
       } else {
@@ -2594,7 +2609,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       }
     },
     EnvTraitImpl(name, target, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImpl(name, target, restricted)
       } else {
@@ -2602,7 +2617,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       }
     },
     EnvTraitImplGen(name, params, bounds, target, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImplGen(name, params, bounds, target, restricted)
       } else {
@@ -2610,14 +2625,14 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       }
     },
     EnvTypeDefs(defs, _, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(defs) {
         let def = Array::get(defs, i)
         if bsearch_leftmost(type_surface, typedef_projection_name(def)) >= 0 {
           let closure = array_empty()
-          typedef_projection_add_named(typedef_projection_name(def), defs, closure)
+          typedef_projection_add_named(typedef_projection_name(def), all_defs, closure)
           let mut ci = 0
           while ci < Array::length(closure) {
             let closure_def = Array::get(closure, ci)
@@ -2633,7 +2648,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
         }
         i = i + 1
       }
-      if Array::length(kept) == 0 && Array::length(type_surface) == 0 {
+      if Array::length(kept) == 0 {
         restricted
       } else {
         EnvTypeDefs(kept, type_surface, restricted)
@@ -2645,7 +2660,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       while i < Array::length(bindings) {
         let (name, binding) = Array::get(bindings, i)
         if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
-          Array::push(kept, (name, env_value_binding(binding.ty)))
+          Array::push(kept, (name, binding))
         } else {
           ()
         }
@@ -2662,7 +2677,20 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     // module lane resolves an import over a same-named local (the merge
     // lane shadows correctly), while an `as` alias broke the
     // collect_merged_stmts lane instead. Both are their own bugs.
-    EnvCached(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+    EnvCached(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+  }
+}
+
+fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+  let all_defs = env_type_defs(env)
+  let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, env, all_defs)
+  if Array::length(type_surface) > 0 && Array::length(env_selectable_type_defs(restricted)) == 0 {
+    // Opaque builtins and re-exported contracts can grant type authority
+    // without carrying a forgeable TypeDef payload. Keep one surface node for
+    // that case; concrete closures already carry their own surface node.
+    EnvTypeDefs(array_empty(), type_surface, restricted)
+  } else {
+    restricted
   }
 }
 
@@ -2721,7 +2749,7 @@ export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt
   let value_surface = interface_public_value_names(stmts)
   let trait_surface = interface_public_trait_names(stmts, publication_env)
   let type_surface = interface_public_type_names(stmts, publication_env)
-  let published = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env)
+  let published = env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env), publication_env)
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
@@ -3033,7 +3061,7 @@ fn incremental_checked_env_identity(env: TypeEnv) -> String with Exception {
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
-/// A trace-only observation of the complete persistent TypeEnv v8 transport.
+/// A trace-only observation of the complete persistent TypeEnv v9 transport.
 /// The canonical cache-text bytes are the sole input. This is not a
 /// CheckedProgram, typed IR, exported interface, cache key, or reuse decision.
 fn incremental_persistent_type_env_transport_identity(env: TypeEnv) -> String {
@@ -3087,7 +3115,7 @@ fn incremental_trace_json_string(text: String) -> String {
 /// provisional canonical token-stream identity, not normalized typed IR.
 /// `checked_env_fingerprint` is a complete value-environment observation.
 /// `persistent_type_env_transport_fingerprint` observes only the complete
-/// persistent TypeEnv v8 transport, not a CheckedProgram, typed IR, exported
+/// persistent TypeEnv v9 transport, not a CheckedProgram, typed IR, exported
 /// interface, cache key, or reuse decision. `decision` records what this current TypeDb
 /// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
@@ -3152,7 +3180,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete persistent TypeEnv transport observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(persistent_type_env_transport_fingerprint))
-    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v8 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
+    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1
@@ -3287,14 +3315,14 @@ fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with E
   text
 }
 
-// TDRE8 is deliberately independent from the TypeEnv v8 envelope and from
-// every production artifact/cache identity. Both v8 envelopes use strict
+// TDRE9 is deliberately independent from the TypeEnv v9 envelope and from
+// every production artifact/cache identity. Both v9 envelopes use strict
 // decimal length-delimited fields and bind the logical checker input, target
-// conservative fingerprint, and exact canonical TypeEnv-v8 transport text.
+// conservative fingerprint, and exact canonical TypeEnv-v9 transport text.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
-let typing_dependency_env_reuse_alias_v8_tag = "TDRE8A"
-let typing_dependency_env_reuse_witness_v8_tag = "TDRE8W"
+let typing_dependency_env_reuse_alias_v9_tag = "TDRE9A"
+let typing_dependency_env_reuse_witness_v9_tag = "TDRE9W"
 
 fn typing_reuse_segment(text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
@@ -3361,11 +3389,11 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 /// source, effective typing semantics, resolution authority, and every resolved direct dependency row of
 /// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
 /// this table once with project_exact_dependency_envs and gives the same value
-/// to both check_module and TDRE8 lookup/publication, so ambient coordinator
+/// to both check_module and TDRE9 lookup/publication, so ambient coordinator
 /// cache rows are neither checker-visible nor part of this canonical text.
 fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v8")
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v9")
   StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
   StringBuilder::push(out, typing_reuse_segment(source))
   StringBuilder::push(out, typing_reuse_segment(semantics_seed))
@@ -3412,7 +3440,7 @@ fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(S
   if !Fs::exists(witness_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v8_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v9_tag) {
       Some((input_key, target_fingerprint, target_text)) =>
       if target_fingerprint != fingerprint {
         None
@@ -3434,7 +3462,7 @@ fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool
   }
 }
 
-/// Eligibility is transitively witnessed by successful canonical TypeEnv-v8
+/// Eligibility is transitively witnessed by successful canonical TypeEnv-v9
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
@@ -3453,7 +3481,7 @@ fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> 
 }
 
 fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Fs {
-  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v8_tag, input_key, fingerprint, target_text)
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v9_tag, input_key, fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
 }
 
@@ -3462,7 +3490,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
   if !Fs::exists(sidecar_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v8_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v9_tag) {
       Some((alias_input_key, target_fingerprint, target_text)) =>
       if alias_input_key != input_key {
         None
@@ -3489,7 +3517,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
 }
 
 fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Fs {
-  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v8_tag, input_key, target_fingerprint, target_text)
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v9_tag, input_key, target_fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 
@@ -4149,7 +4177,7 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
   // The final strings are trace-only interface, checked-value-env, and
-  // complete persistent TypeEnv v8 transport identities. They are computed
+  // complete persistent TypeEnv v9 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
   // inputs, and are empty unless the invalidation trace is enabled. The final
   // optional string is a canonical in-memory-only #1550 module artifact
@@ -4308,7 +4336,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
       // consumer of `Checked`'s env (env cache, persistent store, worker
-      // transport, TDRE8, trace identities) is a publication path. The full
+      // transport, TDRE9, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
       let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
       let interface_identity = if incremental_interface_trace_enabled() {
@@ -4368,7 +4396,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       throw(String::concat(job.path, ": type error"))
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, _) => {
-      // Serialize the TypeEnv once. Production-default TDRE8 publication binds
+      // Serialize the TypeEnv once. Production-default TDRE9 publication binds
       // the exact same text as the conservative target; serializing it a second
       // time materially inflates fresh selfcompile heap without adding evidence.
       let target_text = store_persistent_type_env(fingerprint, checked_env)
@@ -4643,7 +4671,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     },
     None => {
       // Keep the accumulated cache as coordinator state, but expose exactly the
-      // resolved dependency sequence to the checker and TDRE8. Construct this
+      // resolved dependency sequence to the checker and TDRE9. Construct this
       // once: lookup, check, and publication must describe the same value.
       let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
       let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)

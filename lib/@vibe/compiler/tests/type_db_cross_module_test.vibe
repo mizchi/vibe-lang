@@ -24,6 +24,7 @@ import @vibe/compiler/core {
   env_lookup,
   env_lookup_binding,
   env_selectable_type_defs,
+  env_type_definition_origin,
   env_type_defs,
   env_value_binding,
   trait_defined,
@@ -1088,7 +1089,7 @@ test "projected checker nested modules retain legacy import replay" {
   assert_module_origin(checked, "alias", dep_path, "source")
 }
 
-test "projected import origins are stripped by public and persistent surfaces" {
+test "projected import origins survive public and persistent surfaces" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let value = 1")
   let source = "export ./dep.vibe { value }"
@@ -1098,12 +1099,52 @@ test "projected import origins are stripped by public and persistent surfaces" {
   ])
   assert_module_origin(checked, "value", dep_path, "value")
   let published = checked_module_public_env(stmts, checked)
-  assert_unavailable_origin(published, "value")
+  assert_module_origin(published, "value", dep_path, "value")
   let encoded = persistent_type_env_cache_text(published)
   match parse_persistent_type_env(encoded) {
     Some(decoded) => {
-      assert_unavailable_origin(decoded, "value")
+      assert_module_origin(decoded, "value", dep_path, "value")
       assert(persistent_type_env_cache_text(decoded) == encoded)
+    },
+    None => assert(false)
+  }
+}
+
+fn assert_type_definition_module_origin(env: TypeEnv, name: String, expected_path: String, expected_source_name: String) -> Unit {
+  match env_type_definition_origin(env, name) {
+    Some(BindingOriginModuleExport(path, source_name)) => {
+      assert(path == expected_path)
+      assert(source_name == expected_source_name)
+    },
+    Some(BindingOriginReExportSurface(path, source_name)) => {
+      assert(path == expected_path)
+      assert(source_name == expected_source_name)
+    },
+    _ => assert(false)
+  }
+}
+
+test "public struct dependency closure preserves imported type provenance" {
+  let builtin_path = "lib/@vibe/builtin/index.vpkg"
+  let builtin_env = EnvTypeDefs([TDStruct("AsyncIter", [], [], ["T"])], [
+    "AsyncIter"
+  ], EnvEmpty)
+  let provider_path = "workspace/provider.vibe"
+  let source = "import @vibe/builtin { struct AsyncIter }\nexport struct Holder { stream: AsyncIter[Int] }"
+  let stmts = parse_program_with_path(provider_path, source)
+  let checked = projected_checked_env(source, provider_path, [builtin_path], [
+    (builtin_path, builtin_env)
+  ])
+  let published = checked_module_public_env(stmts, checked)
+  assert(Array::length(env_type_defs(published)) == 2)
+  assert(Array::length(env_selectable_type_defs(published)) == 1)
+  assert(Array::get(env_selectable_type_defs(published), 0) == "Holder")
+  assert_type_definition_module_origin(published, "AsyncIter", builtin_path, "AsyncIter")
+  match parse_persistent_type_env(persistent_type_env_cache_text(published)) {
+    Some(decoded) => {
+      assert(Array::length(env_type_defs(decoded)) == 2)
+      assert(Array::length(env_selectable_type_defs(decoded)) == 1)
+      assert_type_definition_module_origin(decoded, "AsyncIter", builtin_path, "AsyncIter")
     },
     None => assert(false)
   }
@@ -1994,7 +2035,7 @@ test "db_typecheck_fs: private unknown effects and effectsets are not selectable
   assert(String::contains(unknown, "imported name 'Missing' is not exported by"))
 }
 
-test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v7" {
+test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v9" {
   let dir = "/tmp/vibe_v4_cache_cold_recheck"
   let path = String::concat(dir, "/main.vibe")
   let source = "export let value = 1\n"
@@ -2007,11 +2048,11 @@ test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck 
   let leaf_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
   Fs::write_file(env_path, "version\t3\nenv\t1:0\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t8\nenv\t"))
-  Fs::write_file(env_path, "version\t8\nenv\t1:Z\n")
+  assert(String::starts_with(Fs::read_file(env_path), "version\t9\nenv\t"))
+  Fs::write_file(env_path, "version\t9\nenv\t1:Z\n")
   Fs::write_file(leaf_path, "version\t1\nnot-a-fingerprint\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t8\nenv\t"))
+  assert(String::starts_with(Fs::read_file(env_path), "version\t9\nenv\t"))
 }
 
 test "db_typecheck: an imported effect does not leak through a non-re-exporting module (#1549)" {
