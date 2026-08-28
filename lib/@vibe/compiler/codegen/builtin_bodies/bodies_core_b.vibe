@@ -1394,7 +1394,24 @@ fn emit_windowed_substring_search(b: Bytes, enable_rc: Bool, str_eq_idx: Int) ->
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
   emit_i64_or(b)
-  emit_local_get(b, 1)
+  // #2345 step 2: the needle side is SYNTHESISED from locals 6/3 rather than
+  // read from local 1. Local 1 is the caller's second PARAMETER, which is only
+  // a usable operand when it happens to be a String fat value -- and that is
+  // the single thing that kept this loop String-only. A Bytes caller has a
+  // heap handle in local 1 and nothing that `str_eq` could consume, so passing
+  // it through would have compiled and then compared a pointer against a fat
+  // value at run time. Built from (ndl_ptr << 32) | ndl_len, exactly like the
+  // haystack window above, it is the SAME i64 for a String caller and a
+  // constructible one for a Bytes caller. Both then reach the SIMD `str_eq`
+  // (ADR-0054 measures it at 5.65x), which is the point of sharing at all: a
+  // hand-written Bytes compare would be the slow one.
+  emit_local_get(b, 6)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 3)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
   emit_call(b, str_eq_idx)
   emit_i32_wrap_i64(b)
   emit_if_void(b)
@@ -1463,6 +1480,61 @@ export fn gen_string_index_of_body(enable_rc: Bool, str_len_idx: Int, str_substr
   emit_i64_const(b, 32)
   emit_i64_shr_s(b)
   emit_i32_wrap_i64(b)
+  emit_local_set(b, 6)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_sub(b)
+  emit_local_set(b, 8)
+  emit_windowed_substring_search(b, enable_rc, str_eq_idx)
+  b
+}
+
+/// `Bytes::index_of(haystack, needle)` -- the SAME windowed search as
+/// `String::index_of`, reached through a different prologue.
+///
+/// That is the whole of #2345: the search is representation-independent, and
+/// only the handle unpacking differs. `String` arrives as a packed
+/// `(ptr << 32) | len` fat value, so its prologue is two shifts. `Bytes`
+/// arrives as a heap handle, so its prologue is two loads -- length at
+/// offset 4, data pointer at offset 8, exactly what `gen_bytes_get_body`
+/// reads, and NOT untagged (a Bytes handle is a raw pointer in the value
+/// world; only `Int` carries the `n << 1` tag).
+///
+/// Both then populate locals 2/3 (lengths), 5/6 (data pointers) and 8 (last
+/// valid start) and call the same loop, so `Bytes` gets the SIMD window
+/// (ADR-0054, ~5.1x) and the SIMD `str_eq` (5.65x) rather than a second,
+/// slower hand-written scan. Writing the Bytes search independently is the
+/// thing this issue exists to avoid.
+///
+/// Returns a tagged -1 when the needle is longer than the haystack, matching
+/// the String contract; the empty-needle case is handled inside the loop.
+export fn gen_bytes_index_of_body(enable_rc: Bool, str_eq_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_local_get(b, 2)
+  emit_i32_gt_u(b)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 5)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
   emit_local_set(b, 6)
   emit_local_get(b, 2)
   emit_local_get(b, 3)
