@@ -419,7 +419,10 @@ retired it:
   { String::trim }` alone cost a sparse `String::index_of` 0.8 µs → 174 µs
   (~218×), and turned `String::split(s, "")` from a hard trap into `[s]`.
 
-So the routing was subtraction: the six re-implementations are deleted, and
+So the routing was subtraction: the six re-implementations are deleted --
+their names stay on the package's published surface as bodyless intrinsic
+declarations, the shape `String::utf8_length` already used, so
+`import @vibe/builtin { String::split }` still resolves -- and
 `count` / `replace` / `replace_all` reach the window search because nothing
 shadows it any more. Measured net of haystack construction
 (`bench/bench_string_scan_routing.vibe`, p50):

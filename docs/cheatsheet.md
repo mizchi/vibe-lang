@@ -2273,7 +2273,8 @@ scalar re-implementations of six SIMD builtins, so `import @vibe/builtin {
 String::trim }` -- one unrelated name -- replaced `String::index_of`,
 `String::contains`, `String::split`, `String::starts_with`,
 `String::ends_with` and `String::last_index_of` everywhere in the importing
-program. A sparse `String::index_of` over a 22 KiB haystack cost **0.8 us
+program. Those bodies are gone; the names stay importable as bodyless
+declarations on the package surface. A sparse `String::index_of` over a 22 KiB haystack cost **0.8 us
 without that import and 174 us with it (~218x)**, and `String::split(s, "")`
 changed from a hard trap into `[s]`. Those definitions are gone;
 `scripts/check_builtin_shadowing.sh` fails the build if `lib/**` grows a new
