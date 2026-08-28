@@ -168,28 +168,55 @@ while IFS= read -r f; do
     # or a trailing `// ... let String::contains ...` is reported as a
     # program-wide override -- a false FAIL on a required gate, from a file
     # that declares only `diagnostic`.
-    # `Char` is a real type and `let c: Char = \x27"\x27` is valid source, so a
-    # bare quote scan mistakes the char literal\x27s `"` for a string opener and
-    # swallows the rest of the line -- including a declaration sharing it.
-    # `#|` opens a raw string that runs to end of line (no escape processing),
-    # so from here it behaves like a comment.
-    function strip_trivia(s,   out, i, c, n, mode) {
+    # Strip everything that can carry arbitrary text, so the declaration scan
+    # below only ever sees top-level code. vibe has exactly four such forms --
+    # `"..."` (lex_string), `\x27c\x27` (lex_char), `#|...` to end of line
+    # (lex_multiline_string) and `//` to end of line. There is no block
+    # comment: a lone `/` is division (lexer.vibe\x27s dispatch).
+    #
+    # Strings nest, because `\{ ... }` interpolation returns to code, where
+    # another string may open: `"a \{tag("b")} c"` is one string containing an
+    # expression containing another string. A flat in-string flag mis-tracks
+    # that in both directions -- it swallowed a declaration sharing the line,
+    # and it reported `fn String::split` sitting inside the inner string as a
+    # program-wide override.
+    #
+    # The stack holds "S" for string and "I" for interpolated code. Only text
+    # at depth zero can declare anything, so only that is emitted.
+    function strip_trivia(s,   out, i, c, d, n, stack, top) {
       out = ""
-      mode = ""                                   # "", "str", or "char"
+      stack = ""
       n = length(s)
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
-        if (mode != "") {
-          if (c == "\\") { i++; continue }        # escape: skip the next char
-          if (mode == "str" && c == "\"") { mode = "" }
-          else if (mode == "char" && c == "\x27") { mode = "" }
-          continue                                # literal bodies contribute nothing
+        d = length(stack)
+        top = (d > 0) ? substr(stack, d, 1) : ""
+
+        if (top == "S") {
+          if (c == "\\") {
+            if (substr(s, i + 1, 1) == "{") { stack = stack "I"; i++ }
+            else { i++ }                        # escaped char
+            continue
+          }
+          if (c == "\"") { stack = substr(stack, 1, d - 1) }
+          continue                              # string bodies contribute nothing
         }
-        if (c == "\"") { mode = "str"; continue }
-        if (c == "\x27") { mode = "char"; continue }
-        if (c == "/" && substr(s, i + 1, 1) == "/") { break }   # line comment
-        if (c == "#" && substr(s, i + 1, 1) == "|") { break }   # raw string to EOL
-        out = out c
+
+        # code, either top level or inside an interpolation
+        if (c == "\"") { stack = stack "S"; continue }
+        if (c == "\x27") {                      # char literal
+          i++
+          while (i <= n) {
+            if (substr(s, i, 1) == "\\") { i += 2; continue }
+            if (substr(s, i, 1) == "\x27") break
+            i++
+          }
+          continue
+        }
+        if (top == "I" && c == "}") { stack = substr(stack, 1, d - 1); continue }
+        if (d == 0 && c == "/" && substr(s, i + 1, 1) == "/") break
+        if (d == 0 && c == "#" && substr(s, i + 1, 1) == "|") break
+        if (d == 0) out = out c                 # only top-level code declares
       }
       return out
     }

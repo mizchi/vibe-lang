@@ -384,6 +384,51 @@ else
   note "case 13b ok: apostrophes in char literals, strings and comments are inert"
 fi
 
+# --- Case 14: interpolation nests, so strings nest -------------------------
+# `"a \{tag("b")} c"` is one string containing an expression containing
+# another string. A flat in-string flag mis-tracks it in BOTH directions, and
+# both were reproduced on source `vibe check` accepts.
+mkdir -p "$tmp/lib14/pkg"
+
+# (a) false positive: a builtin name inside the INNER string.
+cat > "$tmp/lib14/pkg/interp.vibe" <<'VEOF'
+fn tag(s: String) -> String {
+  s
+}
+
+let msg = "a \{tag("write fn String::split here")} c"
+VEOF
+run_gate "$tmp/lib14" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 14a: a builtin name inside an interpolated string was reported as a shadow"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 14a ok: an interpolated string declares nothing"
+fi
+
+# (b) the miss: a real declaration AFTER such a string.
+cat > "$tmp/lib14/pkg/interp.vibe" <<'VEOF'
+fn tag(s: String) -> String {
+  s
+}
+
+let msg = "a \{tag("b")} c" fn String::index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+if ! grep -q "fn String::index_of" "$tmp/lib14/pkg/interp.vibe"; then
+  bad "case 14b: the fixture does not contain the declaration it is testing"
+fi
+run_gate "$tmp/lib14" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 14b: a shadow after an interpolated string was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
+  bad "case 14b: the finding does not name String::index_of:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 14b ok: a declaration after an interpolated string is caught"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "[shadow-gate-test] $fail case(s) failed" >&2
   exit 1
