@@ -1815,6 +1815,176 @@ export fn gen_bytes_last_index_of_byte_body(enable_rc: Bool) -> Bytes {
   b
 }
 
+/// `Bytes::compare(a, b)` -- lexicographic ordering (#2345). -1, 0 or 1.
+///
+/// The last member of #2345's Layer 2 surface, and the only one that is not a
+/// search: `Bytes < Bytes` was a type error, so there was no way to order byte
+/// strings at all.
+///
+/// Two phases, like the searches, but the vector phase asks the opposite
+/// question. `i8x16.eq` sets a lane to all-ones where the bytes MATCH, so
+/// `i8x16.bitmask` is 0xFFFF exactly when a whole 16-byte chunk is equal.
+/// Anything else means the first difference is inside this chunk, and the
+/// scalar loop then finds which byte it is. The searches break OUT of their
+/// vector loop on a hit; this one breaks out on a MISS.
+///
+/// The compare itself is unsigned. Bytes are `i32.load8_u`, so both sides are
+/// 0..255 and the i64 signed compare below cannot see a negative -- but the
+/// distinction matters for the contract: `compare` orders by BYTE VALUE, so
+/// 0x80 is greater than 0x7F, which a signed byte compare would invert.
+///
+/// A common prefix falls through to the lengths, which is what makes this
+/// lexicographic rather than a memcmp: "ab" < "abc".
+///
+///   locals: i32 { 2: pa, 3: pb } ; i64 { 4: i, 5: n, 6: la, 7: lb }
+export fn gen_bytes_compare_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 3)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 6)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 7)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 6)
+  emit_else(b)
+  emit_local_get(b, 7)
+  emit_end(b)
+  emit_local_set(b, 5)
+  emit_i64_const(b, 0)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_get(b, 5)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i8x16_eq(b)
+  emit_i8x16_bitmask(b)
+  emit_i32_const(b, 65535)
+  emit_i32_ne(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i32_ne(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_i64_const(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_end(b)
+  emit_else(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i64_gt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_i64_const(b, 0)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_end(b)
+  emit_end(b)
+  emit_end(b)
+  b
+}
+
 /// `Bytes::index_of_bytes(hay, needle)` -- the substring search, over two heap
 /// handles instead of two String fat values.
 ///

@@ -61,6 +61,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_truncate_body,
   gen_array_value_copy_body,
   gen_bytes_append_body,
+  gen_bytes_compare_body,
   gen_bytes_concat_body,
   gen_bytes_count_byte_body,
   gen_bytes_from_array_body,
@@ -439,7 +440,7 @@ fn bytebuf_push_i32le(buf: Bytes, v: Int) -> Unit {
 /// cc_is_borrow_arg0_call in codegen/expr/compile_call.vibe and
 /// is_borrow_arg0_call in perceus/perceus.vibe).
 fn lc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
 }
 
 /// #1085: does `name` have a consuming occurrence OUTSIDE any loop body?
@@ -5213,11 +5214,12 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   let bytes_index_of_idx = bytes_index_of_bytes_idx + 1
   let bytes_count_byte_idx = bytes_index_of_idx + 1
   let bytes_last_index_of_idx = bytes_count_byte_idx + 1
+  let bytes_compare_idx = bytes_last_index_of_idx + 1
   // #1987: shadow-only UAF abort reuses gen_oob_abort_body with a different
   // middle fragment. Off when rc_shadow is false so a normal RC build stays
   // byte-identical (ADR-0062).
   let shadow_uaf_abort_idx = if rc_shadow {
-    bytes_last_index_of_idx + 1
+    bytes_compare_idx + 1
   } else {
     0 - 1
   }
@@ -5228,7 +5230,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     (if rc_shadow {
       shadow_uaf_abort_idx
     } else {
-      bytes_last_index_of_idx
+      bytes_compare_idx
     }) + 1
   } else {
     -1
@@ -5584,7 +5586,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     // 3 short and shifted every user-function call target by 3 -- stage1
     // trapped with `unreachable` while compiling a sample, exactly as the
     // comment above says it would.
-    bytes_last_index_of_idx
+    bytes_compare_idx
   }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -5750,6 +5752,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
         "Bytes::index_of" => bytes_index_of_idx,
         "Bytes::count" => bytes_count_byte_idx,
         "Bytes::last_index_of" => bytes_last_index_of_idx,
+        "Bytes::compare" => bytes_compare_idx,
         "String::contains" => string_contains_idx,
         "String::starts_with" => string_starts_with_idx,
         "String::split" => string_split_idx,
@@ -6080,6 +6083,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   push_builtin(gen_bytes_index_of_byte_body(enable_rc), 1, 3, 4)
   push_builtin(gen_bytes_count_byte_body(enable_rc), 1, 4, 4)
   push_builtin(gen_bytes_last_index_of_byte_body(enable_rc), 1, 3, 4)
+  push_builtin(gen_bytes_compare_body(enable_rc), 2, 4, 4)
   if rc_shadow {
     push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
   } else {
@@ -8649,6 +8653,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   Array::set(gen_sec_names, bytes_index_of_idx - num_imported_funcs, "__rt_bytes_index_of_byte")
   Array::set(gen_sec_names, bytes_count_byte_idx - num_imported_funcs, "__rt_bytes_count_byte")
   Array::set(gen_sec_names, bytes_last_index_of_idx - num_imported_funcs, "__rt_bytes_last_index_of_byte")
+  Array::set(gen_sec_names, bytes_compare_idx - num_imported_funcs, "__rt_bytes_compare")
   Array::set(gen_sec_names, str_char_code_at_idx - num_imported_funcs, "__rt_str_char_code_at")
   Array::set(gen_sec_names, str_from_char_code_idx - num_imported_funcs, "__rt_str_from_char_code")
   Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")

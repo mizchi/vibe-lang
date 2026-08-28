@@ -1736,6 +1736,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
 | `Bytes::last_index_of(hay, byte)` | last index holding `byte`, or `-1`. Same scan, downwards | linear / gc |
 | `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
+| `Bytes::compare(a, b)` | lexicographic order: `-1` / `0` / `1`, by **unsigned** byte value | linear / gc |
 | `Bytes::index_of_bytes(hay, needle)` | first index of the `needle` **subsequence**, or `-1`. An empty needle answers `0` | linear / gc |
 | `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
@@ -1762,8 +1763,11 @@ via `memory.copy`, so `push` is amortised O(1)):
 > change an answer. `count` reads the mask AS the answer (`popcnt`), so it
 > checks the needle's range up front instead.
 >
-> `Bytes::compare` is still unimplemented — measured, calling it is
-> `unknown name`.
+> `Bytes::compare` orders by **unsigned** byte value, so `0x80` is greater than
+> `0x7F`, and a common prefix falls through to the lengths — `"ab" < "abc"`.
+> That second part is what makes it lexicographic rather than a memcmp. There
+> is still no `Bytes < Bytes`: the operator is a type error and `compare` is
+> the way to order byte strings.
 >
 > Against a 4 KiB buffer (`bench/bench_simd_bytes_find.vibe`, p50):
 > `Bytes::index_of` 216 ns, a **native scalar byte loop** 2413 ns, the

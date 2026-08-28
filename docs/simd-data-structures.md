@@ -382,15 +382,15 @@ Bytes::count(Bytes, Int) -> Int
 Bytes::index_of_bytes(Bytes, Bytes) -> Int      // substring; calls String::index_of
 ```
 
-**Still open:**
-
 ```
 Bytes::compare(Bytes, Bytes) -> Int             // lexicographic, first differing lane
 ```
 
-`Bytes` still has no ordering: `Bytes < Bytes` is a type error and
-`Bytes::compare` is the builtin that would fix it. Everything else in this
-layer is served, so a library no longer writes the 6.1 ns/byte loop by hand.
+The whole layer is served.
+
+`Bytes < Bytes` remains a type error — the operator was never the ask,
+`Bytes::compare` is how byte strings are ordered. A library no longer writes
+the 6.1 ns/byte loop by hand.
 Measured on a 4 KiB buffer (`bench/bench_simd_bytes_find.vibe`, p50): that loop
 is 23600 ns and `Bytes::index_of` is 216 ns.
 
