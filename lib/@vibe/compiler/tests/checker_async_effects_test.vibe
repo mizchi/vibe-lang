@@ -526,6 +526,65 @@ test "mapped IIFE-performed handler payloads require Async" {
   assert_mapped_requires_async(handled)
 }
 
+test "mapped named-helper handler payloads require Async" {
+  let performed = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1)
+  ], -1)
+  let helper = SLet(false, false, "emit", None, EFn(array_empty(), array_empty(), [
+    ("items", Some(TyName("Chan")))
+  ], Some(TyName("Unit")), Some("Carry"), performed))
+  let handled = EHandle(ESeq(ECall(EIdent("emit", -1), [chan_literal()], -1), chan_literal()), [
+    (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
+  ])
+  let errors = check_async_effects_stmts([
+    helper,
+    SExpr(for_over(mapped_over(handled)))
+  ], poly_map_env())
+  assert(Array::length(errors) > 0)
+}
+
+test "mapped recursive-helper handler payloads require Async without looping" {
+  let performed = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1)
+  ], -1)
+  let recursive_call = ECall(EIdent("emit_rec", -1), [EIdent("items", -1)], -1)
+  let helper = SLet(false, false, "emit_rec", None, EFn(array_empty(), array_empty(), [
+    ("items", Some(TyName("Chan")))
+  ], Some(TyName("Unit")), Some("Carry"), ESeq(recursive_call, performed)))
+  let handled = EHandle(ESeq(ECall(EIdent("emit_rec", -1), [chan_literal()], -1), chan_literal()), [
+    (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
+  ])
+  let errors = check_async_effects_stmts([
+    helper,
+    SExpr(for_over(mapped_over(handled)))
+  ], poly_map_env())
+  assert(Array::length(errors) > 0)
+}
+
+test "mutually recursive helper reachability does not cache a false result" {
+  let performed = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1)
+  ], -1)
+  let call_a = ECall(EIdent("emit_a", -1), [EIdent("items", -1)], -1)
+  let call_b = ECall(EIdent("emit_b", -1), [EIdent("items", -1)], -1)
+  let params = [("items", Some(TyName("Chan")))]
+  let helper_a = SLet(false, false, "emit_a", None, EFn(array_empty(), array_empty(), params, Some(TyName("Unit")), Some("Carry"), ESeq(call_b, performed)))
+  let helper_b = SLet(false, false, "emit_b", None, EFn(array_empty(), array_empty(), params, Some(TyName("Unit")), Some("Carry"), call_a))
+  let handled_a = EHandle(ESeq(ECall(EIdent("emit_a", -1), [chan_literal()], -1), chan_literal()), [
+    (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
+  ])
+  let handled_b = EHandle(ESeq(ECall(EIdent("emit_b", -1), [chan_literal()], -1), chan_literal()), [
+    (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
+  ])
+  let errors = check_async_effects_stmts([
+    helper_a,
+    helper_b,
+    SExpr(for_over(mapped_over(handled_a))),
+    SExpr(for_over(mapped_over(handled_b)))
+  ], poly_map_env())
+  assert(Array::length(errors) >= 2)
+}
+
 test "mapped payloads cross nested non-consuming handler bodies" {
   let performed = ECall(EIdent("perform", -1), [
     ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1)

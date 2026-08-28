@@ -1185,6 +1185,192 @@ fn afe_handler_consumes_op(arms: Array[(Pat, Expr)], op: String) -> Bool {
   consumes
 }
 
+let afe_callable_bodies: Array[(String, Array[(String, Option[TypeExpr])], Option[String], Expr)] = array_empty()
+let afe_payload_call_stack: Array[String] = array_empty()
+let afe_reachability_keys: Array[String] = array_empty()
+let afe_reachability_values: Array[Bool] = array_empty()
+let afe_reachability_stack: Array[String] = array_empty()
+
+fn afe_collect_callable_bodies(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, params, _, effect, body)) => {
+        Array::push(afe_callable_bodies, (name, params, effect, body))
+      },
+      SFnDecl(_, name, EFn(_, _, params, _, effect, body), _, _) => {
+        Array::push(afe_callable_bodies, (name, params, effect, body))
+      },
+      SModule(_, _, body) => afe_collect_callable_bodies(body),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn afe_lookup_callable_body(name: String) -> Option[(Array[(String, Option[TypeExpr])], Option[String], Expr)] {
+  let mut i = Array::length(afe_callable_bodies) - 1
+  let mut out = None
+  let mut found = false
+  let mut ambiguous = false
+  while i >= 0 {
+    let (current, params, effect, body) = Array::get(afe_callable_bodies, i)
+    if current == name {
+      if found {
+        ambiguous = true
+      } else {
+        out = Some((params, effect, body))
+        found = true
+      }
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  if ambiguous {
+    None
+  } else {
+    out
+  }
+}
+
+fn afe_payload_call_is_active(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(afe_payload_call_stack) && !found {
+    found = Array::get(afe_payload_call_stack, i) == name
+    i = i + 1
+  }
+  found
+}
+
+fn afe_callable_may_perform(effect: Option[String], op: String) -> Bool {
+  match effect_row_parse(effect) {
+    Some(labels) => decl_authorizes_op(labels, op),
+    None => false
+  }
+}
+
+fn afe_reachability_key(name: String, op: String) -> String {
+  String::concat(name, String::concat("\t", op))
+}
+
+fn afe_reachability_cache_get(key: String) -> Option[Bool] {
+  let mut i = 0
+  let mut out = None
+  while i < Array::length(afe_reachability_keys) {
+    if Array::get(afe_reachability_keys, i) == key {
+      out = Some(Array::get(afe_reachability_values, i))
+      i = Array::length(afe_reachability_keys)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn afe_reachability_is_active(key: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(afe_reachability_stack) && !found {
+    found = Array::get(afe_reachability_stack, i) == key
+    i = i + 1
+  }
+  found
+}
+
+fn afe_expr_may_perform(expr: Expr, op: String) -> Bool {
+  match expr {
+    EHandle(body, arms) => {
+      let mut found = if afe_handler_consumes_op(arms, op) {
+        false
+      } else {
+        afe_expr_may_perform(body, op)
+      }
+      let mut i = 0
+      while i < Array::length(arms) && !found {
+        let (_, arm_body) = Array::get(arms, i)
+        found = afe_expr_may_perform(arm_body, op)
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, _, _, _, _) => false,
+    ECall(callee, args, _) => {
+      let mut found = match callee {
+        EIdent("perform", _) => if Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(EIdent(op_name, _), _, _) => afe_op_name_matches(op_name, op),
+            _ => false
+          }
+        } else {
+          false
+        },
+        EFn(_, _, _, _, _, body) => afe_expr_may_perform(body, op),
+        EIdent(name, _) => afe_callable_reaches_op(name, op),
+        _ => false
+      }
+      let mut i = 0
+      while i < Array::length(args) && !found {
+        found = afe_expr_may_perform(Array::get(args, i), op)
+        i = i + 1
+      }
+      found
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(children) && !found {
+        found = afe_expr_may_perform(Array::get(children, i), op)
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn afe_callable_reaches_op(name: String, op: String) -> Bool {
+  let key = afe_reachability_key(name, op)
+  match afe_reachability_cache_get(key) {
+    Some(value) => value,
+    None => if afe_reachability_is_active(key) {
+      false
+    } else match afe_lookup_callable_body(name) {
+      Some((_, effect, body)) => {
+        let stack_len = Array::length(afe_reachability_stack)
+        Array::push(afe_reachability_stack, key)
+        let result = afe_callable_may_perform(effect, op) && afe_expr_may_perform(body, op)
+        Array::truncate(afe_reachability_stack, stack_len)
+        if result {
+          Array::push(afe_reachability_keys, key)
+          Array::push(afe_reachability_values, true)
+        } else {
+          ()
+        }
+        result
+      },
+      None => false
+    }
+  }
+}
+
+fn afe_callable_body_locals(params: Array[(String, Option[TypeExpr])], args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+  let mut body_locals = afe_bind_params(locals, params, env)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    let inferred = if i < Array::length(args) {
+      afe_expr_head_name(Array::get(args, i), env, locals)
+    } else {
+      None
+    }
+    body_locals = afe_bind_local(body_locals, name, inferred)
+    i = i + 1
+  }
+  body_locals
+}
+
 fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env: TypeEnv, locals: Array[(String, String)], out: Array[Option[String]]) -> Unit {
   match expr {
     EHandle(body, arms) => {
@@ -1237,19 +1423,22 @@ fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env:
       }
       match callee {
         EFn(_, _, params, _, _, body) => {
-          let mut body_locals = afe_bind_params(locals, params, env)
-          let mut pi = 0
-          while pi < Array::length(params) {
-            let (name, _) = Array::get(params, pi)
-            let inferred = if pi < Array::length(args) {
-              afe_expr_head_name(Array::get(args, pi), env, locals)
-            } else {
-              None
-            }
-            body_locals = afe_bind_local(body_locals, name, inferred)
-            pi = pi + 1
-          }
+          let body_locals = afe_callable_body_locals(params, args, env, locals)
           afe_collect_perform_payloads(body, op, payload_index, env, body_locals, out)
+        },
+        EIdent(name, _) => if name == "perform" || afe_payload_call_is_active(name) {
+          ()
+        } else match afe_lookup_callable_body(name) {
+          Some((params, effect, body)) => if afe_callable_may_perform(effect, op) && afe_callable_reaches_op(name, op) {
+            let stack_len = Array::length(afe_payload_call_stack)
+            Array::push(afe_payload_call_stack, name)
+            let body_locals = afe_callable_body_locals(params, args, env, locals)
+            afe_collect_perform_payloads(body, op, payload_index, env, body_locals, out)
+            Array::truncate(afe_payload_call_stack, stack_len)
+          } else {
+            ()
+          },
+          None => ()
         },
         _ => ()
       }
@@ -1591,7 +1780,28 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) 
   }
 }
 
+fn afe_contains_for(expr: Expr) -> Bool {
+  match expr {
+    EForIn(_, _, _, _) => true,
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(children) && !found {
+        found = afe_contains_for(Array::get(children, i))
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
   check_async_effects_expr_lo(expr, env, in_async, afe_no_locals())
 }
 
@@ -1630,7 +1840,12 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, afe_handler_arm_locals(body, pat, env, locals)))
+        let arm_locals = if afe_contains_for(arm_body) {
+          afe_handler_arm_locals(body, pat, env, locals)
+        } else {
+          locals
+        }
+        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, arm_locals))
         ai = ai + 1
       }
     },
@@ -1688,19 +1903,28 @@ fn check_async_effects_binding(ty: Option[TypeExpr], body: Expr, env: TypeEnv) -
     // binding's own parameters here — otherwise `fn drain(s: AsyncIter[Int])`
     // would not resolve `s` when its body loops over it.
     EFn(_, _, params, _, eff, fbody) => check_async_effects_expr_lo(fbody, env, sig_async || effect_opt_is_async(eff), afe_bind_params(afe_no_locals(), merge_param_types_with_sig(ty, params), env)),
-    _ => check_async_effects_expr(body, env, sig_async)
+    _ => check_async_effects_expr_lo(body, env, sig_async, afe_no_locals())
+  }
+}
+
+fn check_async_effects_stmt_lo(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
+  match stmt {
+    SLet(_, _, _, ty, body) => check_async_effects_binding(ty, body, env),
+    SLetMut(_, ty, body) => check_async_effects_binding(ty, body, env),
+    STest(_, body) => check_async_effects_expr_lo(body, env, false, afe_no_locals()),
+    SBench(_, body) => check_async_effects_expr_lo(body, env, false, afe_no_locals()),
+    SExpr(e) => check_async_effects_expr_lo(e, env, false, afe_no_locals()),
+    _ => array_empty()
   }
 }
 
 export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
-  match stmt {
-    SLet(_, _, _, ty, body) => check_async_effects_binding(ty, body, env),
-    SLetMut(_, ty, body) => check_async_effects_binding(ty, body, env),
-    STest(_, body) => check_async_effects_expr(body, env, false),
-    SBench(_, body) => check_async_effects_expr(body, env, false),
-    SExpr(e) => check_async_effects_expr(e, env, false),
-    _ => array_empty()
-  }
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
+  check_async_effects_stmt_lo(stmt, env)
 }
 
 export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
@@ -1713,9 +1937,15 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
   afe_set_field_types(stmts, env)
   Array::truncate(afe_builtin_async_iter_import_names, 0)
   afe_record_builtin_async_iter_imports(stmts)
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
+  afe_collect_callable_bodies(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
-    append_eff_errs(errors, check_async_effects_stmt(Array::get(stmts, i), env))
+    append_eff_errs(errors, check_async_effects_stmt_lo(Array::get(stmts, i), env))
     i = i + 1
   }
   errors

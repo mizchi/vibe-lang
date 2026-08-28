@@ -215,6 +215,20 @@ test "mapped IIFE-performed handler payloads are accepted with Async" {
   assert(!String::contains(msg, "async iterator awaits every step"))
 }
 
+test "mapped named-helper handler payloads require Async after package projection" {
+  let path = "/tmp/vibe_async_iter_package_projection_cache_handler_named_payload_v1.vibe"
+  let source = "import @vibe/builtin { Array::iter, trait Mappable, struct AsyncIter }\neffect Carry {\n  Yield(AsyncIter[Int]) -> Unit\n}\nfn emit(items: AsyncIter[Int]) -> Unit with Carry {\n  perform Carry::Yield(items)\n  ()\n}\nfn main() -> Unit {\n  let ys = Mappable::map(handle {\n    emit(Array::iter([1]))\n    Array::iter([2])\n  } with { Carry::Yield(it) => it }, (x: Int) -> Int { x + 1 })\n  for y in ys {\n    let _ = y\n  }\n  ()\n}\n"
+  let msg = expect_async_for_message(path, source)
+  assert(String::contains(msg, "async iterator awaits every step"))
+}
+
+test "mapped named-helper handler payloads are accepted with Async" {
+  let path = "/tmp/vibe_async_iter_package_projection_cache_handler_named_payload_ok_v1.vibe"
+  let source = "import @vibe/builtin { Array::iter, trait Mappable, struct AsyncIter }\neffect Carry {\n  Yield(AsyncIter[Int]) -> Unit\n}\nfn emit(items: AsyncIter[Int]) -> Unit with Carry {\n  perform Carry::Yield(items)\n  ()\n}\nfn main() -> Unit with Async {\n  let ys = Mappable::map(handle {\n    emit(Array::iter([1]))\n    Array::iter([2])\n  } with { Carry::Yield(it) => it }, (x: Int) -> Int { x + 1 })\n  for y in ys {\n    let _ = y\n  }\n  ()\n}\n"
+  let msg = expect_async_for_message(path, source)
+  assert(!String::contains(msg, "async iterator awaits every step"))
+}
+
 test "mapped payloads cross nested non-consuming handler bodies after package projection" {
   let path = "/tmp/vibe_async_iter_package_projection_cache_nested_handler_body_v1.vibe"
   let source = "import @vibe/builtin { Array::iter, trait Mappable, struct AsyncIter }\neffect Carry {\n  Yield(AsyncIter[Int]) -> Unit\n}\neffect Dummy {\n  Ping() -> Unit\n}\nfn main() -> Unit {\n  let ys = Mappable::map(handle {\n    handle {\n      perform Carry::Yield(Array::iter([1]))\n      ()\n    } with { Dummy::Ping() => () }\n    Array::iter([2])\n  } with { Carry::Yield(it) => it }, (x: Int) -> Int { x + 1 })\n  for y in ys {\n    let _ = y\n  }\n  ()\n}\n"
