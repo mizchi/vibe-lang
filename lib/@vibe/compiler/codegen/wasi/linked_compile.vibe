@@ -443,6 +443,15 @@ fn lc_is_borrow_arg0_call(f: String) -> Bool {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
 }
 
+/// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
+/// and `Bytes::compare` read both of their `Bytes` arguments and drop neither,
+/// so bit 1 belongs in the mask beside bit 0. The arg0 predicate above cannot
+/// say this -- it is one bit -- which is why this is a separate list rather
+/// than a wider version of that one.
+fn lc_is_borrow_arg1_call(f: String) -> Bool {
+  f == "Bytes::index_of_bytes" || f == "Bytes::compare"
+}
+
 /// #1085: does `name` have a consuming occurrence OUTSIDE any loop body?
 /// The #725 single unconditional epilogue drop for a loop-consumed param
 /// is only sound when EVERY consuming occurrence is a loop-borrow site
@@ -556,6 +565,10 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
         EIdent(f, _) => lc_is_borrow_arg0_call(f),
         _ => false
       }
+      let borrow1 = match callee {
+        EIdent(f, _) => lc_is_borrow_arg1_call(f),
+        _ => false
+      }
       let callee_c = match callee {
         EIdent(_, _) => false,
         _ => lc_has_nonloop_consume(callee, name)
@@ -563,7 +576,7 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
       let mut found = callee_c
       let mut i = 0
       while i < Array::length(args) {
-        let skip_borrowed_head = borrow0 && i == 0 && (match Array::get(args, i) {
+        let skip_borrowed_head = ((borrow0 && i == 0) || (borrow1 && i == 1)) && (match Array::get(args, i) {
           EIdent(_, _) => true,
           _ => false
         })

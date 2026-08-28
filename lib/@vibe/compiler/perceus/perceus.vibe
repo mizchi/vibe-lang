@@ -1545,6 +1545,15 @@ fn is_borrow_arg0_call(f: String) -> Bool {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
+/// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
+/// and `Bytes::compare` read both of their `Bytes` arguments and drop neither,
+/// so bit 1 belongs in the mask beside bit 0. The arg0 predicate above cannot
+/// say this -- it is one bit -- which is why this is a separate list rather
+/// than a wider version of that one.
+fn is_borrow_arg1_call(f: String) -> Bool {
+  f == "Bytes::index_of_bytes" || f == "Bytes::compare"
+}
+
 /// Bit i means parameter i of this callee is borrowed. Mirrors
 /// bmask_has/md_borrow_mask_of in codegen/common_analysis (the same
 /// keep-in-sync convention as is_borrow_arg0_call above).
@@ -1566,10 +1575,15 @@ fn pe_borrow_mask(ctx: PCtx, scope: Map[String, Int], callee: Expr) -> Int {
       } else {
         0
       }
-      if is_borrow_arg0_call(f) {
+      let m0 = if is_borrow_arg0_call(f) {
         user|1
       } else {
         user
+      }
+      if is_borrow_arg1_call(f) {
+        m0|2
+      } else {
+        m0
       }
     },
     _ => 0
