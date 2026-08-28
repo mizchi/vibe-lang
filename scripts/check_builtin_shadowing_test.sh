@@ -183,27 +183,47 @@ else
   note "case 7 ok: value alias caught and recorded as let"
 fi
 
-# --- Case 8: an unclassifiable column-0 line FAILS, it is not skipped -------
-# A lexical scan that skips what it cannot read is indistinguishable from a
-# clean tree, so the scanner must stop instead (#2248).
+# --- Case 8: top level is brace depth, not column zero ---------------------
+# The scan used to key on column 0 and needed scaffolding (classify the head,
+# refuse what it could not read) to stay honest about it. Depth is the property
+# itself, and both directions of the proxy were wrong: an attribute pushed the
+# declaration off column 0, and a local binding inside a one-line body was
+# reported as a program-wide override.
 mkdir -p "$tmp/lib8/pkg"
-cat > "$tmp/lib8/pkg/weird.vibe" <<'VEOF'
-export fn ordinary() -> Int {
-  1
-}
 
-gizmo Whatsit {
-  x: Int
+# (a) an attribute in front must not hide the declaration behind it
+cat > "$tmp/lib8/pkg/attr.vibe" <<'VEOF'
+#deprecated fn String::index_of(s: String, sub: String) -> Int {
+  -1
 }
 VEOF
 run_gate "$tmp/lib8" "$tmp/empty_allow.txt"
 if [ "$rc" -eq 0 ]; then
-  bad "case 8: an unknown column-0 declaration keyword was silently skipped"
-elif ! printf '%s\n' "$out" | grep -q 'could not classify'; then
-  bad "case 8: rejected, but not for the unreadable reason:"
+  bad "case 8a: a declaration behind an attribute was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
+  bad "case 8a: the finding does not name String::index_of:"
   echo "$out" | sed 's/^/    /' >&2
 else
-  note "case 8 ok: unclassifiable line stops the gate"
+  note "case 8a ok: an attribute does not hide the declaration"
+fi
+
+# (b) a LOCAL binding inside a body shadows nothing and must not be reported
+rm "$tmp/lib8/pkg/attr.vibe"
+cat > "$tmp/lib8/pkg/local.vibe" <<'VEOF'
+fn ordinary() -> Int { let println = 1; println }
+
+fn multi() -> Int {
+  let eq = 2
+  let String::split = 3
+  eq + String::split
+}
+VEOF
+run_gate "$tmp/lib8" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 8b: a local binding inside a function body was reported as a shadow"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 8b ok: bindings inside a body are local, not shadows"
 fi
 
 # --- Case 9: EVERY declaration on a shared line, not just the first ---------
@@ -427,6 +447,32 @@ elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
   echo "$out" | sed 's/^/    /' >&2
 else
   note "case 14b ok: a declaration after an interpolated string is caught"
+fi
+
+# --- Case 15: depth drift is reported, not absorbed -------------------------
+# Top level is brace depth, so a file whose delimiters do not balance was read
+# at the wrong depth from the drift onward and may have under-reported. Silence
+# there is indistinguishable from a clean file.
+mkdir -p "$tmp/lib15/pkg"
+printf 'fn broken() -> Int {\n  1\n' > "$tmp/lib15/pkg/x.vibe"
+run_gate "$tmp/lib15" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 15: an unbalanced file was scanned silently"
+elif ! printf '%s\n' "$out" | grep -q 'did not return to zero'; then
+  bad "case 15: rejected, but not for the drift reason:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 15 ok: depth drift stops the gate"
+fi
+
+# The balanced control, so the case discriminates.
+printf 'fn fine() -> Int {\n  1\n}\n' > "$tmp/lib15/pkg/x.vibe"
+run_gate "$tmp/lib15" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 15 control: a balanced file should pass, got exit $rc"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 15 control ok: a balanced file passes"
 fi
 
 if [ "$fail" -ne 0 ]; then

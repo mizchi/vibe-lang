@@ -137,7 +137,6 @@ if [ ! -s "$tmp/files.txt" ]; then
 fi
 
 : > "$tmp/defs.txt"
-: > "$tmp/unreadable.txt"
 # Top-level declarations, read line by line. This is a LEXICAL scan, and the
 # hazard with those is the one they cannot see: a shape not encoded by the
 # pattern is missed in silence, and a silent miss is indistinguishable from a
@@ -162,27 +161,16 @@ fi
 # and optionally behind `export`.
 while IFS= read -r f; do
   awk -v path="$f" '
-    # Drop string literals and line comments before anything looks at the text.
-    # The scan below matches on raw characters, so without this a line like
-    #   let diagnostic = "write fn String::index_of to override it"
-    # or a trailing `// ... let String::contains ...` is reported as a
-    # program-wide override -- a false FAIL on a required gate, from a file
-    # that declares only `diagnostic`.
-    # Strip everything that can carry arbitrary text, so the declaration scan
-    # below only ever sees top-level code. vibe has exactly four such forms --
-    # `"..."` (lex_string), `\x27c\x27` (lex_char), `#|...` to end of line
-    # (lex_multiline_string) and `//` to end of line. There is no block
-    # comment: a lone `/` is division (lexer.vibe\x27s dispatch).
+    # Strip everything that can carry arbitrary text, so the scan below only
+    # ever sees code. vibe has exactly four such forms -- `"..."` (lex_string),
+    # \x27c\x27 (lex_char), `#|` to end of line (lex_multiline_string) and `//` to
+    # end of line. There is no block comment: a lone `/` is division.
     #
-    # Strings nest, because `\{ ... }` interpolation returns to code, where
+    # Strings nest, because `\{ ... }` interpolation returns to code where
     # another string may open: `"a \{tag("b")} c"` is one string containing an
-    # expression containing another string. A flat in-string flag mis-tracks
-    # that in both directions -- it swallowed a declaration sharing the line,
-    # and it reported `fn String::split` sitting inside the inner string as a
-    # program-wide override.
-    #
-    # The stack holds "S" for string and "I" for interpolated code. Only text
-    # at depth zero can declare anything, so only that is emitted.
+    # expression containing another string. The stack holds "S" for string and
+    # "I" for interpolated code; only text outside every literal is emitted,
+    # so nothing inside one reaches the depth counter or the matcher.
     function strip_trivia(s,   out, i, c, d, n, stack, top) {
       out = ""
       stack = ""
@@ -195,16 +183,15 @@ while IFS= read -r f; do
         if (top == "S") {
           if (c == "\\") {
             if (substr(s, i + 1, 1) == "{") { stack = stack "I"; i++ }
-            else { i++ }                        # escaped char
+            else { i++ }
             continue
           }
           if (c == "\"") { stack = substr(stack, 1, d - 1) }
-          continue                              # string bodies contribute nothing
+          continue
         }
 
-        # code, either top level or inside an interpolation
         if (c == "\"") { stack = stack "S"; continue }
-        if (c == "\x27") {                      # char literal
+        if (c == "\x27") {
           i++
           while (i <= n) {
             if (substr(s, i, 1) == "\\") { i += 2; continue }
@@ -216,79 +203,74 @@ while IFS= read -r f; do
         if (top == "I" && c == "}") { stack = substr(stack, 1, d - 1); continue }
         if (d == 0 && c == "/" && substr(s, i + 1, 1) == "/") break
         if (d == 0 && c == "#" && substr(s, i + 1, 1) == "|") break
-        if (d == 0) out = out c                 # only top-level code declares
+        if (d == 0) out = out c
       }
       return out
     }
 
-    # Column 0 only; indented lines are inside a declaration.
-    /^[ \t]/ { next }
-    /^[ \t]*$/ { next }
+    BEGIN { depth = 0 }
+
+    # A binding shadows the builtin only if it is TOP LEVEL, and top level is
+    # brace depth zero -- not column zero, which was a proxy for it. The proxy
+    # needed a pile of scaffolding to stay honest (classify the head, refuse
+    # what it cannot read) and still got both directions wrong: it missed
+    # `#deprecated fn String::index_of(...)` because the line starts with an
+    # attribute, and it reported the local `println` in
+    # `fn f() -> Int { let println = 1; println }` as a program-wide override.
+    #
+    # Depth is the property itself, so the scaffolding is gone with it. Braces
+    # inside strings, char literals and interpolations never reach the counter
+    # (strip_trivia emits none of them), and `module` blocks -- the one other
+    # nesting that could have held a declaration -- were removed in #728.
     {
       line = strip_trivia($0)
-      if (line ~ /^[ \t]*$/) next
-      # A declaration may follow closers on the same line.
-      sub(/^[})\]]+[ \t]*/, "", line)
-      if (line ~ /^\/\//) next          # comment
-      if (line ~ /^#/) next             # attribute (#deprecated, #zero_alloc)
-      if (line == "") next              # the line was only closers
-      # Trailing clauses of the declaration that just closed, not a new one:
-      # `} derive (Show)`, `} with { Exception::Throw(_) => ... }`.
-      if (line ~ /^(derive|with)[ \t({]/) next
-      # Not a word start -> continuation of a multi-line string literal etc.
-      if (line !~ /^[A-Za-z_]/) next
+      n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if (c == "{" || c == "(" || c == "[") { depth++; continue }
+        if (c == "}" || c == ")" || c == "]") { if (depth > 0) depth-- ; continue }
+        if (depth != 0) continue
 
-      head = line
-      sub(/^export[ \t]+/, "", head)
-
-      # (1) Record EVERY value-namespace binding on the line, not just the
-      # head. A line may carry several:
-      # lib/@vibe/compiler/loader/loader.vibe:1217 is
-      # `] let a: Array[String] = [] fn vpkg_types_registry_note(...) {`,
-      # three declarations deep. Recording only the head missed the rest --
-      # the exact failure this classifier exists to prevent. Scanning the
-      # whole line also covers a binding that trails a non-declaration head.
-      rest = line
-      while (match(rest, /(^|[^A-Za-z0-9_:])(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+[A-Za-z_][A-Za-z0-9_:]*/)) {
-        hit = substr(rest, RSTART, RLENGTH)
-        rest = substr(rest, RSTART + RLENGTH)
-        sub(/^[^A-Za-z_]/, "", hit)
-        form = (hit ~ /^(rec[ \t]+)?fn[ \t]/) ? "fn" : "let"
-        sub(/^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+/, "", hit)
-        print path " " hit " " form
+        # At depth 0: a value-namespace binding, optionally behind `export`
+        # and/or attributes, which are ordinary tokens here.
+        rest = substr(line, i)
+        if (match(rest, /^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+[A-Za-z_][A-Za-z0-9_:]*/)) {
+          hit = substr(rest, RSTART, RLENGTH)
+          # Must start at a token boundary, not inside a longer identifier.
+          if (i > 1) {
+            prev = substr(line, i - 1, 1)
+            if (prev ~ /[A-Za-z0-9_:]/) continue
+          }
+          form = (hit ~ /^(rec[ \t]+)?fn[ \t]/) ? "fn" : "let"
+          sub(/^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+/, "", hit)
+          print path " " hit " " form
+          i += RLENGTH - 1
+        }
       }
-
-      # (2) Independently, refuse to pass over a head this cannot classify.
-      # Silence is not safety: a skipped line is indistinguishable from a
-      # clean one.
-      if (head ~ /^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+/) next
-      if (head ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)[ \t({"]/) next
-      if (head ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)$/) next
-      if (head ~ /^[{(]/) next
-      # `export { ... }` (publish a name) and `export ./dep.vibe { ... }` /
-      # `export ../../pkg { ... }` (re-export a target) bind nothing here.
-      if (head ~ /^[.\/@]/) next
-      if (line ~ /^export[ \t]*[{(]/) next
-
-      print path ":" FNR " unclassified column-0 declaration: " $0 > "/dev/stderr"
-      print "unreadable"
     }
-  ' "$f" 2>> "$tmp/unreadable_detail.txt" | while IFS= read -r out; do
-      if [ "$out" = "unreadable" ]; then
-        echo "x" >> "$tmp/unreadable.txt"
-      else
-        echo "$out" >> "$tmp/defs.txt"
-      fi
-    done
+    # Depth that does not return to 0 means the scanner lost track of the
+    # delimiters -- a stripper bug, or a form it does not know. Everything
+    # after the drift was scanned at the wrong depth and silently under-
+    # reported, which is the failure mode this gate exists to not have. Say so
+    # instead.
+    END {
+      if (depth != 0) {
+        print "DRIFT " path " " depth
+      }
+    }
+  ' "$f" >> "$tmp/defs.txt"
 done < "$tmp/files.txt"
 
-if [ -s "$tmp/unreadable.txt" ]; then
-  echo "check_builtin_shadowing: FAIL -- the scanner could not classify some column-0 lines:" >&2
-  cat "$tmp/unreadable_detail.txt" >&2
+if grep -q "^DRIFT " "$tmp/defs.txt" 2>/dev/null; then
+  echo "check_builtin_shadowing: FAIL -- brace depth did not return to zero:" >&2
+  grep "^DRIFT " "$tmp/defs.txt" | while IFS= read -r line; do
+    echo "  $line" >&2
+  done
   echo "" >&2
-  echo "  A lexical scan that skips what it cannot read is indistinguishable from" >&2
-  echo "  a clean tree. Teach the classifier the new shape (and add a case to" >&2
-  echo "  scripts/check_builtin_shadowing_test.sh) rather than widening the skip." >&2
+  echo "  The scan tracks top level as brace depth, so a file whose delimiters" >&2
+  echo "  do not balance was read at the wrong depth from that point on and" >&2
+  echo "  may have under-reported. Teach strip_trivia the construct it is" >&2
+  echo "  missing (and add a case to the self-test) rather than ignoring this." >&2
   exit 1
 fi
 
