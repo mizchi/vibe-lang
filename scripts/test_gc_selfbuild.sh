@@ -231,7 +231,7 @@ BUNDLE_SRC="lib/@vibe/compiler/_cli_adapter_module_source.vibe"
 BUNDLE_OUT="$OUT_DIR/bundle_gc.wasm"
 rm -f "$BUNDLE_OUT" "$BUNDLE_OUT.diag"
 env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  VIBE_INTERNAL_TRUSTED_SOURCE=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
   "$BUNDLE_SRC" "${BUNDLE_OUT#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
 if [ -s "$BUNDLE_OUT" ]; then
   if command -v wasm-tools >/dev/null 2>&1; then

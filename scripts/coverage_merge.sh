@@ -84,7 +84,7 @@ sample_rel="$(rel "$sample")"
 # Workload A: self-compile the flat compiler source (parser/checker/codegen).
 run_workload compile \
   env VIBE_IMPORT_ABI=raw \
-  bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$FLAT" "$OUT_DIR/out_compile.wasm" cli_main
+  VIBE_INTERNAL_TRUSTED_SOURCE=1 bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$FLAT" "$OUT_DIR/out_compile.wasm" cli_main
 
 # Workload B: normalize the sample (exercises the AST printer: print_expr/_stmt).
 run_workload normalize \
