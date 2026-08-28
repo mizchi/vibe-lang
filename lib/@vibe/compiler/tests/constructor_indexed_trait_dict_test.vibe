@@ -319,6 +319,31 @@ test "#2338: effect payload scans cross unrelated nested handlers" {
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
 }
 
+test "#2338: handler payload binders select their own constructor witnesses" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let xs = Some(0); let _ = handle { perform Log::Emit([1]); () } with { Log::Emit(xs) => { let _ = Mappable::map(xs, (x) -> { x + 1 }); () } }; () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "false")
+}
+
+test "#2338: top-level pattern initializers rewrite constructor witness calls" {
+  let source = "fn inc(x: Int) -> Int { x + 1 }\nlet (xs, n) = (Mappable::map([1], inc), 0)\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: effect payload scans enter immediately invoked lambdas" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { (() -> Unit { perform Log::Emit([1]); () })(); [0] } with { Log::Emit(xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: effect payload scans bind immediately invoked lambda parameters" {
+  let source = "effect Log { Emit(Array[Int]) -> Unit }\nfn probe() -> Unit { let _ = Mappable::map(handle { ((items: Array[Int]) -> Unit { perform Log::Emit(items); () })([1]); [0] } with { Log::Emit(xs) => xs }, (x) -> { x + 1 }); () }\n"
+  let out = desugar_mappable_program(source)
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
 test "#2338: shadowing a recursive helper drops its return constructor" {
   let out = desugar_mappable_program("fn probe() -> Unit { let _ = Mappable::map({ let rec make = (n: Int) -> Array[Int] { [n] }; let make = (n: Int) -> Option[Int] { Some(n) }; make(1) }, (x) -> { x + 1 }); () }\n")
   inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
