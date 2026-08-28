@@ -1,11 +1,16 @@
 //# Imports
 
 import @vibe/compiler/core {
-  append_import_alias_rewritten_non_import_stmts, build_export_rename_plan, collect_import_value_renames, namespace_exported_name
+  append_import_alias_rewritten_non_import_stmts,
+  build_export_rename_plan,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_namespace_markers,
+  collect_import_value_renames,
+  namespace_exported_name
 }
 
 import @vibe/ast {
-  TypeExpr, impl_method_binding_name
+  ImportKind, Stmt, TypeExpr, impl_method_binding_name
 }
 
 import @vibe/compiler/syntax {
@@ -13,6 +18,30 @@ import @vibe/compiler/syntax {
 }
 
 //# Misc
+
+test "standard Iterator provenance is recorded only without a local helper" {
+  let imported = parse_program(lex("import @vibe/builtin { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
+  match Array::get(imported, 0) {
+    SImport(path, items) => {
+      inspect(path, "@vibe/builtin")
+      inspect(Array::get(items, 0).name, "Iterator")
+      inspect(match Array::get(items, 0).kind {
+        Some(ImportTrait) => "trait",
+        Some(_) => "other",
+        None => "none"
+      }, "trait")
+    },
+    _ => inspect("not an import", "an import")
+  }
+  let imported_markers = builtin_iterator_namespace_markers(imported)
+  inspect(Array::length(imported_markers), "1")
+  inspect(builtin_iterator_namespace_from_marker(Array::get(imported_markers, 0)), "Some(Iterator)")
+  let shadowed = parse_program(lex("import @vibe/builtin { trait Iterator }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { xs }"))
+  inspect(Array::length(builtin_iterator_namespace_markers(shadowed)), "0")
+  let aliased = parse_program(lex("import @vibe/builtin { trait Iterator as Iter }\nlet answer = Iter::map([1], (x: Int) -> Int { x })"))
+  let alias_markers = builtin_iterator_namespace_markers(aliased)
+  inspect(builtin_iterator_namespace_from_marker(Array::get(alias_markers, 0)), "Some(Iterator)")
+}
 
 test "append import alias rewrite resolves import aliases" {
   let stmts = parse_program(lex("import ./dep.vibe { answer as local }\nexport let run: () -> Int = () -> { local() }"))

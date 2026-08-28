@@ -1,7 +1,7 @@
 //# Imports
 
 import ./ast.vibe {
-  Expr, ImportItem, Pat, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
 }
 
 import @vibe/core {
@@ -28,6 +28,82 @@ fn empty_strings() -> Array[String] {
 
 fn empty_import_refs() -> Array[(String, String, String)] {
   array_empty()
+}
+
+fn builtin_iterator_origin_marker_prefix() -> String {
+  "__vibe_internal_builtin_iterator_origin:"
+}
+
+fn iterator_namespace_operation(name: String, namespace: String) -> Bool {
+  name == String::concat(namespace, "::map") || name == String::concat(namespace, "::filter") || name == String::concat(namespace, "::fold") || name == String::concat(namespace, "::find") || name == String::concat(namespace, "::any") || name == String::concat(namespace, "::all")
+}
+
+fn stmts_define_iterator_namespace_operation(stmts: Array[Stmt], namespace: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => iterator_namespace_operation(name, namespace),
+      SFnDecl(_, name, _, _, _) => iterator_namespace_operation(name, namespace),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Compiler-only provenance carried in an existing source-boundary marker.
+/// It is emitted only when this source unit explicitly imports the standard
+/// Iterator trait and does not replace any optimized namespace operation.
+/// The marker is consumed before codegen and never becomes a runtime value.
+export fn builtin_iterator_namespace_markers(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => if path == "@vibe/builtin" {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          if explicit_trait && item.name == "Iterator" {
+            let local = match item.alias {
+              Some(alias) => alias,
+              None => item.name
+            }
+            if !stmts_define_iterator_namespace_operation(stmts, local) {
+              // Import-alias rewriting canonicalizes `Iter::map` back to the
+              // provider's `Iterator::map` before dictionary desugaring.
+              Array::push(out, String::concat(builtin_iterator_origin_marker_prefix(), item.name))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Decode a compiler-only standard Iterator provenance marker.
+export fn builtin_iterator_namespace_from_marker(marker: String) -> Option[String] {
+  let prefix = builtin_iterator_origin_marker_prefix()
+  if String::starts_with(marker, prefix) && String::length(marker) > String::length(prefix) {
+    Some(String::substring(marker, String::length(prefix), String::length(marker)))
+  } else {
+    None
+  }
 }
 
 fn string_array_contains(items: Array[String], target: String) -> Bool {

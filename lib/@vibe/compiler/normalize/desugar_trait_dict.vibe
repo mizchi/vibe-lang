@@ -9,6 +9,8 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   __to_string,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_namespace_markers,
   expr_children,
   is_exception_effect_name,
   is_exception_throw_operation,
@@ -2629,8 +2631,48 @@ fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struc
 /// Devirtualize finite Iterator operations when the receiver is statically an
 /// Array. The public helper remains dictionary-based for user collections,
 /// while Array hot loops keep the same direct intrinsics as `Array::*`.
+let dtd_builtin_iterator_namespaces: Array[String] = array_empty()
+
+fn dtd_add_builtin_iterator_markers(markers: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(markers) {
+    match builtin_iterator_namespace_from_marker(Array::get(markers, i)) {
+      Some(namespace) => if !str_array_contains(dtd_builtin_iterator_namespaces, namespace) {
+        Array::push(dtd_builtin_iterator_namespaces, namespace)
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+fn dtd_builtin_iterator_reset(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dtd_builtin_iterator_namespaces, 0)
+  // Direct/single-source preprocessing still has its imports. FS merges erase
+  // them and restore the same fact at each SReExportSourceBoundary instead.
+  dtd_add_builtin_iterator_markers(builtin_iterator_namespace_markers(stmts))
+}
+
+fn dtd_builtin_iterator_set_boundary(markers: Array[String]) -> Unit {
+  Array::truncate(dtd_builtin_iterator_namespaces, 0)
+  dtd_add_builtin_iterator_markers(markers)
+}
+
 fn iterator_array_intrinsic(name: String, args: Array[Expr], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
-  if Array::length(args) == 0 {
+  let member = match split_qualified(name) {
+    Some(parts) => {
+      let (namespace, operation) = parts
+      if str_array_contains(dtd_builtin_iterator_namespaces, namespace) {
+        operation
+      } else {
+        ""
+      }
+    },
+    None => ""
+  }
+  if Array::length(args) == 0 || member == "" {
     None
   } else {
     // Constructor-aware inference covers result-bearing control flow such as
@@ -2644,17 +2686,17 @@ fn iterator_array_intrinsic(name: String, args: Array[Expr], gens: Array[DictGen
     }
     if !is_array {
       None
-    } else if name == "Iterator::map" {
+    } else if member == "map" {
       Some("Array::map")
-    } else if name == "Iterator::filter" {
+    } else if member == "filter" {
       Some("Array::filter")
-    } else if name == "Iterator::fold" {
+    } else if member == "fold" {
       Some("Array::fold")
-    } else if name == "Iterator::find" {
+    } else if member == "find" {
       Some("Array::find")
-    } else if name == "Iterator::any" {
+    } else if member == "any" {
       Some("Array::any")
-    } else if name == "Iterator::all" {
+    } else if member == "all" {
       Some("Array::all")
     } else {
       None
@@ -18993,6 +19035,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   // #2283: same discipline -- whether the assert lowering must stand down for
   // THIS program, because the program defines the name itself.
   user_assert_eq_reset(stmts)
+  dtd_builtin_iterator_reset(stmts)
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)
@@ -19062,7 +19105,10 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SReExportSourceBoundary(local_names, _) => user_assert_eq_set_merged_source(stmts, i + 1, local_names),
+      SReExportSourceBoundary(local_names, _) => {
+        user_assert_eq_set_merged_source(stmts, i + 1, local_names)
+        dtd_builtin_iterator_set_boundary(local_names)
+      },
       stmt => Array::set(stmts, i, rewrite_stmt(stmt, gens, traits, struct_sets, fn_returns, toplevel_vars))
     }
     i = i + 1
