@@ -1374,7 +1374,8 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
     fixtures/int_bit_primitives_test.vibe \
     fixtures/bytes_alloc_backend_parity_test.vibe \
     fixtures/bytes_index_of_bytes_test.vibe \
-    fixtures/bytes_index_of_byte_test.vibe; then
+    fixtures/bytes_index_of_byte_test.vibe \
+    fixtures/bytes_count_last_index_of_test.vibe; then
   echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
   exit 1
 fi

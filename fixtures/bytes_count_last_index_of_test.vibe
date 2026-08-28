@@ -1,0 +1,177 @@
+// `Bytes::count` and `Bytes::last_index_of` (#2345) -- the other two members of
+// the single-byte family, both on the same 16-byte SIMD scan as
+// `Bytes::index_of`.
+//
+// Import-free on purpose so the wasm-gc lane, which compiles one file as
+// self-contained, can run it.
+//
+// THE OUT-OF-RANGE BLOCKS ARE NOT PADDING. `i8x16.splat` takes the low 8 bits
+// of its operand, so a needle of 300 splats as 44 and a needle of -1 splats as
+// 255. `index_of` and `last_index_of` survive that because their mask only
+// picks WHERE a scalar loop starts, and that loop compares the full value --
+// the mask can cost a scan, never change an answer. `count` reads the mask AS
+// the answer (`popcnt` of it), so nothing downstream would catch a truncated
+// needle: `count(b, 300)` would silently return the number of commas. Its body
+// carries a `needle >>> 8 != 0` guard for exactly that, and these blocks are
+// what holds the guard in place.
+//
+// The sweep blocks compare against scalar oracles written here in vibe. They
+// exist because every bug these bodies can have is an off-by-one at a chunk
+// boundary or in the tail, and a fixture with hand-picked lengths checks only
+// the offsets its author thought of. The oracles are independent of the
+// builtins (`Bytes::get` loops, not second calls into them), so agreement is
+// evidence rather than tautology, and the blocks above still pin absolute
+// answers so a systematically wrong pair cannot agree its way to green.
+
+fn mk(s: String) -> Bytes {
+  let b = Bytes::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, String::char_code_at(s, i))
+    i = i + 1
+  }
+  b
+}
+
+/// Oracle for `count`: the loop a library had to write.
+fn count_scan(hay: Bytes, needle: Int) -> Int {
+  let n = Bytes::length(hay)
+  let mut i = 0
+  let mut c = 0
+  while i < n {
+    if Bytes::get(hay, i) == needle {
+      c = c + 1
+    }
+    i = i + 1
+  }
+  c
+}
+
+/// Oracle for `last_index_of`: forward scan keeping the newest hit, so it does
+/// not share a direction with the body it checks.
+fn last_scan(hay: Bytes, needle: Int) -> Int {
+  let n = Bytes::length(hay)
+  let mut i = 0
+  let mut r = -1
+  while i < n {
+    if Bytes::get(hay, i) == needle {
+      r = i
+    }
+    i = i + 1
+  }
+  r
+}
+
+/// `len` bytes of 'a', with the needle at every `every`-th index.
+fn spaced(len: Int, every: Int, needle: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < len {
+    if i % every == 0 {
+      Bytes::push(b, needle)
+    } else {
+      Bytes::push(b, 97)
+    }
+    i = i + 1
+  }
+  b
+}
+
+fn buf(len: Int, at: Int, needle: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < len {
+    if i == at {
+      Bytes::push(b, needle)
+    } else {
+      Bytes::push(b, 97)
+    }
+    i = i + 1
+  }
+  b
+}
+
+test "Bytes::count counts occurrences" {
+  inspect(Bytes::count(mk("hello world"), 108), "3")
+  inspect(Bytes::count(mk("hello world"), 111), "2")
+  inspect(Bytes::count(mk("hello world"), 122), "0")
+  inspect(Bytes::count(mk(""), 97), "0")
+  // 40 bytes, every 4th is the needle: indices 0,4,...,36
+  inspect(Bytes::count(spaced(40, 4, 122), 122), "10")
+  // spanning whole chunks and a partial tail
+  inspect(Bytes::count(spaced(35, 1, 122), 122), "35")
+}
+
+test "Bytes::count refuses a needle outside 0..255" {
+  // 300 & 0xFF == 44 == ','. Without the guard the SIMD phase would count the
+  // commas, because `count` reads the mask as the answer.
+  inspect(Bytes::count(mk("a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r"), 300), "0")
+  inspect(Bytes::count(mk("a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r"), 44), "17")
+  // -1 & 0xFF == 255. The buffer holds a real 255 byte, so a truncating
+  // implementation would answer 1.
+  let with_ff = Bytes::new()
+  Bytes::push(with_ff, 255)
+  Bytes::push(with_ff, 97)
+  inspect(Bytes::count(with_ff, 0 - 1), "0")
+  inspect(Bytes::count(with_ff, 255), "1")
+}
+
+test "Bytes::last_index_of finds the last occurrence" {
+  inspect(Bytes::last_index_of(mk("hello world"), 108), "9")
+  inspect(Bytes::last_index_of(mk("hello world"), 111), "7")
+  inspect(Bytes::last_index_of(mk("hello world"), 104), "0")
+  inspect(Bytes::last_index_of(mk("hello world"), 122), "-1")
+  inspect(Bytes::last_index_of(mk(""), 97), "-1")
+  inspect(Bytes::last_index_of(mk("abc"), 300), "-1")
+}
+
+test "Bytes::last_index_of across the 16-byte chunk boundary" {
+  // the only occurrence is below the last whole chunk
+  inspect(Bytes::last_index_of(buf(40, 5, 122), 122), "5")
+  // and inside it
+  inspect(Bytes::last_index_of(buf(40, 39, 122), 122), "39")
+  inspect(Bytes::last_index_of(buf(40, 24, 122), 122), "24")
+  // two occurrences in different chunks: the later one wins
+  let two = spaced(40, 20, 122)
+  inspect(Bytes::last_index_of(two, 122), "20")
+  inspect(Bytes::count(two, 122), "2")
+}
+
+test "both agree with their oracles at every length and offset" {
+  let mut bad_count = 0
+  let mut bad_last = 0
+  let mut len = 0
+  while len <= 40 {
+    let mut at = 0
+    while at <= len {
+      let h = buf(len, at, 122)
+      if Bytes::count(h, 122) != count_scan(h, 122) {
+        bad_count = bad_count + 1
+      }
+      if Bytes::last_index_of(h, 122) != last_scan(h, 122) {
+        bad_last = bad_last + 1
+      }
+      at = at + 1
+    }
+    // and a buffer with MANY hits at this length, which the single-needle
+    // sweep above never produces
+    let dense_len = if len == 0 {
+      1
+    } else {
+      len
+    }
+    let d = spaced(dense_len, 3, 122)
+    if Bytes::count(d, 122) != count_scan(d, 122) {
+      bad_count = bad_count + 1
+    }
+    if Bytes::last_index_of(d, 122) != last_scan(d, 122) {
+      bad_last = bad_last + 1
+    }
+    len = len + 1
+  }
+  inspect(bad_count, "0")
+  inspect(bad_last, "0")
+  // the sweep really ran, so "0 mismatches" is not "0 comparisons"
+  inspect(len, "41")
+}

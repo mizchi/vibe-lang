@@ -1734,6 +1734,8 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
 | `Bytes::slice(b, start, end)` | subsequence | linear / gc |
 | `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
+| `Bytes::last_index_of(hay, byte)` | last index holding `byte`, or `-1`. Same scan, downwards | linear / gc |
+| `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
 | `Bytes::index_of_bytes(hay, needle)` | first index of the `needle` **subsequence**, or `-1`. An empty needle answers `0` | linear / gc |
 | `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
@@ -1751,8 +1753,17 @@ via `memory.copy`, so `push` is amortised O(1)):
 > `str_eq`, and a byte is not a span, so each has its own body. A needle
 > outside `0..255` answers `-1`.
 >
-> `Bytes::last_index_of` / `count` / `compare` are still unimplemented —
-> measured, calling one is `unknown name`.
+> All three single-byte searches answer for a needle outside `0..255`: `-1`,
+> `-1`, and `0`. `count` needs a guard in its body to do so and the other two do
+> not, which is worth knowing if you write a fourth: `i8x16.splat` keeps only
+> the low 8 bits, so the vector mask for `300` is the mask for `,`. `index_of`
+> and `last_index_of` use that mask only to pick where a scalar loop starts,
+> and that loop compares the full value — the mask can cost a scan, never
+> change an answer. `count` reads the mask AS the answer (`popcnt`), so it
+> checks the needle's range up front instead.
+>
+> `Bytes::compare` is still unimplemented — measured, calling it is
+> `unknown name`.
 >
 > Against a 4 KiB buffer, `Bytes::index_of` measures **96× the hand-written
 > `Bytes::get` loop** it replaces and 1.6× the native scalar `String::index_of`
