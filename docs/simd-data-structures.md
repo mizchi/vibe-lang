@@ -412,15 +412,22 @@ at zero allocation, and no `String::index_of_from` builtin is needed. Measured:
 `String::split` over 512 / 1024 / 2048 lines costs 23.3 / 45.5 / 92.3 µs —
 linear in the number of separators.
 
-**Nothing in `lib/**` may declare a name the builtin registry owns.** A
+**A library must not re-implement a kernel under the builtin's own name.** A
 top-level `fn X::y` replaces the builtin named `X::y` for the whole linked
 program, including at call sites in files that never imported it
-([#2378](https://github.com/mizchi/vibe-lang/issues/2378)). A scalar
-re-implementation in a library is therefore not a second implementation
-alongside the kernel — it *is* the one that runs, for every dependent.
-Measured: `import @vibe/builtin { String::trim }` alone moved a sparse
-`String::index_of` from 0.8 µs to 174 µs (~218×). #2378 is where the
-diagnostic for it belongs.
+([#2378](https://github.com/mizchi/vibe-lang/issues/2378)). Such a
+re-implementation is therefore not a second implementation alongside the
+kernel — it *is* the one that runs, for every dependent. Measured: `import
+@vibe/builtin { String::trim }` alone moved a sparse `String::index_of` from
+0.8 µs to 174 µs (~218×).
+
+Two names in `lib/@vibe/builtin/string.vibe` still shadow their builtins,
+deliberately: `String::equals` and `String::trim`. Both were measured
+equivalent to the builtin (20/20 answers, including tab/LF/CR/VT/FF padding
+and the equality edge cases) and performance-neutral, so what runs is the same
+work under a different symbol. The six search functions were neither, which is
+what made them worth removing. Nothing enforces the rule — #2378 is where the
+diagnostic belongs.
 
 Cost of the routing, net of haystack construction
 (`bench/bench_string_scan_routing.vibe`, p50):
