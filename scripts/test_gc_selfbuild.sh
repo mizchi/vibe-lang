@@ -318,6 +318,7 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/int_bit_primitives_test.vibe \
     fixtures/bytes_alloc_backend_parity_test.vibe \
     fixtures/gc_handle_aggregate_test.vibe \
+    fixtures/trait_namespace_operation_test.vibe \
     fixtures/constructor_indexed_map_gc_test.vibe \
     fixtures/constructor_indexed_async_iter_gc_test.vibe > "$gcfx_log" 2>&1; then
   sed 's/^/[gc-selfbuild]   /' "$gcfx_log"

@@ -1,5 +1,8 @@
 import @vibe/compiler/normalize {
-  derive_trait_namespace_operations, desugar_trait_dicts
+  collect_trait_namespace_conflict_errors,
+  collect_undispatchable_trait_method_errors,
+  derive_trait_namespace_operations,
+  desugar_trait_dicts
 }
 
 import @vibe/compiler/checker {
@@ -43,6 +46,39 @@ test "#2357: derived constructor operation preserves its kinded bound" {
 test "#2357: deriving an operation does not bind its bare name" {
   let source = "trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nlet operation = measure"
   inspect(String::contains(check_source_error_message(source), "unknown name: measure"), content = "true")
+}
+
+test "#2357: a manual binding cannot replace a derived trait operation" {
+  let source = "trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nfn Measurable::measure(_value: Int) -> Int { 0 }\nlet answer = Measurable::measure(42)"
+  inspect(check_source_error_message(source), "remove declaration `Measurable::measure`: trait operations are generated from `trait Measurable`")
+}
+
+test "#2357: the generated forwarding shape remains idempotent" {
+  let source = "trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nfn Measurable::measure[T: Measurable](value: T) -> Int { T::measure(value) }\nlet answer = Measurable::measure(42)"
+  inspect(check_source_error_message(source), "")
+}
+
+test "#2357: a subtrait namespace includes inherited operations" {
+  let source = "trait Measurable { measure(Self) -> Int }\ntrait Sized: Measurable { bump(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }\nlet answer = Sized::measure(20) + Sized::bump(20)"
+  inspect(check_source_error_message(source), "")
+}
+
+test "#2357: inherited namespace operations preserve method generics" {
+  let source = "trait Converter { convert[A](Self, A) -> A }\ntrait Sized: Converter { bump(Self) -> Int }\nimpl Converter for Int { convert(self: Int, value) -> A { let _ = self; value } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }\nlet answer: String = Sized::convert(20, \"ok\")"
+  inspect(check_source_error_message(source), "")
+}
+
+test "#2357: marker supertrait cycles do not recurse during namespace derivation" {
+  inspect(check_source_error_message("trait Loop: Loop"), "")
+}
+
+test "#2357: lowered generated operations are not source conflicts" {
+  let source = "trait Measurable { measure(Self) -> Int }\ntrait Sized: Measurable { bump(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }\nlet answer = Sized::measure(20) + Sized::bump(20)"
+  let stmts = parse_program(lex(source))
+  let env = check_program(stmts)
+  desugar_trait_dicts(stmts)
+  inspect(Array::length(collect_trait_namespace_conflict_errors(stmts, env)), "0")
+  inspect(Array::length(collect_undispatchable_trait_method_errors(stmts, env)), "0")
 }
 
 test "#2357: namespace operations require a recoverable witness carrier" {
