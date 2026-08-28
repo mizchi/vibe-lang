@@ -22,3 +22,26 @@ test "inline Iterator map devirtualizes before codegen" {
   assert(String::contains(rewritten, "Array::map"))
   assert(!String::contains(rewritten, "Iterator::map"))
 }
+
+test "inline source boundaries retain plain re-export builtin blockers" {
+  let main_source = "export ./dep.vibe { assert_eq }\nfn answer() -> Int { assert_eq(1, 2) }"
+  let merged = closure_merged_stmts(main_source, "main.vibe", [
+    ("dep.vibe", "export fn assert_eq(a: Int, b: Int) -> Int { a + b }")
+  ])
+  desugar_trait_dicts(merged)
+  let rewritten = print_program(merged)
+  assert(String::contains(rewritten, "answer = () -> Int { assert_eq(1, 2) }"))
+  assert(!String::contains(rewritten, "assert_eq failed"))
+}
+
+test "inline merge publishes renamed provider-qualified trait helpers" {
+  let dep_source = "import @vibe/builtin { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"
+  let main_source = "import ./dep.vibe { Iterator::map }\nfn answer() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x }), 0) }"
+  let merged = closure_merged_stmts(main_source, "main.vibe", [
+    ("@vibe/builtin.vibe", "export trait Iterator[T]"),
+    ("dep.vibe", dep_source)
+  ])
+  let rewritten = print_program(merged)
+  assert(String::contains(rewritten, "__local_trait_Iterator::map_exp_dep_vibe ="))
+  assert(String::contains(rewritten, "Array::get(__local_trait_Iterator::map_exp_dep_vibe("))
+}

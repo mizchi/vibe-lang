@@ -41,6 +41,20 @@ test "runtime merges preserve Iterator optimization provenance" {
   assert_serialized_iterator_provenance(grouped_module_source)
 }
 
+test "runtime source caches preserve re-export builtin blockers" {
+  let dep = "export fn assert_eq(a: Int, b: Int) -> Int { a + b }"
+  let main = "export ./dep.vibe { assert_eq }\nfn answer() -> Int { assert_eq(1, 2) }"
+  let (merged, _, _) = db_merged_source(db_new(), "main.vibe", [
+    ("dep.vibe", dep),
+    ("main.vibe", main)
+  ])
+  let stmts = parse_program(lex(merged))
+  desugar_trait_dicts(stmts)
+  let rewritten = print_program(stmts)
+  assert(String::contains(rewritten, "answer = () -> Int { assert_eq(1, 2) }"))
+  assert(!String::contains(rewritten, "assert_eq failed"))
+}
+
 test "serialized Iterator provenance resets at every source boundary" {
   let imported = "import @vibe/builtin { trait Iterator }\nlet imported_map = Iterator::map([1], (x: Int) -> Int { x + 1 })"
   let local = "fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local_map = Iterator::map([1], (x: Int) -> Int { x + 1 })"
