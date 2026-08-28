@@ -1,5 +1,5 @@
 import ./checker_parity_test_support.vibe {
-  check_source_error_message, check_source_located_err_contains
+  check_source_error_message, check_source_located_err_contains, check_source_ok
 }
 
 import @vibe/compiler/core {
@@ -162,4 +162,38 @@ test "a kinded effect application accepts a user constructor" {
 test "a kinded effect application accepts a constructor formal" {
   let source = "effect Read[F[_]] {\n  Get() -> F[Int]\n}\nfn f[G[_]]() -> Int with Read[G] {\n  0\n}"
   inspect(check_source_error_message(source), "")
+}
+
+test "a kinded bound replaces an applied constructor head" {
+  let source = "trait Accepts[A] { accept(A) -> Int }\nimpl Accepts[Array[Int]] for Array { accept(xs: Array[Int]) -> Int { Array::length(xs) } }\nfn accept[F[_]: Accepts[F[Int]]](xs: F[Int]) -> Int { F::accept(xs) }\nlet answer = accept([1])"
+  inspect(check_source_error_message(source), "")
+}
+
+test "an applied bound through a constructor alias instantiates" {
+  let source = "type Apply[F[_], A] = F[A]\ntrait Accepts[A] { accept(A) -> Int }\nimpl Accepts[Array[Int]] for Array { accept(xs: Array[Int]) -> Int { Array::length(xs) } }\nfn accept[F[_]: Accepts[Apply[F, Int]]](xs: F[Int]) -> Int { F::accept(xs) }\nlet answer = accept([1])"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a missing constructor-indexed instance fails during checking" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nstruct Box[T] { value: T }\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nlet bad = map(Box::{ value: 1 }, (x) -> { x + 1 })"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "no impl `Mappable[Box]` for `Box/1`"))
+  assert(!String::contains(message, "reached code generation unresolved"))
+}
+
+test "a user-defined constructor-indexed instance satisfies its bound" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nstruct Box[T] { value: T }\nimpl Mappable[Box] for Box { map(xs: Box[A], f: (A) -> B) -> Box[B] { Box::{ value: f(xs.value) } } }\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nlet mapped = map(Box::{ value: 1 }, (x) -> { x + 1 })"
+  assert(check_source_ok(source))
+}
+
+test "a user-defined enum constructor-indexed instance satisfies its bound" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nenum Slot[T] { Full(T) }\nimpl Mappable[Slot] for Slot { map(xs: Slot[A], f: (A) -> B) -> Slot[B] { match xs { Full(value) => Full(f(value)) } } }\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nlet mapped = map(Full(1), (x) -> { x + 1 })"
+  assert(check_source_ok(source))
+}
+
+test "duplicate constructor-indexed instances fail during checking" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nimpl Mappable[Array] for Array { map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) } }\nimpl Mappable[Array] for Array { map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) } }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "duplicate declaration: Array$impl$"))
+  assert(!String::contains(message, "reached code generation unresolved"))
 }

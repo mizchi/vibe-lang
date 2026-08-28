@@ -2720,7 +2720,7 @@ suspend CPS split が「closure パラメータの呼び出し」を無条件拒
   対象にする — 意図的な過剰拒否)。needing 名の参照 (call でも値でも)、
   `__scps_`/`__Scps` 名前空間への参照 (phase 2 prepass が step 化した機械が
   引数内にある = suspend する)、不透明 callee、nested handle も taint。
-- **委譲** (`async_iter_any` → `async_iter_find` 転送形): site の実引数が
+- **委譲** (`AsyncIter::any` → `AsyncIter::find` 転送形): site の実引数が
   囲む top-level fn 自身の row-free param なら、その slot を再帰的に証明する
   (`scps_param_slot_inert`、循環は coinductive に inert 扱い)。fn 本体の
   どこかで同名が再束縛されていたら保守的に降りる。
@@ -2741,7 +2741,7 @@ suspend CPS split が「closure パラメータの呼び出し」を無条件拒
 fixtures: `effect_closure_param_inert.vibe` (want 5)、
 `effect_closure_param_inert_transitive_test.vibe` (委譲形、want 5)、
 `err_effect_closure_param_taint.vibe` (1 site が perform する literal を渡す
-→ 拒否維持)。これで `async_iter_find` / `_any` / `_all` が suspend body から
+→ 拒否維持)。これで `AsyncIter::find` / `AsyncIter::any` / `AsyncIter::all` が suspend body から
 呼べる。
 
 ### Update 41 (2026-08-20): the eager Stream retarget is retired (#1954)
@@ -2759,7 +2759,7 @@ the nominal `ByteStream` surface, while host-owned reads remain on the separate
 `ELet(__iter_src, .., ELetMut(.., ELetMut(.., EWhile)))` 1 式に落ち、文位置の
 `for` ではそれが `ESeq(<for 機械>, rest)` の HEAD に置かれる。手書きの
 while+let-mut spine (適格) と脱糖出力の差はこの木の左右バランスだけで、
-`async_iter_collect` / `_fold` / `_count` (と suspend body 内のあらゆる非末尾
+`AsyncIter::collect` / `AsyncIter::fold` / `AsyncIter::count` (と suspend body 内のあらゆる非末尾
 `for`、brace block 文) が実質これだけで塞がっていた (#1536 の残りの名指し被害)。
 
 `scps_split_tail` の ESeq arm に let-floating を足した:

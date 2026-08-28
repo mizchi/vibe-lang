@@ -29,7 +29,7 @@ const validTrace = {
       checked_env_fingerprint: "32:1:2",
       checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)",
       persistent_type_env_transport_fingerprint: "33:1:2",
-      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v7 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
+      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
       decision: "reused",
     },
   ],
@@ -243,7 +243,7 @@ test("shadow planner keeps implementation edits local and propagates interface e
   assert.deepEqual(planObservedTypingInvalidation(before, removedEdgeAfter), ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"]);
 });
 
-test("private dependency classifier is explicit, fail-closed, and reports TypeEnv-v7 separately", () => {
+test("private dependency classifier is explicit, fail-closed, and reports TypeEnv-v9 separately", () => {
   const before = plannerTrace();
   const after = plannerTrace({
     source: { "/p/library.vibe": "source:library:private-edit" },

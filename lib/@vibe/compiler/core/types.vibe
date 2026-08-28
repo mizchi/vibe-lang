@@ -5,7 +5,7 @@ import ./ast.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_from_key, trait_ref_name, type_param_arity, type_param_name
+  trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./exception_effect.vibe {
@@ -73,7 +73,8 @@ export enum TypeDef {
 }
 
 /// Checker-internal authority for where a value binding was resolved.
-/// Persistent/public TypeEnv transport intentionally drops this payload.
+/// Module publication and persistent TypeEnv transport preserve this payload
+/// so semantic provenance survives facade and cache hops.
 export enum BindingOrigin {
   BindingOriginUnavailable;
   BindingOriginModuleExport(String, String);
@@ -297,6 +298,127 @@ export fn env_type_defs(env: TypeEnv) -> Array[TypeDef] {
     }
   }
   out
+}
+
+fn type_definition_origin_marker(name: String) -> String {
+  String::concat("#typedef-origin:", name)
+}
+
+/// Origin carried beside the nearest declaration node for `name`.
+///
+/// The marker is an internal binding with a spelling source programs cannot
+/// name. It preserves semantic provenance for private declaration-closure
+/// entries without making those entries selectable imports. Stopping at the
+/// first matching EnvTypeDefs node keeps a nearer user declaration from
+/// inheriting an older module origin with the same name.
+export fn env_type_definition_origin(env: TypeEnv, name: String) -> Option[BindingOrigin] {
+  let marker = type_definition_origin_marker(name)
+  let mut cur = env
+  let mut pending = None
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, binding, rest) => {
+        if n == marker || n == name {
+          match binding.origin {
+            BindingOriginUnavailable => (),
+            origin => {
+              pending = Some(origin)
+            }
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(defs, _, rest) => match find_typedef(defs, name) {
+        Some(_) => {
+          result = pending
+          done = true
+        },
+        None => {
+          pending = None
+          cur = rest
+        }
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  result
+}
+
+fn source_type_definition_origin(env: TypeEnv, name: String) -> Option[BindingOrigin] {
+  match env_type_definition_origin(env, name) {
+    Some(origin) => Some(origin),
+    None => match env_lookup_binding(env, name) {
+      Some(binding) => match binding.origin {
+        BindingOriginUnavailable => None,
+        origin => Some(origin)
+      },
+      None => None
+    }
+  }
+}
+
+fn type_definition_name(def: TypeDef) -> String {
+  match def {
+    TDEnum(name, _, _) => name,
+    TDStruct(name, _, _, _) => name,
+    TDAlias(name, _, _) => name,
+    TDEffect(name, _, _) => name,
+    TDEffectSet(name, _) => name
+  }
+}
+
+/// Copy declaration provenance from `source` into every declaration node in
+/// `env` while leaving its public/selectable surface unchanged.
+export fn env_preserve_type_definition_origins(env: TypeEnv, source: TypeEnv) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => EnvBind(name, binding, env_preserve_type_definition_origins(rest, source)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, env_preserve_type_definition_origins(rest, source), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_preserve_type_definition_origins(rest, source)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_preserve_type_definition_origins(rest, source)),
+    EnvTypeDefs(defs, selectable, rest) => {
+      let mut out = EnvTypeDefs(defs, selectable, env_preserve_type_definition_origins(rest, source))
+      let mut i = Array::length(defs) - 1
+      while i >= 0 {
+        let name = type_definition_name(Array::get(defs, i))
+        match source_type_definition_origin(source, name) {
+          Some(origin) => {
+            out = EnvBind(type_definition_origin_marker(name), env_value_binding_with_origin(CtUnknown, origin), out)
+          },
+          None => ()
+        }
+        i = i - 1
+      }
+      out
+    },
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_preserve_type_definition_origins(rest, source)),
+    EnvFlat(bindings) => EnvFlat(bindings),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, env_preserve_type_definition_origins(rest, source))
+  }
 }
 
 /// Names explicitly published for selected import. The declaration closure
@@ -1042,6 +1164,67 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
   result
 }
 
+/// Look up a binding without hiding a re-export-surface entry. Import
+/// projection uses this to carry the ultimate module/name provenance across a
+/// facade while ordinary value lookup continues to treat that entry as a
+/// local-scope blocker.
+export fn env_lookup_binding_including_surface(env: TypeEnv, name: String) -> Option[EnvValueBinding] {
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, binding, rest) => if String::equals(n, name) {
+        result = Some(binding)
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) && !done {
+          let (n, binding) = Array::get(bindings, i)
+          if String::equals(n, name) {
+            result = Some(binding)
+            done = true
+          } else {
+            i = i + 1
+          }
+        }
+        done = true
+      },
+      EnvCached(names_sorted, types_sorted, rest) => {
+        let slot = bsearch_leftmost(names_sorted, name)
+        if slot >= 0 {
+          result = Some(Array::get(types_sorted, slot))
+          done = true
+        } else {
+          cur = rest
+        }
+      }
+    }
+  }
+  result
+}
+
 export fn env_bind_all(env: TypeEnv, bindings: Array[(String, Type)]) -> TypeEnv {
   let len = Array::length(bindings)
   let mut i = 0
@@ -1187,6 +1370,27 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
     EnvTypeDefs(_, _, rest) => trait_supers(rest, name),
     EnvFlat(_) => empty,
     EnvCached(_, _, rest) => trait_supers(rest, name)
+  }
+}
+
+/// Return the declaration payload retained for an imported trait. The value
+/// namespace is derived from this authority, so importing a trait does not
+/// need to import each `Trait::operation` as a separate value.
+export fn trait_definition(env: TypeEnv, name: String) -> Option[(Array[String], Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(String, Array[String], Array[(String, Array[String])])])] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => trait_definition(rest, name),
+    EnvTraitDef(tname, supers, _, methods, rest, params, method_gens) => if tname == trait_ref_name(name) {
+      Some((supers, methods, params, method_gens))
+    } else {
+      trait_definition(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => trait_definition(rest, name),
+    EnvMutCell(_, _, rest) => trait_definition(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_definition(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_definition(rest, name),
+    EnvFlat(_) => None,
+    EnvCached(_, _, rest) => trait_definition(rest, name)
   }
 }
 
@@ -2655,6 +2859,72 @@ fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
   }
 }
 
+fn trait_bound_vid_prefix() -> String {
+  "#tpvid."
+}
+
+fn parse_trait_bound_vid(name: String) -> Option[Int] {
+  let prefix = trait_bound_vid_prefix()
+  if !String::starts_with(name, prefix) {
+    None
+  } else {
+    let rest = String::substring(name, String::length(prefix), String::length(name))
+    if String::length(rest) == 0 {
+      None
+    } else {
+      let mut i = 0
+      let mut n = 0
+      let mut ok = true
+      while i < String::length(rest) && ok {
+        let c = String::char_code_at(rest, i)
+        if c >= '0' && c <= '9' {
+          n = n * 10 + c - '0'
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(n)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn remap_trait_bound_vid_expr(te: TypeExpr, id_map: Array[(Int, Int)]) -> TypeExpr {
+  match te {
+    TyName(name) => match parse_trait_bound_vid(name) {
+      Some(old_id) => TyName(String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0)))),
+      None => te
+    },
+    TyApp(name, args) => {
+      let head = match parse_trait_bound_vid(name) {
+        Some(old_id) => String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0))),
+        None => name
+      }
+      TyApp(head, for arg in args {
+        remap_trait_bound_vid_expr(arg, id_map)
+      })
+    },
+    TyTuple(items) => TyTuple(for item in items {
+      remap_trait_bound_vid_expr(item, id_map)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      remap_trait_bound_vid_expr(param, id_map)
+    }, remap_trait_bound_vid_expr(ret, id_map), effect),
+    TyUnit => TyUnit
+  }
+}
+
+fn remap_trait_bound_vids(key: String, id_map: Array[(Int, Int)]) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => trait_ref_key(remap_trait_bound_vid_expr(reference, id_map)),
+    None => key
+  }
+}
+
 export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
   match ty {
     CtForAll(bound_vars, var_bounds, body) => {
@@ -2696,7 +2966,10 @@ export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String]
       for var_bound in var_bounds {
         let (old_id, bounds) = var_bound
         let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
-        Array::push(new_bounds, (new_id, bounds))
+        let remapped = for bound in bounds {
+          remap_trait_bound_vids(bound, id_map2)
+        }
+        Array::push(new_bounds, (new_id, remapped))
       };
       let inst_body = subst_apply(inst_s, body)
       // #626 criterion 4: freshen the scheme's effect variables so each use site
@@ -4031,6 +4304,14 @@ fn erased_impl_ctor_matches(target: Type, resolved: Type) -> Bool {
   let head = type_constructor_name(resolved)
   match target {
     CtNamed(tname, targs) => Array::length(targs) == 0 && head != "" && tname == head,
+    // A bare user-defined generic head is retained as its nominal declaration
+    // node in an impl target, while constructor inference resolves the use
+    // site to CtConstructor after #2337. Both denote the same erased family.
+    CtStruct(tname) => head != "" && tname == head,
+    CtEnum(tname) => head != "" && tname == head,
+    // Keep this arm for already-reified constructor targets (for example a
+    // target reconstructed from a checked artifact).
+    CtConstructor(tname, _) => head != "" && tname == head,
     _ => false
   }
 }

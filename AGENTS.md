@@ -81,8 +81,9 @@ types that have `Eq` (`Int`, `String`, a `derive(Eq)` struct) and is
 That is a diagnostic, not silent-wrong, and it is the deliberate gate that
 stays until ADR-0097 is done. `fixtures/structural_eq_contexts_test.vibe`
 holds the regression. The cheatsheet's "`==` on `Array` / `Bytes` (#1526)" is
-the full contract), eager `Array::*` plus a pull `AsyncIter` as two layers of
-iteration (ADR-0099, #1559), and `Exception` as the truth with `Error`
+the full contract), pipeline combinators over `F[_]` (ADR-0110) with eager
+Array plus pull `AsyncIter` as two execution layers (ADR-0099, #1559), and
+`Exception` as the truth with `Error`
 deprecated at the 1.0 freeze (ADR-0085, #1564). Code examples in `docs/` are
 checked by doctest against the current compiler — the spec and the
 implementation do not get to disagree.

@@ -37,6 +37,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 OUT_DIR="${VIBE_CLI_CORE_OUT_DIR:-$PROJECT_ROOT/_build/bench/selfhost_cli_core}"
 ENTRY_PATH="${ENTRY_PATH:-$PROJECT_ROOT/lib/@vibe/cli/main.vibex}"
 STAGE1_CORE_WASM="${STAGE1_CORE_WASM:-$OUT_DIR/index_stage1.wasm}"
+HEADER_CACHE_WARM_OUTPUT="$OUT_DIR/header_cache_warm.deps"
 HOST_MODE="${VIBE_CLI_CORE_HOST_MODE:-debug}"
 REBUILD_MODE="${VIBE_CLI_CORE_REBUILD:-auto}"
 STAGE_TIMEOUT_SEC="${VIBE_CLI_CORE_STAGE_TIMEOUT_SEC:-300}"
@@ -172,6 +173,36 @@ if [ ! -f "$BASE_COMPILER" ]; then
   echo "build-selfhost-cli-core: base compiler not found: $BASE_COMPILER" >&2
   exit 1
 fi
+
+# The split CLI is the largest import graph compiled by this script. On a cold
+# checkout, retaining every parsed header while the full bodies are prepared
+# makes the cold RC path trap with a wasm OOB before codegen.
+# Ask the same loader for the dependency closure first: this populates its
+# persistent, source-fingerprinted module-header cache without inventing a
+# second graph, and the following compile then loads the cached headers.
+echo "[selfhost-cli-core] warm persistent module-header cache" >&2
+rm -f "$HEADER_CACHE_WARM_OUTPUT" "$HEADER_CACHE_WARM_OUTPUT.diag"
+set +e
+VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=0 VIBE_DEPS=1 \
+  VIBE_DEPS_DIRECT=0 VIBE_IMPORT_ABI=raw \
+  run_with_timeout "$STAGE_TIMEOUT_SEC" \
+  bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \
+  --invoke cli_main \
+  "$BASE_COMPILER" \
+  "$(rel_path "$ENTRY_PATH")" \
+  "$(rel_path "$HEADER_CACHE_WARM_OUTPUT")" >/dev/null
+status=$?
+set -e
+if [ -s "$HEADER_CACHE_WARM_OUTPUT.diag" ]; then
+  cat "$HEADER_CACHE_WARM_OUTPUT.diag" >&2
+fi
+if [ "$status" -eq 124 ]; then
+  echo "[selfhost-cli-core] timeout: warming persistent module-header cache (${STAGE_TIMEOUT_SEC}s)" >&2
+fi
+if [ "$status" -ne 0 ]; then
+  exit "$status"
+fi
+rm -f "$HEADER_CACHE_WARM_OUTPUT" "$HEADER_CACHE_WARM_OUTPUT.diag"
 
 echo "[selfhost-cli-core] base selfhost compiler -> stage1 selfhost CLI core wasm" >&2
 set +e

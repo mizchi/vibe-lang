@@ -6,7 +6,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "[compiler-gate] selfhost split CLI core"
-VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" VIBE_RC=1 bash scripts/test_cli_core.sh
+# On a clean Linux checkout, header discovery for this import graph retains
+# about 1.03 GB and the cold RC path traps before codegen. build_cli_core first
+# warms the source-fingerprinted header cache, reducing that phase to about
+# 189 MB. The subsequent compile still peaks at about 4.18 GB, so reserve its
+# measured wasm32 space up front for this build only; test_cli_core deliberately
+# does not pass it to the smaller consumer invocations.
+VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" \
+  VIBE_CLI_CORE_BUILD_PRE_GROW_PAGES=65000 \
+  VIBE_RC=1 \
+  bash scripts/test_cli_core.sh
 
 echo "[compiler-gate] FS heap mark lane smoke"
 heapmarkdir="_build/_gate_fs_heap_marks"
