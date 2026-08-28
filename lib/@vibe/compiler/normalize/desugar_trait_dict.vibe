@@ -3988,9 +3988,43 @@ fn constructor_op_name_matches(name: String, op: String) -> Bool {
   }
 }
 
+fn constructor_handler_consumes_op(arms: Array[(Pat, Expr)], op: String) -> Bool {
+  let mut i = 0
+  let mut consumes = false
+  while i < Array::length(arms) && !consumes {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(name, _) => {
+        consumes = constructor_op_name_matches(name, op)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  consumes
+}
+
 fn collect_constructor_perform_payloads(expr: Expr, op: String, payload_index: Int, out: Array[Option[String]], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
   match expr {
-    EHandle(_, _) => (),
+    EHandle(body, arms) => {
+      // A nested handler is a boundary only for operations it actually
+      // consumes. Unhandled operations propagate to the enclosing handler,
+      // so their constructor payload evidence must cross this scope too.
+      if constructor_handler_consumes_op(arms, op) {
+        ()
+      } else {
+        collect_constructor_perform_payloads(body, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
+      }
+      // Operations performed by a handler clause are outside the handled
+      // body and can still reach an enclosing handler.
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_vars = constructor_handler_arm_var_types(body, pat, gens, struct_sets, var_types, fn_returns)
+        collect_constructor_perform_payloads(arm_body, op, payload_index, out, gens, struct_sets, arm_vars, fn_returns)
+        i = i + 1
+      }
+    },
     EFn(_, _, _, _, _, _) => (),
     ELet(name, val, body, _) => {
       collect_constructor_perform_payloads(val, op, payload_index, out, gens, struct_sets, var_types, fn_returns)
