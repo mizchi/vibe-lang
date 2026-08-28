@@ -1167,9 +1167,40 @@ fn afe_op_name_matches(name: String, op: String) -> Bool {
   name == op || String::ends_with(name, String::concat("::", op)) || String::ends_with(op, String::concat("::", name))
 }
 
+fn afe_handler_consumes_op(arms: Array[(Pat, Expr)], op: String) -> Bool {
+  let mut i = 0
+  let mut consumes = false
+  while i < Array::length(arms) && !consumes {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(name, _) => if afe_op_name_matches(name, op) {
+        consumes = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  consumes
+}
+
 fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env: TypeEnv, locals: Array[(String, String)], out: Array[Option[String]]) -> Unit {
   match expr {
-    EHandle(_, _) => (),
+    EHandle(body, arms) => {
+      if !afe_handler_consumes_op(arms, op) {
+        afe_collect_perform_payloads(body, op, payload_index, env, locals, out)
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_locals = afe_handler_arm_locals(body, pat, env, locals)
+        afe_collect_perform_payloads(arm_body, op, payload_index, env, arm_locals, out)
+        i = i + 1
+      }
+    },
     EFn(_, _, _, _, _, _) => (),
     ELet(name, val, body, _) => {
       afe_collect_perform_payloads(val, op, payload_index, env, locals, out)
