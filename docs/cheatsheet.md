@@ -2268,18 +2268,21 @@ So redefining `eq` or `println` in a package does not reach that package's
 users. Treat that as today's behaviour rather than a rule: it is an observed
 property of the resolver, and #2378 is where the intended one gets decided.
 
-This is not hypothetical: until #2378 `lib/@vibe/builtin/string.vibe` carried
-scalar re-implementations of six SIMD builtins, so `import @vibe/builtin {
-String::trim }` -- one unrelated name -- replaced `String::index_of`,
-`String::contains`, `String::split`, `String::starts_with`,
-`String::ends_with` and `String::last_index_of` everywhere in the importing
-program. Those bodies are gone; the names stay importable as bodyless
-declarations on the package surface. A sparse `String::index_of` over a 22 KiB haystack cost **0.8 us
-without that import and 174 us with it (~218x)**, and `String::split(s, "")`
-changed from a hard trap into `[s]`. Those definitions are gone;
-`scripts/check_builtin_shadowing.sh` fails the build if `lib/**` grows a new
-one (the exemptions that predate the gate are pinned inside that script, so
-widening the set takes a diff to the checker itself).
+The cost is not theoretical. A scalar re-implementation of a SIMD builtin in a
+library is not a second implementation alongside it — it is the one that runs,
+for every dependent. Measured on a 22 KiB haystack with one match: a sparse
+`String::index_of` costs **0.8 us** against the builtin and **174 us** (~218x)
+against a library `fn` of the same name that some other file in the program
+happened to define. The answers can differ too, not just the speed:
+`String::split(s, "")` trapped on one and returned `[s]` on the other.
+
+`scripts/check_builtin_shadowing.sh` fails the build if `lib/**` declares a
+name the builtin registry owns. The exemptions that predate it are pinned
+inside that script, so widening the set takes a diff to the checker itself.
+A compiler-provided name can still be published from a package without
+defining it — a bodyless declaration on the export surface, the shape
+`String::utf8_length` uses — so `import @vibe/builtin { String::split }`
+resolves without anything shadowing the builtin.
 
 ### A `handle` that type-checks can still fail to compile
 

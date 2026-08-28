@@ -298,6 +298,48 @@ else
 fi
 
 
+# --- Case 12: strings and comments are not declarations --------------------
+# The scan matches raw characters, so without stripping lexical trivia a line
+# like `let diagnostic = "write fn String::index_of ..."` is reported as a
+# program-wide override -- a false FAIL on a required gate, from a file that
+# declares only `diagnostic`.
+mkdir -p "$tmp/lib12/pkg"
+cat > "$tmp/lib12/pkg/trivia.vibe" <<'VEOF'
+let diagnostic = "write fn String::index_of to override it"
+
+export fn ordinary(n: Int) -> Int {
+  n + 1
+}
+
+// a comment mentioning fn String::split must not count either
+let other = 1 // trailing: let String::contains
+VEOF
+run_gate "$tmp/lib12" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 12: a builtin name inside a string or comment was reported as a shadow"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 12 ok: strings and comments do not declare anything"
+fi
+
+# The other direction: stripping trivia must not blind the scan to a real
+# declaration that shares the line with a string.
+cat >> "$tmp/lib12/pkg/trivia.vibe" <<'VEOF'
+
+let note = "harmless" fn String::last_index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+run_gate "$tmp/lib12" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 12b: a real shadow sharing a line with a string was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::last_index_of'; then
+  bad "case 12b: the finding does not name String::last_index_of:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 12b ok: a declaration after a string is still caught"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "[shadow-gate-test] $fail case(s) failed" >&2
   exit 1

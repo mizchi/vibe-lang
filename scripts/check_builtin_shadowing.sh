@@ -162,11 +162,36 @@ fi
 # and optionally behind `export`.
 while IFS= read -r f; do
   awk -v path="$f" '
+    # Drop string literals and line comments before anything looks at the text.
+    # The scan below matches on raw characters, so without this a line like
+    #   let diagnostic = "write fn String::index_of to override it"
+    # or a trailing `// ... let String::contains ...` is reported as a
+    # program-wide override -- a false FAIL on a required gate, from a file
+    # that declares only `diagnostic`.
+    function strip_trivia(s,   out, i, c, n, in_str) {
+      out = ""
+      in_str = 0
+      n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (in_str) {
+          if (c == "\\") { i++; continue }        # escape: skip the next char
+          if (c == "\"") { in_str = 0 }
+          continue                                # string bodies contribute nothing
+        }
+        if (c == "\"") { in_str = 1; continue }
+        if (c == "/" && substr(s, i + 1, 1) == "/") { break }   # line comment
+        out = out c
+      }
+      return out
+    }
+
     # Column 0 only; indented lines are inside a declaration.
     /^[ \t]/ { next }
     /^[ \t]*$/ { next }
     {
-      line = $0
+      line = strip_trivia($0)
+      if (line ~ /^[ \t]*$/) next
       # A declaration may follow closers on the same line.
       sub(/^[})\]]+[ \t]*/, "", line)
       if (line ~ /^\/\//) next          # comment

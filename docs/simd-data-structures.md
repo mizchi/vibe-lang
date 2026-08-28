@@ -398,44 +398,41 @@ Against `find_4k_native_scalar` (§1) `Bytes::index_of` is ~11x; against
 `String::index_of` it is ~1.7x, which measures specialisation — a single byte
 needs no needle span verified through `str_eq` — not SIMD.
 
-**Routing is done, and the obstacle was not the one this section predicted.**
-The plan was a `String::index_of_from(s, sub, start)` builtin for
-`String::count` / `replace_all` / `split` to call, on the theory that scanning
-a suffix would otherwise copy the tail once per match. Two measurements
-retired it:
+**`String` routes through the same window search.** `String::index_of` /
+`equals` / `starts_with` / `ends_with` / `split` are SIMD builtins (ADR-0054);
+`String::count` / `replace` / `replace_all` are library functions in
+`@vibe/builtin` and reach that search through `string_index_of_from`, which is
+one `String::index_of` call over a suffix.
 
-- **`String::substring` does not copy.** On the linear lane it returns
-  `((ptr + start) << 32) | (len - start)` — a second fat value into the same
-  buffer (`gen_str_substring_body`) — so `s[start: len]` is a view, and
-  `String::index_of(s[start: len], sub)` already *is* `index_of_from` at zero
-  allocation. `String::split` over 512 / 1024 / 2048 lines costs 23.3 / 45.5 /
-  92.3 µs: linear, never the quadratic shape the suffix-copy theory predicted.
-- **The library's scalar loops were not a second implementation — they were
-  displacing the first.** A top-level `fn` replaces a same-named builtin
-  program-wide ([#2378](https://github.com/mizchi/vibe-lang/issues/2378)), so
-  `lib/@vibe/builtin/string.vibe`'s `String::index_of` / `contains` / `split` /
-  `starts_with` / `ends_with` / `last_index_of` took over the SIMD builtins for
-  every program importing *any* name from that package. `import @vibe/builtin
-  { String::trim }` alone cost a sparse `String::index_of` 0.8 µs → 174 µs
-  (~218×), and turned `String::split(s, "")` from a hard trap into `[s]`.
+Seeding that call costs nothing, because `String::substring` does not copy: on
+the linear lane it returns `((ptr + start) << 32) | (len - start)`, a second
+fat value into the same buffer (`gen_str_substring_body`). So `s[start: len]`
+is a view, `String::index_of(s[start: len], sub)` **is** a search-from-offset
+at zero allocation, and no `String::index_of_from` builtin is needed. Measured:
+`String::split` over 512 / 1024 / 2048 lines costs 23.3 / 45.5 / 92.3 µs —
+linear in the number of separators.
 
-So the routing was subtraction: the six re-implementations are deleted --
-their names stay on the package's published surface as bodyless intrinsic
-declarations, the shape `String::utf8_length` already used, so
-`import @vibe/builtin { String::split }` still resolves -- and
-`count` / `replace` / `replace_all` reach the window search because nothing
-shadows it any more. Measured net of haystack construction
+**Nothing in `lib/**` may declare a name the builtin registry owns.** A
+top-level `fn X::y` replaces the builtin named `X::y` for the whole linked
+program, including at call sites in files that never imported it
+([#2378](https://github.com/mizchi/vibe-lang/issues/2378)). A scalar
+re-implementation in a library is therefore not a second implementation
+alongside the kernel — it *is* the one that runs, for every dependent.
+Measured: `import @vibe/builtin { String::trim }` alone moved a sparse
+`String::index_of` from 0.8 µs to 174 µs (~218×).
+`scripts/check_builtin_shadowing.sh` fails the build on a new one.
+
+Cost of the routing, net of haystack construction
 (`bench/bench_string_scan_routing.vibe`, p50):
 
-| | before | after | |
+| | scalar scan | window search | |
 |---|---:|---:|---:|
 | `String::count`, match every 11 B | 186 µs | 70.8 µs | 2.6× |
 | `String::count`, one match in 22 KiB | 180 µs | 2.2 µs | **82×** |
 | `String::replace_all`, dense | 309 µs | 164 µs | 1.9× |
 
 Dense is bounded by per-match loop overhead, which no scanner removes; sparse
-is the scan itself. `scripts/check_builtin_shadowing.sh` fails the build if
-`lib/**` grows a new shadow.
+is the scan itself.
 
 **Tail slack is still undecided.** A kernel wants to over-read its tail:
 guaranteeing at least 15 bytes of readable slack past `len` would let every
