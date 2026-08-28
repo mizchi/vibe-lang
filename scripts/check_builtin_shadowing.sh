@@ -27,6 +27,13 @@ cd "$ROOT_DIR"
 
 REGISTRY="lib/@vibe/compiler/core/builtin_registry.vibe"
 ALLOWLIST="${VIBE_SHADOW_ALLOWLIST:-scripts/builtin_shadowing_allowlist.txt}"
+# The allowlist is a RATCHET, and "entries may be removed, never added" is only
+# a comment unless something checks it: a PR that adds a shadowing definition
+# AND its allowlist row leaves both `new` and `stale` empty, so the gate passes
+# and a program-wide override ships. Pinning the count makes an addition
+# require editing this number too -- which is the reviewable act -- and makes a
+# removal move the baseline down instead of leaving headroom to drift back into.
+EXPECTED_ENTRIES="${VIBE_SHADOW_EXPECTED:-16}"
 LIB_ROOT="${VIBE_SHADOW_LIB_ROOT:-lib}"
 
 if [ ! -f "$REGISTRY" ]; then
@@ -225,9 +232,27 @@ if [ -s "$tmp/stale.txt" ]; then
   status=1
 fi
 
+allow_n="$(awk 'END { print NR }' "$tmp/allowed.txt")"
+if [ "$allow_n" -gt "$EXPECTED_ENTRIES" ]; then
+  echo "check_builtin_shadowing: FAIL -- the allowlist grew: $allow_n entries, baseline $EXPECTED_ENTRIES." >&2
+  echo "" >&2
+  echo "  The list is shrink-only. Do not exempt a new shadow: rename the" >&2
+  echo "  function, or delete it and let the builtin answer. If an addition is" >&2
+  echo "  genuinely unavoidable, raise EXPECTED_ENTRIES in this script in the" >&2
+  echo "  same commit and say why in the allowlist -- an exemption should cost" >&2
+  echo "  a deliberate, reviewable edit, not a silent line." >&2
+  status=1
+elif [ "$allow_n" -lt "$EXPECTED_ENTRIES" ]; then
+  echo "check_builtin_shadowing: FAIL -- the allowlist shrank to $allow_n, baseline $EXPECTED_ENTRIES." >&2
+  echo "" >&2
+  echo "  Good. Lower EXPECTED_ENTRIES to $allow_n in this script so the ratchet" >&2
+  echo "  holds the new position; otherwise the headroom lets it drift back." >&2
+  status=1
+fi
+
 if [ "$status" -eq 0 ]; then
   hits_n="$(awk 'END { print NR }' "$tmp/hits.txt")"
-  echo "check_builtin_shadowing: ok ($hits_n allowlisted, 0 new)"
+  echo "check_builtin_shadowing: ok ($hits_n allowlisted, 0 new, baseline $EXPECTED_ENTRIES)"
 fi
 
 exit "$status"

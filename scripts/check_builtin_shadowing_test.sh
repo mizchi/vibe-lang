@@ -11,7 +11,7 @@ cd "$ROOT_DIR"
 
 # The gate reads these; a value inherited from a shell profile or a
 # session-start hook would silently change what is under test (#2252).
-unset VIBE_SHADOW_LIB_ROOT VIBE_SHADOW_ALLOWLIST || true
+unset VIBE_SHADOW_LIB_ROOT VIBE_SHADOW_ALLOWLIST VIBE_SHADOW_EXPECTED || true
 
 GATE="scripts/check_builtin_shadowing.sh"
 tmp="$(mktemp -d)"
@@ -22,15 +22,25 @@ note() { echo "[shadow-gate-test] $*"; }
 bad() { echo "[shadow-gate-test] FAIL: $*" >&2; fail=$((fail + 1)); }
 
 run_gate() {
-  # $1 lib root, $2 allowlist; captures stdout+stderr in $out, status in $rc
+  # $1 lib root, $2 allowlist, $3 expected-entries baseline (default: count the
+  # allowlist, so a case that is not about the ratchet is not perturbed by it).
   set +e
-  out="$(VIBE_SHADOW_LIB_ROOT="$1" VIBE_SHADOW_ALLOWLIST="$2" bash "$GATE" 2>&1)"
+  exp="${3:-}"
+  if [ -z "$exp" ]; then
+    exp="$(awk '{ sub(/#.*$/, ""); if (NF >= 3) n++ } END { print n + 0 }' "$2")"
+  fi
+  out="$(VIBE_SHADOW_LIB_ROOT="$1" VIBE_SHADOW_ALLOWLIST="$2" VIBE_SHADOW_EXPECTED="$exp" bash "$GATE" 2>&1)"
   rc=$?
   set -e
 }
 
 # --- Case 0: the real tree passes -----------------------------------------
-run_gate "lib" "scripts/builtin_shadowing_allowlist.txt"
+# No baseline argument: the gate uses its own pinned EXPECTED_ENTRIES, which
+# is the value under test here.
+set +e
+out="$(VIBE_SHADOW_LIB_ROOT=lib VIBE_SHADOW_ALLOWLIST=scripts/builtin_shadowing_allowlist.txt bash "$GATE" 2>&1)"
+rc=$?
+set -e
 if [ "$rc" -ne 0 ]; then
   bad "case 0: the committed tree should pass, got exit $rc"
   echo "$out" | sed 's/^/    /' >&2
@@ -252,6 +262,41 @@ elif ! printf '%s\n' "$out" | grep -q 'String::contains'; then
   echo "$out" | sed 's/^/    /' >&2
 else
   note "case 10 ok: a shadow trailing a closed test block is caught"
+fi
+
+# --- Case 11: the allowlist is shrink-only ---------------------------------
+# A PR that adds a shadowing definition AND its allowlist row leaves both the
+# `new` and `stale` sets empty, so without a pinned baseline the gate passes
+# and a program-wide override ships. Case 2 above is exactly that shape; here
+# the baseline is what stops it.
+mkdir -p "$tmp/lib11/pkg"
+cat > "$tmp/lib11/pkg/shadow.vibe" <<'VEOF'
+export fn String::index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+echo "$tmp/lib11/pkg/shadow.vibe String::index_of fn" > "$tmp/allow_grown.txt"
+# Baseline 0: the row is an ADDITION relative to it.
+run_gate "$tmp/lib11" "$tmp/allow_grown.txt" 0
+if [ "$rc" -eq 0 ]; then
+  bad "case 11: a shadow exempted by a NEW allowlist row was accepted"
+elif ! printf '%s\n' "$out" | grep -q 'the allowlist grew'; then
+  bad "case 11: rejected, but not for the ratchet reason:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 11 ok: adding an allowlist row is rejected"
+fi
+
+# --- Case 12: removing an entry must move the baseline down -----------------
+# Otherwise the headroom lets the list drift back up silently.
+run_gate "$tmp/lib11" "$tmp/allow_grown.txt" 5
+if [ "$rc" -eq 0 ]; then
+  bad "case 12: leftover baseline headroom was accepted"
+elif ! printf '%s\n' "$out" | grep -q 'the allowlist shrank'; then
+  bad "case 12: rejected, but not for the shrink reason:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 12 ok: stale headroom is rejected"
 fi
 
 if [ "$fail" -ne 0 ]; then
