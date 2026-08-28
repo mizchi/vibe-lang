@@ -128,7 +128,7 @@ export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(_, items) => {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
@@ -187,6 +187,13 @@ fn builtin_iterator_serialized_boundary_path() -> String {
   "@vibe/compiler/internal/iterator_boundary"
 }
 
+/// Whether an import path is the reserved source-text carrier for Iterator
+/// provenance. Loaders must retain this statement for the trait desugar pass,
+/// but must not resolve it as a package dependency.
+export fn is_builtin_iterator_serialized_boundary_path(path: String) -> Bool {
+  path == builtin_iterator_serialized_boundary_path()
+}
+
 /// A parseable carrier for Iterator provenance across source-text caches.
 /// Ordinary in-memory merges use `SReExportSourceBoundary`; the printer drops
 /// that internal node, so TypeDb/group caches need this reserved synthetic
@@ -215,7 +222,7 @@ export fn builtin_iterator_serialized_boundary_from_markers(markers: Array[Strin
 /// Recover marker payload from the reserved source-text cache carrier.
 export fn builtin_iterator_serialized_boundary_markers(stmt: Stmt) -> Option[Array[String]] {
   match stmt {
-    SImport(path, items) => if path == builtin_iterator_serialized_boundary_path() {
+    SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
       let markers = empty_strings()
       let mut i = 0
       while i < Array::length(items) {
@@ -944,7 +951,7 @@ export fn collect_import_aliases(stmts: Array[Stmt]) -> Array[(String, String)] 
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(_, items) => {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
@@ -971,7 +978,7 @@ fn collect_import_refs(stmts: Array[Stmt]) -> Array[(String, String, String)] {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, items) => {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
@@ -1226,7 +1233,7 @@ export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String,
   let mut ti = 0
   while ti < Array::length(stmts) {
     match Array::get(stmts, ti) {
-      SImport(_, items) => {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut tj = 0
         while tj < Array::length(items) {
           let item = Array::get(items, tj)
@@ -1345,7 +1352,7 @@ fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
 export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
   let rec stmt_has_import_deep: (Stmt) -> Bool = (stmt) -> {
     match stmt {
-      SImport(_, _) => true,
+      SImport(path, _) => !is_builtin_iterator_serialized_boundary_path(path),
       SReExport(_, _) => true,
       SModule(_, _, inner_stmts) => stmts_have_import_deep(inner_stmts),
       _ => false
@@ -1399,7 +1406,11 @@ export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stm
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        Array::push(merged, stmt)
+      } else {
+        append_stdin_provider_import_alias_markers(merged, items)
+      },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
@@ -1415,7 +1426,11 @@ export fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        Array::push(merged, stmt)
+      } else {
+        append_stdin_provider_import_alias_markers(merged, items)
+      },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
@@ -2660,7 +2675,7 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
     let mut i = Array::length(stmts) - 1
     while i >= 0 {
       match Array::get(stmts, i) {
-        SImport(raw_path, items) => {
+        SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
           let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, path)
           append_import_value_renames(plan, target, items, false, out, locals_seen)
         },
@@ -2841,7 +2856,11 @@ export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Ar
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        Array::push(merged, stmt)
+      } else {
+        append_stdin_provider_import_alias_markers(merged, items)
+      },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
