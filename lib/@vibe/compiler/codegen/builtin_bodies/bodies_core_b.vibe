@@ -1394,24 +1394,15 @@ fn emit_windowed_substring_search(b: Bytes, enable_rc: Bool, str_eq_idx: Int) ->
   emit_local_get(b, 3)
   emit_i64_extend_i32_u(b)
   emit_i64_or(b)
-  // #2345 step 2: the needle side is SYNTHESISED from locals 6/3 rather than
-  // read from local 1. Local 1 is the caller's second PARAMETER, which is only
-  // a usable operand when it happens to be a String fat value -- and that is
-  // the single thing that kept this loop String-only. A Bytes caller has a
-  // heap handle in local 1 and nothing that `str_eq` could consume, so passing
-  // it through would have compiled and then compared a pointer against a fat
-  // value at run time. Built from (ndl_ptr << 32) | ndl_len, exactly like the
-  // haystack window above, it is the SAME i64 for a String caller and a
-  // constructible one for a Bytes caller. Both then reach the SIMD `str_eq`
-  // (ADR-0054 measures it at 5.65x), which is the point of sharing at all: a
-  // hand-written Bytes compare would be the slow one.
-  emit_local_get(b, 6)
-  emit_i64_extend_i32_u(b)
-  emit_i64_const(b, 32)
-  emit_i64_shl(b)
-  emit_local_get(b, 3)
-  emit_i64_extend_i32_u(b)
-  emit_i64_or(b)
+  // Local 1 is the caller's second PARAMETER, and `str_eq` can only consume it
+  // when it is a String fat value. #2345 step 2 briefly SYNTHESISED the needle
+  // here from locals 6/3 instead, so that a Bytes caller with a heap handle in
+  // local 1 could reach this loop. That cost 6 instructions per candidate
+  // instead of 1 and measured +0.61% fuel on the string_ops scenario. It is
+  // gone: `Bytes::index_of_bytes` now packs its two handles into fat values
+  // ONCE, in its own prologue, and CALLS `String::index_of` -- so every caller
+  // that reaches this line has a fat value in local 1 again.
+  emit_local_get(b, 1)
   emit_call(b, str_eq_idx)
   emit_i32_wrap_i64(b)
   emit_if_void(b)
@@ -1508,39 +1499,51 @@ export fn gen_string_index_of_body(enable_rc: Bool, str_len_idx: Int, str_substr
 ///
 /// Returns a tagged -1 when the needle is longer than the haystack, matching
 /// the String contract; the empty-needle case is handled inside the loop.
-export fn gen_bytes_index_of_bytes_body(enable_rc: Bool, str_eq_idx: Int) -> Bytes {
+/// `Bytes::index_of_bytes(hay, needle)` -- the substring search, over two heap
+/// handles instead of two String fat values.
+///
+/// It does NOT carry a copy of the search. It packs each handle into the fat
+/// value `String` already uses -- `(data_ptr << 32) | len`, read at offsets 8
+/// and 4 -- and CALLS `String::index_of`, which owns the length guard, the RC
+/// tagging of the result, and the windowed SIMD loop
+/// (`emit_windowed_substring_search`).
+///
+/// #2345 step 2 inlined the loop into this body instead, via the shared emit
+/// helper. That is a code EXPANDER, not a wasm function, so the loop was
+/// duplicated in the output: the wasm-gc lane, which links builtins
+/// unconditionally, grew +2.8-3.9% on all nine perf scenarios even for
+/// programs that never call this. One `call` replaces ~215 B of duplicated
+/// body, and the loop's needle can go back to reading local 1 (see the comment
+/// at that site), which returns the +0.61% string_ops fuel the synthesis cost.
+///
+/// The loads are the same ones `gen_bytes_get_body` does and are deliberately
+/// NOT untagged: a `Bytes` handle is a raw pointer in the value world, and only
+/// `Int` carries the `n << 1` tag.
+export fn gen_bytes_index_of_bytes_body(string_index_of_idx: Int) -> Bytes {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
+  emit_local_tee(b, 2)
+  emit_i32_load(b, 2, 8)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 2)
   emit_i32_load(b, 2, 4)
-  emit_local_set(b, 2)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
   emit_local_get(b, 1)
   emit_i32_wrap_i64(b)
+  emit_local_tee(b, 3)
+  emit_i32_load(b, 2, 8)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 3)
   emit_i32_load(b, 2, 4)
-  emit_local_set(b, 3)
-  emit_local_get(b, 3)
-  emit_local_get(b, 2)
-  emit_i32_gt_u(b)
-  emit_if_i64(b)
-  emit_i64_const(b, -1)
-  if enable_rc {
-    emit_i64_const(b, 1)
-    emit_i64_shl(b)
-  }
-  emit_else(b)
-  emit_local_get(b, 0)
-  emit_i32_wrap_i64(b)
-  emit_i32_load(b, 2, 8)
-  emit_local_set(b, 5)
-  emit_local_get(b, 1)
-  emit_i32_wrap_i64(b)
-  emit_i32_load(b, 2, 8)
-  emit_local_set(b, 6)
-  emit_local_get(b, 2)
-  emit_local_get(b, 3)
-  emit_i32_sub(b)
-  emit_local_set(b, 8)
-  emit_windowed_substring_search(b, enable_rc, str_eq_idx)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
+  emit_call(b, string_index_of_idx)
   b
 }
 
