@@ -6908,13 +6908,25 @@ fn fn_return_is_fn_type(fn_returns: Array[(String, String)], fname: String) -> B
 /// Nested loops shadow the `__iter_*` names correctly (ELetMut scoping). The
 /// optional index binding is not supported for iterators (first slice).
 ///
-/// `nextcall` is the expression yielding `Option[(T, Self)]` for the current
-/// cursor `__iter_cur`: a bare `C::next(__iter_cur)` for a sync iterator, or
-/// `await(C::next(__iter_cur))` (a `Future[Option[(T, Self)]]` unwrapped) for an
-/// async iterator under `for`.
-fn build_iter_for_with(name: String, nextcall: Expr, iter: Expr, body: Expr) -> Expr {
-  let some_arm = (PCtor("Some", [PTuple([PBind(name), PBind("__iter_rest")])]), EAssign("__iter_cur", EIdent("__iter_rest", -1), body))
-  let none_arm = (PCtor("None", array_empty()), EAssign("__iter_go", EBool(false), EUnit))
+/// `ctype` supplies the `C::next` namespace and `should_await` selects whether
+/// that call is wrapped in `await`. All internal binders are minted fresh
+/// against the iterand and body so user names that resemble lowering details
+/// cannot be captured.
+fn build_iter_for_with(name: String, ctype: String, should_await: Bool, iter: Expr, body: Expr) -> Expr {
+  let src_name = dinsp_fresh_name("__iter_src", iter, body)
+  let cur_name = dinsp_fresh_name("__iter_cur", iter, body)
+  let go_name = dinsp_fresh_name("__iter_go", iter, body)
+  let rest_name = dinsp_fresh_name("__iter_rest", iter, body)
+  let raw_next = ECall(EIdent(String::concat(ctype, "::next"), -1), [
+    EIdent(cur_name, -1)
+  ], -1)
+  let nextcall = if should_await {
+    ECall(EIdent("await", -1), [raw_next], -1)
+  } else {
+    raw_next
+  }
+  let some_arm = (PCtor("Some", [PTuple([PBind(name), PBind(rest_name)])]), EAssign(cur_name, EIdent(rest_name, -1), body))
+  let none_arm = (PCtor("None", array_empty()), EAssign(go_name, EBool(false), EUnit))
   let loop_body = EMatch(nextcall, [some_arm, none_arm])
   // Bind the iterand through an immutable `__iter_src` and initialize the
   // mutable cursor from that ident, rather than from `iter` directly. The
@@ -6923,15 +6935,11 @@ fn build_iter_for_with(name: String, nextcall: Expr, iter: Expr, body: Expr) -> 
   // `for x in Range::{..}`) made that consume-then-reassign double-free the
   // initial value under RC. Seeding from a stable binding mirrors the working
   // `let r = ..; for x in r` shape so the ownership accounting balances (#704).
-  ELet("__iter_src", iter, ELetMut("__iter_cur", EIdent("__iter_src", -1), ELetMut("__iter_go", EBool(true), EWhile(EIdent("__iter_go", -1), loop_body), -1), -1), -1)
-}
-
-fn next_call_for(ctype: String) -> Expr {
-  ECall(EIdent(String::concat(ctype, "::next"), -1), [EIdent("__iter_cur", -1)], -1)
+  ELet(src_name, iter, ELetMut(cur_name, EIdent(src_name, -1), ELetMut(go_name, EBool(true), EWhile(EIdent(go_name, -1), loop_body), -1), -1), -1)
 }
 
 fn build_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
-  build_iter_for_with(name, next_call_for(ctype), iter, body)
+  build_iter_for_with(name, ctype, false, iter, body)
 }
 
 /// #736: `for x in xs` over a USER type implementing the indexed Iterable
@@ -6953,20 +6961,23 @@ fn build_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
 /// the index): `for x, i in xs` binds `i` to the current `__iter_i`. The loop
 /// is a statement (no per-iteration result collection).
 fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter: Expr, body: Expr) -> Expr {
+  let src_name = dinsp_fresh_name("__iter_src", iter, body)
+  let len_name = dinsp_fresh_name("__iter_n", iter, body)
+  let index_name = dinsp_fresh_name("__iter_i", iter, body)
   let get_call = ECall(EIdent(String::concat(ctype, "::iter_get"), -1), [
-    EIdent("__iter_src", -1),
-    EIdent("__iter_i", -1)
+    EIdent(src_name, -1),
+    EIdent(index_name, -1)
   ], -1)
   let len_call = ECall(EIdent(String::concat(ctype, "::iter_length"), -1), [
-    EIdent("__iter_src", -1)
+    EIdent(src_name, -1)
   ], -1)
-  let incr = EAssign("__iter_i", EBinOp("+", EIdent("__iter_i", -1), EInt(1)), EUnit)
+  let incr = EAssign(index_name, EBinOp("+", EIdent(index_name, -1), EInt(1)), EUnit)
   let bound_body = match idx {
-    Some(iname) => ELet(iname, EIdent("__iter_i", -1), body, -1),
+    Some(iname) => ELet(iname, EIdent(index_name, -1), body, -1),
     None => body
   }
   let loop_body = ELet(name, get_call, ESeq(bound_body, incr), -1)
-  ELet("__iter_src", iter, ELet("__iter_n", len_call, ELetMut("__iter_i", EInt(0), EWhile(EBinOp("<", EIdent("__iter_i", -1), EIdent("__iter_n", -1)), loop_body), -1), -1), -1)
+  ELet(src_name, iter, ELet(len_name, len_call, ELetMut(index_name, EInt(0), EWhile(EBinOp("<", EIdent(index_name, -1), EIdent(len_name, -1)), loop_body), -1), -1), -1)
 }
 
 /// `for` over an async iterator type `C` whose
@@ -6999,17 +7010,16 @@ fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter
 /// re-iterable collection. Left unsupported rather than given a plausible
 /// wrong meaning.
 fn build_host_stream_for(name: String, iter: Expr, body: Expr) -> Expr {
-  let read_call = ECall(EIdent("host_stream_next", -1), [
-    EIdent("__hs_src", -1)
-  ], -1)
-  let advance = EAssign("__hs_b", read_call, EUnit)
-  let loop_body = ELet(name, EIdent("__hs_b", -1), ESeq(body, advance), -1)
-  ELet("__hs_src", iter, ELetMut("__hs_b", read_call, EWhile(EBinOp("<=", EInt(0), EIdent("__hs_b", -1)), loop_body), -1), -1)
+  let src_name = dinsp_fresh_name("__hs_src", iter, body)
+  let byte_name = dinsp_fresh_name("__hs_b", iter, body)
+  let read_call = ECall(EIdent("host_stream_next", -1), [EIdent(src_name, -1)], -1)
+  let advance = EAssign(byte_name, read_call, EUnit)
+  let loop_body = ELet(name, EIdent(byte_name, -1), ESeq(body, advance), -1)
+  ELet(src_name, iter, ELetMut(byte_name, read_call, EWhile(EBinOp("<=", EInt(0), EIdent(byte_name, -1)), loop_body), -1), -1)
 }
 
 fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
-  let awaited = ECall(EIdent("await", -1), [next_call_for(ctype)], -1)
-  build_iter_for_with(name, awaited, iter, body)
+  build_iter_for_with(name, ctype, true, iter, body)
 }
 
 /// `for x in pull { body }` over a pull closure `pull : () -> Option[T]`
@@ -7019,20 +7029,22 @@ fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> 
 /// `C::next` drives the iterator loop above; anything else — a pull closure or a
 /// call whose return type is unknown — falls back to this).
 fn build_pull_for_in(value_name: String, index_name: Option[String], iterable: Expr, body: Expr) -> Expr {
+  let continue_name = dinsp_fresh_name("__pull_continue", iterable, body)
+  let next_name = dinsp_fresh_name("__pull_next", iterable, body)
   let some_arm = match index_name {
     Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
     None => ESeq(body, EUnit)
   }
-  let loop_body = EMatch(ECall(EIdent("__pull_next", -1), array_empty(), -1), [
+  let loop_body = EMatch(ECall(EIdent(next_name, -1), array_empty(), -1), [
     (PCtor("Some", [PBind(value_name)]), some_arm),
-    (PCtor("None", array_empty()), EAssign("__pull_continue", EBool(false), EUnit))
+    (PCtor("None", array_empty()), EAssign(continue_name, EBool(false), EUnit))
   ])
-  let core_loop = ELetMut("__pull_continue", EBool(true), EWhile(EIdent("__pull_continue", -1), loop_body), -1)
+  let core_loop = ELetMut(continue_name, EBool(true), EWhile(EIdent(continue_name, -1), loop_body), -1)
   let with_index = match index_name {
     Some(ix) => ELetMut(ix, EInt(0), core_loop, -1),
     None => core_loop
   }
-  ELet("__pull_next", iterable, with_index, -1)
+  ELet(next_name, iterable, with_index, -1)
 }
 
 /// Does `fname`'s recorded return-type head indicate an async iterator
