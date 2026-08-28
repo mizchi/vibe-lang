@@ -11,7 +11,7 @@ cd "$ROOT_DIR"
 
 # The gate reads these; a value inherited from a shell profile or a
 # session-start hook would silently change what is under test (#2252).
-unset VIBE_SHADOW_LIB_ROOT VIBE_SHADOW_ALLOWLIST || true
+unset VIBE_SHADOW_LIB_ROOT VIBE_SHADOW_ALLOWLIST VIBE_SHADOW_REGISTRY || true
 
 GATE="scripts/check_builtin_shadowing.sh"
 tmp="$(mktemp -d)"
@@ -507,6 +507,66 @@ elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
   echo "$out" | sed 's/^/    /' >&2
 else
   note "case 16b ok: a declaration after a braced interpolation is caught"
+fi
+
+# --- Case 17: a registry row that does not parse is refused ------------------
+# "Some rows parsed" is not "every row parsed". A row legally wrapped so `CtFn`
+# lands on the next line drops out of the protected set, while the non-empty
+# check still passes on its 171 siblings -- so the builtin it names stops being
+# guarded and nothing says so.
+mkdir -p "$tmp/lib17/pkg"
+cat > "$tmp/lib17/pkg/shadow.vibe" <<'VEOF'
+export fn Probe::shadow(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+: > "$tmp/lib17/allow.txt"
+
+# Control: the row on one line -> the name is protected, so the shadow is found.
+cat > "$tmp/registry_flat.vibe" <<'VEOF'
+fn registry_typed_rows() -> Array[BuiltinRow] {
+  [
+  ("Probe::shadow", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
+  ]
+}
+VEOF
+set +e
+out="$(VIBE_SHADOW_LIB_ROOT="$tmp/lib17" VIBE_SHADOW_ALLOWLIST="$tmp/lib17/allow.txt" \
+       VIBE_SHADOW_REGISTRY="$tmp/registry_flat.vibe" bash "$GATE" 2>&1)"
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then
+  bad "case 17 control: a shadow of a one-line registry row was not caught"
+  echo "$out" | sed 's/^/    /' >&2
+elif ! printf '%s\n' "$out" | grep -q 'Probe::shadow'; then
+  bad "case 17 control: the finding does not name Probe::shadow:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 17 control ok: a parsed row protects its name"
+fi
+
+# The mutation: wrap the row. The name must not silently stop being guarded.
+cat > "$tmp/registry_wrapped.vibe" <<'VEOF'
+fn registry_typed_rows() -> Array[BuiltinRow] {
+  [
+  ("Probe::shadow",
+   CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
+  ("Other::name", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true),
+  ]
+}
+VEOF
+set +e
+out="$(VIBE_SHADOW_LIB_ROOT="$tmp/lib17" VIBE_SHADOW_ALLOWLIST="$tmp/lib17/allow.txt" \
+       VIBE_SHADOW_REGISTRY="$tmp/registry_wrapped.vibe" bash "$GATE" 2>&1)"
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then
+  bad "case 17: a wrapped registry row was silently skipped"
+elif ! printf '%s\n' "$out" | grep -q 'could not classify'; then
+  bad "case 17: rejected, but not for the unparsed-row reason:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 17 ok: an unparsed registry row stops the gate"
 fi
 
 if [ "$fail" -ne 0 ]; then

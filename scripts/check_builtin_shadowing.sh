@@ -25,7 +25,8 @@ set -eu
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-REGISTRY="lib/@vibe/compiler/core/builtin_registry.vibe"
+# Self-test hook ONLY: point the extractor at a staged registry.
+REGISTRY="${VIBE_SHADOW_REGISTRY:-lib/@vibe/compiler/core/builtin_registry.vibe}"
 # The exemption set lives HERE, in the checker, not in a data file beside it.
 #
 # A count-based pin was the first attempt and it was a proxy, not the property:
@@ -119,6 +120,37 @@ awk '
 if [ ! -s "$tmp/builtins.txt" ]; then
   echo "check_builtin_shadowing: read 0 builtin names from $REGISTRY -- the row" >&2
   echo "  shape must have changed. Refusing to pass on an empty corpus." >&2
+  exit 2
+fi
+
+# "Some rows parsed" is not "every row parsed". A row legally wrapped so that
+# `CtFn` lands on the next line drops out of the protected set silently, and
+# the non-empty check above still passes on the strength of its 171 siblings --
+# so the builtin that row names stops being protected and nothing says so.
+# Every line that OPENS a registry tuple must therefore also yield a name.
+awk '
+  match($0, /^[ \t]*\("[A-Za-z_][A-Za-z0-9_:]*",/) {
+    s = $0
+    sub(/^[^"]*"/, "", s)
+    sub(/".*$/, "", s)
+    print FNR " " s
+  }
+' "$REGISTRY" > "$tmp/registry_openers.txt"
+
+awk -v first="$tmp/builtins.txt" '
+  FILENAME == first { known[$0] = 1; next }
+  !($2 in known) { print }
+' "$tmp/builtins.txt" "$tmp/registry_openers.txt" > "$tmp/registry_unparsed.txt"
+
+if [ -s "$tmp/registry_unparsed.txt" ]; then
+  echo "check_builtin_shadowing: FAIL -- registry rows this could not classify:" >&2
+  while IFS= read -r line; do
+    echo "  $REGISTRY:$line" >&2
+  done < "$tmp/registry_unparsed.txt"
+  echo "" >&2
+  echo "  Each names a builtin that would silently drop out of the protected" >&2
+  echo "  set. Teach the extractor the row shape (a wrapped tuple, most" >&2
+  echo "  likely) rather than letting the name go unguarded." >&2
   exit 2
 fi
 
