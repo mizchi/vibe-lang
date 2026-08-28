@@ -114,28 +114,36 @@ while IFS= read -r f; do
       # Not a word start -> continuation of a multi-line string literal etc.
       if (line !~ /^[A-Za-z_]/) next
 
-      sub(/^export[ \t]+/, "", line)
-      if (line == "") next
-      if (line !~ /^[A-Za-z_]/) next
+      head = line
+      sub(/^export[ \t]+/, "", head)
 
-      # Binds a callable name in the value namespace.
-      if (match(line, /^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+/)) {
-        kw = substr(line, 1, RLENGTH)
-        rest = substr(line, RLENGTH + 1)
-        if (match(rest, /^[A-Za-z_][A-Za-z0-9_:]*/)) {
-          name = substr(rest, RSTART, RLENGTH)
-          form = (kw ~ /fn/) ? "fn" : "let"
-          print path " " name " " form
-        } else {
-          print path ":" FNR " cannot read the bound name from: " $0 > "/dev/stderr"
-          print "unreadable"
-        }
-        next
+      # (1) Record EVERY value-namespace binding on the line, not just the
+      # head. A line may carry several:
+      # lib/@vibe/compiler/loader/loader.vibe:1217 is
+      # `] let a: Array[String] = [] fn vpkg_types_registry_note(...) {`,
+      # three declarations deep. Recording only the head missed the rest --
+      # the exact failure this classifier exists to prevent. Scanning the
+      # whole line also covers a binding that trails a non-declaration head.
+      rest = line
+      while (match(rest, /(^|[^A-Za-z0-9_:])(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+[A-Za-z_][A-Za-z0-9_:]*/)) {
+        hit = substr(rest, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+        sub(/^[^A-Za-z_]/, "", hit)
+        form = (hit ~ /^(rec[ \t]+)?fn[ \t]/) ? "fn" : "let"
+        sub(/^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+/, "", hit)
+        print path " " hit " " form
       }
 
-      # Declaration keywords that bind no callable value name.
-      if (line ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)[ \t({"]/) next
-      if (line ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)$/) next
+      # (2) Independently, refuse to pass over a head this cannot classify.
+      # Silence is not safety: a skipped line is indistinguishable from a
+      # clean one.
+      if (head ~ /^(rec[ \t]+fn|fn|let[ \t]+rec|let)[ \t]+/) next
+      if (head ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)[ \t({"]/) next
+      if (head ~ /^(test|bench|import|declare|struct|enum|impl|type|effect|trait|handle|module)$/) next
+      if (head ~ /^[{(]/) next
+      # `export { ... }` (publish a name) and `export ./dep.vibe { ... }` /
+      # `export ../../pkg { ... }` (re-export a target) bind nothing here.
+      if (head ~ /^[.\/@]/) next
       if (line ~ /^export[ \t]*[{(]/) next
 
       print path ":" FNR " unclassified column-0 declaration: " $0 > "/dev/stderr"

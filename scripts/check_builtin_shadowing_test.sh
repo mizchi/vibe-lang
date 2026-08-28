@@ -202,6 +202,58 @@ else
   note "case 8 ok: unclassifiable line stops the gate"
 fi
 
+# --- Case 9: EVERY declaration on a shared line, not just the first ---------
+# lib/@vibe/compiler/loader/loader.vibe:1217 is
+# `] let a: Array[String] = [] fn vpkg_types_registry_note(...) {` -- three
+# declarations on one line. A classifier that records the head and moves on
+# misses the rest in silence, which is the failure it exists to prevent.
+mkdir -p "$tmp/lib9/pkg"
+cat > "$tmp/lib9/pkg/ok.vibe" <<'VEOF'
+export fn totally_unrelated_helper(n: Int) -> Int {
+  n + 1
+}
+VEOF
+run_gate "$tmp/lib9" "$tmp/empty_allow.txt"
+if [ "$rc" -ne 0 ]; then
+  bad "case 9 control: a lib root with no shadow should pass, got exit $rc"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 9 control ok"
+fi
+cat > "$tmp/lib9/pkg/shared.vibe" <<'VEOF'
+let harmless: Array[String] = [] fn String::index_of(s: String, sub: String) -> Int {
+  -1
+}
+VEOF
+run_gate "$tmp/lib9" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 9: a shadow trailing another declaration on the same line was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::index_of'; then
+  bad "case 9: the finding does not name String::index_of:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 9 ok: every declaration on a shared line is scanned"
+fi
+
+# --- Case 10: a shadow trailing a NON-declaration head ----------------------
+mkdir -p "$tmp/lib10/pkg"
+cat > "$tmp/lib10/pkg/after_test.vibe" <<'VEOF'
+test "something" {
+  1
+} fn String::contains(s: String, sub: String) -> Bool {
+  false
+}
+VEOF
+run_gate "$tmp/lib10" "$tmp/empty_allow.txt"
+if [ "$rc" -eq 0 ]; then
+  bad "case 10: a shadow after a non-declaration head was NOT caught"
+elif ! printf '%s\n' "$out" | grep -q 'String::contains'; then
+  bad "case 10: the finding does not name String::contains:"
+  echo "$out" | sed 's/^/    /' >&2
+else
+  note "case 10 ok: a shadow trailing a closed test block is caught"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "[shadow-gate-test] $fail case(s) failed" >&2
   exit 1
