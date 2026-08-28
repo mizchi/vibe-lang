@@ -1775,10 +1775,10 @@ via `memory.copy`, so `push` is amortised O(1)):
 > 365 ns. So **11× over scalar native** — that is what the SIMD earns — and
 > ~109× over the loop a library had to write.
 >
-> `String::index_of` is *not* the scalar baseline, despite what an earlier
-> version of this note said: it goes through the same windowed v128 scan
-> (`emit_windowed_substring_search`). The 1.7× against it measures
-> specialisation — no needle span to verify through `str_eq` — not SIMD.
+> `String::index_of` is **not** the scalar baseline: it goes through the same
+> windowed v128 scan (`emit_windowed_substring_search`). The 1.7× against it
+> measures specialisation — a single byte needs no needle span verified through
+> `str_eq` — not SIMD.
 >
 > `Bytes::index_of_bytes` runs the SAME windowed search as `String::index_of`
 > (ADR-0054): a 16-byte SIMD scan for the needle's first byte, then the SIMD
