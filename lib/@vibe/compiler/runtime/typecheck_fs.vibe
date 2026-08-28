@@ -56,6 +56,7 @@ import @vibe/compiler/core {
   env_lookup,
   env_lookup_binding_including_surface,
   env_lookup_flat,
+  env_preserve_type_definition_origins,
   env_selectable_type_defs,
   env_type_defs,
   env_value_binding,
@@ -1080,7 +1081,7 @@ fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[ImportItem], tail
       }
       i = i + 1
     }
-    EnvTypeDefs(defs, selectable, tail)
+    env_preserve_type_definition_origins(EnvTypeDefs(defs, selectable, tail), dep_env)
   }
 }
 
@@ -2584,11 +2585,11 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// Trait definitions and implementations are published only for the selected
 /// trait surface. EnvCached wrappers are rebuilt from the restricted chain
 /// (their arrays are acceleration state, same rule as the serializer's).
-fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, all_defs: Array[TypeDef]) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
         EnvBind(name, binding, restricted)
       } else {
@@ -2598,9 +2599,9 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     // #1262: `let mut` escape markers are function-local, so a module's export
     // surface never carries one. Drop it with its scope rather than inventing
     // a rule for publishing mutability across a boundary.
-    EnvMutCell(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest),
+    EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs),
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(trait_surface, name) >= 0 {
         EnvTraitDef(name, supers, is_auto, methods, restricted, params, method_gens)
       } else {
@@ -2608,7 +2609,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       }
     },
     EnvTraitImpl(name, target, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImpl(name, target, restricted)
       } else {
@@ -2616,7 +2617,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       }
     },
     EnvTraitImplGen(name, params, bounds, target, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImplGen(name, params, bounds, target, restricted)
       } else {
@@ -2624,14 +2625,14 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       }
     },
     EnvTypeDefs(defs, _, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(defs) {
         let def = Array::get(defs, i)
         if bsearch_leftmost(type_surface, typedef_projection_name(def)) >= 0 {
           let closure = array_empty()
-          typedef_projection_add_named(typedef_projection_name(def), defs, closure)
+          typedef_projection_add_named(typedef_projection_name(def), all_defs, closure)
           let mut ci = 0
           while ci < Array::length(closure) {
             let closure_def = Array::get(closure, ci)
@@ -2647,7 +2648,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
         }
         i = i + 1
       }
-      if Array::length(kept) == 0 && Array::length(type_surface) == 0 {
+      if Array::length(kept) == 0 {
         restricted
       } else {
         EnvTypeDefs(kept, type_surface, restricted)
@@ -2676,7 +2677,20 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     // module lane resolves an import over a same-named local (the merge
     // lane shadows correctly), while an `as` alias broke the
     // collect_merged_stmts lane instead. Both are their own bugs.
-    EnvCached(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+    EnvCached(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+  }
+}
+
+fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+  let all_defs = env_type_defs(env)
+  let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, env, all_defs)
+  if Array::length(type_surface) > 0 && Array::length(env_selectable_type_defs(restricted)) == 0 {
+    // Opaque builtins and re-exported contracts can grant type authority
+    // without carrying a forgeable TypeDef payload. Keep one surface node for
+    // that case; concrete closures already carry their own surface node.
+    EnvTypeDefs(array_empty(), type_surface, restricted)
+  } else {
+    restricted
   }
 }
 
@@ -2735,7 +2749,7 @@ export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt
   let value_surface = interface_public_value_names(stmts)
   let trait_surface = interface_public_trait_names(stmts, publication_env)
   let type_surface = interface_public_type_names(stmts, publication_env)
-  let published = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env)
+  let published = env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env), publication_env)
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.

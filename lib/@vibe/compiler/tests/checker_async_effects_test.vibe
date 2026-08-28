@@ -1,7 +1,17 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeDef, TypeEnv, TypeExpr, env_bind
+  BindingOrigin,
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_bind,
+  env_preserve_type_definition_origins,
+  env_value_binding_with_origin
 }
 
 import @vibe/core {
@@ -9,7 +19,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  EffectError, check_async_effects_expr, check_async_effects_stmt
+  EffectError, check_async_effects_expr, check_async_effects_stmt, check_async_effects_stmts
 }
 
 //# Functions
@@ -318,6 +328,34 @@ test "a SYNC enum iterator still requires nothing" {
   ], CtEnum("Chan"), None))
   let call = ECall(EIdent("Chan", -1), [EInt(3)], -1)
   let errors = check_async_effects_expr(for_over(call), env, false)
+  assert(eq(Array::length(errors), 0))
+}
+
+test "a projected builtin AsyncIter struct field requires Async" {
+  let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
+  let env = env_preserve_type_definition_origins(EnvTypeDefs([
+    TDStruct("Holder", [("stream", CtNamed("AsyncIter", [CtInt]))], [], []),
+    TDStruct("AsyncIter", [], [], ["T"])
+  ], ["Holder"], EnvEmpty), source)
+  let body = EFn(array_empty(), array_empty(), [
+    ("holder", Some(TyName("Holder")))
+  ], None, None, for_over(EDot(EIdent("holder", -1), "stream", -1, -1)))
+  let errors = check_async_effects_stmts([
+    STest("projected builtin field", body)
+  ], env)
+  assert(Array::length(errors) > 0)
+}
+
+test "a projected user AsyncIter struct field stays synchronous" {
+  let env = EnvTypeDefs([
+    TDStruct("Holder", [("stream", CtNamed("AsyncIter", [CtInt]))], [], []),
+    TDStruct("AsyncIter", [], [], ["T"])
+  ], ["Holder"], EnvEmpty)
+  let body = EFn(array_empty(), array_empty(), [
+    ("holder", Some(TyName("Holder")))
+  ], None, None, for_over(EDot(EIdent("holder", -1), "stream", -1, -1)))
+  let errors = check_async_effects_stmts([STest("projected user field", body)], env)
   assert(eq(Array::length(errors), 0))
 }
 

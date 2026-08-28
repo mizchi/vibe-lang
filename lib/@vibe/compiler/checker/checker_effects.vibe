@@ -16,6 +16,7 @@ import @vibe/compiler/core {
   entry_cache_safe_effects,
   env_lookup,
   env_lookup_binding,
+  env_type_definition_origin,
   env_type_defs,
   exception_effect_labels_equal,
   exception_kinds_compatible,
@@ -589,7 +590,28 @@ fn afe_field_type_key(struct_name: String, field: String) -> String {
   String::concat(struct_name, String::concat(".", field))
 }
 
-fn afe_collect_field_types(stmts: Array[Stmt]) -> Unit {
+fn afe_field_head_with_origin(head: String, env: TypeEnv) -> String {
+  if head == "AsyncIter" {
+    let from_binding = afe_type_binding_is_builtin_async_iter(env)
+    let from_definition = match env_type_definition_origin(env, head) {
+      Some(origin) => afe_origin_is_builtin_async_iter(origin),
+      None => false
+    }
+    afe_tag_async_iter_head(head, from_binding || from_definition)
+  } else {
+    head
+  }
+}
+
+fn afe_record_field_type(struct_name: String, field: String, head: String, env: TypeEnv) -> Unit {
+  if String::length(head) > 0 {
+    Array::push(afe_field_types_cell, (afe_field_type_key(struct_name, field), afe_field_head_with_origin(head, env)))
+  } else {
+    ()
+  }
+}
+
+fn afe_collect_field_types(stmts: Array[Stmt], env: TypeEnv) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -597,16 +619,33 @@ fn afe_collect_field_types(stmts: Array[Stmt]) -> Unit {
         let mut j = 0
         while j < Array::length(fields) {
           let (fname, fty) = Array::get(fields, j)
-          let head = texpr_head_name_afe(fty)
-          if String::length(head) > 0 {
-            Array::push(afe_field_types_cell, (afe_field_type_key(sname, fname), head))
-          } else {
-            ()
+          afe_record_field_type(sname, fname, texpr_head_name_afe(fty), env)
+          j = j + 1
+        }
+      },
+      SModule(_, _, inner) => afe_collect_field_types(inner, env),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn afe_collect_env_field_types(env: TypeEnv) -> Unit {
+  let defs = env_type_defs(env)
+  let mut i = 0
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDStruct(sname, fields, _, _) => {
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, j)
+          match afe_type_head_name(fty) {
+            Some(head) => afe_record_field_type(sname, fname, head, env),
+            None => ()
           }
           j = j + 1
         }
       },
-      SModule(_, _, inner) => afe_collect_field_types(inner),
       _ => ()
     }
     i = i + 1
@@ -621,9 +660,10 @@ fn texpr_head_name_afe(t: TypeExpr) -> String {
   }
 }
 
-fn afe_set_field_types(stmts: Array[Stmt]) -> Unit {
+fn afe_set_field_types(stmts: Array[Stmt], env: TypeEnv) -> Unit {
   Array::truncate(afe_field_types_cell, 0)
-  afe_collect_field_types(stmts)
+  afe_collect_field_types(stmts, env)
+  afe_collect_env_field_types(env)
 }
 
 fn afe_lookup_field_type(struct_name: String, field: String) -> Option[String] {
@@ -1615,7 +1655,7 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
   // #1341: rebuild the struct field-type table for THIS program before the
   // walk, so a stale one from a previous module can never classify a
   // same-named field here.
-  afe_set_field_types(stmts)
+  afe_set_field_types(stmts, env)
   Array::truncate(afe_builtin_async_iter_import_names, 0)
   afe_record_builtin_async_iter_imports(stmts)
   let mut i = 0

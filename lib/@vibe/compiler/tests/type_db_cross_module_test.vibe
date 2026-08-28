@@ -24,6 +24,7 @@ import @vibe/compiler/core {
   env_lookup,
   env_lookup_binding,
   env_selectable_type_defs,
+  env_type_definition_origin,
   env_type_defs,
   env_value_binding,
   trait_defined,
@@ -1104,6 +1105,46 @@ test "projected import origins survive public and persistent surfaces" {
     Some(decoded) => {
       assert_module_origin(decoded, "value", dep_path, "value")
       assert(persistent_type_env_cache_text(decoded) == encoded)
+    },
+    None => assert(false)
+  }
+}
+
+fn assert_type_definition_module_origin(env: TypeEnv, name: String, expected_path: String, expected_source_name: String) -> Unit {
+  match env_type_definition_origin(env, name) {
+    Some(BindingOriginModuleExport(path, source_name)) => {
+      assert(path == expected_path)
+      assert(source_name == expected_source_name)
+    },
+    Some(BindingOriginReExportSurface(path, source_name)) => {
+      assert(path == expected_path)
+      assert(source_name == expected_source_name)
+    },
+    _ => assert(false)
+  }
+}
+
+test "public struct dependency closure preserves imported type provenance" {
+  let builtin_path = "lib/@vibe/builtin/index.vpkg"
+  let builtin_env = EnvTypeDefs([TDStruct("AsyncIter", [], [], ["T"])], [
+    "AsyncIter"
+  ], EnvEmpty)
+  let provider_path = "workspace/provider.vibe"
+  let source = "import @vibe/builtin { struct AsyncIter }\nexport struct Holder { stream: AsyncIter[Int] }"
+  let stmts = parse_program_with_path(provider_path, source)
+  let checked = projected_checked_env(source, provider_path, [builtin_path], [
+    (builtin_path, builtin_env)
+  ])
+  let published = checked_module_public_env(stmts, checked)
+  assert(Array::length(env_type_defs(published)) == 2)
+  assert(Array::length(env_selectable_type_defs(published)) == 1)
+  assert(Array::get(env_selectable_type_defs(published), 0) == "Holder")
+  assert_type_definition_module_origin(published, "AsyncIter", builtin_path, "AsyncIter")
+  match parse_persistent_type_env(persistent_type_env_cache_text(published)) {
+    Some(decoded) => {
+      assert(Array::length(env_type_defs(decoded)) == 2)
+      assert(Array::length(env_selectable_type_defs(decoded)) == 1)
+      assert_type_definition_module_origin(decoded, "AsyncIter", builtin_path, "AsyncIter")
     },
     None => assert(false)
   }
