@@ -1765,11 +1765,16 @@ via `memory.copy`, so `push` is amortised O(1)):
 > `Bytes::compare` is still unimplemented — measured, calling it is
 > `unknown name`.
 >
-> Against a 4 KiB buffer, `Bytes::index_of` measures **96× the hand-written
-> `Bytes::get` loop** it replaces and 1.6× the native scalar `String::index_of`
-> (`bench/bench_simd_bytes_find.vibe` records the runs). The first number is
-> why the builtin exists; the second is the one the SIMD code itself has to
-> earn.
+> Against a 4 KiB buffer (`bench/bench_simd_bytes_find.vibe`, p50):
+> `Bytes::index_of` 216 ns, a **native scalar byte loop** 2413 ns, the
+> hand-written `Bytes::get` loop it replaces 23600 ns, `String::index_of`
+> 365 ns. So **11× over scalar native** — that is what the SIMD earns — and
+> ~109× over the loop a library had to write.
+>
+> `String::index_of` is *not* the scalar baseline, despite what an earlier
+> version of this note said: it goes through the same windowed v128 scan
+> (`emit_windowed_substring_search`). The 1.7× against it measures
+> specialisation — no needle span to verify through `str_eq` — not SIMD.
 >
 > `Bytes::index_of_bytes` runs the SAME windowed search as `String::index_of`
 > (ADR-0054): a 16-byte SIMD scan for the needle's first byte, then the SIMD
