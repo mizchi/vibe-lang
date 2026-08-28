@@ -1302,30 +1302,37 @@ export fn gen_string_contains_body(enable_rc: Bool, string_index_of_idx: Int) ->
 /// packed). Locals (all i32, meta 8/0): 2=hay_len 3=ndl_len 4=i 5=hay_ptr
 /// 6=ndl_ptr 7=first_byte 8=limit (= hay_len - ndl_len, last valid start)
 /// 9=chunk_limit (window phase bound; 0 when the range is under 16 starts).
-/// #2345: the windowed substring search, emitted over four i32 locals that the
-/// CALLER has already populated:
+/// #2345: the windowed substring search, emitted over the i32 locals its ONE
+/// caller -- `gen_string_index_of_body` -- has already populated:
 ///
 ///   local 2  haystack length      local 5  haystack data pointer
 ///   local 3  needle length        local 6  needle data pointer
 ///   local 8  last valid start (hay_len - ndl_len)
 ///
-/// and locals 4 / 7 / 9 as scratch. That is the whole interface: everything
-/// above this point is unpacking a handle, and every byte below it is
-/// representation-independent. `String` reaches those locals from a packed
-/// `(ptr << 32) | len` fat value; `Bytes` reaches the same locals from a heap
-/// handle (`i32.load offset=8` for the data, `offset=4` for the length), which
-/// is why the search itself can be shared even though the two types have
-/// nothing else in common.
+/// and locals 4 / 7 / 9 as scratch, plus `local 1` read straight through to
+/// `str_eq` as the needle fat value. That last one is why the caller must be a
+/// String: `local 1` is the caller's own second parameter.
 ///
-/// Extracted as PURE CODE MOTION -- byte-for-byte the emitter calls that were
-/// inline in gen_string_index_of_body -- so `String::index_of`'s emitted bytes
-/// are unchanged, which is the property that makes the extraction safe to
-/// believe. The SIMD window (splat the needle's first byte, scan 16 bytes with
-/// i8x16.eq + v128.any_true, skip the whole window when no candidate byte is
-/// present, scalar full-match only on candidate windows) lives here now, so a
-/// second caller gets it rather than reimplementing it. ADR-0054 measured that
-/// window at ~5.1x over the scalar baseline; a Bytes search written without it
-/// would be the slow one.
+/// It briefly had a second caller. `Bytes::index_of_bytes` filled the same
+/// locals from a heap handle and inlined this helper, with the needle
+/// synthesised from locals 6/3 so it did not depend on `local 1`. That is
+/// gone: this is an emit HELPER, a code expander rather than a wasm function,
+/// so the second caller duplicated ~215 B of loop into the output and the
+/// wasm-gc lane -- which links builtins unconditionally -- grew 2.8-3.9% on
+/// every perf scenario, including programs that never search bytes. The
+/// synthesis cost 0.61% string_ops fuel on top, six instructions per candidate
+/// where `local.get 1` is one. `gen_bytes_index_of_bytes_body` now packs its
+/// two handles into fat values once and CALLS `String::index_of`, which
+/// removed both.
+///
+/// So the extraction no longer buys a shared caller; what it buys is that the
+/// search is readable on its own, separate from the unpacking above it.
+///
+/// Still byte-for-byte the emitter calls that were inline in
+/// gen_string_index_of_body. The SIMD window (splat the needle's first byte,
+/// scan 16 bytes with i8x16.eq + v128.any_true, skip the whole window when no
+/// candidate byte is present, scalar full-match only on candidate windows)
+/// lives here; ADR-0054 measured it at ~5.1x over the scalar baseline.
 fn emit_windowed_substring_search(b: Bytes, enable_rc: Bool, str_eq_idx: Int) -> Unit {
   emit_block_i64(b)
   emit_local_get(b, 3)
