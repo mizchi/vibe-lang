@@ -282,3 +282,15 @@ test "AsyncIter provenance survives a facade re-export" {
   } with { Exception::Throw(m) => m }
   assert(String::contains(msg, "async iterator awaits every step"))
 }
+
+test "mapped imported struct fields preserve AsyncIter provenance" {
+  let base_dir = "/tmp/vibe_async_iter_package_projection_cache_field_v1"
+  Fs::mkdir_p(base_dir)
+  let provider_path = String::concat(base_dir, "/provider.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  let provider = "import @vibe/builtin { struct AsyncIter }\nexport struct Holder {\n  stream: AsyncIter[Int]\n}\n"
+  let source = "import ./provider.vibe { struct Holder }\nimport @vibe/builtin { trait Mappable }\nfn drain(holder: Holder) -> Unit {\n  let ys = Mappable::map(holder.stream, (x: Int) -> Int { x + 1 })\n  for y in ys {\n    let _ = y\n  }\n  ()\n}\n"
+  Fs::write_bytes(provider_path, string_to_bytes(provider))
+  let msg = expect_async_for_message(main_path, source)
+  assert(String::contains(msg, "async iterator awaits every step"))
+}
