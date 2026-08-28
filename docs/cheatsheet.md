@@ -1733,6 +1733,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
 | `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
 | `Bytes::slice(b, start, end)` | subsequence | linear / gc |
+| `Bytes::index_of_bytes(hay, needle)` | first index of the `needle` **subsequence**, or `-1`. An empty needle answers `0` | linear / gc |
 | `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
@@ -1741,6 +1742,20 @@ via `memory.copy`, so `push` is amortised O(1)):
 > range is faster — both lower to a single `memory.copy` instruction. Accumulating
 > into an `Array[Int]` and then calling `Bytes::from_array` costs one extra copy,
 > so write into a `Bytes` from the start.
+>
+> **`Bytes::index_of_bytes` takes a `Bytes` needle, and there is no
+> `Bytes::index_of` yet** (#2345). The name is spelled the long way on purpose:
+> `docs/simd-data-structures.md` reserves `Bytes::index_of(Bytes, Int)` for
+> single-byte search, whose needle is an `Int`. That is a separate body with a
+> different scan — the substring loop compares a needle *span*, so it cannot
+> consume a byte — and it is not implemented, nor are `last_index_of` / `count`
+> / `compare`. Calling any of them today is `unknown name`.
+>
+> `Bytes::index_of_bytes` runs the SAME windowed search as `String::index_of`
+> (ADR-0054): a 16-byte SIMD scan for the needle's first byte, then the SIMD
+> `str_eq` on each candidate. The two differ only in how they unpack their
+> arguments — `String` is a packed `(ptr << 32) | len`, `Bytes` is a heap handle
+> whose length is at offset 4 and data pointer at offset 8.
 >
 > **`Bytes::fill` is NOT one of that group** (measured 2026-08-27). This table used
 > to describe it as `Bytes::fill(b, off, len)`, "range fill, one `memory.fill`".
