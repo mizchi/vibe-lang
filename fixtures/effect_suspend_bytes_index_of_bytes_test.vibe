@@ -1,0 +1,76 @@
+// `Bytes::index_of_bytes` (#2345) has to be on the hand-audited pure-builtin
+// allowlist (idp_pure_builtin_names / edp_pure_builtin_names,
+// codegen/common_base/inline_direct_perform.vibe) -- the same list
+// `Array::concat` joined in #1536, and the one `String::index_of` has been on
+// all along.
+//
+// The path that consults it here is scps_named_call_ok (suspend-class
+// lowering, ADR-0076 Phase 3a/3b), which has NO registry fallback: a handler
+// arm capturing `resume` as a value refuses any handle-body call it cannot see
+// through, and an absent builtin name is exactly that. Without the entry this
+// file does not compile:
+//
+//   a handler arm captures `resume` as a value ... (here: the call to
+//   'Bytes::index_of_bytes')
+//
+// That is NOT the other consumer of the same list. edp_has_unsafe_construct
+// gained a registry first-order fallback in #2109, so it admits any registry
+// builtin with no function-typed parameter whether or not it is listed --
+// measured, a needing function calling `Bytes::index_of_bytes` compiles on the
+// wasm-gc lane today, and so does one calling `Bytes::slice`, which is not on
+// the list either.
+//
+// LINEAR ONLY on purpose. A suspend-class arm captures `resume` as a value,
+// and the wasm-gc backend does not lower that (`resume` (gc ident) reached
+// code generation unresolved), so a gc run of this shape says nothing about
+// the allowlist.
+//
+// The second block is the control, not decoration: `String::index_of` is the
+// same windowed search reached through a String prologue and is already on the
+// list, so the two blocks stand or fall together. One failing alone means the
+// entry for the other was dropped.
+
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn mkb(s: String) -> Bytes {
+  let b = Bytes::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, String::char_code_at(s, i))
+    i = i + 1
+  }
+  b
+}
+
+fn via_bytes() -> Int {
+  handle {
+    perform Ask::Get(Bytes::index_of_bytes(mkb("hello world"), mkb("world")))
+  } with {
+    Ask::Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+fn via_string() -> Int {
+  handle {
+    perform Ask::Get(String::index_of("hello world", "world"))
+  } with {
+    Ask::Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+test "Bytes::index_of_bytes is callable from a suspend-class handle body" {
+  inspect(via_bytes(), "16")
+}
+
+test "String::index_of, the same search through a String prologue, agrees" {
+  inspect(via_string(), "16")
+}
