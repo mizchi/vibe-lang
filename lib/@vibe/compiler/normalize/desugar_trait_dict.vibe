@@ -87,6 +87,7 @@ struct GenericImplInfo {
 
 struct DictGen {
   name: String;
+  type_params: Array[String];
   threaded: Array[(String, String, Int)];
   return_constructor_param: String;
   impl_trait: String;
@@ -2625,6 +2626,42 @@ fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struc
   }
 }
 
+/// Devirtualize finite Iterator operations when the receiver is statically an
+/// Array. The public helper remains dictionary-based for user collections,
+/// while Array hot loops keep the same direct intrinsics as `Array::*`.
+fn iterator_array_intrinsic(name: String, args: Array[Expr], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  if Array::length(args) == 0 {
+    None
+  } else {
+    // Constructor-aware inference covers result-bearing control flow such as
+    // `Iterator::map(loop { break [1] }, f)`. Falling back to the generic
+    // dictionary there is semantically valid in principle, but would make an
+    // Array pay abstraction overhead solely because its receiver is not a
+    // literal or a named binding.
+    let is_array = match infer_constructor_arg_type_name(Array::get(args, 0), gens, struct_sets, var_types, fn_returns) {
+      Some(receiver) => receiver == "Array",
+      None => false
+    }
+    if !is_array {
+      None
+    } else if name == "Iterator::map" {
+      Some("Array::map")
+    } else if name == "Iterator::filter" {
+      Some("Array::filter")
+    } else if name == "Iterator::fold" {
+      Some("Array::fold")
+    } else if name == "Iterator::find" {
+      Some("Array::find")
+    } else if name == "Iterator::any" {
+      Some("Array::any")
+    } else if name == "Iterator::all" {
+      Some("Array::all")
+    } else {
+      None
+    }
+  }
+}
+
 /// #760(4): anonymous-record dot access `r.name`. A `record { .. }` literal whose
 /// field-set matches NO declared struct is stored in LITERAL field order with tag
 /// 0 (see compile_expr_tail4 ERecord); its `.field` reads reach codegen's EDot,
@@ -3230,16 +3267,20 @@ fn collect_generic_impl_owners(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
-fn collect_generic_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
+fn collect_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
   let out = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImpl(tparams, _, trait_name, target) => if Array::length(tparams) > 0 {
+      SImpl(tparams, _, trait_name, target) => {
         let dispatch_target = match target {
-          TyName(name) => TyApp(name, for tparam in tparams {
-            TyName(tparam)
-          }),
+          TyName(name) => if Array::length(tparams) > 0 {
+            TyApp(name, for tparam in tparams {
+              TyName(tparam)
+            })
+          } else {
+            target
+          },
           _ => target
         }
         Array::push(out, GenericImplInfo::{
@@ -3248,8 +3289,6 @@ fn collect_generic_impl_infos(stmts: Array[Stmt]) -> Array[GenericImplInfo] {
           type_params: tparams,
           target: dispatch_target
         })
-      } else {
-        ()
       },
       _ => ()
     }
@@ -3342,6 +3381,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
             match impl_info {
               Some(info) => Array::push(out, DictGen::{
                 name: fname,
+                type_params: tparams,
                 threaded,
                 return_constructor_param: result_constructor,
                 impl_trait: info.trait_name,
@@ -3351,6 +3391,7 @@ fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[Ty
               }),
               None => Array::push(out, DictGen::{
                 name: fname,
+                type_params: tparams,
                 threaded,
                 return_constructor_param: result_constructor,
                 impl_trait: "",
@@ -3697,6 +3738,141 @@ fn matching_generic_impl_method(gens: Array[DictGen], cname: String, trait_name:
       erased_result
     } else {
       None
+    }
+  }
+}
+
+fn type_expr_mentions_param(ty: TypeExpr, params: Array[String]) -> Bool {
+  match ty {
+    TyName(name) => str_array_contains(params, name),
+    TyApp(head, args) => if str_array_contains(params, head) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) && !found {
+        found = type_expr_mentions_param(Array::get(args, i), params)
+        i = i + 1
+      }
+      found
+    },
+    TyFn(fn_params, ret, _) => {
+      let mut i = 0
+      let mut found = type_expr_mentions_param(ret, params)
+      while i < Array::length(fn_params) && !found {
+        found = type_expr_mentions_param(Array::get(fn_params, i), params)
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) && !found {
+        found = type_expr_mentions_param(Array::get(items, i), params)
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+fn trait_ref_mentions_param(trait_name: String, params: Array[String]) -> Bool {
+  match trait_ref_from_key(trait_name) {
+    Some(reference) => type_expr_mentions_param(reference, params),
+    None => false
+  }
+}
+
+fn substitute_impl_bindings(ty: TypeExpr, bindings: Array[(String, TypeExpr)]) -> TypeExpr {
+  match ty {
+    TyName(name) => match impl_pattern_binding(bindings, name) {
+      Some(bound) => bound,
+      None => ty
+    },
+    TyApp(head, args) => TyApp(head, for arg in args {
+      substitute_impl_bindings(arg, bindings)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      substitute_impl_bindings(param, bindings)
+    }, substitute_impl_bindings(ret, bindings), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_impl_bindings(item, bindings)
+    }),
+    TyUnit => TyUnit
+  }
+}
+
+fn instantiate_impl_trait(gen: DictGen, bindings: Array[(String, TypeExpr)]) -> Option[String] {
+  match trait_ref_from_key(gen.impl_trait) {
+    Some(reference) => {
+      let instantiated = substitute_impl_bindings(reference, bindings)
+      if type_expr_mentions_param(instantiated, gen.impl_params) {
+        None
+      } else {
+        Some(trait_ref_key(instantiated))
+      }
+    },
+    None => None
+  }
+}
+
+/// Resolve a callee-generic applied bound (`C: Iterator[A]`) from the unique
+/// generic impl selected by the concrete receiver (`Triple[Int]`). The checker
+/// has already established the call's type relation; this recovery exists so
+/// the syntax-only dictionary pass does not emit `Iterator[A]` after `A` has
+/// been inferred. Multiple compatible impl families remain unresolved rather
+/// than choosing one and silently dispatching to the wrong implementation.
+fn specialize_applied_trait_for_target(trait_name: String, callee_params: Array[String], actual_target: TypeExpr, gens: Array[DictGen]) -> String {
+  if !trait_ref_mentions_param(trait_name, callee_params) {
+    trait_name
+  } else match trait_ref_from_key(trait_name) {
+    None => trait_name,
+    Some(requested) => {
+      let candidates = empty_str_array()
+      let mut i = 0
+      while i < Array::length(gens) {
+        let gen = Array::get(gens, i)
+        match gen.impl_target {
+          Some(target) => if trait_ref_name(gen.impl_trait) == trait_ref_name(trait_name) {
+            let bindings = []
+            let target_matches = if impl_target_pattern_matches(target, actual_target, gen.impl_params, bindings) {
+              true
+            } else match actual_target {
+              TyName(actual_head) => actual_head == impl_target_head(target) && generic_impl_target_is_total(target, gen.impl_params),
+              _ => false
+            }
+            if target_matches {
+              match instantiate_impl_trait(gen, bindings) {
+                Some(candidate) => match trait_ref_from_key(candidate) {
+                  Some(candidate_ref) => {
+                    let requested_bindings = []
+                    if impl_target_pattern_matches(requested, candidate_ref, callee_params, requested_bindings) && !str_array_contains(candidates, candidate) {
+                      Array::push(candidates, candidate)
+                    } else {
+                      ()
+                    }
+                  },
+                  None => ()
+                },
+                None => ()
+              }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          },
+          None => ()
+        }
+        i = i + 1
+      }
+      if Array::length(candidates) == 1 {
+        Array::get(candidates, 0)
+      } else {
+        trait_name
+      }
     }
   }
 }
@@ -4824,7 +5000,7 @@ fn infer_constructor_match_arm_type_name(scrut: Expr, arms: Array[(Pat, Expr)], 
 /// receiver type is syntactically known) or by forwarding the caller's own dict
 /// parameter (the receiver is a type parameter bound by the same trait in the
 /// enclosing generic — the generic->generic case).
-fn synth_dicts(threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] {
+fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0
@@ -4861,19 +5037,20 @@ fn synth_dicts(threaded: Array[(String, String, Int)], constructor_recvs: Array[
           } else {
             trait_name
           }
-          match find_dict_for_trait(dict_binds, nm, resolved_trait) {
+          let target = if is_elem_recv || is_constructor_recv {
+            // The receiver carries `Array[T]`, but this witness is for T.
+            // A constructor receiver similarly carries `F[A]`, while its
+            // witness target is the constructor F rather than F[A].
+            TyName(nm)
+          } else match infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns) {
+            Some(inferred) => inferred,
+            None => TyName(nm)
+          }
+          let concrete_trait = specialize_applied_trait_for_target(resolved_trait, callee_type_params, target, gens)
+          match find_dict_for_trait(dict_binds, nm, concrete_trait) {
             Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
             None => {
-              let target = if is_elem_recv || is_constructor_recv {
-                // The receiver carries `Array[T]`, but this witness is for T.
-                // A constructor receiver similarly carries `F[A]`, while its
-                // witness target is the constructor F rather than F[A].
-                TyName(nm)
-              } else match infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns) {
-                Some(inferred) => inferred,
-                None => TyName(nm)
-              }
-              match build_concrete_dict_for_target(target, resolved_trait, traits, gens, struct_sets, var_types, fn_returns, Some(recv_arg)) {
+              match build_concrete_dict_for_target(target, concrete_trait, traits, gens, struct_sets, var_types, fn_returns, Some(recv_arg)) {
                 Some(dict) => Array::push(dicts, dict),
                 None => {
                   ok = false
@@ -10155,14 +10332,18 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 },
                 None => None
               }
-              match as_method {
-                Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off),
-                None => match lookup_gen_entry(gens, name) {
-                  Some(gen) => match synth_dicts(gen.threaded, gen.constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
-                    Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
+              let array_intrinsic = iterator_array_intrinsic(name, args, gens, struct_sets, var_types, fn_returns)
+              match array_intrinsic {
+                Some(intrinsic) => ECall(EIdent(intrinsic, coff), rwargs, off),
+                None => match as_method {
+                  Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off),
+                  None => match lookup_gen_entry(gens, name) {
+                    Some(gen) => match synth_dicts(gen.type_params, gen.threaded, gen.constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                      Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
+                      None => ECall(EIdent(name, coff), rwargs, off)
+                    },
                     None => ECall(EIdent(name, coff), rwargs, off)
-                  },
-                  None => ECall(EIdent(name, coff), rwargs, off)
+                  }
                 }
               }
             },
@@ -10231,7 +10412,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                   // falling back to the un-dicted call (same as the EIdent
                   // arm's own fallback) when synth_dicts can't resolve one.
                   Some(qual) => match lookup_gen_entry(gens, qual) {
-                    Some(gen) => match synth_dicts(gen.threaded, gen.constructor_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                    Some(gen) => match synth_dicts(gen.type_params, gen.threaded, gen.constructor_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, prepend_expr(robj, rwargs)), off),
                       None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off)
                     },
@@ -18847,7 +19028,7 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
   inject_trait_method_generics_with(stmts, traits)
   let struct_sets = collect_struct_field_sets(stmts)
   let fn_returns = collect_fn_returns(stmts)
-  let gimpl_infos = collect_generic_impl_infos(stmts)
+  let gimpl_infos = collect_impl_infos(stmts)
   let gens = build_gens(stmts, traits, gimpl_infos)
   Array::truncate(dtd_constructor_local_returns, 0)
   Array::truncate(dtd_constructor_callable_bodies, 0)

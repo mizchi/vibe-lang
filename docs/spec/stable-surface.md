@@ -212,20 +212,20 @@ The stable symbols listed under "Key Builtins" in the
   first-class values (call-only; #2275).
 - **Conversions**: `Int::to_double`, `Double::to_int`.
   `Int::to_string` cannot be frozen as a first-class value (call-only; #2275).
-- **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
-  **combinator layer (`Iterator::map` and friends) is not frozen** — it is
-  retired by ADR-0099's two-layer split and has zero rows in the registry
-  (measured: `Iterator::` 0 hits). The frozen constructor-polymorphic surface
-  is the `Mappable` API listed under @vibe/builtin below; its shipped
-  implementations are eager Array, Option, and pull `AsyncIter` (ADR-0110,
-  ADR-0099). Container-specific
+- **Iteration**: the finite indexed `Iterator[T]` trait, its `for-in` desugar,
+  and eager namespace operations (ADR-0044, ADR-0110). Importing
+  `trait Iterator`
+  activates the exported `Iterator::*` namespace without introducing bare
+  operation names. Array, String, Map, and `@vibe/core` List implement the
+  protocol; Option does not. Pull `AsyncIter` remains a separate layer with
+  `AsyncIter::*` operations (ADR-0099). Container-specific
   `Array::map` / `Array::filter` / `Array::fold` remain available but cannot be frozen
   as first-class values; see Array above.
 - **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), the
-  `Mappable[F[_]]` trait and its pipeline-first operation (ADR-0110), and the
-  `let*` railway bind. `Mappable::map` is **not frozen as a no-import prelude
+  `Iterator[T]` trait and its eager operations (ADR-0110), and the `let*`
+  railway bind. `Iterator::map` is **not frozen as a no-import prelude
   symbol**: it is frozen as an imported `@vibe/builtin` API by `index.vpkg`,
-  and `import @vibe/builtin { trait Mappable }` makes it visible without a
+  and `import @vibe/builtin { trait Iterator }` makes it visible without a
   separate operation import. `Result::and_then` **cannot be frozen** — `Result` was
   removed from the language in #1324, and `Result::` has zero registry rows.
   `tap` / `tap_some` moved to `@vibe/console` in #2102 (`tap_ok` / `tap_err`

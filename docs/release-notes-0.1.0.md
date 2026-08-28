@@ -55,11 +55,12 @@ read, and every feature below is one the compiler itself depends on.
 - Syntax was narrowed where two spellings meant one thing: string interpolation
   is `\{expr}`, type-declaration bodies separate with `;`, top-level named
   functions are `fn` (ADR-0064), and struct literals are `Type::{ ... }`.
-- **Pipeline combinators are constructor-polymorphic** (ADR-0110). Kinded
-  parameters such as `F[_]` support applied types `F[A]`, and
-  `xs |> Mappable::map(f)` dispatches through `Mappable[F]`. The shipped instances cover
-  eager Array, Option, and pull `AsyncIter`; cross-package contracts and both codegen backends are
-  covered by executable fixtures.
+- **Trait namespaces and finite iteration are generic** (ADR-0110). Importing
+  `trait Iterator` activates `Iterator::*` without exposing bare operation
+  names, and any type implementing `iter_length` plus `iter_get` gains the
+  eager combinators. Array calls devirtualize to `Array::*`; `AsyncIter`
+  remains a separate pull layer. Kinded parameters such as `F[_]` and applied
+  types `F[A]` remain available for user-defined constructor-indexed traits.
 - Other additions: generic struct type parameters, trait bounds in package
   contracts, `derive(Eq)`, conditional impls, `is` expressions, `loop` /
   `break(v)` / `continue(...)`, and inline wasm
