@@ -77,6 +77,24 @@ test "#2357: transparent aliases preserve namespace operation carriers" {
   inspect(String::contains(print_program(stmts), "Mappable::map"), content = "true")
 }
 
+test "#2357: derived Self binders avoid trait type parameters" {
+  let source = "trait Scoped[__trait_operation_self_Scoped_project] { project(Self, __trait_operation_self_Scoped_project) -> Self }"
+  let stmts = parse_program(lex(source))
+  derive_trait_namespace_operations(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "__trait_operation_self_Scoped_project_1"), content = "true")
+  inspect(check_source_error_message(out), "")
+}
+
+test "#2357: derived Self binders avoid method type parameters" {
+  let source = "trait Scoped { project[__trait_operation_self_Scoped_project](Self, __trait_operation_self_Scoped_project) -> Self }"
+  let stmts = parse_program(lex(source))
+  derive_trait_namespace_operations(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "__trait_operation_self_Scoped_project_1"), content = "true")
+  inspect(check_source_error_message(out), "")
+}
+
 test "#2338: constructor-indexed bounds lower through a witness dictionary" {
   let out = desugared_constructor_map(false, false)
   inspect(String::contains(out, "__dict_"), content = "true")
@@ -232,6 +250,14 @@ fn desugar_mappable_program(body: String) -> String with Exception {
 test "#2338: top-level constructor bindings preserve the recovered witness" {
   let out = desugar_mappable_program("fn inc(x: Int) -> Int { x + 1 }\nfn dbl(x: Int) -> Int { x * 2 }\nlet xs = Mappable::map([1], inc)\nlet ys = Mappable::map(xs, dbl)\n")
   inspect(String::contains(out, "Mappable::map(xs, dbl)"), content = "false")
+  inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+}
+
+test "#2338: assignments publish constructor evidence to their continuation" {
+  let stmts = parse_program(lex(mappable_program("fn probe() -> Unit { let id = (x) -> { x }; let mut xs = id([0]); xs = [1]; let _ = Mappable::map(xs, (x) -> { x + 1 }); () }\n")))
+  desugar_trait_dicts(stmts)
+  let out = print_program(stmts)
+  inspect(String::contains(out, "Mappable::map(xs"), content = "false")
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
 }
 

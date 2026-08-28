@@ -840,6 +840,16 @@ fn trait_operation_method_shadows(method_params: Array[String], name: String) ->
   found
 }
 
+fn trait_operation_fresh_self_param(base: String, header_params: Array[String], method_params: Array[String]) -> String {
+  let mut candidate = base
+  let mut suffix = 1
+  while trait_operation_method_shadows(header_params, candidate) || trait_operation_method_shadows(method_params, candidate) {
+    candidate = String::concat(base, String::concat("_", __to_string(suffix)))
+    suffix = suffix + 1
+  }
+  candidate
+}
+
 fn trait_operation_shadows_header(method_params: Array[String], header_params: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
@@ -971,8 +981,8 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
           let (method_name, raw_params, raw_ret) = Array::get(methods, mi)
           let operation_name = String::concat(trait_name, String::concat("::", method_name))
           if !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_dict_already_materialized(stmts, trait_name) {
-            let self_param = String::concat("__trait_operation_self_", String::concat(trait_name, String::concat("_", method_name)))
             let (method_params, method_bounds) = trait_operation_method_generics(method_gens, mi, method_name)
+            let self_param = trait_operation_fresh_self_param(String::concat("__trait_operation_self_", String::concat(trait_name, String::concat("_", method_name))), header_params, method_params)
             let shadows_header = trait_operation_shadows_header(method_params, header_params)
             let uses_self = !shadows_header && trait_operation_params_have_carrier(raw_params, "Self", stmts)
             let surface_mentions_self = trait_operation_surface_mentions(raw_params, raw_ret, "Self")
@@ -9873,7 +9883,20 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let body_vars = extend_local_fn_return(body_vars3, name, val)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
-    EAssign(name, val, cont) => EAssign(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EAssign(name, val, cont) => {
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let inferred = if result_uses_constructor_witness(val, gens) {
+        anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)
+      } else {
+        anon_or_infer(val, struct_sets, var_types, fn_returns)
+      }
+      let continuation_vars = if Array::get(dtd_constructor_tracking, 0) {
+        extend_local_fn_return(constructor_rewrite_var_types(var_types, name, inferred), name, val)
+      } else {
+        var_types
+      }
+      EAssign(name, new_val, rewrite_expr(cont, gens, traits, struct_sets, dict_binds, continuation_vars, fn_returns))
+    },
     EAssignOp(name, op, val, cont) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     ESeq(a, b) => ESeq(rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EMatch(scrut, arms) => {
