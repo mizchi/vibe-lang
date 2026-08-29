@@ -213,12 +213,17 @@ def main():
     def named_bodies(wasm, bodies):
         imports = fn_import_count(wasm)
         names = fn_names(wasm)
+        # A name can label several bodies (the emitter deliberately labels
+        # every unassigned generated helper "__rt_gen"), so keep every index
+        # per name in index order -- collapsing to one would silently drop
+        # bodies from the comparison.
         by_name = {}
         run_body = None
-        for idx, nm in names.items():
+        for idx in sorted(names):
+            nm = names[idx]
             body_idx = idx - imports
             if 0 <= body_idx < len(bodies):
-                by_name[nm] = body_idx
+                by_name.setdefault(nm, []).append(body_idx)
                 if nm == "run":
                     run_body = body_idx
         return by_name, run_body
@@ -247,24 +252,42 @@ def main():
     only_a = [nm for nm in by_name_a if nm not in by_name_b]
     only_b = [nm for nm in by_name_b if nm not in by_name_a]
     glue = {"_start", "run"}
+    # Groups sharing one name pair positionally (index order); a group whose
+    # size changed cannot be paired and fails below rather than dropping the
+    # unmatched bodies from the comparison.
     named_diffs = []
+    group_mismatch = []
     for nm in shared:
-        if bodies_a[by_name_a[nm]] != bodies_b[by_name_b[nm]]:
+        ga, gb = by_name_a[nm], by_name_b[nm]
+        if len(ga) != len(gb):
+            group_mismatch.append((nm, len(ga), len(gb)))
+        elif any(bodies_a[ia] != bodies_b[ib] for ia, ib in zip(ga, gb)):
             named_diffs.append(nm)
     glue_diffs = [nm for nm in named_diffs if nm in glue]
     foreign = [nm for nm in named_diffs if nm not in glue and ("_exp_" in nm or "_dep_" in nm)]
     local = [nm for nm in named_diffs if nm not in glue and nm not in foreign]
     print(
-        f"named: {len(shared)} paired by name, {len(named_diffs)} differ "
+        f"named: {len(shared)} name groups paired, {len(named_diffs)} differ "
         f"({len(foreign)} foreign, {len(local)} entry/synthesized, "
         f"{len(glue_diffs)} entry glue); only-in-baseline {len(only_a)}, "
         f"only-in-candidate {len(only_b)} (the probe's own test is expected here)"
     )
-    if only_a:
-        print(f"  names only in baseline (unexpected): {only_a[:5]}")
+    # A baseline name the candidate lost means its body was never compared;
+    # the appended test cannot legitimately remove a name, so fail closed.
+    if only_a or group_mismatch:
+        if only_a:
+            print(f"  names only in baseline: {only_a[:5]}")
+        for nm, ca, cb in group_mismatch[:5]:
+            print(f"  name group size changed: {nm} ({ca} -> {cb})")
+        print(
+            f"FAIL: {len(only_a)} baseline names unpaired and "
+            f"{len(group_mismatch)} name groups resized -- those bodies were "
+            f"never compared, so stability cannot be certified"
+        )
+        return 1
 
     def diff_shape(nm):
-        a, b = bodies_a[by_name_a[nm]], bodies_b[by_name_b[nm]]
+        a, b = bodies_a[by_name_a[nm][0]], bodies_b[by_name_b[nm][0]]
         if len(a) != len(b):
             return f"len {len(a)}->{len(b)}"
         nd = sum(1 for j in range(len(a)) if a[j] != b[j])
