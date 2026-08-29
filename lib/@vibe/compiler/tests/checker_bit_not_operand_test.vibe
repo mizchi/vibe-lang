@@ -34,12 +34,34 @@ test "#2403 `~` rejects a declared struct through the enclosing fn's own param" 
 }
 
 test "#2403 `~` keeps accepting an alias that resolves to Int" {
-  // The carve-out this fix must NOT swallow: `Wrap[Bool]` IS an `Int`, and it
-  // reaches the guard as a `CtNamed` with arguments -- the same shape as
-  // `Cell[Int]`. Only the DECLARATION tells the two apart, which is why the
-  // fix consults `find_typedef` rather than testing for applied arguments.
+  // `Wrap[Bool]` IS an `Int`. It is accepted because `subst_apply` expands the
+  // alias before the guard runs, so it arrives as `CtInt` -- NOT because the
+  // declared-type match lets aliases through. Measured: making `TDAlias` an
+  // error there leaves this answer unchanged.
   let src = "type Wrap[T] = Int\nfn f(x: Wrap[Bool]) -> Int { ~x }"
   assert(check_source_ok(src))
+}
+
+// The same expansion is what rejects an alias to a NON-Int, which is the half
+// that has to keep working for the acceptance above to be safe rather than
+// lucky. All three of these resolve through the alias to a concrete type the
+// `type_is_ground` guard already refuses.
+
+test "#2403 `~` rejects an alias to a non-Int type" {
+  let src = "type Text = String\nfn f(x: Text) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects a generic alias applied to a non-Int body" {
+  let src = "type WrapS[T] = String\nfn f(x: WrapS[Bool]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects an identity alias carrying a non-Int argument" {
+  // `Id[String]` expands to `String` through the alias's OWN type parameter,
+  // so the argument decides and the head name cannot be trusted alone.
+  let src = "type Id[T] = T\nfn f(x: Id[String]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
 }
 
 test "#2403 `~` stays permissive for a bare rigid type formal" {
