@@ -87,10 +87,23 @@ test "Map iterator key views and their wrappers stay borrow-returning" {
   inspect(contains(borrow_set_of(src), "key_at"), "true")
 }
 
+test "source-owned Map iterator accessors derive ownership from their bodies" {
+  let owned = "fn Map::iter_get(_m: Int, _i: Int) -> String {\n  String::concat(\"owned\", \" result\")\n}\nfn Map::__iter_get_unchecked(_m: Int, _i: Int) -> String {\n  String::concat(\"owned\", \" result\")\n}\nfn checked_wrapper(m: Int, i: Int) -> String { Map::iter_get(m, i) }\nfn unchecked_wrapper(m: Int, i: Int) -> String { Map::__iter_get_unchecked(m, i) }\n"
+  let owned_names = borrow_set_of(owned)
+  inspect(contains(owned_names, "Map::iter_get"), "false")
+  inspect(contains(owned_names, "Map::__iter_get_unchecked"), "false")
+  inspect(contains(owned_names, "checked_wrapper"), "false")
+  inspect(contains(owned_names, "unchecked_wrapper"), "false")
+  let borrowed = "fn Map::iter_get(xs: Array[String], i: Int) -> String { Array::get(xs, i) }\nfn key_at(xs: Array[String], i: Int) -> String { Map::iter_get(xs, i) }\n"
+  let borrowed_names = borrow_set_of(borrowed)
+  inspect(contains(borrowed_names, "Map::iter_get"), "true")
+  inspect(contains(borrowed_names, "key_at"), "true")
+}
+
 //# #1979 review: the two exported APIs must not be two spellings of the set.
 //#
-//# `is_borrow_ret_builtin` classifies DIRECT calls; `borrow_ret_builtin_names`
-//# seeds the wrapper fixed point. When they were an independent `||` chain and
+//# `is_borrow_ret_builtin` identifies intrinsic members;
+//# `borrow_ret_builtin_names` seeds the wrapper fixed point. When they were an independent `||` chain and
 //# an independent array literal, a builtin added to one and not the other
 //# silently reintroduced the drift the consolidation removed -- and the two
 //# partial updates fail in OPPOSITE directions, so neither is the safe one to

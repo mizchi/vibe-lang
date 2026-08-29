@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, borrow_ret_builtin_names, bsearch_leftmost, is_borrow_ret_builtin, is_exception_throw_operation
+  Expr, Pat, Stmt, TypeExpr, borrow_ret_builtin_names, bsearch_leftmost, is_exception_throw_operation, sorted_names_of
 }
 
 //# Types
@@ -407,7 +407,9 @@ fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
 /// pctx_names, so the names sit here unprefixed and a miss costs only the
 /// fixed set.
 fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
-  is_borrow_ret_builtin(fname) || bsearch_leftmost(ctx.pctx_names, fname) >= 0
+  // The computed set includes compiler-owned builtins and transitive wrappers,
+  // but excludes a builtin spelling when source owns that exact binding.
+  bsearch_leftmost(ctx.pctx_names, fname) >= 0
 }
 
 /// #707: fixed-point closure over top-level function definitions, starting
@@ -776,13 +778,47 @@ fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
   }
 }
 
+/// The two Map iterator accessors have source-ownership guards in both linear
+/// and GC codegen. If source binds either exact name, its body -- not the
+/// compiler intrinsic -- determines whether the result is borrowed.
+fn source_owns_shadowable_borrow_builtin(stmts: Array[Stmt], name: String) -> Bool {
+  if name != "Map::iter_get" && name != "Map::__iter_get_unchecked" {
+    false
+  } else {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(stmts) && !found {
+      found = match Array::get(stmts, i) {
+        SLet(_, _, bound, _, _) => bound == name,
+        SFnDecl(_, bound, _, _, _) => bound == name,
+        _ => false
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
 export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
   // Seeded from the shared single-source-of-truth list (#1979) -- a seed that
   // drifts from is_borrow_ret_builtin (MutList::get was missing until #1932
   // review) makes both the inline branch-tail check and the #1915
   // spine-binding resolution classify that builtin's result as owned, and RC
-  // callers then drop an interior view.
-  let known: Array[String] = borrow_ret_builtin_names()
+  // callers then drop an interior view. Source-owned shadowable names are
+  // removed before the fixed point and may re-enter only when their bodies
+  // actually return a borrowed view.
+  let builtin_names = borrow_ret_builtin_names()
+  let known: Array[String] = []
+  let mut seed_i = 0
+  while seed_i < Array::length(builtin_names) {
+    let builtin_name = Array::get(builtin_names, seed_i)
+    if !source_owns_shadowable_borrow_builtin(stmts, builtin_name) {
+      Array::push(known, builtin_name)
+    } else {
+      ()
+    }
+    seed_i = seed_i + 1
+  }
   let mut changed = true
   while changed {
     changed = false
@@ -2398,7 +2434,8 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
 /// Build the dup/drop plan for a function body expression.
 export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
   let no_masks: Array[Int] = []
-  let ctx = pctx_new([], [], no_masks, [])
+  let ctx = pctx_new(sorted_names_of(borrow_ret_builtin_names()), [], no_masks, [
+  ])
   let empty: Map[String, Int] = Map::new()
   pc_count(ctx, empty, body)
   pctx_apply_borrow_retention(ctx)
