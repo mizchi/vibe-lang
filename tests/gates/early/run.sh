@@ -259,6 +259,69 @@ if ! printf '%s\n' "$oob_bytes_out" | grep -qF "Bytes::get: index 9 out of bound
 fi
 echo "[compiler-gate] OOB abort messages ok (Array::get, Bytes::get)"
 
+# 4f. #2362: `insert_raw`'s probe walk is BOUNDED. `find_index` has carried a
+#     step guard since it was written; the insert path walking the same chain
+#     under the same invariant did not, so a table with no empty slot spun
+#     forever -- the least diagnosable way to fail. The state is unreachable
+#     through `MutMap::set`, which grows before every insert, so the probe
+#     below reaches it the way an accounting bug would: by under-counting
+#     `m.tombs`, which is exactly what the growth check reads.
+#
+#     The assertion is TERMINATION, timed: before the guard this program ran
+#     until something killed it, so a plain "did it fail?" check passes either
+#     way -- a hang and a trap are both non-zero once a timeout is involved.
+#     `timeout` reports 124 when it had to intervene, and that is the value
+#     this pins against.
+echo "[compiler-gate] 4f insert_raw's probe walk is bounded (#2362)"
+hmdir="_build/_gate_hashmap_bound"
+rm -rf "$hmdir"; mkdir -p "$hmdir"
+cat > "$hmdir/fill.vibe" <<'VEOF'
+import @vibe/core { struct MutMap }
+
+fn main with Console {
+  let m: MutMap[String, Int] = MutMap::with_capacity_string(8)
+  println("filling")
+  let mut i = 0
+  while i < 40 {
+    let k = "k\{i}"
+    MutMap::set(m, k, i)
+    let _ = MutMap::delete(m, k)
+    m.tombs = m.tombs - 1
+    i = i + 1
+  }
+  println("returned")
+}
+VEOF
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$hmdir/fill.vibe" "$hmdir/fill.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$hmdir/fill.wasm" ]; then
+  echo "[compiler-gate] FAIL: #2362 probe did not compile" >&2
+  cat "$hmdir/fill.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+set +e
+hm_out="$(timeout 60 env VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$hmdir/fill.wasm" 2>&1)"
+hm_rc=$?
+set -e
+rm -rf "$hmdir"
+if [ "$hm_rc" -eq 124 ]; then
+  echo "[compiler-gate] FAIL: a full table made insert_raw spin -- the probe had to be killed at the timeout (#2362)" >&2
+  printf '%s\n' "$hm_out" >&2
+  exit 1
+fi
+if [ "$hm_rc" -eq 0 ]; then
+  echo "[compiler-gate] FAIL: insert_raw accepted an insert into a table with no free slot (#2362)" >&2
+  printf '%s\n' "$hm_out" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$hm_out" | grep -qF "filling"; then
+  echo "[compiler-gate] FAIL: the #2362 probe failed before it reached the fill loop, so it proves nothing" >&2
+  printf '%s\n' "$hm_out" >&2
+  exit 1
+fi
+echo "[compiler-gate] insert_raw bounded probe ok (terminated, rc=$hm_rc)"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that
