@@ -211,6 +211,23 @@ test "a method generic shadows a same-named trait parameter" {
   assert(String::contains(unshadowed, "constructor parameter `A` is applied"))
 }
 
+/// Two SOURCE row binders unified by the body must stay unified in the
+/// published scheme. Restoring each one's original spelling made them
+/// independent again, so a caller could bind the callback to one concrete
+/// effect and the function it returns to another -- the callback's authority,
+/// misreported, with no diagnostic (Codex review).
+test "a source-to-source effect unification survives generalization" {
+  let src = "fn cast[T, e, f](g: (T) -> T with e) -> (T) -> T with f {\n  g\n}\nfn main { () }\n"
+  let env = check_program(parse_program(lex(src)))
+  match env_lookup(env, "cast") {
+    Some(CtForAll(_, _, CtFn(params, CtFn(_, _, Some(ret_effect)), _))) => match Array::get(params, 0) {
+      CtFn(_, _, Some(param_effect)) => assert(param_effect == ret_effect),
+      _ => assert(false)
+    },
+    _ => assert(false)
+  }
+}
+
 test "generic scheme applies a closed effect constraint" {
   let src = "effect Log { Emit() -> Unit }\nfn narrow[T, e](f: (T) -> T with e) -> (T) -> T with Log {\n  f\n}\nfn main { () }\n"
   let env = check_program(parse_program(lex(src)))
