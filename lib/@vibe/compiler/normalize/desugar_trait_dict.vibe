@@ -2182,16 +2182,18 @@ fn lookup_var_type(var_types: Array[(String, String)], name: String) -> Option[S
   // entry for the same name. Return the LAST match (the innermost binding in
   // scope) so `let r = record { a }; ...; let r = record { c }; r.c` resolves
   // against the inner shape rather than the stale outer one (#760(4)).
-  let mut i = 0
+  // Scanned BACKWARD so the innermost binding -- the common query -- answers
+  // without walking the whole environment.
+  let mut i = Array::length(var_types) - 1
   let mut result = None
-  while i < Array::length(var_types) {
+  while i >= 0 {
     let (vn, vt) = Array::get(var_types, i)
     if vn == name {
       result = Some(vt)
+      i = -1
     } else {
-      ()
+      i = i - 1
     }
-    i = i + 1
   }
   result
 }
@@ -4195,12 +4197,7 @@ fn infer_impl_target_key(arg: Expr, struct_sets: Array[(String, Array[String])],
 fn bind_impl_target_key(var_types: Array[(String, String)], name: String, value: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   match infer_impl_target_key(value, struct_sets, var_types, fn_returns) {
     Some(key) => {
-      let out = array_empty()
-      let mut i = 0
-      while i < Array::length(var_types) {
-        Array::push(out, Array::get(var_types, i))
-        i = i + 1
-      }
+      let out = clone_var_types(var_types)
       Array::push(out, (impl_target_var_key(name), key))
       out
     },
@@ -5202,8 +5199,7 @@ fn array_elem_type_of(var_types: Array[(String, String)], name: String) -> Optio
 fn mask_stale_array_elem(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
   match array_elem_type_of(var_types, name) {
     Some(_) => {
-      let out = array_empty()
-      push_all_var_types(out, var_types)
+      let out = clone_var_types(var_types)
       Array::push(out, (array_elem_key(name), ""))
       out
     },
@@ -5295,8 +5291,7 @@ fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, 
   // an annotated binding has to reach it too.
   match dtd_array_elem_of_ann_opt(dtd_ascribed_type(val)) {
     Some(elem) => {
-      let out = array_empty()
-      push_all_var_types(out, var_types)
+      let out = clone_var_types(var_types)
       Array::push(out, (array_elem_key(name), elem))
       out
     },
@@ -5390,12 +5385,12 @@ fn ctor_payload_key(pname: String, ctor: String) -> String {
   String::concat("__ctorpay$", String::concat(ctor, String::concat("$", pname)))
 }
 
-fn push_all_var_types(out: Array[(String, String)], var_types: Array[(String, String)]) -> Unit {
-  let mut i = 0
-  while i < Array::length(var_types) {
-    Array::push(out, Array::get(var_types, i))
-    i = i + 1
-  }
+/// Independent copy of the rewrite environment, made once per extension.
+/// `Array::slice` is one allocation + one guarded-dup copy; the push-per-element
+/// version this replaces was the single largest __rt_arr_push caller in a
+/// full-closure compile profile (same finding as perceus.vibe's copy_ints).
+fn clone_var_types(var_types: Array[(String, String)]) -> Array[(String, String)] {
+  Array::slice(var_types, 0, Array::length(var_types))
 }
 
 /// Split a `tuple_shape_key` value back into its per-element type names.
@@ -5497,8 +5492,7 @@ fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr,
   // NOTHING and `t.0 < t.1` stayed an address comparison.
   match dtd_tuple_elem_names_of_ann(dtd_ascribed_type(val)) {
     Some(sentinel) => {
-      let out = array_empty()
-      push_all_var_types(out, var_types)
+      let out = clone_var_types(var_types)
       Array::push(out, (tuple_shape_key(name), sentinel))
       return out
     },
@@ -5510,8 +5504,7 @@ fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr,
   // types are in the ARRAY's own `__shape$` record.
   let from_elem = dtd_tuple_elem_names_of_array_get(val, var_types)
   if String::length(from_elem) > 0 {
-    let out = array_empty()
-    push_all_var_types(out, var_types)
+    let out = clone_var_types(var_types)
     Array::push(out, (tuple_shape_key(name), from_elem))
     return out
   } else {
@@ -5533,8 +5526,7 @@ fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr,
         }
         i = i + 1
       }
-      let out = array_empty()
-      push_all_var_types(out, var_types)
+      let out = clone_var_types(var_types)
       Array::push(out, (tuple_shape_key(name), acc))
       out
     } else {
@@ -5552,8 +5544,7 @@ fn ctor_payload_bind(var_types: Array[(String, String)], name: String, val: Expr
   match val {
     ECall(callee, cargs, _) => match callee {
       EIdent(cn, _) => if Array::length(cargs) >= 1 && starts_upper(cn) {
-        let out = array_empty()
-        push_all_var_types(out, var_types)
+        let out = clone_var_types(var_types)
         let mut i = 0
         let mut wrote = false
         while i < Array::length(cargs) {
@@ -5806,8 +5797,7 @@ fn dtd_elem_projecting_shape(fname: String, cargs: Array[Expr], struct_sets: Arr
 /// reads back as unknown here because `dtd_scalar_shape`'s `EIdent` arm returns
 /// the looked-up string as-is.
 fn dtd_mask_var_type(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
-  let out = array_empty()
-  push_all_var_types(out, var_types)
+  let out = clone_var_types(var_types)
   Array::push(out, (name, ""))
   out
 }
@@ -6029,8 +6019,7 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
 /// composites are stored.
 fn shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let sh = infer_shape(val, struct_sets, var_types, fn_returns)
-  let out = array_empty()
-  push_all_var_types(out, var_types)
+  let out = clone_var_types(var_types)
   // ALWAYS record, even for a non-composite binding (recording ""). Skipping
   // those would leave a SHADOWED name's old shape as the live answer:
   // `extend_var_types` appends and `lookup_var_type` returns the LAST match
@@ -6109,8 +6098,7 @@ fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, st
       _ => infer_eq_shape(val, struct_sets, var_types, fn_returns)
     }
   }
-  let out = array_empty()
-  push_all_var_types(out, var_types)
+  let out = clone_var_types(var_types)
   Array::push(out, (eq_shape_key(name), if shape_is_composite(sh) {
     sh
   } else {
@@ -6674,8 +6662,7 @@ fn empty_array_shape_from_body(var_types: Array[(String, String)], name: String,
     if String::length(elem) == 0 {
       var_types
     } else {
-      let out = array_empty()
-      push_all_var_types(out, var_types)
+      let out = clone_var_types(var_types)
       Array::push(out, (eq_shape_key(name), String::concat("[", String::concat(elem, "]"))))
       out
     }
@@ -6871,8 +6858,7 @@ fn arm_binder_var_types_env(scrut: Expr, p: Pat, var_types: Array[(String, Strin
                   // A NESTED tuple: record it under the binder's own tuple key
                   // so `inner.0` resolves, instead of putting a shape where a
                   // type name belongs.
-                  let nested = array_empty()
-                  push_all_var_types(nested, eacc)
+                  let nested = clone_var_types(eacc)
                   Array::push(nested, (tuple_shape_key(ev), dtd_join_shape_parts(shape_split(shape_inner(ety)))))
                   eacc = nested
                 } else {
@@ -6912,8 +6898,7 @@ fn arm_binder_var_types_env(scrut: Expr, p: Pat, var_types: Array[(String, Strin
                   // A composite payload goes in as a SHAPE, so the arm body's
                   // interpolation takes the recursive path rather than the
                   // head-name one.
-                  let out = array_empty()
-                  push_all_var_types(out, acc)
+                  let out = clone_var_types(acc)
                   Array::push(out, (shape_key(v), sh))
                   acc = out
                 } else {
@@ -8401,12 +8386,7 @@ fn constructor_match_arm_var_types(scrut: Expr, pat: Pat, gens: Array[DictGen], 
 fn extend_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
   match inferred {
     Some(tname) => {
-      let out = array_empty()
-      let mut i = 0
-      while i < Array::length(var_types) {
-        Array::push(out, Array::get(var_types, i))
-        i = i + 1
-      }
+      let out = clone_var_types(var_types)
       Array::push(out, (name, tname))
       out
     },
