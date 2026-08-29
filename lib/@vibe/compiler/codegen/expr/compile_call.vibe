@@ -32,6 +32,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
+  md_borrow_mask_of,
   packed_lines_to_array_expr
 }
 
@@ -1031,45 +1032,69 @@ export fn cc_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
-/// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept in
-/// sync with `is_borrow_arg0_call` in perceus/index.vibe — a projection passed as
-/// arg0 to one of these must NOT be rc_dup'd at the call site (the callee never
-/// drops it, so the dup would leak; #704). Other argument positions are owning.
-fn cc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
-}
-
-/// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
-/// and `Bytes::compare` read both of their `Bytes` arguments and drop neither,
-/// so bit 1 belongs in the mask beside bit 0. The arg0 predicate above cannot
-/// say this -- it is one bit -- which is why this is a separate list rather
-/// than a wider version of that one.
-fn cc_is_borrow_arg1_call(f: String) -> Bool {
-  f == "Bytes::index_of_bytes" || f == "Bytes::compare"
+/// Emit checked Map key-slot access without synthesizing source-visible calls.
+/// The bounds check and trap must not resolve through user definitions of
+/// `Map::size` or `Array::get`.
+fn compile_map_iter_get_checked(buf: Bytes, map_expr: Expr, index_expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let map_l = next_local
+  let index_l = next_local + 1
+  let len_l = next_local + 2
+  // `[` cannot occur in a source identifier, so these slots cannot shadow
+  // or be shadowed by user bindings during name-to-local lookup.
+  Array::push(local_names, "[temp]__map_iter_get_map")
+  Array::push(local_names, "[temp]__map_iter_get_index")
+  Array::push(local_names, "[temp]__map_iter_get_len")
+  let mut nl = next_local + 3
+  nl = ce(buf, map_expr, local_names, nl, ctx, ld)
+  emit_local_set(buf, map_l)
+  nl = ce(buf, index_expr, local_names, nl, ctx, ld)
+  emit_local_set(buf, index_l)
+  emit_local_get(buf, map_l)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, map_l)
+  if ctx.enable_rc {
+    emit_local_get(buf, index_l)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_local_set(buf, index_l)
+  } else {
+    ()
+  }
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, len_l)
+  emit_local_get(buf, index_l)
+  emit_i64_const(buf, 0)
+  emit_i64_lt_s(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  emit_local_get(buf, index_l)
+  emit_local_get(buf, len_l)
+  emit_i64_ge_s(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, index_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 8)
+  nl
 }
 
 /// The borrowed-parameter mask for a call to top-level fn `fname`: the
-/// builtin arg0 list unioned with the user set's per-position mask. Kept in
-/// sync with pe_borrow_mask in perceus/perceus.vibe and md_borrow_mask_of in
-/// codegen/common_analysis. Lexical shadowing is handled by the caller (the
-/// #875 local_idx_hint guard already routes a shadowed name elsewhere).
+/// authoritative source/user mask when present, otherwise the builtin mask.
+/// Lexical shadowing is handled by the caller (the #875 local_idx_hint guard
+/// already routes a shadowed name elsewhere).
 fn cc_borrow_mask(ctx: CompileCtx, fname: String) -> Int {
-  let bi = bsearch_leftmost(ctx.borrow_param_user, fname)
-  let user = if bi >= 0 && bi < Array::length(ctx.borrow_param_mask) {
-    Array::get(ctx.borrow_param_mask, bi)
-  } else {
-    0
-  }
-  let m0 = if cc_is_borrow_arg0_call(fname) {
-    user|1
-  } else {
-    user
-  }
-  if cc_is_borrow_arg1_call(fname) {
-    m0|2
-  } else {
-    m0
-  }
+  md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask)
 }
 
 fn cc_bmask_has(mask: Int, i: Int) -> Bool {
@@ -1390,6 +1415,8 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
     ce(buf, mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
   } else if is_eident(callee) && frozen_array_conversion_copy(get_eident_name(callee)) != "" && Array::length(args) == 1 && func_table_index_of(ctx.func_table, get_eident_name(callee)) >= 0 && !array_contains_str(local_names, get_eident_name(callee)) {
     ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && get_eident_name(callee) == "Map::iter_get" && Array::length(args) == 2 && func_table_index_of(ctx.func_table, "Map::iter_get") < 0 && !array_contains_str(local_names, "Map::iter_get") {
+    compile_map_iter_get_checked(buf, Array::get(args, 0), Array::get(args, 1), local_names, next_local, ctx, ld, ce)
   } else {
     compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
   }
@@ -3000,7 +3027,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     // alias the same way as its siblings restores precedence for a real
     // user-defined `map` while leaving the intentional `Array::map` /
     // unbound bare-`map` sugar intact.
-    else if fname == "Array::map" || fname == "Iterator::map" || (!prefer_bound_call && fname == "map") {
+    else if fname == "Array::map" || (!prefer_bound_call && fname == "map") {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
       let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
@@ -3170,6 +3197,52 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_end(buf)
       emit_local_get(buf, acc_l)
       nl + 7
+    }
+    else if !prefer_bound_call && fname == "Array::iter_eager" {
+      let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
+      let (arr_get_fi, _, _) = resolve_func(ctx.func_table, "Array::get")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      let arr_l = nl
+      let fn_l = nl + 1
+      let len_l = nl + 2
+      let i_l = nl + 3
+      let slot_l = nl + 4
+      let env_l = nl + 5
+      Array::push(local_names, "__iter_arr")
+      Array::push(local_names, "__iter_fn")
+      Array::push(local_names, "__iter_len")
+      Array::push(local_names, "__iter_i")
+      Array::push(local_names, "__iter_slot")
+      Array::push(local_names, "__iter_env")
+      emit_local_set(buf, fn_l)
+      emit_local_set(buf, arr_l)
+      emit_local_get(buf, arr_l)
+      emit_call(buf, arr_len_fi)
+      emit_local_set(buf, len_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, i_l)
+      emit_closure_resolve(buf, fn_l, slot_l, env_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, i_l)
+      emit_local_get(buf, len_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, arr_l)
+      emit_local_get(buf, i_l)
+      emit_call(buf, arr_get_fi)
+      emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
+      emit_drop(buf)
+      emit_local_get(buf, i_l)
+      emit_index_one(buf, ctx)
+      emit_i64_add(buf)
+      emit_local_set(buf, i_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, i_l)
+      nl + 6
     }
     else if fname == "Array::reverse" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -3556,6 +3629,23 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_end(buf)
       emit_local_get(buf, res_l)
       nl2
+    }
+    else if !prefer_bound_call && fname == "Map::__iter_get_unchecked" {
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      }
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      nl
     }
     else if fname == "Map::keys" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")

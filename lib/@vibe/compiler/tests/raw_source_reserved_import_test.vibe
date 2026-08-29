@@ -1,0 +1,47 @@
+import @vibe/compiler/entry/source_compile {
+  compile_source, compile_source_wasi, compile_source_wasi_mode
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only, compile_source_wasi_only_coverage, compile_source_wasi_only_rc, compile_source_wasi_only_rc_shadow
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+fn forged_boundary_source() -> String {
+  "import @vibe/compiler/internal/iterator_boundary { trait Iterator as Local }\nfn main() -> Int { 0 }"
+}
+
+fn raw_compile_error(lane: Int) -> String {
+  let source = forged_boundary_source()
+  handle {
+    let _bytes = if lane == 0 {
+      compile_source(source)
+    } else if lane == 1 {
+      compile_source_wasi(source, "main")
+    } else if lane == 2 {
+      compile_source_wasi_mode(source, "main", "mvp")
+    } else if lane == 3 {
+      compile_source_wasi_only(source, "main")
+    } else if lane == 4 {
+      compile_source_wasi_only_coverage(source, "main")
+    } else if lane == 5 {
+      compile_source_wasi_only_rc(source, "main")
+    } else if lane == 6 {
+      compile_source_wasi_only_rc_shadow(source, "main")
+    } else {
+      compile_source_gc_only(source, "main")
+    }
+    "accepted"
+  } with { Exception::Throw(message) => message }
+}
+
+test "all raw-source compiler APIs reject reserved provenance imports" {
+  let mut lane = 0
+  while lane < 8 {
+    inspect(raw_compile_error(lane), "remove reserved compiler import `@vibe/compiler/internal/iterator_boundary`: this path is generated internally and cannot be imported by source files")
+    lane = lane + 1
+  }
+}

@@ -4,6 +4,18 @@ import ./codegen_test_support.vibe {
   compile_wasi, compile_wasi_gc, compile_wasi_rc
 }
 
+import @vibe/compiler/entry/compiler/fs_compile {
+  closure_merged_stmts
+}
+
+import @vibe/compiler/syntax {
+  print_program
+}
+
+import @vibe/compiler/codegen {
+  desugar_trait_dicts
+}
+
 //# Functions
 
 fn run_one(bytes: Bytes, entry: String, label: String, expected: String) -> Int with Fs + Process {
@@ -54,6 +66,22 @@ fn assert_result_all_backends(src: String, entry: String, label: String, expecte
   0
 }
 
+fn run_one_traps(bytes: Bytes, entry: String, label: String) -> Int with Fs + Process {
+  let path = "/tmp/_heap_e2e_" + label + ".wasm"
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines("wasmtime run -W exceptions=y,gc=y --invoke " + entry + " " + path + " 0 >/dev/null 2>&1 && echo unexpected || echo trapped")
+  assert(Array::length(out) == 1)
+  assert(Array::get(out, 0) == "trapped")
+  0
+}
+
+fn assert_traps_all_backends(src: String, entry: String, label: String) -> Int with Exception + Fs + Process {
+  run_one_traps(compile_wasi(src, entry), entry, label)
+  run_one_traps(compile_wasi_rc(src, entry), entry, label + "_rc")
+  run_one_traps(compile_wasi_gc(src, entry), entry, label + "_gc")
+  0
+}
+
 //# Misc
 
 test "heap e2e: compact fingerprint bridge does not capture user prefix names" {
@@ -69,6 +97,90 @@ test "heap e2e: captured let mut lambda reassignment then call" {
 test "#2236 review: local constructors shadow compiler-owned Attempt names" {
   let src = "enum Local { NotGranted(Int) }\nfn main() -> Int {\n  let candidate = NotGranted(7)\n  let overwrite = [41, 42]\n  let _keep = Array::length(overwrite)\n  match candidate {\n    NotGranted(value) => value\n  }\n}\n"
   assert_result_all_backends(src, "main", "local_not_granted_constructor", "7")
+}
+
+test "#2379 review: Map iterator bounds ignore a source Map::size" {
+  let src = "fn Map::size[K, V](_m: Map[K, V]) -> Int { 100 }\nfn main() -> String {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::iter_get(m, 50)\n}\n"
+  assert_traps_all_backends(src, "main", "map_iter_get_size_shadow")
+}
+
+test "#2379 review: Map iterator bounds ignore a source Array::get" {
+  let src = "fn Array::get(_xs: Array[String], _index: Int) -> String { \"shadow\" }\nfn main() -> String {\n  let m = Map::from_pairs([(\"a\", 1)])\n  Map::iter_get(m, 50)\n}\n"
+  assert_traps_all_backends(src, "main", "map_iter_get_array_get_shadow")
+}
+
+test "#2379 review: a bound unchecked Map helper is not an intrinsic" {
+  let src = "fn Map::__iter_get_unchecked(_map: Int, _index: Int) -> Int { 42 }\nfn main() -> Int { Map::__iter_get_unchecked(1, 0) }\n"
+  assert_result_all_backends(src, "main", "bound_map_iter_get_unchecked", "42")
+}
+
+test "#2379 review: a source-owned Map accessor may consume its receiver" {
+  let src = "fn Map::iter_get(m: Map[String, Int], _index: Int) -> Map[String, Int] { m }\nfn main() -> Int {\n  let m = Map::from_pairs([(\"a\", 1)])\n  let moved = Map::iter_get(m, 0)\n  Map::size(m) + Map::size(moved)\n}\n"
+  assert_result_all_backends(src, "main", "owned_map_iter_get_receiver", "2")
+}
+
+test "#2379 review: a bound eager Array iterator is not an intrinsic" {
+  let src = "fn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 42 }\nfn main() -> Int { Array::iter_eager([1], (_x: Int) -> Unit { () }) }\n"
+  assert_result_all_backends(src, "main", "bound_array_iter_eager", "42")
+}
+
+test "#2379 review: an eager Array helper cannot capture Iterator::iter" {
+  let entry = "import ./provider.vibe { trait Iterator }\nfn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 77 }\nfn main() -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }"
+  let provider = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], _f: (Int) -> Unit) -> Int { Array::length(xs) }"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("provider.vibe", provider)
+  ])
+  assert_result_all_backends(print_program(merged), "main", "bound_array_iter_eager_does_not_capture_iterator", "3")
+}
+
+test "#2379 review: an entry Iterator export wins over its aliased provider" {
+  let entry = "import ./provider.vibe { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nfn main() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x }), 0) + Array::length(Iter::map([1], (x: Int) -> Int { x })) }"
+  let provider = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], f: (Int) -> Int) -> Array[Int] { Array::map(xs, f) }"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("provider.vibe", provider)
+  ])
+  assert_result_all_backends(print_program(merged), "main", "entry_iterator_export", "78")
+}
+
+test "#2379 review: trait companion operations cross a facade" {
+  let entry = "import ./facade.vibe { trait Reducible as R }\nfn main() -> Int { R::reduce([1]) }"
+  let facade = "export ./provider.vibe { trait Reducible }"
+  let provider = "export trait Reducible[T]\nexport fn Reducible::reduce(_xs: Array[Int]) -> Int { 41 }"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("provider.vibe", provider),
+    ("facade.vibe", facade)
+  ])
+  assert_result_all_backends(print_program(merged), "main", "trait_companion_facade", "41")
+}
+
+test "#2379 review: a later custom Iterator trait import wins provenance" {
+  let entry = "import @vibe/builtin { trait Iterator }\nimport ./custom.vibe { trait Iterator }\nfn main() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x + 1 }), 0) }"
+  let custom = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("@vibe/builtin.vibe", "export trait Iterator[T]"),
+    ("custom.vibe", custom)
+  ])
+  assert_result_all_backends(print_program(merged), "main", "custom_iterator_wins", "77")
+}
+
+test "#2379 review: Iterator iter over Array stays direct on every backend" {
+  let entry = "import @vibe/builtin { trait Iterator }\nfn main() -> Int {\n  let mut total = 0\n  let count = Iterator::iter([1, 2, 3], (x: Int) -> Unit { total = total + x; () })\n  count * 10 + total\n}"
+  let builtin = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], f: (Int) -> Unit) -> Int {\n  let len = Array::length(xs)\n  let mut i = 0\n  while i < len { f(Array::get(xs, i)); i = i + 1 }\n  i\n}"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("@vibe/builtin.vibe", builtin)
+  ])
+  desugar_trait_dicts(merged)
+  assert_result_all_backends(print_program(merged), "main", "iterator_iter_direct", "36")
+}
+
+test "#2379 review: direct Iterator iter remains direct inside a closure" {
+  let entry = "import @vibe/builtin { trait Iterator }\nfn main() -> Int {\n  let run = () -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }\n  run()\n}"
+  let builtin = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], f: (Int) -> Unit) -> Int {\n  let len = Array::length(xs)\n  let mut i = 0\n  while i < len { f(Array::get(xs, i)); i = i + 1 }\n  i\n}"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("@vibe/builtin.vibe", builtin)
+  ])
+  desugar_trait_dicts(merged)
+  assert_result_all_backends(print_program(merged), "main", "iterator_iter_direct_in_closure", "3")
 }
 
 // #1967: `continue` in a collecting `for-in` used to `br` to the loop

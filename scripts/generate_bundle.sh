@@ -3,6 +3,7 @@
 # This allows the compiler wasm to compile itself without filesystem access.
 set -euo pipefail
 : "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
+: "${VIBE_INTERNAL_TRUSTED_SOURCE:=1}"; export VIBE_INTERNAL_TRUSTED_SOURCE
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"

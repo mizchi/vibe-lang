@@ -21,6 +21,7 @@ import @vibe/core {
 import @vibe/compiler/core {
   ExportRenamePlan,
   Stmt,
+  append_builtin_iterator_plan_operation_markers,
   append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
   apply_export_renames_stmts,
@@ -32,12 +33,15 @@ import @vibe/compiler/core {
   dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
+  merged_source_boundary_names,
   namespace_private_value_stmts,
   namespace_rename_originals_reset,
   resolution_env_seed,
   resolve_import_path,
   rewrite_imported_value_stmt_to_local,
-  stmts_have_import_deep
+  stmts_have_import_deep,
+  trait_import_local_operation_renames,
+  trait_import_local_operation_renames_preserving_exports
 }
 
 import @vibe/compiler/codegen {
@@ -270,10 +274,27 @@ fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], 
 /// (entry keeps its private names), and `plan`/`sources` drive the export-name
 /// rewriting and the collision-def fallback.
 fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)]) -> Unit with Exception {
-  let export_renamed = if is_entry_source {
-    stmts
+  // Preserve the proof that an optimized trait namespace came from the
+  // standard module. Desugaring consumes this source-local marker before
+  // codegen; it is not part of the runtime program.
+  let import_renames = if stmts_have_import_deep(stmts) {
+    collect_import_value_renames(plan, path, stmts)
   } else {
-    apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+    array_empty()
+  }
+  let (boundary_locals, boundary_surface_only) = merged_source_boundary_names(stmts)
+  append_builtin_iterator_plan_operation_markers(boundary_locals, import_renames, plan)
+  Array::push(merged, SReExportSourceBoundary(boundary_locals, boundary_surface_only))
+  let collision_renames = if is_entry_source {
+    trait_import_local_operation_renames_preserving_exports(stmts, path)
+  } else {
+    trait_import_local_operation_renames(stmts, path)
+  }
+  let collision_renamed = apply_export_renames_stmts(stmts, collision_renames)
+  let export_renamed = if is_entry_source {
+    collision_renamed
+  } else {
+    apply_export_renames_stmts(collision_renamed, export_plan_renames_for(plan, path))
   }
   let namespaced_stmts = if is_entry_source {
     export_renamed
@@ -281,7 +302,6 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
     namespace_private_value_stmts(path, export_renamed)
   }
   if stmts_have_import_deep(stmts) {
-    let import_renames = collect_import_value_renames(plan, path, stmts)
     let skipped_locals = collect_import_alias_collision_locals(stmts)
     append_import_alias_collision_defs_from_sources(merged, path, stmts, sources, plan, import_value_rename_locals(import_renames))
     append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)

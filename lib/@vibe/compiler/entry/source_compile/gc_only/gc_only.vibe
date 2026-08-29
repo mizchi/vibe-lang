@@ -8,7 +8,7 @@ import @vibe/core {
   array_empty
 }
 import @vibe/compiler/checker {
-  check_program_double_call_result_observation
+  check_program_double_call_result_observation, validate_user_source_stmts
 }
 
 import @vibe/compiler/codegen {
@@ -329,9 +329,14 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool
 /// operands into the derived structural Eq walk (and Show's Int::to_string
 /// etc.); without it the gc lane compared ctor POINTERS, so the gc-compiled
 /// checker's Option/effect-row comparisons were silently wrong.
-export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
+fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
   let (tokens, starts, _) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
+  if !trusted_generated {
+    validate_user_source_stmts(stmts)
+  } else {
+    ()
+  }
   expand_interp_stmts(stmts)
   // #683: lower test/bench blocks BEFORE the check so the synthesized
   // `__test_*` lets and the no-entry `_start` runner are type-checked like
@@ -379,4 +384,12 @@ export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes wi
   gc_add_hoisted_float_returning_names(stmts, gc_pre_hoist_fn_names, gc_float_ret_fn_names)
   strip_generic_type_params(stmts)
   compile_wasi_module_gc(stmts, effective_entry, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
+}
+
+export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_gc_only_impl(source, entry_name, false)
+}
+
+export fn compile_generated_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_gc_only_impl(source, entry_name, true)
 }

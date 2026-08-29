@@ -172,6 +172,20 @@ test "#2338: concrete constructor calls synthesize applied witnesses" {
   inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
 }
 
+test "#2379 review: a local Iterator helper is not devirtualized by spelling" {
+  let source = "trait Iterator[T] {\n  iter_length(Self) -> Int\n  iter_get(Self, Int) -> T\n}\nfn Iterator::map[A, C: Iterator[A], B](xs: C, f: (A) -> B) -> Array[B] { [] }\nimpl [T] Iterator[T] for Array[T] {\n  iter_length(xs: Array[T]) -> Int { Array::length(xs) }\n  iter_get(xs: Array[T], index: Int) -> T { Array::get(xs, index) }\n}\nfn use_it() -> Array[Int] { Iterator::map([1], (x: Int) -> Int { x + 1 }) }"
+  let out = desugar_checked_source(source)
+  inspect(String::contains(out, "Array::map([1]"), content = "false")
+  inspect(String::contains(out, "Iterator::map(IteratorDict[Int]"), content = "true")
+}
+
+test "#2357: user Iterator operations retain one generic witness" {
+  let source = "trait Iterator[T] {\n  iter_length(Self) -> Int\n  iter_get(Self, Int) -> T\n}\nfn Iterator::map[A, C: Iterator[A], B](xs: C, f: (A) -> B) -> Array[B] { [] }\nstruct Triple[T] { a: T; b: T; c: T }\nimpl [T] Iterator[T] for Triple[T] {\n  iter_length(_xs: Triple[T]) -> Int { 3 }\n  iter_get(xs: Triple[T], index: Int) -> T { if index == 0 { xs.a } else if index == 1 { xs.b } else { xs.c } }\n}\nfn use_it(xs: Triple[Int]) -> Array[Int] { Iterator::map(xs, (x: Int) -> Int { x + 1 }) }"
+  let out = desugar_checked_source(source)
+  inspect(String::contains(out, "Iterator::map(IteratorDict[Int]::{ iter_length:"), content = "true")
+  inspect(String::contains(out, "Array::map(xs"), content = "false")
+}
+
 test "#2338: unresolved shadows do not reuse an outer constructor witness" {
   let source = "trait Mappable[F[_]] {\n  map[A, B](F[A], (A) -> B) -> F[B]\n}\nimpl Mappable[Array] for Array {\n  map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) }\n}\nimpl Mappable[Option] for Option {\n  map(xs: Option[A], f: (A) -> B) -> Option[B] { match xs { Some(value) => Some(f(value)), None => None } }\n}\nfn probe() -> Unit { let xs = [1]; let _ = Mappable::map({ let xs = ((x) -> { x })(Some(3)); xs }, (x) -> { x + 1 }); () }\n"
   let stmts = parse_program(lex(source))

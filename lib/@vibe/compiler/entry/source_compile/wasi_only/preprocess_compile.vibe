@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/checker {
-  check_program, check_program_double_call_result_located_observation, effect_row_contains_label
+  check_program, check_program_double_call_result_located_observation, effect_row_contains_label, validate_user_source_stmts
 }
 
 import @vibe/compiler/codegen/wasi {
@@ -210,12 +210,21 @@ fn source_float_call_offsets(stmts: Array[Stmt]) -> Array[Int] with Exception {
   }
 }
 
-export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
+fn validate_source_if_user(stmts: Array[Stmt], trusted_generated: Bool) -> Unit with Exception {
+  if !trusted_generated {
+    validate_user_source_stmts(stmts)
+  } else {
+    ()
+  }
+}
+
+fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
   // #2158: located lex+parse. `parse_program(lex(source))` leaves every node's
   // offset at -1, which makes the checker's offset-keyed table empty BY
   // CONSTRUCTION -- the channel would be wired up and permanently inert.
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
+  validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
   let float_call_offsets = source_float_call_offsets(stmts)
@@ -224,13 +233,22 @@ export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes 
   maybe_wrap_async_component(compile_wasi_module_impl_with_float_offsets(stmts, entry_name, float_call_offsets), wrap_async)
 }
 
+export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_impl(source, entry_name, false)
+}
+
+export fn compile_generated_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_impl(source, entry_name, true)
+}
+
 /// Coverage (#cov): same source pipeline as compile_source_wasi_only but routes
 /// through the coverage codegen, so compiling the flat compiler source under
 /// VIBE_COVERAGE=1 yields an instrumented compiler (per-function hit bitmap +
 /// `vibe_cov` section).
-export fn compile_source_wasi_only_coverage(source: String, entry_name: String) -> Bytes with Exception {
+fn compile_source_wasi_only_coverage_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
+  validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
   strip_generic_type_params(stmts)
@@ -240,22 +258,39 @@ export fn compile_source_wasi_only_coverage(source: String, entry_name: String) 
   reject_stdin_provider_core(compile_wasi_module_coverage_impl(stmts, entry_name), "VIBE_COVERAGE=1")
 }
 
+export fn compile_source_wasi_only_coverage(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_coverage_impl(source, entry_name, false)
+}
+
+export fn compile_generated_source_wasi_only_coverage(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_coverage_impl(source, entry_name, true)
+}
+
 /// ADR-0055 #493 cutover: same pipeline on the Perceus RC codegen path. Lets the
 /// selfbuild / bootstrap / e2e gates compile real programs (incl. the whole
 /// compiler) under RC via an env toggle in cli_main — the full-scale validity +
 /// correctness signal the memory-limited test probes cannot produce.
-export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
+fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
   // #2158: same located parse + checker offsets as the bump sibling above. RC
   // is the production representation, so leaving it on the syntactic
   // classifier alone would mean the two lanes rendered the same program's
   // Doubles differently.
   let (tokens, starts, _ends) = lex_with_offsets(source)
   let stmts = parse_program_located(tokens, starts, source)
+  validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   let float_call_offsets = source_float_call_offsets(stmts)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_impl_with_float_offsets(stmts, entry_name, float_call_offsets), wrap_async)
+}
+
+export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_rc_impl(source, entry_name, false)
+}
+
+export fn compile_generated_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_rc_impl(source, entry_name, true)
 }
 
 /// #715 recurrence guard: same RC pipeline, but the produced module carries
@@ -264,12 +299,21 @@ export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Byt
 /// drop-of-freed operation. Turns "moving target" free-list corruption into a
 /// deterministic trap at the faulting operation. Debug-only (VIBE_RC=shadow):
 /// adds a memory-reservation pad and per-dup/drop checks, so never the default.
-export fn compile_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {
+fn compile_source_wasi_only_rc_shadow_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
   let tokens = lex(source)
   let stmts = parse_program(tokens)
+  validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   let _ = check_program(stmts)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl(stmts, entry_name), wrap_async)
+}
+
+export fn compile_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_rc_shadow_impl(source, entry_name, false)
+}
+
+export fn compile_generated_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {
+  compile_source_wasi_only_rc_shadow_impl(source, entry_name, true)
 }

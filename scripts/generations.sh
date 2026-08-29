@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 : "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
+: "${VIBE_INTERNAL_TRUSTED_SOURCE:=1}"; export VIBE_INTERNAL_TRUSTED_SOURCE
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/trace_lib.sh"

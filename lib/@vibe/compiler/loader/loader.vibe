@@ -24,6 +24,7 @@ import @vibe/compiler/core {
   env_bind,
   env_lookup,
   external_lib_roots,
+  is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
   nearest_vpkg_path_fs,
   normalize_path,
@@ -31,6 +32,7 @@ import @vibe/compiler/core {
   path_set_add,
   path_set_contains,
   path_set_new,
+  reject_user_iterator_serialized_boundaries,
   resolve_import_path,
   resolve_import_path_candidates,
   resolve_import_path_probe,
@@ -1516,6 +1518,14 @@ fn record_unstable_candidate(path: String, ingested: String) -> Unit {
 }
 
 export fn ingest_source_text_fs(path: String, raw: String) -> String with Exception + Fs {
+  // The serialized Iterator boundary is a trusted carrier only after sources
+  // have been merged. Keep the common path allocation- and parse-free; a
+  // comment mentioning the prefix pays one parse but remains accepted.
+  if String::contains(raw, "@vibe/compiler/internal/iterator_boundary") {
+    reject_user_iterator_serialized_boundaries(parse_program(lex(raw)))
+  } else {
+    ()
+  }
   let (_, pin_blanked) = extract_require_pins(raw)
   let ingested = if is_contract_ext(path) {
     if String::starts_with(pin_blanked, contract_facade_marker) {
@@ -1886,7 +1896,9 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path)),
+      SImport(raw_path, _) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
+        Array::push(deps, resolve_path_fs(base_dir, raw_path))
+      },
       SReExport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path)),
       _ => ()
     }
@@ -2101,7 +2113,9 @@ export fn check_module(source: String, path: String, sources: Array[(String, Str
       while ri < Array::length(stmts) {
         let stmt = Array::get(stmts, ri)
         import_env = match stmt {
-          SImport(raw_path, names) => {
+          SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+            import_env
+          } else {
             match resolve_path_in_sources(base_dir, raw_path, sources) {
               None => throw(String::concat("module not found: ", resolve_import_path(base_dir, raw_path))),
               Some((resolved, mod_source)) => {

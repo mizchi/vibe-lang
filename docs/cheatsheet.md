@@ -549,34 +549,36 @@ operations, but never introduces a bare `operation` binding. A subtrait exposes
 inherited methods through its own namespace as well. These generated operation
 names are reserved: a source declaration cannot replace `Trait::operation`.
 
-The constructor-indexed `Mappable::map` is one instance of this general rule
-and is the canonical container-preserving pipeline combinator (ADR-0110):
+The finite indexed `Iterator` protocol is one instance of this general rule.
+Implementing `iter_length` and `iter_get` activates its eager operations
+(ADR-0110):
 
 ```vibe
-import @vibe/builtin { trait Mappable }
+import @vibe/builtin { trait Iterator }
 
 let arrays = [1, 2]
-  |> Mappable::map((x) -> { x + 1 })
-  |> Mappable::map((x) -> { x * 2 })
-let option = Some(3) |> Mappable::map((x) -> { x + 1 })
+  |> Iterator::map((x) -> { x + 1 })
+  |> Iterator::map((x) -> { x * 2 })
 ```
 
-`Mappable[Array]` lowers to eager `Array::map`; `Mappable[Option]` preserves
-the Option shape. `AsyncIter` is the separate pull layer (ADR-0099), entered
-explicitly with `Array::iter`:
+`Iterator::map` and `filter` return arrays; `fold`, `find`, `any`, and `all`
+are eager terminals. Array calls devirtualize to the existing `Array::*`
+intrinsics, so the trait spelling adds no loop or allocation overhead. Option
+does not implement `Iterator`. `AsyncIter` is the separate pull layer
+(ADR-0099), entered explicitly with `Array::iter`:
 
 ```vibe
 import @vibe/builtin {
   Array::iter,
   AsyncIter::collect,
   AsyncIter::filter,
-  trait Mappable
+  AsyncIter::map
 }
 
 let values = [1, 2, 3, 4]
   |> Array::iter
   |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
-  |> Mappable::map((x) -> { x * 10 })
+  |> AsyncIter::map((x) -> { x * 10 })
   |> AsyncIter::collect
 ```
 
@@ -917,13 +919,12 @@ let ok = keep([1, 2, 3])
 ### Higher-kinded type parameters (`F[A]` and `F[_]`)
 
 **A type formal may stand in constructor position — `F[A]`.** Unification
-binds `F` to a type constructor (`F := Array` yields `Array[A]`). The
-pipeline combinator is `xs |> Iterator::map(f)` (not bare `map`, not
-`Array::map`). `Iterator::map` itself is Array-only until a functor
-instance exists; a user `fn map[F, A, B](xs: F[A], f: (A) -> B) -> F[B]`
-is what instantiates `F`. A formal used both unapplied (`x: F`) and
-applied (`y: F[A]`) is rejected as mixed-kind. Ascribing `F[A]` to a
-concrete constructor (`let ys: Array[Int] = xs`) is rejected.
+binds `F` to a type constructor (`F := Array` yields `Array[A]`). This is
+independent of the element-indexed `Iterator[T]` protocol: constructor-indexed
+traits remain available for APIs whose result must preserve an arbitrary
+`F[_]`. A formal used both unapplied (`x: F`) and applied (`y: F[A]`) is
+rejected as mixed-kind. Ascribing `F[A]` to a concrete constructor
+(`let ys: Array[Int] = xs`) is rejected.
 
 A constructor parameter may also declare its arity with underscore slots
 (`F[_]`, `F[_, _]`). Applied constructor variables participate in ordinary
@@ -946,28 +947,28 @@ Kinded binders and applied types are preserved across package interfaces.
 Passing a complete type where a constructor is required is rejected with the
 expected and actual arities. Unkinded `F[A]` remains legal.
 
-Constructor parameters may carry applied trait bounds. `Mappable[F]` selects a
-witness for the constructor itself, while `F[A]` and `F[B]` remain ordinary
-applied value types:
+Constructor parameters may carry applied trait bounds. `LocalFunctor[F]`
+selects a witness for the constructor itself, while `F[A]` and `F[B]` remain
+ordinary applied value types:
 
 ```vibe
-trait LocalMappable[F[_]] {
+trait LocalFunctor[F[_]] {
   map[A, B](F[A], (A) -> B) -> F[B]
 }
 
-impl LocalMappable[Array] for Array {
+impl LocalFunctor[Array] for Array {
   map(xs: Array[A], f: (A) -> B) -> Array[B] {
     Array::map(xs, f)
   }
 }
 
-let mapped = LocalMappable::map([1, 2], (x) -> { x + 1 })
+let mapped = LocalFunctor::map([1, 2], (x) -> { x + 1 })
 ```
 
 Missing or duplicate constructor instances are checker errors; an unresolved
 trait witness never reaches code generation. The implementation-side
 `F::map` spelling is internal dictionary dispatch; public calls use
-`LocalMappable::map`.
+`LocalFunctor::map`.
 
 <!-- doctest-skip: mixed-kind is deliberately rejected -->
 ```vibe skip

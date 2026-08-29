@@ -1734,8 +1734,11 @@ echo "[compiler-gate] closure shadowed inline builtin ok (28)"
 #        whole-program view -- ordinary FS-mode compilation never reproduced
 #        it -- so this gate drives the REAL merge lane
 #        (VIBE_EMIT_MERGED_SOURCE=1, the same mode generate_bundle.sh uses)
-#        and then compiles its output, rather than compiling the sources
-#        directly. Note the merge STRIPS the qualification: `Msg::Request(..)`
+#        and then compiles its output through the trusted single-source lane
+#        used by generate_bundle.sh. The flat artifact carries compiler-only
+#        source-boundary metadata, so feeding it back through ordinary FS
+#        ingestion would correctly reject that reserved syntax as a user
+#        forgery. Note the merge STRIPS the qualification: `Msg::Request(..)`
 #        in a pattern comes out as bare `Request(..)`, which is exactly the
 #        state the bare-name resolution has to get right.
 echo "[compiler-gate] 57/57 merged-program ctor/effect-op name collision across packages (#1078)"
@@ -1792,7 +1795,7 @@ if [ ! -s "$c1078dir/merged.vibe" ]; then
   cat "$c1078dir/merged.vibe.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$c1078dir/merged.vibe" "$c1078dir/out.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$c1078dir/out.wasm" ]; then
