@@ -998,7 +998,7 @@ fn profile_callstack_env() -> String with Env {
 
 export fn selfhost_cli_low_level_args_profiled(input_path: String, output_path: String, entry_name: String, mode: String, profile_tsv_path: String, profile_callstack_path: String) -> Int with Exception + Fs + Env + Profiler {
   if !input_file_exists(input_path) {
-    1
+    throw(String::concat("no such input file: ", input_path))
   } else {
     let total_start = profiler_now_us()
     let (bytes, load_us, type_us, bundle_us, parse_us, compile_us, _compile_total_us) = compile_release_file_mode_for_cli_profiled(input_path, entry_name, mode)
@@ -1028,22 +1028,36 @@ fn low_level_compile_release_profiled(input_path: String, output_path: String, e
   }
 }
 
+/// What the positional low-level form takes, and what to type instead. Named
+/// here rather than in a wrapper script so it cannot drift from the dispatch
+/// `match` a few lines below, which is the only place the subcommands exist.
+fn low_level_usage() -> String {
+  "usage: <input> <output> <entry> [mode], or a subcommand: build, check, compile, compile-lite, profile, serve"
+}
+
+/// `deps foo.vibe` is not a subcommand, so dispatch reads it as the positional
+/// form and `deps` becomes the input path. Say what was read as what, so a
+/// mistyped or unported verb is visible instead of being an exit code (#2361).
+fn low_level_read_as(input_path: String, output_path: String, entry_name: String) -> String {
+  String::concat(String::concat(String::concat("read `", input_path), "` as the input path, `"), String::concat(String::concat(output_path, "` as the output path, `"), String::concat(entry_name, "` as the entry name")))
+}
+
 export fn selfhost_cli_low_level_args(input_path: String, output_path: String, entry_name: String, mode: String) -> Int with Exception + Fs + Env + Profiler {
   if input_path == "" {
-    1
+    throw(String::concat("no input path -- ", low_level_usage()))
   }
   else if output_path == "" {
-    1
+    throw(String::concat(String::concat("no output path (", low_level_read_as(input_path, output_path, entry_name)), String::concat(") -- ", low_level_usage())))
   }
   else if entry_name == "" {
-    1
+    throw(String::concat(String::concat("no entry name (", low_level_read_as(input_path, output_path, entry_name)), String::concat(") -- ", low_level_usage())))
   }
   else if is_vibex_path(input_path) && entry_name != "main" {
     throw(".vibex executable entry is always main; arbitrary entry names are not allowed")
   }
   else if mode == "" || mode == "release" || mode == "no-dce" || mode == "mvp" {
     if !input_file_exists(input_path) {
-      1
+      throw(String::concat(String::concat("no such input file: ", input_path), String::concat(" -- ", low_level_usage())))
     } else {
       let profile_tsv_path = profile_tsv_env()
       let profile_callstack_path = profile_callstack_env()
@@ -1076,7 +1090,7 @@ export fn selfhost_cli_low_level_args(input_path: String, output_path: String, e
     status
   }
   else {
-    1
+    throw(String::concat(String::concat("unknown mode `", mode), "`: expected one of release, no-dce, mvp, debug, check"))
   }
 }
 

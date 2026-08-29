@@ -43,4 +43,43 @@ grep -q ".vibex entry is always main" "$entry_err" || {
   echo "[vibe-run-smoke] FAIL: missing custom-entry rejection diagnostic" >&2; exit 1
 }
 
-echo "[vibe-run-smoke] ok (single=10, multi-file=42)"
+# #2361: a program that does not compile must say WHY on stderr. The compile
+# step's reason lives in the `<output>.diag` sidecar, and the wrapper used to
+# send its stdout to /dev/null and exit 1 having printed nothing -- "the file is
+# broken", "the wrapper does not support this" and "the toolchain is not built"
+# were indistinguishable from the output.
+#
+# Two shapes, because they are produced by different parts of the compiler and
+# a wrapper can lose one while relaying the other.
+check_explains() { # <label> <source text> <expected substring>
+  local label="$1" src="$2" needle="$3" err="$WORK/$1.err"
+  printf '%s' "$src" > "$WORK/$label.vibex"
+  if bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/$label.vibex" > /dev/null 2> "$err"; then
+    echo "[vibe-run-smoke] FAIL $label: a program that does not compile exited 0" >&2; exit 1
+  fi
+  grep -q "$needle" "$err" || {
+    echo "[vibe-run-smoke] FAIL $label: the failure was not explained on stderr (#2361)" >&2
+    echo "    expected substring: $needle" >&2
+    echo "    stderr was:" >&2
+    sed 's/^/      /' "$err" >&2
+    exit 1
+  }
+}
+
+# A checker diagnostic.
+check_explains missing_effect_row \
+  'fn main() -> Unit {
+  println("hi")
+}
+' \
+  "requires an explicit effect row"
+
+# A parse error, which is reported by an earlier phase.
+check_explains parse_error \
+  'fn main() -> Unit with () {
+  let x = (
+}
+' \
+  "unexpected token"
+
+echo "[vibe-run-smoke] ok (single=10, multi-file=42, compile failures explained)"

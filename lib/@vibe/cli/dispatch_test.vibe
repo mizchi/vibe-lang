@@ -9,6 +9,7 @@ import ./dispatch.vibe {
   selfhost_cli_check_args,
   selfhost_cli_compile_args,
   selfhost_cli_compile_lite_args,
+  selfhost_cli_low_level_args,
   selfhost_cli_low_level_args_profiled,
   selfhost_cli_profile_plan_args
 }
@@ -695,6 +696,62 @@ test "cli_main nesting: check usage throw is a printable String and exits 1" {
   assert(thrown == "check: expected <file...>")
   let status = run_cli_main_with_args(["check"])
   assert(status == 1)
+}
+
+/// #2361: the positional low-level form returned a bare `1` for every way of
+/// being wrong -- no input, no output, no entry, a file that is not there, an
+/// unrecognized mode. The exit code is unchanged; what was missing is the
+/// reason, and "the file is broken", "this verb is not supported" and "the
+/// toolchain is not built" were indistinguishable from the output.
+///
+/// The unknown-verb case arrives here because dispatch falls through to the
+/// positional form for anything that is not a subcommand, so `vibe_cli.sh deps
+/// foo.vibe` compiles a file named `deps`. Saying what was read as what is what
+/// makes that visible.
+fn low_level_throw(input_path: String, output_path: String, entry_name: String, mode: String) -> String with Env + Exception + Fs + Profiler {
+  handle {
+    let _ = selfhost_cli_low_level_args(input_path, output_path, entry_name, mode)
+    "OK"
+  } with { Exception::Throw(e) => e }
+}
+
+test "low-level form names what it read when an argument is missing" {
+  assert(String::contains(low_level_throw("", "", "", ""), "no input path"))
+  let no_output = low_level_throw("deps", "", "", "")
+  assert(String::contains(no_output, "no output path"))
+  assert(String::contains(no_output, "read `deps` as the input path"))
+  // `vibe_cli.sh deps foo.vibe`: not a subcommand, so `deps` became the input.
+  let no_entry = low_level_throw("deps", "lib/x.vibe", "", "")
+  assert(String::contains(no_entry, "no entry name"))
+  assert(String::contains(no_entry, "read `deps` as the input path"))
+  assert(String::contains(no_entry, "`lib/x.vibe` as the output path"))
+  // Every one of them points at the two things that ARE accepted.
+  for message in [no_output, no_entry] {
+    assert(String::contains(message, "<input> <output> <entry> [mode]"))
+    assert(String::contains(message, "build, check, compile, compile-lite, profile, serve"))
+  }
+}
+
+test "low-level form names a missing input file and an unknown mode" {
+  let missing = low_level_throw("/tmp/vibe_no_such_input_2361.vibe", "/tmp/vibe_2361_out.wasm", "main", "")
+  assert(String::contains(missing, "no such input file: /tmp/vibe_no_such_input_2361.vibe"))
+  let real_path = "/tmp/vibe_selfhost_cli_2361_mode.vibe"
+  Fs::write_bytes(real_path, string_to_bytes("export let answer: () -> Int = () -> { 42 }\n"))
+  let bad_mode = low_level_throw(real_path, "/tmp/vibe_2361_out.wasm", "answer", "frobnicate")
+  assert(String::contains(bad_mode, "unknown mode `frobnicate`"))
+  assert(String::contains(bad_mode, "release, no-dce, mvp, debug, check"))
+  // The control: the same call with a mode that IS recognized does not throw.
+  assert(low_level_throw(real_path, "/tmp/vibe_2361_out.wasm", "answer", "release") == "OK")
+}
+
+/// The exit code these carry is the one they always had -- 1, via the entry
+/// wrapper's Exception arm. Only the printed reason is new.
+test "an unexplained low-level failure still exits 1" {
+  assert(run_cli_main_with_args([
+    "/tmp/vibe_no_such_input_2361.vibe",
+    "/tmp/vibe_2361_out.wasm",
+    "main"
+  ]) == 1)
 }
 
 /// Same framing as `runtime/vibe` `emit_check_diagnostics`: `error: ` on a
