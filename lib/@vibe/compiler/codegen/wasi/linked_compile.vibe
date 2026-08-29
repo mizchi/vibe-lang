@@ -3720,6 +3720,27 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   let late_dce_roots = lc_late_dce_roots(stmts, entry_name)
   let iw_names = lc_fresh_string_array()
   let iw_wats = lc_fresh_string_array()
+  // #2388 step 2: everything the prelude APPENDS past this length is
+  // compiler-synthesized (derived comparators, monoify specializations, the
+  // __exn_kind_cell thunk, ...) -- the prelude is the container for every
+  // AST-mutating pass, so this boundary is exact. The let-name snapshot of
+  // the source prefix lets the padding step below verify, fail-safe, that
+  // no pass inserted or renamed ahead of the boundary before it trusts it.
+  let synth_boundary_stmt = Array::length(stmts)
+  let pre_prelude_let_names = lc_fresh_string_array()
+  let mut __sbn_i = 0
+  while __sbn_i < synth_boundary_stmt {
+    match Array::get(stmts, __sbn_i) {
+      SLet(_, _, __sbn_name, _, _) => Array::push(pre_prelude_let_names, __sbn_name),
+      // The test/bench lowering below rewrites these in place to
+      // `SLet(__test_<name>, ...)` / `SLet(__bench_<name>, ...)` before the
+      // padding step verifies the prefix, so record the POST-rewrite name.
+      STest(__sbn_tname, _) => Array::push(pre_prelude_let_names, String::concat("__test_", __sbn_tname)),
+      SBench(__sbn_bname, _) => Array::push(pre_prelude_let_names, String::concat("__bench_", __sbn_bname)),
+      _ => ()
+    }
+    __sbn_i = __sbn_i + 1
+  }
   let prelude_errs = effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats)
   if Array::length(prelude_errs) > 0 {
     throw(Array::get(prelude_errs, 0))
@@ -3973,6 +3994,133 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
       }
     }
     i = i + 1
+  }
+  // #2388 step 2: pin the compiler-synthesized functions (derived
+  // comparators, monoify specializations, trait-operation dispatchers, the
+  // __exn_kind_cell thunk) to a capacity-based index region, the same move
+  // lambda_slot_base makes for table slots. Their callee indices are embedded
+  // as call immediates in bodies all over the program, and they are created
+  // by the effect_lowering_prelude either appended past the source program or
+  // INSERTED after the last trait/impl (see desugar_trait_dict's insertion
+  // scan), so any added source function shifts them.
+  //
+  // Classification is by NAME SET: every let name present before the prelude
+  // (with STest/SBench recorded under their later __test_/__bench_ spelling)
+  // is a source function; a function whose name the source never declared is
+  // prelude-synthesized. A misclassification cannot produce wrong code --
+  // the reorder below is a consistent permutation of the function index
+  // space applied before any index is consumed -- it can only cost layout
+  // stability, so no verification gate is needed. The one lane skipped is
+  // library_mode, which exports every function and gains nothing from edit
+  // stability.
+  //
+  // New order: [source functions][pads to a 1024 capacity][synthesized].
+  // Pads are trivial `() -> 0` statements appended past the program; every
+  // downstream consumer (lambda planning, body compile, Perceus, the name
+  // and type sections) treats them as ordinary tiny functions. They are
+  // never called, exported, or given table slots. Export user indices are
+  // recomputed by name after the reorder.
+  //
+  // Coverage builds also skip the reorder: cov_count = num_user_funcs is the
+  // function-coverage denominator and the vibe_cov section serializes every
+  // user-function name, so never-callable pads would report as up to 1023
+  // uncovered functions (measured: a one-test file answered
+  // "functions 2/1025"). Coverage is a measurement lane; edit-stable indices
+  // buy it nothing.
+  if !library_mode && !coverage {
+    let __pp_sorted = sorted_names_of(pre_prelude_let_names)
+    let __pin_total = Array::length(fn_names_list)
+    let __pin_src_idx = lc_fresh_int_array()
+    let __pin_synth_idx = lc_fresh_int_array()
+    let mut __pin_i = 0
+    while __pin_i < __pin_total {
+      if bsearch_leftmost(__pp_sorted, Array::get(fn_names_list, __pin_i)) >= 0 {
+        Array::push(__pin_src_idx, __pin_i)
+      } else {
+        Array::push(__pin_synth_idx, __pin_i)
+      }
+      __pin_i = __pin_i + 1
+    }
+    if Array::length(__pin_synth_idx) > 0 {
+      let __pin_src_n = Array::length(__pin_src_idx)
+      let __pin_capacity = ((__pin_src_n + 1023) / 1024) * 1024
+      let __new_names = lc_fresh_string_array()
+      let __new_params = lc_fresh_int_array()
+      let __new_env = lc_fresh_bool_array()
+      let __new_stmts = lc_fresh_int_array()
+      let mut __pin_s = 0
+      while __pin_s < __pin_src_n {
+        let __pin_from = Array::get(__pin_src_idx, __pin_s)
+        Array::push(__new_names, Array::get(fn_names_list, __pin_from))
+        Array::push(__new_params, Array::get(fn_param_counts, __pin_from))
+        Array::push(__new_env, Array::get(fn_needs_env_list, __pin_from))
+        Array::push(__new_stmts, Array::get(fn_stmt_indices, __pin_from))
+        __pin_s = __pin_s + 1
+      }
+      let mut __pin_p = __pin_src_n
+      while __pin_p < __pin_capacity {
+        // `#` is unspellable in identifiers (the same guarantee #active_region
+        // and the #region_N skolems rely on), so a user function can never
+        // collide with a pad name and no name lookup can resolve to a pad.
+        let __pad_name = String::concat("#slot_pad_", __to_string(__pin_p))
+        let __pad_stmt_idx = Array::length(stmts)
+        Array::push(stmts, SLet(false, false, __pad_name, None, EFn(empty_tp, empty_bounds, empty_params, None, None, EInt(0))))
+        Array::push(__new_names, __pad_name)
+        Array::push(__new_params, 0)
+        Array::push(__new_env, true)
+        Array::push(__new_stmts, __pad_stmt_idx)
+        __pin_p = __pin_p + 1
+      }
+      let mut __pin_y = 0
+      while __pin_y < Array::length(__pin_synth_idx) {
+        let __pin_from2 = Array::get(__pin_synth_idx, __pin_y)
+        Array::push(__new_names, Array::get(fn_names_list, __pin_from2))
+        Array::push(__new_params, Array::get(fn_param_counts, __pin_from2))
+        Array::push(__new_env, Array::get(fn_needs_env_list, __pin_from2))
+        Array::push(__new_stmts, Array::get(fn_stmt_indices, __pin_from2))
+        __pin_y = __pin_y + 1
+      }
+      Array::truncate(fn_names_list, 0)
+      Array::truncate(fn_param_counts, 0)
+      Array::truncate(fn_needs_env_list, 0)
+      Array::truncate(fn_stmt_indices, 0)
+      let mut __pin_w = 0
+      while __pin_w < Array::length(__new_names) {
+        Array::push(fn_names_list, Array::get(__new_names, __pin_w))
+        Array::push(fn_param_counts, Array::get(__new_params, __pin_w))
+        Array::push(fn_needs_env_list, Array::get(__new_env, __pin_w))
+        Array::push(fn_stmt_indices, Array::get(__new_stmts, __pin_w))
+        __pin_w = __pin_w + 1
+      }
+      // Exports were recorded with pre-reorder indices; re-resolve each by
+      // name against the reordered list (source names are unique in the
+      // merged program -- #716 mangling -- and synthesized names are never
+      // exported outside library_mode, which is excluded above).
+      let mut __pin_e = 0
+      while __pin_e < Array::length(export_fn_names) {
+        let __pin_ename = Array::get(export_fn_names, __pin_e)
+        let mut __pin_found = -1
+        let mut __pin_f = 0
+        while __pin_found < 0 && __pin_f < Array::length(fn_names_list) {
+          if Array::get(fn_names_list, __pin_f) == __pin_ename {
+            __pin_found = __pin_f
+          } else {
+            ()
+          }
+          __pin_f = __pin_f + 1
+        }
+        if __pin_found >= 0 {
+          Array::set(export_fn_user_indices, __pin_e, __pin_found)
+        } else {
+          ()
+        }
+        __pin_e = __pin_e + 1
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
   }
   let ctor_names_list = lc_fresh_string_array()
   let ctor_tags_list = lc_fresh_int_array()
