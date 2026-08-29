@@ -213,8 +213,20 @@ import @vibe/compiler/codegen/wasm_emit {
 /// Params 0=a 1=b (packed (ptr<<32)|len i64). Locals (all i32, meta_i32=6):
 /// 2=len_a 3=len_b 4=ptr_a 5=ptr_b 6=i 7=chunk_limit (len-15, or 0 when
 /// len < 16 so the unsigned loop guard skips the chunk phase entirely).
+///
+/// Identity fast path: equal packed values mean same ptr AND same len, so the
+/// bytes are trivially equal -- answer 1 without touching memory. Same-object
+/// compares are common (e.g. table-verification scans over arrays sharing
+/// their element strings), and the check is one i64.eq before anything else.
 export fn gen_str_eq_body() -> Bytes {
   let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_i64_eq(b)
+  emit_if_void(b)
+  emit_i64_const(b, 1)
+  emit_return(b)
+  emit_end(b)
   emit_local_get(b, 0)
   emit_i64_const(b, 4294967295)
   emit_i64_and(b)
