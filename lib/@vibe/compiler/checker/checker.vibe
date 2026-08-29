@@ -639,6 +639,12 @@ fn collect_all_formals_in_type(ty: Type, formals: Array[String], out: Array[Stri
   match ty {
     CtNamed(name, args) => {
       push_unique_formal(name, formals, out)
+      // A kinded application is `CtNamed("#hkt", [head, index...])` and a bare
+      // constructor is `CtNamed("#ctor.F", [])`, so the formal's own name is
+      // not `name` -- it is what type_constructor_name reads out of them.
+      // Pushing it as well is safe: push_unique_formal keeps only names that
+      // are formals of this signature.
+      push_unique_formal(type_constructor_name(ty), formals, out)
       let mut i = 0
       while i < Array::length(args) {
         collect_all_formals_in_type(Array::get(args, i), formals, out)
@@ -699,9 +705,31 @@ fn collect_all_formals_in_type(ty: Type, formals: Array[String], out: Array[Stri
 fn collect_hkt_related_formals_in_type(ty: Type, formals: Array[String], out: Array[String]) -> Unit {
   match ty {
     CtNamed(head, args) => {
-      if string_array_has(formals, head) && Array::length(args) > 0 {
-        push_unique_formal(head, formals, out)
-        let mut i = 0
+      // `F[A]` for a KINDED `F[_]` is not `CtNamed("F", [A])` -- alias
+      // expansion produces `CtNamed("#hkt", [<ctor F>, A])`, whose head is
+      // args[0] and whose indices are the rest. Reading `head` literally made
+      // this an ordinary named type with no formal in it, so
+      // `type Apply[F[_], A] = F[A]` left `F`, `A` and `B` unmarked and
+      // `fn bad[F[_], A, B](x: Apply[F, A]) -> Apply[F, B] { x }` compiled.
+      // The unkinded spelling DOES arrive as `CtNamed("F", [A])`, which is why
+      // only the kinded one was wrong (Codex review).
+      let applied_name = if is_hkt_app(ty) {
+        type_constructor_name(ty)
+      } else {
+        head
+      }
+      let index_start = if is_hkt_app(ty) {
+        1
+      } else {
+        0
+      }
+      // `formals` holds type-param KEYS (`F[_]`), so an exact compare never
+      // matches a kinded parameter -- which is the whole case this arm exists
+      // for. formals_contain_source_name reads the name out of the key, the
+      // same way push_unique_formal below does.
+      if formals_contain_source_name(formals, applied_name) && Array::length(args) > index_start {
+        push_unique_formal(applied_name, formals, out)
+        let mut i = index_start
         while i < Array::length(args) {
           collect_all_formals_in_type(Array::get(args, i), formals, out)
           i = i + 1
@@ -737,7 +765,7 @@ fn collect_hkt_related_formals_in_type(ty: Type, formals: Array[String], out: Ar
     // function classifies, so its arguments are collected in full.
     CtApplied(head, args) => {
       let head_name = type_constructor_name(head)
-      if string_array_has(formals, head_name) && Array::length(args) > 0 {
+      if formals_contain_source_name(formals, head_name) && Array::length(args) > 0 {
         push_unique_formal(head_name, formals, out)
         let mut i = 0
         while i < Array::length(args) {
