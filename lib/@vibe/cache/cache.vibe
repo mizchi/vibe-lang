@@ -128,17 +128,38 @@ export fn decode_persistent_artifact(env: Bytes) -> Option[Bytes] {
   }
 }
 
-/// #1326: publish atomically — write "<path>.tmp", then Fs::rename over the
-/// final path — so readers never observe a mid-write final file. Racing
-/// writers of the same key produce identical bytes, so rename-over is safe;
-/// any residual torn read is caught by the envelope length check above.
+/// #1326: publish atomically — write a temporary file, then Fs::rename over
+/// the final path — so readers never observe a mid-write final file. The
+/// temporary name carries a checksum of the PAYLOAD (#2402): most artifact
+/// keys are content-derived, so racing writers of one key produce identical
+/// bytes and share one temporary file harmlessly, exactly as before — but a
+/// self-describing artifact (the #2388 codegen body cache) re-publishes
+/// DIFFERENT bytes under one fixed key, and with a shared temporary name one
+/// writer could rename the other's half-written file out from under it and
+/// abort an otherwise valid compile. Distinct payloads now write distinct
+/// temporary files; last rename wins, and any residual torn read is caught
+/// by the envelope length check above.
 export fn store_persistent_artifact(version_tag: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> Unit with Exception + Fs {
   let path = persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint)
   store_artifact_envelope_at(path, bytes)
 }
 
+fn artifact_payload_stamp(bytes: Bytes) -> String {
+  let mut h1 = 17
+  let mut h2 = 29
+  let n = Bytes::length(bytes)
+  let mut i = 0
+  while i < n {
+    let byte = Bytes::get(bytes, i)
+    h1 = (h1 * 131 + byte) % 2147483647
+    h2 = (h2 * 137 + byte) % 2147483629
+    i = i + 1
+  }
+  String::concat(__to_string(h1), String::concat("-", __to_string(h2)))
+}
+
 export fn store_artifact_envelope_at(path: String, bytes: Bytes) -> Unit with Exception + Fs {
-  let tmp = String::concat(path, ".tmp")
+  let tmp = String::concat(path, String::concat(".", String::concat(artifact_payload_stamp(bytes), ".tmp")))
   Fs::write_bytes(tmp, encode_persistent_artifact(bytes))
   Fs::rename(tmp, path)
 }

@@ -58,6 +58,8 @@ import @vibe/compiler/codegen {
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache,
   DbgProv,
+  bcc_int_lists_equal,
+  bcc_string_lists_equal,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_from_bytes,
   codegen_body_cache_merge,
@@ -936,6 +938,18 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
 /// all). The artifact carries a payload checksum; any corruption -- a
 /// same-length bit flip in a cached body included -- decodes as an empty
 /// cache and recompiles.
+/// #2388 step 3: full guard-set equality between two caches. Used where the
+/// consuming compile's own validation cannot run: the verify lane's second
+/// compile re-feeds the already-lowered stmts, where linked_compile's guard
+/// validation legitimately stands down (the pin reorder is a no-op there),
+/// so expected guard drift from an edit must be turned into a cache miss
+/// HERE, against the fresh harvest's guards -- not left to throw as a
+/// verify mismatch. Also decides whether a consumed cache may be merged
+/// back into the refreshed artifact.
+fn body_cache_guards_equal(a: CodegenBodyCache, b: CodegenBodyCache) -> Bool {
+  Array::length(a.guard_meta) == 5 && bcc_int_lists_equal(a.guard_meta, b.guard_meta) && bcc_string_lists_equal(a.guard_synth_names, b.guard_synth_names) && bcc_int_lists_equal(a.guard_synth_stmts, b.guard_synth_stmts) && bcc_string_lists_equal(a.guard_import_names, b.guard_import_names) && bcc_string_lists_equal(a.guard_borrow_names, b.guard_borrow_names) && bcc_int_lists_equal(a.guard_borrow_masks, b.guard_borrow_masks) && bcc_string_lists_equal(a.guard_unmangled_names, b.guard_unmangled_names)
+}
+
 export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -953,7 +967,13 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
     let fresh = compile_wasi_module_rc_body_cached(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out)
-    if Array::length(cache_in.fn_indices) > 0 {
+    if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
+      // Guard drift (an edit flipped a whole-program fact the guards pin)
+      // is an EXPECTED cache miss, checked above against the fresh
+      // harvest's guards -- the second compile below re-feeds the
+      // already-lowered stmts, where linked_compile's own validation
+      // stands down, so it must never see a drifted cache.
+      //
       // Second compile of the SAME (now already-lowered) stmts: the #1259
       // replay/sliced gates prove that recompile is byte-identical to the
       // first, so any difference here is attributable to the persisted
@@ -988,10 +1008,18 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   } else {
     let cache_out = codegen_body_cache_new()
     let bytes = compile_wasi_module_rc_body_cached(merged_stmts, entry_name, cache_in, cache_out)
-    // Replayed entries are not re-recorded, so the refreshed artifact is the
-    // new harvest plus the entries it replayed; merge prefers the new
-    // harvest's guards, which describe this compile's layout.
-    store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, codegen_body_cache_merge(cache_out, cache_in)))
+    // Replayed entries are not re-recorded, so the refreshed artifact is
+    // the new harvest plus the entries it replayed -- but ONLY when the
+    // cache was actually consumed (its guards match the new harvest's).
+    // Merging a guard-rejected cache would re-persist every entry the
+    // compile just recompiled, growing the artifact by a full duplicate
+    // set on each guard-flipping edit.
+    let refreshed = if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_out, cache_in) {
+      codegen_body_cache_merge(cache_out, cache_in)
+    } else {
+      cache_out
+    }
+    store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, refreshed))
     bytes
   }
 }
