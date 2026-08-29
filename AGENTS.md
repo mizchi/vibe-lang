@@ -502,7 +502,7 @@ completion / signature help を提供する。詳細は
 [docs/editor-and-debugging.md](docs/editor-and-debugging.md)。標準ライブラリ API
 の発見も `vibe symbols` で該当モジュールの `index.vibe` を見るのが速い。
 
-## vibe 言語の Int 型制約
+## `Int` constraints
 
 - **Literal bound**: 4611686018427387903 (2^62-1); anything above raises
   `IntLiteralOverflow`. (#1877 widened this from the historic 2^61-1 —
@@ -523,14 +523,22 @@ completion / signature help を提供する。詳細は
   the committed seed still enforces the old 2^61-1 literal bound and
   seed-driven tooling (vibe fmt) lexes all of `lib/**`, so spell large
   constants there by arithmetic (`(2305843009213693951 << 1) | 1`)
-- **hex リテラル**: `0xFF`, `0X1A2B` (prefix・digits ともに大文字小文字可)
-- **`>>` は算術シフト（符号拡張あり）**: 符号なし右シフトには `(x >> n) & ((1 << (32 - n)) - 1)` を使う
-- **ビット演算子**: `&`, `|`, `^`, `<<`, `>>`, および前置 `~` (bit-not, #2344 slice C)。
-  `~x` は 63-bit 二の補数上の補数で、`~x == -x - 1` (`~0 == -1`, `~5 == -6`)。
-  lowering は `x ^ -1` だが **定数はレーン依存**: RC レーンでは `Int` が `n<<1`
-  なので tagged(-1) = `-2` と xor する。生の `-1` と xor するとタグビットが
-  立ち、非負の小さい値では正しく見えて符号をまたぐと壊れる —
-  `fixtures/bit_not_test.vibe` が負の入力を必ず含むのはそのため
+- **Hex literals**: `0xFF`, `0X1A2B` — the prefix and the digits are both
+  case-insensitive.
+- **`>>` is an ARITHMETIC shift** (it sign-extends). For a logical right shift,
+  spell it `(x >> n) & ((1 << (32 - n)) - 1)`.
+- **Bitwise operators**: `&`, `|`, `^`, `<<`, `>>`, and prefix `~` (bit-not,
+  #2344 slice C). `~x` is the complement over the 63-bit two's complement
+  value, so `~x == -x - 1` (`~0 == -1`, `~5 == -6`) and `~` is its own
+  inverse. It lowers to `x ^ -1`, but **the constant is lane-dependent**: on
+  the RC lane an `Int` is `n<<1`, so complementing it needs tagged(-1) = `-2`.
+  Xoring a tagged value with a raw `-1` sets the tag bit and yields a
+  malformed `Int` — right-looking for small non-negative operands and wrong
+  across the sign, which is why every case in `fixtures/bit_not_test.vibe`
+  carries a negative input. `~` is also registered in both intish classifiers
+  (`expr_is_intish`, `gc_expr_is_intish`); without that, `~a == ~b` takes the
+  generic `eq` path, which reads an operand as a `(ptr|len)` string and
+  answered `true` for distinct integers whose low 32 bits are zero.
 
 ## 実装上の Gotcha
 

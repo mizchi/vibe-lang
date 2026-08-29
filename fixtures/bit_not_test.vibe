@@ -43,3 +43,32 @@ test "#2344 ~ through a function and composed with the bit operators" {
   // `~` binds tighter than the infix operators, like the other prefixes.
   assert(~0 - 1 == 0 - 2)
 }
+
+test "#2344 `~` is intish: a both-`~` equality takes the integer path" {
+  // Review (#2403): `expr_is_intish` / `gc_expr_is_intish` decide whether `==`
+  // uses the integer path or the generic `eq`, which reads an operand as a
+  // (ptr|len) string. With `~` unregistered, two DISTINCT integers whose low
+  // 32 bits are zero both looked like the empty string and the comparison
+  // answered `true`.
+  //
+  // Every other equality in this file has an intish literal or binop on the
+  // other side, so only a both-sides-`~` case reaches the classifier. These
+  // are written DIRECTLY rather than through a `let`: a bare ident is
+  // classified from the slot log on the linear lane and not at all on gc
+  // (`gc_expr_is_intish` takes no locals), which is a pre-existing gap in the
+  // runtime string-pointer heuristic and not what `~` changed.
+  assert(~((0 - (64<<32)) - 1) != ~((0 - (65<<32)) - 1))
+  assert(!(~((0 - (64<<32)) - 1) == ~((0 - (65<<32)) - 1)))
+  assert(~((0 - (64<<32)) - 1) == ~((0 - (64<<32)) - 1))
+}
+
+test "#2344 `~` is intish: `__to_string` renders an integer, not a string" {
+  // `ts_known_int` had no unary arm at all, so a direct `~` fell to the
+  // runtime heuristic. (A pathological VALUE additionally traps `__to_string`
+  // on the gc lane, with no `~` involved -- pre-existing, filed separately --
+  // so these stay in the ordinary range.)
+  assert(__to_string(~0) == "-1")
+  assert(__to_string(~5) == "-6")
+  assert(__to_string(~(0 - 1)) == "0")
+  assert(__to_string(~(0 - 6)) == "5")
+}
