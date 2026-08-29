@@ -27,7 +27,7 @@ import ../codegen_gc.vibe {
 }
 
 import @vibe/compiler/codegen {
-  compile_inline_wat, compile_inline_wat_full
+  compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full
 }
 
 //# Functions
@@ -66,6 +66,24 @@ fn wat_err(wat: String) -> String {
     let _ = compile_inline_wat("probe", wat, ["a", "b"])
     ""
   } with { Exception::Throw(msg) => msg }
+}
+
+/// #2348: a two-entry callee table -- `dbl` at wasm index 7 taking 1 param,
+/// `sub2` at wasm index 9 taking 2.
+fn iw_test_callees() -> Array[(String, Int, Int)] {
+  [("dbl", 7, 1), ("sub2", 9, 2)]
+}
+
+fn call_err(wat: String) -> String {
+  handle {
+    let _ = compile_inline_wat_calls("probe", wat, ["a", "b"], 3, iw_test_callees())
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn call_bytes(wat: String) -> Bytes with Exception {
+  let (out, _n32, _n64, _nv) = compile_inline_wat_calls("probe", wat, ["a", "b"], 3, iw_test_callees())
+  out
 }
 
 //# Misc
@@ -116,8 +134,13 @@ test "inline wasm assembler: malformed WAT is a located error" {
   assert(String::contains(e3, "missing ')'"))
   let e4 = wat_err("(br $nowhere)")
   assert(String::contains(e4, "unknown label '$nowhere'"))
+  // #2348: `call` resolves against the module's inline-wasm fns. `wat_err`
+  // passes no callee table, so nothing is callable and the error says so --
+  // this used to read "not supported", when no body could call anything.
   let e5 = wat_err("(call $f)")
-  assert(String::contains(e5, "not supported"))
+  assert(String::contains(e5, "no inline-wasm fn named 'f'"))
+  let e5b = wat_err("(call_indirect (local.get $a))")
+  assert(String::contains(e5b, "not supported"))
   let e6 = wat_err("block")
   assert(String::contains(e6, "folded form"))
 }
@@ -297,4 +320,94 @@ test "inline wasm: printer round-trips the = wasm form" {
   // and the printed form re-parses to the same print
   let stmts2 = parse_program_preserving(lex(printed))
   assert(print_stmt(Array::get(stmts2, 0)) == printed)
+}
+
+test "#2348 inline wasm: folded call emits operands, the env slot, then the call" {
+  // `(call $dbl (local.get $a))` is the same sequence compile_call.vibe emits
+  // for a static call: the argument, `i64.const 0` for the closure-env slot
+  // every user function carries as its last wasm param, then `call <idx>`.
+  let bytes = call_bytes("(call $dbl (local.get $a))")
+  assert(Bytes::length(bytes) == 6)
+  assert(bytes[0] == 0x20)
+  assert(bytes[1] == 0x00)
+  assert(bytes[2] == 0x42)
+  assert(bytes[3] == 0x00)
+  assert(bytes[4] == 0x10)
+  assert(bytes[5] == 7)
+}
+
+test "#2348 inline wasm: call operands keep source order" {
+  // Deliberately a NON-commutative callee: `sub2` would assemble identically
+  // under a swap if this used an add, and an argument-order bug would survive
+  // the test (CLAUDE.md, "never test argument order with a commutative
+  // operator").
+  let bytes = call_bytes("(call $sub2 (local.get $a) (local.get $b))")
+  assert(Bytes::length(bytes) == 8)
+  assert(bytes[0] == 0x20)
+  assert(bytes[1] == 0x00)
+  assert(bytes[2] == 0x20)
+  assert(bytes[3] == 0x01)
+  assert(bytes[4] == 0x42)
+  assert(bytes[5] == 0x00)
+  assert(bytes[6] == 0x10)
+  assert(bytes[7] == 9)
+}
+
+test "#2348 inline wasm: a call nests inside another call and inside an operator" {
+  let nested = call_bytes("(call $dbl (call $dbl (local.get $a)))")
+  assert(Bytes::length(nested) == 10)
+  assert(nested[4] == 0x10)
+  assert(nested[5] == 7)
+  assert(nested[8] == 0x10)
+  assert(nested[9] == 7)
+  let inside = call_bytes("(i64.add (call $dbl (local.get $a)) (local.get $b))")
+  assert(Bytes::length(inside) == 9)
+  assert(inside[8] == 0x7C)
+}
+
+test "#2348 inline wasm: call arity is checked against the callee" {
+  let too_few = call_err("(call $sub2 (local.get $a))")
+  assert(String::contains(too_few, "'sub2' takes 2 argument(s), called with 1"))
+  let too_many = call_err("(call $dbl (local.get $a) (local.get $b))")
+  assert(String::contains(too_many, "'dbl' takes 1 argument(s), called with 2"))
+}
+
+test "#2348 inline wasm: an unknown callee names what IS callable" {
+  let e = call_err("(call $nope (local.get $a))")
+  assert(String::contains(e, "no inline-wasm fn named 'nope'"))
+  assert(String::contains(e, "callable: dbl, sub2"))
+}
+
+test "#2348 inline wasm: with no callee table nothing is callable" {
+  // What the two back-compat entries pass, and what every `call` met before
+  // this issue.
+  let e = handle {
+    let _ = compile_inline_wat("probe", "(call $dbl (local.get $a))", ["a", "b"])
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(e, "no inline-wasm fn named 'dbl'"))
+  assert(String::contains(e, "callable: (none)"))
+}
+
+test "#2348 inline wasm: flat-form call is rejected, with the fix in the message" {
+  // Folded-only on purpose: the flat spelling's operand count is not knowable
+  // in the assembler, so its arity could not be checked and the mismatch
+  // would surface as a wasm validation failure at module load.
+  let e = call_err("local.get $a call $dbl")
+  assert(String::contains(e, "'call' must be written in folded form"))
+  assert(String::contains(e, "(call $f (local.get $a) ...)"))
+}
+
+test "#2348 inline wasm: the callee must be spelled $name" {
+  let e = call_err("(call dbl (local.get $a))")
+  assert(String::contains(e, "'call' callee must be written as $name"))
+  let bare = call_err("(call)")
+  assert(String::contains(bare, "'call' needs a callee name"))
+}
+
+test "#2348 inline wasm: call_indirect and return_call stay unsupported" {
+  let ci = call_err("(call_indirect (local.get $a))")
+  assert(String::contains(ci, "'call_indirect' is not supported"))
+  let rc = call_err("return_call $dbl")
+  assert(String::contains(rc, "'return_call' is not supported"))
 }

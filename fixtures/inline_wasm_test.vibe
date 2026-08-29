@@ -100,6 +100,33 @@ fn wasm_reverse16(buf: Bytes) -> Int = wasm
 "  (i8x16.shuffle 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0 (local.get $v) (local.get $v)))"
 "(i64.const 0)"
 
+// #2348: a kernel may `call` another inline-wasm fn in the SAME module, in
+// folded form. The assembler emits the operands, then `i64.const 0` for the
+// closure-env slot every user function carries as its last wasm param, then
+// the call -- the WAT author writes only the real arguments. Only inline-wasm
+// fns are callable: an ordinary vibe fn's effect row, RC accounting and real
+// closure env are not modelled here.
+//
+// Subtraction, not addition, so an operand-order bug cannot pass this
+// (CLAUDE.md: never test argument order with a commutative operator).
+fn wasm_sub(a: Int, b: Int) -> Int = wasm"(i64.sub (local.get $a) (local.get $b))"
+
+fn wasm_sub3(a: Int, b: Int, c: Int) -> Int = wasm
+"(call $wasm_sub (call $wasm_sub (local.get $a) (local.get $b)) (local.get $c))"
+
+// One shared kernel, two call sites, inside a folded `if` -- the duplication
+// #2348 exists to remove.
+fn wasm_abs_diff(a: Int, b: Int) -> Int = wasm
+"(if (result i64) (i64.gt_s (local.get $a) (local.get $b))"
+"  (then (call $wasm_sub (local.get $a) (local.get $b)))"
+"  (else (call $wasm_sub (local.get $b) (local.get $a))))"
+
+// The callee table is the MODULE's, not a prefix of it: this one calls a
+// kernel declared further down the file.
+fn wasm_calls_forward(a: Int) -> Int = wasm"(call $wasm_declared_later (local.get $a))"
+
+fn wasm_declared_later(a: Int) -> Int = wasm"(i64.sub (i64.const 0) (local.get $a))"
+
 //# Misc
 
 test "inline wasm: tagged add" {
@@ -173,4 +200,15 @@ test "inline wasm: i8x16.shuffle reverses through v128.load/store" {
     assert(Bytes::get(b, j) == 15 - j)
     j = j + 1
   }
+}
+
+test "#2348 inline wasm: a kernel calls another kernel in the same module" {
+  assert(wasm_sub(10, 3) == 7)
+  assert(wasm_sub3(10, 3, 2) == 5)
+  assert(wasm_sub3(0, 1, 2) == -3)
+  assert(wasm_abs_diff(3, 10) == 7)
+  assert(wasm_abs_diff(10, 3) == 7)
+  assert(wasm_abs_diff(4, 4) == 0)
+  assert(wasm_calls_forward(41) == -41)
+  assert(wasm_calls_forward(-41) == 41)
 }

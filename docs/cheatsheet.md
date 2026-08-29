@@ -2220,7 +2220,20 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   layout: length at `obj+4`, data pointer at `obj+8`) — the body can
   `i32.load offset=8` the data pointer and feed `v128.load`/`v128.store`
   (the pointer is only valid while the Bytes is alive and un-grown). No
-  `call` / `global.*` / `br_table` / `f32.const` / `f64.const`.
+  `call_indirect` / `return_call` / `global.*` / `br_table` / `f32.const` /
+  `f64.const`.
+- **Calling another kernel** (#2348): a body may `call` another inline-wasm
+  `fn` in the same module — `(call $other (local.get $a) (local.get $b))`.
+  Write only the real arguments: the assembler adds the closure-env slot
+  every user function carries as its last wasm param, then the call. The
+  callee may be declared anywhere in the module, before or after the caller.
+  Two limits, both deliberate: the callee must itself be an inline-wasm `fn`
+  (an ordinary vibe `fn` has an effect row, RC accounting and a real closure
+  env that this assembler does not model), and `call` is **folded-form only**
+  — the flat spelling's operand count is not knowable in the assembler, so
+  its arity could not be checked and a mismatch would surface as a wasm
+  validation failure at module load instead of a located error. The operand
+  count IS checked against the callee's declared params.
 - **Locals**: the fn's own params (`$name` or index), plus `(local $name
   TYPE)` declarations at the START of the body — types `i32`/`i64`/`v128`,
   grouped in that order (a located error enforces the grouping); declared
@@ -2243,7 +2256,8 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   sequences (`local.get $a local.get $b i64.add`) also work. Structured
   control (`block`/`loop`/`if`) is folded-form only:
   `(block $l (result i64) ...)`, `(if (result i64) <cond> (then ...) (else ...))`,
-  `br`/`br_if` with `$label` or relative depth.
+  `br`/`br_if` with `$label` or relative depth. `call` is folded-form only for
+  the same reason (see above).
 - SIMD (0xFD prefix) is supported: `v128.const i64x2 1 2`, splat /
   extract_lane / replace_lane, `i8x16.shuffle` (16 lane-byte immediates
   0..31), lane arithmetic, bitwise, `all_true` / `any_true` / `bitmask`,

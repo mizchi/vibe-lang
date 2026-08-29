@@ -165,7 +165,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_new,
   codegen_body_cache_record,
   codegen_body_cache_replay,
-  compile_inline_wat_full,
+  compile_inline_wat_calls,
   compute_agg_returning,
   ctor_sorted_index,
   desugar_trait_dicts,
@@ -672,6 +672,11 @@ fn push_ctor_float_fields(out: Array[Int], ctor_idx: Int, field_types: Array[Typ
   }
 }
 
+/// #2348: the inline-wasm callee table (name, wasm index, declared arity).
+fn lc_fresh_iw_callees() -> Array[(String, Int, Int)] {
+  array_empty()
+}
+
 fn lc_fresh_string_matrix() -> Array[Array[String]] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
@@ -689,7 +694,7 @@ fn gen_heap_grow_check_body() -> Bytes {
 /// scalar-return classification, string-table collection, coverage) sees an
 /// ordinary trivial body and the WAT text never leaks into the data section.
 /// The per-fn codegen loop then splices the assembled instruction bytes
-/// (compile_inline_wat) instead of running compile_expr for these names.
+/// (compile_inline_wat_calls) instead of running compile_expr for these names.
 fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -721,6 +726,40 @@ fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[
   }
 }
 
+/// #2348: the callee table a `(call $f ...)` inside an inline-wasm body may
+/// name — one `(source name, wasm function index, declared param count)` per
+/// inline-wasm fn in this module.
+///
+/// Only inline-wasm fns are listed, deliberately: calling an ordinary vibe fn
+/// would need this assembler to model an effect row, RC accounting and a real
+/// closure env, none of which it does. The scan is over the USER prefix of the
+/// func table (`[0, num_user_funcs)`, the layout func_table_user_index_of
+/// documents), so a builtin registered under the same name can never be
+/// resolved instead.
+fn lc_build_iw_callees(iw_names: Array[String], ft_names: Array[String], ft_indices: Array[Int], ft_params: Array[Int], num_user_funcs: Int) -> Array[(String, Int, Int)] {
+  let out = lc_fresh_iw_callees()
+  let limit = if num_user_funcs < Array::length(ft_names) {
+    num_user_funcs
+  } else {
+    Array::length(ft_names)
+  }
+  let mut i = 0
+  while i < Array::length(iw_names) {
+    let want = Array::get(iw_names, i)
+    let mut j = 0
+    while j < limit {
+      if Array::get(ft_names, j) == want {
+        Array::push(out, (want, Array::get(ft_indices, j), Array::get(ft_params, j)))
+        j = limit
+      } else {
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// #805 SIMD locals: assemble an inline-wasm fn's body bytes into `body_buf`
 /// and write its extra-local counts (i32, i64, v128) into the 3-slot
 /// `iw_extra_cell` -- zeros when the function is not inline wasm (iw_found
@@ -730,7 +769,7 @@ fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[
 /// depth of the flattened module source ("unknown name" on every later
 /// reference, tuple/mut/plain-Int alike), while reads through an
 /// already-in-scope array provably survive (meta_i32 itself is one).
-fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int, iw_extra_cell: Array[Int]) -> Unit with Exception {
+fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int, iw_extra_cell: Array[Int], iw_callees: Array[(String, Int, Int)]) -> Unit with Exception {
   Array::set(iw_extra_cell, 0, 0)
   Array::set(iw_extra_cell, 1, 0)
   Array::set(iw_extra_cell, 2, 0)
@@ -740,7 +779,7 @@ fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[Strin
     // Declared `(local ...)` runs index from param_count (params + the
     // closure-env slot), matching the i32/i64/v128 header runs the meta
     // arrays receive at the code-section assembly.
-    let (iw_bytes, iw_n32, iw_n64, iw_nv) = compile_inline_wat_full(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names, param_count)
+    let (iw_bytes, iw_n32, iw_n64, iw_nv) = compile_inline_wat_calls(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names, param_count, iw_callees)
     bytebuf_push_buf(body_buf, iw_bytes)
     Array::set(iw_extra_cell, 0, iw_n32)
     Array::set(iw_extra_cell, 1, iw_n64)
@@ -5896,6 +5935,9 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // would re-sort this same, unchanging array on every iteration) for
   // func_table_index_of's O(log N) lookups.
   let (all_fn_names_sorted, all_fn_names_sorted_pos) = ctor_sorted_index(all_fn_names_list)
+  // #2348: built once here, from the finalized func-table lists, and shared
+  // by every inline-wasm body the loop below assembles.
+  let iw_callees = lc_build_iw_callees(iw_names, all_fn_names_list, all_fn_indices_list, all_fn_param_counts, num_user_funcs)
   let num_base_types = 9
   let lt_w = LambdaTable::{
     bodies: lc_fresh_bytes_array(),
@@ -6850,7 +6892,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
             Array::push(iw_param_names, iw_pn)
             iw_pi = iw_pi + 1
           }
-          lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, param_count, iw_extra_cell)
+          lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, param_count, iw_extra_cell, iw_callees)
           let final_nl = if iw_found >= 0 {
             param_count
           } else {
