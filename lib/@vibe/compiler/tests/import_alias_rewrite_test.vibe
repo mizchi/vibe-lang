@@ -207,6 +207,60 @@ test "provider operation projection is trait-generic" {
   assert(String::ends_with(Array::get(imported, 0).1, "::reduce"))
 }
 
+test "trait companion projection follows facade re-exports" {
+  let provider_path = "/virtual/provider.vibe"
+  let facade_path = "/virtual/facade.vibe"
+  let entry_path = "/virtual/main.vibe"
+  let provider = parse_program(lex("export trait Reducible[T]\nexport fn Reducible::reduce[T, C: Reducible[T]](_xs: C) -> Int { 41 }"))
+  let facade = parse_program(lex("export ./provider.vibe { trait Reducible }"))
+  let entry = parse_program(lex("import ./facade.vibe { trait Reducible as R }\nlet answer = R::reduce([1])"))
+  let plan = build_export_rename_plan([provider_path, facade_path, entry_path], [
+    provider,
+    facade,
+    entry
+  ], entry_path)
+  let imported = collect_import_value_renames(plan, entry_path, entry)
+  inspect(Array::length(imported), "1")
+  inspect(Array::get(imported, 0).0, "R::reduce")
+  assert(String::ends_with(Array::get(imported, 0).1, "::reduce"))
+}
+
+test "Array Iterator flatmap specialization gets a provider-unique name" {
+  let provider_path = "/virtual/provider.vibe"
+  let entry_path = "/virtual/main.vibe"
+  let provider = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::flatmap(xs: Array[Int], f: (Int) -> Array[Int]) -> Array[Int] { Array::flatmap(xs, f) }\nexport fn Array::flatmap(xs: Array[Int], _f: (Int) -> Array[Int]) -> Array[Int] { [88] }"))
+  let entry = parse_program(lex("import ./provider.vibe { trait Iterator }\nfn Array::flatmap(xs: Array[Int], _f: (Int) -> Array[Int]) -> Array[Int] { [77] }"))
+  let plan = build_export_rename_plan([provider_path, entry_path], [
+    provider,
+    entry
+  ], entry_path)
+  let provider_renames = export_plan_renames_for(plan, provider_path)
+  inspect(Array::length(provider_renames), "2")
+  let mut specialization = ""
+  for rename in provider_renames {
+    if rename.0 == "Array::flatmap" {
+      specialization = rename.1
+    }
+  }
+  assert(String::starts_with(specialization, "Array_exp_"))
+  assert(String::ends_with(specialization, "::flatmap"))
+  let imported = collect_import_value_renames(plan, entry_path, entry)
+  inspect(Array::length(imported), "1")
+  inspect(Array::get(imported, 0).0, "Iterator::flatmap")
+  let iterator_unique = Array::get(imported, 0).1
+  let standard_import = parse_program(lex("import @vibe/builtin { trait Iterator }"))
+  let markers = builtin_iterator_namespace_markers(standard_import)
+  append_builtin_iterator_operation_markers(markers, [
+    ("Iterator::flatmap", iterator_unique)
+  ])
+  let serialized = print_program([
+    builtin_iterator_serialized_boundary_from_markers(markers)
+  ])
+  let optimized = parse_program(lex(String::concat(serialized, String::concat("let answer = ", String::concat(iterator_unique, "([1], (x: Int) -> Array[Int] { [x] })")))))
+  desugar_trait_dicts(optimized)
+  assert(String::contains(print_program(optimized), String::concat("answer = ", String::concat(specialization, "([1]"))))
+}
+
 test "append import alias rewrite resolves import aliases" {
   let stmts = parse_program(lex("import ./dep.vibe { answer as local }\nexport let run: () -> Int = () -> { local() }"))
   let out = Array::slice(stmts, 0, 0)

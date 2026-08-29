@@ -2484,7 +2484,12 @@ fn append_export_def_name(out: Array[String], extern_names: Array[String], trait
   } else {
     false
   }
-  if (qi < 0 || trait_owned) && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
+  // Iterator::flatmap devirtualizes Array receivers to the specialization
+  // defined beside the trait helper. It must travel under the same provider-
+  // unique suffix: otherwise an entry-local Array::flatmap races the imported
+  // specialization in the flattened function table.
+  let iterator_array_specialization = name == "Array::flatmap" && string_array_contains(trait_names, "Iterator")
+  if (qi < 0 || trait_owned || iterator_array_specialization) && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
     Array::push(out, name)
   } else {
     ()
@@ -2848,6 +2853,36 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
             }
           },
           None => ()
+        }
+        // A trait-only facade also publishes that trait's companion
+        // operations. They are not explicit re-export items, so carry every
+        // provider-qualified rename with the same head across this edge. The
+        // fixpoint makes this work through arbitrary facade chains.
+        let target_path = Array::get(edge_tpath, ci)
+        let target_name = Array::get(edge_tname, ci)
+        let target_prefix = String::concat(target_name, "::")
+        let public_prefix = String::concat(pub_name, "::")
+        let mut ri2 = 0
+        while ri2 < Array::length(rename_paths) {
+          let source_path = Array::get(rename_paths, ri2)
+          let source_name = Array::get(rename_names, ri2)
+          if source_path == target_path && String::starts_with(source_name, target_prefix) {
+            let from_name = String::concat(public_prefix, String::substring(source_name, String::length(target_prefix), String::length(source_name)))
+            let from_key = plan_rename_key(from, from_name)
+            if !MutMap::has(rename_idx, from_key) {
+              let mangled = Array::get(rename_mangled, ri2)
+              Array::push(rename_paths, from)
+              Array::push(rename_names, from_name)
+              Array::push(rename_mangled, mangled)
+              MutMap::set(rename_idx, from_key, mangled)
+              changed = true
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          ri2 = ri2 + 1
         }
       }
       ci = ci + 1
