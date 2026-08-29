@@ -130,6 +130,9 @@ def compile_entry(stage2, entry, out_path):
         VIBE_PREOPEN_DIR=os.getcwd(),
         VIBE_FS_COMPILE="1",
         VIBE_IMPORT_ABI="raw",
+        # Attribution below reads the OUTPUT's name section; make sure the
+        # compile emits one regardless of the ambient strip default.
+        VIBE_WASM_NAMES="1",
     )
     subprocess.run(
         [
@@ -201,11 +204,38 @@ def main():
     # defs are never renamed). The sanitized path carries no `lib/` prefix
     # requirement -- an entry under fixtures/ pulls `_exp_fixtures_...`
     # names -- so match the mangling markers alone.
+    # Lambda bodies sit after the `run` entry glue and carry no name-section
+    # entry, so their owner cannot be read from names. They still count
+    # against prefix stability: an unchanged module's lambdas must stay
+    # byte-identical too (the edit's own new lambda lands past the compared
+    # range). Locate the region boundary from the named `run` index.
+    run_body = None
+    for idx, nm in names.items():
+        if nm == "run":
+            run_body = idx - imports
+    # Fail closed on missing attribution: with no name section every lookup
+    # answers "?", `foreign` stays empty, and the probe would certify prefix
+    # stability it never checked. Unverified and safe must not look alike.
     foreign = []
+    lambda_region = []
+    unattributed = []
     for i in diffs:
-        nm = names.get(i + imports, "?")
-        if "_exp_" in nm or "_dep_" in nm:
+        nm = names.get(i + imports)
+        if nm is None:
+            if run_body is not None and i > run_body:
+                lambda_region.append(i)
+            else:
+                unattributed.append(i)
+        elif "_exp_" in nm or "_dep_" in nm:
             foreign.append((i, nm))
+    if unattributed:
+        print(
+            f"FAIL: {len(unattributed)} differing bodies have no name-section entry "
+            f"(first: {unattributed[:5]}) -- cannot attribute them; ensure the "
+            f"compile emits names (the probe sets VIBE_WASM_NAMES=1 itself, so "
+            f"this points at a naming gap in the output)"
+        )
+        return 1
     for i, nm in foreign[:15]:
         a, b = bodies_a[i], bodies_b[i]
         bd = [
@@ -215,9 +245,15 @@ def main():
         ]
         shape = f"{len(bd)} byte(s)" if len(a) == len(b) else f"len {len(a)}->{len(b)}"
         print(f"  foreign diff: body {i} ({nm}): {shape}")
-    if foreign:
+    if lambda_region:
         print(
-            f"FAIL: {len(foreign)} differing bodies belong to modules other than the edited entry"
+            f"  lambda-region diffs (owner not recoverable from names): "
+            f"{len(lambda_region)}, first {lambda_region[:5]}"
+        )
+    if foreign or lambda_region:
+        print(
+            f"FAIL: {len(foreign)} differing named bodies belong to modules other "
+            f"than the edited entry, plus {len(lambda_region)} differing lambda bodies"
         )
         return 1
     print("ok: every differing body belongs to the edited entry")
