@@ -2,7 +2,9 @@
 
 import @vibe/compiler/core {
   append_builtin_iterator_operation_markers,
+  append_builtin_iterator_plan_operation_markers,
   append_import_alias_rewritten_non_import_stmts,
+  append_import_alias_rewritten_non_import_stmts_with_renames,
   apply_export_renames_stmts,
   build_export_rename_plan,
   builtin_iterator_namespace_from_marker,
@@ -225,6 +227,59 @@ test "trait companion projection follows facade re-exports" {
   inspect(Array::length(imported), "1")
   inspect(Array::get(imported, 0).0, "R::reduce")
   assert(String::ends_with(Array::get(imported, 0).1, "::reduce"))
+}
+
+test "#2379 review: builtin Iterator companion projection follows an export facade" {
+  let builtin_path = "lib/@vibe/builtin/index.vpkg"
+  let facade_path = "facade.vibe"
+  let entry_path = "main.vibe"
+  let builtin = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::map[T, C: Iterator[T]](_xs: C, _f: (T) -> T) -> Array[T] { [] }"))
+  let facade = parse_program(lex("import @vibe/builtin { trait Iterator }\nexport { Iterator }"))
+  let entry = parse_program(lex("import ./facade.vibe { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
+  let plan = build_export_rename_plan([builtin_path, facade_path, entry_path], [
+    builtin,
+    facade,
+    entry
+  ], entry_path)
+  let facade_renames = export_plan_renames_for(plan, facade_path)
+  let imported = collect_import_value_renames(plan, entry_path, entry)
+  inspect(Array::length(facade_renames), "1")
+  inspect(Array::length(imported), "1")
+  inspect(Array::get(imported, 0).0, "Iterator::map")
+  let markers = builtin_iterator_namespace_markers(entry)
+  inspect(Array::length(markers), "0")
+  append_builtin_iterator_plan_operation_markers(markers, imported, plan)
+  inspect(Array::length(markers), "1")
+  let merged: Array[Stmt] = [
+    builtin_iterator_serialized_boundary_from_markers(markers)
+  ]
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged, entry, [], imported)
+  desugar_trait_dicts(merged)
+  assert(String::contains(print_program(merged), "answer = Array::map"))
+}
+
+test "#2379 review: a custom Iterator facade cannot forge builtin provenance" {
+  let provider_path = "provider.vibe"
+  let facade_path = "facade.vibe"
+  let entry_path = "main.vibe"
+  let provider = parse_program(lex("export trait Iterator[T]\nexport fn Iterator::map[T, C: Iterator[T]](_xs: C, _f: (T) -> T) -> Array[T] { [] }"))
+  let facade = parse_program(lex("export ./provider.vibe { trait Iterator }"))
+  let entry = parse_program(lex("import ./facade.vibe { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
+  let plan = build_export_rename_plan([provider_path, facade_path, entry_path], [
+    provider,
+    facade,
+    entry
+  ], entry_path)
+  let imported = collect_import_value_renames(plan, entry_path, entry)
+  let markers = builtin_iterator_namespace_markers(entry)
+  append_builtin_iterator_plan_operation_markers(markers, imported, plan)
+  inspect(Array::length(markers), "0")
+  let merged: Array[Stmt] = [
+    builtin_iterator_serialized_boundary_from_markers(markers)
+  ]
+  append_import_alias_rewritten_non_import_stmts_with_renames(merged, entry, [], imported)
+  desugar_trait_dicts(merged)
+  assert(!String::contains(print_program(merged), "answer = Array::map"))
 }
 
 test "Array Iterator flatmap specialization gets a provider-unique name" {

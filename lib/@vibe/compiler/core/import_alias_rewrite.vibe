@@ -2626,6 +2626,11 @@ export struct ExportRenamePlan {
   rename_paths: Array[String];
   rename_names: Array[String];
   rename_mangled: Array[String];
+  // Provider-unique Iterator operations whose origin is authenticated by an
+  // import/re-export edge targeting @vibe/builtin. Facade consumers compare
+  // their already-resolved operation renames against this compact set, so
+  // provenance follows arbitrary facade chains without another graph walk.
+  builtin_iterator_mangled: Array[String];
   // #1259: (path, name) -> mangled index over the three parallel arrays
   // above (plan_rename_key encoding). Built once in build_export_rename_plan
   // -- which needs it for its own facade-closure fixpoint -- and reused by
@@ -2692,7 +2697,7 @@ fn plan_triple_lookup(tpaths: Array[String], tnames: Array[String], tvalues: Arr
 /// `import { x } ... export { x }` facade idiom (an `export {}` item with no
 /// local let def but a matching import). Pushed as parallel arrays
 /// (from-path, public-name, target-path, target-name).
-fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Array[String], edge_from: Array[String], edge_pub: Array[String], edge_tpath: Array[String], edge_tname: Array[String]) -> Unit {
+fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Array[String], edge_from: Array[String], edge_pub: Array[String], edge_tpath: Array[String], edge_tname: Array[String], builtin_iterator_paths: Array[String]) -> Unit {
   let base_dir = dir_of_path(path)
   let let_names = empty_strings()
   let mut i = 0
@@ -2708,11 +2713,39 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
+      SImport(raw_path, items) => if raw_path == "@vibe/builtin" {
+        let target = resolve_known_import_path(known_paths, base_dir, raw_path, path)
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let is_iterator_trait = item.name == "Iterator" && (match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          })
+          if is_iterator_trait && !string_array_contains(builtin_iterator_paths, target) {
+            Array::push(builtin_iterator_paths, target)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      },
       SReExport(raw_path, items) => {
         let target = resolve_known_import_path(known_paths, base_dir, raw_path, path)
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
+          let is_builtin_iterator_trait = raw_path == "@vibe/builtin" && item.name == "Iterator" && (match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          })
+          if is_builtin_iterator_trait && !string_array_contains(builtin_iterator_paths, target) {
+            Array::push(builtin_iterator_paths, target)
+          } else {
+            ()
+          }
           let iname = item.name
           let alias_opt = item.alias
           let public_name = match alias_opt {
@@ -2769,9 +2802,10 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let edge_pub = empty_strings()
   let edge_tpath = empty_strings()
   let edge_tname = empty_strings()
+  let builtin_iterator_paths = empty_strings()
   let mut ei = 0
   while ei < file_count {
-    collect_reexport_edges_into(Array::get(paths, ei), Array::get(stmts_list, ei), paths, edge_from, edge_pub, edge_tpath, edge_tname)
+    collect_reexport_edges_into(Array::get(paths, ei), Array::get(stmts_list, ei), paths, edge_from, edge_pub, edge_tpath, edge_tname, builtin_iterator_paths)
     ei = ei + 1
   }
   // The origins of the entry file's re-export surface are program ABI (wasm
@@ -2957,12 +2991,75 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       ci = ci + 1
     }
   }
+  // Resolve authenticated origins to the same provider-unique values already
+  // used by import rewriting. This is computed once from the finished rename
+  // plan; consumers perform only membership checks over the small operation
+  // set and never re-walk the module graph.
+  let builtin_iterator_mangled = empty_strings()
+  let mut bmi = 0
+  while bmi < Array::length(rename_paths) {
+    let source_path = Array::get(rename_paths, bmi)
+    let source_name = Array::get(rename_names, bmi)
+    let mut trusted = false
+    let mut bpi = 0
+    while bpi < Array::length(builtin_iterator_paths) && !trusted {
+      let provider_path = Array::get(builtin_iterator_paths, bpi)
+      trusted = source_path == provider_path || (is_contract_ext(provider_path) && dir_of_path(source_path) == dir_of_path(provider_path))
+      bpi = bpi + 1
+    }
+    if trusted && iterator_namespace_operation(source_name, "Iterator") {
+      let mangled = Array::get(rename_mangled, bmi)
+      if !string_array_contains(builtin_iterator_mangled, mangled) {
+        Array::push(builtin_iterator_mangled, mangled)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    bmi = bmi + 1
+  }
   ExportRenamePlan::{
     plan_paths: paths,
     rename_paths: rename_paths,
     rename_names: rename_names,
     rename_mangled: rename_mangled,
+    builtin_iterator_mangled: builtin_iterator_mangled,
     rename_idx: rename_idx
+  }
+}
+
+/// Add standard Iterator provenance for operation renames whose resolved
+/// provider was authenticated while building the export plan. This is the
+/// facade counterpart of the direct-import marker path.
+export fn append_builtin_iterator_plan_operation_markers(markers: Array[String], renames: Array[(String, String)], plan: ExportRenamePlan) -> Unit {
+  // First preserve the direct-import path. Its local namespace marker is
+  // emitted only when the whole namespace is free of source overrides.
+  append_builtin_iterator_operation_markers(markers, renames)
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (_, resolved) = Array::get(renames, i)
+    if string_array_contains(plan.builtin_iterator_mangled, resolved) {
+      let split = String::index_of(resolved, "::")
+      if split > 0 {
+        let namespace = String::substring(resolved, 0, split)
+        if iterator_namespace_operation(resolved, namespace) {
+          let marker = String::concat(builtin_iterator_origin_marker_prefix(), namespace)
+          if !string_array_contains(markers, marker) {
+            Array::push(markers, marker)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
   }
 }
 
@@ -3005,6 +3102,12 @@ export fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String {
     StringBuilder::push(buf, ">")
     StringBuilder::push(buf, Array::get(rename_mangled, i))
     i = i + 1
+  }
+  let mut bi = 0
+  while bi < Array::length(plan.builtin_iterator_mangled) {
+    StringBuilder::push(buf, "|builtin-iterator>")
+    StringBuilder::push(buf, Array::get(plan.builtin_iterator_mangled, bi))
+    bi = bi + 1
   }
   StringBuilder::freeze(buf)
 }
