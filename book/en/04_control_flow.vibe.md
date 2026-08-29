@@ -109,17 +109,10 @@ body's results. Add a name before the element to get the index:
 
 ```vibe run
 fn main with Console {
-  let doubled = for x in [
-    1,
-    2,
-    3
-  ] {
+  let doubled = for x in [1, 2, 3] {
     x * 2
   }
-  let with_index = for i, x in [
-    10,
-    20
-  ] {
+  let with_index = for i, x in [10, 20] {
     i + x
   }
   println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
@@ -138,22 +131,18 @@ with_index = [10, 21]
 instead of inside out:
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
 fn main with Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
-  let arr_len = [
-    1,
-    2,
-    3
-  ] |> Array::length
-  let mapped = [
-    1,
-    2,
-    3
-  ] |> Array::map(_, _ * 2)
+  let arr_len = [1, 2, 3] |> Array::length
+  let mapped = [1, 2, 3] |> Iterator::map(_, _ * 2)
   let repeated = 7 |> pair(_, _)
   println("trimmed_len = \{trimmed_len}")
   println("arr_len = \{arr_len}")
@@ -174,7 +163,7 @@ somewhere else, mark the position with a bare `_`: `x |> f(a, _)` is
 `f(a, x)`, and a slot may repeat, so `7 |> pair(_, _)` is `pair(7, 7)`.
 
 A `_` inside a larger expression is a different thing — the lambda
-shorthand from the last chapter. That is why `Array::map(_, _ * 2)` has
+shorthand from the last chapter. That is why `Iterator::map(_, _ * 2)` has
 two of them doing unrelated jobs: the first is the pipe slot, the second
 is `(v) -> v * 2`.
 

@@ -4316,6 +4316,13 @@ fn erased_impl_ctor_matches(target: Type, resolved: Type) -> Bool {
   }
 }
 
+/// Apply the shared receiver-matching rule for a non-generic impl. Bare
+/// constructor impls cover the constructor family only for method-bearing
+/// traits; marker traits retain their stricter representation-safety gate.
+fn concrete_trait_impl_target_matches(full: TypeEnv, trait_name: String, target: Type, resolved: Type) -> Bool {
+  types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full, trait_name))
+}
+
 fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, resolved: Type) -> Bool {
   match e {
     EnvEmpty => false,
@@ -4328,7 +4335,7 @@ fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, reso
       // builtin `==` / `<`, and those are reference equality on `Array` /
       // `Bytes`, so honouring `impl Eq for Array[Int]` would make `==` silently
       // wrong on the very type the bound was written for.
-      if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full, trait_name)) {
+      if concrete_trait_impl_target_matches(full, trait_name, target, resolved) {
         true
       }
       else type_implements_check_env(rest, full, trait_name, resolved)
@@ -4451,7 +4458,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvMutCell(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
-    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full_env, trait_name)) {
+    EnvTraitImpl(tname, target, rest) => if concrete_trait_impl_target_matches(full_env, trait_name, target, resolved) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
       }
@@ -4778,6 +4785,168 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
     EnvTypeDefs(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved)
+  }
+}
+
+/// Decode an instantiated bound reference while preserving its fresh type
+/// variables. The serialized `#tpvid.N` spelling is checker provenance, not a
+/// nominal type name.
+fn instantiated_bound_ref_type(expr: TypeExpr) -> Type {
+  match expr {
+    TyName(name) => match parse_trait_bound_vid(name) {
+      Some(id) => CtVar(id),
+      None => trait_ref_type_expr_type(expr)
+    },
+    TyApp(name, nested) => {
+      let args = for item in nested {
+        instantiated_bound_ref_type(item)
+      }
+      match parse_trait_bound_vid(name) {
+        Some(id) => apply_type_constructor(CtVar(id), args),
+        None => if name == "Array" && Array::length(args) == 1 {
+          CtArray(Array::get(args, 0))
+        } else if name == "Option" && Array::length(args) == 1 {
+          CtOption(Array::get(args, 0))
+        } else {
+          CtNamed(name, args)
+        }
+      }
+    },
+    TyTuple(items) => CtTuple(for item in items {
+      instantiated_bound_ref_type(item)
+    }),
+    TyFn(params, ret, effect) => CtFn(for param in params {
+      instantiated_bound_ref_type(param)
+    }, instantiated_bound_ref_type(ret), effect),
+    TyUnit => CtUnit
+  }
+}
+
+/// Instantiate the trait reference written on a generic impl using the type
+/// arguments recovered by matching its target against the receiver.
+fn generic_impl_ref_type(expr: TypeExpr, tparams: Array[String], args: Array[Type]) -> Type {
+  match expr {
+    TyName(name) => {
+      let pi = generic_param_index(tparams, name)
+      if pi >= 0 && pi < Array::length(args) {
+        Array::get(args, pi)
+      } else {
+        trait_ref_type_expr_type(expr)
+      }
+    },
+    TyApp(name, nested) => {
+      let resolved = for item in nested {
+        generic_impl_ref_type(item, tparams, args)
+      }
+      let pi = generic_param_index(tparams, name)
+      if pi >= 0 && pi < Array::length(args) {
+        apply_type_constructor(Array::get(args, pi), resolved)
+      } else if name == "Array" && Array::length(resolved) == 1 {
+        CtArray(Array::get(resolved, 0))
+      } else if name == "Option" && Array::length(resolved) == 1 {
+        CtOption(Array::get(resolved, 0))
+      } else {
+        CtNamed(name, resolved)
+      }
+    },
+    TyTuple(items) => CtTuple(for item in items {
+      generic_impl_ref_type(item, tparams, args)
+    }),
+    TyFn(params, ret, effect) => CtFn(for param in params {
+      generic_impl_ref_type(param, tparams, args)
+    }, generic_impl_ref_type(ret, tparams, args), effect),
+    TyUnit => CtUnit
+  }
+}
+
+fn trait_key_type_for_bound(key: String) -> Type {
+  match trait_ref_from_key(key) {
+    Some(reference) => instantiated_bound_ref_type(reference),
+    None => CtNamed(key, array_empty())
+  }
+}
+
+fn trait_key_type_for_generic_impl(key: String, tparams: Array[String], args: Array[Type]) -> Type {
+  match trait_ref_from_key(key) {
+    Some(reference) => generic_impl_ref_type(reference, tparams, args),
+    None => CtNamed(key, array_empty())
+  }
+}
+
+/// Count impls that can determine the type arguments of `bound` from a
+/// concrete receiver. A count above one is deliberately ambiguous and the
+/// caller leaves the variables unresolved.
+fn trait_bound_receiver_refinements(scan: TypeEnv, full: TypeEnv, s: Subst, bound: String, receiver: Type) -> (Int, Subst) {
+  let (rest_count, rest_subst) = match scan {
+    EnvEmpty => (0, s),
+    EnvBind(_, _, rest) => trait_bound_receiver_refinements(rest, full, s, bound, receiver),
+    EnvTraitDef(_, _, _, _, rest, _, _) => trait_bound_receiver_refinements(rest, full, s, bound, receiver),
+    EnvTraitImpl(_, _, rest) => trait_bound_receiver_refinements(rest, full, s, bound, receiver),
+    EnvMutCell(_, _, rest) => trait_bound_receiver_refinements(rest, full, s, bound, receiver),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_bound_receiver_refinements(rest, full, s, bound, receiver),
+    EnvTypeDefs(_, _, rest) => trait_bound_receiver_refinements(rest, full, s, bound, receiver),
+    EnvFlat(_) => (0, s),
+    EnvCached(_, _, rest) => trait_bound_receiver_refinements(rest, full, s, bound, receiver)
+  }
+  let current = match scan {
+    EnvTraitImpl(itrait, target, _) => if trait_ref_name(itrait) == trait_ref_name(bound) && concrete_trait_impl_target_matches(full, trait_ref_name(bound), subst_apply(s, target), receiver) {
+      unify(trait_key_type_for_bound(bound), trait_key_type_for_generic_impl(itrait, array_empty(), array_empty()), s)
+    } else {
+      None
+    },
+    EnvTraitImplGen(itrait, tparams, bounds, target, _) => if trait_ref_name(itrait) == trait_ref_name(bound) {
+      match generic_target_args(tparams, target, receiver) {
+        Some(args) => if generic_bounds_hold(full, s, tparams, bounds, args) {
+          unify(trait_key_type_for_bound(bound), trait_key_type_for_generic_impl(itrait, tparams, args), s)
+        } else {
+          None
+        },
+        None => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+  match current {
+    Some(current_subst) => {
+      if rest_count == 0 {
+        (1, current_subst)
+      } else if rest_count == 1 && types_equal(subst_apply(current_subst, trait_key_type_for_bound(bound)), subst_apply(rest_subst, trait_key_type_for_bound(bound))) {
+        // Import projection may retain the same impl through more than one
+        // facade layer. Equal answers are duplicates, not an ambiguous choice.
+        (1, current_subst)
+      } else {
+        (rest_count + 1, s)
+      }
+    },
+    None => (rest_count, rest_subst)
+  }
+}
+
+/// Refine type variables mentioned by a parameter's applied trait bounds from
+/// the unique visible impl for its concrete receiver. This lets a signature
+/// such as `[A, C: Iterator[A]] (C, (A) -> B)` infer `A` from `Array[A]`
+/// before checking the callback, without making an ambiguous impl choice.
+export fn refine_trait_bounds_from_receiver(env: TypeEnv, s: Subst, param: Type, receiver: Type) -> Subst {
+  match param {
+    CtVar(id) => {
+      let bounds = subst_bounds_for(s, id)
+      let mut out = s
+      let mut i = 0
+      while i < Array::length(bounds) {
+        let bound = Array::get(bounds, i)
+        let (count, refined) = trait_bound_receiver_refinements(env, env, out, bound, subst_apply(out, receiver))
+        if count == 1 {
+          out = refined
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    _ => s
   }
 }
 

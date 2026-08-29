@@ -106,17 +106,10 @@ r = (3, 3)
 
 ```vibe run
 fn main with Console {
-  let doubled = for x in [
-    1,
-    2,
-    3
-  ] {
+  let doubled = for x in [1, 2, 3] {
     x * 2
   }
-  let with_index = for i, x in [
-    10,
-    20
-  ] {
+  let with_index = for i, x in [10, 20] {
     i + x
   }
   println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
@@ -134,22 +127,18 @@ with_index = [10, 21]
 `x |> f` は `f(x)` です。変換を内側から外側へではなく、左から右へ読ませます:
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
 fn main with Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
-  let arr_len = [
-    1,
-    2,
-    3
-  ] |> Array::length
-  let mapped = [
-    1,
-    2,
-    3
-  ] |> Array::map(_, _ * 2)
+  let arr_len = [1, 2, 3] |> Array::length
+  let mapped = [1, 2, 3] |> Iterator::map(_, _ * 2)
   let repeated = 7 |> pair(_, _)
   println("trimmed_len = \{trimmed_len}")
   println("arr_len = \{arr_len}")
@@ -170,7 +159,7 @@ repeated = 77
 `7 |> pair(_, _)` は `pair(7, 7)` です。
 
 もっと大きな式の中の `_` は別物で、前章のラムダ略記です。だから
-`Array::map(_, _ * 2)` には無関係な仕事をする `_` が2つあります — 最初が
+`Iterator::map(_, _ * 2)` には無関係な仕事をする `_` が2つあります — 最初が
 パイプのスロット、次が `(v) -> v * 2` です。
 
 次: [型と文字列](05_types_strings.vibe.md)。

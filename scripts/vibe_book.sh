@@ -5,6 +5,10 @@
 #
 # Writes _build/book/*.html. Uses the same compile-once tool cache pattern
 # as scripts/vibe_md.sh. Invokes `_start` directly so main runs once.
+#
+# The book package resolves the current @vibe/builtin closure. Build a current
+# stage2 before compiling the tool: the pinned seed is a stage0 compiler and
+# may predate intrinsics used by that closure.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,15 +17,18 @@ cd "$ROOT_DIR"
 
 compiler="${VIBE_BOOK_COMPILER:-}"
 if [ -z "$compiler" ]; then
+  echo "vibe_book.sh: building current stage2"
+  # The tool compile and `_start` run below are the executable validation for
+  # this lane. Skip generations.sh's additional sample run so the standalone
+  # book workflow does not also require a wasmtime installation.
+  VIBE_REGEN_MODULE_SOURCE=1 VIBE_GENERATION_VALIDATE_RUN=0 \
+    bash scripts/generations.sh build
   for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
     if [ -s "${gen}stage2.wasm" ]; then
       compiler="${gen}stage2.wasm"
       break
     fi
   done
-  if [ -z "$compiler" ]; then
-    compiler="bootstrap/seed/compiler.wasm"
-  fi
 fi
 if [ ! -s "$compiler" ]; then
   echo "vibe_book.sh: compiler wasm not found: $compiler" >&2

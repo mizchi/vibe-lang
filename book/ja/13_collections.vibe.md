@@ -12,15 +12,15 @@ English version: [13_collections.vibe.md](../en/13_collections.vibe.md)
 `Array` は基本の列。添字で読み、map をかけ、push する。
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn main with Console {
-  let xs = [
-    1,
-    2,
-    3
-  ]
+  let xs = [1, 2, 3]
   println("xs[0] = \{xs[0]}")
   println("length = \{Array::length(xs)}")
-  let doubled = Array::map(xs, _ * 2)
+  let doubled = Iterator::map(xs, _ * 2)
   println("doubled[2] = \{Array::get(doubled, 2)}")
   Array::push(xs, 4)
   println("after push, length = \{Array::length(xs)}")
@@ -84,7 +84,9 @@ hello vibe
 渡す必要はない。
 
 ```vibe run
-import @vibe/core { struct MutMap }
+import @vibe/core {
+  struct MutMap
+}
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
   match o {
