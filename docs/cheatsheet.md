@@ -2234,12 +2234,16 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   its arity could not be checked and a mismatch would surface as a wasm
   validation failure at module load instead of a located error. The operand
   count IS checked against the callee's declared params, and each operand
-  must itself **yield one value**: `(call $f (drop (local.get $a)))` counts
-  as one operand but pushes nothing, so it is rejected with a located error
-  rather than assembled a value short. A `(block ...)` / `(if ...)` operand
-  therefore needs an explicit `(result ...)`. The check errs toward
-  rejecting — `unreachable` / `return` / `br` are stack-polymorphic and wasm
-  would accept them there.
+  must itself **yield one i64** — every inline-wasm parameter is an i64 slot.
+  Both halves are located errors rather than a module that fails at load:
+  `(call $f (drop (local.get $a)))` counts as one operand but pushes nothing,
+  and `(call $f (i32.const 1))` pushes the wrong width. So a `(block ...)` /
+  `(if ...)` operand needs an explicit `(result i64)`, a comparison
+  (`i64.eq`, `f64.lt`) is i32 and is rejected, and `local.get` of a declared
+  `(local $p i32)` is rejected while a parameter — always i64 — is fine. The
+  check errs toward rejecting: `unreachable` / `return` / `br` are
+  stack-polymorphic and wasm would accept them there, and `select` is not
+  typed.
 - **Locals**: the fn's own params (`$name` or index), plus `(local $name
   TYPE)` declarations at the START of the body — types `i32`/`i64`/`v128`,
   grouped in that order (a located error enforces the grouping); declared

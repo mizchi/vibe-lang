@@ -469,20 +469,47 @@ test "#2348 inline wasm: a call operand that leaves nothing on the stack is reje
   // `(drop ...)` is one operand that pushes NOTHING, so the call would be
   // assembled a value short and the module would fail wasm validation at load
   // -- clean `vibe check`, broken artifact.
-  assert(String::contains(call_result("(call $dbl (drop (local.get $a)))"), "does not produce a value"))
-  assert(String::contains(call_result("(call $dbl (nop))"), "does not produce a value"))
-  assert(String::contains(call_result("(call $dbl (local.set $a (i64.const 2)))"), "does not produce a value"))
-  assert(String::contains(call_result("(call $dbl (i64.store (local.get $a) (local.get $b)))"), "does not produce a value"))
+  assert(String::contains(call_result("(call $dbl (drop (local.get $a)))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (nop))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (local.set $a (i64.const 2)))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (i64.store (local.get $a) (local.get $b)))"), "does not produce an i64"))
   // A block yields a value only with an explicit `(result ...)`.
-  assert(String::contains(call_result("(call $dbl (block (i64.const 1)))"), "does not produce a value"))
+  assert(String::contains(call_result("(call $dbl (block (i64.const 1)))"), "does not produce an i64"))
   // The message names WHICH argument.
   assert(String::contains(call_result("(call $sub2 (local.get $a) (drop (local.get $b)))"), "argument 2"))
 }
 
-test "#2348 inline wasm: value-producing call operands still assemble" {
-  // The control for the test above: the check must not reject the ordinary
-  // shapes. Covers a local, an arithmetic head, a nested call, a block WITH a
-  // result, a load, local.tee, and a SIMD lane extract.
+test "#2348 inline wasm: a call operand of the wrong result type is rejected" {
+  // "pushes something" is not a type check either: every inline-wasm parameter
+  // is an i64 slot, so an i32 or v128 operand assembles a module that fails
+  // validation at load just as surely as a missing one. The message names the
+  // type it found.
+  assert(String::contains(call_result("(call $dbl (i32.const 1))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (v128.const i32x4 0 0 0 0))"), "produces v128"))
+  assert(String::contains(call_result("(call $dbl (i32.wrap_i64 (local.get $a)))"), "produces i32"))
+  // A comparison is i32 whatever its operand width -- a prefix rule alone
+  // would type `i64.eq` as i64.
+  assert(String::contains(call_result("(call $dbl (i64.eq (local.get $a) (local.get $b)))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (f64.abs (f64.reinterpret_i64 (local.get $a))))"), "produces f64"))
+  // A SIMD reduction is i32; a lane extract is the lane's scalar type.
+  assert(String::contains(call_result("(call $dbl (i8x16.all_true (v128.load (local.get $a))))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (block (result i32) (i32.const 1)))"), "produces i32"))
+}
+
+test "#2348 inline wasm: a declared local's type decides, not just its name" {
+  // Params are i64 by construction (the parser admits only Int and Bytes), but
+  // a declared `(local $p i32)` is not -- the locals table carries the type so
+  // `local.get` can be typed instead of assumed.
+  assert(call_result("(local $t i64) (call $dbl (local.get $t))") == "ok")
+  assert(String::contains(call_result("(local $p i32) (call $dbl (local.get $p))"), "produces i32"))
+  assert(String::contains(call_result("(local $v v128) (call $dbl (local.get $v))"), "produces v128"))
+}
+
+test "#2348 inline wasm: i64 call operands still assemble" {
+  // The control for the three tests above: the check must not reject the
+  // ordinary shapes. A local, an arithmetic head, a nested call, a block WITH
+  // an i64 result, a load, local.tee, an i64 lane extract, and a widening
+  // conversion.
   assert(call_result("(call $dbl (local.get $a))") == "ok")
   assert(call_result("(call $dbl (i64.add (local.get $a) (local.get $b)))") == "ok")
   assert(call_result("(call $dbl (call $dbl (local.get $a)))") == "ok")
@@ -490,4 +517,5 @@ test "#2348 inline wasm: value-producing call operands still assemble" {
   assert(call_result("(call $dbl (i64.load (local.get $a)))") == "ok")
   assert(call_result("(call $dbl (local.tee $a (i64.const 2)))") == "ok")
   assert(call_result("(call $dbl (i64x2.extract_lane 0 (v128.load (local.get $a))))") == "ok")
+  assert(call_result("(call $dbl (i64.extend_i32_s (i32.const 1)))") == "ok")
 }
