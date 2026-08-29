@@ -21,7 +21,7 @@ sort -u "$files" -o "$files"
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   relative="${file#"$PROJECT_ROOT"/}"
-  grep -nE 'Array::(map|filter|flatmap|fold|find|any|all)([^A-Za-z0-9_]|$)' "$file" |
+  grep -nE 'Array::(iter|map|filter|flatmap|fold|find|any|all)([^A-Za-z0-9_]|$)' "$file" |
     sed "s|^|$relative:|" >> "$findings" || true
 done < "$files"
 
