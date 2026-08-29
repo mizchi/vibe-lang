@@ -791,13 +791,16 @@ explicitly (`check_rc_default.sh`, `check_cheatsheet_signatures.sh` and
 
 Four related rules, all learned the same way:
 
-- **A perf comparison must control the persistent cache (#2393).** The FS
-  compile lane's typing cache is content-keyed, not compiler-keyed, so a
-  freshly rebuilt stage2's first run can be silently WARM from entries the
-  baseline run wrote — cold is ~8.0s/1.46GB, warm ~4.7s/727MB, a gap larger
-  than most real optimizations (it once turned a +3.5% regression into a
-  "−31%/−42% win"). Isolate with `VIBE_BUILD_CACHE_DIR=$(mktemp -d)` per
-  run, compare cold-vs-cold and warm-vs-warm, N≥3 runs; full protocol in
+- **A perf comparison must control the persistent cache (#2393).** The
+  cache namespace embeds a hash of the compiler SOURCES, which protects
+  correctness across compiler changes but not a before/after protocol: any
+  same-compiler compile that runs before you profile (a build's
+  run-validation, a stage3 self-compile, an output-equivalence check of the
+  very corpus you measure) silently pre-warms the candidate — cold is
+  ~8.0s/1.46GB, warm ~4.7s/727MB, a gap larger than most real optimizations
+  (asymmetric warming once turned a +3.5% regression into a "−31%/−42%
+  win"). Isolate with `VIBE_BUILD_CACHE_DIR=$(mktemp -d)` per run, compare
+  cold-vs-cold and warm-vs-warm, N≥3 runs; full protocol in
   `.claude/skills/compiler-perf-profiling`.
 - **Establish the baseline before changing anything.** Run the failing case
   first and confirm it reproduces *through the compiler you are about to
