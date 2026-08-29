@@ -167,20 +167,28 @@ export struct CodegenBodyCache {
   /// #2388 step 3 guards. Cross-compile replay is only sound while the
   /// layout facts every cached body's immediates were emitted against still
   /// hold in the consuming compile. `guard_meta` is exactly
-  /// `[pin_src_n, pin_capacity, lambda_slot_base]` when the recording
-  /// compile ran the #2388 step-2 pin reorder, and empty otherwise -- an
-  /// empty guard makes the cache in-process-only (the consumer treats it as
-  /// unusable across compiles). `guard_synth_names`/`guard_synth_stmts` are
-  /// the synthesized region's function names and their merged-statement
+  /// `[pin_src_n, pin_capacity, lambda_slot_base, num_imported_funcs,
+  /// num_generated]` when the recording compile ran the #2388 step-2 pin
+  /// reorder, and empty otherwise -- an empty guard makes the cache
+  /// in-process-only (the consumer treats it as unusable across compiles).
+  /// The import/generated counts pin `func_offset`, the base every user
+  /// call immediate is built on. `guard_synth_names`/`guard_synth_stmts`
+  /// are the synthesized region's function names and their merged-statement
   /// positions: a prelude whose synthesized output changed in CONTENT keeps
   /// name and position, so synthesized entries are never replayed across
   /// compiles at all -- these lists exist to pin their count, order, and
   /// insertion positions, which is what keeps every pre-pass table
   /// (string pool, signatures) and the synth index region aligned for the
-  /// source bodies that ARE replayed.
+  /// source bodies that ARE replayed. `guard_import_names` is the sorted
+  /// used-builtin-name set plus the linked-import names: the gated host
+  /// imports are assigned indices by a fixed code sequence of
+  /// `Map::has_key(used_builtin_names, ...)` tests, so set equality (not
+  /// merely count equality -- two different sets of the same size assign
+  /// DIFFERENT indices to each import) pins the whole import vector.
   guard_meta: Array[Int];
   guard_synth_names: Array[String];
-  guard_synth_stmts: Array[Int]
+  guard_synth_stmts: Array[Int];
+  guard_import_names: Array[String]
 }
 
 /// An empty cache. Threading one of these in means "compile everything, cache
@@ -204,7 +212,8 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     fn_src_stmts: array_empty(),
     guard_meta: array_empty(),
     guard_synth_names: array_empty(),
-    guard_synth_stmts: array_empty()
+    guard_synth_stmts: array_empty(),
+    guard_import_names: array_empty()
   }
 }
 
@@ -356,6 +365,27 @@ fn bcc_copy_guards(src: CodegenBodyCache, out: CodegenBodyCache) -> Unit {
     Array::push(out.guard_synth_stmts, Array::get(src.guard_synth_stmts, gk))
     gk = gk + 1
   }
+  let mut gm = 0
+  while gm < Array::length(src.guard_import_names) {
+    Array::push(out.guard_import_names, Array::get(src.guard_import_names, gm))
+    gm = gm + 1
+  }
+}
+
+/// #2388 step 3: exact string-list equality, used by the guard validation
+/// (synth-name and import-name lists must match elementwise, in order).
+export fn bcc_string_lists_equal(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    if Array::get(a, i) != Array::get(b, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }
 
 /// Replay cache entry `at` into the whole-program accumulators, in place of
@@ -411,7 +441,7 @@ export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Ar
 export fn codegen_body_cache_filter_src_below(cache: CodegenBodyCache, limit: Int) -> CodegenBodyCache {
   let out = codegen_body_cache_new()
   let keep_fn = array_empty()
-  let src_region_n = if Array::length(cache.guard_meta) == 3 {
+  let src_region_n = if Array::length(cache.guard_meta) == 5 {
     Array::get(cache.guard_meta, 0)
   } else {
     0
@@ -576,6 +606,7 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bcc_push_int_array(buf, cache.guard_meta)
   bcc_push_string_array(buf, cache.guard_synth_names)
   bcc_push_int_array(buf, cache.guard_synth_stmts)
+  bcc_push_string_array(buf, cache.guard_import_names)
   bytebuf_to_bytes(buf)
 }
 
@@ -827,10 +858,15 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
     } else {
       ()
     }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_import_names)
+    } else {
+      ()
+    }
     let fn_n = Array::length(out.fn_indices)
     let lam_n = Array::length(out.lam_owner)
     let guard_n = Array::length(out.guard_meta)
-    if p < 0 || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || (guard_n != 0 && guard_n != 3) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) {
+    if p < 0 || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) {
       None
     } else {
       Some(out)

@@ -161,6 +161,7 @@ import @vibe/compiler/codegen/common_base {
   append_hidden_attempt_constructors,
   await_poll_pass,
   bcc_guard_synth_matches,
+  bcc_string_lists_equal,
   codegen_body_cache_find,
   codegen_body_cache_merge,
   codegen_body_cache_new,
@@ -4310,47 +4311,6 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // before this change (one added test in the entry): 581 of 4214 function
   // bodies differed, every one only in a slot immediate.
   let lambda_slot_base = ((num_user_funcs + 1023) / 1024) * 1024
-  // #2388 step 3: record the layout facts this compile's bodies are emitted
-  // against, and validate an incoming cross-compile cache against the same
-  // facts. A cached body's immediates assume the pin region's shape, the
-  // lambda-slot base, and the synthesized functions' names AND merged-
-  // statement positions (their positions decide the statement-ordered
-  // pre-pass tables -- string pool, signatures -- every body offset is
-  // computed from). Any mismatch makes replay unsound, so the cache is
-  // dropped wholesale: a miss costs a recompile, never a wrong body.
-  if pin_region_capacity >= 0 {
-    Array::push(body_cache_out.guard_meta, pin_region_src_n)
-    Array::push(body_cache_out.guard_meta, pin_region_capacity)
-    Array::push(body_cache_out.guard_meta, lambda_slot_base)
-    let mut __gsy = pin_region_capacity
-    while __gsy < num_user_funcs {
-      Array::push(body_cache_out.guard_synth_names, Array::get(fn_names_list, __gsy))
-      Array::push(body_cache_out.guard_synth_stmts, Array::get(fn_stmt_indices, __gsy))
-      __gsy = __gsy + 1
-    }
-  }
-  let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
-    true
-  } else if pin_region_capacity < 0 {
-    // This compile did not run the pin reorder. Either the stmts were
-    // already lowered by an earlier compile in this same process (#1259's
-    // replay/sliced lanes re-feed the SAME mutated array, whose layout is
-    // exactly the harvest's -- the earlier compile's pads and synthesized
-    // lets now read as source names, so the reorder is a no-op skip), or
-    // the program has no synthesized functions at all. In both cases the
-    // incoming cache came from this identical layout; the cross-compile
-    // lane never lands here, because a fresh closure compile always
-    // lowers, always synthesizes, and therefore always reorders.
-    true
-  } else if Array::length(body_cache_in.guard_meta) == 0 {
-    // Guard-less but non-empty under a reordering compile: only hand-built
-    // test caches look like this (a real harvest of a reordering compile
-    // records guards, and codegen_body_cache_filter_src_below empties a
-    // guard-less cache before it can cross compiles). Accept unchanged.
-    true
-  } else {
-    Array::length(body_cache_in.guard_meta) == 3 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs)
-  }
   let mut entry_user_idx = -1
   let mut ei = 0
   while ei < num_user_funcs {
@@ -5845,6 +5805,65 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
+  // #2388 step 3: record the layout facts this compile's bodies are emitted
+  // against, and validate an incoming cross-compile cache against the same
+  // facts. A cached body's immediates assume the pin region's shape, the
+  // lambda-slot base, the host-import/generated-builtin index layout below
+  // func_offset, and the synthesized functions' names AND merged-statement
+  // positions (their positions decide the statement-ordered pre-pass tables
+  // -- string pool, signatures -- every body offset is computed from). The
+  // import vector is pinned by the sorted used-builtin-name SET, not its
+  // size: the gated imports are assigned indices by a fixed sequence of
+  // has_key tests, so two different sets of equal size would assign each
+  // import a different index while every count still matched. Any mismatch
+  // makes replay unsound, so the cache is dropped wholesale: a miss costs a
+  // recompile, never a wrong body.
+  let guard_import_names_now = sorted_names_of(Map::keys(used_builtin_names))
+  let mut __gim = 0
+  while __gim < Array::length(linked_import_names) {
+    Array::push(guard_import_names_now, Array::get(linked_import_names, __gim))
+    __gim = __gim + 1
+  }
+  if pin_region_capacity >= 0 {
+    Array::push(body_cache_out.guard_meta, pin_region_src_n)
+    Array::push(body_cache_out.guard_meta, pin_region_capacity)
+    Array::push(body_cache_out.guard_meta, lambda_slot_base)
+    Array::push(body_cache_out.guard_meta, num_imported_funcs)
+    Array::push(body_cache_out.guard_meta, num_generated)
+    let mut __gsy = pin_region_capacity
+    while __gsy < num_user_funcs {
+      Array::push(body_cache_out.guard_synth_names, Array::get(fn_names_list, __gsy))
+      Array::push(body_cache_out.guard_synth_stmts, Array::get(fn_stmt_indices, __gsy))
+      __gsy = __gsy + 1
+    }
+    let mut __gin = 0
+    while __gin < Array::length(guard_import_names_now) {
+      Array::push(body_cache_out.guard_import_names, Array::get(guard_import_names_now, __gin))
+      __gin = __gin + 1
+    }
+  }
+  let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
+    true
+  } else if pin_region_capacity < 0 {
+    // This compile did not run the pin reorder. Either the stmts were
+    // already lowered by an earlier compile in this same process (#1259's
+    // replay/sliced lanes re-feed the SAME mutated array, whose layout is
+    // exactly the harvest's -- the earlier compile's pads and synthesized
+    // lets now read as source names, so the reorder is a no-op skip), or
+    // the program has no synthesized functions at all. In both cases the
+    // incoming cache came from this identical layout; the cross-compile
+    // lane never lands here, because a fresh closure compile always
+    // lowers, always synthesizes, and therefore always reorders.
+    true
+  } else if Array::length(body_cache_in.guard_meta) == 0 {
+    // Guard-less but non-empty under a reordering compile: only hand-built
+    // test caches look like this (a real harvest of a reordering compile
+    // records guards, and codegen_body_cache_filter_src_below empties a
+    // guard-less cache before it can cross compiles). Accept unchanged.
+    true
+  } else {
+    Array::length(body_cache_in.guard_meta) == 5 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in.guard_meta, 4) == num_generated && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in.guard_import_names, guard_import_names_now)
+  }
   let fn_indices_list = lc_fresh_int_array()
   let fn_returns_list = lc_fresh_int_array()
   let mut fi = 0

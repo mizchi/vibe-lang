@@ -16,6 +16,14 @@ import @vibe/compiler/cache {
   persistent_artifact_cache_path
 }
 
+import @vibe/compiler/codegen {
+  compile_wasi_module_rc_body_cached
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
 //# Functions
 
 fn string_to_bytes(s: String) -> Bytes {
@@ -85,8 +93,12 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.guard_meta, 1)
   Array::push(c.guard_meta, 1024)
   Array::push(c.guard_meta, 2048)
+  Array::push(c.guard_meta, 7)
+  Array::push(c.guard_meta, 40)
   Array::push(c.guard_synth_names, "Pt::equals")
   Array::push(c.guard_synth_stmts, 42)
+  Array::push(c.guard_import_names, "vibe_env_get")
+  Array::push(c.guard_import_names, "vibe_http_request_raw")
   c
 }
 
@@ -107,8 +119,10 @@ test "codegen body cache codec round-trips every field group" {
       inspect(Array::get(d.lam_meta_i64, 0), content = "-1")
       inspect(Array::get(d.slot_values, 0), content = "1029")
       inspect(Array::get(d.guard_meta, 2), content = "2048")
+      inspect(Array::get(d.guard_meta, 4), content = "40")
       inspect(Array::get(d.guard_synth_names, 0), content = "Pt::equals")
       inspect(Array::get(d.guard_synth_stmts, 0), content = "42")
+      inspect(Array::get(d.guard_import_names, 1), content = "vibe_http_request_raw")
     },
     None => assert(false)
   }
@@ -145,13 +159,48 @@ test "filter_src_below keeps only guarded source-region entries below the limit"
   inspect(Array::get(f.fn_indices, 0), content = "0")
   inspect(Array::length(f.lam_owner), content = "1")
   inspect(Array::length(f.slot_owner), content = "1")
-  inspect(Array::length(f.guard_meta), content = "3")
+  inspect(Array::length(f.guard_meta), content = "5")
   inspect(Array::get(f.guard_synth_names, 0), content = "Pt::equals")
+  inspect(Array::length(f.guard_import_names), content = "2")
   // A guard-less cache never crosses compiles: it filters to empty.
   let unguarded = sample_cache()
   Array::truncate(unguarded.guard_meta, 0)
   let g = codegen_body_cache_filter_src_below(unguarded, 100)
   inspect(Array::length(g.fn_indices), content = "0")
+}
+
+test "guard validation can fail: a poisoned body replays, a poisoned guard drops the cache" {
+  // Red/green pair for the #2388 guard validation, per the repo's gate
+  // doctrine: a check is only trusted once it has been shown to fail.
+  let src = "let helper: () -> Bool = () -> { [1, 2] == [1, 2] }\nlet run: () -> Int = () -> { if helper() { 42 } else { 0 } }"
+  let out1 = codegen_body_cache_new()
+  let fresh = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", codegen_body_cache_new(), out1)
+  // RED (proves replay is live and this test can detect it): copy the
+  // harvest, poison ONE cached body, keep the guards valid. A fresh parse
+  // of the same source revalidates the guards, accepts the cache, and
+  // replays the poisoned bytes -- the output MUST differ.
+  match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(out1)) {
+    Some(poisoned_body) => {
+      let victim = Array::get(poisoned_body.fn_bodies, 0)
+      Bytes::set(victim, Bytes::length(victim) - 1, (Bytes::get(victim, Bytes::length(victim) - 1) + 1)&255)
+      let replayed = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", poisoned_body, codegen_body_cache_new())
+      assert(!bytes_eq(fresh, replayed))
+    },
+    None => assert(false)
+  }
+  // GREEN: the same poisoned body PLUS a poisoned import-name guard. The
+  // validation must now drop the cache wholesale, so the poisoned body
+  // never reaches the output and the compile answers fresh bytes.
+  match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(out1)) {
+    Some(poisoned_guard) => {
+      let victim2 = Array::get(poisoned_guard.fn_bodies, 0)
+      Bytes::set(victim2, Bytes::length(victim2) - 1, (Bytes::get(victim2, Bytes::length(victim2) - 1) + 1)&255)
+      Array::push(poisoned_guard.guard_import_names, "#never_a_builtin")
+      let dropped = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", poisoned_guard, codegen_body_cache_new())
+      assert(bytes_eq(fresh, dropped))
+    },
+    None => assert(false)
+  }
 }
 
 test "persisted body cache: verify survives an entry edit; on matches a fresh compile" {
