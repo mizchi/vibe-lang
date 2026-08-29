@@ -1,0 +1,70 @@
+import ./intern.vibe {
+  intern_qualified, intern_slice, intern_str
+}
+
+test "intern_slice round-trips slice content" {
+  let s = "let foo = Array::push(foo, bar)"
+  inspect(intern_slice(s, 4, 7), "foo")
+  inspect(intern_slice(s, 22, 25), "foo")
+  inspect(intern_slice(s, 27, 30), "bar")
+  // empty request stays out of the table
+  inspect(String::length(intern_slice(s, 5, 5)), "0")
+  inspect(intern_str("foo"), "foo")
+}
+
+test "intern_qualified equals the concatenation" {
+  inspect(intern_qualified("Array", "push"), "Array::push")
+  inspect(intern_qualified("Iterator", "map"), "Iterator::map")
+  // repeated queries keep answering the same content
+  inspect(intern_qualified("Array", "push"), "Array::push")
+  // a qualified spelling and the same content arriving as a plain slice
+  // resolve to equal content
+  let full = "Array::push"
+  inspect(intern_slice(full, 0, String::length(full)), "Array::push")
+}
+
+test "the table survives growth and never returns the wrong string" {
+  // 40000 distinct names crosses the initial 65536-capacity table's 1/2 load
+  // threshold (32768), forcing at least one rehash mid-loop. Every returned
+  // string is content-checked on insert AND on a second lookup pass, so a
+  // probe bug, a bad rehash, or a hash collision mishandled would fail here
+  // rather than silently canonicalizing two different names to one object.
+  let names: Array[String] = []
+  let mut i = 0
+  while i < 40000 {
+    let name = "sym_\{i}_x"
+    Array::push(names, intern_str(name))
+    i = i + 1
+  }
+  let mut ok_first = true
+  let mut j = 0
+  while j < 40000 {
+    if Array::get(names, j) != "sym_\{j}_x" {
+      ok_first = false
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  let relookup_ok = if ok_first {
+    let mut all = true
+    let mut k = 0
+    while k < 40000 {
+      if intern_str("sym_\{k}_x") != Array::get(names, k) {
+        all = false
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    all
+  } else {
+    false
+  }
+  let verdict = if ok_first && relookup_ok {
+    "consistent"
+  } else {
+    "corrupted"
+  }
+  inspect(verdict, "consistent")
+}
