@@ -522,3 +522,16 @@ test "#2348 merge: a local spelled like a private fn is left alone" {
   let printed = print_program(renamed)
   assert(String::contains(printed, "local.get $helper)"))
 }
+
+test "#2348 merge: a parameter named like the callee does not block the rename" {
+  // The enclosing EFn removes its parameter names from the alias map before
+  // the body is rewritten. A WAT `$name` callee is a wasm FUNCTION name, a
+  // namespace of its own, so it must not inherit that shadowing -- it did,
+  // and the caller was left naming a definition the merge had renamed.
+  let renamed = namespace_private_value_stmts("dep.vibe", parse_program(lex("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nexport fn caller(helper: Int) -> Int = wasm\"(call $helper (local.get $helper) (i64.const 8))\"\n")))
+  assert(iw_stmt_binding_name(Array::get(renamed, 0)) != "helper")
+  let printed = print_program(renamed)
+  assert(!String::contains(printed, "call $helper "))
+  // ... while the parameter read keeps its own spelling.
+  assert(String::contains(printed, "local.get $helper)"))
+}

@@ -1128,6 +1128,14 @@ fn rewrite_alias_param_types(params: Array[(String, Option[TypeExpr])], am: Alia
   }
 }
 
+/// #2348: is this expression an inline-wasm marker call, `%wasm("<WAT>")`?
+fn is_inline_wasm_marker_body(body: Expr) -> Bool {
+  match body {
+    ECall(callee, args, _) => is_inline_wasm_marker(callee, args),
+    _ => false
+  }
+}
+
 /// #2348: is this call the parser's inline-wasm marker, `%wasm("<WAT>")`?
 fn is_inline_wasm_marker(callee: Expr, args: Array[Expr]) -> Bool {
   match callee {
@@ -1261,7 +1269,18 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // namespaces while canonicalizing imported contract aliases in fn
         // parameter and return annotations (#1539 StdinStream as S).
         let type_am = aliasidx_without_names(am, type_params)
-        EFn(type_params, rewrite_alias_bounds(bounds, type_am), rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params)))
+        // #2348: a WAT body's `$name` callees are wasm FUNCTION names, a
+        // namespace of their own -- `fn caller(helper: Int) = wasm"(call
+        // $helper (local.get $helper))"` calls the fn and reads the param, and
+        // the assembler already keeps those apart. So the marker body is
+        // rewritten with the UNSHADOWED map: passing it the params-removed one
+        // left the callee spelled for a definition the merge had renamed.
+        let body_am = if is_inline_wasm_marker_body(body) {
+          am
+        } else {
+          aliasidx_without_params(am, params)
+        }
+        EFn(type_params, rewrite_alias_bounds(bounds, type_am), rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, body_am))
       },
       // #897: `mod.x` written against a qualified-import namespace (`import
       // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see

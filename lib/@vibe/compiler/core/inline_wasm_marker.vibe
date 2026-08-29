@@ -13,8 +13,12 @@ export fn inline_wasm_marker_name() -> String {
   "%wasm"
 }
 
+/// The assembler's own word terminators: whitespace, `(`, `)` and `;`
+/// (inline_wat.vibe's tokenizer ends a word at any of these). `;` matters:
+/// `(call $helper;; why` is valid WAT whose callee is `helper`, and a scan
+/// that stopped only at whitespace read `helper;;` and matched nothing.
 fn wat_is_delim(c: Int) -> Bool {
-  c == 32 || c == 9 || c == 10 || c == 13 || c == 40 || c == 41
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 40 || c == 41 || c == 59
 }
 
 fn wat_token_end(wat: String, start: Int, len: Int) -> Int {
@@ -25,10 +29,48 @@ fn wat_token_end(wat: String, start: Int, len: Int) -> Int {
   i
 }
 
+/// Advance past delimiters AND comments, the two forms the assembler accepts:
+/// `;;` to end of line and `(; ... ;)`. Skipping them is what lets the `call`
+/// keyword be recognized after one, and keeps a `call $x` written INSIDE a
+/// comment from being recorded as an edge.
 fn wat_skip_delims(wat: String, start: Int, len: Int) -> Int {
   let mut i = start
-  while i < len && wat_is_delim(String::char_code_at(wat, i)) {
-    i = i + 1
+  let mut moving = true
+  while moving {
+    if i >= len {
+      moving = false
+    } else if wat_is_delim(String::char_code_at(wat, i)) {
+      // `;;` runs to the end of the line; a lone `;` is just a terminator.
+      if String::char_code_at(wat, i) == 59 && i + 1 < len && String::char_code_at(wat, i + 1) == 59 {
+        let mut j = i + 2
+        while j < len && String::char_code_at(wat, j) != 10 {
+          j = j + 1
+        }
+        i = j
+      } else if String::char_code_at(wat, i) == 40 && i + 1 < len && String::char_code_at(wat, i + 1) == 59 {
+        // `(; ... ;)`. An unterminated one is the assembler's error to
+        // report, not this scan's: treat the rest of the text as comment.
+        let mut j = i + 2
+        let mut closed = false
+        while j + 1 < len && !closed {
+          if String::char_code_at(wat, j) == 59 && String::char_code_at(wat, j + 1) == 41 {
+            closed = true
+            j = j + 2
+          } else {
+            j = j + 1
+          }
+        }
+        i = if closed {
+          j
+        } else {
+          len
+        }
+      } else {
+        i = i + 1
+      }
+    } else {
+      moving = false
+    }
   }
   i
 }
