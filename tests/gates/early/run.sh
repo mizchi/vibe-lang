@@ -1938,7 +1938,7 @@ echo "[compiler-gate] untyped-empty equality answers after a push ok"
 #        produced a different silent-wrong answer on the same values.
 #        Linear lane (the production default) only: the gc `eq` arm has no
 #        scalar guard at all and traps on ANY distinct large-Int pair, with no
-#        `~` involved -- filed separately, not something `~` introduced.
+#        `~` involved -- #2407, not something `~` introduced.
 echo '[compiler-gate] 15b-2/15 bit-not ~ (#2344)'
 run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe
 echo '[compiler-gate] bit-not ~ ok'
