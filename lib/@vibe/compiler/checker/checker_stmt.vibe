@@ -4209,6 +4209,23 @@ fn fapp_decl_label(owner: String, member: String) -> String {
   String::concat(String::concat(String::concat("the signature of `", owner), String::concat("::", member)), "`")
 }
 
+/// Does this method declare a generic of its own with this name -- i.e. does it
+/// shadow a trait header parameter spelled the same way?
+fn fapp_method_binds_name(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], mname: String, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(method_gens) && !found {
+    let (gname, gtp, _) = Array::get(method_gens, i)
+    if gname == mname && fapp_formals_have_name(gtp, name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// Does any of `formals` bind this NAME? They are type-param keys (`A[_]`), so
 /// an exact string compare misses a kinded binder -- which is the shadow this
 /// question exists to find.
@@ -4274,20 +4291,44 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
         report_formal_applications_across(effect_tes, eparams, String::concat(String::concat("effect `", ename), "`"), errors)
       },
       STrait(_, tname, _, methods, method_gens, tparams) => {
-        let trait_tes = array_empty()
-        let mut mi = 0
-        while mi < Array::length(methods) {
-          let (_, mparams, mret) = Array::get(methods, mi)
-          let mut pi = 0
-          while pi < Array::length(mparams) {
-            Array::push(trait_tes, Array::get(mparams, pi))
-            pi = pi + 1
+        // A header parameter's kind is aggregated across the whole trait, so
+        // it has to be aggregated over the methods that actually MENTION it.
+        // A method generic of the same name is a different binder with its own
+        // kind, and pooling both made
+        //
+        //   trait Scoped[A] { raw(A) -> A; project[A[_], B](A[B]) -> A[B] }
+        //
+        // look like one `A` used unapplied by `raw` and applied by `project`,
+        // reported as a mixed-kind error against a valid declaration (Codex
+        // review). One pass per header parameter, over the methods that do not
+        // rebind it.
+        let trait_label = String::concat(String::concat("trait `", tname), "`")
+        let mut hi = 0
+        while hi < Array::length(tparams) {
+          let header_key = Array::get(tparams, hi)
+          let header_name = type_param_name(header_key)
+          let visible_tes = array_empty()
+          let mut mj = 0
+          while mj < Array::length(methods) {
+            let (mname_j, mparams_j, mret_j) = Array::get(methods, mj)
+            if !fapp_method_binds_name(method_gens, mname_j, header_name) {
+              let mut pj = 0
+              while pj < Array::length(mparams_j) {
+                Array::push(visible_tes, Array::get(mparams_j, pj))
+                pj = pj + 1
+              }
+              Array::push(visible_tes, mret_j)
+            } else {
+              ()
+            }
+            mj = mj + 1
           }
-          Array::push(trait_tes, mret)
-          mi = mi + 1
+          let header_only = array_empty()
+          Array::push(header_only, header_key)
+          report_formal_applications_across(visible_tes, header_only, trait_label, errors)
+          hi = hi + 1
         }
-        report_formal_applications_across(trait_tes, tparams, String::concat(String::concat("trait `", tname), "`"), errors)
-        mi = 0
+        let mut mi = 0
         while mi < Array::length(methods) {
           let (mname, mparams, mret) = Array::get(methods, mi)
           // Method-local formals are checked per method. Header formals were
