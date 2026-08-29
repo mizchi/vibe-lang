@@ -1,15 +1,59 @@
 // Byte search over `Bytes`, four ways (#536 follow-up; see
-// docs/simd-data-structures.md). `Bytes` has no native search builtin, so a
-// library that scans bytes must write the scalar loop below by hand.
+// docs/simd-data-structures.md).
 //
+//   find_4k_Bytes_index_of         the native builtin (#2345)
 //   find_4k_simd_inline_wasm       hand-written v128 kernel (this file)
-//   find_4k_boxed_intrinsics       the same algorithm through the v128_* intrinsics
-//   find_4k_scalar                 the loop a library has to write today
-//   find_4k_String_index_of        the native scalar builtin, for scale
+//   find_4k_native_scalar          a native scalar byte loop (this file)
+//   find_4k_scalar                 the loop a library HAD to write before it
+//   find_4k_String_index_of        the native String search, for scale
 //
-// The boxed lane is the one to watch: every v128_load / v128_eq_i8x16 heap-
-// allocates a 16-byte box, so the intrinsic surface allocates ~2 boxes per
-// 16 bytes scanned.
+// This file used to open by saying `Bytes` has "no native search builtin, so a
+// library that scans bytes must write the scalar loop below by hand". #2345
+// landed `Bytes::index_of`, so both clauses are past tense, and the file's job
+// changed with them: it is no longer evidence that the builtin is missing, it
+// is the measurement of what replacing the loop bought. The hand-written
+// kernel stays as the bound the builtin is measured against.
+//
+// Measured 2026-08-28, 1000 iters. Read p50: the mean on this runner moves
+// ~40% between runs on the same binary, and the p50 does not. Two clean runs;
+// a third was discarded because every lane in it was ~1.8x slower (another
+// build was running), which is exactly the artefact p50-per-run exposes.
+//
+//     find_4k_Bytes_index_of         212 /   220 ns p50    0 B/op
+//     find_4k_simd_inline_wasm       272 /   306 ns p50    0 B/op
+//     find_4k_String_index_of        365 /   365 ns p50    0 B/op
+//     find_4k_native_scalar         2413 /  2413 ns p50    0 B/op
+//     find_4k_scalar               23602 / 23600 ns p50    0 B/op
+//
+// THE SCALAR BASELINE IS find_4k_native_scalar, NOT String::index_of. That
+// distinction was got wrong twice -- #2345's own text calls String::index_of
+// "(native, scalar)" and this file repeated it -- and it matters by a factor
+// of eight. `gen_string_index_of_body` calls emit_windowed_substring_search,
+// which is a v128 scan; it has never been scalar. Measured against a byte loop
+// that really is native and really is scalar:
+//
+//     ~11x   over native scalar          <- what the SIMD earns
+//     ~109x  over the vibe Bytes::get loop a library had to write
+//     ~1.7x  over String::index_of       <- specialisation, NOT SIMD: no
+//                                           needle span to verify via str_eq
+//
+// #2345's baseline discipline says the number that justifies the SIMD code is
+// the one against a scalar NATIVE implementation, and puts it at ~1.4x. That
+// estimate came from the same mismeasurement; the real figure is ~11x.
+//
+// REJECTION EVIDENCE (#2342). A fourth lane ran the SAME algorithm through the
+// `v128_*` intrinsics. Measured here, 500 iters, mean:
+//
+//     find_4k_simd_inline_wasm      248 ns      0 B/op
+//     find_4k_String_index_of       352 ns      0 B/op
+//     find_4k_boxed_intrinsics     5564 ns   8048 B/op   <- 22x, and leaks
+//     find_4k_scalar              25001 ns      0 B/op
+//
+// Every v128_load / v128_eq_i8x16 heap-allocated a 16-byte box with no RC
+// header, so scanning 4 KiB allocated 8 KiB that nothing ever freed. That
+// measurement retired the 12 intrinsics, and the lane went with them -- it
+// cannot be rebuilt without them. `tests/gates/mid/run.sh` step 40 now asserts
+// the names stay unresolvable.
 
 fn simd_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int = wasm
 "(local $p i32) (local $i i32) (local $e i32) (local $m i32) (local $c i32)"
@@ -53,8 +97,34 @@ fn simd_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int = wasm
 ")"
 "local.get $r"
 
-fn ctz32(x: Int) -> Int = wasm
-"(i64.shl (i64.extend_i32_u (i32.ctz (i32.wrap_i64 (i64.shr_s (local.get $x) (i64.const 1))))) (i64.const 1))"
+/// A NATIVE scalar byte loop, in inline wasm, so the SIMD claim has a baseline
+/// that is actually scalar and actually native. `String::index_of` is not one:
+/// it goes through emit_windowed_substring_search, which is a v128 scan. The
+/// vibe `scalar_find` below is not one either -- it pays vibe call and bounds
+/// overhead per byte. This is the same loop the kernels replace, compiled the
+/// same way they are.
+fn native_scalar_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int = wasm
+"(local $p i32) (local $i i32) (local $e i32) (local $c i32)"
+"(local $r i64)"
+"i64.const -2 local.set $r"
+"local.get $hay i32.wrap_i64 i32.load offset=8 local.set $p"
+"local.get $from i64.const 1 i64.shr_s i32.wrap_i64 local.set $i"
+"local.get $len i64.const 1 i64.shr_s i32.wrap_i64 local.set $e"
+"local.get $needle i64.const 1 i64.shr_s i32.wrap_i64 local.set $c"
+"(block $done"
+"  (loop $t"
+"    (br_if $done (i32.ge_s (local.get $i) (local.get $e)))"
+"    (if (i32.eq (i32.load8_u (i32.add (local.get $p) (local.get $i))) (local.get $c))"
+"      (then"
+"        (local.set $r (i64.shl (i64.extend_i32_s (local.get $i)) (i64.const 1)))"
+"        (br $done)"
+"      )"
+"    )"
+"    (local.set $i (i32.add (local.get $i) (i32.const 1)))"
+"    (br $t)"
+"  )"
+")"
+"local.get $r"
 
 fn scalar_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int {
   let mut i = from
@@ -69,36 +139,15 @@ fn scalar_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int {
   }
   r
 }
-
-fn boxed_find(hay: Bytes, needle: Int, from: Int, len: Int) -> Int {
-  let nv = v128_splat_i8x16(needle)
-  let mut i = from
-  let mut r = -1
-  while i + 16 <= len {
-    let m = v128_bitmask_i8x16(v128_eq_i8x16(v128_load(hay, i), nv))
-    if m != 0 {
-      r = i + ctz32(m)
-      i = len
-    } else {
-      i = i + 16
-    }
-  }
-  while i < len {
-    if Bytes::get(hay, i) == needle {
-      r = i
-      i = len
-    } else {
-      i = i + 1
-    }
-  }
-  r
-}
-
 fn mkb(n: Int, at: Int) -> Bytes {
   let b = Bytes::new()
   let mut i = 0
   while i < n {
-    Bytes::push(b, if i == at { 88 } else { 97 })
+    Bytes::push(b, if i == at {
+      88
+    } else {
+      97
+    })
     i = i + 1
   }
   b
@@ -108,7 +157,11 @@ fn mks(n: Int, at: Int) -> String {
   let sb = StringBuilder::new()
   let mut i = 0
   while i < n {
-    StringBuilder::push(sb, if i == at { "X" } else { "a" })
+    StringBuilder::push(sb, if i == at {
+      "X"
+    } else {
+      "a"
+    })
     i = i + 1
   }
   StringBuilder::freeze(sb)
@@ -118,25 +171,30 @@ let hay = mkb(4096, 4000)
 
 let hay_s = mks(4096, 4000)
 
-let sink = [
-  0
-]
+let sink = [0]
 
-test "the four lanes agree" {
-  assert_eq(simd_find(hay, 88, 0, 4096), 4000)
-  assert_eq(boxed_find(hay, 88, 0, 4096), 4000)
-  assert_eq(scalar_find(hay, 88, 0, 4096), 4000)
-  assert_eq(String::index_of(hay_s, "X"), 4000)
-  assert_eq(simd_find(hay, 66, 0, 4096), -1)
-  assert_eq(scalar_find(hay, 66, 0, 4096), -1)
+test "the lanes agree" {
+  inspect(Bytes::index_of(hay, 88), "4000")
+  inspect(native_scalar_find(hay, 88, 0, 4096), "4000")
+  inspect(simd_find(hay, 88, 0, 4096), "4000")
+  inspect(scalar_find(hay, 88, 0, 4096), "4000")
+  inspect(String::index_of(hay_s, "X"), "4000")
+  inspect(Bytes::index_of(hay, 66), "-1")
+  inspect(native_scalar_find(hay, 66, 0, 4096), "-1")
+  inspect(simd_find(hay, 66, 0, 4096), "-1")
+  inspect(scalar_find(hay, 66, 0, 4096), "-1")
+}
+
+bench "find_4k_native_scalar" {
+  Array::set(sink, 0, native_scalar_find(hay, 88, 0, 4096))
+}
+
+bench "find_4k_Bytes_index_of" {
+  Array::set(sink, 0, Bytes::index_of(hay, 88))
 }
 
 bench "find_4k_simd_inline_wasm" {
   Array::set(sink, 0, simd_find(hay, 88, 0, 4096))
-}
-
-bench "find_4k_boxed_intrinsics" {
-  Array::set(sink, 0, boxed_find(hay, 88, 0, 4096))
 }
 
 bench "find_4k_scalar" {

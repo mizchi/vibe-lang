@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars
+  collect_free_vars, md_borrow_mask_of
 }
 
 import @vibe/core {
@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, borrow_ret_builtin_names, bsearch_leftmost, is_borrow_ret_builtin, is_exception_throw_operation
+  Expr, Pat, Stmt, TypeExpr, borrow_ret_builtin_names, bsearch_leftmost, is_exception_throw_operation, sorted_names_of
 }
 
 //# Types
@@ -38,10 +38,11 @@ struct PCtx {
   mut next_id: Int;
   mut seq_id: Int;
   pctx_names: Array[String];
-  // ADR-0092 borrow-inference: whole-program set of user fns with at least
-  // one borrowed parameter (compute_borrow_param_user_fns,
-  // common_analysis.vibe), sorted. Same COPY discipline as pctx_names -- see
-  // pctx_new's doc comment.
+  // ADR-0092 borrow-inference: sorted whole-program names with aligned borrow
+  // masks (compute_borrow_param_user_fns, common_analysis.vibe). A
+  // source-owned shadowable builtin is retained even with mask zero so its
+  // source ABI overrides the builtin contract. Same COPY discipline as
+  // pctx_names -- see pctx_new's doc comment.
   borrow_param_user: Array[String];
   // Aligned to borrow_param_user: bit i of entry k says parameter i of
   // borrow_param_user[k] is borrowed. One bsearch on the names indexes
@@ -365,10 +366,6 @@ fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
   out
 }
 
-fn is_v128_box_call(fname: String) -> Bool {
-  fname == "v128_load" || fname == "v128_splat_i8x16" || fname == "v128_eq_i8x16" || fname == "v128_le_u_i8x16" || fname == "v128_ge_u_i8x16" || fname == "v128_and" || fname == "v128_or" || fname == "v128_not"
-}
-
 fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
   // #1100: early-exit — this membership scan is one of the plan's hottest
   // loops and used to keep scanning the whole array after a hit.
@@ -411,7 +408,9 @@ fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
 /// pctx_names, so the names sit here unprefixed and a miss costs only the
 /// fixed set.
 fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
-  is_borrow_ret_builtin(fname) || bsearch_leftmost(ctx.pctx_names, fname) >= 0
+  // The computed set includes compiler-owned builtins and transitive wrappers,
+  // but excludes a builtin spelling when source owns that exact binding.
+  bsearch_leftmost(ctx.pctx_names, fname) >= 0
 }
 
 /// #707: fixed-point closure over top-level function definitions, starting
@@ -780,13 +779,64 @@ fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
   }
 }
 
+/// The two Map iterator accessors have source-ownership guards in both linear
+/// and GC codegen. If source binds either exact name, its body -- not the
+/// compiler intrinsic -- determines whether the result is borrowed.
+/// Return a two-bit mask in one statement scan: bit 0 is the checked accessor,
+/// bit 1 is the unchecked accessor. This runs on every linked compile, so do
+/// not scan the compiler-sized statement array once per builtin seed.
+fn source_owned_shadowable_borrow_mask(stmts: Array[Stmt]) -> Int {
+  let mut mask = 0
+  let mut i = 0
+  while i < Array::length(stmts) && mask != 3 {
+    let bound = match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => name,
+      SFnDecl(_, name, _, _, _) => name,
+      _ => ""
+    }
+    if bound == "Map::iter_get" {
+      mask = mask|1
+    } else if bound == "Map::__iter_get_unchecked" {
+      mask = mask|2
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  mask
+}
+
+fn source_owns_shadowable_borrow_builtin(mask: Int, name: String) -> Bool {
+  if name == "Map::iter_get" {
+    (mask&1) != 0
+  } else if name == "Map::__iter_get_unchecked" {
+    (mask&2) != 0
+  } else {
+    false
+  }
+}
+
 export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
   // Seeded from the shared single-source-of-truth list (#1979) -- a seed that
   // drifts from is_borrow_ret_builtin (MutList::get was missing until #1932
   // review) makes both the inline branch-tail check and the #1915
   // spine-binding resolution classify that builtin's result as owned, and RC
-  // callers then drop an interior view.
-  let known: Array[String] = borrow_ret_builtin_names()
+  // callers then drop an interior view. Source-owned shadowable names are
+  // removed before the fixed point and may re-enter only when their bodies
+  // actually return a borrowed view.
+  let builtin_names = borrow_ret_builtin_names()
+  let known: Array[String] = []
+  let source_owned_mask = source_owned_shadowable_borrow_mask(stmts)
+  let mut seed_i = 0
+  while seed_i < Array::length(builtin_names) {
+    let builtin_name = Array::get(builtin_names, seed_i)
+    if !source_owns_shadowable_borrow_builtin(source_owned_mask, builtin_name) {
+      Array::push(known, builtin_name)
+    } else {
+      ()
+    }
+    seed_i = seed_i + 1
+  }
   let mut changed = true
   while changed {
     changed = false
@@ -919,15 +969,7 @@ fn is_scalar_expr(ctx: PCtx, e: Expr) -> Bool {
     EBool(_) => true,
     EFloat(_) => true,
     EUnit => true,
-    // #705: v128_load/splat/binary-op/not return a tagged pointer to a 16-byte
-    // box with NO rc header (type_id/refcount) -- see compile_call.vibe. The
-    // tag makes it look like a heap pointer to the runtime dup/drop guards
-    // (odd low bit), so planning a PaDup/PaDrop for a binding holding one would
-    // make those guards misread the v128 payload bytes as a refcount and
-    // corrupt it (or an adjacent allocation). Treat the binding as scalar
-    // (never dup/drop'd), matching the box's actual bump-only, never-freed
-    // lifetime under both backends.
-    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || is_v128_box_call(fname) || is_borrow_ret_fname(ctx, fname),
+    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || is_borrow_ret_fname(ctx, fname),
     _ => false
   }
 }
@@ -1284,16 +1326,7 @@ fn type_name_is_heap(n: String) -> Bool {
     let c0 = String::char_code_at(n, 0)
     if c0 < 'A' || c0 > 'Z' {
       false
-    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "V128" || n == "StdinStream" {
-      // #705: V128 is a tagged pointer to a 16-byte box (see compile_call.vibe
-      // v128_load/v128_splat_i8x16/etc), but the box has NO rc header
-      // (type_id/refcount) -- it's a bare payload written directly by
-      // v128.store. Treating it as heap would make Perceus emit __rc_dup /
-      // vibe_rc_drop calls that misread the v128 payload bytes as a type_id and
-      // refcount, corrupting the box (or freeing arbitrary memory at the
-      // implied "next"/size fields). Excluding it here keeps V128 boxes exactly
-      // as they behave under the bump backend: forward-only bump allocations
-      // that are simply never reclaimed, not memory-unsafe ones.
+    } else if n == "Int" || n == "Bool" || n == "Double" || n == "Float" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "StdinStream" {
       false
     } else {
       true
@@ -1562,13 +1595,8 @@ fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
   }
 }
 
-fn is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
-}
-
 /// Bit i means parameter i of this callee is borrowed. Mirrors
-/// bmask_has/md_borrow_mask_of in codegen/common_analysis (the same
-/// keep-in-sync convention as is_borrow_arg0_call above).
+/// bmask_has/md_borrow_mask_of in codegen/common_analysis.
 fn pe_bmask_has(mask: Int, i: Int) -> Bool {
   i >= 0 && i < 32 && ((mask>>i)&1) == 1
 }
@@ -1581,17 +1609,7 @@ fn pe_borrow_mask(ctx: PCtx, scope: Map[String, Int], callee: Expr) -> Int {
     EIdent(f, _) => if Map::has_key(scope, f) {
       0
     } else {
-      let bi = bsearch_leftmost(ctx.borrow_param_user, f)
-      let user = if bi >= 0 && bi < Array::length(ctx.borrow_param_mask) {
-        Array::get(ctx.borrow_param_mask, bi)
-      } else {
-        0
-      }
-      if is_borrow_arg0_call(f) {
-        user|1
-      } else {
-        user
-      }
+      md_borrow_mask_of(f, ctx.borrow_param_user, ctx.borrow_param_mask)
     },
     _ => 0
   }
@@ -2405,7 +2423,8 @@ fn pctx_apply_borrow_retention(ctx: PCtx) -> Int {
 /// Build the dup/drop plan for a function body expression.
 export fn build_perceus_plan(body: Expr) -> Array[PerceusAction] {
   let no_masks: Array[Int] = []
-  let ctx = pctx_new([], [], no_masks, [])
+  let ctx = pctx_new(sorted_names_of(borrow_ret_builtin_names()), [], no_masks, [
+  ])
   let empty: Map[String, Int] = Map::new()
   pc_count(ctx, empty, body)
   pctx_apply_borrow_retention(ctx)

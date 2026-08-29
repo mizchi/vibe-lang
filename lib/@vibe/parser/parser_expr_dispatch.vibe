@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Pat, TypeExpr
+  Expr, Pat, TypeExpr, trait_ref_key
 }
 
 import ./parser_base.vibe {
@@ -16,6 +16,7 @@ import ./parser_base.vibe {
   parse_pattern_with_binder_context,
   parse_struct_stmt_with_binder_context,
   parse_type_impl,
+  parse_type_param_kind,
   peek,
   reject_retired_effect_label,
   skip_semi,
@@ -123,9 +124,15 @@ fn dispatch_tp_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], In
   let mut done = false
   while !done {
     match peek(tokens, p) {
-      TIdent(bname) => {
-        ArrayBuilder::push(b, bname)
-        p = p + 1
+      TIdent(_) => {
+        let (reference, next) = parse_type_impl(tokens, p, 0)
+        let key = match reference {
+          TyName(_) => trait_ref_key(reference),
+          TyApp(_, _) => trait_ref_key(reference),
+          _ => throw("a trait bound must be a named trait, such as `Eq` or `Iter[Int]`")
+        }
+        ArrayBuilder::push(b, key)
+        p = next
         match peek(tokens, p) {
           TPlus => {
             p = p + 1
@@ -157,12 +164,13 @@ fn dispatch_type_params_with_binder_context(tokens: Array[Token], pos: Int, cont
       },
       TIdent(name) => {
         binder_capture_source(context, name, p, p)
-        ArrayBuilder::push(names, name)
-        p = p + 1
+        let (param_key, after_kind) = parse_type_param_kind(tokens, p + 1, name)
+        ArrayBuilder::push(names, param_key)
+        p = after_kind
         match peek(tokens, p) {
           TColon => {
             let (bound_names, next) = dispatch_tp_bound_names(tokens, p + 1)
-            ArrayBuilder::push(bounds, (name, bound_names))
+            ArrayBuilder::push(bounds, (param_key, bound_names))
             p = next
           },
           _ => ()

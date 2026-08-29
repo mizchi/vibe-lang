@@ -6,6 +6,10 @@
 import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_stream_handler,
   comp_emit_component_wasm_string_handler,
+  compile_generated_source_wasi_only,
+  compile_generated_source_wasi_only_coverage,
+  compile_generated_source_wasi_only_rc,
+  compile_generated_source_wasi_only_rc_shadow,
   compile_source_wasi_only,
   compile_source_wasi_only_coverage,
   compile_source_wasi_only_rc,
@@ -17,7 +21,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
 }
 
 import @vibe/compiler/entry/source_compile/gc_only {
-  compile_source_gc_only
+  compile_generated_source_gc_only, compile_source_gc_only
 }
 
 import @vibe/compiler/runtime {
@@ -626,18 +630,30 @@ fn apply_cfg_env(source: String, cfg_csv: String) -> String {
   }
 }
 
-fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: String) -> Bytes with Exception {
+fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: String, trusted_generated: Bool) -> Bytes with Exception {
   // ADR-0055 #493 cutover: the Perceus RC codegen (memory-reclaiming linear
   // backend) is the DEFAULT; set VIBE_RC=0 to opt back into the legacy bump
   // path. The compiler self-build, bootstrap, and bump-baseline gates pin
   // VIBE_RC=0 (see scripts/*.sh) so they stay byte-identical on bump.
   if rc_flag == "shadow" {
     // #715 recurrence guard: RC codegen + shadow-liveness traps (debug builds).
-    compile_source_wasi_only_rc_shadow(source, entry_name)
+    if trusted_generated {
+      compile_generated_source_wasi_only_rc_shadow(source, entry_name)
+    } else {
+      compile_source_wasi_only_rc_shadow(source, entry_name)
+    }
   } else if rc_flag != "0" {
-    compile_source_wasi_only_rc(source, entry_name)
+    if trusted_generated {
+      compile_generated_source_wasi_only_rc(source, entry_name)
+    } else {
+      compile_source_wasi_only_rc(source, entry_name)
+    }
   } else {
-    compile_source_wasi_only(source, entry_name)
+    if trusted_generated {
+      compile_generated_source_wasi_only(source, entry_name)
+    } else {
+      compile_source_wasi_only(source, entry_name)
+    }
   }
 }
 
@@ -849,7 +865,7 @@ fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
 }
 
 export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
-  // Reset the process-wide TDRE5 cell before every invocation. Only the
+  // Reset the process-wide TDRE8 cell before every invocation. Only the
   // check-only branch may enable it after strict policy validation below;
   // build/codegen lanes stay conservative, and a prior check in a long-lived
   // instance cannot leak its policy into a later invocation.
@@ -1227,11 +1243,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   } else ()
   if Env::get("VIBE_CHECK_ONLY") == "1" {
     return handle {
-      // TDRE5 is production-default only for the proven check/edit-cycle lane.
+      // TDRE8 is production-default only for the proven check/edit-cycle lane.
       // This call also resets policy on every check-only invocation, including
       // strict opt-out and observation-only trace runs.
       configure_typing_dependency_env_reuse_policy()
-      // Telemetry remains opt-in even though TDRE5 reuse is now the default
+      // Telemetry remains opt-in even though TDRE8 reuse is now the default
       // for this check-only lane. The counters cover only the db_typecheck_fs walk
       // inside check_linked_file; the second linked inline-wasm validation is
       // intentionally outside this incremental-cache telemetry boundary.
@@ -1979,17 +1995,29 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     let source_cfg = apply_cfg_env(source, Env::get("VIBE_CFG"))
     handle {
       let rc_flag = Env::get("VIBE_RC")
+      // Compiler-generated flat/module source carries reserved provenance
+      // statements. Trust is out-of-band: ordinary source bytes can never
+      // opt themselves into this lane.
+      let trusted_generated = Env::get("VIBE_INTERNAL_TRUSTED_SOURCE") == "1"
       // #cov: function-level coverage build (same source pipeline, instrumented
       // codegen). Running the produced wasm records which compiler functions ran.
       let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-        compile_source_wasi_only_coverage(source_cfg, entry_name)
+        if trusted_generated {
+          compile_generated_source_wasi_only_coverage(source_cfg, entry_name)
+        } else {
+          compile_source_wasi_only_coverage(source_cfg, entry_name)
+        }
       } else if Env::get("VIBE_BACKEND") == "gc" {
         // wasm-gc backend lane (parity checks / #415). Direct source compile
         // only; FS-import mode and the special instrumentation modes stay
         // linear-backend-only.
-        compile_source_gc_only(source_cfg, entry_name)
+        if trusted_generated {
+          compile_generated_source_gc_only(source_cfg, entry_name)
+        } else {
+          compile_source_gc_only(source_cfg, entry_name)
+        }
       } else {
-        compile_source_for_rc_flag(source_cfg, entry_name, rc_flag)
+        compile_source_for_rc_flag(source_cfg, entry_name, rc_flag, trusted_generated)
       }
       profile_memory_mark(mark_memory)
       // Binary-size (#1100): same release strip as the FS-compile lane above.

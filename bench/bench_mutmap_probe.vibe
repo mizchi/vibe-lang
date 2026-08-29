@@ -1,0 +1,270 @@
+// MutMap[K, V] probe cost — the before/after harness for the control-byte
+// slot metadata (#2346).
+//
+// The change under test replaces `state: Array[Int]` (8 bytes per slot, values
+// 0/1/2) with a `Bytes` control array (1 byte per slot) carrying a 7-bit
+// fingerprint of the key's hash. The claim is that a probe can reject a
+// colliding occupied slot by reading one byte, instead of loading
+// `Array[Option[K]]`, matching the Option, and calling the closed-over `eq_fn`.
+//
+// This file only ever touches MutMap's PUBLIC API, so the same source measures
+// both representations with nothing else varying. Per #2346: if the isolated
+// change does not win here, it does not land.
+//
+// WHY THERE ARE SEPARATE `seq` AND `rand` LANES. `hash_int` is `x ^ (x >> 33)`
+// (key.vibe, deliberately weak — "linear probing tolerates the weak
+// avalanche"). For keys below 2^33 that is the IDENTITY, so a table keyed by
+// 0..N-1 has `home = k % cap` with NO collisions at all: every lookup succeeds
+// on its first probe and there is nothing for a fingerprint to filter. That
+// lane is the honest control — it should show no win, and it is where a
+// regression from the extra byte read would appear. The `rand` lanes are
+// 32-bit xorshift keys, where `% cap` collides at the birthday rate and the
+// probe actually walks.
+//
+// The `string` lanes are where the mechanism should pay most: the compare being
+// skipped is `eq_string`, not `eq_int`.
+
+import @vibe/core {
+  Array::make,
+  MutMap,
+  MutMap::delete,
+  MutMap::get,
+  MutMap::new_int,
+  MutMap::new_string,
+  MutMap::set,
+  MutMap::size,
+  MutMap::with_capacity_int
+}
+
+//# Key material
+
+/// 32-bit xorshift, Marsaglia triple (13, 17, 5). Stays inside 32 bits, so
+/// `hash_int` is still the identity on it and the home index is `key % cap` --
+/// the collisions measured here are the table's own, not an artifact of a
+/// second hash.
+///
+/// THE TRIPLE IS LOAD-BEARING, measured. The first version of this file used
+/// (13, 7, 17), which produces only 4096 of the 8192 possible low-13-bit
+/// values -- so 5000 keys competed for 4096 possible home slots, an effective
+/// load factor above 1.0, and linear probing degenerated into a scan:
+/// 236 probes per lookup instead of 1.8, and every `rand` lane ran ~68x
+/// slower than it should. That is a property of the generator, not of MutMap,
+/// and it would have made this harness report a spectacular and completely
+/// fictitious win for any change that shortens probe chains. With (13, 17, 5)
+/// the generator covers all 8192 low-13-bit values and the measured average
+/// successful probe is 1.83 steps at load 0.61, against the 1.78 that linear
+/// probing predicts.
+fn nextr(s: Int) -> Int {
+  let a = (s^(s<<13))&4294967295
+  let b = a^(a>>17)
+  (b^(b<<5))&4294967295
+}
+
+let n_entries = 5000
+
+fn build_seq_keys(n: Int) -> Array[Int] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, i)
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+fn build_rand_keys(n: Int) -> Array[Int] {
+  let b = ArrayBuilder::new()
+  let mut s = 123456789
+  let mut i = 0
+  while i < n {
+    s = nextr(s)
+    ArrayBuilder::push(b, s)
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+fn build_string_keys(n: Int) -> Array[String] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, "key_\{i}_slot")
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+let seq_keys = build_seq_keys(n_entries)
+
+let rand_keys = build_rand_keys(n_entries)
+
+/// Absent keys, PROVABLY disjoint from the present ones: the same stream
+/// shifted up by 2^32. Every present key is below 2^32 and every absent key is
+/// above it, so no absent key can accidentally be present -- and because
+/// 2^32 is a multiple of every power-of-two capacity this table reaches, and
+/// `hash_int` is the identity below 2^33, each absent key probes from exactly
+/// the SAME home slot as its present counterpart. That is the realistic
+/// miss: one that has to walk a populated chain to the first empty slot.
+/// (Drawing a second stream from a different seed would have been disjoint
+/// only with high probability, and the first draft of this file reused the
+/// SAME seed, which silently made a third of the "miss" lane hits.)
+fn build_absent_keys(n: Int) -> Array[Int] {
+  let b = ArrayBuilder::new()
+  let mut s = 123456789
+  let mut i = 0
+  while i < n {
+    s = nextr(s)
+    ArrayBuilder::push(b, s + 4294967296)
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+let rand_absent = build_absent_keys(n_entries)
+
+let string_keys = build_string_keys(n_entries)
+
+fn build_string_absent(n: Int) -> Array[String] {
+  let b = ArrayBuilder::new()
+  let mut i = 0
+  while i < n {
+    ArrayBuilder::push(b, "absent_\{i}_slot")
+    i = i + 1
+  }
+  ArrayBuilder::freeze(b)
+}
+
+let string_absent = build_string_absent(n_entries)
+
+//# Tables
+
+fn fill_int(m: MutMap[Int, Int], keys: Array[Int]) -> Unit {
+  let n = Array::length(keys)
+  let mut i = 0
+  while i < n {
+    MutMap::set(m, Array::get(keys, i), i)
+    i = i + 1
+  }
+}
+
+fn make_seq_map() -> MutMap[Int, Int] {
+  let m: MutMap[Int, Int] = MutMap::new_int()
+  fill_int(m, seq_keys)
+  m
+}
+
+fn make_rand_map() -> MutMap[Int, Int] {
+  let m: MutMap[Int, Int] = MutMap::new_int()
+  fill_int(m, rand_keys)
+  m
+}
+
+/// Half the entries deleted, so half the occupied slots on every probe path are
+/// tombstones. A tombstone is skipped without any key compare in BOTH
+/// representations, so this lane isolates the cost of reading the slot metadata
+/// itself (`Array[Int]` element vs one byte) from the cost of the key compare.
+fn make_tombstoned_map() -> MutMap[Int, Int] {
+  let m: MutMap[Int, Int] = MutMap::new_int()
+  fill_int(m, rand_keys)
+  let mut i = 0
+  while i < n_entries {
+    if i % 2 == 0 {
+      let _ = MutMap::delete(m, Array::get(rand_keys, i))
+    }
+    i = i + 1
+  }
+  m
+}
+
+fn make_string_map() -> MutMap[String, Int] {
+  let m: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < n_entries {
+    MutMap::set(m, Array::get(string_keys, i), i)
+    i = i + 1
+  }
+  m
+}
+
+let seq_map = make_seq_map()
+
+let rand_map = make_rand_map()
+
+let tomb_map = make_tombstoned_map()
+
+let string_map = make_string_map()
+
+//# Probe kernels
+//#
+//# Each returns a count so nothing can be folded away, and the bench blocks
+//# park the result in a sink array.
+
+fn count_int_hits(m: MutMap[Int, Int], keys: Array[Int]) -> Int {
+  let n = Array::length(keys)
+  let mut hits = 0
+  let mut i = 0
+  while i < n {
+    match MutMap::get(m, Array::get(keys, i)) {
+      Some(_) => {
+        hits = hits + 1
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  hits
+}
+
+fn count_string_hits(m: MutMap[String, Int], keys: Array[String]) -> Int {
+  let n = Array::length(keys)
+  let mut hits = 0
+  let mut i = 0
+  while i < n {
+    match MutMap::get(m, Array::get(keys, i)) {
+      Some(_) => {
+        hits = hits + 1
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  hits
+}
+
+fn build_and_count(keys: Array[Int]) -> Int {
+  let m: MutMap[Int, Int] = MutMap::with_capacity_int(16)
+  fill_int(m, keys)
+  MutMap::size(m)
+}
+
+let sink = Array::make(1, 0)
+
+//# Lanes
+
+bench "mutmap_get_hit_int_seq" {
+  Array::set(sink, 0, count_int_hits(seq_map, seq_keys))
+}
+
+bench "mutmap_get_hit_int_rand" {
+  Array::set(sink, 0, count_int_hits(rand_map, rand_keys))
+}
+
+bench "mutmap_get_miss_int_rand" {
+  Array::set(sink, 0, count_int_hits(rand_map, rand_absent))
+}
+
+bench "mutmap_get_hit_int_tombstoned" {
+  Array::set(sink, 0, count_int_hits(tomb_map, rand_keys))
+}
+
+bench "mutmap_get_hit_string" {
+  Array::set(sink, 0, count_string_hits(string_map, string_keys))
+}
+
+bench "mutmap_get_miss_string" {
+  Array::set(sink, 0, count_string_hits(string_map, string_absent))
+}
+
+bench "mutmap_build_int_rand" {
+  Array::set(sink, 0, build_and_count(rand_keys))
+}

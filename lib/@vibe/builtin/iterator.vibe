@@ -1,8 +1,8 @@
 //# Types
 
-/// #736: `Iterable[T]` is a real method-bearing trait (the #636 witness-dict
+/// #736: `Iterator[T]` is a real method-bearing trait (the #636 witness-dict
 /// machinery), replacing the ADR-0044 name-coupled convention. The old scheme
-/// compiled `xs |> iter_length` inside a `[C: Iterable]` combinator as a call
+/// compiled `xs |> iter_length` inside a `[C: Iterator]` combinator as a call
 /// to a BARE `iter_length` function that had to exist in the merged program by
 /// accident — under selfhost it never resolved, so every Iterator::* combinator
 /// failed to compile ("undefined variable (local): iter_length") unless some
@@ -13,11 +13,11 @@
 /// as separate `let MyType::iter_length = ...` bindings — an impl block
 /// desugars to exactly those):
 ///
-///   impl [T] Iterable for MyVec[T] {
+///   impl [T] Iterator[T] for MyVec[T] {
 ///     iter_length(self) -> Int { ... }
 ///     iter_get(self, i) -> T { ... }
 ///   }
-export trait Iterable[T] {
+export trait Iterator[T] {
   iter_length(Self) -> Int
   iter_get(Self, Int) -> T
 }
@@ -27,7 +27,7 @@ export trait Iterable[T] {
 /// Builtin iterables (ADR-0044 Phase 3 semantics preserved): Array yields its
 /// elements, String yields Int char codes (consistent with `for c in s`), and
 /// Map yields its keys in insertion order.
-impl [T] Iterable for Array[T] {
+impl [T] Iterator[T] for Array[T] {
   iter_length(self) -> Int {
     Array::length(self)
   }
@@ -36,7 +36,7 @@ impl [T] Iterable for Array[T] {
   }
 }
 
-impl Iterable for String {
+impl Iterator[Int] for String {
   iter_length(self) -> Int {
     String::length(self)
   }
@@ -45,19 +45,19 @@ impl Iterable for String {
   }
 }
 
-/// Key iteration goes through Map::keys per access; hoisting the key array out
-/// of the loop needs per-call-site specialization (perf follow-up, not a
-/// correctness issue — small maps dominate current usage).
-impl [K, V] Iterable for Map[K, V] {
+/// Map iteration reads the insertion-order key slot directly. `Map::iter_get`
+/// is a checked compiler primitive; its lowering performs the same bounds
+/// trap as indexing `Map::keys(self)` without allocating that temporary array.
+impl [K, V] Iterator[String] for Map[K, V] {
   iter_length(self) -> Int {
-    Array::length(Map::keys(self))
+    Map::size(self)
   }
   iter_get(self, i) -> String {
-    Array::get(Map::keys(self), i)
+    Map::iter_get(self, i)
   }
 }
 
-export fn Iterator::fold[C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
+export fn Iterator::fold[T, C: Iterator[T], B](xs: C, init: B, f: (acc: B, x: T) -> B) -> B {
   let len = C::iter_length(xs)
   let mut i = 0
   let mut acc = init
@@ -68,7 +68,7 @@ export fn Iterator::fold[C: Iterable, T, B](xs: C, init: B, f: (acc: B, x: T) ->
   acc
 }
 
-export fn Iterator::iter[C: Iterable, T, R](xs: C, f: (x: T) -> R) -> Int {
+export fn Iterator::iter[T, C: Iterator[T], R](xs: C, f: (x: T) -> R) -> Int {
   let len = C::iter_length(xs)
   let mut i = 0
   while i < len {
@@ -78,7 +78,7 @@ export fn Iterator::iter[C: Iterable, T, R](xs: C, f: (x: T) -> R) -> Int {
   i
 }
 
-export fn Iterator::find[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Option[T] {
+export fn Iterator::find[T, C: Iterator[T]](xs: C, pred: (x: T) -> Bool) -> Option[T] {
   let len = C::iter_length(xs)
   let mut i = 0
   let mut result = None
@@ -94,7 +94,7 @@ export fn Iterator::find[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Option[
   result
 }
 
-export fn Iterator::any[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Bool {
+export fn Iterator::any[T, C: Iterator[T]](xs: C, pred: (x: T) -> Bool) -> Bool {
   let len = C::iter_length(xs)
   let mut i = 0
   let mut found = false
@@ -109,7 +109,7 @@ export fn Iterator::any[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Bool {
   found
 }
 
-export fn Iterator::all[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Bool {
+export fn Iterator::all[T, C: Iterator[T]](xs: C, pred: (x: T) -> Bool) -> Bool {
   let len = C::iter_length(xs)
   let mut i = 0
   let mut ok = true
@@ -124,20 +124,20 @@ export fn Iterator::all[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Bool {
   ok
 }
 
-export fn Iterator::map[A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {
-  let len = Array::length(xs)
+export fn Iterator::map[A, C: Iterator[A], B](xs: C, f: (x: A) -> B) -> Array[B] {
+  let len = C::iter_length(xs)
   {
     let acc = ArrayBuilder::new()
     let mut i = 0
     while i < len {
-      ArrayBuilder::push(acc, f(Array::get(xs, i)))
+      ArrayBuilder::push(acc, f(C::iter_get(xs, i)))
       i = i + 1
     }
     ArrayBuilder::freeze(acc)
   }
 }
 
-export fn Iterator::filter[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Array[T] {
+export fn Iterator::filter[T, C: Iterator[T]](xs: C, pred: (x: T) -> Bool) -> Array[T] {
   let len = C::iter_length(xs)
   {
     let acc = ArrayBuilder::new()
@@ -153,13 +153,35 @@ export fn Iterator::filter[C: Iterable, T](xs: C, pred: (x: T) -> Bool) -> Array
   }
 }
 
-export fn Iterator::flatmap[C: Iterable, A, B](xs: C, f: (x: A) -> Array[B]) -> Array[B] {
+export fn Iterator::flatmap[A, C: Iterator[A], B](xs: C, f: (x: A) -> Array[B]) -> Array[B] {
   let len = C::iter_length(xs)
   {
     let acc = ArrayBuilder::new()
     let mut i = 0
     while i < len {
       let chunk = f(C::iter_get(xs, i))
+      let chunk_len = Array::length(chunk)
+      let mut j = 0
+      while j < chunk_len {
+        ArrayBuilder::push(acc, Array::get(chunk, j))
+        j = j + 1
+      }
+      i = i + 1
+    }
+    ArrayBuilder::freeze(acc)
+  }
+}
+
+/// Array specialization for Iterator::flatmap. Keeping it beside the trait
+/// helper makes trait-only imports retain the direct implementation while the
+/// compiler removes witness dispatch from Array receivers.
+export fn Array::flatmap[A, B](xs: Array[A], f: (x: A) -> Array[B]) -> Array[B] {
+  let len = Array::length(xs)
+  {
+    let acc = ArrayBuilder::new()
+    let mut i = 0
+    while i < len {
+      let chunk = f(Array::get(xs, i))
       let chunk_len = Array::length(chunk)
       let mut j = 0
       while j < chunk_len {

@@ -110,7 +110,6 @@ the repo; not the user manual.
 | [side-effect-consolidation.md](side-effect-consolidation.md) | `internal/design/` | |
 | [spec/decisions.md](spec/decisions.md) | `internal/design/` | Locked language decisions |
 | [spec/builtin-ssot-design.md](spec/builtin-ssot-design.md) | `internal/design/` | |
-| [spec/iterable-touch-points.md](spec/iterable-touch-points.md) | `internal/design/` | Maintainer checklist |
 | [spec/memory-contract.md](spec/memory-contract.md) | `internal/design/` | Linear / wasm-gc / RC |
 | [spec/profiling.md](spec/profiling.md) | `internal/design/` | |
 | [spec/rc-cutover-readiness.md](spec/rc-cutover-readiness.md) | `internal/design/` | ADR-0055 status |

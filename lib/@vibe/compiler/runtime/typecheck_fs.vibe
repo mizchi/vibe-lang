@@ -14,6 +14,10 @@ import @vibe/core {
   array_empty
 }
 
+import @vibe/ast {
+  TypeExpr, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
+}
+
 import @vibe/compiler/checker {
   CheckedProgram,
   check_program,
@@ -50,11 +54,14 @@ import @vibe/compiler/core {
   env_bind_with_origin,
   env_flat_bindings,
   env_lookup,
+  env_lookup_binding_including_surface,
   env_lookup_flat,
+  env_preserve_type_definition_origins,
   env_selectable_type_defs,
   env_type_defs,
   env_value_binding,
   has_standard_effect_policy,
+  is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
   lookup_registry_builtin,
   normalize_path,
@@ -273,16 +280,27 @@ fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String
 /// coincidence) but "unknown name: Json::string" for the other 8 of the
 /// 11 documented accessors. The bundle-merge lane resolves these by name
 /// against the merged unit and never had the gap; only this FS lane did.
-fn selected_module_binding_origin(resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
+fn selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
+  // Preserve an ultimate module origin already carried by a facade binding.
+  // Replacing it with `resolved` at every import hop loses semantic provenance
+  // such as the canonical @vibe/builtin AsyncIter constructors.
+  let (path, original_name) = match env_lookup_binding_including_surface(dep_env, source_name) {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(origin_path, origin_name) => (origin_path, origin_name),
+      BindingOriginReExportSurface(origin_path, origin_name) => (origin_path, origin_name),
+      BindingOriginUnavailable => (resolved, source_name)
+    },
+    None => (resolved, source_name)
+  }
   if reexport_surface_only {
-    BindingOriginReExportSurface(resolved, source_name)
+    BindingOriginReExportSurface(path, original_name)
   } else {
-    BindingOriginModuleExport(resolved, source_name)
+    BindingOriginModuleExport(path, original_name)
   }
 }
 
-fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
-  let qual_prefix = String::concat(enum_name, "::")
+fn bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], source_owner: String, local_owner: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
+  let qual_prefix = String::concat(source_owner, "::")
   let mut out = acc
   // #1908: the dep's flat bindings can carry a name twice — the authoritative
   // generalized scheme first, then a stale shadowed duplicate from the dep's
@@ -299,12 +317,17 @@ fn bind_enum_constructor_companions(acc: TypeEnv, resolved: String, dep_bindings
   let mut i = 0
   while i < Array::length(dep_bindings) {
     let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
-    if candidate_name != enum_name && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, enum_name) || String::starts_with(candidate_name, qual_prefix)) {
+    if candidate_name != source_owner && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, source_owner) || String::starts_with(candidate_name, qual_prefix)) {
       if contains_str(seen, candidate_name) {
         ()
       } else {
         Array::push(seen, candidate_name)
-        out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(resolved, candidate_name, reexport_surface_only))
+        let local_name = if source_owner != local_owner && String::starts_with(candidate_name, qual_prefix) {
+          String::concat(local_owner, String::substring(candidate_name, String::length(source_owner), String::length(candidate_name)))
+        } else {
+          candidate_name
+        }
+        out = env_bind_with_origin(out, local_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(dep_env, resolved, candidate_name, reexport_surface_only))
       }
     }
     i = i + 1
@@ -361,6 +384,23 @@ fn trait_projection_mapping(mappings: Array[(String, String)], canonical: String
     }
   }
   found
+}
+
+/// Project only the trait constructor spelling while preserving its applied
+/// arguments. Applied references use an AST key internally, so treating the
+/// complete key as an ordinary name loses explicit import aliases.
+fn trait_projection_map_ref(label: String, mappings: Array[(String, String)]) -> String {
+  let source_name = trait_ref_name(label)
+  match trait_projection_mapping(mappings, source_name) {
+    Some(mapped) => match trait_ref_from_key(label) {
+      Some(applied) => match applied {
+        TyApp(_, args) => trait_ref_key(TyApp(mapped, args)),
+        _ => mapped
+      },
+      None => mapped
+    },
+    None => label
+  }
 }
 
 fn trait_projection_local_owner(mappings: Array[(String, String)], local_name: String) -> Option[String] {
@@ -587,15 +627,16 @@ fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: St
     EnvTraitImpl(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
     EnvMutCell(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
     EnvTraitImplGen(candidate, _, bounds, _, rest) => {
-      if candidate == trait_name {
+      if trait_ref_name(candidate) == trait_ref_name(trait_name) {
         let mut i = 0
         while i < Array::length(bounds) {
           let (_, labels) = Array::get(bounds, i)
           let mut j = 0
           while j < Array::length(labels) {
             let label = Array::get(labels, j)
+            let base = trait_ref_name(label)
             if trait_defined(dep_env, label) {
-              trait_projection_add_mapping(mappings, label, label)
+              trait_projection_add_mapping(mappings, base, base)
             } else {
               ()
             }
@@ -623,8 +664,9 @@ fn trait_projection_collect_type_bounds(ty: Type, mappings: Array[(String, Strin
         let mut j = 0
         while j < Array::length(labels) {
           let label = Array::get(labels, j)
+          let base = trait_ref_name(label)
           if trait_defined(dep_env, label) {
-            trait_projection_add_mapping(mappings, label, label)
+            trait_projection_add_mapping(mappings, base, base)
           } else {
             ()
           }
@@ -777,7 +819,8 @@ fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(S
     while j < Array::length(supers) {
       let super_name = Array::get(supers, j)
       if trait_defined(dep_env, super_name) {
-        trait_projection_add_mapping(mappings, super_name, super_name)
+        let super_base = trait_ref_name(super_name)
+        trait_projection_add_mapping(mappings, super_base, super_base)
       } else {
         ()
       }
@@ -797,10 +840,7 @@ fn trait_projection_map_bound_rows(bounds: Array[(Int, Array[String])], mappings
     let mut j = 0
     while j < Array::length(labels) {
       let label = Array::get(labels, j)
-      Array::push(mapped_labels, match trait_projection_mapping(mappings, label) {
-        Some(mapped) => mapped,
-        None => label
-      })
+      Array::push(mapped_labels, trait_projection_map_ref(label, mappings))
       j = j + 1
     }
     Array::push(out, (param, mapped_labels))
@@ -829,10 +869,7 @@ fn trait_projection_map_method_bound_rows(bounds: Array[(String, Array[String])]
     let mut j = 0
     while j < Array::length(labels) {
       let label = Array::get(labels, j)
-      Array::push(mapped_labels, match trait_projection_mapping(mappings, label) {
-        Some(mapped) => mapped,
-        None => label
-      })
+      Array::push(mapped_labels, trait_projection_map_ref(label, mappings))
       j = j + 1
     }
     Array::push(out, (param, mapped_labels))
@@ -1050,7 +1087,7 @@ fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[ImportItem], tail
       }
       i = i + 1
     }
-    EnvTypeDefs(defs, selectable, tail)
+    env_preserve_type_definition_origins(EnvTypeDefs(defs, selectable, tail), dep_env)
   }
 }
 
@@ -1080,10 +1117,7 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
             let mut j = 0
             while j < Array::length(supers) {
               let super_name = Array::get(supers, j)
-              Array::push(local_supers, match trait_projection_mapping(mappings, super_name) {
-                Some(mapped) => mapped,
-                None => super_name
-              })
+              Array::push(local_supers, trait_projection_map_ref(super_name, mappings))
               j = j + 1
             }
             Array::push(retained, EnvTraitDef(local_name, local_supers, is_auto, methods, EnvEmpty, params, trait_projection_map_method_gens(method_gens, mappings)))
@@ -1096,15 +1130,15 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
         cur = rest
       },
       EnvTraitImpl(name, target, rest) => {
-        match trait_projection_mapping(mappings, name) {
-          Some(local_name) => Array::push(retained, EnvTraitImpl(local_name, trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
+        match trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => Array::push(retained, EnvTraitImpl(trait_projection_map_ref(name, mappings), trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
           None => ()
         }
         cur = rest
       },
       EnvTraitImplGen(name, params, bounds, target, rest) => {
-        match trait_projection_mapping(mappings, name) {
-          Some(local_name) => Array::push(retained, EnvTraitImplGen(local_name, params, trait_projection_map_method_bound_rows(bounds, mappings), trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
+        match trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => Array::push(retained, EnvTraitImplGen(trait_projection_map_ref(name, mappings), params, trait_projection_map_method_bound_rows(bounds, mappings), trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
           None => ()
         }
         cur = rest
@@ -1194,6 +1228,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       // and the parser records no local binder for it (#2287).
       let surface_only_item = reexport_surface_only && alias != None
       let imported_ty = env_lookup_flat(dep_bindings, name)
+      let binding_origin = selected_module_binding_origin(dep_env, resolved, name, surface_only_item)
       let ty = match imported_ty {
         Some(t) => trait_projection_map_type_bounds(t, trait_mappings),
         None => {
@@ -1209,21 +1244,21 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         }
       }
       let with_name = match imported_ty {
-        Some(_) => env_bind_with_origin(nacc, bound_name, ty, selected_module_binding_origin(resolved, name, surface_only_item)),
-        None => if surface_only_item && (contains_str(dep_selectable_type_defs, name) || trait_defined(dep_env, name)) {
+        Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
+        None => if contains_str(dep_selectable_type_defs, name) || trait_defined(dep_env, name) {
           // Declaration aliases travel in the separate publication projection
-          // below. Retain only an origin marker here so checker diagnostics can
-          // distinguish this claimed-but-nonlocal spelling from an unrelated
-          // unknown declaration; env_lookup deliberately hides the marker.
-          env_bind_with_origin(nacc, bound_name, ty, selected_module_binding_origin(resolved, name, true))
+          // below. Retain the declaration's origin on its existing unknown
+          // value-space marker so semantic checks can distinguish a projected
+          // builtin type from an unrelated same-named local declaration.
+          env_bind_with_origin(nacc, bound_name, ty, binding_origin)
         } else {
           env_bind(nacc, bound_name, ty)
         }
       }
       let with_companions = match ty {
-        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, resolved, dep_bindings, enum_name, trait_mappings, surface_only_item),
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, enum_name, bound_name, trait_mappings, surface_only_item),
         _ => if starts_with_upper(name) {
-          bind_enum_constructor_companions(with_name, resolved, dep_bindings, name, trait_mappings, surface_only_item)
+          bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, name, bound_name, trait_mappings, surface_only_item)
         } else {
           with_name
         }
@@ -1294,7 +1329,9 @@ fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Arr
       (local_acc, surface_acc)
     } else {
       let (next_local, next_surface) = match Array::get(stmts, i) {
-        SImport(raw_path, names) => {
+        SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+          (local_acc, surface_acc)
+        } else {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
           (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false), surface_acc)
         },
@@ -1559,7 +1596,7 @@ fn load_planned_module_source(rdb: RippleDb, path: String) -> (RippleDb, Option[
 ///
 /// Order and duplicate paths are preserved verbatim. lookup_env_cache's
 /// first-match rule is intentional: it is the same rule build_import_env uses,
-/// so a duplicate cache path cannot select one interface while TDRE5 keys a
+/// so a duplicate cache path cannot select one interface while TDRE9 keys a
 /// different one. A missing row is an infrastructure error, never EnvEmpty:
 /// continuing would let an unreadable dependency silently weaken checking.
 fn project_exact_dependency_envs(deps: Array[String], full_cache: Array[(String, TypeEnv)]) -> Array[(String, TypeEnv)] with Exception {
@@ -1800,7 +1837,7 @@ fn collect_module_diagnostics() -> Bool {
 ///   5 current-source parse executions (ModuleJob parse memo misses)
 ///   6 checker executions
 ///   7 modules reused by conservative fingerprint authority
-///   8 modules reused by validated TDRE5 dependency transport authority
+///   8 modules reused by validated TDRE9 dependency transport authority
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
@@ -1824,9 +1861,11 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = []
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// TDRE5 aliases only an exact v5 decoded TypeEnv when every direct dependency
+// TDRE9 aliases only an exact v9 decoded TypeEnv when every direct dependency
 // transport environment is unchanged. It is not a CheckedProgram or typed-IR
-// transport; v5 retains the TypeEnv declaration, trait, and impl chain. The empty cell is
+// transport; v9 retains kinded applications, constructor-bound self references,
+// and binding provenance
+// in the TypeEnv declaration, trait, and impl chain. The empty cell is
 // conservative for direct FS consumers. The CLI check-only lane explicitly
 // enables production reuse after validating its per-invocation policy; build,
 // codegen, and other FS consumers remain off pending compact publication.
@@ -2110,6 +2149,8 @@ fn interface_canonical_type(ty: Type, ids: Array[Int], names: Array[String]) -> 
     CtBytes => "bytes",
     CtUnknown => "unknown",
     CtVar(id) => String::concat("var:", interface_lookup_var(ids, names, id)),
+    CtConstructor(name, arity) => String::concat("constructor:", String::concat(interface_segment(name), __to_string(arity))),
+    CtApplied(head, args) => String::concat("applied:", String::concat(interface_segment(interface_canonical_type(head, ids, names)), types(args, ids, names))),
     CtEnum(name) => String::concat("enum:", interface_segment(name)),
     CtStruct(name) => String::concat("struct:", interface_segment(name)),
     CtArray(elem) => String::concat("array:", interface_segment(interface_canonical_type(elem, ids, names))),
@@ -2169,8 +2210,8 @@ fn interface_lookup_type_param(params: Array[String], name: String) -> String {
   let mut result = name
   let mut found = false
   while i < Array::length(params) && !found {
-    if Array::get(params, i) == name {
-      result = String::concat("p", __to_string(i))
+    if type_param_name(Array::get(params, i)) == name {
+      result = String::concat("p", String::concat(__to_string(i), String::concat("/", __to_string(type_param_arity(Array::get(params, i))))))
       found = true
     } else {
       i = i + 1
@@ -2187,8 +2228,8 @@ fn interface_lookup_trait_type_param(header_params: Array[String], method_params
   let mut method_result = String::concat("free:", name)
   let mut found_method = false
   while i < Array::length(method_params) && !found_method {
-    if Array::get(method_params, i) == name {
-      method_result = String::concat("method:", __to_string(i))
+    if type_param_name(Array::get(method_params, i)) == name {
+      method_result = String::concat("method:", String::concat(__to_string(i), String::concat("/", __to_string(type_param_arity(Array::get(method_params, i))))))
       found_method = true
     } else {
       i = i + 1
@@ -2201,8 +2242,8 @@ fn interface_lookup_trait_type_param(header_params: Array[String], method_params
     let mut header_result = String::concat("free:", name)
     let mut found_header = false
     while j < Array::length(header_params) && !found_header {
-      if Array::get(header_params, j) == name {
-        header_result = String::concat("header:", __to_string(j))
+      if type_param_name(Array::get(header_params, j)) == name {
+        header_result = String::concat("header:", String::concat(__to_string(j), String::concat("/", __to_string(type_param_arity(Array::get(header_params, j))))))
         found_header = true
       } else {
         j = j + 1
@@ -2242,11 +2283,11 @@ fn interface_trait_header_malformed_rows(header_params: Array[String]) -> Array[
   let rows = array_empty()
   let mut p = 0
   while p < Array::length(header_params) {
-    let param_name = Array::get(header_params, p)
+    let param_name = type_param_name(Array::get(header_params, p))
     let mut matches = 0
     let mut p2 = 0
     while p2 < Array::length(header_params) {
-      if Array::get(header_params, p2) == param_name {
+      if type_param_name(Array::get(header_params, p2)) == param_name {
         matches = matches + 1
       } else {
         ()
@@ -2541,7 +2582,7 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// name the module itself imported -- so testing an import against it let
 /// `import ./dep.vibe { private_fn }` through to die in codegen. Dropping
 /// the non-exported bindings here, at the single point every publication
-/// path flows through (persistent store, env cache, worker env.out, TDRE5),
+/// path flows through (persistent store, env cache, worker env.out, TDRE9),
 /// makes the existing membership check in
 /// bind_import_names_from_cache_collecting the export test itself.
 ///
@@ -2552,13 +2593,13 @@ fn interface_public_type_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arra
 /// Trait definitions and implementations are published only for the selected
 /// trait surface. EnvCached wrappers are rebuilt from the restricted chain
 /// (their arrays are acceleration state, same rule as the serializer's).
-fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv, all_defs: Array[TypeDef]) -> TypeEnv {
   match env {
     EnvEmpty => EnvEmpty,
     EnvBind(name, binding, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
-        EnvBind(name, env_value_binding(binding.ty), restricted)
+        EnvBind(name, binding, restricted)
       } else {
         restricted
       }
@@ -2566,9 +2607,9 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     // #1262: `let mut` escape markers are function-local, so a module's export
     // surface never carries one. Drop it with its scope rather than inventing
     // a rule for publishing mutability across a boundary.
-    EnvMutCell(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest),
+    EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs),
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       if bsearch_leftmost(trait_surface, name) >= 0 {
         EnvTraitDef(name, supers, is_auto, methods, restricted, params, method_gens)
       } else {
@@ -2576,30 +2617,30 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       }
     },
     EnvTraitImpl(name, target, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
-      if bsearch_leftmost(trait_surface, name) >= 0 {
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+      if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImpl(name, target, restricted)
       } else {
         restricted
       }
     },
     EnvTraitImplGen(name, params, bounds, target, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
-      if bsearch_leftmost(trait_surface, name) >= 0 {
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+      if bsearch_leftmost(trait_surface, trait_ref_name(name)) >= 0 {
         EnvTraitImplGen(name, params, bounds, target, restricted)
       } else {
         restricted
       }
     },
     EnvTypeDefs(defs, _, rest) => {
-      let restricted = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+      let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
       let kept = array_empty()
       let mut i = 0
       while i < Array::length(defs) {
         let def = Array::get(defs, i)
         if bsearch_leftmost(type_surface, typedef_projection_name(def)) >= 0 {
           let closure = array_empty()
-          typedef_projection_add_named(typedef_projection_name(def), defs, closure)
+          typedef_projection_add_named(typedef_projection_name(def), all_defs, closure)
           let mut ci = 0
           while ci < Array::length(closure) {
             let closure_def = Array::get(closure, ci)
@@ -2615,7 +2656,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
         }
         i = i + 1
       }
-      if Array::length(kept) == 0 && Array::length(type_surface) == 0 {
+      if Array::length(kept) == 0 {
         restricted
       } else {
         EnvTypeDefs(kept, type_surface, restricted)
@@ -2627,7 +2668,7 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
       while i < Array::length(bindings) {
         let (name, binding) = Array::get(bindings, i)
         if bsearch_leftmost(value_surface, name) >= 0 || is_selected_type_companion(name, binding.ty, type_surface) {
-          Array::push(kept, (name, env_value_binding(binding.ty)))
+          Array::push(kept, (name, binding))
         } else {
           ()
         }
@@ -2644,7 +2685,20 @@ fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: A
     // module lane resolves an import over a same-named local (the merge
     // lane shadows correctly), while an `as` alias broke the
     // collect_merged_stmts lane instead. Both are their own bugs.
-    EnvCached(_, _, rest) => restrict_env_to_export_surface(value_surface, trait_surface, type_surface, rest)
+    EnvCached(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs)
+  }
+}
+
+fn restrict_env_to_export_surface(value_surface: Array[String], trait_surface: Array[String], type_surface: Array[String], env: TypeEnv) -> TypeEnv {
+  let all_defs = env_type_defs(env)
+  let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, env, all_defs)
+  if Array::length(type_surface) > 0 && Array::length(env_selectable_type_defs(restricted)) == 0 {
+    // Opaque builtins and re-exported contracts can grant type authority
+    // without carrying a forgeable TypeDef payload. Keep one surface node for
+    // that case; concrete closures already carry their own surface node.
+    EnvTypeDefs(array_empty(), type_surface, restricted)
+  } else {
+    restricted
   }
 }
 
@@ -2703,7 +2757,7 @@ export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt
   let value_surface = interface_public_value_names(stmts)
   let trait_surface = interface_public_trait_names(stmts, publication_env)
   let type_surface = interface_public_type_names(stmts, publication_env)
-  let published = restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env)
+  let published = env_preserve_type_definition_origins(restrict_env_to_export_surface(value_surface, trait_surface, type_surface, publication_env), publication_env)
   // Builtin declarations have no TypeDef node to survive the restriction.
   // Their explicit selected surface still needs a transport node, otherwise
   // the importer cannot distinguish this export from an empty dependency.
@@ -2950,7 +3004,7 @@ export fn incremental_trait_generic_provenance_markers_for_test(header_params: A
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Exception {
   let stmts = parse_program_with_path("<incremental-interface-observation>", source)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-module-interface:v2\n")
+  StringBuilder::push(out, "vibe-module-interface:v4\n")
   let names = interface_public_value_names(stmts)
   let mut i = 0
   while i < Array::length(names) {
@@ -2997,7 +3051,7 @@ fn incremental_checked_env_identity(env: TypeEnv) -> String with Exception {
   }
   let names = interface_sorted_unique(raw_names)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-module-checked-env:v1\n")
+  StringBuilder::push(out, "vibe-module-checked-env:v3\n")
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
@@ -3015,7 +3069,7 @@ fn incremental_checked_env_identity(env: TypeEnv) -> String with Exception {
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
-/// A trace-only observation of the complete persistent TypeEnv v5 transport.
+/// A trace-only observation of the complete persistent TypeEnv v9 transport.
 /// The canonical cache-text bytes are the sole input. This is not a
 /// CheckedProgram, typed IR, exported interface, cache key, or reuse decision.
 fn incremental_persistent_type_env_transport_identity(env: TypeEnv) -> String {
@@ -3069,7 +3123,7 @@ fn incremental_trace_json_string(text: String) -> String {
 /// provisional canonical token-stream identity, not normalized typed IR.
 /// `checked_env_fingerprint` is a complete value-environment observation.
 /// `persistent_type_env_transport_fingerprint` observes only the complete
-/// persistent TypeEnv v5 transport, not a CheckedProgram, typed IR, exported
+/// persistent TypeEnv v9 transport, not a CheckedProgram, typed IR, exported
 /// interface, cache key, or reuse decision. `decision` records what this current TypeDb
 /// walk did (`rechecked` or `reused`), not a formal invalidation verdict.
 /// This function is called only after a successful check; a missing per-module
@@ -3122,19 +3176,19 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete interface observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(interface_fingerprint))
-    StringBuilder::push(out, ",\"interface_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-interface:v2 canonical exported surface including trait-header and method-generic binders)\",\"checked_env_fingerprint\":")
+    StringBuilder::push(out, ",\"interface_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-interface:v4 canonical exported surface including kinded applications)\",\"checked_env_fingerprint\":")
     let checked_env_fingerprint = match incremental_checked_env_trace_observation_of(path) {
       Some(value) => value,
       None => throw(String::concat("incremental invalidation trace: missing complete checked environment observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(checked_env_fingerprint))
-    StringBuilder::push(out, ",\"checked_env_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)\",\"persistent_type_env_transport_fingerprint\":")
+    StringBuilder::push(out, ",\"checked_env_fingerprint_kind\":\"compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)\",\"persistent_type_env_transport_fingerprint\":")
     let persistent_type_env_transport_fingerprint = match incremental_persistent_type_env_transport_trace_observation_of(path) {
       Some(value) => value,
       None => throw(String::concat("incremental invalidation trace: missing complete persistent TypeEnv transport observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(persistent_type_env_transport_fingerprint))
-    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v5 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
+    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1
@@ -3269,14 +3323,14 @@ fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with E
   text
 }
 
-// TDRE5 is deliberately independent from the TypeEnv v5 envelope and from
-// every production artifact/cache identity. Both v5 envelopes use strict
+// TDRE9 is deliberately independent from the TypeEnv v9 envelope and from
+// every production artifact/cache identity. Both v9 envelopes use strict
 // decimal length-delimited fields and bind the logical checker input, target
-// conservative fingerprint, and exact canonical TypeEnv-v5 transport text.
+// conservative fingerprint, and exact canonical TypeEnv-v9 transport text.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
-let typing_dependency_env_reuse_alias_v5_tag = "TDRE5A"
-let typing_dependency_env_reuse_witness_v5_tag = "TDRE5W"
+let typing_dependency_env_reuse_alias_v9_tag = "TDRE9A"
+let typing_dependency_env_reuse_witness_v9_tag = "TDRE9W"
 
 fn typing_reuse_segment(text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
@@ -3343,11 +3397,11 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 /// source, effective typing semantics, resolution authority, and every resolved direct dependency row of
 /// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
 /// this table once with project_exact_dependency_envs and gives the same value
-/// to both check_module and TDRE5 lookup/publication, so ambient coordinator
+/// to both check_module and TDRE9 lookup/publication, so ambient coordinator
 /// cache rows are neither checker-visible nor part of this canonical text.
 fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v5")
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v9")
   StringBuilder::push(out, typing_reuse_segment(normalize_path(path)))
   StringBuilder::push(out, typing_reuse_segment(source))
   StringBuilder::push(out, typing_reuse_segment(semantics_seed))
@@ -3394,7 +3448,7 @@ fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(S
   if !Fs::exists(witness_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v5_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v9_tag) {
       Some((input_key, target_fingerprint, target_text)) =>
       if target_fingerprint != fingerprint {
         None
@@ -3416,7 +3470,7 @@ fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool
   }
 }
 
-/// Eligibility is transitively witnessed by successful canonical TypeEnv-v5
+/// Eligibility is transitively witnessed by successful canonical TypeEnv-v9
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
@@ -3435,7 +3489,7 @@ fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> 
 }
 
 fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Fs {
-  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v5_tag, input_key, fingerprint, target_text)
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v9_tag, input_key, fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
 }
 
@@ -3444,7 +3498,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
   if !Fs::exists(sidecar_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v5_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v9_tag) {
       Some((alias_input_key, target_fingerprint, target_text)) =>
       if alias_input_key != input_key {
         None
@@ -3471,7 +3525,7 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
 }
 
 fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Fs {
-  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v5_tag, input_key, target_fingerprint, target_text)
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v9_tag, input_key, target_fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 
@@ -4131,7 +4185,7 @@ export fn locate_type_error(source: String, msg: String) -> String {
 /// resolve from impl units against the contract definition.
 export enum ModuleOutcome {
   // The final strings are trace-only interface, checked-value-env, and
-  // complete persistent TypeEnv v5 transport identities. They are computed
+  // complete persistent TypeEnv v9 transport identities. They are computed
   // from this successful check's typed environment, never used as cache
   // inputs, and are empty unless the invalidation trace is enabled. The final
   // optional string is a canonical in-memory-only #1550 module artifact
@@ -4290,7 +4344,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
       // consumer of `Checked`'s env (env cache, persistent store, worker
-      // transport, TDRE5, trace identities) is a publication path. The full
+      // transport, TDRE9, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
       let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
       let interface_identity = if incremental_interface_trace_enabled() {
@@ -4350,7 +4404,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       throw(String::concat(job.path, ": type error"))
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, _) => {
-      // Serialize the TypeEnv once. Production-default TDRE5 publication binds
+      // Serialize the TypeEnv once. Production-default TDRE9 publication binds
       // the exact same text as the conservative target; serializing it a second
       // time materially inflates fresh selfcompile heap without adding evidence.
       let target_text = store_persistent_type_env(fingerprint, checked_env)
@@ -4625,7 +4679,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
     },
     None => {
       // Keep the accumulated cache as coordinator state, but expose exactly the
-      // resolved dependency sequence to the checker and TDRE5. Construct this
+      // resolved dependency sequence to the checker and TDRE9. Construct this
       // once: lookup, check, and publication must describe the same value.
       let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
       let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
@@ -4678,7 +4732,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
   let len = Array::length(stmts)
   while i < len {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => if String::length(raw_path) > 0 {
+      SImport(raw_path, _) => if String::length(raw_path) > 0 && !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let resolved = resolve_import_path(base_dir, raw_path)
         if !contains_str(out, resolved) {
           Array::push(out, resolved)
@@ -6004,7 +6058,7 @@ fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs:
 /// types module's source mapping: `stmt_at` carries the parser's token index and
 /// `starts` converts it to the contract's byte offset. The message itself names
 /// the field or payload, so the reported edit remains actionable.
-fn contract_type_shadow(stmts: Array[Stmt], type_defs: Array[Stmt], opaque_names: Array[(String, Int)]) -> Array[String] {
+fn contract_type_shadow(stmts: Array[Stmt], type_defs: Array[Stmt], opaque_names: Array[(String, Array[String])]) -> Array[String] {
   let out = contract_types_item_names(type_defs)
   let provenance = contract_type_provenance(stmts, opaque_names)
   let mut i = 0
@@ -6050,7 +6104,7 @@ fn contract_append_decl_errors(source: String, starts: Array[Int], stmt_at: Arra
   }
 }
 
-fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], opaque_names: Array[(String, Int)], type_defs: Array[Stmt]) -> Array[String] with Exception {
+fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> Array[String] with Exception {
   let out = array_empty()
   let derive_names = contract_derive_name_table(tokens, starts)
   let derive_taken = contract_taken_flags(derive_names)

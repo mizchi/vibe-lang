@@ -1,0 +1,199 @@
+import ./checker_parity_test_support.vibe {
+  check_source_error_message, check_source_located_err_contains, check_source_ok
+}
+
+import @vibe/compiler/core {
+  CtApplied, CtArray, CtConstructor, CtForAll, CtInt, CtString, CtVar, SubstEmpty, generalize, instantiate, subst_apply, types_equal, unify
+}
+
+test "a unary constructor variable preserves distinct argument types" {
+  let source = "fn pair[F[_], A, B](left: F[A], right: F[B]) -> (F[A], F[B]) { (left, right) }\nlet arrays = pair([1], [\"vibe\"])\nlet options = pair(Some(1), Some(\"vibe\"))"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a trait method can quantify over a unary constructor" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "constructor parameter arity errors name the edit site" {
+  let source = "fn bad[F[_], A](value: F[A, String]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(check_source_located_err_contains(source, "line 1:"))
+  assert(String::contains(message, "type constructor parameter `F` expects 1 type argument(s), got 2 in parameter `value`"))
+}
+
+test "constructor values cannot escape into value types" {
+  let source = "fn bad[F[_]](value: Int) -> F { value }"
+  let message = check_source_error_message(source)
+  assert(check_source_located_err_contains(source, "line 1:"))
+  assert(String::contains(message, "type constructor parameter `F` must be applied to 1 type argument(s) in the return type"))
+}
+
+test "unkinded F[A] stays legal after arity-1 HKT" {
+  // #2351: `F[A]` without `F[_]` is the kernel spelling. Mixed-kind
+  // (`F` and `F[A]` together) is still rejected; constructor position
+  // alone is not.
+  let source = "fn keep[F, A](value: F[A]) -> F[A] { value }\nfn main { () }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "one constructor variable cannot unify Array with Option" {
+  let source = "fn pair[F[_], A, B](left: F[A], right: F[B]) -> Int { 0 }\nlet bad = pair([1], Some(\"vibe\"))"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "argument type mismatch"))
+}
+
+test "one applied argument variable remains shared" {
+  let source = "fn same[F[_], A](left: F[A], right: F[A]) -> Int { 0 }\nlet bad = same([1], [\"vibe\"])"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "argument type mismatch"))
+}
+
+test "a constructor parameter can flow through a type alias" {
+  let source = "type Apply[F[_], A] = F[A]\nfn keep[F[_], A](value: Apply[F, A]) -> F[A] { value }\nfn keep_array(value: Apply[Array, Int]) -> Array[Int] { value }\nfn keep_option(value: Apply[Option, String]) -> Option[String] { value }\ntest \"alias\" { let xs: Apply[Array, Int] = [1] }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "constructor parameters flow through nominal type arguments" {
+  let source = "struct Holder[F[_], A] { value: F[A] }\nfn array_holder(value: Holder[Array, Int]) -> Holder[Array, Int] { value }\nfn generic_holder[F[_], A](value: Holder[F, A]) -> Holder[F, A] { value }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "kinded alias arguments reject complete types" {
+  let source = "type Apply[F[_], A] = F[A]\nfn bad(value: Apply[Int, String]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(check_source_located_err_contains(source, "line 2:"))
+  assert(String::contains(message, "type parameter `F` of `Apply` expects a constructor with 1 argument(s), but `Int` has 0"))
+}
+
+test "complete type arguments reject bare constructor variables" {
+  let source = "fn bad[F[_]](value: Array[F]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "expects a complete type, but `F` is a constructor with 1 argument(s)"))
+}
+
+test "applied constructor variables survive generalization and instantiation" {
+  let applied = CtApplied(CtVar(4), [CtVar(5)])
+  let scheme = generalize(SubstEmpty, applied)
+  match scheme {
+    CtForAll(ids, _, _) => assert(Array::length(ids) == 2),
+    _ => assert(false)
+  }
+  let (instantiated, _, _) = instantiate(scheme, 20)
+  match unify(instantiated, CtArray(CtInt), SubstEmpty) {
+    Some(subst) => assert(types_equal(subst_apply(subst, instantiated), CtArray(CtInt))),
+    None => assert(false)
+  }
+}
+
+test "constructor heads participate in occurs checks" {
+  match unify(CtVar(7), CtApplied(CtVar(7), [CtString]), SubstEmpty) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match unify(CtApplied(CtVar(8), [CtInt]), CtArray(CtInt), SubstEmpty) {
+    Some(subst) => assert(types_equal(subst_apply(subst, CtVar(8)), CtConstructor("Array", 1))),
+    None => assert(false)
+  }
+}
+
+test "an alias constructor expands instead of becoming nominal" {
+  let source = "type Vec[T] = Array[T]\ntype Apply[F[_], A] = F[A]\nfn keep(x: Apply[Vec, Int]) -> Vec[Int] { x }\nfn keep_array(x: Apply[Vec, Int]) -> Array[Int] { x }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a constant alias constructor keeps its fixed argument" {
+  let source = "struct Box[T] { value: T }\ntype Const[A] = Box[Int]\ntype Apply[F[_], X] = F[X]\nfn keep(x: Apply[Const, String]) -> Box[Int] { x }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a constant alias constructor does not take the applied argument" {
+  let source = "struct Box[T] { value: T }\ntype Const[A] = Box[Int]\ntype Apply[F[_], X] = F[X]\nfn bad(x: Apply[Const, String]) -> Box[String] { x }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "mismatch"))
+}
+
+test "a kinded Option formal shadows the builtin Option" {
+  let source = "fn id[Option[_], A](x: Option[A]) -> Option[A] { x }\nfn use_it(xs: Array[Int]) -> Array[Int] { id(xs) }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded trait application rejects a complete type argument" {
+  let source = "trait Functor[F[_]] { }\nstruct X { v: Int }\nimpl Functor[Int] for X { }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "expects a constructor with 1 argument(s), but `Int` has 0"))
+}
+
+test "a kinded effect application rejects a complete type argument" {
+  let source = "effect Read[F[_]] {\n  Get() -> F[Int]\n}\nfn f() -> Int with Read[Int] {\n  0\n}"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "expects a constructor"))
+  assert(String::contains(message, "`Int`"))
+}
+
+test "a nested-kind constructor is not a flat arity-N argument" {
+  let source = "struct Higher[F[_], A] { value: A }\ntype Apply[C[_, _], X, Y] = C[X, Y]\nfn bad(x: Apply[Higher, Int, Int]) -> Int { 0 }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "Higher"))
+  assert(String::contains(message, "constructor"))
+}
+
+test "a kinded trait bound reifies Array as a constructor" {
+  let source = "trait Wrap[F[_]] { make(Self) -> F[Int] }\nfn wrap_it[T: Wrap[Array]](x: T) -> Array[Int] { T::make(x) }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded struct literal reifies Array as a constructor" {
+  let source = "struct Holder[F[_], A] { value: F[A] }\nfn make() -> Holder[Array, Int] { Holder[Array, Int]::{ value: [1, 2] } }"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded derived-Eq struct literal typechecks" {
+  let source = "struct KBox[F[_], A] { value: F[A] } derive (Eq)\nfn eq_it() -> Bool {\n  let a = KBox[Array, Int]::{ value: [1, 2] }\n  let b = KBox[Array, Int]::{ value: [1, 2] }\n  a == b\n}"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded effect application accepts a user constructor" {
+  let source = "effect Read[F[_]] {\n  Get() -> F[Int]\n}\nstruct Vec[T] { value: T }\nfn f() -> Int with Read[Vec] {\n  0\n}"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded effect application accepts a constructor formal" {
+  let source = "effect Read[F[_]] {\n  Get() -> F[Int]\n}\nfn f[G[_]]() -> Int with Read[G] {\n  0\n}"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a kinded bound replaces an applied constructor head" {
+  let source = "trait Accepts[A] { accept(A) -> Int }\nimpl Accepts[Array[Int]] for Array { accept(xs: Array[Int]) -> Int { Array::length(xs) } }\nfn accept[F[_]: Accepts[F[Int]]](xs: F[Int]) -> Int { F::accept(xs) }\nlet answer = accept([1])"
+  inspect(check_source_error_message(source), "")
+}
+
+test "an applied bound through a constructor alias instantiates" {
+  let source = "type Apply[F[_], A] = F[A]\ntrait Accepts[A] { accept(A) -> Int }\nimpl Accepts[Array[Int]] for Array { accept(xs: Array[Int]) -> Int { Array::length(xs) } }\nfn accept[F[_]: Accepts[Apply[F, Int]]](xs: F[Int]) -> Int { F::accept(xs) }\nlet answer = accept([1])"
+  inspect(check_source_error_message(source), "")
+}
+
+test "a missing constructor-indexed instance fails during checking" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nstruct Box[T] { value: T }\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nlet bad = map(Box::{ value: 1 }, (x) -> { x + 1 })"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "no impl `Mappable[Box]` for `Box/1`"))
+  assert(!String::contains(message, "reached code generation unresolved"))
+}
+
+test "a user-defined constructor-indexed instance satisfies its bound" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nstruct Box[T] { value: T }\nimpl Mappable[Box] for Box { map(xs: Box[A], f: (A) -> B) -> Box[B] { Box::{ value: f(xs.value) } } }\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nlet mapped = map(Box::{ value: 1 }, (x) -> { x + 1 })"
+  assert(check_source_ok(source))
+}
+
+test "a user-defined enum constructor-indexed instance satisfies its bound" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nenum Slot[T] { Full(T) }\nimpl Mappable[Slot] for Slot { map(xs: Slot[A], f: (A) -> B) -> Slot[B] { match xs { Full(value) => Full(f(value)) } } }\nfn map[F[_]: Mappable[F], A, B](xs: F[A], f: (A) -> B) -> F[B] { F::map(xs, f) }\nlet mapped = map(Full(1), (x) -> { x + 1 })"
+  assert(check_source_ok(source))
+}
+
+test "duplicate constructor-indexed instances fail during checking" {
+  let source = "trait Mappable[F[_]] { map[A, B](F[A], (A) -> B) -> F[B] }\nimpl Mappable[Array] for Array { map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) } }\nimpl Mappable[Array] for Array { map(xs: Array[A], f: (A) -> B) -> Array[B] { Array::map(xs, f) } }"
+  let message = check_source_error_message(source)
+  assert(String::contains(message, "duplicate declaration: Array$impl$"))
+  assert(!String::contains(message, "reached code generation unresolved"))
+}

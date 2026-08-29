@@ -1,0 +1,165 @@
+// `Bytes::compare(a, b)` -- lexicographic ordering (#2345), the last member of
+// that issue's Layer 2 surface and the only one that is not a search.
+// `Bytes < Bytes` is a type error, so before this there was no way to order
+// byte strings at all.
+//
+// Import-free so the wasm-gc lane, which compiles one file as self-contained,
+// can run it.
+//
+// The vector phase asks the opposite question to the searches: `i8x16.eq` sets
+// a lane where the bytes MATCH, so a bitmask of 0xFFFF means a whole 16-byte
+// chunk is equal and anything else means the first difference is inside it.
+// The searches break out of their vector loop on a hit; this one breaks out on
+// a miss. So the cases that matter are a difference exactly at a chunk
+// boundary, and a long common prefix that only diverges in the tail.
+//
+// Two properties beyond "it returns the right sign":
+//
+//   * the compare is by BYTE VALUE, unsigned. 0x80 > 0x7F. A signed byte
+//     compare would invert that, and every string of ASCII would still pass.
+//   * a common prefix falls through to the LENGTHS, which is what makes this
+//     lexicographic rather than a memcmp: "ab" < "abc".
+//
+// The last block sweeps a set of inputs against a scalar oracle written here,
+// checking the full antisymmetry relation rather than one direction.
+
+fn mk(s: String) -> Bytes {
+  let b = Bytes::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, String::char_code_at(s, i))
+    i = i + 1
+  }
+  b
+}
+
+fn rep(byte: Int, n: Int) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, byte)
+    i = i + 1
+  }
+  b
+}
+
+/// `len` copies of 97, with `at` set to `byte`.
+fn poke(len: Int, at: Int, byte: Int) -> Bytes {
+  let b = rep(97, len)
+  if at < len {
+    Bytes::set(b, at, byte)
+  }
+  b
+}
+
+/// Oracle: the loop a library had to write. Independent of the builtin.
+fn cmp_scan(a: Bytes, b: Bytes) -> Int {
+  let la = Bytes::length(a)
+  let lb = Bytes::length(b)
+  let n = if la < lb {
+    la
+  } else {
+    lb
+  }
+  let mut i = 0
+  let mut r = 0
+  while i < n {
+    if r == 0 && Bytes::get(a, i) != Bytes::get(b, i) {
+      r = if Bytes::get(a, i) < Bytes::get(b, i) {
+        0 - 1
+      } else {
+        1
+      }
+    }
+    i = i + 1
+  }
+  if r != 0 {
+    r
+  } else if la < lb {
+    0 - 1
+  } else if la > lb {
+    1
+  } else {
+    0
+  }
+}
+
+test "Bytes::compare orders by first differing byte" {
+  inspect(Bytes::compare(mk("abc"), mk("abd")), "-1")
+  inspect(Bytes::compare(mk("abd"), mk("abc")), "1")
+  inspect(Bytes::compare(mk("abc"), mk("abc")), "0")
+  inspect(Bytes::compare(mk(""), mk("")), "0")
+}
+
+test "Bytes::compare falls through to length on a common prefix" {
+  // this is what makes it lexicographic rather than a memcmp
+  inspect(Bytes::compare(mk("ab"), mk("abc")), "-1")
+  inspect(Bytes::compare(mk("abc"), mk("ab")), "1")
+  inspect(Bytes::compare(mk(""), mk("a")), "-1")
+  inspect(Bytes::compare(mk("a"), mk("")), "1")
+}
+
+test "Bytes::compare orders by byte VALUE, unsigned" {
+  // 0x80 vs 0x7F. A signed byte compare answers the opposite, and every
+  // ASCII case above would still pass while this one flips.
+  let hi = rep(128, 1)
+  let lo = rep(127, 1)
+  inspect(Bytes::compare(hi, lo), "1")
+  inspect(Bytes::compare(lo, hi), "-1")
+  // and 0xFF, the extreme of the same question
+  let ff = rep(255, 1)
+  inspect(Bytes::compare(ff, lo), "1")
+  inspect(Bytes::compare(lo, ff), "-1")
+}
+
+test "Bytes::compare across the 16-byte chunk boundary" {
+  // equal through two whole chunks, differing in the third
+  inspect(Bytes::compare(poke(40, 33, 98), poke(40, 33, 97)), "1")
+  // the last byte of the first chunk, and the first of the second
+  inspect(Bytes::compare(poke(40, 15, 98), poke(40, 15, 97)), "1")
+  inspect(Bytes::compare(poke(40, 16, 96), poke(40, 16, 97)), "-1")
+  // in the scalar tail of a length that is not a multiple of 16
+  inspect(Bytes::compare(poke(20, 19, 98), poke(20, 19, 97)), "1")
+  // wholly equal across several chunks
+  inspect(Bytes::compare(rep(97, 40), rep(97, 40)), "0")
+  // equal prefix of 40, then one is longer
+  inspect(Bytes::compare(rep(97, 40), rep(97, 41)), "-1")
+}
+
+test "Bytes::compare agrees with a scalar oracle, and is antisymmetric" {
+  let mut mismatches = 0
+  let mut asym = 0
+  let mut len = 0
+  while len <= 36 {
+    let mut at = 0
+    while at <= len {
+      let a = poke(len, at, 98)
+      let b = rep(97, len)
+      if Bytes::compare(a, b) != cmp_scan(a, b) {
+        mismatches = mismatches + 1
+      }
+      if Bytes::compare(b, a) != cmp_scan(b, a) {
+        mismatches = mismatches + 1
+      }
+      // compare(a, b) and compare(b, a) must be exact opposites
+      if Bytes::compare(a, b) + Bytes::compare(b, a) != 0 {
+        asym = asym + 1
+      }
+      // and a differing LENGTH at the same content
+      let c = rep(97, len + 1)
+      if Bytes::compare(b, c) != cmp_scan(b, c) {
+        mismatches = mismatches + 1
+      }
+      if Bytes::compare(b, c) + Bytes::compare(c, b) != 0 {
+        asym = asym + 1
+      }
+      at = at + 1
+    }
+    len = len + 1
+  }
+  inspect(mismatches, "0")
+  inspect(asym, "0")
+  // the sweep really ran, so "0 mismatches" is not "0 comparisons"
+  inspect(len, "37")
+}

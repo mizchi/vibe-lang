@@ -541,6 +541,52 @@ prepend). A *compound* placeholder such as `_ * 2` is a section lambda
 (`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
 `Array::map(xs, (v) -> v * 2)`.
 
+Every method-bearing trait exposes its operations through the trait namespace:
+`Trait::operation(value, args)` or `value |> Trait::operation(args)`. The
+operation is derived from the trait declaration; no forwarding function is
+needed. Importing `trait Trait` also activates its exported `Trait::*`
+operations, but never introduces a bare `operation` binding. A subtrait exposes
+inherited methods through its own namespace as well. These generated operation
+names are reserved: a source declaration cannot replace `Trait::operation`.
+
+The finite indexed `Iterator` protocol is one instance of this general rule.
+Implementing `iter_length` and `iter_get` activates its eager operations
+(ADR-0110):
+
+```vibe
+import @vibe/builtin { trait Iterator }
+
+let arrays = [1, 2]
+  |> Iterator::map((x) -> { x + 1 })
+  |> Iterator::map((x) -> { x * 2 })
+```
+
+`Iterator::map` and `filter` return arrays; `fold`, `find`, `any`, and `all`
+are eager terminals. Array calls devirtualize to the existing `Array::*`
+intrinsics, so the trait spelling adds no loop or allocation overhead. Option
+does not implement `Iterator`. `AsyncIter` is the separate pull layer
+(ADR-0099), entered explicitly with `Array::iter`:
+
+```vibe
+import @vibe/builtin {
+  Array::iter,
+  AsyncIter::collect,
+  AsyncIter::filter,
+  AsyncIter::map
+}
+
+let values = [1, 2, 3, 4]
+  |> Array::iter
+  |> AsyncIter::filter((x: Int) -> Bool { x % 2 == 0 })
+  |> AsyncIter::map((x) -> { x * 10 })
+  |> AsyncIter::collect
+```
+
+`AsyncIter::map`, `filter`, `take`, and `take_while` are lazy. `collect`,
+`fold`, `count`, `find`, `any`, and `all` are terminals and carry `Async`.
+A plain `for x in array` remains an eager Array loop; importing
+`Array::iter` does not change it implicitly.
+
 **Method-style calls** (#736): `xs.length()` and `xs |> length` resolve to
 `List::length(xs)` when `xs`'s type is a USER type and the method is declared
 as a top-level fn in the **`Type::method` spelling** (`fn List::length(xs:
@@ -870,16 +916,59 @@ fn keep[T: Measured](x: T) -> T { x }
 let ok = keep([1, 2, 3])
 ```
 
-### Higher-kinded type parameters (`F[A]`)
+### Higher-kinded type parameters (`F[A]` and `F[_]`)
 
 **A type formal may stand in constructor position — `F[A]`.** Unification
-binds `F` to a type constructor (`F := Array` yields `Array[A]`). The
-pipeline combinator is `xs |> Iterator::map(f)` (not bare `map`, not
-`Array::map`). `Iterator::map` itself is Array-only until a functor
-instance exists; a user `fn map[F, A, B](xs: F[A], f: (A) -> B) -> F[B]`
-is what instantiates `F`. A formal used both unapplied (`x: F`) and
-applied (`y: F[A]`) is rejected as mixed-kind. Ascribing `F[A]` to a
-concrete constructor (`let ys: Array[Int] = xs`) is rejected.
+binds `F` to a type constructor (`F := Array` yields `Array[A]`). This is
+independent of the element-indexed `Iterator[T]` protocol: constructor-indexed
+traits remain available for APIs whose result must preserve an arbitrary
+`F[_]`. A formal used both unapplied (`x: F`) and applied (`y: F[A]`) is
+rejected as mixed-kind. Ascribing `F[A]` to a concrete constructor
+(`let ys: Array[Int] = xs`) is rejected.
+
+A constructor parameter may also declare its arity with underscore slots
+(`F[_]`, `F[_, _]`). Applied constructor variables participate in ordinary
+unification, so their element arguments remain distinct and the shared
+constructor head must match:
+
+```vibe
+fn pair[F[_], A, B](left: F[A], right: F[B]) -> (F[A], F[B]) {
+  (left, right)
+}
+
+let arrays = pair([1], ["vibe"])
+let options = pair(Some(1), Some("vibe"))
+
+type Apply[F[_], A] = F[A]
+let optional: Apply[Option, Int] = Some(42)
+```
+
+Kinded binders and applied types are preserved across package interfaces.
+Passing a complete type where a constructor is required is rejected with the
+expected and actual arities. Unkinded `F[A]` remains legal.
+
+Constructor parameters may carry applied trait bounds. `LocalFunctor[F]`
+selects a witness for the constructor itself, while `F[A]` and `F[B]` remain
+ordinary applied value types:
+
+```vibe
+trait LocalFunctor[F[_]] {
+  map[A, B](F[A], (A) -> B) -> F[B]
+}
+
+impl LocalFunctor[Array] for Array {
+  map(xs: Array[A], f: (A) -> B) -> Array[B] {
+    Array::map(xs, f)
+  }
+}
+
+let mapped = LocalFunctor::map([1, 2], (x) -> { x + 1 })
+```
+
+Missing or duplicate constructor instances are checker errors; an unresolved
+trait witness never reaches code generation. The implementation-side
+`F::map` spelling is internal dictionary dispatch; public calls use
+`LocalFunctor::map`.
 
 <!-- doctest-skip: mixed-kind is deliberately rejected -->
 ```vibe skip
@@ -1399,7 +1488,7 @@ let r = handle {
 let/seq/tail/分岐 tail に直接現れる必要がある。**let 連鎖 (brace block
 文や文位置の async-iterator `for` の脱糖出力) が文の途中 (sequence HEAD)
 に立つ形は、split が継続 spine へ float して受理する** (#1536 (a) v3,
-ADR-0076 追記42 — `async_iter_collect` / `_fold` / `_count` が suspend
+ADR-0076 追記42 — `AsyncIter::collect` / `AsyncIter::fold` / `AsyncIter::count` が suspend
 body から呼べるのはこれ)。**`if` condition / `match` scrutinee が direct
 perform・concrete needing call・CPS-local call そのものなら、fresh let へ
 一回評価してから selection する形も可** (追記44)。同じ direct 形そのものは
@@ -1422,7 +1511,7 @@ short-circuit、呼び出し引数等の compound、`return` / `break` / `contin
 「concrete row が対象 effect を含まない関数」、そして **row-free な
 closure param 経由の呼び出しのうち、その関数の全 by-name call site が
 perform を含まない closure literal (または委譲元の同様に証明済みの
-param) を渡すと静的に証明できるもの** (#1536 (a) — `async_iter_find`
+param) を渡すと静的に証明できるもの** (#1536 (a) — `AsyncIter::find`
 の `pred(v)` がこの形。1 site でも perform する literal を渡すと従来
 どおり reject)。**`while` / `loop` の中の perform も可** (#1230/#1536 —
 ループは step を返す再帰クロージャになる。`break` / `continue` を持つ本体も
@@ -1635,25 +1724,92 @@ From `@vibe/json` (`import @vibe/json { ... }`):
 `Json::is_null`, `Json::length`, `Json::keys`, `Json::stringify_lines`,
 `Json::parse_lines`.
 
-**Bytes** (linear memory 上の可変バイト列。容量倍々 + `memory.copy` で伸長するので
-`push` は償却 O(1)):
+**Bytes** (a mutable byte buffer in linear memory. Capacity doubles and grows
+via `memory.copy`, so `push` is amortised O(1)):
 
-| 関数 | 意味 | backend |
+| function | meaning | backend |
 |---|---|---|
-| `Bytes::new()` | 空バッファ (初期容量 64) | linear / gc |
-| `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | 長さ・要素 | linear / gc |
-| `Bytes::push(b, v)` | 1バイト追加 (償却 O(1)) | linear / gc |
-| `Bytes::append(dst, src)` | **一括連結。`memory.copy` 1発** | linear / gc |
-| `Bytes::concat(a, b)` | 新しいバッファを返す連結 | linear / gc |
-| `Bytes::slice(b, start, end)` | 部分列 | linear / gc |
-| `Bytes::blit(dst, src, dst_off, len)` | **範囲コピー。`memory.copy` 1発** | linear / gc |
-| `Bytes::fill(b, off, len)` | **範囲埋め。`memory.fill` 1発** | linear / gc |
-| `Bytes::from_array(a)` / `to_array(b)` | `Array[Int]` との変換 (**コピーが入る**) | linear / gc |
+| `Bytes::new()` | empty buffer (initial capacity 64) | linear / gc |
+| `Bytes::new(n)` | **zero-filled** buffer of length `n` | linear / gc |
+| `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | length, element access | linear / gc |
+| `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
+| `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
+| `Bytes::concat(a, b)` | concatenation returning a new buffer | linear / gc |
+| `Bytes::slice(b, start, end)` | subsequence | linear / gc |
+| `Bytes::index_of(hay, byte)` | first index holding `byte`, or `-1`. 16-byte SIMD scan | linear / gc |
+| `Bytes::last_index_of(hay, byte)` | last index holding `byte`, or `-1`. Same scan, downwards | linear / gc |
+| `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
+| `Bytes::compare(a, b)` | lexicographic order: `-1` / `0` / `1`, by **unsigned** byte value | linear / gc |
+| `Bytes::index_of_bytes(hay, needle)` | first index of the `needle` **subsequence**, or `-1`. An empty needle answers `0` | linear / gc |
+| `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
+| `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
+| `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
 
-> バイト列を組み立てるループで `Bytes::push` を回すより、まとまった範囲は
-> `Bytes::append` / `Bytes::blit` に置き換えるほうが速い — どちらも
-> `memory.copy` 1命令に落ちる。`Array[Int]` に貯めてから `Bytes::from_array`
-> するのはコピーが1回増えるので、最初から `Bytes` に書くほうがよい。
+> Replacing a `Bytes::push` loop with `Bytes::append` / `Bytes::blit` over a whole
+> range is faster — both lower to a single `memory.copy` instruction. Accumulating
+> into an `Array[Int]` and then calling `Bytes::from_array` costs one extra copy,
+> so write into a `Bytes` from the start.
+>
+> **`Bytes::index_of` and `Bytes::index_of_bytes` are two builtins, not one
+> with two spellings** (#2345). `index_of` takes an `Int` needle and finds a
+> single byte; `index_of_bytes` takes a `Bytes` needle and finds a subsequence.
+> They cannot be merged: the substring loop compares a needle *span* through
+> `str_eq`, and a byte is not a span, so each has its own body. A needle
+> outside `0..255` answers `-1`.
+>
+> All three single-byte searches answer for a needle outside `0..255`: `-1`,
+> `-1`, and `0`. `count` needs a guard in its body to do so and the other two do
+> not, which is worth knowing if you write a fourth: `i8x16.splat` keeps only
+> the low 8 bits, so the vector mask for `300` is the mask for `,`. `index_of`
+> and `last_index_of` use that mask only to pick where a scalar loop starts,
+> and that loop compares the full value — the mask can cost a scan, never
+> change an answer. `count` reads the mask AS the answer (`popcnt`), so it
+> checks the needle's range up front instead.
+>
+> `Bytes::compare` orders by **unsigned** byte value, so `0x80` is greater than
+> `0x7F`, and a common prefix falls through to the lengths — `"ab" < "abc"`.
+> That second part is what makes it lexicographic rather than a memcmp. There
+> is still no `Bytes < Bytes`: the operator is a type error and `compare` is
+> the way to order byte strings.
+>
+> Against a 4 KiB buffer (`bench/bench_simd_bytes_find.vibe`, p50):
+> `Bytes::index_of` 216 ns, a **native scalar byte loop** 2413 ns, the
+> hand-written `Bytes::get` loop it replaces 23600 ns, `String::index_of`
+> 365 ns. So **11× over scalar native** — that is what the SIMD earns — and
+> ~109× over the loop a library had to write.
+>
+> `String::index_of` is **not** the scalar baseline: it goes through the same
+> windowed v128 scan (`emit_windowed_substring_search`). The 1.7× against it
+> measures specialisation — a single byte needs no needle span verified through
+> `str_eq` — not SIMD.
+>
+> `Bytes::index_of_bytes` runs the SAME windowed search as `String::index_of`
+> (ADR-0054): a 16-byte SIMD scan for the needle's first byte, then the SIMD
+> `str_eq` on each candidate. The two differ only in how they unpack their
+> arguments — `String` is a packed `(ptr << 32) | len`, `Bytes` is a heap handle
+> whose length is at offset 4 and data pointer at offset 8.
+>
+> **`Bytes::fill` is NOT one of that group** (measured 2026-08-27). This table used
+> to describe it as `Bytes::fill(b, off, len)`, "range fill, one `memory.fill`".
+> Both halves were wrong: the parameters are `(b, value, count)`, the behaviour is
+> an **append** rather than an overwrite of a range, and the implementation is the
+> `bytes_push` loop in `gen_bytes_fill_body`
+> (`codegen/builtin_bodies/bodies_core_a2.vibe`) — a single body shared by the
+> linear and gc backends.
+>
+> **The one-argument `Bytes::new(n)` used to be linear-only** and is not any
+> more (#2363, fixed 2026-08-27). `compile_call.vibe` special-cases a
+> one-argument `Bytes::new` and synthesises `new()` plus a zero-push loop;
+> `codegen/gc/backend_call.vibe` had no counterpart, and the registry declares
+> `Bytes::new` with `reg_p0()`, so on wasm-gc the argument was pushed and the
+> zero-parameter runtime body called anyway. It type-checked on both lanes,
+> passed `wasmtime compile`, and failed at run time on one of them. The gc call
+> path now carries the same synthesis, and
+> `fixtures/bytes_alloc_backend_parity_test.vibe` pins both spellings on both
+> lanes.
+>
+> `Bytes::new()` + `Bytes::fill(b, 0, n)` remains equivalent and is what
+> `MutMap`'s control array uses (`lib/@vibe/core/hashmap.vibe`).
 
 **SIMD scans** (scan `Bytes` / `String` in 16-byte chunks; available on both
 the linear and GC backends):
@@ -1728,6 +1884,7 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 | `String::from_byte` | `(Int) -> String` (deprecated alias `String::from_char_code` — `vibe check` warns per use, including inside `\{...}` interpolations, #2203) |
 | `String::equals` | `(String, String) -> Bool` |
 | `String::split` / `String::join` | `(String, String) -> Array[String]` / `(Array[String], String) -> String` |
+| | `String::split(s, "")` is `[s]` — an empty separator does not split into bytes (#2378; it used to run out of memory) |
 | `String::contains` | `(String, String) -> Bool` |
 | `String::index_of` / `String::last_index_of` | `(String, String) -> Int` |
 | `String::starts_with` / `String::ends_with` | `(String, String) -> Bool` |
@@ -1781,6 +1938,17 @@ from `@vibe/core`.
 **Math**: `Int::abs`, `Int::max`, `Int::min`, `Int::clamp`, `Int::signum`,
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
 `Double::floor`, `Double::ceil`.
+
+**Bits** (#2344): `Int::popcount`, `Int::ctz`, `Int::clz`, `Int::select1`.
+All four are **63-bit** answers, because an `Int` is a 63-bit two's complement
+value and not an i64 — so `Int::popcount(-1)` is 63, not 64, and the largest
+positive `Int` (2^62-1) tops out at bit 61, giving it a popcount of 62 and a
+`clz` of 1. The zero cases are defined rather than inherited from wasm (which
+answers 64): `Int::ctz(0)` and `Int::clz(0)` are both 63. `Int::select1(x, k)`
+gives the position of the `k`-th set bit counting from 0, or -1 when `x` has
+fewer than `k + 1` set bits — so `Int::select1(x, 0)` agrees with `Int::ctz(x)`
+for every non-zero `x`. `~` (bit-not) is still not a thing; spell it
+`x ^ mask`.
 
 **Conversion**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
@@ -2063,6 +2231,63 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### A library `fn X::y` replaces a same-named builtin PROGRAM-WIDE
+
+A top-level definition wins over a builtin of the same name. For a **qualified**
+name (`X::y`) the scope of that win is the whole linked program -- not the file,
+not the import list. Measured (2026-08-28), three files:
+
+```vibe skip
+// dep.vibe
+export fn String::index_of(s: String, sub: String) -> Int { -999 }
+export fn unrelated_helper(n: Int) -> Int { n + 1 }
+
+// caller.vibe -- imports ONLY unrelated_helper, never String::index_of
+import ./dep.vibe { unrelated_helper }
+test "t" {
+  inspect(String::index_of("hello world", "world"), "")   // -999, not 6
+}
+```
+
+Drop the `import` line and the same expression answers `6`. Nothing is
+reported either way, so the two readings of one source are indistinguishable
+without running it.
+
+A **bare** name is contained to its own file. Measured the same way, four
+names, each called both from its defining file and from an importer that
+imports only an unrelated name:
+
+| definition | shape | what the importer got |
+|---|---|---|
+| `String::index_of` | qualified | the local definition |
+| `String::trim` | qualified | the local definition |
+| `eq` | bare | the builtin |
+| `not` | bare | the builtin |
+
+So redefining `eq` or `println` in a package does not reach that package's
+users. Treat that as today's behaviour rather than a rule: it is an observed
+property of the resolver, and #2378 is where the intended one gets decided.
+
+The cost is not theoretical. A scalar re-implementation of a SIMD builtin in a
+library is not a second implementation alongside it — it is the one that runs,
+for every dependent. Measured on a 22 KiB haystack with one match: a sparse
+`String::index_of` costs **0.8 us** against the builtin and **174 us** (~218x)
+against a library `fn` of the same name that some other file in the program
+happened to define. The answers can differ too, not just the speed:
+`String::split(s, "")` trapped on one and returned `[s]` on the other.
+
+Nothing enforces this yet, which is what #2378 is for. A lexical scan cannot:
+`fn r#String::index_of` defines `String::index_of` and reads as `r`,
+`#deprecated fn X::y` puts the declaration off column zero, and `fn` and its
+name may sit on separate lines — each of those was a silent miss in a scanner
+built for exactly this rule. Deciding what a declaration binds is the
+compiler's job.
+
+A compiler-provided name can still be published from a package without
+defining it — a bodyless declaration on the export surface, the shape
+`String::utf8_length` uses — so `import @vibe/builtin { String::split }`
+resolves without anything shadowing the builtin.
 
 ### A `handle` that type-checks can still fail to compile
 

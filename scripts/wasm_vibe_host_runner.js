@@ -2560,7 +2560,7 @@ async function main() {
           }
           return encodeHostBytes(instanceRef, buf);
         } catch (e) {
-          throw new Error(`fs_read_bytes failed for '${filePath}': ${e.message}`);
+          throwVibeHostError(`fs_read_bytes failed for '${filePath}': ${e.message}`);
         }
       },
       // #729/#730: Fs::readdir — entry NAMES, byte-sorted, "\n"-joined into
@@ -2578,7 +2578,7 @@ async function main() {
           entries.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
           return encodeHostString(instanceRef, entries.join("\n"));
         } catch (e) {
-          throw new Error(`fs_read_dir failed for '${dirPath}': ${e.message}`);
+          throwVibeHostError(`fs_read_dir failed for '${dirPath}': ${e.message}`);
         }
       },
       fs_exists(pathTagged) {

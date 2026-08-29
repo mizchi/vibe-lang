@@ -2,6 +2,7 @@
 
 import @vibe/compiler/core {
   BindingOrigin,
+  Subst,
   Type,
   TypeDef,
   TypeEnv,
@@ -15,9 +16,15 @@ import @vibe/compiler/core {
   env_selectable_type_defs,
   env_type_defs,
   env_value_binding,
+  env_value_binding_with_origin,
   trait_method_sig,
   trait_supers,
+  type_implements_trait,
   types_equal
+}
+
+import @vibe/ast {
+  trait_ref_key, type_param_key
 }
 
 import @vibe/compiler/runtime {
@@ -34,11 +41,18 @@ fn cached_polymorphic_type() -> Type {
   CtForAll([7], [(7, ["Eq"])], CtFn([CtVar(7)], CtNamed("Box", [CtVar(7)]), Some("Async")))
 }
 
+fn cached_kinded_type() -> Type {
+  CtForAll([8, 9], array_empty(), CtFn([CtApplied(CtVar(8), [CtVar(9)])], CtApplied(CtVar(8), [
+    CtVar(9)
+  ]), None))
+}
+
 fn cached_flat_rest() -> TypeEnv {
   EnvFlat([
     ("shadow", env_value_binding(CtInt)),
     ("flat", env_value_binding(CtTuple([CtChar, CtBytes]))),
-    ("cached", env_value_binding(cached_polymorphic_type()))
+    ("cached", env_value_binding(cached_polymorphic_type())),
+    ("kinded", env_value_binding(cached_kinded_type()))
   ])
 }
 
@@ -66,7 +80,9 @@ fn codec_fixture() -> TypeEnv {
     env_value_binding(cached_polymorphic_type()),
     env_value_binding(CtTuple([CtChar, CtBytes])),
     env_value_binding(CtInt)
-  ], cached_flat_rest()), ["T", "E"], [("map", ["A"], [("A", ["Eq", "Show"])])]))))
+  ], cached_flat_rest()), [type_param_key("F", 1), "E"], [
+    ("map", [type_param_key("G", 2)], [(type_param_key("G", 2), ["Eq", "Show"])])
+  ]))))
 }
 
 fn retained_trait_header_params(env: TypeEnv, name: String) -> Array[String] {
@@ -160,16 +176,16 @@ fn malformed_rejected(text: String) -> Bool {
 
 //# Tests
 
-test "persistent TypeEnv v5 bytes ignore binding provenance and decode it unavailable" {
+test "persistent TypeEnv v9 bytes retain binding provenance" {
   let plain = EnvBind("x", env_value_binding(CtInt), EnvEmpty)
   let originated = env_bind_with_origin(EnvEmpty, "x", CtInt, BindingOriginModuleExport("/dep.vibe", "source_x"))
   let plain_text = persistent_type_env_cache_text(plain)
   let originated_text = persistent_type_env_cache_text(originated)
-  assert(plain_text == originated_text)
+  assert(plain_text != originated_text)
   match parse_persistent_type_env(originated_text) {
     Some(decoded) => match env_lookup_binding(decoded, "x") {
       Some(binding) => match binding.origin {
-        BindingOriginUnavailable => assert(true),
+        BindingOriginModuleExport(path, source) => assert(path == "/dep.vibe" && source == "source_x"),
         _ => assert(false)
       },
       None => assert(false)
@@ -178,7 +194,23 @@ test "persistent TypeEnv v5 bytes ignore binding provenance and decode it unavai
   }
 }
 
-test "fixpoint bytes retain cached mut TypeEnv v5" {
+test "persistent TypeEnv v9 retains flat binding provenance" {
+  let env = EnvFlat([
+    ("x", env_value_binding_with_origin(CtInt, BindingOriginModuleExport("/dep.vibe", "source_x")))
+  ])
+  match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+    Some(decoded) => match env_lookup_binding(decoded, "x") {
+      Some(binding) => match binding.origin {
+        BindingOriginModuleExport(path, source) => assert(path == "/dep.vibe" && source == "source_x"),
+        _ => assert(false)
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "fixpoint bytes retain cached mut TypeEnv v9" {
   let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginModuleExport("/dep.vibe", "source_imported")))
   match parse_persistent_type_env(encoded) {
     Some(decoded) => inspect(persistent_type_env_cache_text(decoded) == encoded, "1"),
@@ -186,7 +218,7 @@ test "fixpoint bytes retain cached mut TypeEnv v5" {
   }
 }
 
-test "truefact survives cached mut TypeEnv v5 decode" {
+test "truefact survives cached mut TypeEnv v9 decode" {
   let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginUnavailable))
   match parse_persistent_type_env(encoded) {
     Some(decoded) => match env_mut_escape(decoded, "true_cell") {
@@ -197,7 +229,7 @@ test "truefact survives cached mut TypeEnv v5 decode" {
   }
 }
 
-test "falsefact survives cached mut TypeEnv v5 decode" {
+test "falsefact survives cached mut TypeEnv v9 decode" {
   let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginUnavailable))
   match parse_persistent_type_env(encoded) {
     Some(decoded) => match env_mut_escape(decoded, "false_cell") {
@@ -208,12 +240,12 @@ test "falsefact survives cached mut TypeEnv v5 decode" {
   }
 }
 
-test "decodedorigin is unavailable after cached mut TypeEnv v5 decode" {
+test "binding origin survives cached mut TypeEnv v9 decode" {
   let encoded = persistent_type_env_cache_text(cached_mut_codec_fixture(BindingOriginModuleExport("/dep.vibe", "source_imported")))
   match parse_persistent_type_env(encoded) {
     Some(decoded) => match env_lookup_binding(decoded, "imported") {
       Some(binding) => match binding.origin {
-        BindingOriginUnavailable => inspect(types_equal(binding.ty, CtChar), "1"),
+        BindingOriginModuleExport(path, source) => inspect(path == "/dep.vibe" && source == "source_imported" && types_equal(binding.ty, CtChar), "1"),
         _ => assert(false)
       },
       None => assert(false)
@@ -222,13 +254,13 @@ test "decodedorigin is unavailable after cached mut TypeEnv v5 decode" {
   }
 }
 
-test "persistent module interface v5 round-trips every variant and trait payload" {
+test "persistent module interface v9 round-trips every variant and trait payload" {
   let env = codec_fixture()
   let encoded = persistent_type_env_cache_text(env)
-  assert(String::starts_with(encoded, "version\t5\nenv\t"))
-  // TDRE4 hardening binds this exact canonical text externally; it does not
-  // change or wrap the production TypeEnv-v4 transport envelope itself.
-  assert(String::index_of(encoded, "TDRE4") < 0)
+  assert(String::starts_with(encoded, "version\t9\nenv\t"))
+  // TDRE9 binds this canonical text externally but does not wrap the
+  // production TypeEnv-v9 transport envelope itself.
+  assert(String::index_of(encoded, "TDRE9") < 0)
   match parse_persistent_type_env(encoded) {
     Some(decoded) => {
       assert(persistent_type_env_cache_text(decoded) == encoded)
@@ -240,18 +272,22 @@ test "persistent module interface v5 round-trips every variant and trait payload
         Some(ty) => assert(types_equal(ty, cached_polymorphic_type())),
         None => assert(false)
       }
+      match env_lookup(decoded, "kinded") {
+        Some(ty) => assert(types_equal(ty, cached_kinded_type())),
+        None => assert(false)
+      }
       assert(Array::get(trait_supers(decoded, "Functor"), 0) == "Show")
       let header_params = retained_trait_header_params(decoded, "Functor")
       assert(Array::length(header_params) == 2)
-      assert(Array::get(header_params, 0) == "T")
+      assert(Array::get(header_params, 0) == type_param_key("F", 1))
       assert(Array::get(header_params, 1) == "E")
       let method_gens = retained_trait_method_gens(decoded, "Functor")
       assert(Array::length(method_gens) == 1)
       let (generic_method, generic_params, generic_bounds) = Array::get(method_gens, 0)
       assert(generic_method == "map")
-      assert(Array::get(generic_params, 0) == "A")
+      assert(Array::get(generic_params, 0) == type_param_key("G", 2))
       let (generic_bound_name, generic_bound_labels) = Array::get(generic_bounds, 0)
-      assert(generic_bound_name == "A")
+      assert(generic_bound_name == type_param_key("G", 2))
       assert(Array::get(generic_bound_labels, 0) == "Eq")
       let impl_bounds = retained_generic_impl_bounds(decoded, "Functor")
       assert(Array::length(impl_bounds) == 1)
@@ -301,7 +337,33 @@ test "persistent module interface retains complete concrete and generic impl tar
   }
 }
 
-test "persistent module interface v5 round-trips enum struct and alias authority" {
+test "persistent TypeEnv v9 retains applied trait bounds and impl heads" {
+  let applied = trait_ref_key(TyApp("Value", [TyName("Int")]))
+  let constructor_self = trait_ref_key(TyApp("Mappable", [
+    TyName("$trait_bound_self$")
+  ]))
+  let env = EnvBind("read", env_value_binding(CtForAll([7], [
+    (7, [applied, constructor_self])
+  ], CtFn([CtVar(7)], CtInt, None))), EnvTraitDef("Value", [], false, [], EnvTraitImpl(applied, CtInt, EnvEmpty), [
+    "A"
+  ], []))
+  match parse_persistent_type_env(persistent_type_env_cache_text(env)) {
+    Some(decoded) => {
+      match env_lookup(decoded, "read") {
+        Some(CtForAll(_, bounds, _)) => {
+          let (_, labels) = Array::get(bounds, 0)
+          assert(Array::get(labels, 0) == applied)
+          assert(Array::get(labels, 1) == constructor_self)
+        },
+        _ => assert(false)
+      }
+      assert(type_implements_trait(decoded, SubstEmpty, CtInt, applied))
+    },
+    None => assert(false)
+  }
+}
+
+test "persistent module interface v9 round-trips enum struct and alias authority" {
   let defs = [
     TDEnum("Choice", ["T"], [("Pick", [CtNamed("T", [])])]),
     TDStruct("Box", [("value", CtNamed("T", []))], [], ["T"]),
@@ -332,7 +394,7 @@ test "persistent module interface v5 round-trips enum struct and alias authority
   }
 }
 
-test "persistent module interface v5 round-trips effect and effectset authority" {
+test "persistent module interface v9 round-trips effect and effectset authority" {
   let env = EnvTypeDefs([
     TDEffect("Audit", [("Emit", [CtString], CtUnit)], []),
     TDEffectSet("Audits", ["Audit"])
@@ -357,7 +419,7 @@ test "persistent module interface v5 round-trips effect and effectset authority"
   }
 }
 
-test "legacy enum carrier bytes cannot alter v5 typedef authority" {
+test "legacy enum carrier bytes cannot alter v6 typedef authority" {
   let declared = TDEnum("Choice", [], [("Pick", [CtInt])])
   // This was the retired `Choice::__variants__` value carrier. It is valid
   // TypeEnv data but EnvTypeDefs must remain the only declaration authority.
@@ -383,7 +445,7 @@ test "legacy enum carrier bytes cannot alter v5 typedef authority" {
   }
 }
 
-test "persistent module interface v5 rebuilds untrusted cached lookup indexes" {
+test "persistent module interface v9 rebuilds untrusted cached lookup indexes" {
   let corrupt = EnvCached(["shadow", "shadow", "cached"], [
     env_value_binding(CtBool),
     env_value_binding(CtString),
@@ -408,15 +470,16 @@ test "persistent module interface v5 rebuilds untrusted cached lookup indexes" {
   }
 }
 
-test "persistent module interface v5 rejects old, truncated, and malformed envelopes" {
+test "persistent module interface v9 rejects old, truncated, and malformed envelopes" {
   assert(malformed_rejected("version\t1\nbind\tvalue\tI\n"))
   assert(malformed_rejected("version\t2\nenv\t1:0\n"))
   // Bare v3 was a value/trait-only TypeEnv, never an empty declaration interface.
   assert(malformed_rejected("version\t3\nenv\t1:0\n"))
   assert(malformed_rejected("version\t4\nenv\t1:0\n"))
-  assert(malformed_rejected("version\t5\nenv\t"))
-  assert(malformed_rejected("version\t5\nenv\t1:Z\n"))
-  assert(malformed_rejected("version\t5\nenv\t2:00\n"))
-  assert(malformed_rejected("version\t5\nenv\t4:B0:0\n"))
-  assert(malformed_rejected("version\t5\nenv\t1:0\ntrailing"))
+  assert(malformed_rejected("version\t8\nenv\t1:0\n"))
+  assert(malformed_rejected("version\t9\nenv\t"))
+  assert(malformed_rejected("version\t9\nenv\t1:Z\n"))
+  assert(malformed_rejected("version\t9\nenv\t2:00\n"))
+  assert(malformed_rejected("version\t9\nenv\t4:B0:0\n"))
+  assert(malformed_rejected("version\t9\nenv\t1:0\ntrailing"))
 }

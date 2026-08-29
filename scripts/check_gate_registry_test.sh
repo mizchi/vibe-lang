@@ -77,7 +77,7 @@ python3 - "$lanecopy" <<'PYEOF'
 import sys
 p = sys.argv[1]
 s = open(p).read()
-old = '"fixtures/v128_intrinsics_test.vibe" "$vdir/v128.wasm" __no_entry__ >/dev/null 2>&1 || true'
+old = '"$vdir/retired_v128.vibe" "$vdir/v128.wasm" __no_entry__ >"$vdir/out.txt" 2>&1 || true'
 assert s.count(old) == 1, "the guarded step this Red case removes has moved"
 open(p, 'w').write(s.replace(old, old[:-len(" || true")], 1))
 PYEOF

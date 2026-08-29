@@ -261,3 +261,54 @@ test "rehash spare key slots stay None, not a copy of the last insert" {
   }
   assert(eq(n99, 1))
 }
+
+//# Control-byte / fingerprint invariants (#2346)
+
+/// Every key hashes to the SAME value, so every key shares both a home slot
+/// and a fingerprint. The control byte therefore filters NOTHING and
+/// correctness rests entirely on `eq_fn` still being consulted on a
+/// fingerprint match: if a matching fingerprint were ever taken as proof of a
+/// matching key, every lookup here would return the first key's value.
+///
+/// THIS IS THE ONE STATE THE REST OF THE FILE NEVER REACHES, and that is the
+/// whole reason it exists. Three further tests were written alongside it
+/// (negative hashes, rehash-heavy insertion, tombstone churn) and then
+/// deleted: measured against eight mutations of the implementation, each of
+/// them failed in exactly the cases "negative keys", "delete then reinsert
+/// reuses tombstone" and "rehash across growth with 300 int keys" above
+/// already failed, so they restated existing coverage. This one does not.
+/// Truncating the probe walk to a hundred steps (`steps > cap` -> `steps >
+/// 100`) leaves the other thirteen tests GREEN, because a well-spread hash
+/// never probes that far, and fails here.
+fn hash_const(x: Int) -> Int {
+  if x < 0 {
+    7
+  } else {
+    7
+  }
+}
+
+fn eq_i(a: Int, b: Int) -> Bool {
+  a == b
+}
+
+test "fingerprint collision: identical hash for every key" {
+  let m: MutMap[Int, Int] = MutMap::new(hash_const, eq_i)
+  let mut i = 0
+  while i < 200 {
+    MutMap::set(m, i, i * 10)
+    i = i + 1
+  }
+  assert_eq(MutMap::size(m), 200)
+  let mut j = 0
+  while j < 200 {
+    assert_eq(get_or(m, j, -1), j * 10)
+    j = j + 1
+  }
+  assert_eq(MutMap::has(m, 200), false)
+  assert_eq(MutMap::delete(m, 137), true)
+  assert_eq(MutMap::has(m, 137), false)
+  assert_eq(get_or(m, 138, -1), 1380)
+  assert_eq(MutMap::size(m), 199)
+  assert_eq(Array::length(MutMap::keys(m)), 199)
+}

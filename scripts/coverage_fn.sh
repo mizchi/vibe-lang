@@ -47,7 +47,7 @@ if [ -z "$workload" ]; then
   # Default workload: self-compile the whole compiler source (default path).
   echo "[coverage_selfhost_fn] workload: self-compile the compiler source" >&2
   VIBE_COV_OUT="$REPORT" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-    bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
+    VIBE_INTERNAL_TRUSTED_SOURCE=1 bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
     "$(realpath --relative-to="$ROOT_DIR" "$FLAT")" \
     "$(realpath --relative-to="$ROOT_DIR" "$sample_out")" \
     cli_main

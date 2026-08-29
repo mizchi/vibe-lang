@@ -83,7 +83,7 @@ doc '- **builders**: `ArrayBuilder::new/push/freeze`'
 expect 0 "slash-joined operations expand"
 
 # 5. The document may say a name is deliberately not frozen.
-doc '- **gone**: `Iterator::map` is not frozen'
+doc '- **gone**: `Legacy::gone` is not frozen'
 expect 0 "an explicitly not-frozen name is not probed"
 
 # 6. ...but not while also freezing it. That contradiction is what let a

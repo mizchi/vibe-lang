@@ -824,7 +824,7 @@ fn is_inlined_async_builtin(name: String) -> Bool {
 /// the two names here removes the second reading, which is what lets the arms
 /// switch to `!prefer_bound_call` and a local binding finally win.
 fn is_inlined_scalar_builtin(name: String) -> Bool {
-  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "Double::from_i64_bits"
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager"
 }
 
 /// A namespaced source alias recognized by the builtin registry resolves
@@ -840,18 +840,6 @@ fn canonical_builtin_resolves_globally(name: String, fn_names: Array[String]) ->
   } else {
     false
   }
-}
-
-/// #1348: the SIMD intrinsics (`lib/@vibex/simd`) are inline-dispatched by
-/// compile_call exactly like the scalar ones above and were never registered
-/// here -- a lambda calling `v128_load(..)` produced an INVALID MODULE
-/// ("invalid signature index"), not merely a runtime trap. Found by
-/// scripts/check_inline_builtin_capture.sh rather than by a user crash, which
-/// is the point of that script: the same registration gap had already been
-/// reintroduced four times (#773, #1095, #1230, #1218) and each time it was a
-/// crash report that surfaced it.
-fn is_inlined_simd_builtin(name: String) -> Bool {
-  name == "v128_load" || name == "v128_store" || name == "v128_not" || name == "v128_and" || name == "v128_or" || name == "v128_any_true" || name == "v128_all_true_i8x16" || name == "v128_bitmask_i8x16" || name == "v128_splat_i8x16" || name == "v128_eq_i8x16" || name == "v128_le_u_i8x16" || name == "v128_ge_u_i8x16"
 }
 
 /// Stack-based free variable analysis: uses in-place push/truncate on bound array
@@ -982,7 +970,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
           0
         }
       }
-    } else if skip_inlined && !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (canonical_builtin_resolves_globally(cname, fn_names) || is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname) || is_inlined_simd_builtin(cname)) {
+    } else if skip_inlined && !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (canonical_builtin_resolves_globally(cname, fn_names) || is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
       let mut i = 0
       while i < Array::length(args) {
         collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
@@ -1639,7 +1627,7 @@ export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
 /// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
 /// in sync with is_borrow_arg0_call in perceus/index.vibe.
 export fn md_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 
 fn md_max(a: Int, b: Int) -> Int {
@@ -1673,20 +1661,35 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
   md_cc_go(e, name, md_no_user_fns, md_no_user_masks)
 }
 
-/// Which parameter positions of callee `f` are borrowed: the builtin
-/// arg0 list unioned with the user set's per-position mask. `bfns` is
-/// sorted and `bmasks` is aligned to it (compute_borrow_param_user_fns).
-fn md_borrow_mask_of(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+/// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
+/// and `Bytes::compare` read both of their `Bytes` arguments and drop neither,
+/// so bit 1 belongs in the mask beside bit 0. The arg0 predicate above cannot
+/// say this -- it is one bit -- which is why this is a separate list rather
+/// than a wider version of that one.
+fn md_is_borrow_arg1_call(f: String) -> Bool {
+  f == "Bytes::index_of_bytes" || f == "Bytes::compare"
+}
+
+/// Which parameter positions of callee `f` are borrowed. A name present in
+/// `bfns` is authoritative, including a zero mask: source definitions of a
+/// shadowable builtin must be allowed to consume arguments that the compiler
+/// builtin only borrows. Otherwise the builtin mask is used. `bfns` is sorted
+/// and `bmasks` is aligned to it (compute_borrow_param_user_fns).
+export fn md_borrow_mask_of(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
   let bi = bsearch_leftmost(bfns, f)
-  let user = if bi >= 0 && bi < Array::length(bmasks) {
+  if bi >= 0 && bi < Array::length(bmasks) {
     Array::get(bmasks, bi)
   } else {
-    0
-  }
-  if md_is_borrow_arg0_call(f) {
-    user|1
-  } else {
-    user
+    let m0 = if md_is_borrow_arg0_call(f) {
+      1
+    } else {
+      0
+    }
+    if md_is_borrow_arg1_call(f) {
+      m0|2
+    } else {
+      m0
+    }
   }
 }
 
@@ -2471,8 +2474,6 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
               } else {
                 ""
               }
-            } else if za_safe_builtin(cname) {
-              ""
             } else {
               let mut fi = 0
               let mut fidx = 0 - 1
@@ -2484,6 +2485,9 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
                   fi = fi + 1
                 }
               }
+              // A source definition owns its spelling even when that spelling
+              // is also registered as a builtin. Resolve the body first so a
+              // shadow cannot inherit a name-only zero-allocation certificate.
               if fidx >= 0 {
                 if array_contains_str(visited, cname) {
                   ""
@@ -2511,6 +2515,8 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
                     String::concat("call to '", String::concat(cname, String::concat("' which may allocate: ", inner)))
                   }
                 }
+              } else if za_safe_builtin(cname) {
+                ""
               } else if za_mode_of(visited) == "assume" {
                 ""
               } else {
@@ -3201,8 +3207,7 @@ fn ca_walk_stmts_nonident_args(stmts: Array[Stmt], out: Array[String], out_pos: 
 /// are never borrowed -- Int is 62-bit tagged, and a 32-param ceiling keeps
 /// every shift far inside it with no arity check at the query sites.
 ///
-/// Kept in sync with the identical helpers in perceus/perceus.vibe and
-/// codegen/expr/compile_call.vibe (same convention as is_borrow_arg0_call).
+/// Shared by Perceus, call emission, and linked-compile analysis.
 export fn bmask_max_param() -> Int {
   32
 }
@@ -3362,10 +3367,12 @@ fn bp_calls_round0_borrow_arms(arms: Array[(Pat, Expr)], round0_names: Array[Str
 /// This deliberately stops after one extra layer: deeper closure is a possible
 /// future worklist extension, while every intermediate result stays sound.
 ///
-/// Returns the SORTED name array of fns with a non-zero mask and fills
-/// `out_masks` aligned to it, so a single `bsearch_leftmost` on the names
-/// indexes straight into the masks. Sorting and alignment happen here
-/// together -- a caller that sorted the names itself would silently
+/// Returns the SORTED name array and fills `out_masks` aligned to it, so a
+/// single `bsearch_leftmost` on the names indexes straight into the masks.
+/// Ordinary entries have a non-zero inferred borrow mask. A source definition
+/// that shadows a compiler-owned accessor is retained with an authoritative
+/// zero mask when it consumes every parameter. Sorting and alignment happen
+/// here together -- a caller that sorted the names itself would silently
 /// misattribute every mask.
 export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
   let valued = array_empty()
@@ -3395,9 +3402,27 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   let excluded_srt = sorted_names_of(exclude)
   let names = array_empty()
   let masks: MutMap[String, Int] = MutMap::new_string()
+  // Source-owned compiler intrinsics need an authoritative entry even when
+  // their inferred mask is zero. Keep this as two scalar bits and collect it
+  // during the analysis' existing statement pass: no extra compiler-sized
+  // scan or per-function allocation is added.
+  let mut source_shadow_mask = 0
   let mut si = 0
   while si < Array::length(stmts) {
-    match Array::get(stmts, si) {
+    let stmt = Array::get(stmts, si)
+    let source_name = match stmt {
+      SLet(_, _, name, _, _) => name,
+      SFnDecl(_, name, _, _, _) => name,
+      _ => ""
+    }
+    if source_name == "Map::iter_get" {
+      source_shadow_mask = source_shadow_mask|1
+    } else if source_name == "Map::__iter_get_unchecked" {
+      source_shadow_mask = source_shadow_mask|2
+    } else {
+      ()
+    }
+    match stmt {
       SLet(_, _, fname, _, fval) => match fval {
         EFn(_, _, fps, _, _, fbody) => if bsearch_leftmost(valued_srt, fname) < 0 && bsearch_leftmost(excluded_srt, fname) < 0 {
           let owned_bits = match MutMap::get(nonident, fname) {
@@ -3500,6 +3525,31 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
       _ => ()
     }
     si = si + 1
+  }
+  // A zero-mask entry is an ownership override, not a borrowed ABI. Callers
+  // distinguish it by looking up the aligned mask instead of testing name
+  // membership alone.
+  if (source_shadow_mask&1) != 0 {
+    match MutMap::get(masks, "Map::iter_get") {
+      Some(_) => (),
+      None => {
+        Array::push(names, "Map::iter_get")
+        MutMap::set(masks, "Map::iter_get", 0)
+      }
+    }
+  } else {
+    ()
+  }
+  if (source_shadow_mask&2) != 0 {
+    match MutMap::get(masks, "Map::__iter_get_unchecked") {
+      Some(_) => (),
+      None => {
+        Array::push(names, "Map::__iter_get_unchecked")
+        MutMap::set(masks, "Map::__iter_get_unchecked", 0)
+      }
+    }
+  } else {
+    ()
   }
   let names_srt = sorted_names_of(names)
   let mut oi = 0

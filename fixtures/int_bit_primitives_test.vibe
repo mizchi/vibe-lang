@@ -1,0 +1,48 @@
+// #2344: Int::popcount / Int::ctz / Int::clz, the scalar bit primitives that
+// rank/select is built on (bench/bench_simd_rank.vibe measured i64.popcnt
+// carrying 344x of the 438x -- the win is this instruction, not SIMD).
+//
+// Deliberately free of prelude and import dependencies so it also runs on the
+// wasm-gc lane, which compiles one file at a time. lib/@vibe/builtin/int_test.vibe
+// carries the same cases plus Int::select1, which is a prelude function and so
+// is linear-only here.
+//
+// `Int` is a 63-bit two's complement value, NOT an i64. Every answer below is a
+// 63-bit answer: popcount(-1) is 63 and not 64, and the largest positive Int
+// (2^62-1) has bits 0..61 set, so its popcount is 62 and its clz is 1.
+
+test "popcount is the 63-bit population count" {
+  assert_eq(Int::popcount(0), 0)
+  assert_eq(Int::popcount(1), 1)
+  assert_eq(Int::popcount(3), 2)
+  assert_eq(Int::popcount(255), 8)
+  assert_eq(Int::popcount(1023), 10)
+  assert_eq(Int::popcount(4611686018427387903), 62)
+  // a bare i64.popcnt answers one too many here: bit 63 of the untagged i64 is
+  // a copy of the sign bit and is not part of the 63-bit value
+  assert_eq(Int::popcount(0 - 1), 63)
+  assert_eq(Int::popcount(0 - 2), 62)
+}
+
+test "ctz counts trailing zeros, 63 for zero" {
+  assert_eq(Int::ctz(1), 0)
+  assert_eq(Int::ctz(2), 1)
+  assert_eq(Int::ctz(8), 3)
+  assert_eq(Int::ctz(96), 5)
+  assert_eq(Int::ctz(0 - 1), 0)
+  assert_eq(Int::ctz(0 - 2), 1)
+  // wasm answers 64 for zero, which is outside the 63-bit width
+  assert_eq(Int::ctz(0), 63)
+}
+
+test "clz counts leading zeros of the 63-bit view, 63 for zero" {
+  assert_eq(Int::clz(1), 62)
+  assert_eq(Int::clz(2), 61)
+  assert_eq(Int::clz(3), 61)
+  assert_eq(Int::clz(4), 60)
+  // 2^62-1 tops out at bit 61, so one leading zero
+  assert_eq(Int::clz(4611686018427387903), 1)
+  // only a negative value has bit 62 set
+  assert_eq(Int::clz(0 - 1), 0)
+  assert_eq(Int::clz(0), 63)
+}

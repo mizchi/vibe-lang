@@ -193,8 +193,14 @@ if [ -n "$staged_paths" ] && [ "$grep_available" -eq 1 ]; then
 else
   # Bootstrap fallback for branches predating `vibe grep` (#1572). Once such a
   # branch merges main, the AST backend above takes over automatically.
-  violations="$(printf '%s\n' "$diff" \
+  candidates="$(printf '%s\n' "$diff" \
   | awk '
+      # Emit a CANDIDATE for every added binder whose own line carries no
+      # marker. The next-line case is settled below against the physical file,
+      # not against the diff -- a marker that already existed is unchanged
+      # context and never appears in git diff --unified=0, so deciding it
+      # here would reject a binder whose suppression is sitting one line down.
+      # That is the shape is_allowed() reads, and the two tiers have to agree.
       /^\+\+\+ / {
         path = $2
         sub(/^[^\/]*\//, "", path)
@@ -212,13 +218,34 @@ else
         is_binder = in_transform && (text ~ /E(Let|LetMut|LetRec)\("__[A-Za-z0-9_]+"/ \
           || text ~ /PBind\("__[A-Za-z0-9_]+"/ \
           || text ~ /SLet\([^)]*"__[A-Za-z0-9_]+"/)
-        allowed = text ~ /review-lint: allow-fixed-synthetic-name/
-        if (is_binder && !allowed) {
+        marked = text ~ /review-lint: allow-fixed-synthetic-name/
+        if (is_binder && !marked) {
           printf "%s:%d:%s\n", path, line, text
         }
         line++
       }
     ')"
+  while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      cand_path="${candidate%%:*}"
+      cand_rest="${candidate#*:}"
+      cand_line="${cand_rest%%:*}"
+      # pkf run fmt moves a trailing marker onto the following line, so the
+      # suppression is one line BELOW the binder. Read it from the SAME
+      # SNAPSHOT the candidates came from -- git show "$SHOW_REF:path", the
+      # index when linting --cached and HEAD in range mode, exactly what the
+      # AST tier materializes. Reading PROJECT_ROOT instead would read the
+      # working tree, and a marker added as an UNSTAGED edit would then
+      # suppress a staged binder: the lint would pass while the committed
+      # snapshot still violates it. Never the line above: that would let one
+      # marker cover two adjacent binders.
+      next_line="$(git -C "$PROJECT_ROOT" show "$SHOW_REF:$cand_path" 2>/dev/null \
+        | sed -n "$((cand_line + 1))p" || true)"
+      case "$next_line" in
+        *"review-lint: allow-fixed-synthetic-name"*) ;;
+        *) violations="${violations}${violations:+$'\n'}${candidate}" ;;
+      esac
+    done <<< "$candidates"
 fi
 
 if [ -n "$violations" ] || [ "$ast_tool_error" -eq 1 ]; then

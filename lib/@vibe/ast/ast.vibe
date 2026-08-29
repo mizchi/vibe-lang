@@ -4,6 +4,54 @@
 // suppresses sibling auto-discovery (test files beside the contract must
 // not join the facade).
 
+let type_param_kind_prefix = "$type_param$"
+
+/// Canonical AST key for a type parameter and its constructor arity.
+/// Arity-zero parameters keep their historical spelling so old artifacts and
+/// consumers remain readable. The prefix is not a source identifier, so an
+/// encoded constructor binder cannot collide with user code.
+export fn type_param_key(name: String, arity: Int) -> String {
+  if arity <= 0 {
+    name
+  } else {
+    String::concat(type_param_kind_prefix, String::concat(Int::to_string(arity), String::concat("$", name)))
+  }
+}
+
+fn type_param_kind_split(key: String) -> Option[(String, Int)] {
+  if !String::starts_with(key, type_param_kind_prefix) {
+    None
+  } else {
+    let mut pos = String::length(type_param_kind_prefix)
+    let mut arity = 0
+    let mut digits = 0
+    while pos < String::length(key) && String::char_code_at(key, pos) >= '0' && String::char_code_at(key, pos) <= '9' {
+      arity = arity * 10 + String::char_code_at(key, pos) - '0'
+      digits = digits + 1
+      pos = pos + 1
+    }
+    if digits == 0 || arity <= 0 || pos >= String::length(key) || String::char_code_at(key, pos) != '$' {
+      None
+    } else {
+      Some((String::substring(key, pos + 1, String::length(key)), arity))
+    }
+  }
+}
+
+export fn type_param_name(key: String) -> String {
+  match type_param_kind_split(key) {
+    Some(pair) => pair.0,
+    None => key
+  }
+}
+
+export fn type_param_arity(key: String) -> Int {
+  match type_param_kind_split(key) {
+    Some(pair) => pair.1,
+    None => 0
+  }
+}
+
 export fn impl_target_head(target: TypeExpr) -> String {
   match target {
     TyName(name) => name,
@@ -222,6 +270,43 @@ export fn impl_target_from_key(key: String) -> Option[TypeExpr] {
   }
 }
 
+let applied_trait_ref_prefix: String = "$trait$"
+
+/// Canonical storage for a trait reference in the legacy String-shaped AST
+/// slots. Bare names stay byte-for-byte compatible; applied references use an
+/// identifier-impossible prefix plus the reversible impl-target encoding.
+export fn trait_ref_key(reference: TypeExpr) -> String {
+  match reference {
+    TyName(name) => name,
+    TyApp(_, _) => String::concat(applied_trait_ref_prefix, impl_target_key(reference)),
+    _ => ""
+  }
+}
+
+export fn trait_ref_from_key(key: String) -> Option[TypeExpr] {
+  if String::starts_with(key, applied_trait_ref_prefix) {
+    impl_target_from_key(String::substring(key, String::length(applied_trait_ref_prefix), String::length(key)))
+  } else if key == "" {
+    None
+  } else {
+    Some(TyName(key))
+  }
+}
+
+export fn trait_ref_name(key: String) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => impl_target_head(reference),
+    None => ""
+  }
+}
+
+export fn trait_ref_args(key: String) -> Array[TypeExpr] {
+  match trait_ref_from_key(key) {
+    Some(TyApp(_, args)) => args,
+    _ => []
+  }
+}
+
 export fn impl_applied_target_key(head: String, arg_keys: Array[String]) -> String {
   let mut out = String::concat("A", String::concat(impl_encode_name(head), "L"))
   let mut i = 0
@@ -241,7 +326,11 @@ export fn impl_method_owner(tparams: Array[String], trait_name: String, target: 
   let head = impl_target_head(target)
   match target {
     TyApp(_, _) => String::concat(head, String::concat("$impl$", String::concat(impl_encode_name(trait_name), String::concat("$", impl_target_key(target))))),
-    _ => head
+    _ => if Array::length(trait_ref_args(trait_name)) > 0 {
+      String::concat(head, String::concat("$impl$", String::concat(impl_encode_name(trait_name), String::concat("$", impl_target_key(target)))))
+    } else {
+      head
+    }
   }
 }
 

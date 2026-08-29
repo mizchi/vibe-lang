@@ -12,7 +12,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   compile_file_wasi_library,
   compile_file_wasi_linked_artifacts,
   compile_file_wasi_only,
-  compile_source_wasi_only,
+  compile_generated_source_wasi_only,
   merged_program_source_fs
 }
 
@@ -170,7 +170,7 @@ test "same-source imported assert_eq is not lowered as the builtin through FS me
   let bytes = compile_file_wasi_only(main_path, "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "false")
-  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  let merged_bytes = compile_generated_source_wasi_only(merged_program_source_fs(main_path), "answer")
   assert_wasm_magic(merged_bytes)
   inspect(bytes_contains_ascii(merged_bytes, "assert_eq failed"), content = "false")
 }
@@ -242,7 +242,7 @@ test "merged source keeps a dependency re-export from suppressing an entry built
   Fs::write_bytes(inner_path, string_to_bytes("export fn cmp(a: Int, b: Int) -> Int { a + b }\n"))
   Fs::write_bytes(facade_path, string_to_bytes("export ./inner.vibe { cmp as assert_eq }\n"))
   Fs::write_bytes(main_path, string_to_bytes("import ./facade.vibe { assert_eq as forwarded_assert }\nexport fn answer() -> Int with Stdout {\n  let _ = forwarded_assert(1, 2)\n  assert_eq(1, 2)\n  0\n}\n"))
-  let bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  let bytes = compile_generated_source_wasi_only(merged_program_source_fs(main_path), "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "true")
 }
@@ -349,7 +349,7 @@ test "entry import rewrite may use a retained re-export source name" {
   Fs::write_bytes(main_path, string_to_bytes("import ./dep.vibe { source_value as local_value }\nexport ./dep.vibe { source_value as public_value }\nexport fn answer() -> Int { local_value() }\n"))
   let bytes = compile_file_wasi_only(main_path, "answer")
   assert_wasm_magic(bytes)
-  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  let merged_bytes = compile_generated_source_wasi_only(merged_program_source_fs(main_path), "answer")
   assert_wasm_magic(merged_bytes)
 }
 
@@ -364,7 +364,7 @@ test "retained import survives a colliding re-export alias" {
   Fs::write_bytes(main_path, string_to_bytes("import ./a.vibe { f as local_value }\nexport ./a.vibe { f as public_a }\nexport ./b.vibe { h as f }\nexport fn answer() -> Int { local_value() }\n"))
   let bytes = compile_file_wasi_only(main_path, "answer")
   assert_wasm_magic(bytes)
-  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  let merged_bytes = compile_generated_source_wasi_only(merged_program_source_fs(main_path), "answer")
   assert_wasm_magic(merged_bytes)
 }
 
@@ -396,7 +396,7 @@ test "collision preservation selects the latest same-local import" {
   assert(String::contains(merged, "let rec local = () -> Int { 22 }"))
   assert(!String::contains(merged, "let rec local = () -> Int { 11 }"))
   assert_wasm_magic(compile_file_wasi_only(main_path, "answer"))
-  assert_wasm_magic(compile_source_wasi_only(merged, "answer"))
+  assert_wasm_magic(compile_generated_source_wasi_only(merged, "answer"))
 }
 
 test "same-source plain assert_eq re-export remains callable through FS merge" {
@@ -409,7 +409,7 @@ test "same-source plain assert_eq re-export remains callable through FS merge" {
   let bytes = compile_file_wasi_only(main_path, "answer")
   assert_wasm_magic(bytes)
   inspect(bytes_contains_ascii(bytes, "assert_eq failed"), content = "false")
-  let merged_bytes = compile_source_wasi_only(merged_program_source_fs(main_path), "answer")
+  let merged_bytes = compile_generated_source_wasi_only(merged_program_source_fs(main_path), "answer")
   assert_wasm_magic(merged_bytes)
   inspect(bytes_contains_ascii(merged_bytes, "assert_eq failed"), content = "false")
 }
@@ -435,7 +435,7 @@ test "non-entry facade can call its plain re-export after FS namespacing" {
   Fs::write_bytes(facade_path, string_to_bytes("export ./dep.vibe { foo }\nexport fn bar() -> Int { foo() + 1 }\n"))
   Fs::write_bytes(main_path, string_to_bytes("import ./facade.vibe { bar }\nexport fn answer() -> Int { bar() }\n"))
   assert_wasm_magic(compile_file_wasi_only(main_path, "answer"))
-  assert_wasm_magic(compile_source_wasi_only(merged_program_source_fs(main_path), "answer"))
+  assert_wasm_magic(compile_generated_source_wasi_only(merged_program_source_fs(main_path), "answer"))
 }
 
 test "later plain re-export cancels an earlier same-name alias blocker" {
@@ -448,7 +448,7 @@ test "later plain re-export cancels an earlier same-name alias blocker" {
   Fs::write_bytes(b_path, string_to_bytes("export fn foo() -> Int { 2 }\n"))
   Fs::write_bytes(main_path, string_to_bytes("export ./a.vibe { f as foo }\nexport ./b.vibe { foo }\nexport fn answer() -> Int { foo() }\n"))
   assert_wasm_magic(compile_file_wasi_only(main_path, "answer"))
-  assert_wasm_magic(compile_source_wasi_only(merged_program_source_fs(main_path), "answer"))
+  assert_wasm_magic(compile_generated_source_wasi_only(merged_program_source_fs(main_path), "answer"))
 }
 
 test "compile_file_wasi_only: simple file produces valid WASM" {

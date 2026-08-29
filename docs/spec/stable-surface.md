@@ -212,14 +212,21 @@ The stable symbols listed under "Key Builtins" in the
   first-class values (call-only; #2275).
 - **Conversions**: `Int::to_double`, `Double::to_int`.
   `Int::to_string` cannot be frozen as a first-class value (call-only; #2275).
-- **Iteration**: the `Iterable` trait and the `for-in` desugar (ADR-0044). The
-  **combinator layer (`Iterator::map` and friends) is not frozen** — it is
-  retired by ADR-0099's two-layer split and has zero rows in the registry
-  (measured: `Iterator::` 0 hits). Eager iteration is the call forms
-  `Array::map` / `Array::filter` / `Array::fold` (cannot be frozen as
-  first-class values; see Array above).
-- **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), and the
-  `let*` railway bind. `Result::and_then` **cannot be frozen** — `Result` was
+- **Iteration**: the finite indexed `Iterator[T]` trait, its `for-in` desugar,
+  and eager namespace operations (ADR-0044, ADR-0110). Importing
+  `trait Iterator`
+  activates the exported `Iterator::*` namespace without introducing bare
+  operation names. Array, String, Map, and `@vibe/core` List implement the
+  protocol; Option does not. Pull `AsyncIter` remains a separate layer with
+  `AsyncIter::*` operations (ADR-0099). Container-specific
+  `Array::map` / `Array::filter` / `Array::fold` remain available but cannot be frozen
+  as first-class values; see Array above.
+- **@vibe/builtin helpers**: `compose` / `identity` / `flip` (func), the
+  `Iterator[T]` trait and its eager operations (ADR-0110), and the `let*`
+  railway bind. `Iterator::map` is **not frozen as a no-import prelude
+  symbol**: it is frozen as an imported `@vibe/builtin` API by `index.vpkg`,
+  and `import @vibe/builtin { trait Iterator }` makes it visible without a
+  separate operation import. `Result::and_then` **cannot be frozen** — `Result` was
   removed from the language in #1324, and `Result::` has zero registry rows.
   `tap` / `tap_some` moved to `@vibe/console` in #2102 (`tap_ok` / `tap_err`
   were removed in #1324).
@@ -308,7 +315,11 @@ that.
   separate feature; they were absorbed into L1 of this resolution ladder.
 - **`_start` capability declarations and the top-level effect rule**
   (ADR-0041/0042, `proposed`).
-- **The SIMD API** (`spec/simd-api-design.md`).
+- **The SIMD API** (`spec/simd-api-design.md`): the fused scan builtins
+  (`simd_scan_line_end_str` and friends) and inline wasm as the way to write a
+  kernel. The `V128` value type and its 12 `v128_*` intrinsics were **removed**
+  in #2342 — measured at 22x an inline-wasm kernel with an unreclaimable
+  16-byte box per operation — so nothing here promises them.
 - **Line-granularity debugger stepping and call-site hover** (span-arc):
   function-granularity stepping and typed hover are stable; line-granularity
   stepping and arbitrary-expression watch are a future extension.

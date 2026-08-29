@@ -81,8 +81,9 @@ one concept gets exactly one spelling, and every code block in the docs is
 compile-checked against the current compiler. The one-spelling rule is being
 applied as decided-but-landing work: `==` becomes structural in every context
 (ADR-0097, #1526 — today bare `Array`/`Bytes` `==` is still reference
-equality), iteration converges on two layers — eager `Array::*` and pull
-`AsyncIter` (ADR-0099, #1559) — and `Exception` is the canonical spelling with
+equality), pipeline combinators are constructor-polymorphic over `F[_]`
+(ADR-0110) with eager Array and pull `AsyncIter` as the two execution layers
+(ADR-0099, #1559), and `Exception` is the canonical spelling with
 `Error` deprecated at the 1.0 freeze (ADR-0085, #1564).
 
 **2. Self-hosted on wasm, using wasm's newest capabilities.** The compiler is

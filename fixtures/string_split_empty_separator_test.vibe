@@ -1,0 +1,35 @@
+// `String::split(s, "")` used to spin until it died. The SIMD `String::index_of`
+// answers 0 for an empty needle at every cursor, so the builtin's loop pushed an
+// empty part and advanced the cursor by `idx + sep_len` == 0; the run ended in
+// "out of bounds memory access" inside `__rt_arr_push` once the array outgrew
+// the heap. `[s]` is what the scalar `String::split` in
+// lib/@vibe/builtin/string.vibe had always answered for this case.
+//
+// Import-free on purpose. A definition anywhere in the linked program replaces
+// a same-named builtin PROGRAM-WIDE, so importing ANY name from @vibe/builtin
+// -- even an unrelated one -- used to substitute that package's scalar
+// `String::split` here and measure the wrong function.
+
+fn show(parts: Array[String]) -> String {
+  let mut out = "["
+  let mut i = 0
+  while i < Array::length(parts) {
+    out = String::concat(out, String::concat("<", String::concat(Array::get(parts, i), ">")))
+    i = i + 1
+  }
+  String::concat(out, "]")
+}
+
+test "split_on_empty_separator_is_the_whole_string" {
+  inspect(show(String::split("abc", "")), "[<abc>]")
+  inspect(show(String::split("", "")), "[<>]")
+  inspect(Array::length(String::split("abcdefghij", "")), "1")
+}
+
+test "split_on_a_real_separator_is_unchanged" {
+  inspect(show(String::split("a,b,c", ",")), "[<a><b><c>]")
+  inspect(show(String::split(",a,", ",")), "[<><a><>]")
+  inspect(show(String::split("no-sep-here", ",")), "[<no-sep-here>]")
+  inspect(show(String::split("", ",")), "[<>]")
+  inspect(show(String::split("aaaa", "aa")), "[<><><>]")
+}

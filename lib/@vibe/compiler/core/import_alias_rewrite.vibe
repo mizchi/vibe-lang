@@ -1,7 +1,7 @@
 //# Imports
 
 import ./ast.vibe {
-  Expr, ImportItem, Pat, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
 }
 
 import @vibe/core {
@@ -9,11 +9,11 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  impl_method_owner
+  impl_method_owner, trait_ref_from_key, trait_ref_key, type_param_name
 }
 
 import ./module_graph_path.vibe {
-  dir_of_path, resolve_import_path_candidates
+  dir_of_path, is_contract_ext, resolve_import_path_candidates
 }
 
 //# Functions
@@ -28,6 +28,533 @@ fn empty_strings() -> Array[String] {
 
 fn empty_import_refs() -> Array[(String, String, String)] {
   array_empty()
+}
+
+fn builtin_iterator_origin_marker_prefix() -> String {
+  "__vibe_internal_builtin_iterator_origin:"
+}
+
+fn iterator_namespace_operation(name: String, namespace: String) -> Bool {
+  name == String::concat(namespace, "::map") || name == String::concat(namespace, "::filter") || name == String::concat(namespace, "::fold") || name == String::concat(namespace, "::iter") || name == String::concat(namespace, "::find") || name == String::concat(namespace, "::any") || name == String::concat(namespace, "::all") || name == String::concat(namespace, "::flatmap")
+}
+
+fn trait_namespace_operation(name: String, namespace: String) -> Bool {
+  let prefix = String::concat(namespace, "::")
+  String::starts_with(name, prefix) && String::length(name) > String::length(prefix)
+}
+
+fn import_items_bind_iterator_namespace_operation(items: Array[ImportItem], namespace: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    let local = match item.alias {
+      Some(alias) => alias,
+      None => item.name
+    }
+    found = iterator_namespace_operation(local, namespace)
+    i = i + 1
+  }
+  found
+}
+
+fn stmts_define_iterator_namespace_operation(stmts: Array[Stmt], namespace: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => iterator_namespace_operation(name, namespace),
+      SFnDecl(_, name, _, _, _) => iterator_namespace_operation(name, namespace),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        false
+      } else {
+        import_items_bind_iterator_namespace_operation(items, namespace)
+      },
+      SReExport(_, items) => import_items_bind_iterator_namespace_operation(items, namespace),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Import bindings use source order: the last trait imported into a local
+/// namespace is the one whose companion operations that namespace denotes.
+/// Provenance must follow that same winner. Retaining the builtin marker after
+/// a custom trait replaces it would silently turn the custom operation back
+/// into an Array intrinsic during dictionary desugaring.
+fn builtin_iterator_trait_wins_namespace(stmts: Array[Stmt], namespace: String) -> Bool {
+  let mut wins = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if explicit_trait && local == namespace {
+            wins = path == "@vibe/builtin" && item.name == "Iterator"
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SReExport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if explicit_trait && local == namespace {
+            // Only a direct @vibe/builtin import carries authenticated
+            // provenance here. A re-export may name any provider.
+            wins = false
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      STrait(_, name, _, _, _, _) => if name == namespace {
+        wins = false
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  wins
+}
+
+/// Compiler-only provenance carried in an existing source-boundary marker.
+/// It is emitted only when this source unit explicitly imports the standard
+/// Iterator trait and does not replace any optimized namespace operation.
+/// The marker is consumed before codegen and never becomes a runtime value.
+export fn builtin_iterator_namespace_markers(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => if path == "@vibe/builtin" {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          if explicit_trait && item.name == "Iterator" {
+            let local = match item.alias {
+              Some(alias) => alias,
+              None => item.name
+            }
+            // Trait-alias value namespaces remain local (`Iter::*`); only type
+            // occurrences canonicalize to the provider. Therefore a local
+            // canonical `Iterator::*` helper is independent and cannot block
+            // provenance for the imported alias.
+            if builtin_iterator_trait_wins_namespace(stmts, local) && !stmts_define_iterator_namespace_operation(stmts, local) {
+              // Imported trait-operation wrappers keep the local namespace:
+              // `trait Iterator as Iter` materializes `Iter::map`. Recording
+              // the local spelling keeps optimization scoped to that wrapper
+              // and cannot authorize a distinct local `Iterator::map`.
+              let marker = String::concat(builtin_iterator_origin_marker_prefix(), local)
+              if !string_array_contains(out, marker) {
+                Array::push(out, marker)
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Decode a compiler-only standard Iterator provenance marker.
+export fn builtin_iterator_namespace_from_marker(marker: String) -> Option[String] {
+  let prefix = builtin_iterator_origin_marker_prefix()
+  if String::starts_with(marker, prefix) && String::length(marker) > String::length(prefix) {
+    Some(String::substring(marker, String::length(prefix), String::length(marker)))
+  } else {
+    None
+  }
+}
+
+/// Add the unique post-link namespaces of standard Iterator operations to a
+/// source boundary. Provider helpers are named
+/// `Iterator_exp_<provider>::operation`, so the established namespace marker
+/// path can authorize devirtualization without guessing a path from the call.
+export fn append_builtin_iterator_operation_markers(markers: Array[String], renames: Array[(String, String)]) -> Unit {
+  let namespaces = empty_strings()
+  let mut mi = 0
+  while mi < Array::length(markers) {
+    match builtin_iterator_namespace_from_marker(Array::get(markers, mi)) {
+      Some(namespace) => Array::push(namespaces, namespace),
+      None => ()
+    }
+    mi = mi + 1
+  }
+  let mut ri = 0
+  while ri < Array::length(renames) {
+    let (local, resolved) = Array::get(renames, ri)
+    let split = String::index_of(local, "::")
+    if split > 0 {
+      let namespace = String::substring(local, 0, split)
+      if string_array_contains(namespaces, namespace) && iterator_namespace_operation(local, namespace) {
+        let resolved_split = String::index_of(resolved, "::")
+        if resolved_split > 0 {
+          let resolved_namespace = String::substring(resolved, 0, resolved_split)
+          let namespace_marker = String::concat(builtin_iterator_origin_marker_prefix(), resolved_namespace)
+          if !string_array_contains(markers, namespace_marker) {
+            Array::push(markers, namespace_marker)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+}
+
+/// Names carried by an in-memory merged-source boundary. The first field is
+/// both the local-name blocker set used by builtin desugaring and the
+/// compiler-only Iterator provenance payload; the second field records
+/// publication-only re-export aliases for checker projection.
+export fn merged_source_boundary_names(stmts: Array[Stmt]) -> (Array[String], Array[String]) {
+  let locals = empty_strings()
+  let surface_only = empty_strings()
+  let decided = empty_strings()
+  let mut i = Array::length(stmts) - 1
+  while i >= 0 {
+    match Array::get(stmts, i) {
+      SReExport(_, items) => {
+        let mut j = Array::length(items) - 1
+        while j >= 0 {
+          let item = Array::get(items, j)
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if !string_array_contains(decided, local) {
+            Array::push(decided, local)
+            Array::push(locals, local)
+            match item.alias {
+              Some(alias) => Array::push(surface_only, alias),
+              None => ()
+            }
+          } else {
+            ()
+          }
+          j = j - 1
+        }
+      },
+      _ => ()
+    }
+    i = i - 1
+  }
+  let markers = builtin_iterator_namespace_markers(stmts)
+  let mut mi = 0
+  while mi < Array::length(markers) {
+    let marker = Array::get(markers, mi)
+    if !string_array_contains(locals, marker) {
+      Array::push(locals, marker)
+    } else {
+      ()
+    }
+    mi = mi + 1
+  }
+  (locals, surface_only)
+}
+
+/// Private renames for source-local provider helpers when the same source
+/// imports that provider trait under an alias. The merged program also
+/// contains the provider helper; keeping both under `Provider::operation`
+/// would make the wasm function table's first match decide semantics. The
+/// imported trait owns `Local::*`, while a separately declared `Provider::*`
+/// remains an ordinary local namespace for every trait, not only Iterator.
+export fn trait_import_local_operation_renames(stmts: Array[Stmt], path: String) -> Array[(String, String)] {
+  let namespaces = empty_strings()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          if explicit_trait {
+            match item.alias {
+              Some(alias) => if alias != item.name && !string_array_contains(namespaces, item.name) {
+                Array::push(namespaces, item.name)
+              } else {
+                ()
+              },
+              None => ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = empty_aliases()
+  i = 0
+  while i < Array::length(stmts) {
+    let name = match Array::get(stmts, i) {
+      SLet(_, _, bound, _, _) => bound,
+      SFnDecl(_, bound, _, _, _) => bound,
+      _ => ""
+    }
+    let mut ni = 0
+    let mut collides = false
+    while ni < Array::length(namespaces) && !collides {
+      collides = trait_namespace_operation(name, Array::get(namespaces, ni))
+      ni = ni + 1
+    }
+    if collides {
+      // Keep the private spelling outside the provider namespace. Later
+      // normalization may recognize that namespace as a trait or intrinsic
+      // surface, so a path suffix alone is not a sufficient fence.
+      let private_name = namespace_exported_name(path, String::concat("__local_trait_", name))
+      Array::push(out, (name, private_name))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Entry exports are part of the final wasm/library ABI. Keep their original
+/// qualified spelling while retaining collision renames for private helpers.
+export fn trait_import_local_operation_renames_preserving_exports(stmts: Array[Stmt], path: String) -> Array[(String, String)] {
+  let renames = trait_import_local_operation_renames(stmts, path)
+  let exported = collect_exported_value_names(stmts)
+  let out = empty_aliases()
+  let mut i = 0
+  while i < Array::length(renames) {
+    let rename = Array::get(renames, i)
+    if !string_array_contains(exported, rename.0) {
+      Array::push(out, rename)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn builtin_iterator_serialized_boundary_path() -> String {
+  "@vibe/compiler/internal/iterator_boundary"
+}
+
+fn boundary_hex_digit(n: Int) -> String {
+  String::from_char_code(if n < 10 {
+    48 + n
+  } else {
+    87 + n
+  })
+}
+
+fn boundary_hex_value(c: Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else {
+    -1
+  }
+}
+
+fn encode_boundary_names(names: Array[String]) -> String {
+  if Array::length(names) == 0 {
+    return "z"
+  }
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(names) {
+    if i > 0 {
+      StringBuilder::push(out, "_")
+    } else {
+      ()
+    }
+    StringBuilder::push(out, "n")
+    let name = Array::get(names, i)
+    let mut j = 0
+    while j < String::length(name) {
+      let byte = String::byte_at(name, j)
+      StringBuilder::push(out, boundary_hex_digit(byte / 16))
+      StringBuilder::push(out, boundary_hex_digit(byte % 16))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+fn decode_boundary_names(payload: String) -> Option[Array[String]] {
+  let names = empty_strings()
+  if payload == "z" {
+    return Some(names)
+  }
+  if String::length(payload) == 0 {
+    return None
+  }
+  let mut start = 0
+  let mut i = 0
+  while i <= String::length(payload) {
+    if i == String::length(payload) || String::byte_at(payload, i) == 95 {
+      if i - start < 3 || String::byte_at(payload, start) != 110 || (i - start - 1) % 2 != 0 {
+        return None
+      }
+      let name = StringBuilder::new()
+      let mut j = start + 1
+      while j < i {
+        let hi = boundary_hex_value(String::byte_at(payload, j))
+        let lo = boundary_hex_value(String::byte_at(payload, j + 1))
+        if hi < 0 || lo < 0 {
+          return None
+        }
+        StringBuilder::push(name, String::from_char_code(hi * 16 + lo))
+        j = j + 2
+      }
+      Array::push(names, StringBuilder::freeze(name))
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Some(names)
+}
+
+fn builtin_iterator_serialized_boundary_payload_prefix() -> String {
+  String::concat(builtin_iterator_serialized_boundary_path(), "/_")
+}
+
+/// Whether an import path is the reserved source-text carrier for Iterator
+/// provenance. Loaders must retain this statement for the trait desugar pass,
+/// but must not resolve it as a package dependency.
+export fn is_builtin_iterator_serialized_boundary_path(path: String) -> Bool {
+  path == builtin_iterator_serialized_boundary_path() || String::starts_with(path, builtin_iterator_serialized_boundary_payload_prefix())
+}
+
+fn stmt_has_user_iterator_serialized_boundary(stmt: Stmt) -> Bool {
+  match stmt {
+    SImport(path, _) => is_builtin_iterator_serialized_boundary_path(path),
+    SModule(_, _, body) => stmts_have_user_iterator_serialized_boundary(body),
+    _ => false
+  }
+}
+
+fn stmts_have_user_iterator_serialized_boundary(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = stmt_has_user_iterator_serialized_boundary(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+/// Reject the source-spellable form of an internal provenance carrier.
+/// Generated merged-source caches are parsed after the user-source boundary
+/// and intentionally do not call this guard.
+export fn reject_user_iterator_serialized_boundaries(stmts: Array[Stmt]) -> Unit with Exception {
+  if stmts_have_user_iterator_serialized_boundary(stmts) {
+    throw("remove reserved compiler import `@vibe/compiler/internal/iterator_boundary`: this path is generated internally and cannot be imported by source files")
+  } else {
+    ()
+  }
+}
+
+/// A parseable carrier for Iterator provenance across source-text caches.
+/// Ordinary in-memory merges use `SReExportSourceBoundary`; the printer drops
+/// that internal node, so TypeDb/group caches need this reserved synthetic
+/// import until the merged source is parsed for codegen.
+export fn builtin_iterator_serialized_boundary(stmts: Array[Stmt]) -> Stmt {
+  let (local_names, _) = merged_source_boundary_names(stmts)
+  builtin_iterator_serialized_boundary_from_markers(local_names)
+}
+
+export fn builtin_iterator_serialized_boundary_from_markers(markers: Array[String]) -> Stmt {
+  SImport(String::concat(builtin_iterator_serialized_boundary_payload_prefix(), encode_boundary_names(markers)), array_empty())
+}
+
+/// Recover marker payload from the reserved source-text cache carrier.
+export fn builtin_iterator_serialized_boundary_markers(stmt: Stmt) -> Option[Array[String]] {
+  match stmt {
+    SImport(path, items) => if String::starts_with(path, builtin_iterator_serialized_boundary_payload_prefix()) && Array::length(items) == 0 {
+      decode_boundary_names(String::substring(path, String::length(builtin_iterator_serialized_boundary_payload_prefix()), String::length(path)))
+    } else if path == builtin_iterator_serialized_boundary_path() {
+      // Read compatibility for source-text caches emitted before blockers
+      // moved into the path payload. New carriers bind no import names.
+      let markers = empty_strings()
+      let mut i = 0
+      while i < Array::length(items) {
+        let item = Array::get(items, i)
+        match item.kind {
+          Some(ImportTrait) => if item.name == "Iterator" {
+            let namespace = match item.alias {
+              Some(alias) => alias,
+              None => item.name
+            }
+            Array::push(markers, String::concat(builtin_iterator_origin_marker_prefix(), namespace))
+          } else {
+            ()
+          },
+          None => Array::push(markers, item.name),
+          _ => ()
+        }
+        i = i + 1
+      }
+      Some(markers)
+    } else {
+      None
+    },
+    _ => None
+  }
 }
 
 fn string_array_contains(items: Array[String], target: String) -> Bool {
@@ -143,7 +670,7 @@ fn names_shadow_alias(names: Array[String], alias: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(names) && !found {
-    if alias_is_shadowed(alias, Array::get(names, i)) {
+    if alias_is_shadowed(alias, type_param_name(Array::get(names, i))) {
       found = true
     } else {
       i = i + 1
@@ -445,7 +972,7 @@ fn aliasidx_without_names(am: AliasIdx, names: Array[String]) -> AliasIdx {
   let mut any = false
   let mut i = 0
   while i < Array::length(names) && !any {
-    if aliasidx_shadows(am, Array::get(names, i)) {
+    if aliasidx_shadows(am, type_param_name(Array::get(names, i))) {
       any = true
     } else {
       i = i + 1
@@ -563,9 +1090,17 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
     expr
   } else {
     let head = String::substring(name, 0, qi)
-    match MutMap::get(am.idx, head) {
-      Some(original) => EIdent(String::concat(original, String::substring(name, qi, String::length(name))), -1),
-      None => expr
+    if MutMap::has(am.idx, String::concat(head, "::__vibe_trait_namespace_alias")) {
+      // An explicit `trait Provider as Local` import owns value names under
+      // `Local::*`. Unlike a type/constructor reference, `Local::method`
+      // must stay local so trait namespace helpers remain distinct from a
+      // separately declared `Provider::method`.
+      expr
+    } else {
+      match MutMap::get(am.idx, head) {
+        Some(original) => EIdent(String::concat(original, String::substring(name, qi, String::length(name))), -1),
+        None => expr
+      }
     }
   }
 }
@@ -574,6 +1109,25 @@ fn rewrite_alias_type_opt(ty: Option[TypeExpr], am: AliasIdx) -> Option[TypeExpr
   match ty {
     Some(inner) => Some(rewrite_alias_type_expr(inner, am)),
     None => None
+  }
+}
+
+fn rewrite_alias_trait_ref(trait_ref: String, am: AliasIdx) -> String {
+  match trait_ref_from_key(trait_ref) {
+    Some(applied) => trait_ref_key(rewrite_alias_type_expr(applied, am)),
+    None => match MutMap::get(am.idx, trait_ref) {
+      Some(original) => original,
+      None => trait_ref
+    }
+  }
+}
+
+fn rewrite_alias_bounds(bounds: Array[(String, Array[String])], am: AliasIdx) -> Array[(String, Array[String])] {
+  for bound in bounds {
+    let (param, traits) = bound
+    (param, for trait_ref in traits {
+      rewrite_alias_trait_ref(trait_ref, am)
+    })
   }
 }
 
@@ -666,7 +1220,7 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // namespaces while canonicalizing imported contract aliases in fn
         // parameter and return annotations (#1539 StdinStream as S).
         let type_am = aliasidx_without_names(am, type_params)
-        EFn(type_params, bounds, rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params)))
+        EFn(type_params, rewrite_alias_bounds(bounds, type_am), rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params)))
       },
       // #897: `mod.x` written against a qualified-import namespace (`import
       // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see
@@ -705,7 +1259,7 @@ export fn collect_import_aliases(stmts: Array[Stmt]) -> Array[(String, String)] 
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(_, items) => {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
@@ -732,7 +1286,7 @@ fn collect_import_refs(stmts: Array[Stmt]) -> Array[(String, String, String)] {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SImport(raw_path, items) => {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
@@ -796,9 +1350,11 @@ fn collect_impl_method_owner_aliases(stmts: Array[Stmt], aliases: Array[(String,
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SImpl(tparams, _, trait_name, target) => {
-        let rewritten_target = rewrite_alias_type_expr(target, aliasidx_without_names(am, tparams))
+        let type_am = aliasidx_without_names(am, tparams)
+        let rewritten_trait = rewrite_alias_trait_ref(trait_name, type_am)
+        let rewritten_target = rewrite_alias_type_expr(target, type_am)
         let source_owner = impl_method_owner(tparams, trait_name, target)
-        let rewritten_owner = impl_method_owner(tparams, trait_name, rewritten_target)
+        let rewritten_owner = impl_method_owner(tparams, rewritten_trait, rewritten_target)
         if source_owner != rewritten_owner {
           Array::push(out, (source_owner, rewritten_owner))
         } else {
@@ -869,7 +1425,7 @@ fn local_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -
   let mut i = 0
   let mut found = None
   while i < Array::length(params) {
-    if Array::get(params, i) == name && i < Array::length(args) {
+    if type_param_name(Array::get(params, i)) == name && i < Array::length(args) {
       found = Some(Array::get(args, i))
       i = Array::length(params)
     } else {
@@ -982,6 +1538,51 @@ export fn rewrite_import_alias_stmts(stmts: Array[Stmt], aliases: Array[(String,
     Array::push(combined, Array::get(owner_aliases, oi))
     oi = oi + 1
   }
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    match Array::get(stmts, ti) {
+      SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
+        let mut tj = 0
+        while tj < Array::length(items) {
+          let item = Array::get(items, tj)
+          match (item.kind, item.alias) {
+            (Some(ImportTrait), Some(alias)) => Array::push(combined, (String::concat(alias, "::__vibe_trait_namespace_alias"), alias)),
+            _ => ()
+          }
+          tj = tj + 1
+        }
+      },
+      _ => ()
+    }
+    ti = ti + 1
+  }
+  // Explicit trait imports materialize local namespace wrappers such as
+  // `Iter::map`. They are real value bindings, not type references to rewrite
+  // back to `Iterator::map`. Add exact self-mappings before walking bodies so
+  // those calls remain local while ordinary `Iter` type occurrences and
+  // unbound qualified constructors still canonicalize through the head alias.
+  let mut bi = 0
+  while bi < Array::length(stmts) {
+    let bound_name = match Array::get(stmts, bi) {
+      SLet(_, _, name, _, _) => name,
+      SLetMut(name, _, _) => name,
+      SExternLet(name, _) => name,
+      SFnDecl(_, name, _, _, _) => name,
+      _ => ""
+    }
+    let qi = String::index_of(bound_name, "::")
+    if qi > 0 {
+      let head = String::substring(bound_name, 0, qi)
+      if lookup_alias(aliases, head) is Some(_) {
+        Array::push(combined, (bound_name, bound_name))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    bi = bi + 1
+  }
   let am = aliasidx_build(combined)
   let imported = for stmt in stmts {
     rewrite_alias_stmt_ix(rewrite_impl_method_binding(stmt, owner_aliases), am)
@@ -1021,7 +1622,10 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
     // rewrite at all) and is tracked separately -- what this guard buys is that
     // the rewrite is not a SECOND, independent source of the same bug.
     STypeAlias(exported, name, params, target) => STypeAlias(exported, name, params, rewrite_alias_type_expr(target, aliasidx_without_names(am, params))),
-    SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_alias_type_expr(target, aliasidx_without_names(am, tparams))),
+    SImpl(tparams, bounds, trait_name, target) => {
+      let type_am = aliasidx_without_names(am, tparams)
+      SImpl(tparams, rewrite_alias_bounds(bounds, type_am), rewrite_alias_trait_ref(trait_name, type_am), rewrite_alias_type_expr(target, type_am))
+    },
     _ => stmt
   }
 }
@@ -1056,7 +1660,7 @@ fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
 export fn stmts_have_import_deep(stmts: Array[Stmt]) -> Bool {
   let rec stmt_has_import_deep: (Stmt) -> Bool = (stmt) -> {
     match stmt {
-      SImport(_, _) => true,
+      SImport(path, _) => !is_builtin_iterator_serialized_boundary_path(path),
       SReExport(_, _) => true,
       SModule(_, _, inner_stmts) => stmts_have_import_deep(inner_stmts),
       _ => false
@@ -1110,7 +1714,11 @@ export fn append_non_import_stmts_without_alias_rewrite(merged: Array[Stmt], stm
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        Array::push(merged, stmt)
+      } else {
+        append_stdin_provider_import_alias_markers(merged, items)
+      },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
@@ -1126,7 +1734,11 @@ export fn append_import_alias_rewritten_non_import_stmts_skipping(merged: Array[
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        Array::push(merged, stmt)
+      } else {
+        append_stdin_provider_import_alias_markers(merged, items)
+      },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))
@@ -1341,9 +1953,9 @@ fn collect_declared_type_names(stmts: Array[Stmt]) -> Array[String] {
 /// would orphan them from `Strm` — breaking method dispatch and the trait /
 /// `for`-iterator desugar's `Type::method` lookup. Public means the head is
 /// either exported from this module OR not declared in it at all — the latter
-/// covers impls on BUILTIN types (`impl Iterable for Array` desugars to a
+/// covers impls on BUILTIN types (`impl Iterator for Array` desugars to a
 /// non-exported `let Array::iter_length = ..` whose head "Array" no module
-/// declares; #736 hit this when the prelude's builtin Iterable impls were
+/// declares; #736 hit this when the prelude's builtin Iterator impls were
 /// private-renamed and orphaned from the witness dispatch). Only methods whose
 /// head is a type declared in this module and NOT exported keep the old
 /// whole-name renaming: that private type is itself renamed and its call sites
@@ -1919,16 +2531,53 @@ export fn namespace_exported_name(path: String, name: String) -> String {
   String::concat(name, String::concat("_exp_", sanitize_namespace_path(path)))
 }
 
-/// Top-level VALUE defs this file exports under a bare (unqualified) name:
-/// `export let f` plus a plain `let f` listed in an `export { ... }` block.
-/// Excludes qualified `Type::method` lets (dispatched globally by receiver
-/// type), `let mut` globals (an `EAssign` target is a plain string the
-/// expression rewriter cannot rename), and extern lets (host import names).
+/// Trait operations keep the operation as the qualified member after export
+/// namespacing (`Iterator_exp_<provider>::map`). This gives each provider an
+/// unambiguous namespace while preserving the operation spelling consumed by
+/// trait dispatch and intrinsic devirtualization.
+fn namespace_exported_def_name(path: String, name: String) -> String {
+  let split = String::index_of(name, "::")
+  if split > 0 {
+    let namespace = String::substring(name, 0, split)
+    let operation = String::substring(name, split + 2, String::length(name))
+    String::concat(namespace, String::concat("_exp_", String::concat(sanitize_namespace_path(path), String::concat("::", operation))))
+  } else {
+    namespace_exported_name(path, name)
+  }
+}
+
+fn append_export_def_name(out: Array[String], extern_names: Array[String], trait_names: Array[String], name: String) -> Unit {
+  let qi = String::index_of(name, "::")
+  let trait_owned = if qi > 0 {
+    string_array_contains(trait_names, String::substring(name, 0, qi))
+  } else {
+    false
+  }
+  // Iterator::flatmap devirtualizes Array receivers to the specialization
+  // defined beside the trait helper. It must travel under the same provider-
+  // unique suffix: otherwise an entry-local Array::flatmap races the imported
+  // specialization in the flattened function table.
+  let iterator_array_specialization = name == "Array::flatmap" && string_array_contains(trait_names, "Iterator")
+  if (qi < 0 || trait_owned || iterator_array_specialization) && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
+    Array::push(out, name)
+  } else {
+    ()
+  }
+}
+
+/// Top-level VALUE defs this file exports under a bare name, plus qualified
+/// helpers owned by a trait declared in the same file. Ordinary
+/// `Type::method` lets remain global receiver dispatch, but `Trait::operation`
+/// travels with an explicit trait import and therefore needs the same unique
+/// provider spelling as a bare export. This is what lets an entry publish its
+/// own `Trait::operation` ABI without racing the imported provider's helper in
+/// the flattened function table.
 export fn collect_export_def_value_names(stmts: Array[Stmt]) -> Array[String] {
   let extern_names = empty_strings()
   let let_names = empty_strings()
   let exported_lets = empty_strings()
   let export_items = empty_strings()
+  let trait_names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -1948,28 +2597,22 @@ export fn collect_export_def_value_names(stmts: Array[Stmt]) -> Array[String] {
           j = j + 1
         }
       },
+      STrait(_, name, _, _, _, _) => Array::push(trait_names, name),
       _ => ()
     }
     i = i + 1
   }
   let out = empty_strings()
-  let push_def_name: (String) -> Unit = (name) -> {
-    if String::index_of(name, "::") < 0 && !string_array_contains(extern_names, name) && !string_array_contains(out, name) {
-      Array::push(out, name)
-    } else {
-      ()
-    }
-  }
   let mut k = 0
   while k < Array::length(exported_lets) {
-    push_def_name(Array::get(exported_lets, k))
+    append_export_def_name(out, extern_names, trait_names, Array::get(exported_lets, k))
     k = k + 1
   }
   let mut m = 0
   while m < Array::length(export_items) {
     let name = Array::get(export_items, m)
     if string_array_contains(let_names, name) {
-      push_def_name(name)
+      append_export_def_name(out, extern_names, trait_names, name)
     } else {
       ()
     }
@@ -1983,6 +2626,11 @@ export struct ExportRenamePlan {
   rename_paths: Array[String];
   rename_names: Array[String];
   rename_mangled: Array[String];
+  // Provider-unique Iterator operations whose origin is authenticated by an
+  // import/re-export edge targeting @vibe/builtin. Facade consumers compare
+  // their already-resolved operation renames against this compact set, so
+  // provenance follows arbitrary facade chains without another graph walk.
+  builtin_iterator_mangled: Array[String];
   // #1259: (path, name) -> mangled index over the three parallel arrays
   // above (plan_rename_key encoding). Built once in build_export_rename_plan
   // -- which needs it for its own facade-closure fixpoint -- and reused by
@@ -2047,16 +2695,22 @@ fn plan_triple_lookup(tpaths: Array[String], tnames: Array[String], tvalues: Arr
 
 /// Re-export edges of one file: `export ./dep.vibe { a, b as c }` plus the
 /// `import { x } ... export { x }` facade idiom (an `export {}` item with no
-/// local let def but a matching import). Pushed as parallel arrays
+/// local declaration but a matching import). Pushed as parallel arrays
 /// (from-path, public-name, target-path, target-name).
-fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Array[String], edge_from: Array[String], edge_pub: Array[String], edge_tpath: Array[String], edge_tname: Array[String]) -> Unit {
+fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Array[String], edge_from: Array[String], edge_pub: Array[String], edge_tpath: Array[String], edge_tname: Array[String], builtin_iterator_paths: Array[String]) -> Unit {
   let base_dir = dir_of_path(path)
-  let let_names = empty_strings()
+  let local_names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => Array::push(let_names, name),
-      SLetMut(name, _, _) => Array::push(let_names, name),
+      SLet(_, _, name, _, _) => Array::push(local_names, name),
+      SLetMut(name, _, _) => Array::push(local_names, name),
+      SExternLet(name, _) => Array::push(local_names, name),
+      SStruct(_, name, _, _, _, _) => Array::push(local_names, name),
+      SEnum(_, name, _, _, _) => Array::push(local_names, name),
+      STrait(_, name, _, _, _, _) => Array::push(local_names, name),
+      STypeAlias(_, name, _, _) => Array::push(local_names, name),
+      SSuberror(_, name, _) => Array::push(local_names, name),
       _ => ()
     }
     i = i + 1
@@ -2065,11 +2719,39 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
   let mut si = 0
   while si < Array::length(stmts) {
     match Array::get(stmts, si) {
+      SImport(raw_path, items) => if raw_path == "@vibe/builtin" {
+        let target = resolve_known_import_path(known_paths, base_dir, raw_path, path)
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let is_iterator_trait = item.name == "Iterator" && (match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          })
+          if is_iterator_trait && !string_array_contains(builtin_iterator_paths, target) {
+            Array::push(builtin_iterator_paths, target)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      },
       SReExport(raw_path, items) => {
         let target = resolve_known_import_path(known_paths, base_dir, raw_path, path)
         let mut j = 0
         while j < Array::length(items) {
           let item = Array::get(items, j)
+          let is_builtin_iterator_trait = raw_path == "@vibe/builtin" && item.name == "Iterator" && (match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          })
+          if is_builtin_iterator_trait && !string_array_contains(builtin_iterator_paths, target) {
+            Array::push(builtin_iterator_paths, target)
+          } else {
+            ()
+          }
           let iname = item.name
           let alias_opt = item.alias
           let public_name = match alias_opt {
@@ -2087,10 +2769,14 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
         let mut j = 0
         while j < Array::length(items) {
           let name = Array::get(items, j)
-          if !string_array_contains(let_names, name) {
-            let mut ri = 0
+          if !string_array_contains(local_names, name) {
+            // Imports bind in source order, so a later import with the same
+            // local spelling owns the facade export. Walk the already-built
+            // reference list backwards; this adds no module-sized scan.
+            let mut ri = Array::length(import_refs)
             let mut done = false
-            while ri < Array::length(import_refs) && !done {
+            while ri > 0 && !done {
+              ri = ri - 1
               let (raw_path, original, local) = Array::get(import_refs, ri)
               if local == name {
                 Array::push(edge_from, path)
@@ -2099,7 +2785,7 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
                 Array::push(edge_tname, original)
                 done = true
               } else {
-                ri = ri + 1
+                ()
               }
             }
           } else {
@@ -2126,9 +2812,10 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let edge_pub = empty_strings()
   let edge_tpath = empty_strings()
   let edge_tname = empty_strings()
+  let builtin_iterator_paths = empty_strings()
   let mut ei = 0
   while ei < file_count {
-    collect_reexport_edges_into(Array::get(paths, ei), Array::get(stmts_list, ei), paths, edge_from, edge_pub, edge_tpath, edge_tname)
+    collect_reexport_edges_into(Array::get(paths, ei), Array::get(stmts_list, ei), paths, edge_from, edge_pub, edge_tpath, edge_tname, builtin_iterator_paths)
     ei = ei + 1
   }
   // The origins of the entry file's re-export surface are program ABI (wasm
@@ -2211,7 +2898,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         if excluded {
           ()
         } else {
-          let mangled = namespace_exported_name(path, name)
+          let mangled = namespace_exported_def_name(path, name)
           Array::push(rename_paths, path)
           Array::push(rename_names, name)
           Array::push(rename_mangled, mangled)
@@ -2223,6 +2910,31 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
           }
         }
         ni = ni + 1
+      }
+      // A provider-qualified helper that collides with an aliased trait import
+      // is privately renamed before flattening. Unlike ordinary qualified
+      // methods, this rename is part of the module's publication mapping so a
+      // dependent import follows the helper instead of the provider builtin.
+      let source_stmts = Array::get(stmts_list, ri)
+      let exported_names = collect_exported_value_names(source_stmts)
+      let trait_collision_renames = trait_import_local_operation_renames(source_stmts, path)
+      let mut ci = 0
+      while ci < Array::length(trait_collision_renames) {
+        let (name, mangled) = Array::get(trait_collision_renames, ci)
+        if string_array_contains(exported_names, name) {
+          Array::push(rename_paths, path)
+          Array::push(rename_names, name)
+          Array::push(rename_mangled, mangled)
+          let key = plan_rename_key(path, name)
+          if !MutMap::has(rename_idx, key) {
+            MutMap::set(rename_idx, key, mangled)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        ci = ci + 1
       }
     }
     ri = ri + 1
@@ -2255,16 +2967,109 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
           },
           None => ()
         }
+        // A trait-only facade also publishes that trait's companion
+        // operations. They are not explicit re-export items, so carry every
+        // provider-qualified rename with the same head across this edge. The
+        // fixpoint makes this work through arbitrary facade chains.
+        let target_path = Array::get(edge_tpath, ci)
+        let target_name = Array::get(edge_tname, ci)
+        let target_prefix = String::concat(target_name, "::")
+        let public_prefix = String::concat(pub_name, "::")
+        let mut ri2 = 0
+        while ri2 < Array::length(rename_paths) {
+          let source_path = Array::get(rename_paths, ri2)
+          let source_name = Array::get(rename_names, ri2)
+          if source_path == target_path && String::starts_with(source_name, target_prefix) {
+            let from_name = String::concat(public_prefix, String::substring(source_name, String::length(target_prefix), String::length(source_name)))
+            let from_key = plan_rename_key(from, from_name)
+            if !MutMap::has(rename_idx, from_key) {
+              let mangled = Array::get(rename_mangled, ri2)
+              Array::push(rename_paths, from)
+              Array::push(rename_names, from_name)
+              Array::push(rename_mangled, mangled)
+              MutMap::set(rename_idx, from_key, mangled)
+              changed = true
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          ri2 = ri2 + 1
+        }
       }
       ci = ci + 1
     }
+  }
+  // Resolve authenticated origins to the same provider-unique values already
+  // used by import rewriting. This is computed once from the finished rename
+  // plan; consumers perform only membership checks over the small operation
+  // set and never re-walk the module graph.
+  let builtin_iterator_mangled = empty_strings()
+  let mut bmi = 0
+  while bmi < Array::length(rename_paths) {
+    let source_path = Array::get(rename_paths, bmi)
+    let source_name = Array::get(rename_names, bmi)
+    let mut trusted = false
+    let mut bpi = 0
+    while bpi < Array::length(builtin_iterator_paths) && !trusted {
+      let provider_path = Array::get(builtin_iterator_paths, bpi)
+      trusted = source_path == provider_path || (is_contract_ext(provider_path) && dir_of_path(source_path) == dir_of_path(provider_path))
+      bpi = bpi + 1
+    }
+    if trusted && iterator_namespace_operation(source_name, "Iterator") {
+      let mangled = Array::get(rename_mangled, bmi)
+      if !string_array_contains(builtin_iterator_mangled, mangled) {
+        Array::push(builtin_iterator_mangled, mangled)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    bmi = bmi + 1
   }
   ExportRenamePlan::{
     plan_paths: paths,
     rename_paths: rename_paths,
     rename_names: rename_names,
     rename_mangled: rename_mangled,
+    builtin_iterator_mangled: builtin_iterator_mangled,
     rename_idx: rename_idx
+  }
+}
+
+/// Add standard Iterator provenance for operation renames whose resolved
+/// provider was authenticated while building the export plan. This is the
+/// facade counterpart of the direct-import marker path.
+export fn append_builtin_iterator_plan_operation_markers(markers: Array[String], renames: Array[(String, String)], plan: ExportRenamePlan) -> Unit {
+  // First preserve the direct-import path. Its local namespace marker is
+  // emitted only when the whole namespace is free of source overrides.
+  append_builtin_iterator_operation_markers(markers, renames)
+  let mut i = 0
+  while i < Array::length(renames) {
+    let (_, resolved) = Array::get(renames, i)
+    if string_array_contains(plan.builtin_iterator_mangled, resolved) {
+      let split = String::index_of(resolved, "::")
+      if split > 0 {
+        let namespace = String::substring(resolved, 0, split)
+        if iterator_namespace_operation(resolved, namespace) {
+          let marker = String::concat(builtin_iterator_origin_marker_prefix(), namespace)
+          if !string_array_contains(markers, marker) {
+            Array::push(markers, marker)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
   }
 }
 
@@ -2308,7 +3113,47 @@ export fn export_plan_fingerprint_text(plan: ExportRenamePlan) -> String {
     StringBuilder::push(buf, Array::get(rename_mangled, i))
     i = i + 1
   }
+  let mut bi = 0
+  while bi < Array::length(plan.builtin_iterator_mangled) {
+    StringBuilder::push(buf, "|builtin-iterator>")
+    StringBuilder::push(buf, Array::get(plan.builtin_iterator_mangled, bi))
+    bi = bi + 1
+  }
   StringBuilder::freeze(buf)
+}
+
+fn append_imported_trait_operation_renames(plan: ExportRenamePlan, target: String, item: ImportItem, locally_visible: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit {
+  let is_trait = match item.kind {
+    Some(ImportTrait) => true,
+    _ => false
+  }
+  if is_trait && locally_visible {
+    let local_head = match item.alias {
+      Some(alias) => alias,
+      None => item.name
+    }
+    let source_prefix = String::concat(item.name, "::")
+    let mut i = 0
+    while i < Array::length(plan.rename_paths) {
+      let source_name = Array::get(plan.rename_names, i)
+      let source_path = Array::get(plan.rename_paths, i)
+      let same_provider = source_path == target || (is_contract_ext(target) && dir_of_path(source_path) == dir_of_path(target))
+      if same_provider && String::starts_with(source_name, source_prefix) {
+        let local_name = String::concat(local_head, String::substring(source_name, String::length(item.name), String::length(source_name)))
+        if !string_array_contains(locals_seen, local_name) {
+          Array::push(locals_seen, local_name)
+          Array::push(out, (local_name, Array::get(plan.rename_mangled, i)))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
 }
 
 fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Array[ImportItem], plain_reexports_only: Bool, out: Array[(String, String)], locals_seen: Array[String]) -> Unit {
@@ -2329,7 +3174,8 @@ fn append_import_value_renames(plan: ExportRenamePlan, target: String, items: Ar
     } else {
       true
     }
-    if String::index_of(original, "::") < 0 && !string_array_contains(locals_seen, local) {
+    append_imported_trait_operation_renames(plan, target, item, locally_visible, out, locals_seen)
+    if !string_array_contains(locals_seen, local) {
       // Walk bindings newest-first. Even a target that stays bare claims the
       // spelling and prevents an older import from supplying a stale rename.
       // Publication-only aliases claim their local spelling too: they emit no
@@ -2364,6 +3210,24 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
   if Array::length(rename_paths) == 0 {
     out
   } else {
+    // A source-local qualified helper owns its exact spelling. In particular,
+    // `import { trait Iterator }` plus a local `Iterator::map` intentionally
+    // blocks the imported operation, while an aliased `Iter::map` remains a
+    // distinct provider-owned spelling.
+    let mut li = 0
+    while li < Array::length(stmts) {
+      let local_name = match Array::get(stmts, li) {
+        SLet(_, _, name, _, _) => name,
+        SFnDecl(_, name, _, _, _) => name,
+        _ => ""
+      }
+      if String::index_of(local_name, "::") > 0 && !string_array_contains(locals_seen, local_name) {
+        Array::push(locals_seen, local_name)
+      } else {
+        ()
+      }
+      li = li + 1
+    }
     let base_dir = dir_of_path(path)
     // `build_import_env_collecting` prepends bindings as it walks source
     // order, so the last statement wins. Visit in reverse and retain only the
@@ -2371,7 +3235,7 @@ export fn collect_import_value_renames(plan: ExportRenamePlan, path: String, stm
     let mut i = Array::length(stmts) - 1
     while i >= 0 {
       match Array::get(stmts, i) {
-        SImport(raw_path, items) => {
+        SImport(raw_path, items) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
           let target = resolve_known_import_path(plan.plan_paths, base_dir, raw_path, path)
           append_import_value_renames(plan, target, items, false, out, locals_seen)
         },
@@ -2414,6 +3278,17 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
             None => name
           }
           SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, am))
+        },
+        SFnDecl(exported, name, body, requires, ensures) => {
+          let next_name = match MutMap::get(am.idx, name) {
+            Some(renamed) => renamed,
+            None => name
+          }
+          SFnDecl(exported, next_name, rewrite_alias_expr_ix(body, am), for requirement in requires {
+            rewrite_alias_expr_ix(requirement, am)
+          }, for guarantee in ensures {
+            rewrite_alias_expr_ix(guarantee, am)
+          })
         },
         SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, am)),
         SExport(items) => SExport(for item in items {
@@ -2541,7 +3416,11 @@ export fn append_import_alias_rewritten_non_import_stmts_with_renames(merged: Ar
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt {
-      SImport(_, items) => append_stdin_provider_import_alias_markers(merged, items),
+      SImport(path, items) => if is_builtin_iterator_serialized_boundary_path(path) {
+        Array::push(merged, stmt)
+      } else {
+        append_stdin_provider_import_alias_markers(merged, items)
+      },
       SReExport(_, _) => (),
       SAliasDecl(_, _) => (),
       _ => Array::push(merged, Array::get(rewritten, i))

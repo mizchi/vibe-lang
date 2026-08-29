@@ -1,10 +1,12 @@
 //# Imports
 
 import @vibe/compiler/core {
+  BindingOrigin,
   Expr,
   Pat,
   Stmt,
   Type,
+  TypeDef,
   TypeEnv,
   TypeExpr,
   canonical_builtin_name,
@@ -13,11 +15,15 @@ import @vibe/compiler/core {
   effect_row_emitted_text,
   entry_cache_safe_effects,
   env_lookup,
+  env_lookup_binding,
+  env_type_definition_origin,
+  env_type_defs,
   exception_effect_labels_equal,
   exception_kinds_compatible,
   exception_label_kind,
   exception_throw_label_for_kind,
   expr_children,
+  find_typedef,
   has_standard_host_provider,
   is_entry_admitted_effect,
   is_entry_cache_safe_operation,
@@ -25,6 +31,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   is_exception_label,
   is_exception_throw_operation,
+  resolve_type_alias_params,
   test_bench_default_effects,
   type_name_has_async_iterator_impl
 }
@@ -93,6 +100,7 @@ export enum EffectError {
   // diagnostic deliberately names the structural problem instead.
   EEEmptyHandle;
   EEPerformQuestionRequiresOptional(String, Int);
+  EEPerformQuestionSourceShadow(String, Int);
   EEPerformQuestionInvalidOperand(Int)
 }
 
@@ -216,6 +224,14 @@ export fn effect_error_to_string(err: EffectError) -> String {
         body
       }
     },
+    EEPerformQuestionSourceShadow(operation, off) => {
+      let body = String::concat("`perform? ", String::concat(operation, "(..)` resolves to a source function, not a capability operation; rename the source function or call the capability under an unshadowed name"))
+      if off >= 0 {
+        String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+      } else {
+        body
+      }
+    },
     EEPerformQuestionInvalidOperand(off) => {
       let body = "`perform?` takes a capability-operation call, like `perform? Fs::read_file(path)`. Either call an operation here, or drop `perform?` from this expression."
       if off >= 0 {
@@ -236,7 +252,7 @@ export fn effect_error_to_string(err: EffectError) -> String {
 // inside a function/lambda annotated `with Async`.
 //
 // Crucially it does NOT propagate to user functions that merely COMPOSE async
-// work: calling a `with Async` helper (e.g. `async_iter_collect`) from a
+// work: calling a `with Async` helper (e.g. `AsyncIter::collect`) from a
 // sync context is allowed (await is the identity on the synchronous backend,
 // and on a real async backend the value/Future mismatch is a separate type
 // error). Only env-absent BUILTIN primitives are checked, so the compiler /
@@ -402,6 +418,59 @@ fn afe_no_locals() -> Array[(String, String)] {
   array_empty()
 }
 
+// Selected package imports are the source-level provenance that survives even
+// when the projected TypeEnv intentionally hides AsyncIterator. Reset for each
+// checked program because unit-test daemons reuse this compiler instance.
+let afe_builtin_async_iter_import_names: Array[String] = array_empty()
+
+fn afe_is_async_iter_publication_name(name: String) -> Bool {
+  name == "AsyncIter" || name == "Array::iter" || name == "AsyncIter::empty" || name == "AsyncIter::once" || name == "AsyncIter::map" || name == "AsyncIter::filter" || name == "AsyncIter::take" || name == "AsyncIter::take_while" || name == "async_iter_arr" || name == "async_iter_empty" || name == "async_iter_once" || name == "async_iter_map" || name == "async_iter_filter" || name == "async_iter_take" || name == "async_iter_take_while"
+}
+
+let afe_builtin_async_iter_head = "#builtin:AsyncIter"
+
+fn afe_record_builtin_async_iter_imports(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => if path == "@vibe/builtin" {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          if afe_is_async_iter_publication_name(item.name) {
+            Array::push(afe_builtin_async_iter_import_names, item.name)
+            match item.alias {
+              Some(alias) => Array::push(afe_builtin_async_iter_import_names, alias),
+              None => ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      },
+      SModule(_, _, body) => afe_record_builtin_async_iter_imports(body),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn afe_has_recorded_builtin_async_iter_import(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(afe_builtin_async_iter_import_names) && !found {
+    if Array::get(afe_builtin_async_iter_import_names, i) == name {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 /// Head name of an inferred checker type (`AsyncIter[Int]` -> "AsyncIter").
 ///
 /// #1347/#1358 (Codex P1 on PR #1364): `CtEnum` counts too. An ENUM can
@@ -413,9 +482,22 @@ fn afe_no_locals() -> Array[(String, String)] {
 /// that RAN the await loop.
 fn afe_type_head_name(t: Type) -> Option[String] {
   match t {
-    CtNamed(n, _) => Some(n),
+    CtNamed(n, args) => if n == "#hkt" {
+      if Array::length(args) >= 1 {
+        match Array::get(args, 0) {
+          CtVar(_) => None,
+          other => afe_type_head_name(other)
+        }
+      } else {
+        None
+      }
+    } else {
+      Some(n)
+    },
     CtStruct(n) => Some(n),
     CtEnum(n) => Some(n),
+    CtConstructor(n, _) => Some(n),
+    CtApplied(head, _) => afe_type_head_name(head),
     _ => None
   }
 }
@@ -471,13 +553,16 @@ fn afe_bind_local(locals: Array[(String, String)], name: String, head: Option[St
   out
 }
 
-fn afe_bind_params(locals: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
+fn afe_bind_params(locals: Array[(String, String)], params: Array[(String, Option[TypeExpr])], env: TypeEnv) -> Array[(String, String)] {
   let mut cur = locals
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ptype) = Array::get(params, i)
     let head = match ptype {
-      Some(te) => afe_texpr_head_name(te),
+      Some(te) => match afe_texpr_head_name(te) {
+        Some(h) => Some(afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env))),
+        None => None
+      },
       None => None
     }
     cur = afe_bind_local(cur, pname, head)
@@ -505,7 +590,28 @@ fn afe_field_type_key(struct_name: String, field: String) -> String {
   String::concat(struct_name, String::concat(".", field))
 }
 
-fn afe_collect_field_types(stmts: Array[Stmt]) -> Unit {
+fn afe_field_head_with_origin(head: String, env: TypeEnv) -> String {
+  if head == "AsyncIter" {
+    let from_binding = afe_type_binding_is_builtin_async_iter(env)
+    let from_definition = match env_type_definition_origin(env, head) {
+      Some(origin) => afe_origin_is_builtin_async_iter(origin),
+      None => false
+    }
+    afe_tag_async_iter_head(head, from_binding || from_definition)
+  } else {
+    head
+  }
+}
+
+fn afe_record_field_type(struct_name: String, field: String, head: String, env: TypeEnv) -> Unit {
+  if String::length(head) > 0 {
+    Array::push(afe_field_types_cell, (afe_field_type_key(struct_name, field), afe_field_head_with_origin(head, env)))
+  } else {
+    ()
+  }
+}
+
+fn afe_collect_field_types(stmts: Array[Stmt], env: TypeEnv) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -513,16 +619,33 @@ fn afe_collect_field_types(stmts: Array[Stmt]) -> Unit {
         let mut j = 0
         while j < Array::length(fields) {
           let (fname, fty) = Array::get(fields, j)
-          let head = texpr_head_name_afe(fty)
-          if String::length(head) > 0 {
-            Array::push(afe_field_types_cell, (afe_field_type_key(sname, fname), head))
-          } else {
-            ()
+          afe_record_field_type(sname, fname, texpr_head_name_afe(fty), env)
+          j = j + 1
+        }
+      },
+      SModule(_, _, inner) => afe_collect_field_types(inner, env),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn afe_collect_env_field_types(env: TypeEnv) -> Unit {
+  let defs = env_type_defs(env)
+  let mut i = 0
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDStruct(sname, fields, _, _) => {
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, j)
+          match afe_type_head_name(fty) {
+            Some(head) => afe_record_field_type(sname, fname, head, env),
+            None => ()
           }
           j = j + 1
         }
       },
-      SModule(_, _, inner) => afe_collect_field_types(inner),
       _ => ()
     }
     i = i + 1
@@ -537,9 +660,10 @@ fn texpr_head_name_afe(t: TypeExpr) -> String {
   }
 }
 
-fn afe_set_field_types(stmts: Array[Stmt]) -> Unit {
+fn afe_set_field_types(stmts: Array[Stmt], env: TypeEnv) -> Unit {
   Array::truncate(afe_field_types_cell, 0)
-  afe_collect_field_types(stmts)
+  afe_collect_field_types(stmts, env)
+  afe_collect_env_field_types(env)
 }
 
 fn afe_lookup_field_type(struct_name: String, field: String) -> Option[String] {
@@ -558,41 +682,1078 @@ fn afe_lookup_field_type(struct_name: String, field: String) -> Option[String] {
   out
 }
 
+fn afe_applied_constructor_var(t: Type) -> Option[Int] {
+  match t {
+    CtApplied(CtVar(id), _) => Some(id),
+    CtNamed(n, args) => if n == "#hkt" && Array::length(args) >= 1 {
+      match Array::get(args, 0) {
+        CtVar(id) => Some(id),
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn afe_lookup_alias(env: TypeEnv, name: String) -> Option[(Array[String], Type)] {
+  match find_typedef(env_type_defs(env), name) {
+    Some(TDAlias(_, params, body)) => Some((params, body)),
+    _ => None
+  }
+}
+
+fn afe_expand_constructor_alias(t: Type, env: TypeEnv, fuel: Int) -> Type {
+  if fuel <= 0 {
+    t
+  } else {
+    match t {
+      CtForAll(ids, bounds, body) => CtForAll(ids, bounds, afe_expand_constructor_alias(body, env, fuel)),
+      CtNamed(name, args) => match afe_lookup_alias(env, name) {
+        Some((params, body)) => if Array::length(params) == Array::length(args) {
+          afe_expand_constructor_alias(resolve_type_alias_params(body, params, args), env, fuel - 1)
+        } else if Array::length(params) == 0 {
+          afe_expand_constructor_alias(body, env, fuel - 1)
+        } else {
+          t
+        },
+        None => t
+      },
+      CtApplied(head, args) => {
+        let expanded_head = afe_expand_constructor_alias(head, env, fuel - 1)
+        match expanded_head {
+          CtNamed(name, _) => match afe_lookup_alias(env, name) {
+            Some((params, body)) => if Array::length(params) == Array::length(args) {
+              afe_expand_constructor_alias(resolve_type_alias_params(body, params, args), env, fuel - 1)
+            } else {
+              CtApplied(expanded_head, args)
+            },
+            None => CtApplied(expanded_head, args)
+          },
+          CtConstructor(name, _) => match afe_lookup_alias(env, name) {
+            Some((params, body)) => if Array::length(params) == Array::length(args) {
+              afe_expand_constructor_alias(resolve_type_alias_params(body, params, args), env, fuel - 1)
+            } else {
+              CtApplied(expanded_head, args)
+            },
+            None => CtApplied(expanded_head, args)
+          },
+          _ => CtApplied(expanded_head, args)
+        }
+      },
+      _ => t
+    }
+  }
+}
+
+fn afe_type_binding_is_builtin_async_iter(env: TypeEnv) -> Bool {
+  match env_lookup_binding(env, "AsyncIter") {
+    Some(binding) => afe_origin_is_builtin_async_iter(binding.origin),
+    None => false
+  }
+}
+
+fn afe_tag_async_iter_head(head: String, provenanced: Bool) -> String {
+  if head == "AsyncIter" && provenanced {
+    afe_builtin_async_iter_head
+  } else if head == afe_builtin_async_iter_head {
+    afe_builtin_async_iter_head
+  } else {
+    head
+  }
+}
+
+fn afe_display_iter_head(head: String) -> String {
+  if head == afe_builtin_async_iter_head {
+    "AsyncIter"
+  } else {
+    head
+  }
+}
+
+fn afe_tuple_shape_key(name: String) -> String {
+  String::concat("__tupshape$", name)
+}
+
+fn afe_array_elem_key(name: String) -> String {
+  String::concat("__arrelem$", name)
+}
+
+fn afe_local_fn_return_key(name: String) -> String {
+  String::concat("__local_fn_return$", name)
+}
+
+fn afe_digit_index(field: String) -> Option[Int] {
+  let n = String::length(field)
+  if n == 0 {
+    None
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while i < n {
+      let c = String::char_code_at(field, i)
+      if c >= 48 && c <= 57 {
+        acc = acc * 10 + (c - 48)
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      Some(acc)
+    } else {
+      None
+    }
+  }
+}
+
+fn afe_split_csv(sentinel: String) -> Array[String] {
+  let out = array_empty()
+  let mut rest = sentinel
+  let mut go = true
+  while go {
+    let comma = String::index_of(rest, ",")
+    if comma < 0 {
+      Array::push(out, rest)
+      go = false
+    } else {
+      Array::push(out, String::substring(rest, 0, comma))
+      rest = String::substring(rest, comma + 1, String::length(rest))
+    }
+  }
+  out
+}
+
+fn afe_join_csv(parts: Array[String]) -> String {
+  let mut acc = ""
+  let mut i = 0
+  while i < Array::length(parts) {
+    acc = if i == 0 {
+      Array::get(parts, i)
+    } else {
+      String::concat(acc, String::concat(",", Array::get(parts, i)))
+    }
+    i = i + 1
+  }
+  acc
+}
+
+fn afe_prepend_expr(head: Expr, rest: Array[Expr]) -> Array[Expr] {
+  let out = array_empty()
+  Array::push(out, head)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
+/// Recover the concrete head returned by a constructor-polymorphic call such
+/// as `map[F[_]](xs: F[A], ...) -> F[B]`. The checker type keeps the same
+/// constructor variable on the receiver and result, so follow that receiver
+/// back to its source expression instead of treating the abstract `F[B]` as
+/// an unknown head.
+fn afe_call_result_head(callee_type: Type, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match callee_type {
+    CtForAll(_, _, body) => afe_call_result_head(body, args, env, locals),
+    CtFn(params, ret, _) => {
+      let expanded = afe_expand_constructor_alias(ret, env, 8)
+      match afe_type_head_name(expanded) {
+        Some(head) => Some(head),
+        None => match afe_applied_constructor_var(expanded) {
+          Some(result_var) => {
+            let mut i = 0
+            let mut result = None
+            while i < Array::length(params) && i < Array::length(args) {
+              match afe_applied_constructor_var(Array::get(params, i)) {
+                Some(param_var) => {
+                  let same_constructor = param_var == result_var
+                  if same_constructor {
+                    match afe_expr_head_name(Array::get(args, i), env, locals) {
+                      Some(head) => {
+                        result = Some(head)
+                        i = Array::length(params)
+                      },
+                      None => {
+                        i = i + 1
+                      }
+                    }
+                  } else {
+                    i = i + 1
+                  }
+                },
+                None => {
+                  i = i + 1
+                }
+              }
+            }
+            result
+          },
+          None => None
+        }
+      }
+    },
+    _ => None
+  }
+}
+
+fn afe_callee_is_builtin_async_iter(env: TypeEnv, name: String) -> Bool {
+  if afe_has_recorded_builtin_async_iter_import(name) {
+    true
+  } else {
+    match env_lookup_binding(env, name) {
+      Some(binding) => afe_origin_is_builtin_async_iter(binding.origin),
+      None => false
+    }
+  }
+}
+
+fn afe_finish_call_head(head: String, env: TypeEnv, callee: String) -> String {
+  if head == afe_builtin_async_iter_head {
+    head
+  } else {
+    afe_tag_async_iter_head(head, afe_callee_is_builtin_async_iter(env, callee) || afe_type_binding_is_builtin_async_iter(env))
+  }
+}
+
+fn afe_heads_agree(left: Option[String], right: Option[String]) -> Option[String] {
+  match left {
+    Some(name) => match right {
+      Some(other) => {
+        let same = name == other
+        if same {
+          Some(name)
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+fn afe_bind_shapes(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
+  let without = afe_bind_local(afe_bind_local(locals, afe_tuple_shape_key(name), None), afe_array_elem_key(name), None)
+  match val {
+    ETuple(items) => if Array::length(items) > 0 {
+      let parts = array_empty()
+      let mut i = 0
+      while i < Array::length(items) {
+        let part = match afe_expr_head_name(Array::get(items, i), env, locals) {
+          Some(h) => h,
+          None => ""
+        }
+        Array::push(parts, part)
+        i = i + 1
+      }
+      afe_bind_local(without, afe_tuple_shape_key(name), Some(afe_join_csv(parts)))
+    } else {
+      without
+    },
+    EArray(items) => if Array::length(items) > 0 {
+      afe_bind_local(without, afe_array_elem_key(name), afe_expr_head_name(Array::get(items, 0), env, locals))
+    } else {
+      without
+    },
+    _ => without
+  }
+}
+
+fn afe_fn_return_head(val: Expr, env: TypeEnv) -> Option[String] {
+  match val {
+    EFn(_, _, _, ret, _, _) => match ret {
+      Some(te) => match afe_texpr_head_name(te) {
+        Some(h) => Some(afe_tag_async_iter_head(h, afe_type_binding_is_builtin_async_iter(env))),
+        None => None
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn afe_bind_local_fn_return(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
+  afe_bind_local(locals, afe_local_fn_return_key(name), afe_fn_return_head(val, env))
+}
+
+fn afe_bind_value(locals: Array[(String, String)], name: String, val: Expr, env: TypeEnv) -> Array[(String, String)] {
+  let with_head = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
+  let with_fn = afe_bind_local_fn_return(with_head, name, val, env)
+  afe_bind_shapes(with_fn, name, val, env)
+}
+
+fn afe_match_arm_locals(scrut: Expr, pat: Pat, env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+  match pat {
+    PBind(name) => afe_bind_local(locals, name, afe_expr_head_name(scrut, env, locals)),
+    PCtor(cn, sub) => match scrut {
+      ECall(EIdent(name, _), args, _) => if name == cn || String::ends_with(name, String::concat("::", cn)) {
+        let mut acc = locals
+        let mut i = 0
+        while i < Array::length(sub) && i < Array::length(args) {
+          acc = afe_match_arm_locals(Array::get(args, i), Array::get(sub, i), env, acc)
+          i = i + 1
+        }
+        acc
+      } else {
+        locals
+      },
+      _ => locals
+    },
+    _ => locals
+  }
+}
+
+fn afe_tuple_elem_head(obj: Expr, field: String, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match afe_digit_index(field) {
+    None => None,
+    Some(idx) => match obj {
+      ETuple(items) => if idx >= 0 && idx < Array::length(items) {
+        afe_expr_head_name(Array::get(items, idx), env, locals)
+      } else {
+        None
+      },
+      EIdent(name, _) => match afe_lookup_local(locals, afe_tuple_shape_key(name)) {
+        Some(sentinel) => {
+          let parts = afe_split_csv(sentinel)
+          if idx >= 0 && idx < Array::length(parts) {
+            let elem = Array::get(parts, idx)
+            if String::length(elem) > 0 {
+              Some(elem)
+            } else {
+              None
+            }
+          } else {
+            None
+          }
+        },
+        None => None
+      },
+      _ => None
+    }
+  }
+}
+
+fn afe_array_elem_head(args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  if Array::length(args) == 2 {
+    match Array::get(args, 0) {
+      EIdent(arrname, _) => afe_lookup_local(locals, afe_array_elem_key(arrname)),
+      EArray(items) => if Array::length(items) > 0 {
+        afe_expr_head_name(Array::get(items, 0), env, locals)
+      } else {
+        None
+      },
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+fn afe_ident_call_head(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  if f == "Array::get" || f == "__index" {
+    match afe_array_elem_head(args, env, locals) {
+      Some(head) => Some(head),
+      None => afe_ident_call_head_generic(f, args, env, locals)
+    }
+  } else {
+    afe_ident_call_head_generic(f, args, env, locals)
+  }
+}
+
+fn afe_ident_call_head_generic(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match afe_lookup_local(locals, afe_local_fn_return_key(f)) {
+    Some(head) => Some(head),
+    None => afe_ident_call_head_env(f, args, env, locals)
+  }
+}
+
+fn afe_ident_call_head_env(f: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match env_lookup(env, f) {
+    Some(callee_type) => match afe_call_result_head(callee_type, args, env, locals) {
+      Some(head) => Some(afe_finish_call_head(head, env, f)),
+      None => match env_lookup_binding(env, f) {
+        Some(binding) => if afe_origin_is_builtin_async_iter(binding.origin) || afe_has_recorded_builtin_async_iter_import(f) {
+          Some(afe_builtin_async_iter_head)
+        } else {
+          None
+        },
+        None => None
+      }
+    },
+    _ => match lookup_builtin(f) {
+      Some(callee_type) => match afe_call_result_head(callee_type, args, env, locals) {
+        Some(head) => Some(afe_finish_call_head(head, env, f)),
+        None => if afe_has_recorded_builtin_async_iter_import(f) {
+          Some(afe_builtin_async_iter_head)
+        } else {
+          None
+        }
+      },
+      _ => match env_lookup_binding(env, f) {
+        Some(binding) => if afe_origin_is_builtin_async_iter(binding.origin) || afe_has_recorded_builtin_async_iter_import(f) {
+          Some(afe_builtin_async_iter_head)
+        } else {
+          None
+        },
+        None => if afe_has_recorded_builtin_async_iter_import(f) {
+          Some(afe_builtin_async_iter_head)
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
+fn afe_dot_call_head(obj: Expr, method: String, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match afe_expr_head_name(obj, env, locals) {
+    Some(receiver) => {
+      let display = afe_display_iter_head(receiver)
+      let qualified = String::concat(display, String::concat("::", method))
+      let call_args = afe_prepend_expr(obj, args)
+      match afe_ident_call_head(qualified, call_args, env, locals) {
+        Some(head) => Some(head),
+        None => if receiver == afe_builtin_async_iter_head && afe_is_async_iter_publication_name(qualified) {
+          Some(afe_builtin_async_iter_head)
+        } else {
+          None
+        }
+      }
+    },
+    None => None
+  }
+}
+
+fn afe_iife_head(params: Array[(String, Option[TypeExpr])], body: Expr, args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  let mut body_locals = afe_bind_params(locals, params, env)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    let inferred = if i < Array::length(args) {
+      afe_expr_head_name(Array::get(args, i), env, locals)
+    } else {
+      None
+    }
+    body_locals = afe_bind_local(body_locals, name, inferred)
+    i = i + 1
+  }
+  afe_expr_head_name(body, env, body_locals)
+}
+
+fn afe_handler_arm_head(arm_body: Expr, expected: String, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match arm_body {
+    ECall(EIdent("resume", _), resume_args, _) => if Array::length(resume_args) == 1 {
+      Some(expected)
+    } else {
+      None
+    },
+    ELet(name, val, body, _) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
+    ELetMut(name, val, body, _) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
+    ELetRec(name, val, body) => afe_handler_arm_head(body, expected, env, afe_bind_value(locals, name, val, env)),
+    EReturn(inner) => afe_handler_arm_head(inner, expected, env, locals),
+    EAssign(_, _, continuation) => afe_handler_arm_head(continuation, expected, env, locals),
+    EAssignOp(_, _, _, continuation) => afe_handler_arm_head(continuation, expected, env, locals),
+    ESeq(_, result) => afe_handler_arm_head(result, expected, env, locals),
+    EIf(_, then_branch, else_branch) => afe_heads_agree(afe_handler_arm_head(then_branch, expected, env, locals), afe_handler_arm_head(else_branch, expected, env, locals)),
+    _ => afe_expr_head_name(arm_body, env, locals)
+  }
+}
+
+fn afe_op_name_matches(name: String, op: String) -> Bool {
+  name == op || String::ends_with(name, String::concat("::", op)) || String::ends_with(op, String::concat("::", name))
+}
+
+fn afe_handler_consumes_op(arms: Array[(Pat, Expr)], op: String) -> Bool {
+  let mut i = 0
+  let mut consumes = false
+  while i < Array::length(arms) && !consumes {
+    let (pat, _) = Array::get(arms, i)
+    match pat {
+      PCtor(name, _) => if afe_op_name_matches(name, op) {
+        consumes = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  consumes
+}
+
+let afe_callable_bodies: Array[(String, Array[(String, Option[TypeExpr])], Option[String], Expr)] = array_empty()
+let afe_payload_call_stack: Array[String] = array_empty()
+let afe_reachability_keys: Array[String] = array_empty()
+let afe_reachability_values: Array[Bool] = array_empty()
+let afe_reachability_stack: Array[String] = array_empty()
+
+fn afe_collect_callable_bodies(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, params, _, effect, body)) => {
+        Array::push(afe_callable_bodies, (name, params, effect, body))
+      },
+      SFnDecl(_, name, EFn(_, _, params, _, effect, body), _, _) => {
+        Array::push(afe_callable_bodies, (name, params, effect, body))
+      },
+      SModule(_, _, body) => afe_collect_callable_bodies(body),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn afe_lookup_callable_body(name: String) -> Option[(Array[(String, Option[TypeExpr])], Option[String], Expr)] {
+  let mut i = Array::length(afe_callable_bodies) - 1
+  let mut out = None
+  let mut found = false
+  let mut ambiguous = false
+  while i >= 0 {
+    let (current, params, effect, body) = Array::get(afe_callable_bodies, i)
+    if current == name {
+      if found {
+        ambiguous = true
+      } else {
+        out = Some((params, effect, body))
+        found = true
+      }
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  if ambiguous {
+    None
+  } else {
+    out
+  }
+}
+
+fn afe_payload_call_is_active(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(afe_payload_call_stack) && !found {
+    found = Array::get(afe_payload_call_stack, i) == name
+    i = i + 1
+  }
+  found
+}
+
+fn afe_callable_may_perform(effect: Option[String], op: String) -> Bool {
+  match effect_row_parse(effect) {
+    Some(labels) => decl_authorizes_op(labels, op),
+    None => false
+  }
+}
+
+fn afe_reachability_key(name: String, op: String) -> String {
+  String::concat(name, String::concat("\t", op))
+}
+
+fn afe_reachability_cache_get(key: String) -> Option[Bool] {
+  let mut i = 0
+  let mut out = None
+  while i < Array::length(afe_reachability_keys) {
+    if Array::get(afe_reachability_keys, i) == key {
+      out = Some(Array::get(afe_reachability_values, i))
+      i = Array::length(afe_reachability_keys)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn afe_reachability_is_active(key: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(afe_reachability_stack) && !found {
+    found = Array::get(afe_reachability_stack, i) == key
+    i = i + 1
+  }
+  found
+}
+
+fn afe_expr_may_perform(expr: Expr, op: String) -> Bool {
+  match expr {
+    EHandle(body, arms) => {
+      let mut found = if afe_handler_consumes_op(arms, op) {
+        false
+      } else {
+        afe_expr_may_perform(body, op)
+      }
+      let mut i = 0
+      while i < Array::length(arms) && !found {
+        let (_, arm_body) = Array::get(arms, i)
+        found = afe_expr_may_perform(arm_body, op)
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, _, _, _, _) => false,
+    ECall(callee, args, _) => {
+      let mut found = match callee {
+        EIdent("perform", _) => if Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(EIdent(op_name, _), _, _) => afe_op_name_matches(op_name, op),
+            _ => false
+          }
+        } else {
+          false
+        },
+        EFn(_, _, _, _, _, body) => afe_expr_may_perform(body, op),
+        EIdent(name, _) => afe_callable_reaches_op(name, op),
+        _ => false
+      }
+      let mut i = 0
+      while i < Array::length(args) && !found {
+        found = afe_expr_may_perform(Array::get(args, i), op)
+        i = i + 1
+      }
+      found
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(children) && !found {
+        found = afe_expr_may_perform(Array::get(children, i), op)
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn afe_callable_reaches_op(name: String, op: String) -> Bool {
+  let key = afe_reachability_key(name, op)
+  match afe_reachability_cache_get(key) {
+    Some(value) => value,
+    None => if afe_reachability_is_active(key) {
+      false
+    } else match afe_lookup_callable_body(name) {
+      Some((_, effect, body)) => {
+        let stack_len = Array::length(afe_reachability_stack)
+        Array::push(afe_reachability_stack, key)
+        let result = afe_callable_may_perform(effect, op) && afe_expr_may_perform(body, op)
+        Array::truncate(afe_reachability_stack, stack_len)
+        if result {
+          Array::push(afe_reachability_keys, key)
+          Array::push(afe_reachability_values, true)
+        } else {
+          ()
+        }
+        result
+      },
+      None => false
+    }
+  }
+}
+
+fn afe_callable_body_locals(params: Array[(String, Option[TypeExpr])], args: Array[Expr], env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+  let mut body_locals = afe_bind_params(locals, params, env)
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    let inferred = if i < Array::length(args) {
+      afe_expr_head_name(Array::get(args, i), env, locals)
+    } else {
+      None
+    }
+    body_locals = afe_bind_local(body_locals, name, inferred)
+    i = i + 1
+  }
+  body_locals
+}
+
+fn afe_collect_perform_payloads(expr: Expr, op: String, payload_index: Int, env: TypeEnv, locals: Array[(String, String)], out: Array[Option[String]]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      if !afe_handler_consumes_op(arms, op) {
+        afe_collect_perform_payloads(body, op, payload_index, env, locals, out)
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_locals = afe_handler_arm_locals(body, pat, env, locals)
+        afe_collect_perform_payloads(arm_body, op, payload_index, env, arm_locals, out)
+        i = i + 1
+      }
+    },
+    EFn(_, _, _, _, _, _) => (),
+    ELet(name, val, body, _) => {
+      afe_collect_perform_payloads(val, op, payload_index, env, locals, out)
+      afe_collect_perform_payloads(body, op, payload_index, env, afe_bind_value(locals, name, val, env), out)
+    },
+    ELetMut(name, val, body, _) => {
+      afe_collect_perform_payloads(val, op, payload_index, env, locals, out)
+      afe_collect_perform_payloads(body, op, payload_index, env, afe_bind_value(locals, name, val, env), out)
+    },
+    ELetRec(name, val, body) => {
+      let rec_locals = afe_bind_value(locals, name, val, env)
+      afe_collect_perform_payloads(val, op, payload_index, env, rec_locals, out)
+      afe_collect_perform_payloads(body, op, payload_index, env, rec_locals, out)
+    },
+    EAssign(name, val, continuation) => {
+      afe_collect_perform_payloads(val, op, payload_index, env, locals, out)
+      afe_collect_perform_payloads(continuation, op, payload_index, env, afe_bind_value(locals, name, val, env), out)
+    },
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(name, _) => if name == "perform" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(EIdent(op_name, _), oargs, _) => if afe_op_name_matches(op_name, op) && payload_index >= 0 && payload_index < Array::length(oargs) {
+              Array::push(out, afe_expr_head_name(Array::get(oargs, payload_index), env, locals))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      match callee {
+        EFn(_, _, params, _, _, body) => {
+          let body_locals = afe_callable_body_locals(params, args, env, locals)
+          afe_collect_perform_payloads(body, op, payload_index, env, body_locals, out)
+        },
+        EIdent(name, _) => if name == "perform" || afe_payload_call_is_active(name) {
+          ()
+        } else match afe_lookup_callable_body(name) {
+          Some((params, effect, body)) => if afe_callable_may_perform(effect, op) && afe_callable_reaches_op(name, op) {
+            let stack_len = Array::length(afe_payload_call_stack)
+            Array::push(afe_payload_call_stack, name)
+            let body_locals = afe_callable_body_locals(params, args, env, locals)
+            afe_collect_perform_payloads(body, op, payload_index, env, body_locals, out)
+            Array::truncate(afe_payload_call_stack, stack_len)
+          } else {
+            ()
+          },
+          None => ()
+        },
+        _ => ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        afe_collect_perform_payloads(Array::get(args, i), op, payload_index, env, locals, out)
+        i = i + 1
+      }
+    },
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(children) {
+        afe_collect_perform_payloads(Array::get(children, i), op, payload_index, env, locals, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn afe_perform_payload_head(body: Expr, op: String, payload_index: Int, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  let payloads = array_empty()
+  afe_collect_perform_payloads(body, op, payload_index, env, locals, payloads)
+  if Array::length(payloads) == 0 {
+    None
+  } else {
+    let mut i = 1
+    let mut result = Array::get(payloads, 0)
+    while i < Array::length(payloads) {
+      match result {
+        Some(expected) => match Array::get(payloads, i) {
+          Some(actual) => if actual != expected {
+            result = None
+          } else {
+            ()
+          },
+          None => {
+            result = None
+          }
+        },
+        None => {
+          i = Array::length(payloads)
+        }
+      }
+      i = i + 1
+    }
+    result
+  }
+}
+
+fn afe_handler_arm_locals(body: Expr, pat: Pat, env: TypeEnv, locals: Array[(String, String)]) -> Array[(String, String)] {
+  match pat {
+    PCtor(cn, sub) => {
+      let mut arm_locals = locals
+      let mut i = 0
+      while i < Array::length(sub) {
+        match Array::get(sub, i) {
+          PBind(name) => {
+            arm_locals = afe_bind_local(arm_locals, name, afe_perform_payload_head(body, cn, i, env, locals))
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      arm_locals
+    },
+    _ => locals
+  }
+}
+
+fn afe_handle_head(body: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match afe_expr_head_name(body, env, locals) {
+    None => None,
+    Some(expected) => {
+      let mut i = 0
+      let mut agrees = true
+      while i < Array::length(arms) && agrees {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_locals = afe_handler_arm_locals(body, pat, env, locals)
+        match afe_handler_arm_head(arm_body, expected, env, arm_locals) {
+          Some(actual) => {
+            let same = actual == expected
+            if !same {
+              agrees = false
+            } else {
+              ()
+            }
+          },
+          None => {
+            agrees = false
+          }
+        }
+        i = i + 1
+      }
+      if agrees {
+        Some(expected)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn afe_match_head(scrut: Expr, arms: Array[(Pat, Expr)], env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  if Array::length(arms) == 0 {
+    None
+  } else {
+    let mut i = 0
+    let mut result = None
+    let mut agrees = true
+    while i < Array::length(arms) && agrees {
+      let (pat, body) = Array::get(arms, i)
+      let arm_locals = afe_match_arm_locals(scrut, pat, env, locals)
+      match afe_expr_head_name(body, env, arm_locals) {
+        Some(head) => match result {
+          Some(expected) => {
+            let same = head == expected
+            if !same {
+              agrees = false
+            } else {
+              ()
+            }
+          },
+          None => {
+            result = Some(head)
+          }
+        },
+        None => {
+          agrees = false
+        }
+      }
+      i = i + 1
+    }
+    if agrees {
+      result
+    } else {
+      None
+    }
+  }
+}
+
+fn afe_collect_loop_head(expr: Expr, env: TypeEnv, locals: Array[(String, String)], expected: Array[String], valid: Array[Bool]) -> Unit {
+  if !Array::get(valid, 0) {
+    ()
+  } else {
+    match expr {
+      EAssign("__loop_result", value, continuation) => {
+        match afe_expr_head_name(value, env, locals) {
+          Some(actual) => if Array::length(expected) == 0 {
+            Array::push(expected, actual)
+          } else if Array::get(expected, 0) != actual {
+            Array::set(valid, 0, false)
+          } else {
+            ()
+          },
+          None => Array::set(valid, 0, false)
+        }
+        afe_collect_loop_head(continuation, env, locals, expected, valid)
+      },
+      EBreak(Some(value)) => match afe_expr_head_name(value, env, locals) {
+        Some(actual) => if Array::length(expected) == 0 {
+          Array::push(expected, actual)
+        } else if Array::get(expected, 0) != actual {
+          Array::set(valid, 0, false)
+        } else {
+          ()
+        },
+        None => Array::set(valid, 0, false)
+      },
+      ELetMut("__loop_result", _, _, _) => (),
+      ELoop(_, _) => (),
+      EWhile(_, _) => (),
+      EForIn(_, _, _, _) => (),
+      EFn(_, _, _, _, _, _) => (),
+      ELet(name, value, body, _) => {
+        afe_collect_loop_head(value, env, locals, expected, valid)
+        afe_collect_loop_head(body, env, afe_bind_value(locals, name, value, env), expected, valid)
+      },
+      ELetMut(name, value, body, _) => {
+        afe_collect_loop_head(value, env, locals, expected, valid)
+        afe_collect_loop_head(body, env, afe_bind_value(locals, name, value, env), expected, valid)
+      },
+      EMatch(scrut, arms) => {
+        afe_collect_loop_head(scrut, env, locals, expected, valid)
+        let mut i = 0
+        while i < Array::length(arms) && Array::get(valid, 0) {
+          let (pat, body) = Array::get(arms, i)
+          afe_collect_loop_head(body, env, afe_match_arm_locals(scrut, pat, env, locals), expected, valid)
+          i = i + 1
+        }
+      },
+      EHandle(body, arms) => {
+        afe_collect_loop_head(body, env, locals, expected, valid)
+        let mut i = 0
+        while i < Array::length(arms) && Array::get(valid, 0) {
+          let (_, arm_body) = Array::get(arms, i)
+          afe_collect_loop_head(arm_body, env, locals, expected, valid)
+          i = i + 1
+        }
+      },
+      _ => {
+        let children = expr_children(expr)
+        let mut i = 0
+        while i < Array::length(children) && Array::get(valid, 0) {
+          afe_collect_loop_head(Array::get(children, i), env, locals, expected, valid)
+          i = i + 1
+        }
+      }
+    }
+  }
+}
+
+fn afe_parameterized_loop_head(body: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  match body {
+    ESeq(EWhile(_, loop_body), EIdent("__loop_result", _)) => {
+      let expected = array_empty()
+      let valid = [true]
+      afe_collect_loop_head(loop_body, env, locals, expected, valid)
+      if Array::get(valid, 0) && Array::length(expected) == 1 {
+        Some(Array::get(expected, 0))
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+fn afe_loop_head(inits: Array[(String, Expr)], body: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
+  let mut body_locals = locals
+  let mut i = 0
+  while i < Array::length(inits) {
+    let (name, val) = Array::get(inits, i)
+    body_locals = afe_bind_value(body_locals, name, val, env)
+    i = i + 1
+  }
+  let expected = array_empty()
+  let valid = [true]
+  afe_collect_loop_head(body, env, body_locals, expected, valid)
+  if Array::get(valid, 0) && Array::length(expected) == 1 {
+    Some(Array::get(expected, 0))
+  } else {
+    None
+  }
+}
+
 fn afe_expr_head_name(e: Expr, env: TypeEnv, locals: Array[(String, String)]) -> Option[String] {
   match e {
     EIdent(n, _) => match afe_lookup_local(locals, n) {
       Some(h) => Some(h),
       None => match env_lookup(env, n) {
-        Some(t) => afe_type_head_name(t),
+        Some(t) => match afe_type_head_name(t) {
+          Some(head) => Some(afe_tag_async_iter_head(head, afe_callee_is_builtin_async_iter(env, n) || afe_type_binding_is_builtin_async_iter(env))),
+          None => None
+        },
         None => None
       }
     },
-    // `Counter::{ .. }` -- the struct literal names its own type.
     ERecord(n, _, _) => if String::length(n) > 0 {
-      Some(n)
+      Some(afe_tag_async_iter_head(n, afe_type_binding_is_builtin_async_iter(env)))
     } else {
       None
     },
-    // #1341: a PROJECTION (`h.s`) -- the object's type name plus the field
-    // name give the field's declared head. Mirrors infer_arg_type_name's EDot
-    // arm in the desugar so both passes classify the same expression shapes.
-    EDot(obj, field, _, _) => match afe_expr_head_name(obj, env, locals) {
-      Some(otype) => afe_lookup_field_type(otype, field),
-      None => None
-    },
-    // `for x in async_iter_arr(xs)` -- the callee's declared return head.
-    // #1341: a BUILTIN callee (`host_stream_named("body")`) is absent from the
-    // type env -- builtins resolve through lookup_builtin -- so the env lookup
-    // alone left every direct-call iterand unclassified.
-    ECall(EIdent(f, _), _, _) => match env_lookup(env, f) {
-      Some(CtFn(_, ret, _)) => afe_type_head_name(ret),
-      _ => match lookup_builtin(f) {
-        Some(CtFn(_, bret, _)) => afe_type_head_name(bret),
-        _ => None
+    EDot(obj, field, _, _) => match afe_tuple_elem_head(obj, field, env, locals) {
+      Some(head) => Some(head),
+      None => match afe_expr_head_name(obj, env, locals) {
+        Some(otype) => afe_lookup_field_type(afe_display_iter_head(otype), field),
+        None => None
       }
     },
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => afe_ident_call_head(f, args, env, locals),
+      EDot(obj, method, _, _) => afe_dot_call_head(obj, method, args, env, locals),
+      EFn(_, _, params, _, _, body) => afe_iife_head(params, body, args, env, locals),
+      _ => None
+    },
+    ELet(name, val, body, _) => afe_expr_head_name(body, env, afe_bind_value(locals, name, val, env)),
+    ELetMut(name, val, body, _) => if name == "__loop_result" {
+      afe_parameterized_loop_head(body, env, locals)
+    } else {
+      afe_expr_head_name(body, env, afe_bind_value(locals, name, val, env))
+    },
+    ELetRec(name, val, body) => {
+      let rec_locals = afe_bind_value(locals, name, val, env)
+      afe_expr_head_name(body, env, rec_locals)
+    },
+    EReturn(inner) => afe_expr_head_name(inner, env, locals),
+    EAssign(_, _, continuation) => afe_expr_head_name(continuation, env, locals),
+    EAssignOp(_, _, _, continuation) => afe_expr_head_name(continuation, env, locals),
+    ESeq(_, result) => afe_expr_head_name(result, env, locals),
+    EIf(_, then_branch, else_branch) => afe_heads_agree(afe_expr_head_name(then_branch, env, locals), afe_expr_head_name(else_branch, env, locals)),
+    EMatch(scrut, arms) => afe_match_head(scrut, arms, env, locals),
+    EHandle(body, arms) => afe_handle_head(body, arms, env, locals),
+    ELoop(inits, body) => afe_loop_head(inits, body, env, locals),
     _ => None
   }
+}
+
+/// The public constructor is the package-stable evidence available after
+/// `@vibe/builtin` projection hides its private `AsyncIterator` trait. Require
+/// the imported signature as well as the nominal head: a user-defined struct
+/// that happens to be named `AsyncIter` must remain an ordinary sync value.
+fn afe_origin_is_builtin_async_iter(origin: BindingOrigin) -> Bool {
+  let (path, source_name) = match origin {
+    BindingOriginModuleExport(origin_path, source) => (origin_path, source),
+    BindingOriginReExportSurface(origin_path, source) => (origin_path, source),
+    BindingOriginUnavailable => ("", "")
+  }
+  let from_builtin = String::ends_with(path, "@vibe/builtin/index.vpkg") || String::ends_with(path, "@vibe/builtin/async_iter.vibe")
+  let publishes_async_iter = afe_is_async_iter_publication_name(source_name)
+  from_builtin && publishes_async_iter
+}
+
+fn afe_has_builtin_async_iter_provenance(env: TypeEnv) -> Bool {
+  afe_type_binding_is_builtin_async_iter(env)
 }
 
 /// The iterand's type name when driving it with `for` awaits each step,
@@ -605,22 +1766,48 @@ fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: Array[(String, String)]) 
     // loop on that read directly (build_host_stream_for). The loop therefore
     // parks once per byte, so the enclosing row must carry `Async` for exactly
     // the reason #1358 gave for trait-based async iterators.
-    Some(tn) => if tn == "HostStream" || type_name_has_async_iterator_impl(env, tn) {
-      Some(tn)
-    } else {
-      None
+    Some(tn) => {
+      let display = afe_display_iter_head(tn)
+      if display == "HostStream" || type_name_has_async_iterator_impl(env, display) {
+        Some(display)
+      } else if tn == afe_builtin_async_iter_head || (display == "AsyncIter" && afe_has_builtin_async_iter_provenance(env)) {
+        Some("AsyncIter")
+      } else {
+        None
+      }
     },
     None => None
   }
 }
 
+fn afe_contains_for(expr: Expr) -> Bool {
+  match expr {
+    EForIn(_, _, _, _) => true,
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(children) && !found {
+        found = afe_contains_for(Array::get(children, i))
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
   check_async_effects_expr_lo(expr, env, in_async, afe_no_locals())
 }
 
 /// #1358: the same walk with a `name -> head type name` table for the bindings
 /// in scope, so an async `for` can be recognised through an ordinary local
-/// (`let it = async_iter_arr(xs); for x in it`) and through a typed parameter.
+/// (`let it = Array::iter(xs); for x in it`) and through a typed parameter.
 fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals: Array[(String, String)]) -> Array[EffectError] {
   let errors = array_empty()
   // Preserve the legacy preorder diagnostic order: inspect a call before its
@@ -645,15 +1832,20 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
     // Scope boundary: a lambda's explicit row replaces its enclosing Async
     // context. All other expression forms retain the context unchanged.
     EFn(_, _, params, _, effect, body) => {
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params)))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params, env)))
     },
     EHandle(body, arms) => {
       let discharges_async = handle_arms_handle_async(arms)
       append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async || discharges_async, locals))
       let mut ai = 0
       while ai < Array::length(arms) {
-        let (_, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, locals))
+        let (pat, arm_body) = Array::get(arms, ai)
+        let arm_locals = if afe_contains_for(arm_body) {
+          afe_handler_arm_locals(body, pat, env, locals)
+        } else {
+          locals
+        }
+        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, arm_locals))
         ai = ai + 1
       }
     },
@@ -662,14 +1854,14 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
     // itself, so both sides see it.
     ELet(name, val, body, _) => {
       append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_value(locals, name, val, env)))
     },
     ELetMut(name, val, body, _) => {
       append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))))
+      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_value(locals, name, val, env)))
     },
     ELetRec(name, val, body) => {
-      let rec_locals = afe_bind_local(locals, name, afe_expr_head_name(val, env, locals))
+      let rec_locals = afe_bind_value(locals, name, val, env)
       append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, rec_locals))
       append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, rec_locals))
     },
@@ -710,20 +1902,29 @@ fn check_async_effects_binding(ty: Option[TypeExpr], body: Expr, env: TypeEnv) -
     // #1358: descending straight into `fbody` skips the EFn arm, so bind this
     // binding's own parameters here — otherwise `fn drain(s: AsyncIter[Int])`
     // would not resolve `s` when its body loops over it.
-    EFn(_, _, params, _, eff, fbody) => check_async_effects_expr_lo(fbody, env, sig_async || effect_opt_is_async(eff), afe_bind_params(afe_no_locals(), merge_param_types_with_sig(ty, params))),
-    _ => check_async_effects_expr(body, env, sig_async)
+    EFn(_, _, params, _, eff, fbody) => check_async_effects_expr_lo(fbody, env, sig_async || effect_opt_is_async(eff), afe_bind_params(afe_no_locals(), merge_param_types_with_sig(ty, params), env)),
+    _ => check_async_effects_expr_lo(body, env, sig_async, afe_no_locals())
+  }
+}
+
+fn check_async_effects_stmt_lo(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
+  match stmt {
+    SLet(_, _, _, ty, body) => check_async_effects_binding(ty, body, env),
+    SLetMut(_, ty, body) => check_async_effects_binding(ty, body, env),
+    STest(_, body) => check_async_effects_expr_lo(body, env, false, afe_no_locals()),
+    SBench(_, body) => check_async_effects_expr_lo(body, env, false, afe_no_locals()),
+    SExpr(e) => check_async_effects_expr_lo(e, env, false, afe_no_locals()),
+    _ => array_empty()
   }
 }
 
 export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
-  match stmt {
-    SLet(_, _, _, ty, body) => check_async_effects_binding(ty, body, env),
-    SLetMut(_, ty, body) => check_async_effects_binding(ty, body, env),
-    STest(_, body) => check_async_effects_expr(body, env, false),
-    SBench(_, body) => check_async_effects_expr(body, env, false),
-    SExpr(e) => check_async_effects_expr(e, env, false),
-    _ => array_empty()
-  }
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
+  check_async_effects_stmt_lo(stmt, env)
 }
 
 export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
@@ -733,10 +1934,18 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
   // #1341: rebuild the struct field-type table for THIS program before the
   // walk, so a stale one from a previous module can never classify a
   // same-named field here.
-  afe_set_field_types(stmts)
+  afe_set_field_types(stmts, env)
+  Array::truncate(afe_builtin_async_iter_import_names, 0)
+  afe_record_builtin_async_iter_imports(stmts)
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
+  afe_collect_callable_bodies(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
-    append_eff_errs(errors, check_async_effects_stmt(Array::get(stmts, i), env))
+    append_eff_errs(errors, check_async_effects_stmt_lo(Array::get(stmts, i), env))
     i = i + 1
   }
   errors
@@ -2689,10 +3898,15 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             let lexical_callee = lookup_fn_effs(ov_names, ov_effs, name)
             if name == "perform?" && Array::length(args) == 1 {
               match perform_question_op_name(Array::get(args, 0)) {
-                Some(op_name) => if decl_authorizes_optional_op(declared, op_name) {
-                  ()
-                } else {
-                  Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
+                Some(op_name) => {
+                  let lexical_operation = lookup_fn_effs(ov_names, ov_effs, op_name)
+                  if source_definition_shadows_builtin(op_name, lexical_operation, fn_names, fn_effs) {
+                    Array::push(errors, EEPerformQuestionSourceShadow(op_name, call_off))
+                  } else if decl_authorizes_optional_op(declared, op_name) {
+                    ()
+                  } else {
+                    Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
+                  }
                 },
                 // The operand is not a recognizable operation call, as in
                 // `perform? 1`. Reject it here so malformed source never

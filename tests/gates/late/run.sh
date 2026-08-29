@@ -1275,6 +1275,16 @@ VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
 # concat, not the loop.
 VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
   fixtures/effect_for_builtin_iterand_suspend_test.vibe
+# #2345: the same allowlist, the same failure mode, a new name.
+# `Bytes::index_of_bytes` is the Bytes-prologue half of the windowed substring
+# search `String::index_of` already reaches, and scps_named_call_ok consults
+# the list by exact name with no registry fallback -- so without the entry a
+# handle body calling it is refused naming the call. LINEAR only: a
+# suspend-class arm captures `resume` as a value and the gc backend does not
+# lower that, so a gc run of this shape proves nothing here. The fixture
+# carries `String::index_of` as its own control.
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh \
+  fixtures/effect_suspend_bytes_index_of_bytes_test.vibe
 # #1714 P0: the callee-return proof reads the module's TOP-LEVEL statements, so
 # a local binding spelling the same name made it answer about the wrong
 # function -- lowering a String iterand to the indexed ARRAY form, which
@@ -1724,8 +1734,11 @@ echo "[compiler-gate] closure shadowed inline builtin ok (28)"
 #        whole-program view -- ordinary FS-mode compilation never reproduced
 #        it -- so this gate drives the REAL merge lane
 #        (VIBE_EMIT_MERGED_SOURCE=1, the same mode generate_bundle.sh uses)
-#        and then compiles its output, rather than compiling the sources
-#        directly. Note the merge STRIPS the qualification: `Msg::Request(..)`
+#        and then compiles its output through the trusted single-source lane
+#        used by generate_bundle.sh. The flat artifact carries compiler-only
+#        source-boundary metadata, so feeding it back through ordinary FS
+#        ingestion would correctly reject that reserved syntax as a user
+#        forgery. Note the merge STRIPS the qualification: `Msg::Request(..)`
 #        in a pattern comes out as bare `Request(..)`, which is exactly the
 #        state the bare-name resolution has to get right.
 echo "[compiler-gate] 57/57 merged-program ctor/effect-op name collision across packages (#1078)"
@@ -1782,7 +1795,7 @@ if [ ! -s "$c1078dir/merged.vibe" ]; then
   cat "$c1078dir/merged.vibe.diag" 2>/dev/null >&2 || true
   exit 1
 fi
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$c1078dir/merged.vibe" "$c1078dir/out.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$c1078dir/out.wasm" ]; then

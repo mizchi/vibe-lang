@@ -7,6 +7,7 @@ This directory is the vibe core library, self-hosted by porting selected parts o
 | Module | Test Count | Description |
 |--------|-----------:|-------------|
 | `builtin_traits.vibe` | 8 | Trait-oriented generic API (`Eq`/`Hash`/`Ord`/`Add`/`Signed`, `ord_clamp`, `num_abs`) |
+| `iterator.vibe` | 7 | Finite indexed `Iterator[T]` protocol and eager `Iterator::*` operations for Array, String, Map, and user collections |
 | `option.vibe` | 13 | Generic Option helpers (`is_some`, `unwrap_or`, `map_opt`, `map_or`, `or_else`, `equals`) |
 | `cmp.vibe` | 4 | Compare helpers (`int/float/double/string_compare`, `maximum/minimum`, `*_by`, `*_by_key`) |
 | `int.vibe` | 14 | Integer helpers (`abs`, `max`, `min`, `clamp`, `pow`, `gcd`, `lcm`, `factorial`, `fibonacci`) |
@@ -71,13 +72,34 @@ Boundary enforcement is active in:
 - `ord_min`, `ord_max`, `ord_clamp`, `ord_between` for ordering (`T: Ord`)
 - `num_add`, `num_sub`, `num_mul`, `num_div`, `num_abs`, `num_square`, `num_clamp`
 
-`option.vibe` now exposes short names as the preferred API:
+`iterator.vibe` provides the finite collection protocol and its eager transform
+surface. Trait-associated operations stay in the trait namespace instead of
+adding bare top-level names. Importing the trait is sufficient to make its
+exported namespaced operations visible:
+
+```vibe
+import @vibe/builtin { trait Iterator }
+
+let arrays = [1, 2]
+  |> Iterator::map((x) -> { x + 1 })
+  |> Iterator::map((x) -> { x * 2 })
+```
+
+Implementing `Iterator` with `iter_length` and `iter_get` makes
+`Iterator::map`, `filter`, `fold`, `find`, `any`, `all`, and `flatmap`
+available. These eager operations return arrays where applicable. Array calls
+devirtualize to the existing `Array::*` intrinsics; Map key iteration uses a
+direct storage read and does not allocate `Map::keys` per element. `AsyncIter`
+is a separate pull layer with its own `AsyncIter::*` operations (ADR-0099/0110).
+
+`option.vibe` exposes these additional Option-specific helpers:
 
 - `is_some`, `is_none`, `unwrap_or`, `unwrap_or_else`
 - `map_opt`, `map_or`, `flatten`, `flatmap`, `filter`, `zip`
 - `and`, `or`, `or_else`, `equals`, `zip_sum`
 - `option_*` prefixes are no longer exported.
-- `map` itself is reserved in vibe syntax, so Option map is named `map_opt`.
+- `map_opt` remains the explicit Option-specific helper. Option does not
+  implement the finite indexed `Iterator` protocol.
 
 `result.vibe` was removed in #1324 (see the header comment in `index.vpkg`):
 `Result` no longer exists as a language- or library-provided type. A program
@@ -88,7 +110,8 @@ is carried by `Exception[E]` effect rows (ADR-0085).
 
 `@vibe/builtin` では parser 予約語制約を前提に、以下を canonical API 名として扱う。
 
-- Option: `map_opt`, `flatmap`, `map_or`, `unwrap_or`, `unwrap_or_else`
+- Finite collection transform: `Iterator::map` through `Iterator[T]`
+- Option-specific: `map_opt`, `flatmap`, `map_or`, `unwrap_or`, `unwrap_or_else`
 - Array: `Array::map`, `flatmap`, `filter`, `fold`
 
 互換 alias 運用ルール:

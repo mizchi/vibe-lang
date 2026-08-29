@@ -10,11 +10,15 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, hex_encode
 }
 
 import @vibe/compiler/loader {
-  collect_all_sources_fs, collect_source_groups_fs, load_or_parse_module_header_fs, load_persistent_source_group_fingerprint_if_valid
+  collect_all_sources_fs,
+  collect_source_groups_fs,
+  ingest_source_text_fs,
+  load_or_parse_module_header_fs,
+  load_persistent_source_group_fingerprint_if_valid
 }
 
 //# Functions
@@ -274,6 +278,29 @@ test "load_or_parse_module_header_fs: warm cache reuses deps and exports" {
   assert(Array::get(exports2, 0) == "_start")
 }
 
+test "load_or_parse_module_header_fs: Iterator provenance carrier is not a dependency" {
+  let base_dir = "/tmp/vibe_compiler_iterator_boundary_header"
+  let main_path = String::concat(base_dir, "/merged.vibe")
+  let main_source = "import @vibe/compiler/internal/iterator_boundary { trait Iterator as Iter }\nexport let _start: () -> Int = () -> { 0 }"
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  remove_file_if_exists(persistent_module_header_cache_path(main_path, compact_string_fingerprint(main_source)))
+  let (deps, exports, parse_count) = load_or_parse_module_header_fs(main_path, main_source, 0)
+  inspect(parse_count, "1")
+  inspect(Array::length(deps), "0")
+  inspect(Array::length(exports), "1")
+  inspect(Array::get(exports, 0), "_start")
+}
+
+test "ingest_source_text_fs: users cannot forge Iterator provenance carriers" {
+  let source = "import @vibe/compiler/internal/iterator_boundary { trait Iterator as Local }\nexport let _start: () -> Int = () -> { 0 }"
+  let message = handle {
+    let _ = ingest_source_text_fs("/tmp/forged_iterator_boundary.vibe", source)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(message, "remove reserved compiler import `@vibe/compiler/internal/iterator_boundary`: this path is generated internally and cannot be imported by source files")
+}
+
 test "load_or_parse_module_header_fs: package dep re-resolves when store copy vanishes (#801)" {
   // The header cache stores RESOLVED dep paths. `@scope/name` resolution
   // prefers .vibe/store over lib/, so a header cached while a store copy
@@ -334,4 +361,56 @@ test "persistent_module_header_cache_path: uses compiled-safe filename" {
   let path = persistent_module_header_cache_path("/tmp/vibe_compiler_persistent_module_header/main.vibe", compact_string_fingerprint("export let run: () -> Int = () -> { 1 }"))
   assert(String::index_of(path, ":") < 0)
   assert(String::starts_with(path, "_build/vibe_selfhost_module_header_"))
+}
+
+test "v4 facade cache treats malformed dependency paths as misses" {
+  let base_dir = "/tmp/vibe_facade_hex_miss_2338"
+  let dep_dir = String::concat(base_dir, "/dep")
+  let vpkg_path = String::concat(base_dir, "/index.vpkg")
+  let box_path = String::concat(base_dir, "/box.vibe")
+  let source_path = String::concat(dep_dir, "/source.vibe")
+  if Fs::exists(base_dir) {
+    Fs::remove(base_dir)
+  } else {
+    ()
+  }
+  Fs::mkdir_p(dep_dir)
+  Fs::write_bytes(vpkg_path, string_to_bytes("name = @vibetest/hexmiss2338\nversion = 0.0.1\ndeps = {}\n\ngenerated_hash =\n\ntype Box[T]\n"))
+  Fs::write_bytes(box_path, string_to_bytes("export ./dep/source.vibe { Box }\n"))
+  Fs::write_bytes(source_path, string_to_bytes("export type Box[T] = T\n"))
+  let first = handle {
+    let _ = collect_all_sources_fs(vpkg_path)
+    "ok"
+  } with { Exception::Throw(msg) => String::concat("err:", msg) }
+  inspect(first, content = "ok")
+  let needle = hex_encode(source_path)
+  let names = Fs::readdir("_build")
+  let mut cache_path = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if cache_path == "" && String::starts_with(name, "vibe_selfhost_contract_facade_") {
+      let path = String::concat("_build/", name)
+      if String::contains(Fs::read_file(path), needle) {
+        cache_path = path
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(cache_path != "")
+  let original = Fs::read_file(cache_path)
+  let at = String::index_of(original, needle)
+  assert(at >= 0)
+  let corrupted = String::concat(original[0: at], String::concat("zz", original[at + String::length(needle): String::length(original)]))
+  Fs::write_bytes(cache_path, string_to_bytes(corrupted))
+  let collected = handle {
+    let _ = collect_all_sources_fs(vpkg_path)
+    true
+  } with { Exception::Throw(_) => false }
+  Fs::write_bytes(cache_path, string_to_bytes(original))
+  assert(collected)
 }

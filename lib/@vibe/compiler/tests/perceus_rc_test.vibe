@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/perceus {
-  PerceusAction, build_perceus_plan, pa_is_alias_dup, pa_is_drop, pa_is_dup
+  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup
 }
 
 import @vibe/compiler/core {
@@ -346,6 +346,30 @@ test "perceus: array read via Array::get is borrowed and dropped" {
   let body = ELet("a", EArray([EInt(1), EInt(2), EInt(3)]), getcall, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "a") == 1)
+}
+
+test "perceus: a shadowed borrow builtin follows the computed ownership set" {
+  let call = ECall(EIdent("Map::iter_get", -1), [EInt(1), EInt(0)], -1)
+  let body = ELet("result", call, EUnit, -1)
+  let masks: Array[Int] = []
+  let owned_plan = build_perceus_plan_with_params([], body, [], [], masks, [])
+  assert(count_drops(owned_plan, "result") == 1)
+  let borrowed_plan = build_perceus_plan_with_params([], body, ["Map::iter_get"], [
+  ], masks, [])
+  assert(count_drops(borrowed_plan, "result") == 0)
+}
+
+test "#2379 review: a source-owned Map accessor consumes its first argument" {
+  let call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1), EInt(0)], -1)
+  let body = ELet("m", EArray([EInt(1)]), call, -1)
+  let owned_plan = build_perceus_plan_with_params([], body, [], [
+    "Map::iter_get"
+  ], [0], [])
+  assert(count_drops(owned_plan, "m") == 0)
+  let borrowed_plan = build_perceus_plan_with_params([], body, [], [
+    "Map::iter_get"
+  ], [1], [])
+  assert(count_drops(borrowed_plan, "m") == 1)
 }
 
 /// A handler arm-local pattern binding that is only borrowed is dropped.

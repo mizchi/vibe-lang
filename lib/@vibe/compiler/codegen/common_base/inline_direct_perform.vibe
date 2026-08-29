@@ -137,13 +137,24 @@ fn opq_source_value_exists(names: Array[String], name: String) -> Bool {
 /// source call, so fail here before a denied branch can erase it or a granted
 /// branch can wrap it as an optional capability result.
 fn opq_require_registry_operation(source_names: Array[String], operation: String) -> Unit with Exception {
-  match lookup_registry_builtin(operation) {
-    Some(_) => if opq_source_value_exists(source_names, operation) {
+  // `Fs::readdir` is the one checker-visible capability surface that is not a
+  // func-table registry row: compile_call lowers it to the registered
+  // `vibe_fs_read_dir_raw` import plus String::split. Keep provenance aligned
+  // with that explicit surface-to-host lowering.
+  let registered = if operation == "Fs::readdir" {
+    true
+  } else match lookup_registry_builtin(operation) {
+    Some(_) => true,
+    None => false
+  }
+  if registered {
+    if opq_source_value_exists(source_names, operation) {
       throw(String::concat("`perform? ", String::concat(operation, "(..)` resolves to a source function, not a capability operation; rename the source function or call the capability under an unshadowed name")))
     } else {
       ()
-    },
-    None => throw(String::concat("`perform? ", String::concat(operation, "(..)` is not a registered capability operation")))
+    }
+  } else {
+    throw(String::concat("`perform? ", String::concat(operation, "(..)` is not a registered capability operation")))
   }
 }
 
@@ -494,6 +505,24 @@ fn idp_pure_builtin_names() -> Array[String] {
     "String::split",
     "String::contains",
     "String::index_of",
+    // #2345: the Bytes-prologue half of the SAME windowed substring search
+    // `String::index_of` above reaches through a String prologue. Registry row
+    // `(Bytes, Bytes) -> Int`, effect None, no function-typed parameter -- the
+    // audit this list's doc comment demands. The consumer that needs it is
+    // scps_named_call_ok (suspend-class lowering), which has no registry
+    // fallback: without this entry a handle body calling it is refused naming
+    // the call, exactly as `Array::concat` was before #1536.
+    "Bytes::index_of_bytes",
+    // #2345: the single-byte family, on the same audit as the substring
+    // entry above -- registry rows `(Bytes, Int) -> Int`, effect None, no
+    // function-typed parameter. All three were added to the registry in this
+    // PR and to this list only after review caught it, which is the fourth
+    // time one hand-maintained declaration was missed while another was
+    // updated (see #2373).
+    "Bytes::index_of",
+    "Bytes::count",
+    "Bytes::last_index_of",
+    "Bytes::compare",
     "String::to_lower",
     "String::to_upper",
     "String::ends_with",
@@ -4923,6 +4952,14 @@ fn edp_pure_builtin_names() -> Array[String] {
     "String::split",
     "String::contains",
     "String::index_of",
+    // #2345: mirrors idp_pure_builtin_names' entry (same audit, see that
+    // list's comment).
+    "Bytes::index_of_bytes",
+    // #2345: mirrors idp_pure_builtin_names' entries (same audit).
+    "Bytes::index_of",
+    "Bytes::count",
+    "Bytes::last_index_of",
+    "Bytes::compare",
     "String::to_lower",
     "String::to_upper",
     "String::ends_with",
@@ -12529,7 +12566,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
 // whose body cannot reach a perform of E (no perform at all, no needing
 // name, no opaque callee), or the enclosing top-level fn's own row-free
 // param whose slot is proven the same way (delegation, e.g.
-// `async_iter_any` forwarding `pred` to `async_iter_find`) -- then a call
+// `AsyncIter::any` forwarding `pred` to `AsyncIter::find`) -- then a call
 // through that parameter inside the clone cannot suspend and compiles as
 // a plain call.
 //

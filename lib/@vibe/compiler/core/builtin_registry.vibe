@@ -321,6 +321,12 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("Array::set", CtFn(reg_p3(CtArray(reg_any()), CtInt, reg_any()), CtUnit, None), true, true, true),
   ("Double::to_int", CtFn(reg_p1(CtDouble), CtInt, None), true, true, true),
   ("Int::to_double", CtFn(reg_p1(CtInt), CtDouble, None), true, true, true),
+  // #2344: scalar bit primitives. Both lanes -- these are ordinary wasm
+  // instructions, not SIMD, and rank/select needs them far more than it needs
+  // a vector (bench/bench_simd_rank.vibe: i64.popcnt carries 344x of 438x).
+  ("Int::popcount", CtFn(reg_p1(CtInt), CtInt, None), true, true, true),
+  ("Int::ctz", CtFn(reg_p1(CtInt), CtInt, None), true, true, true),
+  ("Int::clz", CtFn(reg_p1(CtInt), CtInt, None), true, true, true),
   ("String::char_code_at", CtFn(reg_p2(CtString, CtInt), CtInt, None), true, true, true),
   ("String::from_char_code", CtFn(reg_p1(CtInt), CtString, None), true, true, true),
   ("String::substring", CtFn(reg_p3(CtString, CtInt, CtInt), CtString, None), true, true, true),
@@ -373,6 +379,11 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool)] = [
   ("Bytes::append", CtFn(reg_p2(CtBytes, CtBytes), CtUnit, None), true, true, true),
   ("Bytes::concat", CtFn(reg_p2(CtBytes, CtBytes), CtBytes, None), true, true, true),
   ("Bytes::slice", CtFn(reg_p3(CtBytes, CtInt, CtInt), CtBytes, None), true, true, true),
+  ("Bytes::index_of_bytes", CtFn(reg_p2(CtBytes, CtBytes), CtInt, None), true, true, true),
+  ("Bytes::index_of", CtFn(reg_p2(CtBytes, CtInt), CtInt, None), true, true, true),
+  ("Bytes::count", CtFn(reg_p2(CtBytes, CtInt), CtInt, None), true, true, true),
+  ("Bytes::last_index_of", CtFn(reg_p2(CtBytes, CtInt), CtInt, None), true, true, true),
+  ("Bytes::compare", CtFn(reg_p2(CtBytes, CtBytes), CtInt, None), true, true, true),
   ("__to_string", CtFn(reg_p1(reg_any()), CtString, None), true, true, true),
   ("vibe_rc_drop", CtFn(reg_p1(reg_any()), CtUnit, None), true, false, false),
   ("vibe_rc_alloc", CtFn(reg_p1(CtInt), CtInt, None), true, false, false),
@@ -695,12 +706,11 @@ export fn builtin_allocates(name: String) -> Bool {
 /// a result, and functions whose tails reduce to these are themselves
 /// borrow-returning (#707).
 ///
-/// SINGLE SOURCE OF TRUTH (#1979): the perceus classifiers
-/// (is_borrow_ret_fname, compute_borrow_returning_names' seed) and every
-/// codegen call-shape check (compile_call / compile_match /
-/// compile_expr_tail / common_analysis) reach the set through this function or
-/// the predicate below, which SCANS it -- there is one spelling of the names,
-/// not two that must be kept equal. The set used to live as five hardcoded
+/// SINGLE SOURCE OF TRUTH (#1979): the Perceus seed and every codegen
+/// call-shape check reach the intrinsic set through this function or the
+/// predicate below, which SCANS it -- there is one spelling of the names, not
+/// two that must be kept equal. Perceus removes a source-owned shadowable name
+/// from this seed before classifying calls. The set used to live as five hardcoded
 /// copies, and two of them drifted when MutList::get landed: a wrapper of the
 /// missing builtin then classifies as owned-returning and RC callers drop an
 /// interior view, a silent double-free caught only by review (#1932). Add new
@@ -710,10 +720,19 @@ export fn builtin_allocates(name: String) -> Bool {
 /// compute_borrow_returning_names' fixed-point worklist pushes discovered user
 /// functions into the one it is given.
 export fn borrow_ret_builtin_names() -> Array[String] {
-  ["Array::get", "MutList::get", "Map::get", "__index", "__rec_field"]
+  [
+    "Array::get",
+    "MutList::get",
+    "Map::get",
+    "Map::iter_get",
+    "Map::__iter_get_unchecked",
+    "__index",
+    "__rec_field"
+  ]
 }
 
-/// Membership in `borrow_ret_builtin_names`, for the direct-call classifiers.
+/// Membership in `borrow_ret_builtin_names`, before source ownership is
+/// applied by the whole-program Perceus classifier.
 ///
 /// A linear scan rather than the `||` chain this replaced: the chain was a
 /// second spelling of the list above, so adding a builtin to one and not the
@@ -738,10 +757,10 @@ export fn is_borrow_ret_builtin(name: String) -> Bool {
 /// The enumerated non-allocating set. Grouped by why they are free.
 fn builtin_is_non_allocating(name: String) -> Bool {
   // Pure scalar reads and predicates over an existing value.
-  name == "String::length" || name == "String::equals" || name == "String::char_code_at" || name == "String::ends_with" || name == "String::starts_with" || name == "String::contains" || name == "String::index_of" || name == "String::last_index_of" ||
+  name == "String::length" || name == "String::equals" || name == "String::char_code_at" || name == "String::ends_with" || name == "String::starts_with" || name == "String::contains" || name == "String::index_of" || name == "Bytes::index_of_bytes" || name == "Bytes::index_of" || name == "Bytes::count" || name == "Bytes::last_index_of" || name == "Bytes::compare" || name == "String::last_index_of" ||
   // Indexed container access. `set`/`blit`/`fill` write into storage that is
   // already there; `truncate` only lowers a length.
-  name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::truncate" || name == "FrozenArray::get" || name == "FrozenArray::length" || name == "FixedArray::length" || name == "FixedArray::get" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "FixedArray::blit" || name == "Int64Array::length" || name == "Int64Array::get" || name == "Int64Array::set" || name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::blit" || name == "Bytes::fill" ||
+  name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::truncate" || name == "FrozenArray::get" || name == "FrozenArray::length" || name == "FixedArray::length" || name == "FixedArray::get" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "FixedArray::blit" || name == "Int64Array::length" || name == "Int64Array::get" || name == "Int64Array::set" || name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::blit" || name == "Bytes::fill" || name == "Map::iter_get" || name == "Map::__iter_get_unchecked" ||
   // Membership questions that return a Bool, not a value.
   name == "MapBuilder::has_key" || name == "map_has" ||
   // Int-domain conversions (Char/Int stay unboxed; the Float family does NOT
@@ -749,6 +768,13 @@ fn builtin_is_non_allocating(name: String) -> Bool {
   name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" ||
   // Comparison / logic primitives.
   name == "eq" || name == "not" || name == "str_lex_diff" || name == "__generic_rel_diff" ||
+  // #2344: bit primitives. Each body is local.get + i64 consts + shifts /
+  // and / or + one of popcnt / ctz / clz, over an UNBOXED Int -- no heap
+  // touched on any path. Omitting them made `builtin_allocates` default them
+  // to allocating, which REJECTED correct code: a `#zero_alloc` fn calling
+  // Int::popcount got "may allocate: call to 'Int::popcount' (not proven
+  // allocation-free)".
+  name == "Int::popcount" || name == "Int::ctz" || name == "Int::clz" ||
   // SIMD scanners that return an index.
   name == "simd_skip_ws" || name == "simd_scan_alnum" || name == "simd_scan_alnum_str" || name == "simd_scan_string_special_str" || name == "simd_scan_line_end_str" ||
   // Output and assertions: they consume, they do not produce.

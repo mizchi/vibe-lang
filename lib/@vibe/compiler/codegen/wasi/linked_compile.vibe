@@ -61,9 +61,14 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_truncate_body,
   gen_array_value_copy_body,
   gen_bytes_append_body,
+  gen_bytes_compare_body,
   gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
   gen_bytes_from_array_body,
   gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
   gen_bytes_len_body,
   gen_bytes_new_body,
   gen_bytes_push_body,
@@ -74,6 +79,9 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_eq_body,
   gen_generic_add_body,
   gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
   gen_map_build_index_body,
   gen_map_cap_body,
   gen_map_hash_body,
@@ -132,6 +140,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
+  md_is_borrow_arg0_call,
   scope_tail_proj_root,
   stmts_contain_exceptions,
   unique_call_offsets_in_stmts,
@@ -149,6 +158,7 @@ import @vibe/compiler/codegen/common_base {
   LineMapState,
   StrTable,
   agg_info_of_type_expr,
+  append_hidden_attempt_constructors,
   await_poll_pass,
   codegen_body_cache_find,
   codegen_body_cache_merge,
@@ -427,11 +437,37 @@ fn bytebuf_push_i32le(buf: Bytes, v: Int) -> Unit {
   bytebuf_push(buf, (v>>24)&255)
 }
 
-/// #1085: builtins whose arg0 is BORROWED (kept in sync with
-/// cc_is_borrow_arg0_call in codegen/expr/compile_call.vibe and
-/// is_borrow_arg0_call in perceus/perceus.vibe).
-fn lc_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "ArrayBuilder::push" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::keys" || f == "Map::has_key" || f == "Map::has" || f == "Map::set" || f == "Map::size" || f == "Map::values" || f == "Map::delete" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "__rec_field"
+/// #1085: builtins whose arg0 is borrowed, with source-owned Map accessors
+/// removed by the two-bit override computed once per linked compile.
+fn lc_is_borrow_arg0_call(f: String, source_owned_mask: Int) -> Bool {
+  let source_owns = (f == "Map::iter_get" && (source_owned_mask&1) != 0) || (f == "Map::__iter_get_unchecked" && (source_owned_mask&2) != 0)
+  !source_owns && md_is_borrow_arg0_call(f)
+}
+
+fn lc_source_owned_borrow_mask(names: Array[String], masks: Array[Int]) -> Int {
+  let mut out = 0
+  let checked = bsearch_leftmost(names, "Map::iter_get")
+  if checked >= 0 && checked < Array::length(masks) && !bmask_has(Array::get(masks, checked), 0) {
+    out = out|1
+  } else {
+    ()
+  }
+  let unchecked = bsearch_leftmost(names, "Map::__iter_get_unchecked")
+  if unchecked >= 0 && unchecked < Array::length(masks) && !bmask_has(Array::get(masks, unchecked), 0) {
+    out = out|2
+  } else {
+    ()
+  }
+  out
+}
+
+/// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
+/// and `Bytes::compare` read both of their `Bytes` arguments and drop neither,
+/// so bit 1 belongs in the mask beside bit 0. The arg0 predicate above cannot
+/// say this -- it is one bit -- which is why this is a separate list rather
+/// than a wider version of that one.
+fn lc_is_borrow_arg1_call(f: String) -> Bool {
+  f == "Bytes::index_of_bytes" || f == "Bytes::compare"
 }
 
 /// #1085: does `name` have a consuming occurrence OUTSIDE any loop body?
@@ -450,17 +486,17 @@ fn lc_is_borrow_arg0_call(f: String) -> Bool {
 /// loop-borrow sites themselves. Branches use OR (existence), which
 /// over-approximates toward suppressing the epilogue drop: the loop-only
 /// path then leaks one reference, the safe direction.
-fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
+fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool {
   match e {
     EIdent(n, _) => n == name,
-    ETuple(items) => lc_hnc_any(items, name),
-    EArray(items) => lc_hnc_any(items, name),
+    ETuple(items) => lc_hnc_any(items, name, source_owned_mask),
+    EArray(items) => lc_hnc_any(items, name, source_owned_mask),
     ERecord(_, fields, _) => {
       let mut found = false
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        if lc_has_nonloop_consume(v, name) {
+        if lc_has_nonloop_consume(v, name, source_owned_mask) {
           found = true
         } else {
           ()
@@ -474,7 +510,7 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        if lc_has_nonloop_consume(v, name) {
+        if lc_has_nonloop_consume(v, name, source_owned_mask) {
           found = true
         } else {
           ()
@@ -483,23 +519,23 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
       }
       found
     },
-    EIf(c, t, el) => lc_has_nonloop_consume(c, name) || lc_has_nonloop_consume(t, name) || lc_has_nonloop_consume(el, name),
-    ELet(_, v, b, _) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
-    ELetRec(_, v, b) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
-    ELetMut(_, v, b, _) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
-    EAssign(_, v, b) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
-    EAssignOp(_, _, v, b) => lc_has_nonloop_consume(v, name) || lc_has_nonloop_consume(b, name),
-    ESeq(a, b) => lc_has_nonloop_consume(a, name) || lc_has_nonloop_consume(b, name),
+    EIf(c, t, el) => lc_has_nonloop_consume(c, name, source_owned_mask) || lc_has_nonloop_consume(t, name, source_owned_mask) || lc_has_nonloop_consume(el, name, source_owned_mask),
+    ELet(_, v, b, _) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
+    ELetRec(_, v, b) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
+    ELetMut(_, v, b, _) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
+    EAssign(_, v, b) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
+    EAssignOp(_, _, v, b) => lc_has_nonloop_consume(v, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
+    ESeq(a, b) => lc_has_nonloop_consume(a, name, source_owned_mask) || lc_has_nonloop_consume(b, name, source_owned_mask),
     EMatch(s, arms) => {
       let scr = match s {
         EIdent(_, _) => false,
-        _ => lc_has_nonloop_consume(s, name)
+        _ => lc_has_nonloop_consume(s, name, source_owned_mask)
       }
       let mut found = scr
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ab) = Array::get(arms, i)
-        if lc_has_nonloop_consume(ab, name) {
+        if lc_has_nonloop_consume(ab, name, source_owned_mask) {
           found = true
         } else {
           ()
@@ -511,13 +547,13 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
     EHandle(s, arms) => {
       let scr = match s {
         EIdent(_, _) => false,
-        _ => lc_has_nonloop_consume(s, name)
+        _ => lc_has_nonloop_consume(s, name, source_owned_mask)
       }
       let mut found = scr
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ab) = Array::get(arms, i)
-        if lc_has_nonloop_consume(ab, name) {
+        if lc_has_nonloop_consume(ab, name, source_owned_mask) {
           found = true
         } else {
           ()
@@ -526,13 +562,13 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
       }
       found
     },
-    EWhile(c, _) => lc_has_nonloop_consume(c, name),
+    EWhile(c, _) => lc_has_nonloop_consume(c, name, source_owned_mask),
     ELoop(params, _) => {
       let mut found = false
       let mut i = 0
       while i < Array::length(params) {
         let (_, v) = Array::get(params, i)
-        if lc_has_nonloop_consume(v, name) {
+        if lc_has_nonloop_consume(v, name, source_owned_mask) {
           found = true
         } else {
           ()
@@ -541,26 +577,30 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
       }
       found
     },
-    EForIn(_, _, it, _) => lc_has_nonloop_consume(it, name),
+    EForIn(_, _, it, _) => lc_has_nonloop_consume(it, name, source_owned_mask),
     ECall(callee, args, _) => {
       let borrow0 = match callee {
-        EIdent(f, _) => lc_is_borrow_arg0_call(f),
+        EIdent(f, _) => lc_is_borrow_arg0_call(f, source_owned_mask),
+        _ => false
+      }
+      let borrow1 = match callee {
+        EIdent(f, _) => lc_is_borrow_arg1_call(f),
         _ => false
       }
       let callee_c = match callee {
         EIdent(_, _) => false,
-        _ => lc_has_nonloop_consume(callee, name)
+        _ => lc_has_nonloop_consume(callee, name, source_owned_mask)
       }
       let mut found = callee_c
       let mut i = 0
       while i < Array::length(args) {
-        let skip_borrowed_head = borrow0 && i == 0 && (match Array::get(args, i) {
+        let skip_borrowed_head = ((borrow0 && i == 0) || (borrow1 && i == 1)) && (match Array::get(args, i) {
           EIdent(_, _) => true,
           _ => false
         })
         if skip_borrowed_head {
           ()
-        } else if lc_has_nonloop_consume(Array::get(args, i), name) {
+        } else if lc_has_nonloop_consume(Array::get(args, i), name, source_owned_mask) {
           found = true
         } else {
           ()
@@ -569,27 +609,27 @@ fn lc_has_nonloop_consume(e: Expr, name: String) -> Bool {
       }
       found
     },
-    EBinOp(_, l, r) => lc_has_nonloop_consume(l, name) || lc_has_nonloop_consume(r, name),
-    EUnaryOp(_, x) => lc_has_nonloop_consume(x, name),
-    EFn(_, _, _, _, _, fb) => lc_has_nonloop_consume(fb, name),
-    EDot(x, _, _, _) => lc_has_nonloop_consume(x, name),
-    ELabeledArg(_, _, v) => lc_has_nonloop_consume(v, name),
-    EReturn(x) => lc_has_nonloop_consume(x, name),
+    EBinOp(_, l, r) => lc_has_nonloop_consume(l, name, source_owned_mask) || lc_has_nonloop_consume(r, name, source_owned_mask),
+    EUnaryOp(_, x) => lc_has_nonloop_consume(x, name, source_owned_mask),
+    EFn(_, _, _, _, _, fb) => lc_has_nonloop_consume(fb, name, source_owned_mask),
+    EDot(x, _, _, _) => lc_has_nonloop_consume(x, name, source_owned_mask),
+    ELabeledArg(_, _, v) => lc_has_nonloop_consume(v, name, source_owned_mask),
+    EReturn(x) => lc_has_nonloop_consume(x, name, source_owned_mask),
     EBreak(opt) => match opt {
-      Some(v) => lc_has_nonloop_consume(v, name),
+      Some(v) => lc_has_nonloop_consume(v, name, source_owned_mask),
       None => false
     },
-    EContinue(args) => lc_hnc_any(args, name),
-    ESpread(x) => lc_has_nonloop_consume(x, name),
+    EContinue(args) => lc_hnc_any(args, name, source_owned_mask),
+    ESpread(x) => lc_has_nonloop_consume(x, name, source_owned_mask),
     _ => false
   }
 }
 
-fn lc_hnc_any(items: Array[Expr], name: String) -> Bool {
+fn lc_hnc_any(items: Array[Expr], name: String, source_owned_mask: Int) -> Bool {
   let mut found = false
   let mut i = 0
   while i < Array::length(items) {
-    if lc_has_nonloop_consume(Array::get(items, i), name) {
+    if lc_has_nonloop_consume(Array::get(items, i), name, source_owned_mask) {
       found = true
     } else {
       ()
@@ -3763,10 +3803,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // program) so those lookups are bsearch_leftmost instead of a linear scan
   // -- same rationale as ctor_table.names_sorted above.
   let lc_borrow_ret_names = sorted_names_of(compute_borrow_returning_names(stmts))
-  // ADR-0092 borrow-inference: user fns with at least one borrowed parameter
-  // program-wide (read-only, never valued/aliased -- see
-  // compute_borrow_param_user_fns). The entry fn and the conventional entry
-  // names are excluded: the host invokes them without consulting the set.
+  // ADR-0092 borrow-inference: program-wide source function borrow masks
+  // (read-only, never valued/aliased -- see compute_borrow_param_user_fns).
+  // Source-owned shadowable builtins remain present with mask zero when they
+  // consume every parameter. The entry fn and conventional entry names are
+  // excluded: the host invokes them without consulting the set.
   //
   // Slice 1 (#1282) inferred POSITION 0 only; this is the per-position
   // generalization, so a fn that consumes param0 but only reads param2 now
@@ -3814,6 +3855,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   } else {
     lc_fresh_string_array()
   }
+  let lc_source_owned_borrow_bits = lc_source_owned_borrow_mask(lc_borrow_param_user_srt, lc_borrow_param_mask)
   // Fns whose RETURN may be an unowned interior view: these mark
   // view_call_let in the planner (see PCtx.view_ret_user and the gate
   // comment above). NOT intersected with the borrow-param set: a callee
@@ -3979,24 +4021,6 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     }
     builtin_ctor_i = builtin_ctor_i + 1
   }
-  // Optional-perform lowering uses compiler-owned names that source cannot
-  // spell. They retain Attempt's public representation even when user code
-  // declares constructors named NotGranted, Errored, or Granted.
-  let hidden_attempt_ctor_names = [
-    "$vibe_attempt_not_granted",
-    "$vibe_attempt_errored",
-    "$vibe_attempt_granted"
-  ]
-  let hidden_attempt_ctor_tags = [2, 3, 4]
-  let hidden_attempt_ctor_fields = [0, 1, 1]
-  let mut hidden_attempt_ctor_i = 0
-  while hidden_attempt_ctor_i < Array::length(hidden_attempt_ctor_names) {
-    Array::push(ctor_names_list, Array::get(hidden_attempt_ctor_names, hidden_attempt_ctor_i))
-    Array::push(ctor_tags_list, Array::get(hidden_attempt_ctor_tags, hidden_attempt_ctor_i))
-    Array::push(ctor_field_counts_list, Array::get(hidden_attempt_ctor_fields, hidden_attempt_ctor_i))
-    Array::push(ctor_type_names_list, "Attempt")
-    hidden_attempt_ctor_i = hidden_attempt_ctor_i + 1
-  }
   // #1062: sparse `ctor_idx * 64 + field_idx` entries for Double/Float-typed
   // positional constructor fields (see CompileCtx.ctor_float_fields). Built
   // alongside ctor_names_list/ctor_field_counts_list above so ctor_idx here
@@ -4051,6 +4075,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     }
     ei2 = ei2 + 1
   }
+  append_hidden_attempt_constructors(ctor_names_list, ctor_tags_list, ctor_field_counts_list, ctor_type_names_list)
   let struct_names = lc_fresh_string_array()
   let struct_field_names = lc_fresh_string_matrix()
   let mut si = 0
@@ -5212,11 +5237,22 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // number, which is order-independent.
   let print_i64_raw_idx = map_probe_index_idx + 1
   let oob_abort_idx = print_i64_raw_idx + 1
+  // #2344: the scalar bit primitives. Appended HERE, after the last
+  // unconditional builtin, because this chain is positional -- inserting
+  // anywhere earlier renumbers every builtin below it.
+  let int_popcount_idx = oob_abort_idx + 1
+  let int_ctz_idx = int_popcount_idx + 1
+  let int_clz_idx = int_ctz_idx + 1
+  let bytes_index_of_bytes_idx = int_clz_idx + 1
+  let bytes_index_of_idx = bytes_index_of_bytes_idx + 1
+  let bytes_count_byte_idx = bytes_index_of_idx + 1
+  let bytes_last_index_of_idx = bytes_count_byte_idx + 1
+  let bytes_compare_idx = bytes_last_index_of_idx + 1
   // #1987: shadow-only UAF abort reuses gen_oob_abort_body with a different
   // middle fragment. Off when rc_shadow is false so a normal RC build stays
   // byte-identical (ADR-0062).
   let shadow_uaf_abort_idx = if rc_shadow {
-    oob_abort_idx + 1
+    bytes_compare_idx + 1
   } else {
     0 - 1
   }
@@ -5227,7 +5263,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     (if rc_shadow {
       shadow_uaf_abort_idx
     } else {
-      oob_abort_idx
+      bytes_compare_idx
     }) + 1
   } else {
     -1
@@ -5578,7 +5614,12 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   } else if rc_shadow {
     shadow_uaf_abort_idx
   } else {
-    oob_abort_idx
+    // #2344: the bit primitives are the last UNCONDITIONAL builtins, so this
+    // is int_clz_idx, not oob_abort_idx. Leaving it stale made num_generated
+    // 3 short and shifted every user-function call target by 3 -- stage1
+    // trapped with `unreachable` while compiling a sample, exactly as the
+    // comment above says it would.
+    bytes_compare_idx
   }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -5728,6 +5769,9 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
         "Array::set" => arr_set_idx,
         "Double::to_int" => double_to_int_idx,
         "Int::to_double" => int_to_double_idx,
+        "Int::popcount" => int_popcount_idx,
+        "Int::ctz" => int_ctz_idx,
+        "Int::clz" => int_clz_idx,
         "String::char_code_at" => str_char_code_at_idx,
         "String::from_char_code" => str_from_char_code_idx,
         "String::substring" => str_substring_idx,
@@ -5737,6 +5781,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
         "String::ends_with" => string_ends_with_idx,
         "String::last_index_of" => string_last_index_of_idx,
         "String::index_of" => string_index_of_idx,
+        "Bytes::index_of_bytes" => bytes_index_of_bytes_idx,
+        "Bytes::index_of" => bytes_index_of_idx,
+        "Bytes::count" => bytes_count_byte_idx,
+        "Bytes::last_index_of" => bytes_last_index_of_idx,
+        "Bytes::compare" => bytes_compare_idx,
         "String::contains" => string_contains_idx,
         "String::starts_with" => string_starts_with_idx,
         "String::split" => string_split_idx,
@@ -6056,6 +6105,18 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // oob_abort_idx slot order fixed above.
   push_builtin(gen_print_i64_raw_body(), 3, 1, 1)
   push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_mid_fat, oob_nl_fat), 0, 0, 7)
+  // #2344: same order as int_popcount_idx / int_ctz_idx / int_clz_idx above.
+  // No extra locals, and type 3 is (i64) -> (i64) -- the same shape as
+  // int_to_double above. Type 1 is (i64) -> (), which would declare these as
+  // returning nothing.
+  push_builtin(gen_int_popcount_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_int_ctz_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_int_clz_body(enable_rc), 0, 0, 3)
+  push_builtin(gen_bytes_index_of_bytes_body(string_index_of_idx), 2, 0, 4)
+  push_builtin(gen_bytes_index_of_byte_body(enable_rc), 1, 3, 4)
+  push_builtin(gen_bytes_count_byte_body(enable_rc), 1, 4, 4)
+  push_builtin(gen_bytes_last_index_of_byte_body(enable_rc), 1, 3, 4)
+  push_builtin(gen_bytes_compare_body(enable_rc), 2, 4, 4)
   if rc_shadow {
     push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
   } else {
@@ -6846,7 +6907,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
               }
               // #1085: the loop-count clause only applies when every consuming
               // occurrence is a loop site (see lc_has_nonloop_consume).
-              let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn)
+              let tcn_loop_drop = tcn_loop_extra > 0 && !lc_has_nonloop_consume(body, tcn, lc_source_owned_borrow_bits)
               if array_contains_str(lc_heap_params, tcn) && (array_contains_str(rc_drops, tcn) || tcn_loop_drop) && tcn == tail_root {
                 need_dup = true
               } else {
@@ -6903,7 +6964,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
                 // the loop-only path then leaks one reference per call, which
                 // is the safe direction until path-sensitive accounting lands
                 // (fixtures/rc_branch_loop_mixed_consume_test.vibe).
-                let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn)
+                let tdn_loop_drop = tdn_loop_count > 0 && !lc_has_nonloop_consume(body, tdn, lc_source_owned_borrow_bits)
                 if array_contains_str(rc_drops, tdn) || tdn_loop_drop {
                   if pfuse_flag >= 0 && tdn == pfuse_name {
                     // ADR-0092: a reuse arm consumed this param's reference —
@@ -8618,6 +8679,14 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   Array::set(gen_sec_names, arr_set_idx - num_imported_funcs, "__rt_arr_set")
   Array::set(gen_sec_names, double_to_int_idx - num_imported_funcs, "__rt_double_to_int")
   Array::set(gen_sec_names, int_to_double_idx - num_imported_funcs, "__rt_int_to_double")
+  Array::set(gen_sec_names, int_popcount_idx - num_imported_funcs, "__rt_int_popcount")
+  Array::set(gen_sec_names, int_ctz_idx - num_imported_funcs, "__rt_int_ctz")
+  Array::set(gen_sec_names, int_clz_idx - num_imported_funcs, "__rt_int_clz")
+  Array::set(gen_sec_names, bytes_index_of_bytes_idx - num_imported_funcs, "__rt_bytes_index_of_bytes")
+  Array::set(gen_sec_names, bytes_index_of_idx - num_imported_funcs, "__rt_bytes_index_of_byte")
+  Array::set(gen_sec_names, bytes_count_byte_idx - num_imported_funcs, "__rt_bytes_count_byte")
+  Array::set(gen_sec_names, bytes_last_index_of_idx - num_imported_funcs, "__rt_bytes_last_index_of_byte")
+  Array::set(gen_sec_names, bytes_compare_idx - num_imported_funcs, "__rt_bytes_compare")
   Array::set(gen_sec_names, str_char_code_at_idx - num_imported_funcs, "__rt_str_char_code_at")
   Array::set(gen_sec_names, str_from_char_code_idx - num_imported_funcs, "__rt_str_from_char_code")
   Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")

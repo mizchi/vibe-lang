@@ -14,6 +14,7 @@ import @vibe/compiler/core {
   Expr,
   ImportItem,
   Stmt,
+  Subst,
   Type,
   TypeDef,
   TypeEnv,
@@ -23,9 +24,15 @@ import @vibe/compiler/core {
   env_lookup,
   env_lookup_binding,
   env_selectable_type_defs,
+  env_type_definition_origin,
   env_type_defs,
   env_value_binding,
-  trait_defined
+  trait_defined,
+  type_implements_trait
+}
+
+import @vibe/ast {
+  trait_ref_key
 }
 
 import @vibe/compiler/checker {
@@ -1082,7 +1089,7 @@ test "projected checker nested modules retain legacy import replay" {
   assert_module_origin(checked, "alias", dep_path, "source")
 }
 
-test "projected import origins are stripped by public and persistent surfaces" {
+test "projected import origins survive public and persistent surfaces" {
   let dep_path = "workspace/dep.vibe"
   let dep_env = checked_test_env("export let value = 1")
   let source = "export ./dep.vibe { value }"
@@ -1092,12 +1099,52 @@ test "projected import origins are stripped by public and persistent surfaces" {
   ])
   assert_module_origin(checked, "value", dep_path, "value")
   let published = checked_module_public_env(stmts, checked)
-  assert_unavailable_origin(published, "value")
+  assert_module_origin(published, "value", dep_path, "value")
   let encoded = persistent_type_env_cache_text(published)
   match parse_persistent_type_env(encoded) {
     Some(decoded) => {
-      assert_unavailable_origin(decoded, "value")
+      assert_module_origin(decoded, "value", dep_path, "value")
       assert(persistent_type_env_cache_text(decoded) == encoded)
+    },
+    None => assert(false)
+  }
+}
+
+fn assert_type_definition_module_origin(env: TypeEnv, name: String, expected_path: String, expected_source_name: String) -> Unit {
+  match env_type_definition_origin(env, name) {
+    Some(BindingOriginModuleExport(path, source_name)) => {
+      assert(path == expected_path)
+      assert(source_name == expected_source_name)
+    },
+    Some(BindingOriginReExportSurface(path, source_name)) => {
+      assert(path == expected_path)
+      assert(source_name == expected_source_name)
+    },
+    _ => assert(false)
+  }
+}
+
+test "public struct dependency closure preserves imported type provenance" {
+  let builtin_path = "lib/@vibe/builtin/index.vpkg"
+  let builtin_env = EnvTypeDefs([TDStruct("AsyncIter", [], [], ["T"])], [
+    "AsyncIter"
+  ], EnvEmpty)
+  let provider_path = "workspace/provider.vibe"
+  let source = "import @vibe/builtin { struct AsyncIter }\nexport struct Holder { stream: AsyncIter[Int] }"
+  let stmts = parse_program_with_path(provider_path, source)
+  let checked = projected_checked_env(source, provider_path, [builtin_path], [
+    (builtin_path, builtin_env)
+  ])
+  let published = checked_module_public_env(stmts, checked)
+  assert(Array::length(env_type_defs(published)) == 2)
+  assert(Array::length(env_selectable_type_defs(published)) == 1)
+  assert(Array::get(env_selectable_type_defs(published), 0) == "Holder")
+  assert_type_definition_module_origin(published, "AsyncIter", builtin_path, "AsyncIter")
+  match parse_persistent_type_env(persistent_type_env_cache_text(published)) {
+    Some(decoded) => {
+      assert(Array::length(env_type_defs(decoded)) == 2)
+      assert(Array::length(env_selectable_type_defs(decoded)) == 1)
+      assert_type_definition_module_origin(decoded, "AsyncIter", builtin_path, "AsyncIter")
     },
     None => assert(false)
   }
@@ -1198,6 +1245,197 @@ test "exact dep projection gives explicit trait aliases precedence over selected
   assert(retained_trait_node_tags(trait_first) == "def:Local;impl:Local;")
   assert(imported_forall_bound_label(value_first, "accept") == "Local")
   assert(imported_forall_bound_label(trait_first, "accept") == "Local")
+}
+
+test "trait imports derive qualified operations without exposing bare names" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Measurable }\nlet answer = Measurable::measure(42)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Measurable::measure") != None, content = "true")
+  inspect(env_lookup(checked, "measure") == None, content = "true")
+  let bare_error = handle {
+    let bare_source = "import ./dep.vibe { trait Measurable }\nlet answer = measure(42)"
+    let bare_env = projected_import_env_for_test(bare_source, "workspace/main.vibe", [
+      dep_path
+    ], [(dep_path, dep_env)])
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", bare_source), bare_env)
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(bare_error != "")
+}
+
+test "trait import aliases derive operations under the local namespace" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Measurable as Metric }\nlet answer = Metric::measure(42)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Metric::measure") != None, content = "true")
+}
+
+test "#2357: imported subtraits derive inherited namespace operations" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nexport trait Sized: Measurable { bump(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Sized }\nlet answer = Sized::measure(20) + Sized::bump(20)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let message = handle {
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(message, "")
+}
+
+test "#2357: aliased subtraits derive inherited namespace operations" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nexport trait Sized: Measurable { bump(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }\nimpl Sized for Int { bump(self) -> Int { self + 1 } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Sized as Dimensioned }\nlet answer = Dimensioned::measure(20) + Dimensioned::bump(20)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let message = handle {
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(message, "")
+}
+
+test "#2357: a value alias does not activate a projected trait namespace" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Marker { mark(Self) -> Int }\nexport fn accept[T: Marker](value: T) -> T { value }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { accept as Marker }"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Marker::mark") == None, content = "true")
+}
+
+test "#2357: importing a trait activates exported namespace helpers but not bare names" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Iterator[T] { iter_length(Self) -> Int\n  iter_get(Self, Int) -> T }\nexport fn Iterator::count[C: Iterator, T](values: C) -> Int { C::iter_length(values) }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Iterator }"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Iterator::count") != None, content = "true")
+  inspect(env_lookup(checked, "count") == None, content = "true")
+}
+
+test "#2357: a trait alias renames its exported namespace helpers" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Iterator[T] { iter_length(Self) -> Int\n  iter_get(Self, Int) -> T }\nexport fn Iterator::count[C: Iterator, T](values: C) -> Int { C::iter_length(values) }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Iterator as Iter }"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Iter::count") != None, content = "true")
+  inspect(env_lookup(checked, "Iterator::count") == None, content = "true")
+  inspect(env_lookup(checked, "count") == None, content = "true")
+}
+
+test "#2357: imported trait namespaces reject conflicting local operations" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Measurable }\nfn Measurable::measure(_value: Int) -> Int { 0 }\nlet answer = Measurable::measure(42)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let message = handle {
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(message, "remove declaration `Measurable::measure`: trait operations are generated from `trait Measurable`")
+}
+
+test "#2357: aliased trait namespaces reject conflicting local operations" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Measurable as Metric }\nfn Metric::measure(_value: Int) -> Int { 0 }\nlet answer = Metric::measure(42)"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let message = handle {
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(message, "remove declaration `Metric::measure`: trait operations are generated from `trait Metric`")
+}
+
+test "#2357: inherited imported operations reserve the subtrait namespace" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nexport trait Sized: Measurable { bump(Self) -> Int }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Sized as Dimensioned }\nfn Dimensioned::measure(_value: Int) -> Int { 0 }"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let message = handle {
+    let _ = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected)
+    ""
+  } with { Exception::Throw(message) => message }
+  inspect(message, "remove declaration `Dimensioned::measure`: trait operations are generated from `trait Dimensioned`")
+}
+
+test "trait-only re-exports preserve derived qualified operations" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"
+  let dep_env = checked_test_env(dep_source)
+  let facade_path = "workspace/facade.vibe"
+  let facade_source = "export ./dep.vibe { trait Measurable }"
+  let facade_stmts = parse_program_with_path(facade_path, facade_source)
+  let facade_import_env = projected_import_env_for_test(facade_source, facade_path, [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let facade_checked = check_program_with_projected_import_env_result(facade_stmts, facade_import_env).final_env
+  let facade_public = checked_module_public_env(facade_stmts, facade_checked)
+  inspect(env_lookup(facade_public, "Measurable::measure") == None, content = "true")
+  let main_source = "import ./facade.vibe { trait Measurable }\nlet answer = Measurable::measure(42)"
+  let main_env = projected_import_env_for_test(main_source, "workspace/main.vibe", [
+    facade_path
+  ], [(facade_path, facade_public)])
+  let main_checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", main_source), main_env).final_env
+  inspect(env_lookup(main_checked, "Measurable::measure") != None, content = "true")
+}
+
+test "applied trait impl projection preserves explicit trait aliases" {
+  let dep_path = "workspace/dep.vibe"
+  let source_ref = trait_ref_key(TyApp("Value", [TyName("Int")]))
+  let local_ref = trait_ref_key(TyApp("ImportedValue", [TyName("Int")]))
+  let dep_env = EnvTraitDef("Value", [], false, [], EnvTraitImpl(source_ref, CtInt, EnvEmpty), [
+    "A"
+  ], [])
+  let projected = projected_import_env_for_test("import ./dep.vibe { trait Value as ImportedValue }", "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  assert(trait_defined(projected, local_ref))
+  assert(type_implements_trait(projected, SubstEmpty, CtInt, local_ref))
+}
+
+test "public trait surfaces retain applied impl instances" {
+  let source = "export trait Value[A]\nimpl Value[Int] for Int"
+  let stmts = parse_program_with_path("workspace/dep.vibe", source)
+  let published = checked_module_public_env(stmts, checked_test_env(source))
+  let applied = trait_ref_key(TyApp("Value", [TyName("Int")]))
+  assert(type_implements_trait(published, SubstEmpty, CtInt, applied))
 }
 
 test "#2310: projected re-export aliases exclude local declaration authority" {
@@ -1911,7 +2149,7 @@ test "db_typecheck_fs: private unknown effects and effectsets are not selectable
   assert(String::contains(unknown, "imported name 'Missing' is not exported by"))
 }
 
-test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v5" {
+test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck as v9" {
   let dir = "/tmp/vibe_v4_cache_cold_recheck"
   let path = String::concat(dir, "/main.vibe")
   let source = "export let value = 1\n"
@@ -1924,11 +2162,11 @@ test "db_typecheck_fs: old and malformed fs cache and leaf entries cold-recheck 
   let leaf_path = persistent_leaf_fingerprint_cache_path(path, compact_string_fingerprint(source))
   Fs::write_file(env_path, "version\t3\nenv\t1:0\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
-  Fs::write_file(env_path, "version\t5\nenv\t1:Z\n")
+  assert(String::starts_with(Fs::read_file(env_path), "version\t9\nenv\t"))
+  Fs::write_file(env_path, "version\t9\nenv\t1:Z\n")
   Fs::write_file(leaf_path, "version\t1\nnot-a-fingerprint\n")
   let _ = db_typecheck_fs(db_set_source(db_new(), path, source), path)
-  assert(String::starts_with(Fs::read_file(env_path), "version\t5\nenv\t"))
+  assert(String::starts_with(Fs::read_file(env_path), "version\t9\nenv\t"))
 }
 
 test "db_typecheck: an imported effect does not leak through a non-re-exporting module (#1549)" {

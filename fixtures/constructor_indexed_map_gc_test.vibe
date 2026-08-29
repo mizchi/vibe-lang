@@ -1,0 +1,244 @@
+trait Mappable[F[_]] {
+  map[A, B](F[A], (A) -> B) -> F[B]
+}
+
+impl Mappable[Array] for Array {
+  map(xs: Array[A], f: (A) -> B) -> Array[B] {
+    Array::map(xs, f)
+  }
+}
+
+impl Mappable[Option] for Option {
+  map(xs: Option[A], f: (A) -> B) -> Option[B] {
+    match xs {
+      Some(value) => Some(f(value)),
+      None => None
+    }
+  }
+}
+
+type Apply[F[_], A] = F[A]
+
+fn mapped[F[_]: Mappable[F], A, B](xs: Apply[F, A], f: (A) -> B) -> Apply[F, B] {
+  F::map(xs, f)
+}
+
+fn mapped_again[F[_]: Mappable[F], A, B](xs: Apply[F, A], f: (A) -> B) -> Apply[F, B] {
+  mapped(xs, f)
+}
+
+struct Mapper {}
+
+fn Mapper::apply[F[_]: Mappable[F], A, B](self: Mapper, xs: F[A], f: (A) -> B) -> F[B] {
+  let _ = self
+  F::map(xs, f)
+}
+
+fn choose_right[F[_]: Mappable[F], G[_]: Mappable[G], A](left: F[A], right: G[A]) -> G[A] {
+  let _ = left
+  right
+}
+
+effect Log {
+  Emit(Unit) -> Unit
+}
+
+fn produce_array() -> Array[Int] with Log {
+  perform Log::Emit(())
+  [1, 2]
+}
+
+test "wasm-gc maps Array through a constructor-indexed witness" {
+  let values = [1, 2] |> Mappable::map((x) -> {
+    x + 1
+  }) |> Mappable::map((x) -> {
+    x * 2
+  })
+  assert_eq(values, [4, 6])
+}
+
+test "wasm-gc maps Option through a constructor-indexed witness" {
+  let value = Some(3) |> Mappable::map((x) -> {
+    x + 1
+  }) |> Mappable::map((x) -> {
+    x * 2
+  })
+  assert_eq(value, Some(8))
+}
+
+test "nested calls follow the constructor named by the return type" {
+  let value = choose_right([1], Some(3)) |> Mappable::map((x) -> {
+    x + 1
+  })
+  assert_eq(value, Some(4))
+}
+
+test "let bindings preserve a recovered constructor witness" {
+  let values = Mappable::map([1, 2], (x) -> {
+    x + 1
+  })
+  let doubled = Mappable::map(values, (x) -> {
+    x * 2
+  })
+  assert_eq(doubled, [4, 6])
+}
+
+test "conditional receivers recover an agreed constructor witness" {
+  let values = Mappable::map(if true {
+    [1, 2]
+  } else {
+    [3, 4]
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "match receivers recover an agreed constructor witness" {
+  let values = Mappable::map(match true {
+    true => [1, 2],
+    false => [3, 4]
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "return aliases preserve a recovered constructor witness" {
+  let values = mapped([1, 2], (x) -> {
+    x + 1
+  }) |> Mappable::map((x) -> {
+    x * 2
+  })
+  assert_eq(values, [4, 6])
+}
+
+test "aliased constructor parameters forward generic witnesses" {
+  let values = mapped_again([1, 2], (x) -> {
+    x + 1
+  }) |> Mappable::map((x) -> {
+    x * 2
+  })
+  assert_eq(values, [4, 6])
+}
+
+test "block receivers recover constructors from let bindings" {
+  let values = Mappable::map({
+    let xs = [1, 2]
+    xs
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "sequence receivers recover the result constructor" {
+  let values = Mappable::map({
+    0;
+    [1, 2]
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "match payload binders preserve the result constructor" {
+  let source = Some([1, 2])
+  let values = Mappable::map(match source {
+    Some(xs) => xs,
+    None => []
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "assignment receivers recover the continuation constructor" {
+  let values = Mappable::map({
+    let mut xs = [1]
+    xs = [2, 3]
+    xs
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [3, 4])
+}
+
+test "recursive-let receivers recover the continuation constructor" {
+  let values = Mappable::map({
+    let rec identity = (x: Int) -> Int {
+      x
+    }
+    [identity(1), identity(2)]
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "method-style generic calls preserve the constructor witness" {
+  let mapper = Mapper::{}
+  let values = Mappable::map(mapper.apply([1, 2], (x) -> {
+    x + 1
+  }), (x) -> {
+    x * 2
+  })
+  assert_eq(values, [4, 6])
+}
+
+test "handled receivers recover an agreed constructor witness" {
+  let values = Mappable::map(handle {
+    [1, 2]
+  } with { Exception::Throw(_) => [] }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "resuming handler arms preserve the handled constructor witness" {
+  let values = Mappable::map(handle {
+    produce_array()
+  } with { Log::Emit(_) => {
+    0;
+    resume(())
+  } }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [2, 3])
+}
+
+test "parameterized loop receivers recover break-value constructors" {
+  let values = Mappable::map(loop (i = 0) {
+    break [i, i + 1]
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [1, 2])
+}
+
+test "loop break values use lexical let constructors" {
+  let values = Mappable::map(loop (i = 0) {
+    let xs = [i]
+    break xs
+  }, (x) -> {
+    x + 1
+  })
+  assert_eq(values, [1])
+}
+
+test "handler result bindings mask unresolved outer constructors" {
+  let xs = Some(0)
+  let values = Mappable::map(handle {
+    throw("fail")
+    [0]
+  } with { Exception::Throw(_) => {
+    let xs = ((u) -> {
+      [1]
+    })(())
+    xs
+  } }, (x) -> {
+    x + 1
+  })
+  let _ = xs
+  assert_eq(values, [2])
+}

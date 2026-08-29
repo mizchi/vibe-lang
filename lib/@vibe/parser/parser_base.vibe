@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_key, type_param_key
 }
 
 import ./parser_binder_context.vibe {
@@ -18,6 +18,43 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
   if pos < Array::length(tokens) {
     Array::get(tokens, pos)
   } else TEof
+}
+
+/// Parse the optional constructor-kind suffix of a type binder. `F` has kind
+/// Type, `F[_]` has kind Type -> Type, and each additional underscore adds one
+/// input. The returned String is the AST contract key, not source spelling.
+export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) -> (String, Int) with Exception {
+  match peek(tokens, pos) {
+    TLBracket => {
+      let mut p = pos + 1
+      let mut arity = 0
+      let mut done = false
+      while !done {
+        match peek(tokens, p) {
+          TIdent(hole) => if hole == "_" {
+            arity = arity + 1
+            p = p + 1
+            match peek(tokens, p) {
+              TComma => {
+                p = p + 1
+              },
+              TRBracket => {
+                p = p + 1
+                done = true
+              },
+              _ => throw("expected ',' or ']' after '_' in a constructor type parameter")
+            }
+          } else {
+            throw("a constructor type parameter kind contains only '_' placeholders, such as F[_]")
+          },
+          TRBracket => throw("a constructor type parameter needs at least one '_' placeholder"),
+          _ => throw("expected '_' in a constructor type parameter, such as F[_]")
+        }
+      }
+      (type_param_key(name, arity), p)
+    },
+    _ => (type_param_key(name, 0), pos)
+  }
 }
 
 fn _no_tp() -> Array[String] {
@@ -560,9 +597,15 @@ fn parse_trait_bound_names(tokens: Array[Token], pos: Int) -> (Array[String], In
   let mut done = false
   while !done {
     match peek(tokens, p) {
-      TIdent(name) => {
-        ArrayBuilder::push(b, name)
-        p = p + 1
+      TIdent(_) => {
+        let (reference, next) = parse_type_impl(tokens, p, 0)
+        let key = match reference {
+          TyName(_) => trait_ref_key(reference),
+          TyApp(_, _) => trait_ref_key(reference),
+          _ => throw("a trait bound must be a named trait, such as `Eq` or `Iter[Int]`")
+        }
+        ArrayBuilder::push(b, key)
+        p = next
         match peek(tokens, p) {
           TPlus => {
             p = p + 1
@@ -593,12 +636,13 @@ fn parse_bounded_type_params_with_binder_context(tokens: Array[Token], pos: Int,
       },
       TIdent(name) => {
         binder_capture_source(context, name, p, p)
-        ArrayBuilder::push(names, name)
-        p = p + 1
+        let (param_key, after_kind) = parse_type_param_kind(tokens, p + 1, name)
+        ArrayBuilder::push(names, param_key)
+        p = after_kind
         match peek(tokens, p) {
           TColon => if allow_bounds {
             let (bound_names, next) = parse_trait_bound_names(tokens, p + 1)
-            ArrayBuilder::push(bounds, (name, bound_names))
+            ArrayBuilder::push(bounds, (param_key, bound_names))
             p = next
           } else {
             ()
@@ -923,7 +967,7 @@ export fn collect_import_path(tokens: Array[Token], pos: Int, acc: String) -> (S
 /// (returning ([], pos) when there is no bracket). Mirrors parse_enum_stmt's
 /// inline collector: only depth-1 identifiers in name position are kept, so a
 /// bound like `[T: Eq]` still records just `T`.
-export fn parse_tparam_names_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Int) {
+export fn parse_tparam_names_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[String], Int) with Exception {
   match peek(tokens, pos) {
     TLBracket => {
       let b = ArrayBuilder::new()
@@ -947,10 +991,13 @@ export fn parse_tparam_names_with_binder_context(tokens: Array[Token], pos: Int,
           TIdent(nm) => {
             if depth == 1 && expect_name {
               binder_capture_source(context, nm, skip, skip)
-              ArrayBuilder::push(b, nm)
+              let (param_key, after_kind) = parse_type_param_kind(tokens, skip + 1, nm)
+              ArrayBuilder::push(b, param_key)
               expect_name = false
+              skip = after_kind
+            } else {
+              skip = skip + 1
             }
-            skip = skip + 1
           },
           TEof => {
             depth = 0
@@ -966,7 +1013,7 @@ export fn parse_tparam_names_with_binder_context(tokens: Array[Token], pos: Int,
   }
 }
 
-fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) {
+fn parse_tparam_names(tokens: Array[Token], pos: Int) -> (Array[String], Int) with Exception {
   parse_tparam_names_with_binder_context(tokens, pos, None)
 }
 
@@ -1820,43 +1867,7 @@ export fn parse_enum_stmt_with_binder_context(tokens: Array[Token], pos: Int, ex
   match peek(tokens, pos) {
     TIdent(name) => {
       binder_capture_source(context, name, pos, pos)
-      let (params, after_name) = match peek(tokens, pos + 1) {
-        TLBracket => {
-          let b = ArrayBuilder::new()
-          let mut skip = pos + 2
-          let mut depth = 1
-          let mut expect_name = true
-          while depth > 0 {
-            match peek(tokens, skip) {
-              TLBracket => {
-                depth = depth + 1; skip = skip + 1
-              },
-              TRBracket => {
-                depth = depth - 1; skip = skip + 1
-              },
-              TComma => {
-                if depth == 1 {
-                  expect_name = true
-                }
-                skip = skip + 1
-              },
-              TIdent(nm) => {
-                if depth == 1 && expect_name {
-                  binder_capture_source(context, nm, skip, skip)
-                  ArrayBuilder::push(b, nm)
-                  expect_name = false
-                }
-                skip = skip + 1
-              },
-              _ => {
-                skip = skip + 1
-              }
-            }
-          }
-          (ArrayBuilder::freeze(b), skip)
-        },
-        _ => (ArrayBuilder::freeze(ArrayBuilder::new()), pos + 1)
-      }
+      let (params, after_name) = parse_tparam_names_with_binder_context(tokens, pos + 1, context)
       let br = expect_tk(tokens, after_name, "{")
       let (ctors, end) = parse_enum_ctors_with_binder_context(tokens, br, context);
       let (derives, final_pos) = parse_derive_names(tokens, end)
@@ -1912,8 +1923,14 @@ fn parse_impl_stmt_with_binder_context(tokens: Array[Token], pos: Int, context: 
     _ => (_no_tp(), _no_tb(), pos)
   }
   match peek(tokens, after_tp) {
-    TIdent(trait_name) => {
-      let fp = expect_tk(tokens, after_tp + 1, "for")
+    TIdent(_) => {
+      let (trait_reference, after_trait) = parse_type_impl(tokens, after_tp, 0)
+      let trait_name = match trait_reference {
+        TyName(_) => trait_ref_key(trait_reference),
+        TyApp(_, _) => trait_ref_key(trait_reference),
+        _ => throw("an impl trait must be a named trait, such as `Eq` or `Iter[Int]`")
+      }
+      let fp = expect_tk(tokens, after_trait, "for")
       let (target, after_target) = parse_type_impl(tokens, fp, 0)
       match target {
         TyName(_) => (SImpl(type_params, type_bounds, trait_name, target), after_target),

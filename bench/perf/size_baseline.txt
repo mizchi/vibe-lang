@@ -127,8 +127,55 @@
 # the whole delta is this change. closure_indirect 2542->2641, fib
 # 881->980, fizzbuzz 1470->1569, hello_world 917->1016, variant_float
 # 4184->4473.
-closure_indirect 2641
-fib 980
-fizzbuzz 1569
-hello_world 1016
-variant_float 4473
+#
+# 2026-08-27 rebaseline (#2344, PR #2358): Int::popcount / Int::ctz /
+# Int::clz land as registry builtins, and like every other static builtin
+# they are part of the linked module's fixed runtime footprint -- the same
+# unconditional shape as the #1191 and #2199 notes above. +20 B on ALL FIVE
+# samples, exactly, even though none of them counts a bit: three bodies of a
+# handful of instructions each, plus their func-table and type entries. Fuel
+# and B/op are unchanged (the happy path executes nothing new) and the
+# compiler's own artifacts move DOWN in the same PR (#2342 retires the V128
+# intrinsics: stage2.wasm -0.12%). Reproduced byte-exactly against a stage2
+# built from this branch, matching CI's numbers to the byte.
+# closure_indirect 2641->2661, fib 980->1000, fizzbuzz 1569->1589,
+# hello_world 1016->1036, variant_float 4473->4493.
+#
+# NOTE the trend this row makes visible: fib has gone 755 -> 780 -> 795 ->
+# 881 -> 980 -> 1000 across the rebaselines above, +32% since the initial
+# baseline. Of those five steps, FOUR are attributed by their own entries to
+# builtins linked unconditionally that the sample never calls -- #1191 (+25),
+# #2199 (+86), #2199 ask 2 (+99) and this one (+20), 230 of the 245 bytes.
+# The remaining step (780 -> 795) is main's drift, recorded but not
+# attributed, by #1666's own table. Each of those entries says the same
+# thing: "no usage-based tree-shaking for builtins today, only for top-level
+# user statements (core/dce.vibe)". Tracked as its own issue rather than
+# widened tolerances here.
+
+# 2026-08-28 rebaseline (#2345 / PR #2372): four Bytes search builtins --
+# index_of_bytes, index_of, count, last_index_of. closure_indirect
+# 2661->2681, fib 1000->1020, fizzbuzz 1589->1609, hello_world 1036->1056,
+# variant_float 4493->4513. EXACTLY +20 B on every sample, which is the
+# interesting part.
+#
+# The entries above all say builtins have "no usage-based tree-shaking today"
+# and so land whole in every module. MEASURED, that is no longer true of the
+# linear lane. Four bodies of 100+ B each would be +400..800 B, not +20; and
+# the compiled fib.wasm contains ZERO 0xFD bytes -- not one SIMD instruction,
+# so not one of the four bodies is in it. The +20 is per-builtin table
+# overhead, ~5 B each. Whatever those older entries were describing, the
+# thing to write down now is the measurement, not the inherited explanation.
+#
+# This rebaseline is not optional bookkeeping: before it, every sample sat at
+# EXACTLY the +2% limit (fib 1020 against a 1020 ceiling). The gate passed and
+# had zero headroom left, so the next codegen change of any kind would have
+# failed it for reasons that had nothing to do with that change.
+#
+# The wasm-gc lane is the opposite and is NOT gated here: it links builtins
+# unconditionally, so these four cost it +2.2..3.1% on every perf scenario
+# including programs that never search bytes. That is #2359, not this file.
+closure_indirect 2681
+fib 1020
+fizzbuzz 1609
+hello_world 1056
+variant_float 4513

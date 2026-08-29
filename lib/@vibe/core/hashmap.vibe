@@ -1,10 +1,24 @@
 // @vibex/collections — MutMap[K, V]: mutable open-addressing hash table.
 //
-// Layout: parallel slot arrays (keys / vals / state) + `mut` struct fields
-// (ADR-0052) so `set`/`delete`/rehash mutate the same handle in place.
-// - linear probing, tombstones (state: 0 = empty, 1 = occupied,
-//   2 = tombstone), rehash to 2x capacity when
+// Layout: a `Bytes` control array plus parallel slot arrays (keys / vals) +
+// `mut` struct fields (ADR-0052) so `set`/`delete`/rehash mutate the same
+// handle in place.
+// - linear probing, tombstones, rehash to 2x capacity when
 //   (size + tombstones + 1) / capacity would exceed 0.7.
+// - ONE CONTROL BYTE PER SLOT (#2346), not one `Int`: 0 = empty,
+//   1 = tombstone, and any value >= 128 = occupied, whose low 7 bits are a
+//   FINGERPRINT of the key's hash. A probe that lands on an occupied slot
+//   whose fingerprint differs from the query's cannot be the key, so it is
+//   rejected on the byte alone -- without loading `Array[Option[K]]`,
+//   matching the Option, and calling the closed-over `eq_fn`. The old
+//   `state: Array[Int]` carried the same three states in 8 bytes each and had
+//   no room for a fingerprint, so every colliding slot paid a full key
+//   compare.
+// - The fingerprint is derived by `ctrl_tag` and NOT taken from the low bits
+//   of the hash, which would be useless: the home index is `h % cap`, so for
+//   the power-of-two capacities this table reaches, two keys that collide
+//   already agree on exactly those low bits. `ctrl_tag` folds the high bits
+//   down first so colliding keys still get differing fingerprints.
 // - Slots hold Option[K] / Option[V] so empty tables need no sentinel key
 //   or value; a generic `Array[K]` prefill would require one. This also
 //   sidesteps the #829 generic-struct-instantiation holes: every slot read
@@ -38,7 +52,7 @@ import ./key.vibe {
 export struct MutMap[K, V] {
   mut keys: Array[Option[K]];
   mut vals: Array[Option[V]];
-  mut state: Array[Int];
+  mut ctrl: Bytes;
   mut size: Int;
   mut tombs: Int;
   hash_fn: (K) -> Int;
@@ -47,8 +61,33 @@ export struct MutMap[K, V] {
 
 //# Internal helpers
 
-fn alloc_states(cap: Int) -> Array[Int] {
-  Array::make(cap, 0)
+/// Control bytes are spelled as bare literals at every use site, not as named
+/// constants: `ctrl_empty()` / `is_occupied(c)` helpers were measured first and
+/// cost more than the fingerprint saves, because they are a function call in
+/// the innermost probe loop. The encoding is
+///   0        empty
+///   1        tombstone
+///   >= 128   occupied, low 7 bits = fingerprint (see `ctrl_tag`)
+///
+/// EMPTY is 0 so that allocating a table needs no separate initialisation pass.
+/// This is `Bytes::new()` + `Bytes::fill`, not the one-argument `Bytes::new(cap)`
+/// overload. The overload was LINEAR-ONLY when this was written -- the gc call
+/// path had no counterpart to the linear lane's synthesis, so it type-checked
+/// on both lanes and failed at run time on one (#2363).
+///
+/// #2363 is FIXED: `codegen/gc/backend_call.vibe` now carries the same
+/// synthesis, and both spellings are pinned on both lanes by
+/// `fixtures/bytes_alloc_backend_parity_test.vibe`. This still does not use the
+/// overload, because the COMMITTED SEED predates the fix and `vibe test` /
+/// `vibe fmt` compile `lib/**` with the seed (CLAUDE.md, "Which compiler
+/// answered?"). Switching here before the next bootstrap bump would break the
+/// gc lane for a reason that is already fixed in the source. Worth revisiting
+/// after the bump: measured, the overload is worth about 2% on table build
+/// (1.033x -> 1.053x against the pre-#2346 baseline), and nothing else.
+fn alloc_ctrl(cap: Int) -> Bytes {
+  let b = Bytes::new()
+  Bytes::fill(b, 0, cap)
+  b
 }
 
 fn alloc_slots[T](cap: Int) -> Array[Option[T]] {
@@ -56,8 +95,10 @@ fn alloc_slots[T](cap: Int) -> Array[Option[T]] {
   Array::make(cap, none_slot)
 }
 
-fn home_index[K, V](m: MutMap[K, V], k: K, cap: Int) -> Int {
-  let h = (m.hash_fn)(k)
+/// Slot's home position. Kept separate from `ctrl_tag` so both can be derived
+/// from ONE call to `hash_fn` — the hash is user-supplied and may be as
+/// expensive as `hash_string`, so a probe must never compute it twice.
+fn home_of(h: Int, cap: Int) -> Int {
   let mut idx = h % cap
   if idx < 0 {
     idx = idx + cap
@@ -65,20 +106,40 @@ fn home_index[K, V](m: MutMap[K, V], k: K, cap: Int) -> Int {
   idx
 }
 
+/// The occupied control byte for a hash: 128 | (7-bit fingerprint).
+///
+/// The two folds are what make the fingerprint independent of the home index.
+/// `home_of` uses `h % cap`, i.e. the LOW bits for a power-of-two capacity, so
+/// two keys that land on the same home slot agree on those bits and a raw
+/// `h & 127` would be identical for every key in a collision chain — a
+/// fingerprint that filters nothing. Folding `h >> 15` and then `>> 7` down
+/// brings the high bits, which collision partners do NOT share, into the low 7.
+fn ctrl_tag(h: Int) -> Int {
+  let a = h^(h>>15)
+  let b = a^(a>>7)
+  128|(b&127)
+}
+
 /// Index of the occupied slot holding `k`, or -1. Probing stops at the first
 /// empty slot; tombstones are skipped (deleted slots must not break chains).
 fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
-  let cap = Array::length(m.state)
-  let mut idx = home_index(m, k, cap)
+  let cap = Bytes::length(m.ctrl)
+  let h = (m.hash_fn)(k)
+  let tag = ctrl_tag(h)
+  let mut idx = home_of(h, cap)
   let mut result = -1
   let mut scanning = true
   let mut steps = 0
   while scanning {
-    let st = Array::get(m.state, idx)
-    if st == 0 {
+    let c = Bytes::get(m.ctrl, idx)
+    if c == 0 {
       scanning = false
     } else {
-      if st == 1 {
+      // An occupied slot with a different fingerprint cannot hold `k`, so the
+      // key load / Option match / eq_fn call below is skipped entirely.
+      // Tombstones (1) never equal a tag (>= 128), so they fall through here
+      // too, without a separate branch.
+      if c == tag {
         match Array::get(m.keys, idx) {
           Some(sk) => {
             if (m.eq_fn)(sk, k) {
@@ -109,13 +170,15 @@ fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
 /// Insert without growth check. Reuses the first tombstone seen on the probe
 /// path when the key is not already present.
 fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
-  let cap = Array::length(m.state)
-  let mut idx = home_index(m, k, cap)
+  let cap = Bytes::length(m.ctrl)
+  let h = (m.hash_fn)(k)
+  let tag = ctrl_tag(h)
+  let mut idx = home_of(h, cap)
   let mut tomb_idx = -1
   let mut inserting = true
   while inserting {
-    let st = Array::get(m.state, idx)
-    if st == 0 {
+    let c = Bytes::get(m.ctrl, idx)
+    if c == 0 {
       let target = if tomb_idx >= 0 {
         tomb_idx
       } else {
@@ -126,10 +189,10 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
       }
       Array::set(m.keys, target, Some(k))
       Array::set(m.vals, target, Some(v))
-      Array::set(m.state, target, 1)
+      Bytes::set(m.ctrl, target, tag)
       m.size = m.size + 1
       inserting = false
-    } else if st == 2 {
+    } else if c == 1 {
       if tomb_idx < 0 {
         tomb_idx = idx
       }
@@ -139,13 +202,15 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
       }
     } else {
       let mut matched = false
-      match Array::get(m.keys, idx) {
-        Some(sk) => {
-          if (m.eq_fn)(sk, k) {
-            matched = true
-          }
-        },
-        None => ()
+      if c == tag {
+        match Array::get(m.keys, idx) {
+          Some(sk) => {
+            if (m.eq_fn)(sk, k) {
+              matched = true
+            }
+          },
+          None => ()
+        }
       }
       if matched {
         Array::set(m.vals, idx, Some(v))
@@ -168,16 +233,16 @@ fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
   }
   let old_keys = m.keys
   let old_vals = m.vals
-  let old_state = m.state
+  let old_ctrl = m.ctrl
   m.keys = alloc_slots(cap)
   m.vals = alloc_slots(cap)
-  m.state = alloc_states(cap)
+  m.ctrl = alloc_ctrl(cap)
   m.size = 0
   m.tombs = 0
-  let n = Array::length(old_state)
+  let n = Bytes::length(old_ctrl)
   let mut i = 0
   while i < n {
-    if Array::get(old_state, i) == 1 {
+    if Bytes::get(old_ctrl, i) >= 128 {
       match Array::get(old_keys, i) {
         Some(k) =>
         match Array::get(old_vals, i) {
@@ -202,7 +267,7 @@ export fn MutMap::with_capacity[K, V](hash_fn: (K) -> Int, eq_fn: (K, K) -> Bool
   MutMap::{
     keys: alloc_slots(cap),
     vals: alloc_slots(cap),
-    state: alloc_states(cap),
+    ctrl: alloc_ctrl(cap),
     size: 0,
     tombs: 0,
     hash_fn: hash_fn,
@@ -243,7 +308,7 @@ export fn MutMap::with_capacity_string[V](capacity: Int) -> MutMap[String, V] {
 //# Operations
 
 export fn MutMap::set[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
-  let cap = Array::length(m.state)
+  let cap = Bytes::length(m.ctrl)
   if (m.size + m.tombs + 1) * 10 > cap * 7 {
     rehash(m, cap * 2)
   }
@@ -270,7 +335,7 @@ export fn MutMap::delete[K, V](m: MutMap[K, V], k: K) -> Bool {
   if idx < 0 {
     false
   } else {
-    Array::set(m.state, idx, 2)
+    Bytes::set(m.ctrl, idx, 1)
     let none_k: Option[K] = None
     Array::set(m.keys, idx, none_k)
     let none_v: Option[V] = None
@@ -287,10 +352,10 @@ export fn MutMap::size[K, V](m: MutMap[K, V]) -> Int {
 
 export fn MutMap::keys[K, V](m: MutMap[K, V]) -> Array[K] {
   let b = ArrayBuilder::new()
-  let cap = Array::length(m.state)
+  let cap = Bytes::length(m.ctrl)
   let mut i = 0
   while i < cap {
-    if Array::get(m.state, i) == 1 {
+    if Bytes::get(m.ctrl, i) >= 128 {
       match Array::get(m.keys, i) {
         Some(k) => ArrayBuilder::push(b, k),
         None => ()
@@ -303,10 +368,10 @@ export fn MutMap::keys[K, V](m: MutMap[K, V]) -> Array[K] {
 
 export fn MutMap::values[K, V](m: MutMap[K, V]) -> Array[V] {
   let b = ArrayBuilder::new()
-  let cap = Array::length(m.state)
+  let cap = Bytes::length(m.ctrl)
   let mut i = 0
   while i < cap {
-    if Array::get(m.state, i) == 1 {
+    if Bytes::get(m.ctrl, i) >= 128 {
       match Array::get(m.vals, i) {
         Some(v) => ArrayBuilder::push(b, v),
         None => ()
@@ -319,10 +384,10 @@ export fn MutMap::values[K, V](m: MutMap[K, V]) -> Array[V] {
 
 export fn MutMap::to_array[K, V](m: MutMap[K, V]) -> Array[(K, V)] {
   let b = ArrayBuilder::new()
-  let cap = Array::length(m.state)
+  let cap = Bytes::length(m.ctrl)
   let mut i = 0
   while i < cap {
-    if Array::get(m.state, i) == 1 {
+    if Bytes::get(m.ctrl, i) >= 128 {
       match Array::get(m.keys, i) {
         Some(k) =>
         match Array::get(m.vals, i) {

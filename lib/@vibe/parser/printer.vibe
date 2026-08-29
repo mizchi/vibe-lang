@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_from_key, type_param_arity, type_param_name
 }
 
 import ./polyfill.vibe {
@@ -30,6 +30,10 @@ fn join(arr: Array[String], sep: String) -> String {
     }
     String::join(ArrayBuilder::freeze(b), "")
   }
+}
+
+fn empty_type_bounds() -> Array[(String, Array[String])] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
 fn print_import_item(item: ImportItem) -> String {
@@ -95,6 +99,19 @@ fn print_bounded_type_params(params: Array[String], bounds: Array[(String, Array
     ""
   } else {
     let parts = for param in params {
+      let param_name = type_param_name(param)
+      let param_arity = type_param_arity(param)
+      let rendered_param = if param_arity == 0 {
+        param_name
+      } else {
+        let holes = ArrayBuilder::new()
+        let mut hi = 0
+        while hi < param_arity {
+          ArrayBuilder::push(holes, "_")
+          hi = hi + 1
+        }
+        String::concat(param_name, String::concat("[", String::concat(join(ArrayBuilder::freeze(holes), ", "), "]")))
+      }
       let labels = ArrayBuilder::new()
       let mut i = 0
       while i < Array::length(bounds) {
@@ -102,7 +119,12 @@ fn print_bounded_type_params(params: Array[String], bounds: Array[(String, Array
         if bound_param == param {
           let mut j = 0
           while j < Array::length(bound_labels) {
-            ArrayBuilder::push(labels, Array::get(bound_labels, j))
+            let key = Array::get(bound_labels, j)
+            let label = match trait_ref_from_key(key) {
+              Some(reference) => print_type_expr(reference),
+              None => key
+            }
+            ArrayBuilder::push(labels, label)
             j = j + 1
           }
         } else {
@@ -112,9 +134,9 @@ fn print_bounded_type_params(params: Array[String], bounds: Array[(String, Array
       }
       let labels = ArrayBuilder::freeze(labels)
       if Array::length(labels) == 0 {
-        param
+        rendered_param
       } else {
-        String::concat(param, String::concat(": ", join(labels, " + ")))
+        String::concat(rendered_param, String::concat(": ", join(labels, " + ")))
       }
     }
     String::concat("[", String::concat(join(parts, ", "), "]"))
@@ -368,27 +390,7 @@ fn print_ctor(name: String, args: Array[TypeExpr]) -> String {
 /// type-parameter scope and `T` resolves to a concrete `CtNamed("T", [])`
 /// instead of a bound type variable.
 fn print_fn_type_params(type_params: Array[String], bounds: Array[(String, Array[String])]) -> String {
-  if Array::length(type_params) == 0 {
-    ""
-  } else {
-    let parts = for tp in type_params {
-      let mut found = Array::slice([""], 0, 0)
-      let mut bi = 0
-      while bi < Array::length(bounds) {
-        let (bname, blist) = Array::get(bounds, bi)
-        if bname == tp {
-          found = blist
-        }
-        bi = bi + 1
-      }
-      if Array::length(found) == 0 {
-        tp
-      } else {
-        String::concat(tp, String::concat(": ", join(found, " + ")))
-      }
-    }
-    String::concat("[", String::concat(join(parts, ", "), "]"))
-  }
+  print_bounded_type_params(type_params, bounds)
 }
 
 fn peel_empty_handles(expr: Expr) -> Expr {
@@ -714,7 +716,7 @@ export fn print_stmt(s: Stmt) -> String {
       let tp = if Array::length(params) == 0 {
         ""
       } else {
-        String::concat("[", String::concat(join(params, ", "), "]"))
+        print_bounded_type_params(params, empty_type_bounds())
       }
       let base = String::concat(prefix(exported), String::concat("enum ", String::concat(name, String::concat(tp, String::concat(" { ", String::concat(print_ctor_list(ctors), " }"))))))
       if Array::length(derives) == 0 {
@@ -759,7 +761,7 @@ export fn print_stmt(s: Stmt) -> String {
       let tp = if Array::length(tparams) == 0 {
         ""
       } else {
-        String::concat("[", String::concat(join(tparams, ", "), "]"))
+        print_bounded_type_params(tparams, empty_type_bounds())
       }
       let base = String::concat(prefix(exported), String::concat("struct ", String::concat(name, String::concat(tp, String::concat(" { ", String::concat(join(parts, "; "), " }"))))))
       if Array::length(derives) == 0 {
@@ -773,7 +775,7 @@ export fn print_stmt(s: Stmt) -> String {
       let tp = if Array::length(params) == 0 {
         ""
       } else {
-        String::concat("[", String::concat(join(params, ", "), "]"))
+        print_bounded_type_params(params, empty_type_bounds())
       }
       String::concat(prefix(exported), String::concat("type ", String::concat(name, String::concat(tp, String::concat(" = ", print_type_expr(ty))))))
     },
@@ -781,7 +783,7 @@ export fn print_stmt(s: Stmt) -> String {
       let tp = if Array::length(tparams) == 0 {
         ""
       } else {
-        String::concat("[", String::concat(join(tparams, ", "), "]"))
+        print_bounded_type_params(tparams, empty_type_bounds())
       }
       let base = String::concat(prefix(exported), String::concat("trait ", String::concat(name, tp)))
       let head = if Array::length(supers) == 0 {
@@ -835,7 +837,11 @@ export fn print_stmt(s: Stmt) -> String {
       } else {
         String::concat("impl ", String::concat(generic_header, " "))
       }
-      String::concat(head, String::concat(trait_name, String::concat(" for ", print_type_expr(target))))
+      let printed_trait = match trait_ref_from_key(trait_name) {
+        Some(reference) => print_type_expr(reference),
+        None => trait_name
+      }
+      String::concat(head, String::concat(printed_trait, String::concat(" for ", print_type_expr(target))))
     },
     SExternLet(name, ty) => String::concat("extern let ", String::concat(name, String::concat(": ", print_type_expr(ty)))),
     SImport(path, items) => {
@@ -878,7 +884,7 @@ export fn print_stmt(s: Stmt) -> String {
         "export "
       } else ""
       let tp = if Array::length(type_params) > 0 {
-        String::concat("[", String::concat(join(type_params, ", "), "]"))
+        print_bounded_type_params(type_params, empty_type_bounds())
       } else ""
       let op_parts = for op in ops {
         let (op_name, params, ret) = op

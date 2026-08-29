@@ -1,0 +1,101 @@
+import @vibe/compiler/runtime {
+  db_grouped_merged_source, db_merged_source, db_module_source, db_new
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs
+}
+
+import @vibe/compiler/codegen {
+  desugar_trait_dicts
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+fn desugar_serialized_iterator_provenance(merged: String) -> String with Exception {
+  assert(String::contains(merged, "@vibe/compiler/internal/iterator_boundary"))
+  let stmts = parse_program(lex(merged))
+  desugar_trait_dicts(stmts)
+  print_program(stmts)
+}
+
+fn assert_serialized_iterator_provenance(merged: String) -> Unit with Exception {
+  assert(String::contains(desugar_serialized_iterator_provenance(merged), "Array::map"))
+}
+
+test "runtime merges preserve Iterator optimization provenance" {
+  let source = "import @vibe/builtin { trait Iterator }\nfn mapped(xs: Array[Int]) -> Array[Int] { Iterator::map(xs, (x: Int) -> Int { x + 1 }) }"
+  let (merged, fingerprint, merged_db) = db_merged_source(db_new(), "main.vibe", [
+    ("main.vibe", source)
+  ])
+  assert_serialized_iterator_provenance(merged)
+  let (module_source, _) = db_module_source(merged_db, fingerprint, merged)
+  assert_serialized_iterator_provenance(module_source)
+  let (grouped, grouped_fingerprint, grouped_db) = db_grouped_merged_source(db_new(), [
+    ("main", [("main.vibe", source)])
+  ])
+  assert_serialized_iterator_provenance(grouped)
+  let (grouped_module_source, _) = db_module_source(grouped_db, grouped_fingerprint, grouped)
+  assert_serialized_iterator_provenance(grouped_module_source)
+}
+
+test "runtime source caches preserve re-export builtin blockers" {
+  let dep = "export fn assert_eq(a: Int, b: Int) -> Int { a + b }"
+  let main = "export ./dep.vibe { assert_eq }\nfn answer() -> Int { assert_eq(1, 2) }"
+  let (merged, _, _) = db_merged_source(db_new(), "main.vibe", [
+    ("dep.vibe", dep),
+    ("main.vibe", main)
+  ])
+  let stmts = parse_program(lex(merged))
+  desugar_trait_dicts(stmts)
+  let rewritten = print_program(stmts)
+  assert(String::contains(rewritten, "answer = () -> Int { assert_eq(1, 2) }"))
+  assert(!String::contains(rewritten, "assert_eq failed"))
+}
+
+test "serialized Iterator provenance resets at every source boundary" {
+  let imported = "import @vibe/builtin { trait Iterator }\nlet imported_map = Iterator::map([1], (x: Int) -> Int { x + 1 })"
+  let local = "fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local_map = Iterator::map([1], (x: Int) -> Int { x + 1 })"
+  let (merged, _, _) = db_merged_source(db_new(), "main.vibe", [
+    ("dep.vibe", imported),
+    ("main.vibe", local)
+  ])
+  let rewritten = desugar_serialized_iterator_provenance(merged)
+  assert(String::contains(rewritten, "imported_map_dep_dep_vibe = Array::map"))
+  assert(String::contains(rewritten, "local_map = Iterator::map"))
+}
+
+test "grouped runtime merge keeps an aliased Iterator separate from a local canonical helper" {
+  let source = "import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local = Iterator::map([1], (x: Int) -> Int { x })\nlet standard = Iter::map([1], (x: Int) -> Int { x })"
+  let (merged, _, _) = db_grouped_merged_source(db_new(), [
+    ("main", [("main.vibe", source)])
+  ])
+  assert(String::contains(merged, "__local_trait_Iterator::map"))
+  assert(String::contains(merged, "__local_trait_Iterator::map_exp_main_vibe ="))
+  assert(String::contains(merged, "local = __local_trait_Iterator::map"))
+  assert(String::contains(merged, "standard = Iter::map"))
+}
+
+test "filesystem source groups preserve Iterator alias ownership" {
+  let groups = collect_source_groups_fs("fixtures/iterator_alias_local_namespace_test.vibe")
+  let (merged, _, _) = db_grouped_merged_source(db_new(), groups)
+  assert(String::contains(merged, "__local_trait_Iterator::map"))
+  assert(String::contains(merged, "__local_trait_Iterator::map_exp_fixtures_iterator_alias_local_namespace_test_vibe ="))
+  assert(String::contains(merged, "local = __local_trait_Iterator::map"))
+  assert(String::contains(merged, "standard = Iterator_exp_lib__vibe_builtin_iterator_vibe::map"))
+  let marker_hex = "5f5f766962655f696e7465726e616c5f6275696c74696e5f6974657261746f725f6f726967696e3a4974657261746f725f6578705f6c69625f5f766962655f6275696c74696e5f6974657261746f725f76696265"
+  inspect(String::contains(merged, marker_hex), "true")
+}
+
+test "runtime merge keeps an aliased Iterator separate from a local canonical helper" {
+  let source = "import @vibe/builtin { trait Iterator as Iter }\nfn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nlet local = Iterator::map([1], (x: Int) -> Int { x })\nlet standard = Iter::map([1], (x: Int) -> Int { x })"
+  let (merged, _, _) = db_merged_source(db_new(), "main.vibe", [
+    ("main.vibe", source)
+  ])
+  assert(String::contains(merged, "__local_trait_Iterator::map"))
+  assert(String::contains(merged, "__local_trait_Iterator::map_exp_main_vibe ="))
+  assert(String::contains(merged, "local = __local_trait_Iterator::map"))
+  assert(String::contains(merged, "standard = Iter::map"))
+}

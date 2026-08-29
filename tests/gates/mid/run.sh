@@ -20,29 +20,37 @@ gate_resolve_stage2
 export VIBE_UNSTABLE=1
 
 
-# 40. V128 SIMD intrinsics (#536): the first-class V128 type + 12 wasm-SIMD
-#     intrinsics (v128_load/store/splat/eq/le_u/ge_u/and/or/not/bitmask/
-#     any_true/all_true) must type-check, lower to valid v128 instructions, and
-#     run correctly on the default non-RC linear backend. fixtures/
-#     v128_intrinsics_test.vibe asserts lane-wise results via i8x16.bitmask; a
-#     failing assert traps (`unreachable`), so a clean `_start` exit == pass.
-echo "[compiler-gate] 40/40 V128 SIMD intrinsics compile+run"
+# 40. The retired V128 intrinsics stay retired (#2342). The 12 `v128_*` names
+#     were removed after measurement: the same algorithm through them cost 22x a
+#     hand-written inline-wasm kernel and heap-boxed 2 unreclaimable bytes per
+#     byte scanned (bench/bench_simd_bytes_find.vibe,
+#     docs/simd-data-structures.md 3.1). A retired surface that quietly comes
+#     back is worse than one that never left -- especially this one, which
+#     type-checked and looked like the supported way to write SIMD -- so assert
+#     the name does NOT resolve, and fails the way the CLI promises.
+echo "[compiler-gate] 40/40 retired V128 intrinsics stay retired"
 vdir="_build/_gate_v128"
 rm -rf "$vdir"; mkdir -p "$vdir"
+cat > "$vdir/retired_v128.vibe" <<'RETIREDEOF'
+fn probe(b: Bytes) -> Int {
+  let _ = v128_load(b, 0)
+  0
+}
+RETIREDEOF
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "fixtures/v128_intrinsics_test.vibe" "$vdir/v128.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$vdir/v128.wasm" ]; then
-  echo "[compiler-gate] FAIL: v128 intrinsics test did not compile" >&2
-  cat "$vdir/v128.wasm.diag" 2>/dev/null >&2 || true
+  "$vdir/retired_v128.vibe" "$vdir/v128.wasm" __no_entry__ >"$vdir/out.txt" 2>&1 || true
+if [ -s "$vdir/v128.wasm" ]; then
+  echo "[compiler-gate] FAIL: v128_load still compiles -- the retired intrinsic surface came back (#2342)" >&2
   exit 1
 fi
-if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-    --invoke _start "$vdir/v128.wasm" >/dev/null 2>&1; then
-  echo "[compiler-gate] FAIL: v128 intrinsics test trapped (assert failed)" >&2; exit 1
+if ! cat "$vdir/out.txt" "$vdir/v128.wasm.diag" 2>/dev/null | grep -q "unknown name: v128_load"; then
+  echo "[compiler-gate] FAIL: v128_load was rejected, but not with 'unknown name' -- the diagnostic must say what is wrong" >&2
+  cat "$vdir/out.txt" "$vdir/v128.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
 fi
 rm -rf "$vdir"
-echo "[compiler-gate] V128 SIMD intrinsics ok"
+echo "[compiler-gate] retired V128 intrinsics stay retired ok"
 
 # 40b. Fused SIMD whitespace skip (#536 Phase 3): simd_skip_ws(Bytes,Int,Int)
 #      runs a single inline v128 scan loop (16 bytes/iteration, v128 kept on the
@@ -413,33 +421,6 @@ if [ "$lk_used" -ge 2000 ]; then
 fi
 rm -rf "$lkdir"
 echo "[compiler-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"
-
-# 40e. V128 SIMD intrinsics under RC (#705 follow-up): step 40 only exercised
-#      the bump backend. v128 boxes are tagged pointers with NO rc header, so
-#      naively letting them flow through RC's dup/drop guards would misread
-#      their payload bytes as a refcount and corrupt them; Perceus now treats
-#      v128-producing let-bindings as scalar (never dup/drop'd), matching their
-#      forward-only, never-freed lifetime under bump too. Also covers a distinct
-#      RC-only bug where v128_load/store's byte offset and v128_splat_i8x16's
-#      byte value were used raw instead of untagged (RC tags Int as n<<1),
-#      silently computing the wrong SIMD lane bytes.
-echo "[compiler-gate] 40e/40 V128 SIMD intrinsics compile+run under RC"
-v2dir="_build/_gate_v128_rc"
-rm -rf "$v2dir"; mkdir -p "$v2dir"
-VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "fixtures/v128_intrinsics_test.vibe" "$v2dir/v128rc.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$v2dir/v128rc.wasm" ]; then
-  echo "[compiler-gate] FAIL: v128 intrinsics test did not compile under RC" >&2
-  cat "$v2dir/v128rc.wasm.diag" 2>/dev/null >&2 || true
-  exit 1
-fi
-if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
-    --invoke _start "$v2dir/v128rc.wasm" >/dev/null 2>&1; then
-  echo "[compiler-gate] FAIL: v128 intrinsics test trapped under RC (assert failed)" >&2; exit 1
-fi
-rm -rf "$v2dir"
-echo "[compiler-gate] V128 SIMD intrinsics under RC ok"
 
 # 40f. RC shadow-liveness regression guard (#715 recurrence prevention).
 #      Compiles the #715 shape corpus (every minimal shape that once produced
@@ -1389,7 +1370,14 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_BACKEND=gc \
     fixtures/array_hof_parity_test.vibe \
     fixtures/gc_builtin_parity_batch2_test.vibe \
     fixtures/gc_builtin_parity_batch3_test.vibe \
-    fixtures/gc_builtin_parity_batch4_test.vibe; then
+    fixtures/gc_builtin_parity_batch4_test.vibe \
+    fixtures/int_bit_primitives_test.vibe \
+    fixtures/bytes_alloc_backend_parity_test.vibe \
+    fixtures/bytes_index_of_bytes_test.vibe \
+    fixtures/bytes_index_of_byte_test.vibe \
+    fixtures/bytes_count_last_index_of_test.vibe \
+    fixtures/bytes_compare_test.vibe \
+    fixtures/string_split_empty_separator_test.vibe; then
   echo "[compiler-gate] FAIL: wasm-gc test-block runtime regression suite" >&2
   exit 1
 fi

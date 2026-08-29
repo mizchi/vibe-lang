@@ -60,9 +60,9 @@ fast structure be quoted at its slowest call.
 **Transfers — export algorithms, not vector values.** jsimd deliberately does
 not export `v128`: "JavaScript cannot pass `v128` across the Wasm boundary, and
 copying is only worthwhile when one call performs enough work." vibe hit the
-same wall from the other side and has not yet drawn the same conclusion — see
-§3.1, where its `v128_*` intrinsics turn out to cost 22x the algorithm they
-exist to express.
+same wall from the other side and has since drawn the same conclusion: §3.1
+measured its `v128_*` intrinsics at 22x the algorithm they existed to express,
+and #2342 removed them.
 
 **Does NOT transfer — the baseline.** jsimd's rejections are measured against
 V8's `Map`, `Set`, typed arrays and `TextDecoder`: hand-tuned native code. A
@@ -71,23 +71,39 @@ orders of magnitude slower (§3.1 measures 6.1 ns per byte scanned). So a
 structure jsimd rejected can still win handily in vibe — and that is a trap,
 not an opportunity: winning against a vibe loop proves nothing except that the
 loop was never the right implementation. **The honest baseline for anything
-proposed here is a native scalar builtin implemented in the compiler**, and
-against that baseline the margins collapse: `String::index_of` (native, scalar)
-runs a 4 KiB search in 352 ns where a hand-written SIMD kernel takes 248 ns —
-1.4x, not 100x.
+proposed here is a native scalar builtin implemented in the compiler**, not a
+vibe loop.
+
+That baseline is `find_4k_native_scalar` in
+`bench/bench_simd_bytes_find.vibe`: a byte loop in inline wasm, native and
+scalar, compiled the way the kernels are. Measured on 4 KiB, p50,
+`Bytes::index_of` is **~11x** it — and ~109x the vibe loop.
+
+**`String::index_of` is not a scalar baseline**, despite the name suggesting a
+plain builtin: `gen_string_index_of_body` calls
+`emit_windowed_substring_search`, a v128 scan (ADR-0054). Comparing a kernel
+against it measures specialisation, not SIMD. The ~11x is the number a SIMD
+kernel has to earn; the ~109x only proves the vibe loop was never the right
+implementation.
 
 ## 2. Where vibe's SIMD support actually is
 
 Two unrelated mechanisms exist today, and they are very far apart in quality.
 
 **Fused builtins written in the compiler** (`codegen/builtin_bodies/`,
-`codegen/expr/compile_call.vibe`). Five exist: `simd_skip_ws`,
-`simd_scan_alnum`, `simd_scan_alnum_str`, `simd_scan_string_special_str`,
-`simd_scan_line_end_str`. They keep the `v128` on the operand stack for the
-whole loop and are fast. Two of the five have a production caller
-(`lib/@vibe/parser/lexer.vibe:653,750`); the other three have only fixtures.
-This mechanism works, but every kernel costs a compiler change, a registry row,
-and a per-lane index arm — it does not scale to a data-structure library.
+`codegen/expr/compile_call.vibe`). Nine exist. Five are lexer-shaped scans with
+their needle baked in: `simd_skip_ws`, `simd_scan_alnum`, `simd_scan_alnum_str`,
+`simd_scan_string_special_str`, `simd_scan_line_end_str`. Four are the Layer 2
+`Bytes` searches this document proposed, landed in #2372: `Bytes::index_of`,
+`Bytes::last_index_of`, `Bytes::count`, `Bytes::index_of_bytes`. They keep the
+`v128` on the operand stack for the whole loop and are fast.
+
+Every kernel costs a compiler change, a registry row, a per-lane index arm, and
+a name in each of several hand-maintained declaration lists that nothing points
+at — two effect-lowering allowlists, four borrow-arg0 masks, a `.vpkg` contract
+(#2373). **This does not scale to a data-structure library**: adding four
+builtins meant editing eleven places, and every one that was missed was caught
+by a human rather than by a gate.
 
 **Inline wasm** (`fn f(b: Bytes, n: Int) -> Int = wasm "..."`, #805/ADR-0072).
 A ~600-line WAT assembler with the full integer/float/SIMD opcode set, `v128`
@@ -97,56 +113,68 @@ makes a SIMD data-structure library possible in *library* code —
 benches here is written this way. It is linear-backend only (the wasm-gc backend
 rejects it).
 
-**The `V128` intrinsic surface** (`v128_load`, `v128_eq_i8x16`, … — 12 names in
-`builtins/declarations.vibe`, typed in `checker/builtins_simd.vibe`) sits between the two and belongs to neither. It is
-measured in §3.1.
+**The `V128` intrinsic surface** (`v128_load`, `v128_eq_i8x16`, … — 12 names)
+sat between the two and belonged to neither. It is measured in §3.1 and has
+since been **removed** (#2342).
 
-## 3. Measured: four gaps
+## 3. Measured: four gaps, two of them now closed
 
-### 3.1 The `V128` intrinsics are the wrong shape
+### 3.1 The `V128` intrinsics were the wrong shape (retired, #2342)
 
 `bench/bench_simd_bytes_find.vibe`, 4 KiB single-byte search, 500 iters:
+
+The intrinsic lane no longer exists; this table is the evidence that retired
+it (`bench/bench_simd_bytes_find.vibe`, 500 iters, mean, at the time):
 
 | lane | ns/op (mean) | B/op | vs. best |
 | :--- | ---: | ---: | ---: |
 | inline-wasm SIMD kernel | **248** | **0** | 1.0x |
-| native `String::index_of` (scalar builtin) | 352 | 0 | 1.4x |
+| `String::index_of` (a SIMD builtin — see §1) | 352 | 0 | 1.4x |
 | same algorithm through `v128_*` intrinsics | 5564 | **8048** | 22x |
 | vibe-level scalar loop over `Bytes::get` | 25001 | 0 | 101x |
 
-The intrinsic lane runs the *identical algorithm* as the kernel lane and is 22x
-slower, because each `v128_load` / `v128_eq_i8x16` / `v128_and` returns a tagged
-pointer to a freshly bump-allocated 16-byte box (`codegen/expr/compile_call.vibe`,
-`perceus/perceus.vibe:922-930,1287-1294` — the boxes deliberately carry no RC
-header, so they are never reclaimed). Scanning 4096 bytes allocates 8 KiB. The compiler's
-own fused builtins avoid this by never letting the vector become a value; the
-comment in `compile_call.vibe:2065` says so outright ("NO heap boxing — the
-per-op boxed v128 intrinsics would bump-allocate 16 bytes each and leak").
+Current numbers, including the native scalar baseline, are in that file's
+header.
 
-So the intrinsics are documented, type-checked, reachable from user code, and
-wrong to use. They never give a wrong answer, so this is not a P0 by the triage
+The intrinsic lane ran the *identical algorithm* as the kernel lane and was 22x
+slower, because each `v128_load` / `v128_eq_i8x16` / `v128_and` returned a
+tagged pointer to a freshly bump-allocated 16-byte box. The box deliberately
+carried no RC header — Perceus had to classify these values as scalar, since a
+dup/drop would have misread the vector's payload bytes as a refcount — which
+also meant nothing ever reclaimed one. Scanning 4096 bytes allocated 8 KiB. The
+compiler's own fused builtins avoid this by never letting the vector become a
+value at all.
+
+(No line citations here on purpose. This paragraph described code that #2342
+deleted, and the ranges it used to cite now land on pattern environments and
+closure ownership — pointing a reader at unrelated current code is worse than
+pointing at nothing. `git log` is the archive; the same rule the `docs/` policy
+in `CLAUDE.md` states for whole documents applies to a line number inside one.)
+
+So the intrinsics were documented, type-checked, reachable from user code, and
+wrong to use. They never gave a wrong answer, so this was not a P0 by the triage
 rules — but it is the shape the design policy cares about for a different
-reason: the surface reads as the supported way to write SIMD, and taking it
-costs 22x and 2 bytes of unreclaimable heap per byte scanned. They have no
-caller in the tree except `fixtures/v128_intrinsics_test.vibe`.
+reason: the surface read as the supported way to write SIMD, and taking it cost
+22x and 2 bytes of unreclaimable heap per byte scanned. Nothing in the tree used
+them except their own fixture.
 
-**Proposal.** Pick one and write it down:
+**Resolved: retired** (#2342). The 12 names, the `CtNamed("V128", [])` type
+behind them, their checker lookup, their inline lowering, and the Perceus and
+gc-backend special cases they needed are gone — and so is the bench lane that
+measured them, which cannot be rebuilt without them; the numbers above are the
+rejection evidence, recorded here and in the bench file's header. `tests/gates/mid/run.sh` step 40 now asserts
+the names stay unresolvable, because a retired surface that quietly comes back
+is worse than one that never left.
 
-- **(a) Unbox them.** Keep `V128` a first-class type but require it to stay in
-  a wasm local: reject (with a located diagnostic) any `V128` that escapes a
-  function body, and lower non-escaping ones to a `v128` local. This is the same
-  shape as ADR-0090's `let mut` escape analysis, and `vibe escapes` already
-  exists as the CLI surface for that question.
-- **(b) Retire them.** Delete the 12 names, keep the fixture as a regression
-  for the emitters, and point the cheatsheet at inline wasm. This is jsimd's
-  answer ("export algorithms rather than raw `v128` values") and is much
-  cheaper.
+The alternative was to keep `V128` and require it to stay in a wasm local —
+reject, with a located diagnostic, any value of that type that escapes a
+function body, the shape of ADR-0090's `let mut` escape analysis. That buys a
+composable vector type that inline wasm already provides at zero cost, and pays
+a new analysis pass and a new diagnostic class for it. Retiring is also jsimd's
+own answer: "the package intentionally exports algorithms rather than raw
+`v128` values".
 
-Either is fine. Leaving them as they are is not: a surface that is 22x slower
-than the thing it wraps is a trap for exactly the LLM-driven loop this repo
-optimizes for.
-
-### 3.2 The bit primitives are missing, and they matter more than SIMD
+### 3.2 The bit primitives matter more than SIMD (added, #2344)
 
 `bench/bench_simd_rank.vibe`, rank1 over 32 Kibit, 500 iters:
 
@@ -162,22 +190,27 @@ is one scalar instruction**; widening the load to `v128` adds 27%, and the
 dedicated `i8x16.popcnt` adds nothing at all. rank/select, and therefore every
 succinct structure built on it, is a *popcount* story, not a SIMD story.
 
-And vibe does not expose popcount. `declarations.vibe` has a
-`//# WASM intrinsics (low-level)` block of ~50 names (`i32_eqz`, `i32_load8_u`,
-`int_ctz`, `f32_sqrt`, …) described as the "Single Source of Truth for all
-builtin function signatures" — measured, **none of them resolve from user
-code**:
+vibe had no popcount when this was measured, and `declarations.vibe` looked
+like it did: its `//# WASM intrinsics (low-level)` block declares ~50 names
+(`i32_eqz`, `i32_load8_u`, `int_ctz`, `f32_sqrt`, …) under a header calling the
+file the "Single Source of Truth for all builtin function signatures". Measured,
+**none of them resolve from user code**, and that is still true:
 
 ```
 $ vibe check probe.vibe        # fn f(x: Int) -> Int { let _ = int_ctz; 0 }
 line 1:31-38: unknown name: int_ctz
 ```
 
-(The `v128_*` block in the same file does resolve. The low-level block is
-compiler-internal, and the file's header comment does not say so.)
+Reachability is **per block**, and the file does not say which is which.
+Measured on the same compiler: `simd_skip_ws`, declared a few lines below in
+that same file, resolves clean — it has a row in `core/builtin_registry.vibe`,
+which is what the checker actually consults. The low-level block has no such
+row, so those names exist only as signatures. (The `v128_*` block was the other
+reachable example until #2342 retired it; §3.1.)
 
-**Proposal.** Add a small, stable, scalar bit surface on `Int`, lowered to the
-corresponding wasm opcode:
+So the surface #2344 added is a designed one on `Int`, lowered to the
+corresponding wasm opcode — not those raw names un-hidden (#2343 covers the
+declarations that still overstate themselves):
 
 ```
 Int::popcount(Int) -> Int      // i64.popcnt on the untagged value
@@ -186,11 +219,17 @@ Int::clz(Int) -> Int
 Int::select1(Int, Int) -> Int  // position of the k-th set bit, -1 if absent
 ```
 
-`~` (bit-not) is also still missing — `CLAUDE.md` tells readers to spell it
-`x ^ mask`, and measured, `~x` is a parse error ("unexpected token: ~"); it
-belongs in the same change. These four are cheap, they are
-tag-safe (untag, operate, retag), they work on both backends, and they unblock
-every bit-level structure in §4 without any SIMD at all.
+`Int::popcount` / `ctz` / `clz` are registry builtins on **both** lanes;
+`Int::select1` is a prelude function on top of them, since wasm has no select
+instruction to lower to. All are tag-safe (untag, operate, retag) and answer at
+the 63-bit width — `popcount(-1)` is 63, not 64 — with the zero cases defined
+rather than inherited. Together they unblock every bit-level structure in §4
+without any SIMD at all.
+
+`~` (bit-not) is still missing: `CLAUDE.md` tells readers to spell it
+`x ^ mask`, and measured, `~x` is a parse error ("unexpected token: ~"). It is
+a new **operator**, touching the lexer, parser and printer, so it is tracked as
+its own slice rather than bundled with a builtin addition.
 
 ### 3.3 There is no packed numeric buffer
 
@@ -250,14 +289,50 @@ the readable numbers are: same table, same probe, same hash. Loop-in-kernel vs
 loop-in-vibe is **1.32x**; moving the queries from an `Array[Int]` to the packed
 column is another **1.84x**.
 
-The case for changing `MutMap` is therefore structural, not measured here.
-`lib/@vibe/core/hashmap.vibe` stores slot state as `Array[Int]` — one tagged
-i64, **8 bytes per slot**, for a value with three possible states. A SwissTable
-control byte is 1 byte and carries a 7-bit fingerprint as well, so one
-`v128.load` covers 16 slots where `Array[Int]` covers 2, and the fingerprint
-skips most of the `eq_fn` indirect calls. Even with no SIMD, that is an 8x cut
-in probe-metadata traffic. What it is *worth* is [#2346](https://github.com/mizchi/vibe-lang/issues/2346)'s
-job to measure, with the rest of `MutMap` held fixed.
+The case for changing `MutMap` was therefore structural, not measured here —
+so [#2346](https://github.com/mizchi/vibe-lang/issues/2346) measured it, with
+the rest of `MutMap` held fixed. It landed: `state: Array[Int]` (one tagged
+i64, **8 bytes per slot**, for a value with three possible states) is now
+`ctrl: Bytes`, one byte per slot, carrying a 7-bit fingerprint of the key's
+hash. `bench/bench_mutmap_probe.vibe` touches only MutMap's public API, so the
+same source measures both representations; best-of-3, alternating A/B/A/B so
+machine drift cannot produce the result:
+
+| lane | before (ns) | after (ns) | |
+| :--- | ---: | ---: | ---: |
+| `get` hit, sequential keys (**zero-collision control**) | 219950 | 215684 | 1.02x |
+| `get` hit, random keys | 327233 | 306711 | **1.07x** |
+| `get` miss, random keys | 720554 | 705474 | 1.02x |
+| `get` hit, half the entries deleted | 514431 | 480477 | **1.07x** |
+| `get` hit, `String` keys | 634086 | 525831 | **1.21x** |
+| `get` miss, `String` keys | 938037 | 749352 | **1.25x** |
+| build 5000 entries | 1689725 | 1605349 | **1.05x** |
+
+Build also allocates 11% less (910496 -> 811008 B/op): the control arrays are
+an eighth of their former size, across the whole rehash history.
+
+The shape of the result is the point, more than its size. The win tracks **the
+cost of the compare that the fingerprint skips** — largest on `String` keys
+(1.21x / 1.25x, where the skipped call is `eq_string`), modest on `Int` keys
+(1.07x, where `eq_int` is nearly free), and a wash on the sequential-key
+control lane, which is exactly right: `hash_int` is the identity below 2^33, so
+a table keyed 0..N-1 has no collisions at all and there is nothing for a
+fingerprint to filter. A lane that showed a large win *there* would have been
+evidence of a broken measurement, not of a fast table.
+
+Two things had to be got right for the number to mean anything, and both were
+initially wrong:
+
+- **The fingerprint cannot come from the low bits of the hash.** The home slot
+  is `h % cap`, so for a power-of-two capacity, two keys that collide already
+  agree on exactly those bits — `h & 0x7f` would be identical for every key in
+  a chain and would filter nothing. `ctrl_tag` folds the high bits down first.
+- **Naming the control constants cost more than the fingerprint saved.** The
+  first implementation had `ctrl_empty()` / `ctrl_tomb()` / `is_occupied(c)`
+  helpers where the original compared against literals `0`/`1`/`2`. Measured,
+  that turned a 1.05x build into a 0.94x *regression* and halved the String
+  win; a zero-argument constant function in the innermost probe loop is not
+  free. The constants are spelled as literals with a comment instead.
 
 ## 4. Proposal: five layers, bottom-up
 
@@ -265,10 +340,11 @@ Each layer is useful on its own and each is a precondition for the next. The
 ordering is deliberate — it puts the cheapest and least SIMD-dependent work
 first, because that is where the measurements say the value is.
 
-### Layer 0 — decide the SIMD surface (§3.1)
+### Layer 0 — the SIMD surface (decided, §3.1)
 
-Unbox `V128` or retire it. Independently, three inline-wasm gaps block kernels
-in library code:
+**Done: `V128` is retired** (#2342), leaving inline wasm as the one way to
+write a kernel. Independently, three inline-wasm gaps block kernels in library
+code:
 
 1. ~~**Out-of-range `i32.const` produces an invalid module with no
    diagnostic.**~~ **Fixed** (#2341). It used to be: `(i32.const 2654435761)` —
@@ -292,36 +368,86 @@ in library code:
 
 ### Layer 1 — scalar bit primitives (§3.2)
 
-`Int::popcount` / `Int::ctz` / `Int::clz` / `Int::select1`, plus `~`. No SIMD,
-both backends, ~344x on rank.
+**Done** (#2344): `Int::popcount` / `Int::ctz` / `Int::clz` / `Int::select1`.
+No SIMD, both backends, ~344x on rank. `~` remains open as its own slice.
 
 ### Layer 2 — `Bytes` bulk kernels
 
-`Bytes` today has `get`/`set`/`push`/`slice`/`concat`/`fill`/`blit` and
-structural `==`. It has **no search, no ordering, no counting** — so any library
-that scans bytes writes the 6.1 ns/byte loop from §3.1 by hand. This is jsimd's
-best-measured group (4.9–18.1x) and the one moonbitlang/core already covers with
-the patterns jsimd inventories in its `CORE_PATTERNS.md`:
+**Landed** in #2372, on both backends:
 
 ```
 Bytes::index_of(Bytes, Int) -> Int              // single byte
-Bytes::index_of_bytes(Bytes, Bytes) -> Int      // first/last-byte SIMD prefilter,
-                                                // then verify the middle
 Bytes::last_index_of(Bytes, Int) -> Int
 Bytes::count(Bytes, Int) -> Int
+Bytes::index_of_bytes(Bytes, Bytes) -> Int      // substring; calls String::index_of
+```
+
+```
 Bytes::compare(Bytes, Bytes) -> Int             // lexicographic, first differing lane
 ```
 
-Two design notes. `String` is a byte string since ADR-0098, so
-`String::index_of` / `contains` / `split` / `starts_with` should route through
-the same kernels rather than keeping a second scalar implementation — that is
-where the 1.4x of §3.1 gets collected, across a surface that already has
-callers. And a kernel wants to over-read its tail: guaranteeing at
-least 15 bytes of readable slack past `len` would let every kernel drop its
-scalar tail loop. Today's block is `[alloc@0][len@4][data@8]` with capacity
-seeded at 64 and doubling, always a multiple of 8
+The whole layer is served.
+
+`Bytes < Bytes` remains a type error — the operator was never the ask,
+`Bytes::compare` is how byte strings are ordered. A library no longer writes
+the 6.1 ns/byte loop by hand.
+Measured on a 4 KiB buffer (`bench/bench_simd_bytes_find.vibe`, p50): that loop
+is 23600 ns and `Bytes::index_of` is 216 ns.
+
+Against `find_4k_native_scalar` (§1) `Bytes::index_of` is ~11x; against
+`String::index_of` it is ~1.7x, which measures specialisation — a single byte
+needs no needle span verified through `str_eq` — not SIMD.
+
+**`String` routes through the same window search.** `String::index_of` /
+`equals` / `starts_with` / `ends_with` / `split` are SIMD builtins (ADR-0054);
+`String::count` / `replace` / `replace_all` are library functions in
+`@vibe/builtin` and reach that search through `string_index_of_from`, which is
+one `String::index_of` call over a suffix.
+
+Seeding that call costs nothing, because `String::substring` does not copy: on
+the linear lane it returns `((ptr + start) << 32) | (len - start)`, a second
+fat value into the same buffer (`gen_str_substring_body`). So `s[start: len]`
+is a view, `String::index_of(s[start: len], sub)` **is** a search-from-offset
+at zero allocation, and no `String::index_of_from` builtin is needed. Measured:
+`String::split` over 512 / 1024 / 2048 lines costs 23.3 / 45.5 / 92.3 µs —
+linear in the number of separators.
+
+**A library must not re-implement a kernel under the builtin's own name.** A
+top-level `fn X::y` replaces the builtin named `X::y` for the whole linked
+program, including at call sites in files that never imported it
+([#2378](https://github.com/mizchi/vibe-lang/issues/2378)). Such a
+re-implementation is therefore not a second implementation alongside the
+kernel — it *is* the one that runs, for every dependent. Measured: `import
+@vibe/builtin { String::trim }` alone moved a sparse `String::index_of` from
+0.8 µs to 174 µs (~218×).
+
+Two names in `lib/@vibe/builtin/string.vibe` still shadow their builtins,
+deliberately: `String::equals` and `String::trim`. Both were measured
+equivalent to the builtin (20/20 answers, including tab/LF/CR/VT/FF padding
+and the equality edge cases) and performance-neutral, so what runs is the same
+work under a different symbol. The six search functions were neither, which is
+what made them worth removing. Nothing enforces the rule — #2378 is where the
+diagnostic belongs.
+
+Cost of the routing, net of haystack construction
+(`bench/bench_string_scan_routing.vibe`, p50):
+
+| | scalar scan | window search | |
+|---|---:|---:|---:|
+| `String::count`, match every 11 B | 186 µs | 70.8 µs | 2.6× |
+| `String::count`, one match in 22 KiB | 180 µs | 2.2 µs | **82×** |
+| `String::replace_all`, dense | 309 µs | 164 µs | 1.9× |
+
+Dense is bounded by per-match loop overhead, which no scanner removes; sparse
+is the scan itself.
+
+**Tail slack is still undecided.** A kernel wants to over-read its tail:
+guaranteeing at least 15 bytes of readable slack past `len` would let every
+kernel drop its scalar tail loop. Today's block is `[alloc@0][len@4][data@8]`
+with capacity seeded at 64 and doubling, always a multiple of 8
 (`gen_bytes_push_body`) — so the slack is 0..7 bytes and a 16-byte tail load
-can read past the block.
+can read past the block. The four landed kernels all keep a scalar tail
+instead, so none of them depends on this being resolved.
 
 ### Layer 3 — packed columns (§3.3)
 
@@ -369,12 +495,13 @@ FrozenIntMap[V]
 with bulk entry points (`contains_many`, `get_many`) as the documented contract
 and point access as a convenience that is explicitly *not* in the contract.
 
-Separately and independently of any of this: **change `MutMap`'s `state:
-Array[Int]` to a `Bytes` control array carrying a 7-bit fingerprint.** It is a
-local change to one file, it needs no new language surface, and it cuts
-probe-metadata traffic 8x with the fingerprint skipping most `eq_fn` calls. It
-is the cheapest change proposed here by a wide margin — but §3.4 does not price
-it, so it ships with its own before/after bench or not at all.
+Separately and independently of any of this, and now **done** (#2346):
+`MutMap`'s `state: Array[Int]` is a `Bytes` control array carrying a 7-bit
+fingerprint. One file, no new language surface, and it shipped with the
+before/after bench §3.4 demanded — 1.02x to 1.25x depending on how expensive
+the key compare it skips is, plus 11% less allocation on build. It remains the
+cheapest change proposed here by a wide margin, and `MutSet` got it for free by
+being a thin wrapper over `MutMap`.
 
 ## 5. Admission policy
 
@@ -428,7 +555,7 @@ something that works today being broken.
 | :-- | :--- | :--- | :--- |
 | [#2340](https://github.com/mizchi/vibe-lang/issues/2340) | SIMD-first data-structure foundation (index) | `epic` | P2 |
 | [#2341](https://github.com/mizchi/vibe-lang/issues/2341) | inline wasm: out-of-range `i32.const` passes `vibe check`, fails at module load (§4/Layer 0) | `bug` | **P0** |
-| [#2342](https://github.com/mizchi/vibe-lang/issues/2342) | `V128` intrinsics heap-box every vector and never reclaim it — unbox or retire (§3.1) | `bug` `performance` | P1 |
+| [#2342](https://github.com/mizchi/vibe-lang/issues/2342) | `V128` intrinsics heap-box every vector and never reclaim it — **retired** (§3.1) | `bug` `performance` | P1 |
 | [#2343](https://github.com/mizchi/vibe-lang/issues/2343) | the low-level wasm intrinsic block in `declarations.vibe` does not resolve from user code (§3.2) | `bug` | P2 |
 | [#2344](https://github.com/mizchi/vibe-lang/issues/2344) | `Int::popcount` / `ctz` / `clz` / `select1`, and `~` (§3.2) | `enhancement` `blocker` | P2 |
 | [#2345](https://github.com/mizchi/vibe-lang/issues/2345) | `Bytes` search/compare/count kernels; route `String::*` through them (§4/Layer 2) | `enhancement` | P2 |
@@ -440,7 +567,7 @@ Layers 4 and 5 have no issue yet, deliberately: by §5 each needs a documented
 end-to-end workload that wins against a native builtin before it is written.
 
 The order falls out of the triage rules — #2341, then #2342, then #2344 (the
-`blocker`), then the rest. None of #2343 / #2344 / #2345 / #2346 waits on the
-#2342 decision. Of those, #2343, #2345 and #2346 need no new language surface
+`blocker`), then the rest. #2341 and #2342 are done. None of
+#2343 / #2344 / #2345 / #2346 waited on the #2342 decision. Of those, #2343, #2345 and #2346 need no new language surface
 at all; #2344 does — `Int::popcount` and friends are builtin additions, and `~`
 is a new operator, so it touches the lexer, the parser and the printer as well.

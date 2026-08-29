@@ -204,6 +204,7 @@ Function types:
 (Int) -> Int with Exception
 [T](T) -> T
 [T: Eq + Ord](T) -> Bool
+[F[_], A](F[A]) -> F[A]
 ```
 
 Labeled arguments:
@@ -704,6 +705,11 @@ Rules:
 - `i32`, `f32`, and `f64` are aliases for `Int`, `Float`, and `Double` in type
   positions.
 - Function effects appear after return type: `-> T with Effect`.
+- A type-constructor parameter may declare its arity with underscore slots:
+  `F[_]` has one input and `F[_, _]` has two, and those forms are
+  arity-enforced at each application. An unannotated parameter such as `F`
+  may still appear as the head of `F[A]` (the kernel spelling from arity-1
+  HKT); `F[_]` is the extra, arity-checked surface, not a requirement.
 - Effect row variables such as `with e` are accepted in polymorphic
   higher-order signatures.
 - The effect row has one spelling, plus one for the empty row:

@@ -172,3 +172,59 @@ test "int_parse" {
   }, (2305843009213693951<<1)|1))
   assert(Int::parse("4611686018427387904") is None)
 }
+
+// #2344: the scalar bit primitives. `Int` is a 63-bit two's complement value,
+// NOT an i64, so the answers below are 63-bit answers: popcount(-1) is 63 and
+// not 64, and the largest positive Int (2^62-1) has bits 0..61 set, so its
+// popcount is 62 and its clz is 1.
+test "Int::popcount" {
+  assert(eq(Int::popcount(0), 0))
+  assert(eq(Int::popcount(1), 1))
+  assert(eq(Int::popcount(2), 1))
+  assert(eq(Int::popcount(3), 2))
+  assert(eq(Int::popcount(255), 8))
+  assert(eq(Int::popcount(1023), 10))
+  // negative inputs are where a bare i64.popcnt would answer one too many
+  assert(eq(Int::popcount(0 - 1), 63))
+  assert(eq(Int::popcount(0 - 2), 62))
+  assert(eq(Int::popcount(4611686018427387903), 62))
+}
+
+test "Int::ctz" {
+  assert(eq(Int::ctz(1), 0))
+  assert(eq(Int::ctz(2), 1))
+  assert(eq(Int::ctz(8), 3))
+  assert(eq(Int::ctz(96), 5))
+  assert(eq(Int::ctz(0 - 1), 0))
+  assert(eq(Int::ctz(0 - 2), 1))
+  // wasm answers 64 for zero, which is outside the 63-bit width
+  assert(eq(Int::ctz(0), 63))
+}
+
+test "Int::clz" {
+  assert(eq(Int::clz(1), 62))
+  assert(eq(Int::clz(2), 61))
+  assert(eq(Int::clz(3), 61))
+  assert(eq(Int::clz(4), 60))
+  assert(eq(Int::clz(4611686018427387903), 1))
+  // only a negative value has bit 62 set
+  assert(eq(Int::clz(0 - 1), 0))
+  assert(eq(Int::clz(0), 63))
+}
+
+test "Int::select1" {
+  // 0b1010: set bits at 1 and 3
+  assert(eq(Int::select1(10, 0), 1))
+  assert(eq(Int::select1(10, 1), 3))
+  assert(eq(Int::select1(10, 2), 0 - 1))
+  assert(eq(Int::select1(1, 0), 0))
+  assert(eq(Int::select1(0, 0), 0 - 1))
+  assert(eq(Int::select1(255, 7), 7))
+  assert(eq(Int::select1(255, 8), 0 - 1))
+  // k = 0 agrees with ctz for every non-zero input
+  assert(eq(Int::select1(96, 0), Int::ctz(96)))
+  // negative: bit 62 is the highest set bit of -1
+  assert(eq(Int::select1(0 - 1, 62), 62))
+  assert(eq(Int::select1(0 - 1, 63), 0 - 1))
+  assert(eq(Int::select1(10, 0 - 1), 0 - 1))
+}

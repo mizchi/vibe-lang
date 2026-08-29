@@ -25,11 +25,11 @@ const validTrace = {
       implementation_fingerprint: "30:1:2",
       implementation_fingerprint_kind: "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))",
       interface_fingerprint: "31:1:2",
-      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v2 canonical exported surface including trait-header and method-generic binders)",
+      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v4 canonical exported surface including kinded applications)",
       checked_env_fingerprint: "32:1:2",
-      checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v1 canonical effective TypeEnv value bindings)",
+      checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)",
       persistent_type_env_transport_fingerprint: "33:1:2",
-      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v5 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
+      persistent_type_env_transport_fingerprint_kind: "compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)",
       decision: "reused",
     },
   ],
@@ -243,7 +243,7 @@ test("shadow planner keeps implementation edits local and propagates interface e
   assert.deepEqual(planObservedTypingInvalidation(before, removedEdgeAfter), ["/p/base.vibe", "/p/library.vibe", "/p/app.vibe"]);
 });
 
-test("private dependency classifier is explicit, fail-closed, and reports TypeEnv-v5 separately", () => {
+test("private dependency classifier is explicit, fail-closed, and reports TypeEnv-v9 separately", () => {
   const before = plannerTrace();
   const after = plannerTrace({
     source: { "/p/library.vibe": "source:library:private-edit" },
@@ -261,7 +261,7 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
     dependency_identity: {
       source: "changed",
       implementation_token_stream_v1: "changed",
-      interface_v2: "unchanged",
+      interface_v3: "unchanged",
     },
     dependency_type_env_transport_v5: "unchanged",
     consumer_own_identities: {
@@ -286,7 +286,7 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
     ["after relation", (_, right) => { right.modules[2].direct_dependencies = []; }, /after direct relation/],
     ["source", (_, right) => { right.modules[1].source_fingerprint = before.modules[1].source_fingerprint; }, /did not change dependency source/],
     ["implementation", (_, right) => { right.modules[1].implementation_fingerprint = before.modules[1].implementation_fingerprint; }, /did not change dependency implementation/],
-    ["interface", (_, right) => { right.modules[1].interface_fingerprint = "interface:library:changed"; }, /changed dependency interface-v2/],
+    ["interface", (_, right) => { right.modules[1].interface_fingerprint = "interface:library:changed"; }, /changed dependency interface-v4/],
     ["consumer identity", (_, right) => { right.modules[2].source_fingerprint = "source:app:changed"; }, /changed consumer own source_fingerprint/],
     ["missing transport", (_, right) => { delete right.modules[1].persistent_type_env_transport_fingerprint; }, /missing after dependency persistent_type_env_transport_fingerprint/],
     ["consumer decision", (_, right) => { right.modules[2].decision = "reused"; }, /no longer conservatively rechecked/],

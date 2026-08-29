@@ -1,4 +1,4 @@
-//# #1379 narrow checked TypeDef artifact v1 codec tests.
+//# #1379 narrow checked TypeDef artifact v2 codec tests.
 
 import @vibe/compiler/checker {
   CheckedProgram, CheckedProgramTypeDefsObservation, canonical_checked_type_defs_snapshot, check_program_type_defs_observation
@@ -7,8 +7,8 @@ import @vibe/compiler/checker {
 import @vibe/compiler/checker/artifacts {
   canonical_checked_type_defs_artifact_snapshot,
   checked_type_defs_artifact_from_observation,
-  decode_checked_type_defs_artifact_v1,
-  encode_checked_type_defs_artifact_v1
+  decode_checked_type_defs_artifact_v2,
+  encode_checked_type_defs_artifact_v2
 }
 
 import @vibe/compiler/core {
@@ -34,17 +34,17 @@ fn typedef_observation(defs: Array[TypeDef], binders: Array[Array[Int]], subst: 
 
 fn encode_from(defs: Array[TypeDef], binders: Array[Array[Int]], subst: Subst) -> Option[String] {
   match checked_type_defs_artifact_from_observation(typedef_observation(defs, binders, subst)) {
-    Some(artifact) => encode_checked_type_defs_artifact_v1(artifact),
+    Some(artifact) => encode_checked_type_defs_artifact_v2(artifact),
     None => None
   }
 }
 
 fn assert_round_trip(observation: CheckedProgramTypeDefsObservation) -> Unit {
   match checked_type_defs_artifact_from_observation(observation) {
-    Some(artifact) => match encode_checked_type_defs_artifact_v1(artifact) {
-      Some(text) => match decode_checked_type_defs_artifact_v1(text) {
+    Some(artifact) => match encode_checked_type_defs_artifact_v2(artifact) {
+      Some(text) => match decode_checked_type_defs_artifact_v2(text) {
         Some(decoded) => {
-          match encode_checked_type_defs_artifact_v1(decoded) {
+          match encode_checked_type_defs_artifact_v2(decoded) {
             Some(reencoded) => assert(reencoded == text),
             None => assert(false)
           }
@@ -61,7 +61,7 @@ fn assert_round_trip(observation: CheckedProgramTypeDefsObservation) -> Unit {
   }
 }
 
-test "checked typedef artifact v1 round-trips real checker retained definitions" {
+test "checked typedef artifact v2 round-trips real checker retained definitions" {
   let observation = check_program_type_defs_observation([
     SEnum(false, "Choice", ["A", "B"], [("Only", [TyName("B")])], array_empty()),
     SStruct(false, "Box", [("value", TyName("T"))], array_empty(), ["value"], [
@@ -73,7 +73,7 @@ test "checked typedef artifact v1 round-trips real checker retained definitions"
   assert_round_trip(observation)
 }
 
-test "checked typedef artifact v1 preserves every retained variant and order" {
+test "checked typedef artifact v2 preserves every retained variant and order" {
   let min_int = 0 - 2305843009213693951 - 1
   let max_int = 2305843009213693951
   let defs = [
@@ -88,6 +88,8 @@ test "checked typedef artifact v1 preserves every retained variant and order" {
         CtBytes,
         CtUnknown,
         CtVar(min_int),
+        CtConstructor("Array", 1),
+        CtApplied(CtVar(max_int), [CtString]),
         CtTuple([CtEnum("E"), CtStruct("S")]),
         CtArray(CtOption(CtNamed("Named", [CtVar(max_int)]))),
         CtFn([CtInt], CtUnit, None),
@@ -120,7 +122,7 @@ test "checked typedef artifact v1 preserves every retained variant and order" {
   assert_round_trip(typedef_observation(defs, binders, subst))
 }
 
-test "checked typedef artifact v1 distinguishes function effect None from Some empty" {
+test "checked typedef artifact v2 distinguishes function effect None from Some empty" {
   let none_defs = [
     TDAlias("Effect", array_empty(), CtFn(array_empty(), CtUnit, None))
   ]
@@ -132,8 +134,8 @@ test "checked typedef artifact v1 distinguishes function effect None from Some e
   ], SubstEmpty)) {
     (Some(none_text), Some(some_text)) => {
       assert(none_text != some_text)
-      match decode_checked_type_defs_artifact_v1(some_text) {
-        Some(decoded) => match encode_checked_type_defs_artifact_v1(decoded) {
+      match decode_checked_type_defs_artifact_v2(some_text) {
+        Some(decoded) => match encode_checked_type_defs_artifact_v2(decoded) {
           Some(reencoded) => assert(reencoded == some_text),
           None => assert(false)
         },
@@ -144,7 +146,7 @@ test "checked typedef artifact v1 distinguishes function effect None from Some e
   }
 }
 
-test "checked typedef artifact v1 preserves final-substitution-sensitive canonical parity" {
+test "checked typedef artifact v2 preserves final-substitution-sensitive canonical parity" {
   let defs = [TDAlias("Resolved", array_empty(), CtVar(9))]
   let binders = [array_empty()]
   let resolved = typedef_observation(defs, binders, SubstBind(9, CtInt, SubstEmpty))
@@ -153,7 +155,7 @@ test "checked typedef artifact v1 preserves final-substitution-sensitive canonic
   assert_round_trip(resolved)
 }
 
-test "checked typedef artifact v1 rejects binder collisions and cached substitutions" {
+test "checked typedef artifact v2 rejects binder collisions and cached substitutions" {
   let duplicate_in_row = typedef_observation([
     TDEnum("Bad", ["A", "B"], array_empty())
   ], [[7, 7]], SubstEmpty)
@@ -178,40 +180,40 @@ test "checked typedef artifact v1 rejects binder collisions and cached substitut
   }
 }
 
-test "checked typedef artifact v1 rejects strict malformed payloads" {
-  let prefix = "vibe-checked-type-defs:v1\n"
-  match decode_checked_type_defs_artifact_v1("vibe-checked-type-defs:v2\n0[]0[]0") {
+test "checked typedef artifact v2 rejects strict malformed payloads" {
+  let prefix = "vibe-checked-type-defs:v2\n"
+  match decode_checked_type_defs_artifact_v2("vibe-checked-type-defs:v1\n0[]0[]0") {
     Some(_) => assert(false),
     None => assert(true)
   }
-  // The exact delimiter prevents v10 from being accepted as v1.
-  match decode_checked_type_defs_artifact_v1("vibe-checked-type-defs:v10\n0[]0[]0") {
+  // The exact delimiter prevents v10 from being accepted as v2.
+  match decode_checked_type_defs_artifact_v2("vibe-checked-type-defs:v20\n0[]0[]0") {
     Some(_) => assert(false),
     None => assert(true)
   }
-  match decode_checked_type_defs_artifact_v1(prefix) {
+  match decode_checked_type_defs_artifact_v2(prefix) {
     Some(_) => assert(false),
     None => assert(true)
   }
-  match decode_checked_type_defs_artifact_v1(String::concat(prefix, "1[")) {
+  match decode_checked_type_defs_artifact_v2(String::concat(prefix, "1[")) {
     Some(_) => assert(false),
     None => assert(true)
   }
-  // Unknown and cache tags are not assigned wire meanings in v1.
-  match decode_checked_type_defs_artifact_v1(String::concat(prefix, "0[]0[]Z")) {
+  // Unknown and cache tags are not assigned wire meanings in v2.
+  match decode_checked_type_defs_artifact_v2(String::concat(prefix, "0[]0[]Z")) {
     Some(_) => assert(false),
     None => assert(true)
   }
-  match decode_checked_type_defs_artifact_v1(String::concat(prefix, "0[]0[]C0")) {
+  match decode_checked_type_defs_artifact_v2(String::concat(prefix, "0[]0[]C0")) {
     Some(_) => assert(false),
     None => assert(true)
   }
-  match decode_checked_type_defs_artifact_v1(String::concat(prefix, "0[]0[]0!")) {
+  match decode_checked_type_defs_artifact_v2(String::concat(prefix, "0[]0[]0!")) {
     Some(_) => assert(false),
     None => assert(true)
   }
   // A generic enum requires one globally unique retained binder per parameter.
-  match decode_checked_type_defs_artifact_v1(String::concat(prefix, "2[15:E3:Bad1[1:T]0[]15:E3:Bad1[1:T]0[]]2[6:1[1:7]6:1[1:7]]0")) {
+  match decode_checked_type_defs_artifact_v2(String::concat(prefix, "2[15:E3:Bad1[1:T]0[]15:E3:Bad1[1:T]0[]]2[6:1[1:7]6:1[1:7]]0")) {
     Some(_) => assert(false),
     None => assert(true)
   }

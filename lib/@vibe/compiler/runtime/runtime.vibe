@@ -5,10 +5,13 @@ import @vibe/compiler/core {
   Stmt,
   Type,
   TypeEnv,
+  append_builtin_iterator_operation_markers,
   append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
   apply_export_renames_stmts,
   build_export_rename_plan,
+  builtin_iterator_serialized_boundary_from_markers,
+  builtin_iterator_serialized_boundary_markers,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
@@ -19,13 +22,18 @@ import @vibe/compiler/core {
   export_plan_fingerprint_text,
   export_plan_renames_for,
   import_value_rename_locals,
+  is_builtin_iterator_serialized_boundary_path,
+  merged_source_boundary_names,
   namespace_private_value_stmts,
   namespace_rename_originals_reset,
   record_namespace_rename_originals_for_file,
+  reject_user_iterator_serialized_boundaries,
   resolve_import_path,
   resolve_import_path_candidates,
   rewrite_imported_value_stmt_to_local,
-  stmts_have_import_deep
+  stmts_have_import_deep,
+  trait_import_local_operation_renames,
+  trait_import_local_operation_renames_preserving_exports
 }
 
 import @vibe/core {
@@ -410,7 +418,11 @@ fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array
       acc
     } else {
       let next = match Array::get(stmts, i) {
-        SImport(raw_path, _) => add_dep(acc, raw_path, base_dir),
+        SImport(raw_path, _) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+          acc
+        } else {
+          add_dep(acc, raw_path, base_dir)
+        },
         SReExport(raw_path, _) => add_dep(acc, raw_path, base_dir),
         _ => acc
       }
@@ -634,7 +646,9 @@ fn parse_merge_sources(sources: Array[(String, String)]) -> (Array[String], Arra
   while si < Array::length(sources) {
     let (path, source) = Array::get(sources, si)
     Array::push(file_paths, path)
-    Array::push(file_stmts, parse_program_with_path(path, source))
+    let stmts = parse_program_with_path(path, source)
+    reject_user_iterator_serialized_boundaries(stmts)
+    Array::push(file_stmts, stmts)
     si = si + 1
   }
   (file_paths, file_stmts)
@@ -659,10 +673,24 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
     } else {
       path == entry_path
     }
-    let export_renamed = if is_entry_source {
-      stmts
+    let import_renames = if stmts_have_import_deep(stmts) {
+      collect_import_value_renames(plan, path, stmts)
     } else {
-      apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+      array_empty()
+    }
+    let (boundary_locals, _) = merged_source_boundary_names(stmts)
+    append_builtin_iterator_operation_markers(boundary_locals, import_renames)
+    Array::push(merged, builtin_iterator_serialized_boundary_from_markers(boundary_locals))
+    let collision_renames = if is_entry_source {
+      trait_import_local_operation_renames_preserving_exports(stmts, path)
+    } else {
+      trait_import_local_operation_renames(stmts, path)
+    }
+    let collision_renamed = apply_export_renames_stmts(stmts, collision_renames)
+    let export_renamed = if is_entry_source {
+      collision_renamed
+    } else {
+      apply_export_renames_stmts(collision_renamed, export_plan_renames_for(plan, path))
     }
     let namespaced_stmts = if is_entry_source {
       export_renamed
@@ -670,7 +698,6 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
       namespace_private_value_stmts(path, export_renamed)
     }
     if stmts_have_import_deep(stmts) {
-      let import_renames = collect_import_value_renames(plan, path, stmts)
       let skipped_locals = collect_import_alias_collision_locals(stmts)
       append_import_alias_collision_defs_from_sources(merged, path, stmts, collision_sources, plan, import_value_rename_locals(import_renames))
       append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
@@ -854,7 +881,7 @@ fn build_module_source(source: String) -> String with Exception {
           _ => false
         }
       },
-      _ => false
+      _ => builtin_iterator_serialized_boundary_markers(stmt) is Some(_)
     }
     if keep {
       Array::push(filtered, stmt)

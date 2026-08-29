@@ -227,14 +227,14 @@ row が空 ⇒ perform しない」が成り立たない。#1536 (a) の受理�
 `f` の by-name call site だけ (値経由の呼び出しは untouched な original を
 走る) なので、全 by-name site が当該 slot に suspend-inert な値 — perform を
 一切含まず・needing 名を参照せず・不透明 callee を呼ばない closure literal、
-または委譲元 fn 自身の同様に証明済みの row-free param (`async_iter_any` →
-`async_iter_find` の転送形) — を渡すと証明できた slot に限り、clone 内の
+または委譲元 fn 自身の同様に証明済みの row-free param (`AsyncIter::any` →
+`AsyncIter::find` の転送形) — を渡すと証明できた slot に限り、clone 内の
 `pred(v)` を plain call として受理する。1 site でも perform する literal を
 渡せば slot 全体が taint し、従来どおり `cannot see through` で拒否される
-(fixtures/err_effect_closure_param_taint.vibe)。これで `async_iter_find` /
-`_any` / `_all` は suspend body から呼べる。`await(Stream::next(s))` は
+(fixtures/err_effect_closure_param_taint.vibe)。これで `AsyncIter::find` /
+`AsyncIter::any` / `AsyncIter::all` は suspend body から呼べる。`await(Stream::next(s))` は
 synthetic retarget (#1536 (a) v2, ADR-0076 追記41) で書けるようになり、
-`for` 駆動の terminal (`async_iter_collect` / `_fold` / `_count`) は
+`for` 駆動の terminal (`AsyncIter::collect` / `AsyncIter::fold` / `AsyncIter::count`) は
 let-floating (#1536 (a) v3, 追記42) で書けるようになった。
 
 ### 2.3 同期 effect との関係

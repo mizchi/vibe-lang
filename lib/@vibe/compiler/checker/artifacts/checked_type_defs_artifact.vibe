@@ -1,6 +1,6 @@
 //# Checked type-definition artifact (#1379)
 //
-// This deliberately narrow, lossless-semantic v1 transport contains only
+// This deliberately narrow, lossless-semantic v2 transport contains only
 // retained TypeDefs, aligned binder provenance, and final_subst's authoritative
 // chain. It is not a
 // CheckedProgram, TypeEnv, typed IR, cache artifact, trace schema, interface,
@@ -141,6 +141,16 @@ fn artifact_type(ty: Type) -> String {
     CtBytes => "Y",
     CtUnknown => "X",
     CtVar(id) => String::concat("V", artifact_piece(__to_string(id))),
+    CtConstructor(name, arity) => String::concat("J", String::concat(artifact_piece(name), artifact_piece(__to_string(arity)))),
+    CtApplied(head, args) => {
+      let encoded = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(encoded, artifact_type(Array::get(args, i)))
+        i = i + 1
+      }
+      String::concat("P", String::concat(artifact_type(head), artifact_array(encoded)))
+    },
     CtTuple(items) => {
       let encoded = array_empty()
       let mut i = 0
@@ -275,7 +285,7 @@ fn artifact_subst(s: Subst) -> String {
         StringBuilder::push(out, artifact_strings(labels))
         cur = rest
       },
-      // Callers reject SubstCached before encoding. It has no v1
+      // Callers reject SubstCached before encoding. It has no v2
       // representation: cache maps are semantically observable and must not
       // be normalized away.
       SubstCached(_, _, _) => {
@@ -293,10 +303,10 @@ fn artifact_subst(s: Subst) -> String {
   StringBuilder::freeze(out)
 }
 
-/// Strict length-delimited v1 encoder. It refuses malformed/colliding binder
-/// provenance and every SubstCached chain; v1 excludes acceleration-bearing
+/// Strict length-delimited v2 encoder. It refuses malformed/colliding binder
+/// provenance and every SubstCached chain; v2 excludes acceleration-bearing
 /// substitutions until Map[Type] codegen can preserve their semantics.
-export fn encode_checked_type_defs_artifact_v1(artifact: CheckedTypeDefsArtifact) -> Option[String] {
+export fn encode_checked_type_defs_artifact_v2(artifact: CheckedTypeDefsArtifact) -> Option[String] {
   if !artifact_valid(artifact.type_defs, artifact.type_def_binders, artifact.final_subst) {
     None
   } else {
@@ -308,7 +318,7 @@ export fn encode_checked_type_defs_artifact_v1(artifact: CheckedTypeDefsArtifact
       Array::push(binders, artifact_ints(Array::get(artifact.type_def_binders, i)))
       i = i + 1
     }
-    Some(String::concat("vibe-checked-type-defs:v1\n", String::concat(artifact_array(defs), String::concat(artifact_array(binders), artifact_subst(artifact.final_subst)))))
+    Some(String::concat("vibe-checked-type-defs:v2\n", String::concat(artifact_array(defs), String::concat(artifact_array(binders), artifact_subst(artifact.final_subst)))))
   }
 }
 
@@ -494,6 +504,52 @@ fn artifact_type_parse(text: String, pos: Int) -> Option[(Type, Int)] {
       match artifact_piece_parse(text, pos + 1) {
         Some((raw, next)) => match artifact_int(raw) {
           Some(id) => Some((CtVar(id), next)),
+          None => None
+        },
+        None => None
+      }
+    } else if tag == 74 {
+      match artifact_piece_parse(text, pos + 1) {
+        Some((name, after_name)) => match artifact_piece_parse(text, after_name) {
+          Some((raw_arity, next)) => match artifact_int(raw_arity) {
+            Some(arity) => if arity > 0 {
+              Some((CtConstructor(name, arity), next))
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    } else if tag == 80 {
+      match artifact_type_parse(text, pos + 1) {
+        Some((head, after_head)) => match artifact_array_parse(text, after_head) {
+          Some((raws, next)) => {
+            let args = array_empty()
+            let mut i = 0
+            let mut valid = true
+            while i < Array::length(raws) {
+              let raw = Array::get(raws, i)
+              match artifact_type_parse(raw, 0) {
+                Some((arg, end)) => if end == String::length(raw) {
+                  Array::push(args, arg)
+                } else {
+                  valid = false
+                },
+                None => {
+                  valid = false
+                }
+              }
+              i = i + 1
+            }
+            if valid && Array::length(args) > 0 {
+              Some((CtApplied(head, args), next))
+            } else {
+              None
+            }
+          },
           None => None
         },
         None => None
@@ -939,7 +995,7 @@ fn artifact_subst_parse(text: String, pos: Int) -> Option[(Subst, Int)] {
         None => None
       }
     }
-    // C was deliberately never assigned in v1. Reject it rather than
+    // C was deliberately never assigned in v2. Reject it rather than
     // silently interpreting a claimed raw cache payload.
     else if tag == 67 {
       None
@@ -962,11 +1018,11 @@ fn artifact_subst_parse(text: String, pos: Int) -> Option[(Subst, Int)] {
   }
 }
 
-/// Strict v1 decoder. It accepts only complete canonical encodings; unknown
+/// Strict v2 decoder. It accepts only complete canonical encodings; unknown
 /// tags, truncation, extra bytes, claimed raw SubstCached payloads, and malformed
 /// binder provenance all return None.
-export fn decode_checked_type_defs_artifact_v1(text: String) -> Option[CheckedTypeDefsArtifact] {
-  let prefix = "vibe-checked-type-defs:v1\n"
+export fn decode_checked_type_defs_artifact_v2(text: String) -> Option[CheckedTypeDefsArtifact] {
+  let prefix = "vibe-checked-type-defs:v2\n"
   if !String::starts_with(text, prefix) {
     None
   } else {
@@ -1009,7 +1065,7 @@ export fn decode_checked_type_defs_artifact_v1(text: String) -> Option[CheckedTy
             if !valid || !artifact_valid(defs, binders, subst) {
               None
             } else {
-              match encode_checked_type_defs_artifact_v1(artifact) {
+              match encode_checked_type_defs_artifact_v2(artifact) {
                 Some(canonical) => if canonical == text {
                   Some(artifact)
                 } else {

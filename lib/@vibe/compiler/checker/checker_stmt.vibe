@@ -32,6 +32,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   __to_string,
+  apply_type_constructor,
   collect_subst_bounds_pairs,
   compiler_owned_type_arity,
   env_bind,
@@ -49,6 +50,7 @@ import @vibe/compiler/core {
   is_singleton_resource_kind,
   overlapping_impl_target_for,
   predeclared_resources,
+  reject_user_iterator_serialized_boundaries,
   resolve_builtin,
   rewrite_import_alias_stmt,
   sort_perm_by_names,
@@ -83,9 +85,16 @@ import ./checker.vibe {
   report_map_key_types,
   report_unknown_type_names,
   report_unknown_type_names_deferred_validation,
+  resolve_trait_bound_self_reference,
   trait_erased_type_param_env,
+  trait_reference_display,
   typed_occurrence_capture_begin_statement,
-  typed_occurrence_capture_end_statement
+  typed_occurrence_capture_end_statement,
+  validate_trait_reference
+}
+
+import @vibe/ast {
+  trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -97,7 +106,10 @@ import ./checker_resolve.vibe {
 }
 
 import @vibe/compiler/normalize {
+  collect_trait_namespace_conflict_errors,
   collect_undispatchable_trait_method_errors,
+  derive_imported_trait_namespace_operations,
+  derive_trait_namespace_operations,
   desugar_inspect_calls,
   desugar_labeled_args,
   desugar_railway_binds,
@@ -116,6 +128,12 @@ import @vibe/parser {
   binder_authority_slot_binder,
   located_program_binder_authority_nodes,
   located_program_binder_authority_program
+}
+
+/// Validate a parsed raw-source API input before any checker or lowering pass
+/// can interpret compiler-only source-boundary metadata as trusted provenance.
+export fn validate_user_source_stmts(stmts: Array[Stmt]) -> Unit with Exception {
+  reject_user_iterator_serialized_boundaries(stmts)
 }
 
 /// Declared arity of a type constructor used by an impl target. Keep builtin
@@ -2845,6 +2863,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
       },
       SImpl(tparams, tbounds, trait_name, target_expr) => {
+        validate_trait_reference(env, trait_name, "impl head", errors)
         let type_name = match target_expr {
           TyName(name) => name,
           TyApp(name, _) => name,
@@ -2852,7 +2871,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         // ADR-0068: `Send` is compiler-judged (structural); user impls
         // would let a non-sendable type cross task/channel boundaries.
-        if trait_name == "Send" {
+        if trait_ref_name(trait_name) == "Send" {
           Array::push(errors, "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
         } else {
           ()
@@ -2892,7 +2911,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }
         let target = resolve_type_expr_shadowed(target_expr, defs, tparams)
         match overlapping_impl_target_for(env, trait_name, tparams, target) {
-          Some(existing_target) => Array::push(errors, String::concat("overlapping impls for `", String::concat(trait_name, String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), "`"))))))),
+          Some(existing_target) => Array::push(errors, String::concat("overlapping impls for `", String::concat(trait_reference_display(trait_name), String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), "`"))))))),
           None => ()
         }
         // A generic impl `impl [T] Trait for C[T]` (type parameters present) is
@@ -3087,7 +3106,8 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
 /// when "no impl" is the whole truth.
 fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
   if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
-    String::concat(": an `impl ", String::concat(trait_name, String::concat(" for ", String::concat(type_constructor_name(resolved), String::concat("` IS declared, but `", String::concat(trait_name, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those are REFERENCE equality on `Array` / `Bytes` -- honouring the impl would make the comparison silently wrong. Give `", String::concat(trait_name, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))))))))
+    let display = trait_reference_display(trait_name)
+    String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(type_constructor_name(resolved), String::concat("` IS declared, but `", String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those are REFERENCE equality on `Array` / `Bytes` -- honouring the impl would make the comparison silently wrong. Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))))))))
   } else {
     ""
   }
@@ -3123,17 +3143,18 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
         let mut bi = 0
         while bi < bn {
           let b = Array::get(bounds, bi)
-          let sat = if b == "" {
+          let resolved_bound = resolve_trait_bound_self_reference(b, resolved, s, defs)
+          let sat = if resolved_bound == "" {
             true
-          } else if b == "Send" {
+          } else if resolved_bound == "Send" {
             // ADR-0068: `Send` is judged structurally from the type
             // definitions (type_send_ok), not from user impls.
             type_send_ok(env, s, defs, resolved)
           } else {
-            type_implements_trait(env, s, resolved, b)
+            type_implements_trait(env, s, resolved, resolved_bound)
           }
-          if b != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(b, String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, b, resolved)))))))
+          if resolved_bound != "" && not(sat) {
+            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, resolved_bound, resolved)))))))
           }
           bi = bi + 1
         }
@@ -3151,7 +3172,44 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
 /// rejected here). Unknown bases are skipped — imported effects are
 /// invisible here, the same permissive stance the containment checker
 /// takes.
-fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_arg_kind_arity(name: String, ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String]) -> Int {
+  match compiler_owned_type_arity(name) {
+    Some(arity) => arity,
+    None => {
+      let mut i = 0
+      let mut found = 0 - 1
+      while i < Array::length(ctor_names) {
+        if Array::get(ctor_names, i) == name {
+          found = Array::get(ctor_arities, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if found >= 0 {
+        found
+      } else {
+        let mut j = 0
+        let mut farity = 0 - 1
+        while j < Array::length(formal_keys) {
+          if type_param_name(Array::get(formal_keys, j)) == name {
+            farity = type_param_arity(Array::get(formal_keys, j))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        if farity >= 0 {
+          farity
+        } else {
+          0
+        }
+      }
+    }
+  }
+}
+
+fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match row {
     None => (),
     Some(r) => {
@@ -3180,9 +3238,11 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
           } else {
             let mut edi = 0
             let mut tpc = 0 - 1
+            let mut expected_kind = 0
             while edi < Array::length(ed_names) {
               if Array::get(ed_names, edi) == base {
                 tpc = Array::get(ed_tpcounts, edi)
+                expected_kind = Array::get(ed_tparities, edi)
               } else {
                 ()
               }
@@ -3192,6 +3252,13 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
               Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, " declares no type parameters")))))
             } else if tpc > 1 {
               Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" declares ", String::concat(__to_string(tpc), " type parameters; a row item supports exactly one type argument for now")))))))
+            } else if expected_kind > 0 {
+              let actual_kind = geff_arg_kind_arity(inner, ctor_names, ctor_arities, formal_keys)
+              if actual_kind != expected_kind {
+                Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" expects a constructor with ", String::concat(__to_string(expected_kind), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(actual_kind), " -- pass a bare constructor with the required arity")))))))))))
+              } else {
+                ()
+              }
             } else {
               ()
             }
@@ -3210,28 +3277,28 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
 /// in parameter/return position) and an EFn value's inline row + parameter
 /// annotations. Nested closure literals inside bodies are not walked (same
 /// coverage boundary as the effectset expansion pass).
-fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
     TyFn(params, ret, eff) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, es_names, errors)
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
       let mut i = 0
       while i < Array::length(params) {
-        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, es_names, errors)
+        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
         i = i + 1
       }
-      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, es_names, errors)
+      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
     },
     TyApp(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, es_names, errors)
+        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
         i = i + 1
       }
     },
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, es_names, errors)
+        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
         i = i + 1
       }
     },
@@ -3239,24 +3306,31 @@ fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Arr
   }
 }
 
-fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
-    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, es_names, errors),
+    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors),
     None => ()
   }
 }
 
-fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], es_names: Array[String], errors: Array[String]) -> Unit {
+fn geff_expr_formals(e: Expr) -> Array[String] {
   match e {
-    EFn(_, _, params, ret, eff, _) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, es_names, errors)
+    EFn(tparams, _, _, _, _, _) => tparams,
+    _ => array_empty()
+  }
+}
+
+fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], errors: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, params, ret, eff, _) => {
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
       let mut i = 0
       while i < Array::length(params) {
         let (_, pty) = Array::get(params, i)
-        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, es_names, errors)
+        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
         i = i + 1
       }
-      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, es_names, errors)
+      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
     },
     _ => ()
   }
@@ -3265,15 +3339,36 @@ fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[In
 fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let ed_names = array_empty()
   let ed_tpcounts = array_empty()
+  let ed_tparities = array_empty()
   let es_names = array_empty()
+  let ctor_names = array_empty()
+  let ctor_arities = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SEffectDef(_, ename, eparams, _) => {
         Array::push(ed_names, ename)
         Array::push(ed_tpcounts, Array::length(eparams))
+        let first_arity = if Array::length(eparams) > 0 {
+          type_param_arity(Array::get(eparams, 0))
+        } else {
+          0
+        }
+        Array::push(ed_tparities, first_arity)
       },
       SEffectSet(_, esname, _) => Array::push(es_names, esname),
+      SStruct(_, sname, _, _, _, tparams) => {
+        Array::push(ctor_names, sname)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
+      SEnum(_, ename, tparams, _, _) => {
+        Array::push(ctor_names, ename)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
+      STypeAlias(_, aname, tparams, _) => {
+        Array::push(ctor_names, aname)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
       _ => ()
     }
     i = i + 1
@@ -3282,12 +3377,14 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   while j < Array::length(stmts) {
     match Array::get(stmts, j) {
       SLet(_, _, _, ty, body) => {
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, es_names, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, es_names, errors)
+        let formals = geff_expr_formals(body)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
       },
       SLetMut(_, ty, body) => {
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, es_names, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, es_names, errors)
+        let formals = geff_expr_formals(body)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
       },
       _ => ()
     }
@@ -3975,7 +4072,7 @@ fn tps_names_contains(names: Array[String], name: String) -> Bool {
 fn tps_report(tparams: Array[String], local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(tparams) {
-    let tp = Array::get(tparams, i)
+    let tp = type_param_name(Array::get(tparams, i))
     if tps_names_contains(local_types, tp) {
       // The ` [@fn=name]` suffix is the #1941 side-channel marker: binder
       // lists carry no offset of their own, so the diagnostic anchors on the
@@ -4431,7 +4528,7 @@ fn type_param_index(params: Array[String], name: String) -> Int {
   let mut found = 0 - 1
   let mut i = 0
   while i < Array::length(params) && found < 0 {
-    if Array::get(params, i) == name {
+    if type_param_name(Array::get(params, i)) == name {
       found = i
     } else {
       i = i + 1
@@ -4973,6 +5070,9 @@ fn refresh_completed_type(ty: Type, defs: Array[TypeDef], shadow: Array[String],
     }),
     CtArray(item) => CtArray(refresh_completed_type(item, defs, shadow, seen)),
     CtOption(item) => CtOption(refresh_completed_type(item, defs, shadow, seen)),
+    CtApplied(head, args) => apply_type_constructor(refresh_completed_type(head, defs, shadow, seen), for arg in args {
+      refresh_completed_type(arg, defs, shadow, seen)
+    }),
     CtFn(params, ret, row) => CtFn(for param in params {
       refresh_completed_type(param, defs, shadow, seen)
     }, refresh_completed_type(ret, defs, shadow, seen), row),
@@ -5084,6 +5184,10 @@ fn refresh_completed_type_env(env: TypeEnv, defs: Array[TypeDef], from: Int, to:
 }
 
 fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture]) -> CheckedProgramTypeDefsObservation with Exception {
+  let errors = ArrayBuilder::new()
+  let frozen_errors = ArrayBuilder::freeze(errors)
+  push_error_strings(collect_trait_namespace_conflict_errors(stmts, EnvEmpty), frozen_errors)
+  derive_trait_namespace_operations(stmts)
   // Rank-1 method generics (#684): re-attach trait-method `[X: Bound]` binders
   // to impl free functions before checking, so `X::method` in an impl body
   // resolves on every path (the FS-compile path type-checks before the codegen
@@ -5094,8 +5198,6 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   // sentinels (the codegen-time desugar runs later, but the FS-compile path
   // type-checks first). In-place, idempotent, inert without `let*`/`?`.
   desugar_railway_binds(stmts)
-  let errors = ArrayBuilder::new()
-  let frozen_errors = ArrayBuilder::freeze(errors)
   canonicalize_stdin_provider_type_import_heads(stmts)
   collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
   // #1455 step 3: the `Enum::Variant` pattern qualifiers the parser folded into
@@ -5522,6 +5624,7 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with Exception {
 /// names that were checked before the error. The table holds RAW (pre-final
 /// subst) types; callers resolve via subst_apply(finalSubst, ty).
 export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], Subst) with Exception {
+  derive_trait_namespace_operations(stmts)
   let empty_defs = array_empty()
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
@@ -5545,12 +5648,15 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
     _ => {
+      let errors = ArrayBuilder::new()
+      let frozen_errors = ArrayBuilder::freeze(errors)
+      push_error_strings(collect_trait_namespace_conflict_errors(stmts, initial_env), frozen_errors)
+      derive_imported_trait_namespace_operations(stmts, initial_env)
+      derive_trait_namespace_operations(stmts)
       inject_trait_method_generics(stmts)
       // #635: lower `let*`/`?` railway sentinels before checking (see
       // check_program). This path checks each imported/entry file pre-codegen.
       desugar_railway_binds(stmts)
-      let errors = ArrayBuilder::new()
-      let frozen_errors = ArrayBuilder::freeze(errors)
       check_import_kinds(stmts, initial_env, frozen_errors)
       canonicalize_stdin_provider_type_import_heads(stmts)
       collect_stdin_provider_direct_call_errors(stmts, frozen_errors)
