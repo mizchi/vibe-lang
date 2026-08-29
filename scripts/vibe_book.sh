@@ -18,7 +18,11 @@ cd "$ROOT_DIR"
 compiler="${VIBE_BOOK_COMPILER:-}"
 if [ -z "$compiler" ]; then
   echo "vibe_book.sh: building current stage2"
-  VIBE_REGEN_MODULE_SOURCE=1 bash scripts/generations.sh build
+  # The tool compile and `_start` run below are the executable validation for
+  # this lane. Skip generations.sh's additional sample run so the standalone
+  # book workflow does not also require a wasmtime installation.
+  VIBE_REGEN_MODULE_SOURCE=1 VIBE_GENERATION_VALIDATE_RUN=0 \
+    bash scripts/generations.sh build
   for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
     if [ -s "${gen}stage2.wasm" ]; then
       compiler="${gen}stage2.wasm"
