@@ -10,10 +10,14 @@ function body by function body at identical indices.
 Usage:
   python3 scripts/prefix_stability_probe.py <stage2.wasm> [entry.vibe]
 
-Prints total/identical/differing body counts, the byte shape of the first
-few diffs, and exits 0 when every differing body belongs to the edited
-entry itself (perfect prefix stability), 1 otherwise.  It needs the entry
-compiled with a name section to attribute diffs (VIBE_WASM_NAMES=1 builds).
+Named functions pair by NAME and lambdas by their offset from each side's
+`run` boundary (the +1 user function shifts every later raw index, so a
+same-index comparison would invent diffs).  Exits 0 when nothing but the
+`_start`/`run` entry glue differs across the one-test edit -- appending a
+test must leave every existing body byte-identical once the index spaces
+are pinned; any named or lambda body that differs is a failure.  The probe
+forces VIBE_WASM_NAMES=1 on its compiles and fails closed if names are
+still missing.
 
 History: before the lambda_slot_base capacity reservation
 (codegen/wasi/linked_compile.vibe), a one-test edit of
@@ -192,71 +196,107 @@ def main():
         B = open(wb, "rb").read()
     bodies_a = code_bodies(A)
     bodies_b = code_bodies(B)
-    imports = fn_import_count(A)
-    names = fn_names(A)
-    n = min(len(bodies_a), len(bodies_b))
-    diffs = [i for i in range(n) if bodies_a[i] != bodies_b[i]]
-    print(f"bodies: {len(bodies_a)} vs {len(bodies_b)}; compared {n}")
-    print(f"identical at same index: {n - len(diffs)}/{n}; differing: {len(diffs)}")
+    print(f"bodies: {len(bodies_a)} vs {len(bodies_b)}")
+
+    # The appended test is one extra user function, and everything emitted
+    # after the user block (_start, run, every lambda body) shifts by one
+    # index in the candidate -- a same-index comparison would then match the
+    # baseline's first lambda against the candidate's `run` and each lambda
+    # against its predecessor, reporting spurious diffs for byte-identical
+    # bodies. So nothing here compares by raw index: named functions pair by
+    # NAME, and lambdas pair by their offset from each side's own `run`
+    # boundary.
+    #
+    # Fail closed on missing names: with no name section nothing can be
+    # paired, and the probe must say so rather than certify prefix stability
+    # it never checked. Unverified and safe must not look alike.
+    def named_bodies(wasm, bodies):
+        imports = fn_import_count(wasm)
+        names = fn_names(wasm)
+        by_name = {}
+        run_body = None
+        for idx, nm in names.items():
+            body_idx = idx - imports
+            if 0 <= body_idx < len(bodies):
+                by_name[nm] = body_idx
+                if nm == "run":
+                    run_body = body_idx
+        return by_name, run_body
+
+    by_name_a, run_a = named_bodies(A, bodies_a)
+    by_name_b, run_b = named_bodies(B, bodies_b)
+    if not by_name_a or not by_name_b or run_a is None or run_b is None:
+        print(
+            "FAIL: name section (or the `run` entry glue) is missing from an "
+            "output -- nothing can be attributed; ensure the compile emits "
+            "names (the probe sets VIBE_WASM_NAMES=1 itself, so this points "
+            "at a naming gap in the output)"
+        )
+        return 1
+
+    # Named functions, paired by name. `_start`/`run` embed entry-dependent
+    # counts and always differ; they are reported informationally only.
     # Attribution: #716 renames every exported def of a non-entry file to
-    # name_exp_<sanitized path> / name_dep_<sanitized path>, so a mangled
-    # name marks a body from a module OTHER than the edited entry (entry
-    # defs are never renamed). The sanitized path carries no `lib/` prefix
-    # requirement -- an entry under fixtures/ pulls `_exp_fixtures_...`
-    # names -- so match the mangling markers alone.
-    # Lambda bodies sit after the `run` entry glue and carry no name-section
-    # entry, so their owner cannot be read from names. They still count
-    # against prefix stability: an unchanged module's lambdas must stay
-    # byte-identical too (the edit's own new lambda lands past the compared
-    # range). Locate the region boundary from the named `run` index.
-    run_body = None
-    for idx, nm in names.items():
-        if nm == "run":
-            run_body = idx - imports
-    # Fail closed on missing attribution: with no name section every lookup
-    # answers "?", `foreign` stays empty, and the probe would certify prefix
-    # stability it never checked. Unverified and safe must not look alike.
-    foreign = []
-    lambda_region = []
-    unattributed = []
-    for i in diffs:
-        nm = names.get(i + imports)
-        if nm is None:
-            if run_body is not None and i > run_body:
-                lambda_region.append(i)
-            else:
-                unattributed.append(i)
-        elif "_exp_" in nm or "_dep_" in nm:
-            foreign.append((i, nm))
-    if unattributed:
+    # name_exp_<sanitized path> / name_dep_<sanitized path> (no `lib/`
+    # anchor -- a fixtures/ entry pulls `_exp_fixtures_...`), so a mangling
+    # marker means a module OTHER than the edited entry. Marker-less names
+    # are the entry's own defs plus compiler-synthesized helpers
+    # (comparators, specializations) -- those still count as failures, since
+    # an unchanged synthesized body shifting means the tail is not pinned.
+    shared = [nm for nm in by_name_a if nm in by_name_b]
+    only_a = [nm for nm in by_name_a if nm not in by_name_b]
+    only_b = [nm for nm in by_name_b if nm not in by_name_a]
+    glue = {"_start", "run"}
+    named_diffs = []
+    for nm in shared:
+        if bodies_a[by_name_a[nm]] != bodies_b[by_name_b[nm]]:
+            named_diffs.append(nm)
+    glue_diffs = [nm for nm in named_diffs if nm in glue]
+    foreign = [nm for nm in named_diffs if nm not in glue and ("_exp_" in nm or "_dep_" in nm)]
+    local = [nm for nm in named_diffs if nm not in glue and nm not in foreign]
+    print(
+        f"named: {len(shared)} paired by name, {len(named_diffs)} differ "
+        f"({len(foreign)} foreign, {len(local)} entry/synthesized, "
+        f"{len(glue_diffs)} entry glue); only-in-baseline {len(only_a)}, "
+        f"only-in-candidate {len(only_b)} (the probe's own test is expected here)"
+    )
+    if only_a:
+        print(f"  names only in baseline (unexpected): {only_a[:5]}")
+
+    def diff_shape(nm):
+        a, b = bodies_a[by_name_a[nm]], bodies_b[by_name_b[nm]]
+        if len(a) != len(b):
+            return f"len {len(a)}->{len(b)}"
+        nd = sum(1 for j in range(len(a)) if a[j] != b[j])
+        return f"{nd} byte(s)"
+
+    for nm in foreign[:10]:
+        print(f"  foreign diff: {nm[:90]}: {diff_shape(nm)}")
+    for nm in local[:10]:
+        print(f"  entry/synthesized diff: {nm[:90]}: {diff_shape(nm)}")
+
+    # Lambda bodies carry no names; pair them by offset from each side's own
+    # `run` boundary. The probe's appended test must not add lambdas, so a
+    # count mismatch is a probe-corpus problem, not a stability verdict.
+    lam_a = bodies_a[run_a + 1 :]
+    lam_b = bodies_b[run_b + 1 :]
+    if len(lam_a) != len(lam_b):
         print(
-            f"FAIL: {len(unattributed)} differing bodies have no name-section entry "
-            f"(first: {unattributed[:5]}) -- cannot attribute them; ensure the "
-            f"compile emits names (the probe sets VIBE_WASM_NAMES=1 itself, so "
-            f"this points at a naming gap in the output)"
+            f"FAIL: lambda counts differ ({len(lam_a)} vs {len(lam_b)}) -- the "
+            f"probe edit must stay lambda-free for the regions to pair"
         )
         return 1
-    for i, nm in foreign[:15]:
-        a, b = bodies_a[i], bodies_b[i]
-        bd = [
-            (j, a[j], b[j])
-            for j in range(min(len(a), len(b)))
-            if a[j] != b[j]
-        ]
-        shape = f"{len(bd)} byte(s)" if len(a) == len(b) else f"len {len(a)}->{len(b)}"
-        print(f"  foreign diff: body {i} ({nm}): {shape}")
-    if lambda_region:
+    lambda_diffs = [k for k in range(len(lam_a)) if lam_a[k] != lam_b[k]]
+    print(f"lambdas: {len(lam_a)} paired by offset from run, {len(lambda_diffs)} differ")
+
+    if foreign or local or lambda_diffs:
         print(
-            f"  lambda-region diffs (owner not recoverable from names): "
-            f"{len(lambda_region)}, first {lambda_region[:5]}"
-        )
-    if foreign or lambda_region:
-        print(
-            f"FAIL: {len(foreign)} differing named bodies belong to modules other "
-            f"than the edited entry, plus {len(lambda_region)} differing lambda bodies"
+            f"FAIL: {len(foreign)} foreign named bodies, {len(local)} "
+            f"entry/synthesized named bodies, and {len(lambda_diffs)} lambda "
+            f"bodies differ across the one-test edit"
         )
         return 1
-    print("ok: every differing body belongs to the edited entry")
+    print("ok: only the entry glue differs across the one-test edit")
     return 0
 
 
