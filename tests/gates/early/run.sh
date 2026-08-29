@@ -360,31 +360,40 @@ if printf '%s\n' "$intrinsic_names" | grep -qx "simd_skip_ws"; then
   echo "[compiler-gate] FAIL: the #2343 scan ran past the WASM-intrinsics block -- it collected simd_skip_ws, which is declared under a later banner" >&2
   exit 1
 fi
+# The CHECK lane, and the diagnostic itself -- not "was a wasm produced?".
+# Those differ: a name that becomes checker-visible but has no linear
+# function-table entry RESOLVES and still emits no wasm, so an
+# artifact-existence test would file it under "unreachable" -- a false pass on
+# exactly the state this section exists to catch (Codex review). `unknown
+# name: <n>` is the checker saying it, and nothing else produces that line.
 reachable=""
 for n in $intrinsic_names; do
+  rm -f "$dcldir/p.out" "$dcldir/p.out.diag"
   printf 'fn probe() -> Int {\n  let _x = %s\n  0\n}\n' "$n" > "$dcldir/p.vibe"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-    "$dcldir/p.vibe" "$dcldir/p.wasm" __no_entry__ >/dev/null 2>&1 || true
-  if [ -s "$dcldir/p.wasm" ]; then
+    "$dcldir/p.vibe" "$dcldir/p.out" __no_entry__ check >/dev/null 2>&1 || true
+  if ! grep -qF "unknown name: $n" "$dcldir/p.out.diag" 2>/dev/null; then
     reachable="$reachable $n"
   fi
-  rm -f "$dcldir/p.wasm" "$dcldir/p.wasm.diag"
 done
-# The control: a name from the same file that IS reachable.
+# The control: a name from the same file that IS reachable -- it must produce
+# NO diagnostic. Without it, a harness whose probes all failed to run would
+# report every name unreachable and pass.
+rm -f "$dcldir/ctl.out" "$dcldir/ctl.out.diag"
 printf 'fn probe(b: Bytes) -> Int {\n  simd_skip_ws(b, 0, 1)\n}\n' > "$dcldir/ctl.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$dcldir/ctl.vibe" "$dcldir/ctl.wasm" __no_entry__ >/dev/null 2>&1 || true
-if [ ! -s "$dcldir/ctl.wasm" ]; then
-  echo "[compiler-gate] FAIL: the #2343 control did not compile -- simd_skip_ws is declared in $decl_src and must resolve, so this harness is reporting 'unreachable' for everything" >&2
-  cat "$dcldir/ctl.wasm.diag" >&2 2>/dev/null || true
+  "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check >/dev/null 2>&1 || true
+if [ -s "$dcldir/ctl.out.diag" ]; then
+  echo "[compiler-gate] FAIL: the #2343 control reported a diagnostic -- simd_skip_ws is declared in $decl_src and must resolve, so this harness is calling everything unreachable" >&2
+  cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
   rm -rf "$dcldir"
   exit 1
 fi
 rm -rf "$dcldir"
 if [ -n "$reachable" ]; then
-  echo "[compiler-gate] FAIL: these names are under the codegen-internal WASM-intrinsics banner in $decl_src but DO resolve from user code:$reachable" >&2
+  echo "[compiler-gate] FAIL: these names are under the codegen-internal WASM-intrinsics banner in $decl_src but the checker did NOT report them unknown:$reachable" >&2
   echo "    Either move them out of that block, or drop the claim. The banner says the block is unreachable (#2343)." >&2
   exit 1
 fi
