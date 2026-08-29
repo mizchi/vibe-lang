@@ -2233,7 +2233,13 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   — the flat spelling's operand count is not knowable in the assembler, so
   its arity could not be checked and a mismatch would surface as a wasm
   validation failure at module load instead of a located error. The operand
-  count IS checked against the callee's declared params.
+  count IS checked against the callee's declared params, and each operand
+  must itself **yield one value**: `(call $f (drop (local.get $a)))` counts
+  as one operand but pushes nothing, so it is rejected with a located error
+  rather than assembled a value short. A `(block ...)` / `(if ...)` operand
+  therefore needs an explicit `(result ...)`. The check errs toward
+  rejecting — `unreachable` / `return` / `br` are stack-polymorphic and wasm
+  would accept them there.
 - **Locals**: the fn's own params (`$name` or index), plus `(local $name
   TYPE)` declarations at the START of the body — types `i32`/`i64`/`v128`,
   grouped in that order (a located error enforces the grouping); declared

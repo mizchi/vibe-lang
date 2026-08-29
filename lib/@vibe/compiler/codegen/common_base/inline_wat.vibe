@@ -1029,6 +1029,54 @@ fn iw_callee_names(callees: Array[(String, Int, Int)]) -> String {
   }
 }
 
+/// #2348: does the folded operand starting at `pos` (its `(`) push exactly one
+/// value?
+///
+/// A folded call counts parenthesized operands, and counting alone is not an
+/// arity check: `(call $f (drop (local.get $a)))` has one operand that leaves
+/// NOTHING on the stack, so the call would be assembled one value short and
+/// the module would fail wasm validation at load -- clean `vibe check`,
+/// broken artifact, the #2341 shape this section exists to avoid.
+///
+/// Answers true only for heads it recognizes as one-result, so an unknown or
+/// newly added instruction is rejected rather than assumed. Two deliberate
+/// conservatisms: `unreachable` / `return` / `br` are stack-polymorphic and
+/// wasm would accept them here, and a result-less `block` / `loop` / `if` is
+/// rejected rather than analyzed. Both reject a program wasm would take; the
+/// opposite direction is what produces the broken module.
+fn iw_operand_yields_value(kinds: Array[Int], texts: Array[String], pos: Int, end: Int) -> Bool {
+  if pos + 1 >= end || Array::get(kinds, pos + 1) != 3 {
+    false
+  } else {
+    let head = Array::get(texts, pos + 1)
+    if head == "block" || head == "loop" || head == "if" {
+      // One value only with an explicit `(result T)`, after an optional label.
+      let mut q = pos + 2
+      if q < end && Array::get(kinds, q) == 3 && String::length(Array::get(texts, q)) > 0 && String::char_code_at(Array::get(texts, q), 0) == 36 {
+        q = q + 1
+      } else {
+        ()
+      }
+      q + 1 < end && Array::get(kinds, q) == 1 && Array::get(kinds, q + 1) == 3 && Array::get(texts, q + 1) == "result"
+    } else if head == "unreachable" || head == "nop" || head == "return" || head == "drop" || head == "br" || head == "br_if" || head == "local.set" || head == "v128.store" || head == "global.set" {
+      false
+    } else if head == "local.get" || head == "local.tee" || head == "i32.const" || head == "i64.const" || head == "v128.const" || head == "memory.size" || head == "memory.grow" || head == "v128.load" || head == "i8x16.shuffle" || head == "call" {
+      true
+    } else if iw_lookup(iw_core_table(), head) >= 0 {
+      // Everything left in the core table pushes one value; the four that do
+      // not are named above.
+      true
+    } else if iw_lookup(iw_simd_lane_table(), head) >= 0 || iw_lookup(iw_simd_table(), head) >= 0 {
+      true
+    } else {
+      let (mem_opc, _mem_align) = iw_mem_lookup(head)
+      // Loads push one, stores push none. `.store` is the only distinction the
+      // memory table draws, and it is in the spelling.
+      mem_opc >= 0 && !String::contains(head, ".store")
+    }
+  }
+}
+
 /// #2348: folded `(call $f <operand exprs...>)` to another inline-wasm fn in
 /// the same module.
 ///
@@ -1075,6 +1123,11 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
     } else if Array::get(kinds, p) == 2 {
       done = true
     } else if Array::get(kinds, p) == 1 {
+      if !iw_operand_yields_value(kinds, texts, p, end) {
+        throw(iw_err(fn_name, "argument \{argc + 1} of '(call $\{callee}' does not produce a value, so the call would be assembled with too few arguments; every operand must be an expression that yields one (a `(block ...)`/`(if ...)` operand needs an explicit `(result ...)`)", Array::get(offs, p)))
+      } else {
+        ()
+      }
       p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
       argc = argc + 1
     } else {
