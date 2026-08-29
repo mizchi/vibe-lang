@@ -5,7 +5,13 @@
 // double-compiles and byte-compares; "on" replays persisted bodies).
 
 import @vibe/compiler/codegen/common_base {
-  CodegenBodyCache, codegen_body_cache_filter_src_below, codegen_body_cache_from_bytes, codegen_body_cache_new, codegen_body_cache_to_bytes
+  CodegenBodyCache,
+  bcc_int_lists_equal,
+  bcc_string_lists_equal,
+  codegen_body_cache_filter_src_below,
+  codegen_body_cache_from_bytes,
+  codegen_body_cache_new,
+  codegen_body_cache_to_bytes
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
@@ -99,6 +105,9 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.guard_synth_stmts, 42)
   Array::push(c.guard_import_names, "vibe_env_get")
   Array::push(c.guard_import_names, "vibe_http_request_raw")
+  Array::push(c.guard_borrow_names, "peek")
+  Array::push(c.guard_borrow_masks, 5)
+  Array::push(c.guard_unmangled_names, "run")
   c
 }
 
@@ -123,6 +132,9 @@ test "codegen body cache codec round-trips every field group" {
       inspect(Array::get(d.guard_synth_names, 0), content = "Pt::equals")
       inspect(Array::get(d.guard_synth_stmts, 0), content = "42")
       inspect(Array::get(d.guard_import_names, 1), content = "vibe_http_request_raw")
+      inspect(Array::get(d.guard_borrow_names, 0), content = "peek")
+      inspect(Array::get(d.guard_borrow_masks, 0), content = "5")
+      inspect(Array::get(d.guard_unmangled_names, 0), content = "run")
     },
     None => assert(false)
   }
@@ -201,6 +213,27 @@ test "guard validation can fail: a poisoned body replays, a poisoned guard drops
     },
     None => assert(false)
   }
+}
+
+test "a call-shape edit that flips the borrow ABI drops the cache" {
+  // The ADR-0092 borrow-parameter inference is call-site sensitive: passing
+  // a non-ident argument (`use_it(make())`) disqualifies the position that
+  // `use_it(x)` qualifies, flipping the callee's parameter between borrowed
+  // and owned -- a different body under an unchanged name and layout. The
+  // borrow guard must drop the cache, so the replayed compile answers the
+  // same bytes as a fresh one.
+  let shared = "let seed_eq: () -> Bool = () -> { [1] == [1] }\nlet make: () -> Array[Int] = () -> { [1, 2] }\nlet use_it: (Array[Int]) -> Int = (xs) -> { Array::length(xs) }\n"
+  let src_a = String::concat(shared, "let run: () -> Int = () -> { let x = make()\n  use_it(x) }")
+  let src_b = String::concat(shared, "let run: () -> Int = () -> { use_it(make()) }")
+  let out_a = codegen_body_cache_new()
+  let _ = compile_wasi_module_rc_body_cached(parse_program(lex(src_a)), "run", codegen_body_cache_new(), out_a)
+  let out_b = codegen_body_cache_new()
+  let fresh_b = compile_wasi_module_rc_body_cached(parse_program(lex(src_b)), "run", codegen_body_cache_new(), out_b)
+  // Non-vacuity: the two programs must actually record different borrow
+  // guards -- otherwise this test would pass without exercising the drop.
+  assert(!bcc_string_lists_equal(out_a.guard_borrow_names, out_b.guard_borrow_names) || !bcc_int_lists_equal(out_a.guard_borrow_masks, out_b.guard_borrow_masks))
+  let replayed_b = compile_wasi_module_rc_body_cached(parse_program(lex(src_b)), "run", out_a, codegen_body_cache_new())
+  assert(bytes_eq(fresh_b, replayed_b))
 }
 
 test "persisted body cache: verify survives an entry edit; on matches a fresh compile" {

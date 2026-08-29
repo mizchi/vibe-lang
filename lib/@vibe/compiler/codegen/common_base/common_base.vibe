@@ -185,10 +185,27 @@ export struct CodegenBodyCache {
   /// `Map::has_key(used_builtin_names, ...)` tests, so set equality (not
   /// merely count equality -- two different sets of the same size assign
   /// DIFFERENT indices to each import) pins the whole import vector.
+  /// `guard_borrow_names`/`guard_borrow_masks` are the ADR-0092 program-wide
+  /// borrow-parameter inference (sorted names, masks aligned): it is
+  /// CALL-SITE sensitive -- a position ever passed a non-ident argument is
+  /// disqualified -- so an edit anywhere can flip an unchanged function's
+  /// owned/borrowed parameter ABI, changing both its own drop obligations
+  /// and every caller's dup obligations. Replay is only sound while the
+  /// whole vector is unchanged.
+  /// `guard_unmangled_names` closes the global name-membership class:
+  /// compile_call's `prefer_bound_call` and the func-table name lookups are
+  /// cross-file matches on the spelled name, and only builtin-spelled names
+  /// take those branches. Prefix defs are #716 path-mangled, so the names
+  /// that can flip such a branch are the unmangled source-region ones;
+  /// `__test_`/`__bench_` blocks are excluded (nothing calls them by name),
+  /// which is what keeps the append-a-test edit inside the cache.
   guard_meta: Array[Int];
   guard_synth_names: Array[String];
   guard_synth_stmts: Array[Int];
-  guard_import_names: Array[String]
+  guard_import_names: Array[String];
+  guard_borrow_names: Array[String];
+  guard_borrow_masks: Array[Int];
+  guard_unmangled_names: Array[String]
 }
 
 /// An empty cache. Threading one of these in means "compile everything, cache
@@ -213,7 +230,10 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     guard_meta: array_empty(),
     guard_synth_names: array_empty(),
     guard_synth_stmts: array_empty(),
-    guard_import_names: array_empty()
+    guard_import_names: array_empty(),
+    guard_borrow_names: array_empty(),
+    guard_borrow_masks: array_empty(),
+    guard_unmangled_names: array_empty()
   }
 }
 
@@ -370,6 +390,36 @@ fn bcc_copy_guards(src: CodegenBodyCache, out: CodegenBodyCache) -> Unit {
     Array::push(out.guard_import_names, Array::get(src.guard_import_names, gm))
     gm = gm + 1
   }
+  let mut gb = 0
+  while gb < Array::length(src.guard_borrow_names) {
+    Array::push(out.guard_borrow_names, Array::get(src.guard_borrow_names, gb))
+    gb = gb + 1
+  }
+  let mut gc = 0
+  while gc < Array::length(src.guard_borrow_masks) {
+    Array::push(out.guard_borrow_masks, Array::get(src.guard_borrow_masks, gc))
+    gc = gc + 1
+  }
+  let mut gu = 0
+  while gu < Array::length(src.guard_unmangled_names) {
+    Array::push(out.guard_unmangled_names, Array::get(src.guard_unmangled_names, gu))
+    gu = gu + 1
+  }
+}
+
+/// #2388 step 3: exact int-list equality, the mask half of the borrow guard.
+export fn bcc_int_lists_equal(a: Array[Int], b: Array[Int]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    if Array::get(a, i) != Array::get(b, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }
 
 /// #2388 step 3: exact string-list equality, used by the guard validation
@@ -607,6 +657,9 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bcc_push_string_array(buf, cache.guard_synth_names)
   bcc_push_int_array(buf, cache.guard_synth_stmts)
   bcc_push_string_array(buf, cache.guard_import_names)
+  bcc_push_string_array(buf, cache.guard_borrow_names)
+  bcc_push_int_array(buf, cache.guard_borrow_masks)
+  bcc_push_string_array(buf, cache.guard_unmangled_names)
   bytebuf_to_bytes(buf)
 }
 
@@ -863,10 +916,25 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
     } else {
       ()
     }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_borrow_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_borrow_masks)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_unmangled_names)
+    } else {
+      ()
+    }
     let fn_n = Array::length(out.fn_indices)
     let lam_n = Array::length(out.lam_owner)
     let guard_n = Array::length(out.guard_meta)
-    if p < 0 || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) {
+    if p < 0 || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) {
       None
     } else {
       Some(out)
