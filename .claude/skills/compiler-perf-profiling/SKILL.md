@@ -21,6 +21,33 @@ scripts/profile_compile.sh /tmp/gen/stage2.wasm            # 既定 corpus
 scripts/profile_compile.sh /tmp/gen/stage2.wasm foo.vibe 30
 ```
 
+## 0.5 Control the persistent cache, or the numbers lie (#2393)
+
+The FS compile lane consults the persistent caches under `_build/vibe_*`, and
+the typing cache is **content-keyed, not compiler-keyed** — so a freshly
+rebuilt stage2's FIRST run can be silently WARM, served by entries the
+baseline run just wrote. Measured on the same corpus, same machine: cold
+8.0s / 1.46GB heap_ptr vs warm 4.7s / 727MB. That gap is bigger than most
+real optimizations, and it produced a wrong "−31% wall, −42% heap" claim in
+PR #2393 (cold baseline vs warm candidate; the honest cold-vs-cold answer
+was +3.5%).
+
+Protocol for ANY before/after comparison on this lane:
+
+- Isolate the cache per run: `VIBE_BUILD_CACHE_DIR=$(mktemp -d)` (the
+  override lives in `cache/cache_underlying.vibe`). Fresh dir = cold run;
+  a second run in the same dir = warm run.
+- Compare **cold-vs-cold AND warm-vs-warm**, never across temperatures.
+  Both lanes matter: cold is CI / first build, warm is the dev inner loop.
+- **N≥3 runs per configuration** — single-run wall deltas under ~5% are
+  noise on a shared machine.
+- `scripts/profile_compile.sh` does NOT isolate the cache; wrap it with
+  `VIBE_BUILD_CACHE_DIR` yourself before trusting its wall/heap output.
+- Cross-check against the PR perf-report's deterministic rows (selfcompile
+  heap, B/op, fuel): if the report says ±0 and your local profile says
+  −40%, the local measurement is contaminated — believe the deterministic
+  lane and find the leak in your method first.
+
 ## 1. まず実コンパイルをプロファイルする (最重要)
 
 ```bash
