@@ -167,6 +167,26 @@ fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
   result
 }
 
+/// The probe is bounded by `cap`, and exceeding it is a violated PRECONDITION,
+/// not a recoverable state: the walk only runs out when the table has no empty
+/// slot AND does not already hold the key, so there is nowhere to put it.
+/// `MutMap::set` is what maintains "there is always a free slot" (it grows
+/// whenever `(size + tombs + 1) / cap` would pass 0.7), so reaching the bound
+/// means that accounting has drifted -- and #2362 measured the consequence:
+/// under-counting `m.tombs` makes the table fill, and this loop then spins
+/// forever, which is the least diagnosable way to fail.
+///
+/// `assert` is the fail-closed mechanism available here. It traps, the way a
+/// bounds-checked builtin does, WITHOUT the message such a builtin prints:
+/// `__rt_oob_abort` is a codegen-level helper that library code cannot reach.
+/// Terminating silently beats hanging; a named abort for library code would be
+/// better still and is not this change to invent.
+///
+/// `find_index`'s bound is deliberately NOT loud, and the asymmetry is real:
+/// there, exhausting the walk over a full table is how a lookup for an ABSENT
+/// key terminates, and `-1` is the correct answer. Here it means the insert
+/// cannot be performed at all.
+///
 /// Insert without growth check. Reuses the first tombstone seen on the probe
 /// path when the key is not already present.
 fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
@@ -176,6 +196,7 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
   let mut idx = home_of(h, cap)
   let mut tomb_idx = -1
   let mut inserting = true
+  let mut steps = 0
   while inserting {
     let c = Bytes::get(m.ctrl, idx)
     if c == 0 {
@@ -200,6 +221,8 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
       if idx >= cap {
         idx = 0
       }
+      steps = steps + 1
+      assert(steps <= cap)
     } else {
       let mut matched = false
       if c == tag {
@@ -220,6 +243,8 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
         if idx >= cap {
           idx = 0
         }
+        steps = steps + 1
+        assert(steps <= cap)
       }
     }
   }
