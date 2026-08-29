@@ -530,6 +530,29 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
     }
     let na = ArrayBuilder::freeze(names)
     let ta = ArrayBuilder::freeze(types)
+    // Negative `#active_region` marker (perf): env_has_active_region asks
+    // for this sentinel once per region-sensitive check, and outside a region
+    // the answer used to be a MISS -- a walk over the entire chain, measured
+    // as the single largest env_lookup consumer in a full-closure compile.
+    // Appending a CtUnit-typed entry turns the miss into an O(log n) bsearch
+    // hit; env_has_active_region treats only the real CtNamed skolem as
+    // active. Appended LAST (= outermost), so a real region marker collected
+    // from the chain stays leftmost and wins the bsearch. The chain itself is
+    // untouched: the manual region walks (type_mentions_active_region,
+    // assignment_crosses_region, binding_predates_active_region) read only
+    // EnvBind nodes and never see this entry.
+    let mut has_region_marker = false
+    let mut mi = 0
+    while mi < Array::length(na) {
+      if Array::get(na, mi) == "#active_region" {
+        has_region_marker = true
+      }
+      mi = mi + 1
+    }
+    if !has_region_marker {
+      Array::push(na, "#active_region")
+      Array::push(ta, env_value_binding(CtUnit))
+    }
     // `na`/`ta` are collected innermost-binding-first (the traversal above
     // walks `cur = rest` outward from the head). A STABLE sort keeps that
     // relative order among same-named entries, and bsearch_leftmost returns
@@ -3745,7 +3768,6 @@ fn char_int_compatible(ta: Type, tb: Type) -> Bool {
   }
 }
 
-///|
 export fn unify(a: Type, b: Type, s: Subst) -> Option[Subst] {
   let ta = subst_apply(s, a)
   let tb = subst_apply(s, b)

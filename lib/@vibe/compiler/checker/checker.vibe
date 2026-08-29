@@ -1880,64 +1880,6 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
   }
 }
 
-/// Legacy carrier decoder path retained for compatibility with its isolated
-/// codec tests. No checker/import path calls it; EnvTypeDefs is authoritative.
-fn resolve_qualified_parameterized_ctor(ename: String, params: Array[String], member: String, env: TypeEnv, c: Int) -> Option[Type] {
-  match env_lookup(env, enum_def_env_name(ename)) {
-    Some(carrier) => match decode_enum_def(carrier) {
-      Some((carrier_params, carrier_variants)) => {
-        // The carrier and the `TDEnum` must agree on the arity, or the
-        // substitution below would leave a formal unbound. They disagree only
-        // if the two were written by different declarations of the same name,
-        // which is exactly when guessing is wrong.
-        if Array::length(carrier_params) != Array::length(params) {
-          env_lookup(env, member)
-        } else {
-          let param_var_ids = array_empty()
-          let param_var_types = array_empty()
-          let mut pi = 0
-          while pi < Array::length(carrier_params) {
-            Array::push(param_var_ids, c + pi)
-            Array::push(param_var_types, CtVar(c + pi))
-            pi = pi + 1
-          }
-          let result_ty = CtNamed(ename, param_var_types)
-          let mut found = false
-          let mut payloads = array_empty()
-          let mut vi = 0
-          while vi < Array::length(carrier_variants) {
-            let (vname, vtypes) = Array::get(carrier_variants, vi)
-            if vname == member {
-              found = true
-              payloads = vtypes
-            } else {
-              ()
-            }
-            vi = vi + 1
-          }
-          if found {
-            let subst_payloads = for pt in payloads {
-              subst_type_params(pt, carrier_params, param_var_types)
-            }
-            let ctor_ty = if Array::length(subst_payloads) == 0 {
-              result_ty
-            } else {
-              CtFn(subst_payloads, result_ty, None)
-            }
-            Some(CtForAll(param_var_ids, array_empty(), ctor_ty))
-          } else {
-            // The `TDEnum` says the variant exists but the carrier does not
-            // list it. Do not invent a scheme for it.
-            None
-          }
-        }
-      },
-      None => env_lookup(env, member)
-    },
-    None => env_lookup(env, member)
-  }
-}
-
 fn expr_ident_name_or_empty(expr: Expr) -> String {
   match expr {
     EIdent(name, _) => name,
@@ -2849,7 +2791,7 @@ fn closure_capture_row(effect: Option[String], body: Expr, params: Array[(String
 fn type_mentions_active_region(ty: Type, env: TypeEnv) -> Bool {
   match env {
     EnvEmpty => false,
-    EnvBind(name, binding, rest) => if name == "__active_region__" {
+    EnvBind(name, binding, rest) => if name == "#active_region" {
       match binding.ty {
         CtNamed(region_name, _) => type_mentions_named(ty, region_name) || type_mentions_active_region(ty, rest),
         _ => type_mentions_active_region(ty, rest)
@@ -2874,7 +2816,7 @@ fn assignment_crosses_region(name: String, ty: Type, env: TypeEnv) -> Bool {
     EnvEmpty => false,
     EnvBind(n, binding, rest) => if n == name {
       false
-    } else if n == "__active_region__" {
+    } else if n == "#active_region" {
       match binding.ty {
         CtNamed(region_name, _) => type_mentions_named(ty, region_name) || assignment_crosses_region(name, ty, rest),
         _ => assignment_crosses_region(name, ty, rest)
@@ -2921,7 +2863,7 @@ fn binding_predates_active_region(name: String, env: TypeEnv) -> Bool {
     EnvEmpty => false,
     EnvBind(n, _, rest) => if n == name {
       false
-    } else if n == "__active_region__" {
+    } else if n == "#active_region" {
       match env_lookup(rest, name) {
         Some(_) => true,
         None => false
@@ -3231,8 +3173,16 @@ export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: 
 }
 
 fn env_has_active_region(env: TypeEnv) -> Bool {
-  match env_lookup(env, "__active_region__") {
-    Some(_) => true,
+  // Only the real region skolem (a CtNamed bound by the `region` checker path)
+  // counts as active. env_cache seeds every acceleration index with a negative
+  // CtUnit-typed `#active_region` entry so this common query answers from
+  // the index instead of walking the whole chain on a miss; that marker (and
+  // any other non-CtNamed value) means NO active region.
+  match env_lookup(env, "#active_region") {
+    Some(ty) => match ty {
+      CtNamed(_, _) => true,
+      _ => false
+    },
     None => false
   }
 }
@@ -6775,7 +6725,7 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
 fn expression_mentions_active_region_scan(expr: Expr, cur: TypeEnv, full: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
   match cur {
     EnvEmpty => false,
-    EnvBind(name, binding, rest) => if name == "__active_region__" {
+    EnvBind(name, binding, rest) => if name == "#active_region" {
       match binding.ty {
         CtNamed(region_name, _) => tail_named_record_mentions_region(expr, full, defs, s, c, region_name, ce) || expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
         _ => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
@@ -8873,8 +8823,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // existing indexed TypeEnv lookup instead of rescanning every
               // lexical binding. env_bind keeps this cache at the head for
               // ordinary region-local names, and a nested region rebuilds it.
-              let env_body_uncached = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "__active_region__", region_ty)
-              let env_body = env_cache_binding(env_body_uncached, "__active_region__", region_ty)
+              let env_body_uncached = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "#active_region", region_ty)
+              let env_body = env_cache_binding(env_body_uncached, "#active_region", region_ty)
               // The specialized region path checks the literal lambda body
               // directly. Preserve both structural edges from the outer call:
               // argument child 1, then EFn body child 0.

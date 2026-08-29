@@ -37,17 +37,22 @@ export enum PerceusActionKind {
 struct PCtx {
   mut next_id: Int;
   mut seq_id: Int;
-  pctx_names: Array[String];
+  // The four table fields are `mut` for one reason only: on a pctx_cache
+  // mismatch the cached PCtx is refilled in place by field assignment, which
+  // drops the previous tables -- replacing the whole PCtx through Array::set
+  // would leak it (the linear lane's arr_set stores without releasing the old
+  // element).
+  mut pctx_names: Array[String];
   // ADR-0092 borrow-inference: sorted whole-program names with aligned borrow
   // masks (compute_borrow_param_user_fns, common_analysis.vibe). A
   // source-owned shadowable builtin is retained even with mask zero so its
   // source ABI overrides the builtin contract. Same COPY discipline as
   // pctx_names -- see pctx_new's doc comment.
-  borrow_param_user: Array[String];
+  mut borrow_param_user: Array[String];
   // Aligned to borrow_param_user: bit i of entry k says parameter i of
   // borrow_param_user[k] is borrowed. One bsearch on the names indexes
   // straight into this. Same COPY discipline.
-  borrow_param_mask: Array[Int];
+  mut borrow_param_mask: Array[Int];
   // User fns whose RETURN may be an unowned interior view
   // (compute_may_return_view_fns; NOT intersected with borrow_param_user --
   // see the linked_compile gate comment for why that intersection was a
@@ -56,17 +61,21 @@ struct PCtx {
   // fresh-returning callee's binding leaks its result (compiler-gate RC
   // reclamation guard), while a view-returning callee's binding must not
   // release a reference it never acquired. Same COPY discipline.
-  view_ret_user: Array[String];
-  uses: Array[Int];
-  borrows: Array[Int];
-  scalar: Array[Bool];
-  remaining: Array[Int];
+  mut view_ret_user: Array[String];
+  // The per-plan working state below is `mut` so a cached PCtx (see
+  // pctx_cache) can be reset between plan builds by assigning fresh empty
+  // arrays -- assignment drops the previous plan's arrays instead of leaking
+  // their elements the way an in-place truncate would.
+  mut uses: Array[Int];
+  mut borrows: Array[Int];
+  mut scalar: Array[Bool];
+  mut remaining: Array[Int];
   // True for a let-binding whose VALUE is a call to a borrow-arg0 fn (user
   // set or builtin list) -- the class whose result may be an unowned
   // interior view. With the borrow set empty this is never set, so the fix
   // is inert while lc_borrow_arg0_enabled is off.
-  view_call_let: Array[Bool];
-  actions: Array[PerceusAction]
+  mut view_call_let: Array[Bool];
+  mut actions: Array[PerceusAction]
 }
 
 struct HeapInferCtx {
@@ -162,6 +171,79 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     view_call_let: [],
     actions: [],
   }
+}
+
+/// The PCtx built for the most recent whole-program table set, reused across
+/// plan builds. pctx_new's four Array::slice copies were the single largest
+/// __rt_arr_slice caller in a full-closure compile profile (~7% of total CPU):
+/// one plan is built per top-level function AND per lambda, and each paid a
+/// fresh copy of the same four program-wide tables. The cache is keyed by
+/// CONTENT: build_perceus_plan_with_params_split verifies all four incoming
+/// tables element-by-element against the cached copies (cheap -- the elements
+/// are the same string objects, so __rt_str_eq answers on its identity fast
+/// path) and falls back to a fresh PCtx on any mismatch. Correctness therefore
+/// never depends on a set/reset discipline; a stale or half-built cache entry
+/// can only cause a miss, never a wrong table.
+let pctx_cache: Array[PCtx] = []
+
+fn same_str_table(a: Array[String], b: Array[String]) -> Bool {
+  let la = Array::length(a)
+  if la != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < la {
+      if Array::get(a, i) == Array::get(b, i) {
+        i = i + 1
+      } else {
+        same = false
+      }
+    }
+    same
+  }
+}
+
+fn same_int_table(a: Array[Int], b: Array[Int]) -> Bool {
+  let la = Array::length(a)
+  if la != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < la {
+      if Array::get(a, i) == Array::get(b, i) {
+        i = i + 1
+      } else {
+        same = false
+      }
+    }
+    same
+  }
+}
+
+fn pctx_cache_matches(ctx: PCtx, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Bool {
+  same_str_table(ctx.pctx_names, borrow_ret_names) && same_str_table(ctx.borrow_param_user, borrow_param_fns) && same_int_table(ctx.borrow_param_mask, borrow_param_masks) && same_str_table(ctx.view_ret_user, view_ret_fns)
+}
+
+/// Clear the per-plan working state of a cached PCtx. Fresh empty arrays (not
+/// truncates): assignment drops the previous plan's arrays and their elements.
+fn pctx_reset(ctx: PCtx) -> Int {
+  ctx.next_id = 0
+  ctx.seq_id = 0
+  let uses0: Array[Int] = []
+  ctx.uses = uses0
+  let borrows0: Array[Int] = []
+  ctx.borrows = borrows0
+  let scalar0: Array[Bool] = []
+  ctx.scalar = scalar0
+  let remaining0: Array[Int] = []
+  ctx.remaining = remaining0
+  let view0: Array[Bool] = []
+  ctx.view_call_let = view0
+  let actions0: Array[PerceusAction] = []
+  ctx.actions = actions0
+  0
 }
 
 /// Perf: this snapshot runs in every branch/match arm of the perceus plan --
@@ -2680,7 +2762,28 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
 export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
-  let ctx = pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
+  // Reuse the cached PCtx when the caller's four whole-program tables are
+  // content-identical to the cached copies (the per-program common case: one
+  // plan per function/lambda, all against the same tables); otherwise build a
+  // fresh one and make it the cache. Either way `ctx` is read back out of the
+  // cache cell so it is uniformly a borrowed view of the cache-owned PCtx.
+  if Array::length(pctx_cache) == 0 {
+    Array::push(pctx_cache, pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns))
+  } else if pctx_cache_matches(Array::get(pctx_cache, 0), borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns) {
+    pctx_reset(Array::get(pctx_cache, 0))
+  } else {
+    // Refill the cached PCtx IN PLACE: field assignment drops the previous
+    // tables and working state. Replacing the element via Array::set would
+    // leak the whole old context -- the linear lane's arr_set stores without
+    // releasing the replaced element.
+    let stale = Array::get(pctx_cache, 0)
+    pctx_reset(stale)
+    stale.pctx_names = Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names))
+    stale.borrow_param_user = Array::slice(borrow_param_fns, 0, Array::length(borrow_param_fns))
+    stale.borrow_param_mask = Array::slice(borrow_param_masks, 0, Array::length(borrow_param_masks))
+    stale.view_ret_user = Array::slice(view_ret_fns, 0, Array::length(view_ret_fns))
+  }
+  let ctx = Array::get(pctx_cache, 0)
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
   while pi < Array::length(params) {
@@ -2718,7 +2821,10 @@ export fn build_perceus_plan_with_params_split(params: Array[(String, Option[Typ
     pe_scope_end(ctx, Array::get(param_ids, pk), pname)
     pk = pk + 1
   }
-  ctx.actions
+  // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
+  // resets) its own actions array, while callers hold the returned plan
+  // across subsequent plan builds.
+  Array::slice(ctx.actions, 0, Array::length(ctx.actions))
 }
 
 /// The plan without the param-drop split index, for callers that do not
