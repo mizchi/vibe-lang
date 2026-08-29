@@ -99,13 +99,19 @@ fn wat_name_index(names: Array[String], name: String) -> Int {
 /// helper's DEFINITION and leave the `$helper` token in the caller pointing
 /// at a name that no longer exists.
 ///
-/// The scan is deliberately looser than the assembler's: it tracks neither
-/// comments nor nesting, so it can report a name the assembler would never
-/// resolve. That direction is safe for both callers — DCE keeps a function it
-/// did not have to, and a rename rewrites a token inside a comment, which
-/// changes nothing. The other direction is not: a MISSED name is a function
-/// DCE drops out from under a live call, or a callee the merge leaves
-/// dangling. When in doubt this over-reports.
+/// It reads the same tokens the assembler does — a word ends at whitespace,
+/// `(`, `)` or `;`, and both comment forms (`;;` to end of line, `(; ... ;)`)
+/// are skipped. That is not cosmetic: `(call $helper;; why` is valid WAT whose
+/// callee is `helper`, and a scan that stopped only at whitespace read
+/// `helper;;`, matched nothing, and let DCE prune the live helper.
+///
+/// Nesting is the one thing it does not track, and does not need to: it keys
+/// on the `call` keyword, and `call` is only ever an instruction. Where it
+/// still differs from the assembler it errs toward reporting a name — DCE
+/// keeps a function it did not have to, a rename rewrites a token that was
+/// already spelled right. The other direction is not safe: a MISSED name is a
+/// function DCE drops out from under a live call, or a callee the merge leaves
+/// dangling.
 export fn wat_callee_names(wat: String) -> Array[String] {
   let out = array_empty()
   let len = String::length(wat)
