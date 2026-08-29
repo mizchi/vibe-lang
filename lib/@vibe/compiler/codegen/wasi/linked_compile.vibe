@@ -4339,7 +4339,29 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   if entry_user_idx < 0 && !library_mode && entry_name != "__no_entry__" {
     throw("entry `\{entry_name}` not found: no exported function named `\{entry_name}` (use __no_entry__ to build a test runner)")
   }
-  let str_strs = collect_strings_stmts(stmts)
+  // #2402: the empty string is seeded at pool slot 0, BEFORE the source
+  // strings. It is the one compiler-materialised string that user bodies
+  // embed (StringBuilder::freeze's join separator, ByteStream::to_string's
+  // accumulator); seeded after the source strings it moved whenever an edit
+  // added a novel literal, shifting the offset inside every unchanged body
+  // that embeds it and defeating cross-compile replay. "" is zero-length,
+  // so fronting it changes no other string's data offset. The remaining
+  // seeded strings (the #2199 OOB fragments below) stay where they are:
+  // only the generated builtin bodies reference them, and those are rebuilt
+  // by every compile.
+  let str_collected = collect_strings_stmts(stmts)
+  let str_strs = lc_fresh_string_array()
+  Array::push(str_strs, "")
+  let mut __sc = 0
+  while __sc < Array::length(str_collected) {
+    let __scs = Array::get(str_collected, __sc)
+    if String::length(__scs) > 0 {
+      Array::push(str_strs, __scs)
+    } else {
+      ()
+    }
+    __sc = __sc + 1
+  }
   let rec add_map_keys_expr: (Expr) -> Unit = (e) -> {
     match e {
       EMap(fields) => {
@@ -4403,13 +4425,8 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     }
     __mk = __mk + 1
   }
-  // Always seed the empty string so codegen that materialises "" (e.g.
-  // StringBuilder::freeze's join separator, ByteStream::to_string's accumulator)
-  // can rely on str_table_lookup("") succeeding even when the source never
-  // mentions "" literally.
-  if !array_contains_str(str_strs, "") {
-    Array::push(str_strs, "")
-  }
+  // ("" is seeded at pool slot 0 above -- see the #2402 note at the pool's
+  // construction.)
   // #2199: every bounds-checked builtin's OOB abort prints
   // `<operation>: index <idx> out of bounds for length <len>` before its
   // `unreachable` (a bare trap reads as a compiler bug). Seed the message

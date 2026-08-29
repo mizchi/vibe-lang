@@ -161,7 +161,17 @@ fn artifact_payload_stamp(bytes: Bytes) -> String {
 export fn store_artifact_envelope_at(path: String, bytes: Bytes) -> Unit with Exception + Fs {
   let tmp = String::concat(path, String::concat(".", String::concat(artifact_payload_stamp(bytes), ".tmp")))
   Fs::write_bytes(tmp, encode_persistent_artifact(bytes))
-  Fs::rename(tmp, path)
+  // Two writers of IDENTICAL bytes share this temporary name; the first
+  // rename consumes it, and the loser must tolerate the loss -- the final
+  // path already holds exactly the bytes it meant to publish, so skipping
+  // is correct, and aborting an otherwise valid compile is not. The check
+  // narrows rather than eliminates the window; a store is best-effort by
+  // contract (a lost write costs a future cache miss, never wrong bytes).
+  if Fs::exists(tmp) {
+    Fs::rename(tmp, path)
+  } else {
+    ()
+  }
 }
 
 export fn load_artifact_envelope_at(path: String) -> Option[Bytes] with Exception + Fs {
