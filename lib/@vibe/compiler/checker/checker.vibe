@@ -482,6 +482,13 @@ export fn report_formal_applications(te: TypeExpr, formals: Array[String], where
 /// Mixed-kind across a local-let annotation and the enclosing signature.
 /// `report_formal_applications` only sees one TypeExpr; `let y: F[Int] = x`
 /// under `fn g[F](x: F)` is applied here and unapplied on the signature.
+fn fapp_kind_marker_is_set(env: TypeEnv, prefix: String, name: String) -> Bool {
+  match env_lookup(env, String::concat(prefix, name)) {
+    Some(CtUnit) => true,
+    _ => false
+  }
+}
+
 fn report_mixed_kind_let_annotation(te: TypeExpr, env: TypeEnv, where_label: String, errors: Array[String]) -> Unit {
   let applied = array_empty()
   let unapplied = array_empty()
@@ -496,10 +503,7 @@ fn report_mixed_kind_let_annotation(te: TypeExpr, env: TypeEnv, where_label: Str
   let mut i = 0
   while i < Array::length(applied) {
     let fname = Array::get(applied, i)
-    let unapplied_in_sig = match env_lookup(env, String::concat(fapp_unapplied_marker_prefix, fname)) {
-      Some(_) => true,
-      None => false
-    }
+    let unapplied_in_sig = fapp_kind_marker_is_set(env, fapp_unapplied_marker_prefix, fname)
     if unapplied_in_sig || string_array_has(unapplied, fname) {
       Array::push(errors, formal_application_error(fname, where_label))
     } else {
@@ -513,10 +517,7 @@ fn report_mixed_kind_let_annotation(te: TypeExpr, env: TypeEnv, where_label: Str
     if string_array_has(applied, fname) {
       ()
     } else {
-      let applied_in_sig = match env_lookup(env, String::concat(fapp_applied_marker_prefix, fname)) {
-        Some(_) => true,
-        None => false
-      }
+      let applied_in_sig = fapp_kind_marker_is_set(env, fapp_applied_marker_prefix, fname)
       if applied_in_sig {
         Array::push(errors, formal_application_error(fname, where_label))
       } else {
@@ -632,6 +633,164 @@ fn collect_hkt_related_formals(te: TypeExpr, formals: Array[String], out: Array[
         i = i + 1
       }
     }
+  }
+}
+
+fn collect_all_formals_in_type(ty: Type, formals: Array[String], out: Array[String]) -> Unit {
+  match ty {
+    CtNamed(name, args) => {
+      push_unique_formal(name, formals, out)
+      // A kinded application is `CtNamed("#hkt", [head, index...])` and a bare
+      // constructor is `CtNamed("#ctor.F", [])`, so the formal's own name is
+      // not `name` -- it is what type_constructor_name reads out of them.
+      // Pushing it as well is safe: push_unique_formal keeps only names that
+      // are formals of this signature.
+      push_unique_formal(type_constructor_name(ty), formals, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_all_formals_in_type(Array::get(args, i), formals, out)
+        i = i + 1
+      }
+    },
+    CtArray(elem) => collect_all_formals_in_type(elem, formals, out),
+    CtOption(elem) => collect_all_formals_in_type(elem, formals, out),
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_all_formals_in_type(Array::get(items, i), formals, out)
+        i = i + 1
+      }
+    },
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_all_formals_in_type(Array::get(params, i), formals, out)
+        i = i + 1
+      }
+      collect_all_formals_in_type(ret, formals, out)
+    },
+    CtForAll(_, _, body) => collect_all_formals_in_type(body, formals, out),
+    // A KINDED formal reached through an alias resolves to `CtApplied`, not
+    // `CtNamed`: `type Apply[F[_], A] = F[A]` puts the head in a slot this
+    // match used to fall past into `_ => ()`, so `F`, `A` and `B` were never
+    // marked and `fn bad[F[_], A, B](x: Apply[F, A]) -> Apply[F, B] { x }`
+    // compiled -- returning an `F[A]` where `F[B]` was declared. Measured; the
+    // unkinded spelling was caught all along ("return type mismatch"), which is
+    // what hid it (Codex review).
+    CtApplied(head, args) => {
+      push_unique_formal(type_constructor_name(head), formals, out)
+      collect_all_formals_in_type(head, formals, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_all_formals_in_type(Array::get(args, i), formals, out)
+        i = i + 1
+      }
+    },
+    CtConstructor(name, _) => push_unique_formal(name, formals, out),
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, field_ty) = Array::get(fields, i)
+        collect_all_formals_in_type(field_ty, formals, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Alias expansion can reveal an HKT application that is not present in the
+/// surface TypeExpr (`Apply[F, A]` where `type Apply[F, A] = F[A]`). Classify
+/// the resolved signature as well so those constructor/index formals receive
+/// the same rigid skolems as a directly written `F[A]`.
+fn collect_hkt_related_formals_in_type(ty: Type, formals: Array[String], out: Array[String]) -> Unit {
+  match ty {
+    CtNamed(head, args) => {
+      // `F[A]` for a KINDED `F[_]` is not `CtNamed("F", [A])` -- alias
+      // expansion produces `CtNamed("#hkt", [<ctor F>, A])`, whose head is
+      // args[0] and whose indices are the rest. Reading `head` literally made
+      // this an ordinary named type with no formal in it, so
+      // `type Apply[F[_], A] = F[A]` left `F`, `A` and `B` unmarked and
+      // `fn bad[F[_], A, B](x: Apply[F, A]) -> Apply[F, B] { x }` compiled.
+      // The unkinded spelling DOES arrive as `CtNamed("F", [A])`, which is why
+      // only the kinded one was wrong (Codex review).
+      let applied_name = if is_hkt_app(ty) {
+        type_constructor_name(ty)
+      } else {
+        head
+      }
+      let index_start = if is_hkt_app(ty) {
+        1
+      } else {
+        0
+      }
+      // `formals` holds type-param KEYS (`F[_]`), so an exact compare never
+      // matches a kinded parameter -- which is the whole case this arm exists
+      // for. formals_contain_source_name reads the name out of the key, the
+      // same way push_unique_formal below does.
+      if formals_contain_source_name(formals, applied_name) && Array::length(args) > index_start {
+        push_unique_formal(applied_name, formals, out)
+        let mut i = index_start
+        while i < Array::length(args) {
+          collect_all_formals_in_type(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      } else {
+        let mut i = 0
+        while i < Array::length(args) {
+          collect_hkt_related_formals_in_type(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      }
+    },
+    CtArray(elem) => collect_hkt_related_formals_in_type(elem, formals, out),
+    CtOption(elem) => collect_hkt_related_formals_in_type(elem, formals, out),
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_hkt_related_formals_in_type(Array::get(items, i), formals, out)
+        i = i + 1
+      }
+    },
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_hkt_related_formals_in_type(Array::get(params, i), formals, out)
+        i = i + 1
+      }
+      collect_hkt_related_formals_in_type(ret, formals, out)
+    },
+    CtForAll(_, _, body) => collect_hkt_related_formals_in_type(body, formals, out),
+    // The alias-expanded application (see collect_all_formals_in_type above).
+    // An applied head that IS one of the formals is exactly the HKT use this
+    // function classifies, so its arguments are collected in full.
+    CtApplied(head, args) => {
+      let head_name = type_constructor_name(head)
+      if formals_contain_source_name(formals, head_name) && Array::length(args) > 0 {
+        push_unique_formal(head_name, formals, out)
+        let mut i = 0
+        while i < Array::length(args) {
+          collect_all_formals_in_type(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      } else {
+        collect_hkt_related_formals_in_type(head, formals, out)
+        let mut i = 0
+        while i < Array::length(args) {
+          collect_hkt_related_formals_in_type(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      }
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, field_ty) = Array::get(fields, i)
+        collect_hkt_related_formals_in_type(field_ty, formals, out)
+        i = i + 1
+      }
+    },
+    _ => ()
   }
 }
 
@@ -3692,20 +3851,8 @@ fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
     while i < Array::length(ea) {
       let e = Array::get(ea, i)
       let a = Array::get(aa, i)
-      if skolem_vs_concrete(e, a) {
+      if rigid_applied_mismatch(e, a) {
         differ = true
-      } else if is_hkt_app(e) && is_hkt_app(a) {
-        match e {
-          CtNamed(_, ea2) => match a {
-            CtNamed(_, aa2) => if named_args_skolem_differ(ea2, aa2) {
-              differ = true
-            } else {
-              ()
-            },
-            _ => ()
-          },
-          _ => ()
-        }
       } else {
         ()
       }
@@ -10592,13 +10739,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut hki = 0
       while hki < Array::length(params) {
         match Array::get(params, hki) {
-          (_, Some(ste)) => collect_hkt_related_formals(ste, tparams, hkt_related),
+          (_, Some(ste)) => {
+            collect_hkt_related_formals(ste, tparams, hkt_related)
+            collect_hkt_related_formals_in_type(resolve_type_expr_shadowed(ste, defs, tparams), tparams, hkt_related)
+          },
           _ => ()
         }
         hki = hki + 1
       }
       match ret_ty {
-        Some(srte) => collect_hkt_related_formals(srte, tparams, hkt_related),
+        Some(srte) => {
+          collect_hkt_related_formals(srte, tparams, hkt_related)
+          collect_hkt_related_formals_in_type(resolve_type_expr_shadowed(srte, defs, tparams), tparams, hkt_related)
+        },
         None => ()
       }
       let mut tpi = 0
@@ -10631,7 +10784,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             } else {
               tv
             }
-            tp_env = env_bind(env_bind(tp_env, tpname, body_ty), marker, CtUnit)
+            // Mask both kind markers from an outer generic that used the same
+            // formal name. `CtBool` is an explicit false sentinel; the
+            // signature scan below shadows it with `CtUnit` for a present use.
+            tp_env = env_bind(env_bind(env_bind(env_bind(tp_env, tpname, body_ty), marker, CtUnit), String::concat(fapp_applied_marker_prefix, tpname), CtBool), String::concat(fapp_unapplied_marker_prefix, tpname), CtBool)
             scheme_env = env_bind(env_bind(scheme_env, tpname, tv), marker, CtUnit)
             c0 = nc
           },

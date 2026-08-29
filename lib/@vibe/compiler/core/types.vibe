@@ -729,7 +729,7 @@ fn subst_apply_except_go(s: Subst, ty: Type, keep: Array[Int]) -> Type {
         Array::push(ps, subst_apply_except_go(s, Array::get(params, i), keep))
         i = i + 1
       }
-      CtFn(ps, subst_apply_except_go(s, ret, keep), effect_name)
+      CtFn(ps, subst_apply_except_go(s, ret, keep), resolve_effect_opt_preserving_open(s, effect_name))
     },
     CtArray(elem) => CtArray(subst_apply_except_go(s, elem, keep)),
     CtOption(elem) => CtOption(subst_apply_except_go(s, elem, keep)),
@@ -1737,6 +1737,15 @@ fn int_array_has(arr: Array[Int], v: Int) -> Bool {
   sfound
 }
 
+/// A row minted by `instantiate` (`$N`), as opposed to a source binder (`e`).
+/// `is_effect_var_name` accepts both, which is right where the question is
+/// "is this a variable at all" and wrong where it is "may this binding be
+/// undone" -- undoing a source-to-source unification loses a constraint the
+/// body proved.
+fn is_fresh_effect_var_name(name: String) -> Bool {
+  String::length(name) >= 2 && String::char_code_at(name, 0) == 36
+}
+
 fn is_effect_var_name(name: String) -> Bool {
   let len = String::length(name)
   if len == 1 {
@@ -1855,6 +1864,56 @@ fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
         None
       } else {
         Some(String::join(resolved, ", "))
+      }
+    }
+  }
+}
+
+/// Apply the closed part of an effect substitution while publishing a generic
+/// scheme. A source binder can temporarily unify with a fresh inference row
+/// (`e -> $82`) while its body is checked; publishing `$82` loses the binder
+/// that `instantiate` must freshen at each call site. Preserve the original
+/// label for every still-open result, while retaining concrete labels learned
+/// beside it. A fully closed binding (`e -> Log`) is applied normally.
+fn resolve_effect_opt_preserving_open(s: Subst, eff: Option[String]) -> Option[String] {
+  match eff {
+    None => None,
+    Some(row) => {
+      let out = array_empty()
+      for raw in String::split(row, ",") {
+        let original = String::trim(raw)
+        match resolve_effect_opt(s, Some(original)) {
+          Some(resolved_row) => for resolved_raw in String::split(resolved_row, ",") {
+            let resolved = String::trim(resolved_raw)
+            // Restore the source spelling ONLY over a fresh `$N`. When one
+            // source binder resolves to ANOTHER source binder, the body proved
+            // they are the same row, and republishing the original made them
+            // independent again:
+            //
+            //   fn cast[T, e, f](g: (T) -> T with e) -> (T) -> T with f { g }
+            //
+            // published `with e` for the argument and `with f` for the result,
+            // so a caller could bind the callback to one concrete effect and
+            // the value it returns to another -- misrepresenting the
+            // callback's authority, with no diagnostic (Codex review).
+            let published = if is_effect_var_name(original) && is_fresh_effect_var_name(resolved) {
+              original
+            } else {
+              resolved
+            }
+            if String::length(published) > 0 && !string_array_contains(out, published) {
+              Array::push(out, published)
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
+      }
+      if Array::length(out) == 0 {
+        None
+      } else {
+        Some(String::join(out, ", "))
       }
     }
   }
