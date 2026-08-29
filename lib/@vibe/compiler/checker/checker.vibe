@@ -33,6 +33,7 @@ import @vibe/compiler/core {
   is_exception_throw_handler_name,
   is_exception_throw_operation,
   is_hkt_app,
+  refine_trait_bounds_from_receiver,
   registry_builtin_arity,
   registry_builtin_param_type,
   resolve_builtin,
@@ -9141,6 +9142,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                       None => check_expr_capture(EIdent(name, callee_off), env, defs, s, c, errors, tytab, capture, lane)
                     }
                   }
+                  let inferred_param_tys = match ct {
+                    CtFn(params, _, _) => params,
+                    _ => array_empty()
+                  }
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
@@ -9149,7 +9154,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   while ai < alen {
                     let (at, ns, nc) = check_expr_capture(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, at)
-                    s2 = ns
+                    if ai < Array::length(inferred_param_tys) {
+                      s2 = refine_trait_bounds_from_receiver(env, ns, Array::get(inferred_param_tys, ai), at)
+                    } else {
+                      s2 = ns
+                    }
                     c2 = nc
                     ai = ai + 1
                   }
