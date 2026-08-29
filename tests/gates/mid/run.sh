@@ -1407,7 +1407,8 @@ if ! VIBE_TEST_CLI_WASM="$stage2_wasm" \
 fi
 echo "[compiler-gate] builtin lane parity ok (gc + linear agree)"
 
-# 40h8c. #1976: the wasm-gc lane's single-file limitation must SAY SO.
+# 40h8c. Direct single-file GC must diagnose imports honestly (#1976), while
+# the public test command resolves them before choosing GC codegen (#2376).
 #
 # Referencing an imported name cannot work on this backend, and for a long time
 # it answered with the codegen internal error -- "this is a bug in the compiler
@@ -1420,7 +1421,7 @@ echo "[compiler-gate] builtin lane parity ok (gc + linear agree)"
 # most -- the rewrite is narrow on purpose, and a future change that widened it
 # would swallow the genuine unresolved-name class (#1502/#1510/#1521) that
 # message exists for.
-echo "[compiler-gate] 40h8c/40 wasm-gc import diagnostic (#1976)"
+echo "[compiler-gate] 40h8c/40 wasm-gc direct diagnostic + public import resolution (#1976/#2376)"
 gcimpdir="_build/_gate_gc_import_diag"
 rm -rf "$gcimpdir"; mkdir -p "$gcimpdir"
 VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -1444,43 +1445,18 @@ if printf '%s' "$gcimp_diag" | grep -q 'please report the source that triggers i
   exit 1
 fi
 
-# The step above drives the compiler directly with VIBE_BACKEND=gc, so it
-# proves the DIAGNOSTIC and nothing about the wrapper users actually type.
-# `vibe test` read no backend variable at all: VIBE_TEST_BACKEND=gc compiled
-# with compile_to's default and ran LINEAR, reporting a pass for a lane it
-# never used. Only scripts/vibe_test.sh honoured it, and nothing said so --
-# the same silent-wrong shape #1701 fixed for `vibe bench`. Pinned end to end
-# here: the wrapper must reach the gc lane, and the gc-only failure must be
-# the one the fixture is built to produce.
-#
-# The probe is written here rather than committed as a fixture for the same
-# reason its sibling pair is not named `*_test.vibe`: it exists to be REJECTED,
-# and unit_test_runner discovers that glob. It reuses the committed dep so the
-# only thing this step adds is the `test {}` wrapper `vibe test` requires.
-gcwrapdir="_build/_gate_gc_test_backend"
-rm -rf "$gcwrapdir"; mkdir -p "$gcwrapdir"
-cat > "$gcwrapdir/gc_backend_probe_test.vibe" <<'GCWRAP'
-import ../../fixtures/gc_import_diag_dep.vibe {
-  gc_import_diag_helper
-}
-
-test "reaches the gc lane" {
-  assert(gc_import_diag_helper(21) == 42)
-}
-GCWRAP
-gcwrap_out="$(VIBE_TEST_BACKEND=gc VIBE_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" \
-  VIBE_CLI_WASM="$stage2_wasm" \
-  bash "$ROOT_DIR/runtime/vibe" test "$gcwrapdir/gc_backend_probe_test.vibe" 2>&1 || true)"
-if ! printf '%s' "$gcwrap_out" | grep -q 'gc_import_diag_helper` is imported'; then
-  echo "[compiler-gate] FAIL: VIBE_TEST_BACKEND=gc did not reach the gc lane (#1976)" >&2
-  echo "  \`vibe test\` compiled on linear while the caller asked for gc -- a pass here" >&2
-  echo "  says nothing about which backend produced it." >&2
-  echo "  got: $gcwrap_out" >&2
+# The direct diagnostic above remains useful for editor/tooling callers that
+# deliberately bypass module loading. It no longer describes `vibe test`:
+# that command must resolve the import and run the test successfully. Backend
+# selection itself is pinned by the selector-precedence gate and the GC-only
+# runtime suite immediately above; this check pins their public composition.
+if ! VIBE_GC_LAUNCHER_RUNNER="$ROOT_DIR/scripts/viberun_node.sh" \
+    bash "$ROOT_DIR/scripts/test_gc_launcher_import.sh" "$stage2_wasm"; then
+  echo "[compiler-gate] FAIL: public wasm-gc test command did not resolve imports (#2376)" >&2
   exit 1
 fi
-rm -rf "$gcwrapdir"
 rm -rf "$gcimpdir"
-echo "[compiler-gate] wasm-gc import diagnostic ok (names the binding, not an internal error; VIBE_TEST_BACKEND=gc reaches the lane)"
+echo "[compiler-gate] wasm-gc import contract ok (direct mode diagnoses; public test mode resolves)"
 
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
