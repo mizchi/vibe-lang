@@ -398,13 +398,48 @@ Against `find_4k_native_scalar` (§1) `Bytes::index_of` is ~11x; against
 `String::index_of` it is ~1.7x, which measures specialisation — a single byte
 needs no needle span verified through `str_eq` — not SIMD.
 
-**Routing is the open half.** `String` has been a byte string since ADR-0098,
-so `String::count` / `split` / `replace` should go through these kernels rather
-than keep a second implementation. Those three are the ones that matter:
-ADR-0054 already made `String::index_of` / `equals` / `starts_with` /
-`ends_with` SIMD, while `count` / `replace` / `replace_all` are library
-functions in `@vibe/builtin` — i.e. exactly the hand-written loop this layer
-replaces, on a surface that already has callers.
+**`String` routes through the same window search.** `String::index_of` /
+`equals` / `starts_with` / `ends_with` / `split` are SIMD builtins (ADR-0054);
+`String::count` / `replace` / `replace_all` are library functions in
+`@vibe/builtin` and reach that search through `string_index_of_from`, which is
+one `String::index_of` call over a suffix.
+
+Seeding that call costs nothing, because `String::substring` does not copy: on
+the linear lane it returns `((ptr + start) << 32) | (len - start)`, a second
+fat value into the same buffer (`gen_str_substring_body`). So `s[start: len]`
+is a view, `String::index_of(s[start: len], sub)` **is** a search-from-offset
+at zero allocation, and no `String::index_of_from` builtin is needed. Measured:
+`String::split` over 512 / 1024 / 2048 lines costs 23.3 / 45.5 / 92.3 µs —
+linear in the number of separators.
+
+**A library must not re-implement a kernel under the builtin's own name.** A
+top-level `fn X::y` replaces the builtin named `X::y` for the whole linked
+program, including at call sites in files that never imported it
+([#2378](https://github.com/mizchi/vibe-lang/issues/2378)). Such a
+re-implementation is therefore not a second implementation alongside the
+kernel — it *is* the one that runs, for every dependent. Measured: `import
+@vibe/builtin { String::trim }` alone moved a sparse `String::index_of` from
+0.8 µs to 174 µs (~218×).
+
+Two names in `lib/@vibe/builtin/string.vibe` still shadow their builtins,
+deliberately: `String::equals` and `String::trim`. Both were measured
+equivalent to the builtin (20/20 answers, including tab/LF/CR/VT/FF padding
+and the equality edge cases) and performance-neutral, so what runs is the same
+work under a different symbol. The six search functions were neither, which is
+what made them worth removing. Nothing enforces the rule — #2378 is where the
+diagnostic belongs.
+
+Cost of the routing, net of haystack construction
+(`bench/bench_string_scan_routing.vibe`, p50):
+
+| | scalar scan | window search | |
+|---|---:|---:|---:|
+| `String::count`, match every 11 B | 186 µs | 70.8 µs | 2.6× |
+| `String::count`, one match in 22 KiB | 180 µs | 2.2 µs | **82×** |
+| `String::replace_all`, dense | 309 µs | 164 µs | 1.9× |
+
+Dense is bounded by per-match loop overhead, which no scanner removes; sparse
+is the scan itself.
 
 **Tail slack is still undecided.** A kernel wants to over-read its tail:
 guaranteeing at least 15 bytes of readable slack past `len` would let every

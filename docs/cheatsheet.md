@@ -1884,6 +1884,7 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 | `String::from_byte` | `(Int) -> String` (deprecated alias `String::from_char_code` — `vibe check` warns per use, including inside `\{...}` interpolations, #2203) |
 | `String::equals` | `(String, String) -> Bool` |
 | `String::split` / `String::join` | `(String, String) -> Array[String]` / `(Array[String], String) -> String` |
+| | `String::split(s, "")` is `[s]` — an empty separator does not split into bytes (#2378; it used to run out of memory) |
 | `String::contains` | `(String, String) -> Bool` |
 | `String::index_of` / `String::last_index_of` | `(String, String) -> Int` |
 | `String::starts_with` / `String::ends_with` | `(String, String) -> Bool` |
@@ -2230,6 +2231,63 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### A library `fn X::y` replaces a same-named builtin PROGRAM-WIDE
+
+A top-level definition wins over a builtin of the same name. For a **qualified**
+name (`X::y`) the scope of that win is the whole linked program -- not the file,
+not the import list. Measured (2026-08-28), three files:
+
+```vibe skip
+// dep.vibe
+export fn String::index_of(s: String, sub: String) -> Int { -999 }
+export fn unrelated_helper(n: Int) -> Int { n + 1 }
+
+// caller.vibe -- imports ONLY unrelated_helper, never String::index_of
+import ./dep.vibe { unrelated_helper }
+test "t" {
+  inspect(String::index_of("hello world", "world"), "")   // -999, not 6
+}
+```
+
+Drop the `import` line and the same expression answers `6`. Nothing is
+reported either way, so the two readings of one source are indistinguishable
+without running it.
+
+A **bare** name is contained to its own file. Measured the same way, four
+names, each called both from its defining file and from an importer that
+imports only an unrelated name:
+
+| definition | shape | what the importer got |
+|---|---|---|
+| `String::index_of` | qualified | the local definition |
+| `String::trim` | qualified | the local definition |
+| `eq` | bare | the builtin |
+| `not` | bare | the builtin |
+
+So redefining `eq` or `println` in a package does not reach that package's
+users. Treat that as today's behaviour rather than a rule: it is an observed
+property of the resolver, and #2378 is where the intended one gets decided.
+
+The cost is not theoretical. A scalar re-implementation of a SIMD builtin in a
+library is not a second implementation alongside it — it is the one that runs,
+for every dependent. Measured on a 22 KiB haystack with one match: a sparse
+`String::index_of` costs **0.8 us** against the builtin and **174 us** (~218x)
+against a library `fn` of the same name that some other file in the program
+happened to define. The answers can differ too, not just the speed:
+`String::split(s, "")` trapped on one and returned `[s]` on the other.
+
+Nothing enforces this yet, which is what #2378 is for. A lexical scan cannot:
+`fn r#String::index_of` defines `String::index_of` and reads as `r`,
+`#deprecated fn X::y` puts the declaration off column zero, and `fn` and its
+name may sit on separate lines — each of those was a silent miss in a scanner
+built for exactly this rule. Deciding what a declaration binds is the
+compiler's job.
+
+A compiler-provided name can still be published from a package without
+defining it — a bodyless declaration on the export surface, the shape
+`String::utf8_length` uses — so `import @vibe/builtin { String::split }`
+resolves without anything shadowing the builtin.
 
 ### A `handle` that type-checks can still fail to compile
 

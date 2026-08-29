@@ -1,8 +1,45 @@
 //# Functions
 
-// Compiler-provided intrinsic signatures are explicitly published.
+// Every scanner in this file is a `while` loop, not a `let rec` closure. A
+// local `let rec` self-calls through the function table (call_indirect), which
+// the self-tail-call pass (rewrite_self_tail_calls) does NOT turn into a loop
+// -- it only covers TOP-LEVEL self-recursion. One frame per scanned character
+// meant a search overflowed the real wasm call stack at a ~4-5 KB haystack
+// ("RangeError: Maximum call stack size exceeded", surfacing as the runner's
+// "expression too deeply nested") -- hit in practice by `vibe diagnostics` /
+// LSP publishDiagnostics on lsp_server.vibe itself, whose located-error path
+// searches the whole source text.
+//
+// This file must not define a function whose name the builtin registry already
+// owns. Such a definition replaces the builtin for the WHOLE linked program,
+// including at call sites in files that never imported it, so a
+// re-implementation here would take over every dependent's calls -- measured,
+// one that shadowed `String::index_of` cost a sparse search 0.8us -> 174us for
+// anyone importing ANY name from this package.
+//
+// NOTHING ENFORCES THIS. #2378 is where the diagnostic belongs. A lexical
+// check was tried and removed: it silently missed value aliases, declarations
+// sharing a line, declarations behind an attribute, declarations wrapped after
+// their keyword, and `r#`-spelled names -- deciding what a declaration binds
+// is the compiler's job. So this comment is the warning, not a backstop.
+
+// Compiler-provided intrinsic signatures are explicitly published. The six
+// search names carry no body here on purpose -- a `fn` definition would
+// replace the SIMD builtin for every dependent (#2378) -- but they stay on
+// this list so `import @vibe/builtin { String::split }` still resolves against
+// the package's published surface. Same shape as the three length intrinsics
+// beside them: declared, never defined, answered by the builtin registry.
 export {
-  String, String::unicode_length, String::utf16_length, String::utf8_length
+  String,
+  String::contains,
+  String::ends_with,
+  String::index_of,
+  String::last_index_of,
+  String::split,
+  String::starts_with,
+  String::unicode_length,
+  String::utf16_length,
+  String::utf8_length
 }
 
 fn string_drop(s: String, n: Int) -> String {
@@ -144,40 +181,39 @@ fn string_is_not_empty(s: String) -> Bool {
   String::length(s) > 0
 }
 
-/// Iterative on purpose (as are the other scanners below): a local `let rec`
-/// closure self-calls through the function table (call_indirect), which the
-/// self-tail-call pass (rewrite_self_tail_calls) does NOT turn into a loop --
-/// it only covers TOP-LEVEL self-recursion. One frame per scanned character
-/// meant `String::index_of` overflowed the real wasm call stack at a ~4-5KB
-/// haystack ("RangeError: Maximum call stack size exceeded", surfacing as the
-/// runner's "expression too deeply nested") -- hit in practice by `vibe
-/// diagnostics`/LSP publishDiagnostics on lsp_server.vibe itself, whose
-/// located-error path searches the whole source text.
+/// Search for `sub` in `s` at or after `start`, in ONE call to the
+/// `String::index_of` builtin -- the SIMD window search of ADR-0054, not a
+/// byte-at-a-time loop.
+///
+/// Seeding the scan is free because `String::substring` does not copy: on the
+/// linear lane it returns `((ptr + start) << 32) | (len - start)`, a second
+/// fat value into the SAME buffer (`gen_str_substring_body`). So `s[start:
+/// s_len]` is a view, and this stays one pass over the tail with no
+/// allocation.
+///
+/// `start > s_len` answers -1. The byte-at-a-time version it replaces
+/// answered `1` there for an empty needle, which no caller could reach
+/// (`String::replace_all` advances by at most `s_len`) and which nothing
+/// documented or tested.
+///
+/// Defining `String::index_of` in this file would not just shadow the builtin
+/// for every dependent (see the note at the top) -- it would make this
+/// function call itself.
 fn string_index_of_from(s: String, sub: String, start: Int) -> Int {
   let s_len = String::length(s)
-  let sub_len = String::length(sub)
   if start < 0 {
     -1
   }
-  else if sub_len == 0 {
-    if start <= s_len {
-      start
-    } else 1
-  }
-  else if sub_len > s_len || start > s_len - sub_len {
+  else if start > s_len {
     -1
   }
   else {
-    let mut i = start
-    let mut found = -1
-    while found < 0 && i <= s_len - sub_len {
-      if s[i: i + sub_len] == sub {
-        found = i
-      } else {
-        i = i + 1
-      }
+    let hit = String::index_of(s[start: s_len], sub)
+    if hit < 0 {
+      -1
+    } else {
+      start + hit
     }
-    found
   }
 }
 
@@ -205,6 +241,9 @@ export fn String::take(s: String, n: Int) -> String {
   string_take(s, n)
 }
 
+/// Non-overlapping occurrences, counted by the SIMD scanner rather than by
+/// walking every candidate position: each hit jumps the cursor past the match
+/// instead of stepping one byte at a time on a miss.
 export fn String::count(s: String, sub: String) -> Int {
   let s_len = String::length(s)
   let sub_len = String::length(sub)
@@ -214,12 +253,14 @@ export fn String::count(s: String, sub: String) -> Int {
   else {
     let mut i = 0
     let mut acc = 0
-    while i <= s_len - sub_len {
-      if s[i: i + sub_len] == sub {
-        acc = acc + 1
-        i = i + sub_len
+    let mut searching = true
+    while searching && i <= s_len - sub_len {
+      let idx = string_index_of_from(s, sub, i)
+      if idx < 0 {
+        searching = false
       } else {
-        i = i + 1
+        acc = acc + 1
+        i = idx + sub_len
       }
     }
     acc
@@ -236,14 +277,6 @@ export fn String::repeat(s: String, n: Int) -> String {
 
 export fn String::compare(a: String, b: String) -> Int {
   string_compare(a, b)
-}
-
-export fn String::contains(s: String, sub: String) -> Bool {
-  string_index_of_from(s, sub, 0) >= 0
-}
-
-export fn String::index_of(s: String, sub: String) -> Int {
-  string_index_of_from(s, sub, 0)
 }
 
 export fn String::replace(s: String, pattern: String, replacement: String) -> String {
@@ -282,15 +315,6 @@ export fn String::trim_end(s: String) -> String {
     s
   }
   else s[0: end]
-}
-
-export fn String::ends_with(s: String, suffix: String) -> Bool {
-  let s_len = String::length(s)
-  let suf_len = String::length(suffix)
-  if suf_len > s_len {
-    false
-  }
-  else s[s_len - suf_len: s_len] == suffix
 }
 
 export fn String::pad_right(s: String, target_len: Int, pad_char: String) -> String {
@@ -346,66 +370,8 @@ export fn String::replace_all(s: String, pattern: String, replacement: String) -
   }
 }
 
-export fn String::starts_with(s: String, prefix: String) -> Bool {
-  let s_len = String::length(s)
-  let p_len = String::length(prefix)
-  if p_len > s_len {
-    false
-  }
-  else s[0: p_len] == prefix
-}
-
 export fn String::is_not_empty(s: String) -> Bool {
   string_is_not_empty(s)
-}
-
-export fn String::last_index_of(s: String, sub: String) -> Int {
-  let s_len = String::length(s)
-  let sub_len = String::length(sub)
-  if sub_len > s_len {
-    -1
-  }
-  else if sub_len == 0 {
-    s_len
-  }
-  else {
-    let mut i = s_len - sub_len
-    let mut found = -1
-    while found < 0 && i >= 0 {
-      if s[i: i + sub_len] == sub {
-        found = i
-      } else {
-        i = i - 1
-      }
-    }
-    found
-  }
-}
-
-export fn String::split(s: String, sep: String) -> Array[String] {
-  let sep_len = String::length(sep)
-  if sep_len == 0 {
-    let single: Array[String] = [s]
-    single
-  }
-  else {
-    let s_len = String::length(s)
-    let parts: Array[String] = []
-    let mut start = 0
-    let mut done = false
-    while !done {
-      let idx = string_index_of_from(s, sep, start)
-      if idx < 0 {
-        Array::push(parts, s[start: s_len])
-        done = true
-      }
-      else {
-        Array::push(parts, s[start: idx])
-        start = idx + sep_len
-      }
-    }
-    parts
-  }
 }
 
 export fn String::to_upper(s: String) -> String {
