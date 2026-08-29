@@ -13,7 +13,7 @@ import @vibe/compiler/entry/compiler/file_compile {
 }
 
 import @vibe/compiler/cache {
-  persistent_artifact_cache_path
+  compact_string_fingerprint, persistent_artifact_cache_path
 }
 
 import @vibe/compiler/codegen {
@@ -214,11 +214,15 @@ test "persisted body cache: verify survives an entry edit; on matches a fresh co
   let main_source2 = "import ./vibe_codegen_body_cache_helper.vibe { helper_flag }\nlet run: () -> Int = () -> { if helper_flag() { 50 + 3 } else { 1 } }"
   Fs::write_bytes(helper_path, string_to_bytes(helper_source))
   Fs::write_bytes(main_path, string_to_bytes(main_source1))
-  remove_file_if_exists(persistent_artifact_cache_path("codegen-body-cache", "run", "self-describing"))
+  // Mirrors the lane's own key derivation: content-independent, but scoped
+  // to the entry path so unrelated roots sharing an entry name (`run`)
+  // cannot race on one artifact slot.
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  remove_file_if_exists(artifact_path)
   // Run 1: no artifact yet -- verify has nothing to replay, compiles fresh
   // and stores the harvest.
   let bytes1 = compile_file_fs_mode_rc_body_cached(main_path, "run", "verify")
-  assert(Fs::exists(persistent_artifact_cache_path("codegen-body-cache", "run", "self-describing")))
+  assert(Fs::exists(artifact_path))
   // Run 2, nothing edited: every file matches the stored table, so the
   // whole harvest replays -- and verify throws if any replayed byte
   // differs from the fresh compile.
@@ -234,4 +238,13 @@ test "persisted body cache: verify survives an entry edit; on matches a fresh co
   let on_bytes = compile_file_fs_mode_rc_body_cached(main_path, "run", "on")
   let fresh_bytes = compile_file_fs_mode_rc(main_path, "run")
   assert(bytes_eq(on_bytes, fresh_bytes))
+  // On-disk corruption: flip one byte inside the stored artifact's body
+  // region (same length, valid framing). The payload checksum must reject
+  // the whole artifact, so "on" still answers the fresh compile's bytes.
+  let stored = Fs::read_bytes(artifact_path)
+  let flip_at = Bytes::length(stored) / 2
+  Bytes::set(stored, flip_at, (Bytes::get(stored, flip_at) + 1)&255)
+  Fs::write_bytes(artifact_path, stored)
+  let after_corruption = compile_file_fs_mode_rc_body_cached(main_path, "run", "on")
+  assert(bytes_eq(after_corruption, fresh_bytes))
 }

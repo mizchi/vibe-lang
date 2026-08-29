@@ -794,21 +794,49 @@ fn bcw_read_string(b: Bytes, pos: Int) -> (String, Int) {
   }
 }
 
+/// Content checksum over `b[start..)`: the same dual-modulus rolling shape
+/// as compact_string_fingerprint, over bytes. Guards the artifact against
+/// same-length corruption that the length-prefixed framing cannot see -- a
+/// bit flip inside a cached body would otherwise replay as wrong
+/// instructions under `on` mode.
+fn bcw_checksum(b: Bytes, start: Int) -> (Int, Int) {
+  let mut h1 = 17
+  let mut h2 = 29
+  let n = Bytes::length(b)
+  let mut i = start
+  while i < n {
+    let byte = Bytes::get(b, i)
+    h1 = (h1 * 131 + byte) % 2147483647
+    h2 = (h2 * 137 + byte) % 2147483629
+    i = i + 1
+  }
+  (h1, h2)
+}
+
 fn encode_body_cache_artifact(paths: Array[String], fps: Array[String], counts: Array[Int], cache: CodegenBodyCache) -> Bytes with Exception {
+  // Payload first, so the header can carry its checksum. The checksum
+  // covers the WHOLE payload -- the per-file table included, because a
+  // corrupted statement count would corrupt the replay limit just as
+  // silently as a corrupted body.
+  let payload = Bytes::new()
+  bcw_push_int(payload, Array::length(paths))
+  let mut i = 0
+  while i < Array::length(paths) {
+    bcw_push_string(payload, Array::get(paths, i))
+    bcw_push_string(payload, Array::get(fps, i))
+    bcw_push_int(payload, Array::get(counts, i))
+    i = i + 1
+  }
+  Bytes::append(payload, codegen_body_cache_to_bytes(cache))
+  let (h1, h2) = bcw_checksum(payload, 0)
   let buf = Bytes::new()
   Bytes::push(buf, 'V')
   Bytes::push(buf, 'B')
   Bytes::push(buf, 'W')
-  Bytes::push(buf, '1')
-  bcw_push_int(buf, Array::length(paths))
-  let mut i = 0
-  while i < Array::length(paths) {
-    bcw_push_string(buf, Array::get(paths, i))
-    bcw_push_string(buf, Array::get(fps, i))
-    bcw_push_int(buf, Array::get(counts, i))
-    i = i + 1
-  }
-  Bytes::append(buf, codegen_body_cache_to_bytes(cache))
+  Bytes::push(buf, '2')
+  bcw_push_int(buf, h1)
+  bcw_push_int(buf, h2)
+  Bytes::append(buf, payload)
   buf
 }
 
@@ -820,49 +848,69 @@ fn encode_body_cache_artifact(paths: Array[String], fps: Array[String], counts: 
 /// entries via the recorded guards). Anything malformed answers an empty
 /// cache -- a damaged artifact costs a recompile, never a wrong body.
 fn decode_body_cache_artifact_for(b: Bytes, paths: Array[String], fps: Array[String], counts: Array[Int]) -> CodegenBodyCache {
-  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'W' || Bytes::get(b, 3) != '1' {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'W' || Bytes::get(b, 3) != '2' {
     codegen_body_cache_new()
   } else {
-    let (file_n, p0) = bcw_read_int(b, 4)
-    if p0 < 0 {
+    let (stored_h1, ph1) = bcw_read_int(b, 4)
+    let (stored_h2, ph2) = if ph1 < 0 {
+      (0, 0 - 1)
+    } else {
+      bcw_read_int(b, ph1)
+    }
+    let checksum_ok = if ph2 < 0 {
+      false
+    } else {
+      let (h1, h2) = bcw_checksum(b, ph2)
+      h1 == stored_h1 && h2 == stored_h2
+    }
+    if !checksum_ok {
       codegen_body_cache_new()
     } else {
-      let mut p = p0
-      let mut i = 0
-      let mut limit = 0
-      let mut still_matching = true
-      let mut malformed = false
-      while !malformed && i < file_n {
-        let (spath, p1) = bcw_read_string(b, p)
-        let (sfp, p2) = if p1 < 0 {
-          ("", 0 - 1)
-        } else {
-          bcw_read_string(b, p1)
-        }
-        let (scount, p3) = if p2 < 0 {
-          (0, 0 - 1)
-        } else {
-          bcw_read_int(b, p2)
-        }
-        if p3 < 0 {
-          malformed = true
-        } else {
-          p = p3
-          if still_matching && i < Array::length(paths) && spath == Array::get(paths, i) && sfp == Array::get(fps, i) && scount == Array::get(counts, i) {
-            limit = limit + scount
-          } else {
-            still_matching = false
-          }
-        }
-        i = i + 1
-      }
-      if malformed || limit == 0 {
-        codegen_body_cache_new()
+      decode_body_cache_payload_for(b, ph2, paths, fps, counts)
+    }
+  }
+}
+
+fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[String], fps: Array[String], counts: Array[Int]) -> CodegenBodyCache {
+  let (file_n, p0) = bcw_read_int(b, payload_start)
+  if p0 < 0 {
+    codegen_body_cache_new()
+  } else {
+    let mut p = p0
+    let mut i = 0
+    let mut limit = 0
+    let mut still_matching = true
+    let mut malformed = false
+    while !malformed && i < file_n {
+      let (spath, p1) = bcw_read_string(b, p)
+      let (sfp, p2) = if p1 < 0 {
+        ("", 0 - 1)
       } else {
-        match codegen_body_cache_from_bytes(Bytes::slice(b, p, Bytes::length(b))) {
-          Some(cache) => codegen_body_cache_filter_src_below(cache, limit),
-          None => codegen_body_cache_new()
+        bcw_read_string(b, p1)
+      }
+      let (scount, p3) = if p2 < 0 {
+        (0, 0 - 1)
+      } else {
+        bcw_read_int(b, p2)
+      }
+      if p3 < 0 {
+        malformed = true
+      } else {
+        p = p3
+        if still_matching && i < Array::length(paths) && spath == Array::get(paths, i) && sfp == Array::get(fps, i) && scount == Array::get(counts, i) {
+          limit = limit + scount
+        } else {
+          still_matching = false
         }
+      }
+      i = i + 1
+    }
+    if malformed || limit == 0 {
+      codegen_body_cache_new()
+    } else {
+      match codegen_body_cache_from_bytes(Bytes::slice(b, p, Bytes::length(b))) {
+        Some(cache) => codegen_body_cache_filter_src_below(cache, limit),
+        None => codegen_body_cache_new()
       }
     }
   }
@@ -880,17 +928,25 @@ fn decode_body_cache_artifact_for(b: Bytes, paths: Array[String], fps: Array[Str
 ///     (pin region shape, lambda slot base, synthesized names and
 ///     positions) drop the cache wholesale on any layout drift.
 ///
-/// Either way the artifact is refreshed with this compile's harvest, under a
-/// fixed per-entry artifact key -- the per-file table INSIDE the artifact is
-/// what decides validity next time, because the whole point is to be usable
-/// when the sources changed (a source-keyed fingerprint would only ever hit
-/// when nothing changed at all).
+/// Either way the artifact is refreshed with this compile's harvest, under
+/// an artifact key scoped to the entry PATH but not to source content --
+/// the per-file table INSIDE the artifact is what decides validity next
+/// time, because the whole point is to be usable when the sources changed
+/// (a source-keyed fingerprint would only ever hit when nothing changed at
+/// all). The artifact carries a payload checksum; any corruption -- a
+/// same-length bit flip in a cached body included -- decodes as an empty
+/// cache and recompiles.
 export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let (merged_stmts, file_paths, file_fps, file_counts) = build_grouped_merged_stmts_counted(source_groups)
-  let cache_in = match load_persistent_artifact("codegen-body-cache", entry_name, "self-describing") {
+  // The key is independent of source CONTENT (the point is to hit after an
+  // edit) but scoped to the entry PATH: two roots that share a conventional
+  // entry name (`run`, `main`) must not share one artifact slot, or their
+  // concurrent stores race on the same temp file and one aborts.
+  let artifact_key = String::concat("self-describing-", compact_string_fingerprint(entry_path))
+  let cache_in = match load_persistent_artifact("codegen-body-cache", entry_name, artifact_key) {
     Some(stored) => decode_body_cache_artifact_for(stored, file_paths, file_fps, file_counts),
     None => codegen_body_cache_new()
   }
@@ -927,7 +983,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
     } else {
       ()
     }
-    store_persistent_artifact("codegen-body-cache", entry_name, "self-describing", encode_body_cache_artifact(file_paths, file_fps, file_counts, fresh_out))
+    store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, fresh_out))
     fresh
   } else {
     let cache_out = codegen_body_cache_new()
@@ -935,7 +991,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
     // Replayed entries are not re-recorded, so the refreshed artifact is the
     // new harvest plus the entries it replayed; merge prefers the new
     // harvest's guards, which describe this compile's layout.
-    store_persistent_artifact("codegen-body-cache", entry_name, "self-describing", encode_body_cache_artifact(file_paths, file_fps, file_counts, codegen_body_cache_merge(cache_out, cache_in)))
+    store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, codegen_body_cache_merge(cache_out, cache_in)))
     bytes
   }
 }
