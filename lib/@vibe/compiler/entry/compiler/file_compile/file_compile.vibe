@@ -62,6 +62,10 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl, compile_wasi_module_no_dce_impl, effect_lowering_prelude
 }
 
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_generated_stmts_gc_only
+}
+
 import @vibe/compiler/loader {
   artifact_input_trace_resolution_context_fingerprint_fs, collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
 }
@@ -573,6 +577,18 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
+}
+
+/// Import-resolving wasm-gc compilation. Module discovery, projected import
+/// environments, and the merged AST are the same ones used by the linear
+/// filesystem lane; only the final backend is selected here. Keeping the AST
+/// avoids re-lexing compiler-internal names introduced by module projection.
+export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  compile_generated_stmts_gc_only(merged_stmts, entry_name)
 }
 
 /// #701 RC variant: same load/merge as compile_file_fs_mode "no-dce" but routes

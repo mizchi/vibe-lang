@@ -324,11 +324,13 @@ that.
   function-granularity stepping and typed hover are stable; line-granularity
   stepping and arbitrary-expression watch are a future extension.
 - **Incremental analysis in the LSP** (optional).
-- **The wasm-gc backend compiles one file at a time** (`VIBE_TEST_BACKEND=gc`):
-  *using* an imported name fails with a diagnostic naming the import and
-  pointing at the linear backend (an unused import is fine, #1976). The linear
-  backend is the stable surface; gc is opt-in and experimental. Builtin-level
-  differences are enumerated in
+- **The wasm-gc backend is opt-in and experimental.**
+  `VIBE_TEST_BACKEND=gc` resolves the same filesystem module graph and projected
+  import environment as the linear test lane before selecting GC codegen
+  (#2376). Explicit direct-source GC mode still analyzes one file: *using* an
+  imported name fails with a diagnostic that asks for filesystem resolution
+  (an unused import is fine, #1976). The linear backend remains the stable
+  surface. Builtin-level differences are enumerated in
   `scripts/builtin_parity_classification.tsv` and enforced at the gate.
 
 ---

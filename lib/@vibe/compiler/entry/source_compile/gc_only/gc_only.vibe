@@ -329,14 +329,7 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool
 /// operands into the derived structural Eq walk (and Show's Int::to_string
 /// etc.); without it the gc lane compared ctor POINTERS, so the gc-compiled
 /// checker's Option/effect-row comparisons were silently wrong.
-fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
-  let (tokens, starts, _) = lex_with_offsets(source)
-  let stmts = parse_program_located(tokens, starts, source)
-  if !trusted_generated {
-    validate_user_source_stmts(stmts)
-  } else {
-    ()
-  }
+fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
   expand_interp_stmts(stmts)
   // #683: lower test/bench blocks BEFORE the check so the synthesized
   // `__test_*` lets and the no-entry `_start` runner are type-checked like
@@ -386,10 +379,28 @@ fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_gener
   compile_wasi_module_gc(stmts, effective_entry, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets)
 }
 
+fn compile_source_gc_only_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  if !trusted_generated {
+    validate_user_source_stmts(stmts)
+  } else {
+    ()
+  }
+  compile_stmts_gc_only_impl(stmts, entry_name)
+}
+
 export fn compile_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
   compile_source_gc_only_impl(source, entry_name, false)
 }
 
 export fn compile_generated_source_gc_only(source: String, entry_name: String) -> Bytes with Exception {
   compile_source_gc_only_impl(source, entry_name, true)
+}
+
+/// Compile an import-resolved, compiler-generated statement graph without a
+/// source round trip. Module merging may use internal identifier spellings
+/// that are valid in the AST but deliberately not accepted by the user lexer.
+export fn compile_generated_stmts_gc_only(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
+  compile_stmts_gc_only_impl(stmts, entry_name)
 }

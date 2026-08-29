@@ -319,6 +319,10 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/bytes_alloc_backend_parity_test.vibe \
     fixtures/gc_handle_aggregate_test.vibe \
     fixtures/trait_namespace_operation_test.vibe \
+    fixtures/trait_namespace_import_test.vibe \
+    fixtures/trait_namespace_inherited_import_test.vibe \
+    fixtures/gc_import_resolution_test.vibe \
+    fixtures/gc_import_builtin_shadow_test.vibe \
     fixtures/constructor_indexed_map_gc_test.vibe \
     fixtures/constructor_indexed_async_iter_gc_test.vibe \
     fixtures/bytes_index_of_bytes_test.vibe \
@@ -332,6 +336,13 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
 else
   sed 's/^/[gc-selfbuild]   /' "$gcfx_log"
   echo "[gc-selfbuild] gc runtime fixtures FAILED"
+  fail=$((fail+1))
+fi
+
+if bash "$ROOT_DIR/scripts/test_gc_direct_import_diag.sh" "$CLI_WASM"; then
+  echo "[gc-selfbuild] direct single-file import diagnostic ok"
+else
+  echo "[gc-selfbuild] direct single-file import diagnostic FAILED"
   fail=$((fail+1))
 fi
 
