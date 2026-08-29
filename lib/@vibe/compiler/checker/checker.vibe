@@ -663,6 +663,23 @@ fn collect_all_formals_in_type(ty: Type, formals: Array[String], out: Array[Stri
       collect_all_formals_in_type(ret, formals, out)
     },
     CtForAll(_, _, body) => collect_all_formals_in_type(body, formals, out),
+    // A KINDED formal reached through an alias resolves to `CtApplied`, not
+    // `CtNamed`: `type Apply[F[_], A] = F[A]` puts the head in a slot this
+    // match used to fall past into `_ => ()`, so `F`, `A` and `B` were never
+    // marked and `fn bad[F[_], A, B](x: Apply[F, A]) -> Apply[F, B] { x }`
+    // compiled -- returning an `F[A]` where `F[B]` was declared. Measured; the
+    // unkinded spelling was caught all along ("return type mismatch"), which is
+    // what hid it (Codex review).
+    CtApplied(head, args) => {
+      push_unique_formal(type_constructor_name(head), formals, out)
+      collect_all_formals_in_type(head, formals, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_all_formals_in_type(Array::get(args, i), formals, out)
+        i = i + 1
+      }
+    },
+    CtConstructor(name, _) => push_unique_formal(name, formals, out),
     CtRecord(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
@@ -715,6 +732,27 @@ fn collect_hkt_related_formals_in_type(ty: Type, formals: Array[String], out: Ar
       collect_hkt_related_formals_in_type(ret, formals, out)
     },
     CtForAll(_, _, body) => collect_hkt_related_formals_in_type(body, formals, out),
+    // The alias-expanded application (see collect_all_formals_in_type above).
+    // An applied head that IS one of the formals is exactly the HKT use this
+    // function classifies, so its arguments are collected in full.
+    CtApplied(head, args) => {
+      let head_name = type_constructor_name(head)
+      if string_array_has(formals, head_name) && Array::length(args) > 0 {
+        push_unique_formal(head_name, formals, out)
+        let mut i = 0
+        while i < Array::length(args) {
+          collect_all_formals_in_type(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      } else {
+        collect_hkt_related_formals_in_type(head, formals, out)
+        let mut i = 0
+        while i < Array::length(args) {
+          collect_hkt_related_formals_in_type(Array::get(args, i), formals, out)
+          i = i + 1
+        }
+      }
+    },
     CtRecord(fields) => {
       let mut i = 0
       while i < Array::length(fields) {

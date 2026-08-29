@@ -4311,7 +4311,24 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
             }
             afi = afi + 1
           }
-          let applied_header_formals = fapp_applied_formals_across(method_tes, tparams)
+          // Only the header parameters this method does NOT shadow. A method
+          // generic of the same name is a different binder with its own kind:
+          // `trait Scoped[A] { project[A[_], B](A[B]) -> A[B] }` applies the
+          // method's kinded `A`, not the header's complete-type `A`, and
+          // reporting it produced a diagnostic that told the author to write
+          // `A[_]` -- which is what they had written (Codex review).
+          let unshadowed_tparams = array_empty()
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            let tparam = Array::get(tparams, ti)
+            if !string_array_contains_exact(formals, type_param_name(tparam)) {
+              Array::push(unshadowed_tparams, tparam)
+            } else {
+              ()
+            }
+            ti = ti + 1
+          }
+          let applied_header_formals = fapp_applied_formals_across(method_tes, unshadowed_tparams)
           let mut ahi = 0
           while ahi < Array::length(applied_header_formals) {
             Array::push(errors, fapp_unkinded_application_error(tname, mname, Array::get(applied_header_formals, ahi)))

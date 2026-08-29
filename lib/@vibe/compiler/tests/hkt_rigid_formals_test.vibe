@@ -171,16 +171,44 @@ test "nested generic formals shadow outer kind markers" {
   assert(checks(src))
 }
 
-test "applied trait formals fail closed before parameterized dispatch" {
+test "an applied formal declared as a complete type is rejected, and named" {
   let src = "trait Functor[F] {\n  fmap[A, B](Self, F[A], (A) -> B) -> F[B]\n}\nfn main { () }\n"
   let msg = first_check_error(src)
-  assert(String::contains(msg, "constructor parameter in trait method"))
+  // Names the parameter and the edit, not an issue number: no impl can supply
+  // a constructor for a complete-type parameter, so the declaration is wrong.
+  assert(String::contains(msg, "constructor parameter `F` is applied"))
+  assert(String::contains(msg, "declare it as a type constructor"))
+  assert(String::contains(msg, "`F[_]`"))
 }
 
 test "alias-expanded HKT indices stay rigid" {
   let src = "type Apply[F, A] = F[A]\nfn bad[F, A, B](x: Apply[F, A]) -> Apply[F, B] {\n  x\n}\nfn main { () }\n"
   let msg = first_check_error(src)
   assert(String::contains(msg, "return type mismatch"))
+}
+
+/// The same program with the parameter declared KINDED. Alias expansion puts
+/// the head in a `CtApplied`, not the `CtNamed` the unkinded spelling above
+/// produces, and the traversals fell past it into `_ => ()` -- so nothing was
+/// marked rigid and this compiled, returning an `F[A]` where `F[B]` is
+/// declared. The unkinded case passing is exactly what hid it, so the two are
+/// pinned together (Codex review).
+test "alias-expanded KINDED HKT indices stay rigid too" {
+  let src = "type Apply[F[_], A] = F[A]\nfn bad[F[_], A, B](x: Apply[F, A]) -> Apply[F, B] {\n  x\n}\nfn main { () }\n"
+  assert(!checks(src))
+  assert(String::contains(first_check_error(src), "return type mismatch"))
+}
+
+/// A method generic shadowing a same-named trait parameter is a DIFFERENT
+/// binder, with its own kind. Reading the applied `A` as the header's
+/// complete-type `A` rejected this and told the author to spell it `A[_]`,
+/// which is what the declaration already says (Codex review).
+test "a method generic shadows a same-named trait parameter" {
+  assert(checks("trait Scoped[A] {\n  project[A[_], B](A[B]) -> A[B]\n}\nfn main { () }\n"))
+  // The control: with no method generic to shadow it, the header `A` is a
+  // complete type and applying it is still reported.
+  let unshadowed = first_check_error("trait Scoped[A] {\n  project[B](A[B]) -> A[B]\n}\nfn main { () }\n")
+  assert(String::contains(unshadowed, "constructor parameter `A` is applied"))
 }
 
 test "generic scheme applies a closed effect constraint" {
