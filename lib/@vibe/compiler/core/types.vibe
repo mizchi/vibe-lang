@@ -4316,6 +4316,13 @@ fn erased_impl_ctor_matches(target: Type, resolved: Type) -> Bool {
   }
 }
 
+/// Apply the shared receiver-matching rule for a non-generic impl. Bare
+/// constructor impls cover the constructor family only for method-bearing
+/// traits; marker traits retain their stricter representation-safety gate.
+fn concrete_trait_impl_target_matches(full: TypeEnv, trait_name: String, target: Type, resolved: Type) -> Bool {
+  types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full, trait_name))
+}
+
 fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, resolved: Type) -> Bool {
   match e {
     EnvEmpty => false,
@@ -4328,7 +4335,7 @@ fn type_implements_check_env(e: TypeEnv, full: TypeEnv, trait_name: String, reso
       // builtin `==` / `<`, and those are reference equality on `Array` /
       // `Bytes`, so honouring `impl Eq for Array[Int]` would make `==` silently
       // wrong on the very type the bound was written for.
-      if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full, trait_name)) {
+      if concrete_trait_impl_target_matches(full, trait_name, target, resolved) {
         true
       }
       else type_implements_check_env(rest, full, trait_name, resolved)
@@ -4451,7 +4458,7 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
     EnvBind(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvMutCell(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvTraitDef(_, _, _, _, rest, _, _) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
-    EnvTraitImpl(tname, target, rest) => if types_equal(target, resolved) || struct_impl_target_matches(target, resolved) || (erased_impl_ctor_matches(target, resolved) && trait_is_method_bearing(full_env, trait_name)) {
+    EnvTraitImpl(tname, target, rest) => if concrete_trait_impl_target_matches(full_env, trait_name, target, resolved) {
       if trait_is_subtrait(full_env, tname, trait_name) {
         true
       }
@@ -4882,7 +4889,7 @@ fn trait_bound_receiver_refinements(scan: TypeEnv, full: TypeEnv, s: Subst, boun
     EnvCached(_, _, rest) => trait_bound_receiver_refinements(rest, full, s, bound, receiver)
   }
   let current = match scan {
-    EnvTraitImpl(itrait, target, _) => if trait_ref_name(itrait) == trait_ref_name(bound) && types_equal(subst_apply(s, target), receiver) {
+    EnvTraitImpl(itrait, target, _) => if trait_ref_name(itrait) == trait_ref_name(bound) && concrete_trait_impl_target_matches(full, trait_ref_name(bound), subst_apply(s, target), receiver) {
       unify(trait_key_type_for_bound(bound), trait_key_type_for_generic_impl(itrait, array_empty(), array_empty()), s)
     } else {
       None

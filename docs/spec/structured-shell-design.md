@@ -1,95 +1,99 @@
-# Structured Shell Design: shellscript superset + nushell-style data pipelines
+# Structured Shell Design: Shell-Script Superset with Nushell-Style Data Pipelines
 
-## ビジョン
+## Vision
 
-vibe shell の posix mode は **shellscript のスーパーセット** として設計する。
+Vibe shell's POSIX mode is designed as a **superset of shell script**.
 
-1. **既存の shellscript がそのまま動く** — 認識できないコマンドは `sh_lines()` にフォールバック
-2. **認識できるコマンドは構造化データで返す** — `ls` → `Array[FileEntry]`, `cat` → `String`
-3. **vibe 式で拡張できる** — `|>`, `match`, `if`, `let`, lambda はそのまま使える
+1. **Existing shell scripts keep working** — unrecognized commands fall back to `sh_lines()`.
+2. **Recognized commands return structured data** — `ls` returns `Array[FileEntry]`, and `cat` returns `String`.
+3. **Vibe expressions extend the shell** — `|>`, `match`, `if`, `let`, and lambdas remain available.
 
-つまり: `bash の全コマンド + vibe の型付きパイプライン + nushell の構造化データ`
+In short: `all bash commands + typed Vibe pipelines + Nushell-style structured data`.
 
-## 設計原則
+## Design Principles
 
-### 1. shellscript 互換 (フォールバック)
+### 1. Shell-script compatibility through fallback
 
 ```bash
-# 全て動く — 認識できないコマンドは sh_lines() 経由で /bin/sh に委譲
+# All of these work: unrecognized commands delegate to /bin/sh through sh_lines().
 git status
 docker build -t myapp .
 curl -s https://api.example.com
 grep -r "TODO" src/
 ```
 
-### 2. 認識コマンドは構造化データに昇格
+### 2. Recognized commands produce structured data
 
 ```bash
-# ls は Array[FileEntry] を返す (テーブル表示)
+# ls returns Array[FileEntry] and displays it as a table.
 ls .
 
-# cat は String を返す (そのまま表示)
+# cat returns String and displays it directly.
 cat README.md
 
-# env は String を返す
+# env returns String.
 env HOME
 ```
 
-### 3. vibe 式でシームレスに拡張
+### 3. Vibe expressions extend pipelines directly
 
 ```bash
-# パイプで構造化フィルタ
+# Filter structured data through a pipeline.
 ls . |> where_entry(e -> e.is_dir)
 
-# let 束縛
+# Bind a result with let.
 let files = ls .
 Array::length(files)
 
-# if/match も混在可能
+# if and match can coexist with shell expressions.
 if exists "package.json" { cat package.json |> jq .name } else { "no package" }
 ```
 
-### 4. 段階的に認識コマンドを増やす
+### 4. Add recognized commands incrementally
 
-将来的に `grep`, `find`, `sort`, `head`, `tail` 等も vibe 実装で置き換え可能。
-ただし **常にフォールバックが動く** ので、未実装コマンドでもブロックされない。
+Commands such as `grep`, `find`, `sort`, `head`, and `tail` can eventually be
+replaced by Vibe implementations. The fallback always remains available, so an
+unimplemented command does not block the user.
 
-## 現状
+## Current State
 
-### 既存の基盤
+### Existing foundation
+
 - `vibe/shell/types.vibe`: `FileEntry { name, path, is_dir }`
-- `vibe/shell/pipeline.vibe`: grep, cut, lines, split, jq, where_entry, filter_str 等
-- `vibe/shell/commands.vibe`: ls → `Array[FileEntry]`, cat → `String`
-- vibe の `|>` パイプ演算子: `expr |> f` = `f(expr)`
-- posix preprocessor: `ls /tmp` → `Fs::readdir("/tmp")`
+- `vibe/shell/pipeline.vibe`: grep, cut, lines, split, jq, where_entry, filter_str, and related helpers
+- `vibe/shell/commands.vibe`: ls returns `Array[FileEntry]`; cat returns `String`
+- Vibe's `|>` pipeline operator: `expr |> f` is `f(expr)`
+- POSIX preprocessor: `ls /tmp` becomes `Fs::readdir("/tmp")`
 
-### ギャップ
-- `|>` は compiled WASM で動くが、shell の posix preprocessor がパイプを解釈しない
-- `where` は関数呼び出しだが、posix 風の `ls | where is_dir` 構文がない
-- 表示 (table format) がない
+### Gaps
 
-## 設計
+- `|>` works in compiled Wasm, but the shell's POSIX preprocessor does not interpret pipelines.
+- `where` exists as a function call, but there is no POSIX-style `ls | where is_dir` syntax.
+- There is no table formatter.
 
-### Phase 1: パイプライン式の posix preprocessor 対応
+## Design
+
+### Phase 1: Pipeline expressions in the POSIX preprocessor
 
 ```bash
-# 現在の vibe 式 (動作する)
+# Current Vibe expression; this works.
 Fs::readdir(".") |> where_entry(e -> e.is_dir)
 
-# 目標: posix 風の構文
+# Target POSIX-style syntax.
 ls . |> where is_dir
 ls . |> where name == "src"
 ls . |> sort_by name |> take 5
 cat data.csv |> from_csv |> where age > 30
 ```
 
-posix preprocessor が `ls . |> where is_dir` を以下に変換:
+The POSIX preprocessor transforms `ls . |> where is_dir` into:
+
 ```vibe skip
 // doctest-skip: design sketch: the syntax below is not implemented (preprocessor output sketch)
 Fs::readdir(".") |> where_entry(e -> e.is_dir)
 ```
 
-### Phase 2: テーブル表示
+### Phase 2: Table display
 
 ```
 vibe> ls .
@@ -102,38 +106,38 @@ vibe> ls .
 └─────┴──────────┴───────┘
 ```
 
-`Array[FileEntry]` や `Array[Record]` を自動的にテーブル形式で表示。
+Values such as `Array[FileEntry]` and `Array[Record]` display automatically as tables.
 
-### Phase 3: 構造化データ変換
+### Phase 3: Structured-data conversion
 
 ```
-# JSON → テーブル
+# JSON to table
 cat package.json |> jq .dependencies |> from_json
 
-# CSV → テーブル
+# CSV to table
 cat data.csv |> from_csv
 
-# YAML → テーブル
+# YAML to table
 cat config.yaml |> from_yaml
 
-# テーブル → JSON
+# Table to JSON
 ls . |> to_json
 
-# テーブルの列選択
+# Select table columns
 ls . |> select name, is_dir
 
-# テーブルのソート
+# Sort a table
 ls . |> sort_by name
 
-# テーブルの集約
+# Aggregate a table
 ls . |> group_by is_dir |> count
 ```
 
-## パイプライン変換ルール
+## Pipeline Transformation Rules
 
-posix preprocessor の拡張:
+The POSIX preprocessor gains these transformations:
 
-| 入力 | 変換 |
+| Input | Transformation |
 |------|------|
 | `ls .` | `Fs::readdir(".")` |
 | `ls . \|> where is_dir` | `Fs::readdir(".") \|> where_entry(e -> e.is_dir)` |
@@ -143,11 +147,11 @@ posix preprocessor の拡張:
 | `cat f.csv \|> from_csv` | `from_csv(Fs::read_file("f.csv"))` |
 | `cat f.json \|> jq .name` | `jq(Fs::read_file("f.json"), ".name")` |
 
-## ワークフロー: REPL → ファイル → リファクタ
+## Workflow: REPL to File to Refactoring
 
-vibe shell の典型的な開発ワークフロー:
+A typical Vibe shell development workflow is:
 
-### 1. REPL で探索的にコードを書く
+### 1. Explore in the REPL
 
 ```
 vibe> import @vibe/builtin { trait Iterator }
@@ -160,27 +164,27 @@ vibe> let avg = Iterator::fold(filtered |> select age, 0, (acc, x) -> acc + x) /
 last: 42
 ```
 
-### 2. セッションを `.vibe` ファイルに吐き出す
+### 2. Save the session as a `.vibe` file
 
 ```
 vibe> :save analysis.vibe
 saved: analysis.vibe (6 bindings)
 ```
 
-`:save` コマンドが scratch_source の全バインディングを normalize してファイルに書き出す。
+The `:save` command normalizes every binding in `scratch_source` and writes the result to a file.
 
-### 3. normalize でクリーンアップ
+### 3. Clean up with normalize
 
 ```bash
 vibe normalize analysis.vibe
 ```
 
-- import の整理・ソート
-- 未使用バインディングの除去
-- 関数定義の並び替え (トポロジカルソート)
-- フォーマット統一
+- Organize and sort imports.
+- Remove unused bindings.
+- Topologically sort function definitions.
+- Apply consistent formatting.
 
-### 4. エディタでリファクタ
+### 4. Refactor in an editor
 
 ```bash
 vim analysis.vibex   # or vscode with vibe extension
@@ -188,55 +192,56 @@ vibe check analysis.vibex
 vibe run analysis.vibex
 ```
 
-### 5. テストを追加して品質保証
+### 5. Add tests for confidence
 
 ```bash
-# analysis.vibex の末尾にテストブロックを追加
+# Add test blocks to the end of analysis.vibex.
 vibe test analysis.vibe
 ```
 
-### 設計上の要件
+### Design requirements
 
-- **scratch_source はバインディングを蓄積**: `let x = ...` は後続行から参照可能
-- **`:save` コマンド**: 現在の scratch_source を normalize してファイルに書き出す
-- **`:load` コマンド**: ファイルを scratch_source に読み込んで REPL で継続
-- **`:clear` コマンド**: scratch_source をリセット
-- **normalize との統合**: `:save` は `vibe normalize` と同等の整形を適用
+- **`scratch_source` accumulates bindings**: `let x = ...` remains visible to later lines.
+- **`:save` command**: normalize the current `scratch_source` and write it to a file.
+- **`:load` command**: load a file into `scratch_source` and continue in the REPL.
+- **`:clear` command**: reset `scratch_source`.
+- **Normalize integration**: `:save` applies formatting equivalent to `vibe normalize`.
 
-## フォールバック戦略
+## Fallback Strategy
 
 ```
-入力行
+input line
   │
-  ├─ vibe keyword (let, if, match, ...) → vibe 式としてコンパイル
-  ├─ 関数呼び出し f(...) → vibe 式としてコンパイル
-  ├─ 認識コマンド (cat, ls, cd, ...) → vibe builtin 呼び出しに変換
-  └─ 不明コマンド → sh_lines("...") でシステムシェルに委譲
+  ├─ Vibe keyword (let, if, match, ...) → compile as a Vibe expression
+  ├─ function call f(...) → compile as a Vibe expression
+  ├─ recognized command (cat, ls, cd, ...) → transform into a Vibe builtin call
+  └─ unknown command → delegate to the system shell through sh_lines("...")
 ```
 
-これにより:
-- `git push` → そのまま動く (sh_lines)
-- `cat file.txt |> lines |> grep "TODO"` → 構造化パイプライン
-- `let count = ls . |> where_entry(e -> e.is_dir) |> Array::length` → 型安全
+As a result:
 
-## 実装計画
+- `git push` runs unchanged through `sh_lines`.
+- `cat file.txt |> lines |> grep "TODO"` is a structured pipeline.
+- `let count = ls . |> where_entry(e -> e.is_dir) |> Array::length` is type-safe.
 
-| Phase | 内容 | 依存 |
+## Implementation Plan
+
+| Phase | Scope | Dependency |
 |-------|------|------|
-| Phase 0 | `ls .` が動く (fs_host_imports) | #44 |
-| Phase 1 | `ls . \|> where is_dir` パイプライン変換 | posix preprocessor 拡張 |
-| Phase 2 | テーブル表示 (Array[FileEntry] の format) | Show trait / REPL display |
-| Phase 3 | from_csv/from_yaml/to_json 変換 | 既存 vibe/shell/from_*.vibe |
-| Phase 4 | grep/find/sort 等の vibe native 実装 | 段階的 |
+| Phase 0 | Make `ls .` work through `fs_host_imports` | #44 |
+| Phase 1 | Transform the `ls . \|> where is_dir` pipeline | POSIX preprocessor extension |
+| Phase 2 | Format `Array[FileEntry]` as a table | Show trait / REPL display |
+| Phase 3 | Add from_csv/from_yaml/to_json conversion | Existing vibe/shell/from_*.vibe modules |
+| Phase 4 | Implement grep/find/sort and related commands in Vibe | Incremental |
 
-## 既存ライブラリとの対応
+## Mapping to the Existing Library
 
-| nushell | vibe/shell |
+| Nushell | vibe/shell |
 |---------|-----------|
 | `ls` | `ls(dir)` → `Array[FileEntry]` |
 | `where` | `where_entry(pred)` / `filter_str(pred)` |
-| `sort-by` | (未実装) `sort_entries_by(key_fn)` |
-| `select` | (未実装) `select_fields(fields)` |
+| `sort-by` | Not implemented: `sort_entries_by(key_fn)` |
+| `select` | Not implemented: `select_fields(fields)` |
 | `get` | `jq(data, expr)` |
 | `from csv` | `from_csv(text)` |
 | `from yaml` | `from_yaml(text)` |
