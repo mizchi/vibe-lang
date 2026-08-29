@@ -1,0 +1,188 @@
+//# Imports
+
+// #2388 step 3: the cross-compile codegen body cache -- codec round-trip,
+// the prefix/guard filter, and the end-to-end persisted lanes ("verify"
+// double-compiles and byte-compares; "on" replays persisted bodies).
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, codegen_body_cache_filter_src_below, codegen_body_cache_from_bytes, codegen_body_cache_new, codegen_body_cache_to_bytes
+}
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached
+}
+
+import @vibe/compiler/cache {
+  persistent_artifact_cache_path
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, i) != Bytes::get(b, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+/// A populated cache exercising every field group: one function entry in the
+/// source region (fn_index 0), one outside it (fn_index 3, which the filter
+/// must drop), a lambda with captures, a slot-log entry, and recorded
+/// guards.
+fn sample_cache() -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  Array::push(c.fn_indices, 0)
+  Array::push(c.fn_src_stmts, 2)
+  Array::push(c.fn_bodies, string_to_bytes("ab"))
+  Array::push(c.fn_meta_i32, 1)
+  Array::push(c.fn_meta_i64, 2)
+  Array::push(c.fn_meta_v128, 0)
+  Array::push(c.fn_indices, 3)
+  Array::push(c.fn_src_stmts, 7)
+  Array::push(c.fn_bodies, string_to_bytes("cde"))
+  Array::push(c.fn_meta_i32, 4)
+  Array::push(c.fn_meta_i64, 5)
+  Array::push(c.fn_meta_v128, 1)
+  Array::push(c.lam_owner, 0)
+  Array::push(c.lam_indices, 5)
+  Array::push(c.lam_bodies, string_to_bytes("xyz"))
+  Array::push(c.lam_param_counts, 2)
+  Array::push(c.lam_captures, ["a", "bb"])
+  Array::push(c.lam_meta_i32, 9)
+  Array::push(c.lam_meta_i64, 0 - 1)
+  Array::push(c.slot_owner, 0)
+  Array::push(c.slot_values, 1029)
+  Array::push(c.guard_meta, 1)
+  Array::push(c.guard_meta, 1024)
+  Array::push(c.guard_meta, 2048)
+  Array::push(c.guard_synth_names, "Pt::equals")
+  Array::push(c.guard_synth_stmts, 42)
+  c
+}
+
+test "codegen body cache codec round-trips every field group" {
+  let c = sample_cache()
+  let b = codegen_body_cache_to_bytes(c)
+  match codegen_body_cache_from_bytes(b) {
+    Some(d) => {
+      inspect(Array::length(d.fn_indices), content = "2")
+      inspect(Array::get(d.fn_indices, 1), content = "3")
+      inspect(Array::get(d.fn_src_stmts, 0), content = "2")
+      assert(bytes_eq(Array::get(d.fn_bodies, 1), string_to_bytes("cde")))
+      inspect(Array::get(d.fn_meta_v128, 1), content = "1")
+      inspect(Array::length(d.lam_owner), content = "1")
+      assert(bytes_eq(Array::get(d.lam_bodies, 0), string_to_bytes("xyz")))
+      inspect(Array::get(d.lam_param_counts, 0), content = "2")
+      inspect(Array::get(Array::get(d.lam_captures, 0), 1), content = "bb")
+      inspect(Array::get(d.lam_meta_i64, 0), content = "-1")
+      inspect(Array::get(d.slot_values, 0), content = "1029")
+      inspect(Array::get(d.guard_meta, 2), content = "2048")
+      inspect(Array::get(d.guard_synth_names, 0), content = "Pt::equals")
+      inspect(Array::get(d.guard_synth_stmts, 0), content = "42")
+    },
+    None => assert(false)
+  }
+}
+
+test "codegen body cache codec fails safe on damage" {
+  let c = sample_cache()
+  let b = codegen_body_cache_to_bytes(c)
+  // Wrong magic.
+  let wrong_magic = Bytes::concat(string_to_bytes("XBC1"), Bytes::slice(b, 4, Bytes::length(b)))
+  match codegen_body_cache_from_bytes(wrong_magic) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  // Truncation anywhere in the stream degrades to None, never to a partial
+  // cache.
+  match codegen_body_cache_from_bytes(Bytes::slice(b, 0, Bytes::length(b) - 3)) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match codegen_body_cache_from_bytes(Bytes::slice(b, 0, 6)) {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+}
+
+test "filter_src_below keeps only guarded source-region entries below the limit" {
+  let c = sample_cache()
+  // limit 7: entry (fn 0, src 2) survives; (fn 3, src 7) is out by limit AND
+  // out of the source region (guard_meta[0] == 1). The kept function's
+  // lambda and slot entries ride along; guards are copied verbatim.
+  let f = codegen_body_cache_filter_src_below(c, 7)
+  inspect(Array::length(f.fn_indices), content = "1")
+  inspect(Array::get(f.fn_indices, 0), content = "0")
+  inspect(Array::length(f.lam_owner), content = "1")
+  inspect(Array::length(f.slot_owner), content = "1")
+  inspect(Array::length(f.guard_meta), content = "3")
+  inspect(Array::get(f.guard_synth_names, 0), content = "Pt::equals")
+  // A guard-less cache never crosses compiles: it filters to empty.
+  let unguarded = sample_cache()
+  Array::truncate(unguarded.guard_meta, 0)
+  let g = codegen_body_cache_filter_src_below(unguarded, 100)
+  inspect(Array::length(g.fn_indices), content = "0")
+}
+
+test "persisted body cache: verify survives an entry edit; on matches a fresh compile" {
+  let helper_path = "/tmp/vibe_codegen_body_cache_helper.vibe"
+  let main_path = "/tmp/vibe_codegen_body_cache_main.vibe"
+  // The helper compares arrays so the closure is guaranteed to synthesize a
+  // derived comparator -- which makes the compile run the #2388 pin reorder
+  // and record guards into the artifact.
+  let helper_source = "export let helper_flag: () -> Bool = () -> { [1, 2] == [1, 2] }"
+  let main_source1 = "import ./vibe_codegen_body_cache_helper.vibe { helper_flag }\nlet run: () -> Int = () -> { if helper_flag() { 40 + 2 } else { 0 } }"
+  let main_source2 = "import ./vibe_codegen_body_cache_helper.vibe { helper_flag }\nlet run: () -> Int = () -> { if helper_flag() { 50 + 3 } else { 1 } }"
+  Fs::write_bytes(helper_path, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source1))
+  remove_file_if_exists(persistent_artifact_cache_path("codegen-body-cache", "run", "self-describing"))
+  // Run 1: no artifact yet -- verify has nothing to replay, compiles fresh
+  // and stores the harvest.
+  let bytes1 = compile_file_fs_mode_rc_body_cached(main_path, "run", "verify")
+  assert(Fs::exists(persistent_artifact_cache_path("codegen-body-cache", "run", "self-describing")))
+  // Run 2, nothing edited: every file matches the stored table, so the
+  // whole harvest replays -- and verify throws if any replayed byte
+  // differs from the fresh compile.
+  let bytes2 = compile_file_fs_mode_rc_body_cached(main_path, "run", "verify")
+  assert(bytes_eq(bytes1, bytes2))
+  // Run 3, entry edited: only the helper prefix may replay; verify again
+  // proves the replayed prefix bytes are what a fresh compile produces.
+  Fs::write_bytes(main_path, string_to_bytes(main_source2))
+  let bytes3 = compile_file_fs_mode_rc_body_cached(main_path, "run", "verify")
+  assert(!bytes_eq(bytes2, bytes3))
+  // "on" mode replays without the double compile; its output must be
+  // byte-identical to the plain production lane's.
+  let on_bytes = compile_file_fs_mode_rc_body_cached(main_path, "run", "on")
+  let fresh_bytes = compile_file_fs_mode_rc(main_path, "run")
+  assert(bytes_eq(on_bytes, fresh_bytes))
+}

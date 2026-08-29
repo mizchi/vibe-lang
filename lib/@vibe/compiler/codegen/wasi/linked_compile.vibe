@@ -160,6 +160,7 @@ import @vibe/compiler/codegen/common_base {
   agg_info_of_type_expr,
   append_hidden_attempt_constructors,
   await_poll_pass,
+  bcc_guard_synth_matches,
   codegen_body_cache_find,
   codegen_body_cache_merge,
   codegen_body_cache_new,
@@ -4066,6 +4067,10 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // uncovered functions (measured: a one-test file answered
   // "functions 2/1025"). Coverage is a measurement lane; edit-stable indices
   // buy it nothing.
+  // #2388 step 3: the pin region's shape, exposed for the body-cache guards
+  // below (-1 = the reorder did not run, so no cross-compile reuse).
+  let mut pin_region_src_n = 0 - 1
+  let mut pin_region_capacity = 0 - 1
   if !library_mode && !coverage {
     let __pp_sorted = sorted_names_of(pre_prelude_let_names)
     let __pin_total = Array::length(fn_names_list)
@@ -4083,6 +4088,8 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     if Array::length(__pin_synth_idx) > 0 {
       let __pin_src_n = Array::length(__pin_src_idx)
       let __pin_capacity = ((__pin_src_n + 1023) / 1024) * 1024
+      pin_region_src_n = __pin_src_n
+      pin_region_capacity = __pin_capacity
       let __new_names = lc_fresh_string_array()
       let __new_params = lc_fresh_int_array()
       let __new_env = lc_fresh_bool_array()
@@ -4303,6 +4310,47 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // before this change (one added test in the entry): 581 of 4214 function
   // bodies differed, every one only in a slot immediate.
   let lambda_slot_base = ((num_user_funcs + 1023) / 1024) * 1024
+  // #2388 step 3: record the layout facts this compile's bodies are emitted
+  // against, and validate an incoming cross-compile cache against the same
+  // facts. A cached body's immediates assume the pin region's shape, the
+  // lambda-slot base, and the synthesized functions' names AND merged-
+  // statement positions (their positions decide the statement-ordered
+  // pre-pass tables -- string pool, signatures -- every body offset is
+  // computed from). Any mismatch makes replay unsound, so the cache is
+  // dropped wholesale: a miss costs a recompile, never a wrong body.
+  if pin_region_capacity >= 0 {
+    Array::push(body_cache_out.guard_meta, pin_region_src_n)
+    Array::push(body_cache_out.guard_meta, pin_region_capacity)
+    Array::push(body_cache_out.guard_meta, lambda_slot_base)
+    let mut __gsy = pin_region_capacity
+    while __gsy < num_user_funcs {
+      Array::push(body_cache_out.guard_synth_names, Array::get(fn_names_list, __gsy))
+      Array::push(body_cache_out.guard_synth_stmts, Array::get(fn_stmt_indices, __gsy))
+      __gsy = __gsy + 1
+    }
+  }
+  let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
+    true
+  } else if pin_region_capacity < 0 {
+    // This compile did not run the pin reorder. Either the stmts were
+    // already lowered by an earlier compile in this same process (#1259's
+    // replay/sliced lanes re-feed the SAME mutated array, whose layout is
+    // exactly the harvest's -- the earlier compile's pads and synthesized
+    // lets now read as source names, so the reorder is a no-op skip), or
+    // the program has no synthesized functions at all. In both cases the
+    // incoming cache came from this identical layout; the cross-compile
+    // lane never lands here, because a fresh closure compile always
+    // lowers, always synthesizes, and therefore always reorders.
+    true
+  } else if Array::length(body_cache_in.guard_meta) == 0 {
+    // Guard-less but non-empty under a reordering compile: only hand-built
+    // test caches look like this (a real harvest of a reordering compile
+    // records guards, and codegen_body_cache_filter_src_below empties a
+    // guard-less cache before it can cross compiles). Accept unchanged.
+    true
+  } else {
+    Array::length(body_cache_in.guard_meta) == 3 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs)
+  }
   let mut entry_user_idx = -1
   let mut ei = 0
   while ei < num_user_funcs {
@@ -6457,7 +6505,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
       // This is where a parallel body phase pays off: the whole per-function
       // pipeline below -- Perceus plan, locals analysis, ctx construction,
       // compile_expr -- is skipped, not merely discarded.
-      let __cache_hit = codegen_body_cache_find(body_cache_in, bi)
+      let __cache_hit = if body_cache_in_ok {
+        codegen_body_cache_find(body_cache_in, bi)
+      } else {
+        0 - 1
+      }
       if __cache_hit >= 0 {
         codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used)
       } else {
@@ -7294,7 +7346,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
         // Harvest is unconditional and cheap (it copies references into parallel
         // arrays, it does not re-encode). The cache is only READ when a caller
         // supplies one.
-        codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
+        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
       }
     }
     bi = bi + 1
@@ -8967,6 +9019,16 @@ export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String)
 export fn compile_wasi_module_rc_impl_with_float_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
   compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+}
+
+/// #2388 step 3: compile_wasi_module_rc_impl with the body caches threaded
+/// through -- `body_cache_in` entries replay instead of compiling (the body
+/// loop already consults it, #1259), and `body_cache_out` harvests this
+/// compile's bodies for the caller to persist. Everything else matches the
+/// plain RC lane flag for flag.
+export fn compile_wasi_module_rc_cached_impl(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), body_cache_in, body_cache_out, 0, 0 - 1)
 }
 
 /// Preserve the post-lowering AST for the explicit `no-dce` compile mode.

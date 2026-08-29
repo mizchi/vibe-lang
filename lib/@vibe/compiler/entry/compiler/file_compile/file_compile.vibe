@@ -50,12 +50,19 @@ import @vibe/compiler/codegen {
   compile_wasi_module_break,
   compile_wasi_module_coverage,
   compile_wasi_module_rc,
+  compile_wasi_module_rc_body_cached,
   compile_wasi_module_rc_shadow,
   compile_wasi_module_trace
 }
 
 import @vibe/compiler/codegen/common_base {
-  DbgProv
+  CodegenBodyCache,
+  DbgProv,
+  codegen_body_cache_filter_src_below,
+  codegen_body_cache_from_bytes,
+  codegen_body_cache_merge,
+  codegen_body_cache_new,
+  codegen_body_cache_to_bytes
 }
 
 import @vibe/compiler/codegen/wasi {
@@ -659,6 +666,278 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   // unset is `"" != "0"`. It is also the lane that cannot afford the
   // checker's offsets today; see compile_file_fs_mode above for the numbers.
   compile_wasi_module_rc(merged_stmts, entry_name)
+}
+
+/// #2388 step 3: like build_grouped_merged_stmts, but ALSO reports, per flat
+/// source file, its path, its content fingerprint, and how many merged
+/// top-level statements it contributed -- measured by length delta around
+/// each append, the same technique build_grouped_merged_stmts_prov uses, so
+/// the counts stay aligned however many statements a file contributes.
+/// `merged` is identical to the normal path's.
+fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[String], Array[Int]) with Exception {
+  namespace_rename_originals_reset()
+  let merged = array_empty()
+  let out_paths = array_empty()
+  let out_fps = array_empty()
+  let out_counts = array_empty()
+  let flat_sources = flatten_source_groups_local(source_groups)
+  let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
+  let plan_entry = if Array::length(file_paths) > 0 {
+    Array::get(file_paths, Array::length(file_paths) - 1)
+  } else {
+    ""
+  }
+  let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let fallback_clone_offset_delta = [0]
+  let mut flat_idx = 0
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_, sources) = Array::get(source_groups, gi)
+    let source_count = Array::length(sources)
+    let mut si = 0
+    while si < source_count {
+      let (path, source) = Array::get(sources, si)
+      Array::push(out_paths, path)
+      Array::push(out_fps, compact_string_fingerprint(source))
+      let before = Array::length(merged)
+      append_merged_stmts_for_file(merged, path, Array::get(file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, file_stmts, fallback_clone_offset_delta, 0)
+      Array::push(out_counts, Array::length(merged) - before)
+      flat_idx = flat_idx + 1
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  (merged, out_paths, out_fps, out_counts)
+}
+
+//# #2388 step 3: codegen body-cache artifact (wrapper codec)
+//
+// The stored artifact is self-describing: a per-file table (path, content
+// fingerprint, merged-statement count, in merge order) followed by the
+// CodegenBodyCache blob. It is stored under ONE fixed artifact fingerprint
+// per entry -- the point is to be loadable when the sources DID change --
+// and the per-file table inside decides how much of the cache is still
+// valid. The persistent-cache version tag already keys the store on the
+// compiler's own codegen fingerprint, so an artifact can never cross
+// compiler versions.
+
+fn bcw_push_int(buf: Bytes, v: Int) -> Unit with Exception {
+  if v < 0 {
+    throw(String::concat("body-cache wrapper: negative field ", __to_string(v)))
+  } else {
+    ()
+  }
+  let mut x = v
+  let mut more = true
+  while more {
+    let low = x&127
+    x = x>>7
+    if x == 0 {
+      Bytes::push(buf, low)
+      more = false
+    } else {
+      Bytes::push(buf, low|128)
+    }
+  }
+}
+
+fn bcw_push_string(buf: Bytes, s: String) -> Unit with Exception {
+  bcw_push_int(buf, String::length(s))
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(buf, String::char_code_at(s, i))
+    i = i + 1
+  }
+}
+
+fn bcw_read_int(b: Bytes, pos: Int) -> (Int, Int) {
+  let n = Bytes::length(b)
+  let mut p = pos
+  let mut shift = 0
+  let mut acc = 0
+  let mut done = false
+  let mut bad = false
+  while !done && !bad {
+    if p >= n || shift > 34 {
+      bad = true
+    } else {
+      let byte = Bytes::get(b, p)
+      p = p + 1
+      acc = acc|((byte&127)<<shift)
+      shift = shift + 7
+      if (byte&128) == 0 {
+        done = true
+      } else {
+        ()
+      }
+    }
+  }
+  if bad {
+    (0, 0 - 1)
+  } else {
+    (acc, p)
+  }
+}
+
+fn bcw_read_string(b: Bytes, pos: Int) -> (String, Int) {
+  let (len, p0) = bcw_read_int(b, pos)
+  if p0 < 0 || len < 0 || p0 + len > Bytes::length(b) {
+    ("", 0 - 1)
+  } else {
+    let parts = array_empty()
+    let mut i = 0
+    while i < len {
+      Array::push(parts, String::from_byte(Bytes::get(b, p0 + i)))
+      i = i + 1
+    }
+    (String::join(parts, ""), p0 + len)
+  }
+}
+
+fn encode_body_cache_artifact(paths: Array[String], fps: Array[String], counts: Array[Int], cache: CodegenBodyCache) -> Bytes with Exception {
+  let buf = Bytes::new()
+  Bytes::push(buf, 'V')
+  Bytes::push(buf, 'B')
+  Bytes::push(buf, 'W')
+  Bytes::push(buf, '1')
+  bcw_push_int(buf, Array::length(paths))
+  let mut i = 0
+  while i < Array::length(paths) {
+    bcw_push_string(buf, Array::get(paths, i))
+    bcw_push_string(buf, Array::get(fps, i))
+    bcw_push_int(buf, Array::get(counts, i))
+    i = i + 1
+  }
+  Bytes::append(buf, codegen_body_cache_to_bytes(cache))
+  buf
+}
+
+/// Decode the stored artifact and cut it down to what the CURRENT compile may
+/// replay: the longest leading run of files whose path, content fingerprint,
+/// and merged-statement count all match gives the unchanged merged-statement
+/// prefix, and only cached bodies compiled from below that boundary survive
+/// (codegen_body_cache_filter_src_below also drops synthesized and pad
+/// entries via the recorded guards). Anything malformed answers an empty
+/// cache -- a damaged artifact costs a recompile, never a wrong body.
+fn decode_body_cache_artifact_for(b: Bytes, paths: Array[String], fps: Array[String], counts: Array[Int]) -> CodegenBodyCache {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'W' || Bytes::get(b, 3) != '1' {
+    codegen_body_cache_new()
+  } else {
+    let (file_n, p0) = bcw_read_int(b, 4)
+    if p0 < 0 {
+      codegen_body_cache_new()
+    } else {
+      let mut p = p0
+      let mut i = 0
+      let mut limit = 0
+      let mut still_matching = true
+      let mut malformed = false
+      while !malformed && i < file_n {
+        let (spath, p1) = bcw_read_string(b, p)
+        let (sfp, p2) = if p1 < 0 {
+          ("", 0 - 1)
+        } else {
+          bcw_read_string(b, p1)
+        }
+        let (scount, p3) = if p2 < 0 {
+          (0, 0 - 1)
+        } else {
+          bcw_read_int(b, p2)
+        }
+        if p3 < 0 {
+          malformed = true
+        } else {
+          p = p3
+          if still_matching && i < Array::length(paths) && spath == Array::get(paths, i) && sfp == Array::get(fps, i) && scount == Array::get(counts, i) {
+            limit = limit + scount
+          } else {
+            still_matching = false
+          }
+        }
+        i = i + 1
+      }
+      if malformed || limit == 0 {
+        codegen_body_cache_new()
+      } else {
+        match codegen_body_cache_from_bytes(Bytes::slice(b, p, Bytes::length(b))) {
+          Some(cache) => codegen_body_cache_filter_src_below(cache, limit),
+          None => codegen_body_cache_new()
+        }
+      }
+    }
+  }
+}
+
+/// #2388 step 3: compile_file_fs_mode_rc with the cross-compile codegen body
+/// cache. `cache_mode` comes from the CLI adapter's VIBE_CODEGEN_BODY_CACHE
+/// read (this layer stays Env-free, #634):
+///
+///   "verify" -- compile everything fresh, then compile AGAIN replaying the
+///     persisted bodies, and throw on the first byte the two outputs differ
+///     at. Proves the replay lane end-to-end on real edits at double compile
+///     cost; the returned bytes are always the fresh compile's.
+///   "on" -- replay persisted bodies directly. The recorded guards
+///     (pin region shape, lambda slot base, synthesized names and
+///     positions) drop the cache wholesale on any layout drift.
+///
+/// Either way the artifact is refreshed with this compile's harvest, under a
+/// fixed per-entry artifact key -- the per-file table INSIDE the artifact is
+/// what decides validity next time, because the whole point is to be usable
+/// when the sources changed (a source-keyed fingerprint would only ever hit
+/// when nothing changed at all).
+export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let (merged_stmts, file_paths, file_fps, file_counts) = build_grouped_merged_stmts_counted(source_groups)
+  let cache_in = match load_persistent_artifact("codegen-body-cache", entry_name, "self-describing") {
+    Some(stored) => decode_body_cache_artifact_for(stored, file_paths, file_fps, file_counts),
+    None => codegen_body_cache_new()
+  }
+  if cache_mode == "verify" {
+    let fresh_out = codegen_body_cache_new()
+    let fresh = compile_wasi_module_rc_body_cached(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out)
+    if Array::length(cache_in.fn_indices) > 0 {
+      // Second compile of the SAME (now already-lowered) stmts: the #1259
+      // replay/sliced gates prove that recompile is byte-identical to the
+      // first, so any difference here is attributable to the persisted
+      // bodies being replayed.
+      let replayed = compile_wasi_module_rc_body_cached(merged_stmts, entry_name, cache_in, codegen_body_cache_new())
+      let fresh_n = Bytes::length(fresh)
+      let rn = Bytes::length(replayed)
+      if fresh_n != rn {
+        throw(String::concat("codegen body-cache verify: length mismatch (fresh ", String::concat(__to_string(fresh_n), String::concat(" B, replayed ", String::concat(__to_string(rn), " B) -- a persisted body replayed wrong; unset VIBE_CODEGEN_BODY_CACHE and report this")))))
+      } else {
+        ()
+      }
+      let mut i = 0
+      let mut bad = 0 - 1
+      while bad < 0 && i < fresh_n {
+        if Bytes::get(fresh, i) != Bytes::get(replayed, i) {
+          bad = i
+        } else {
+          i = i + 1
+        }
+      }
+      if bad >= 0 {
+        throw(String::concat("codegen body-cache verify: byte mismatch at offset ", String::concat(__to_string(bad), " -- a persisted body replayed wrong; unset VIBE_CODEGEN_BODY_CACHE and report this")))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    store_persistent_artifact("codegen-body-cache", entry_name, "self-describing", encode_body_cache_artifact(file_paths, file_fps, file_counts, fresh_out))
+    fresh
+  } else {
+    let cache_out = codegen_body_cache_new()
+    let bytes = compile_wasi_module_rc_body_cached(merged_stmts, entry_name, cache_in, cache_out)
+    // Replayed entries are not re-recorded, so the refreshed artifact is the
+    // new harvest plus the entries it replayed; merge prefers the new
+    // harvest's guards, which describe this compile's layout.
+    store_persistent_artifact("codegen-body-cache", entry_name, "self-describing", encode_body_cache_artifact(file_paths, file_fps, file_counts, codegen_body_cache_merge(cache_out, cache_in)))
+    bytes
+  }
 }
 
 /// #1553: emit a named heap mark for the FS-compile memory measurement. The
