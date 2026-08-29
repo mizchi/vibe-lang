@@ -412,6 +412,16 @@ fn canonical_name_seen(names: Array[String], name: String) -> Bool {
   string_in(names, name)
 }
 
+/// Checker-internal entries that must not surface in a semantic environment
+/// snapshot: per-function return markers, and every `#`-prefixed sentinel --
+/// `#` is rejected in identifiers, so no parsed source can bind such a name
+/// and its presence is pure checker bookkeeping (e.g. the negative
+/// #active_region entry env_cache seeds into every acceleration index).
+/// Filtering here keeps cached and uncached environments canonically equal.
+fn canonical_env_name_is_internal(name: String) -> Bool {
+  String::starts_with(name, "__fn_ret__:") || String::starts_with(name, "#")
+}
+
 fn canonical_collect_effective_bindings(env: TypeEnv) -> Array[(String, Type)] {
   let out = array_empty()
   let seen = array_empty()
@@ -425,7 +435,7 @@ fn canonical_collect_effective_bindings(env: TypeEnv) -> Array[(String, Type)] {
       EnvBind(name, binding, rest) => {
         if !canonical_name_seen(seen, name) {
           Array::push(seen, name)
-          if !String::starts_with(name, "__fn_ret__:") {
+          if !canonical_env_name_is_internal(name) {
             Array::push(out, (name, binding.ty))
           }
         }
@@ -452,7 +462,7 @@ fn canonical_collect_effective_bindings(env: TypeEnv) -> Array[(String, Type)] {
           let (name, binding) = Array::get(bindings, i)
           if !canonical_name_seen(seen, name) {
             Array::push(seen, name)
-            if !String::starts_with(name, "__fn_ret__:") {
+            if !canonical_env_name_is_internal(name) {
               Array::push(out, (name, binding.ty))
             }
           }
@@ -466,7 +476,7 @@ fn canonical_collect_effective_bindings(env: TypeEnv) -> Array[(String, Type)] {
           let name = Array::get(names, i)
           if !canonical_name_seen(seen, name) {
             Array::push(seen, name)
-            if !String::starts_with(name, "__fn_ret__:") {
+            if !canonical_env_name_is_internal(name) {
               Array::push(out, (name, Array::get(types, i).ty))
             }
           }
