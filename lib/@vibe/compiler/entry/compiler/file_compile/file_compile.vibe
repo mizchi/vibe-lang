@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, parse_program, parse_program_located
+  lex, lex_with_offsets, parse_program, parse_program_located, shift_stmts_offsets
 }
 
 // #897: this used to also import `empty_stmt_array` via a leaf path into
@@ -344,7 +344,7 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
   merged
 }
 
-fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool) -> Array[Stmt] with Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
@@ -366,6 +366,7 @@ fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, Strin
   // "undefined variable (local): <name>_exp_<path>" at codegen.
   let flat_total = Array::length(file_paths)
   let mut flat_idx = 0
+  let mut offset_base = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
     let (_, sources) = Array::get(source_groups, gi)
@@ -374,13 +375,38 @@ fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, Strin
     while si < source_count {
       let path = Array::get(file_paths, flat_idx)
       let stmts = Array::get(file_stmts, flat_idx)
-      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources)
+      // Every parser offset is relative to one file. The GC checker's
+      // call-result table is keyed by those offsets, so merging files without
+      // rebasing lets one file's Double call classify another file's Int call.
+      // Shift before the namespace/import rewrites; they preserve locations.
+      let located_stmts = if disjoint_offset_spaces {
+        shift_stmts_offsets(stmts, offset_base)
+      } else {
+        stmts
+      }
+      append_merged_stmts_for_file(merged, path, located_stmts, flat_idx == flat_total - 1, plan, flat_sources)
+      if disjoint_offset_spaces {
+        let (_, source) = Array::get(flat_sources, flat_idx)
+        // A source of N bytes occupies [base, base + N). The extra byte keeps
+        // even an offset exactly at EOF disjoint from the following file.
+        offset_base = offset_base + String::length(source) + 1
+      } else {
+        ()
+      }
       flat_idx = flat_idx + 1
       si = si + 1
     }
     gi = gi + 1
   }
   merged
+}
+
+fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+  build_grouped_merged_stmts_impl(source_groups, false)
+}
+
+fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+  build_grouped_merged_stmts_impl(source_groups, true)
 }
 
 /// Interior-line breakpoints (span-arc step5): the basename of a file path (text
@@ -580,14 +606,16 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
 }
 
 /// Import-resolving wasm-gc compilation. Module discovery, projected import
-/// environments, and the merged AST are the same ones used by the linear
-/// filesystem lane; only the final backend is selected here. Keeping the AST
-/// avoids re-lexing compiler-internal names introduced by module projection.
+/// environments, and namespace projection are the same ones used by the
+/// linear filesystem lane. The GC variant additionally rebases every file's
+/// located AST into a disjoint offset range before merging. The checker and
+/// codegen can then share a call-result table without either transferring a
+/// Double classification to an Int call or discarding a valid Double hint.
 export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let merged_stmts = build_grouped_merged_stmts(source_groups)
+  let merged_stmts = build_grouped_merged_stmts_gc(source_groups)
   compile_generated_stmts_gc_only(merged_stmts, entry_name)
 }
 

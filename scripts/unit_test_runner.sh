@@ -88,6 +88,11 @@ EXCLUDE_PATTERNS=(
   # is that same category, not something this generic linear-backend runner
   # can be made to pass.
   '^fixtures/to_string_bool_gc_test\.vibe$'
+  # #2376: this specifically pins the GC filesystem merge's per-file call
+  # offsets. The ordinary RC lane still shares unrebased offsets and renders
+  # the imported generic Double result as an Int; the dedicated GC selfbuild
+  # and launcher gates below exercise the intended backend explicitly.
+  '^fixtures/gc_import_call_offset_collision_test\.vibe$'
   # wasi p3 http client: currently failing, under active work on a separate
   # branch. Remove once that lands.
   '^fixtures/runtime/http_p3_client_test\.vibe$'
