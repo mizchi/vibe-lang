@@ -2791,7 +2791,7 @@ fn closure_capture_row(effect: Option[String], body: Expr, params: Array[(String
 fn type_mentions_active_region(ty: Type, env: TypeEnv) -> Bool {
   match env {
     EnvEmpty => false,
-    EnvBind(name, binding, rest) => if name == "__active_region__" {
+    EnvBind(name, binding, rest) => if name == "#active_region" {
       match binding.ty {
         CtNamed(region_name, _) => type_mentions_named(ty, region_name) || type_mentions_active_region(ty, rest),
         _ => type_mentions_active_region(ty, rest)
@@ -2816,7 +2816,7 @@ fn assignment_crosses_region(name: String, ty: Type, env: TypeEnv) -> Bool {
     EnvEmpty => false,
     EnvBind(n, binding, rest) => if n == name {
       false
-    } else if n == "__active_region__" {
+    } else if n == "#active_region" {
       match binding.ty {
         CtNamed(region_name, _) => type_mentions_named(ty, region_name) || assignment_crosses_region(name, ty, rest),
         _ => assignment_crosses_region(name, ty, rest)
@@ -2863,7 +2863,7 @@ fn binding_predates_active_region(name: String, env: TypeEnv) -> Bool {
     EnvEmpty => false,
     EnvBind(n, _, rest) => if n == name {
       false
-    } else if n == "__active_region__" {
+    } else if n == "#active_region" {
       match env_lookup(rest, name) {
         Some(_) => true,
         None => false
@@ -3175,10 +3175,10 @@ export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: 
 fn env_has_active_region(env: TypeEnv) -> Bool {
   // Only the real region skolem (a CtNamed bound by the `region` checker path)
   // counts as active. env_cache seeds every acceleration index with a negative
-  // CtUnit-typed `__active_region__` entry so this common query answers from
+  // CtUnit-typed `#active_region` entry so this common query answers from
   // the index instead of walking the whole chain on a miss; that marker (and
   // any other non-CtNamed value) means NO active region.
-  match env_lookup(env, "__active_region__") {
+  match env_lookup(env, "#active_region") {
     Some(ty) => match ty {
       CtNamed(_, _) => true,
       _ => false
@@ -6725,7 +6725,7 @@ fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeD
 fn expression_mentions_active_region_scan(expr: Expr, cur: TypeEnv, full: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
   match cur {
     EnvEmpty => false,
-    EnvBind(name, binding, rest) => if name == "__active_region__" {
+    EnvBind(name, binding, rest) => if name == "#active_region" {
       match binding.ty {
         CtNamed(region_name, _) => tail_named_record_mentions_region(expr, full, defs, s, c, region_name, ce) || expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
         _ => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
@@ -8823,8 +8823,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // existing indexed TypeEnv lookup instead of rescanning every
               // lexical binding. env_bind keeps this cache at the head for
               // ordinary region-local names, and a nested region rebuilds it.
-              let env_body_uncached = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "__active_region__", region_ty)
-              let env_body = env_cache_binding(env_body_uncached, "__active_region__", region_ty)
+              let env_body_uncached = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "#active_region", region_ty)
+              let env_body = env_cache_binding(env_body_uncached, "#active_region", region_ty)
               // The specialized region path checks the literal lambda body
               // directly. Preserve both structural edges from the outer call:
               // argument child 1, then EFn body child 0.
