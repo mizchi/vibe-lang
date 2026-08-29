@@ -1,0 +1,45 @@
+// #2344 slice C: `~` (bit-not) over the 63-bit two's complement `Int`.
+//
+// The lowering is `x ^ -1`, but the CONSTANT is lane-dependent and that is the
+// whole trap: under RC an `Int` is `n<<1`, so complementing the tagged value
+// needs tagged(-1) = -2. Xoring a tagged value with a raw -1 sets the tag bit
+// and hands every consumer a malformed Int -- correct-looking for some inputs,
+// wrong for others. The untagged lanes use -1 directly.
+//
+// Every case below therefore includes a NEGATIVE input: `~` on the tagged
+// value would be right for small non-negative `n` and wrong past the sign, so
+// a non-negative-only test would pass against a broken lowering.
+
+fn bit_not(x: Int) -> Int {
+  ~x
+}
+
+//# Misc
+
+test "#2344 ~ is bit-not: ~x == -x - 1" {
+  assert(~0 == 0 - 1)
+  assert(~(0 - 1) == 0)
+  assert(~5 == 0 - 6)
+  assert(~(0 - 6) == 5)
+  assert(~7 == (0 - 7) - 1)
+  assert(~(0 - 7) == 7 - 1)
+  assert(~1 == 0 - 2)
+  assert(~(0 - 2) == 1)
+}
+
+test "#2344 ~ is an involution" {
+  assert(~(~0) == 0)
+  assert(~(~12345) == 12345)
+  assert(~(~(0 - 12345)) == 0 - 12345)
+  assert(~(~1) == 1)
+}
+
+test "#2344 ~ through a function and composed with the bit operators" {
+  assert(bit_not(0) == 0 - 1)
+  assert(bit_not(0 - 6) == 5)
+  assert((~0)&255 == 255)
+  assert((5^~0) == ~5)
+  assert((~0)&(~0) == ~0)
+  // `~` binds tighter than the infix operators, like the other prefixes.
+  assert(~0 - 1 == 0 - 2)
+}

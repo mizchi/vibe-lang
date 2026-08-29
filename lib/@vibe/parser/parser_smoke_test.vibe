@@ -615,3 +615,28 @@ test "2126: ...and at the other binder positions" {
     i = i + 1
   }
 }
+
+//# #2344 slice C: `~` in expression position
+
+/// The printed program, so a parse can be asserted by its shape.
+fn tilde_printed(src: String) -> String {
+  handle {
+    print_program(parse_program(lex(src)))
+  } with { Exception::Throw(msg) => String::concat("THROW: ", msg) }
+}
+
+test "#2344 `~` parses as a prefix operator" {
+  assert(String::contains(tilde_printed("let a = ~x"), "~"))
+  // Prefix, so it binds to the operand and not to the whole infix expression.
+  assert(String::contains(tilde_printed("let a = ~x + 1"), "(~x)"))
+  assert(String::contains(tilde_printed("let a = ~(~x)"), "(~(~x))"))
+}
+
+test "#2344 `~` did not disturb the labeled-parameter use of the same token" {
+  // `~` was already the labeled-parameter marker; only the expression-START
+  // slot was free. Both spellings must still parse, in the same program.
+  let both = tilde_printed("fn labeled(x~: Int, y~: Int) -> Int { x - y }\nlet a = ~z\nlet b = labeled(x = 10, y = 3)")
+  assert(!String::starts_with(both, "THROW"))
+  assert(String::contains(both, "x~"))
+  assert(String::contains(both, "~z"))
+}

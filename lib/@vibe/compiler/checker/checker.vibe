@@ -9770,6 +9770,30 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             (CtUnknown, s1, c1)
           }
         }
+      } else if op == "~" {
+        // #2344 slice C. Int only -- unlike unary `-` there is no Double form,
+        // because the value being complemented is the 63-bit two's complement
+        // integer. Typed here rather than after the `x ^ -1` lowering so the
+        // diagnostic names the operator the author actually wrote.
+        match subst_apply(s1, operand_ty) {
+          CtInt => (CtInt, s1, c1),
+          CtVar(_) => match unify(operand_ty, CtInt, s1) {
+            Some(s2) => (CtInt, s2, c1),
+            None => (CtUnknown, s1, c1)
+          },
+          other => {
+            let flag = match other {
+              CtUnknown => false,
+              _ => type_is_ground(other)
+            }
+            if flag {
+              Array::push(errors, "operand of `~` must be Int")
+            } else {
+              ()
+            }
+            (CtUnknown, s1, c1)
+          }
+        }
       } else (CtUnknown, s1, c1)
     },
     EAssign(name, val, body) => {
