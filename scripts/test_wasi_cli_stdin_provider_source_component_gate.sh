@@ -566,6 +566,24 @@ if grep -Fq 'stdin_provider_' "$OUT/import-alias-coverage.wasm.diag" "$OUT/impor
   echo "stdin provider source gate FAILED: FS coverage exposed the raw provider ABI" >&2
   exit 1
 fi
+# Coverage wins over VIBE_BACKEND. The post-compile boundary must inspect the
+# selected lane, not the raw backend selector, or this combination publishes
+# the component-private provider core as a standalone artifact.
+rm -f "$OUT/import-alias-coverage-gc.wasm" "$OUT/import-alias-coverage-gc.wasm.diag" "$OUT/import-alias-coverage-gc.log"
+(cd "$OUT" && VIBE_COVERAGE=1 VIBE_BACKEND=gc VIBE_FS_COMPILE=1 VIBE_LIB="$OUT/pkg" \
+  VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
+  bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$COMPILER" "$OUT/import-alias.vibe" "$OUT/import-alias-coverage-gc.wasm" run \
+  >"$OUT/import-alias-coverage-gc.log" 2>&1 || true)
+if [ -s "$OUT/import-alias-coverage-gc.wasm" ]; then
+  echo "stdin provider source gate FAILED: FS coverage+gc emitted a standalone artifact" >&2
+  exit 1
+fi
+grep -Fq 'StdinStream is component-only; VIBE_COVERAGE=1 cannot emit' "$OUT/import-alias-coverage-gc.wasm.diag"
+if grep -Fq 'stdin_provider_' "$OUT/import-alias-coverage-gc.wasm.diag" "$OUT/import-alias-coverage-gc.log"; then
+  echo "stdin provider source gate FAILED: FS coverage+gc exposed the raw provider ABI" >&2
+  exit 1
+fi
 
 echo "[stdin-provider-source] source compile/structure/negative gates OK"
 WT="${WASMTIME_BIN:-$(command -v wasmtime || true)}"
