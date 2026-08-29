@@ -716,19 +716,26 @@ export fn builtin_allocates(name: String) -> Bool {
 /// interior view, a silent double-free caught only by review (#1932). Add new
 /// borrow-returning builtins HERE and nowhere else.
 ///
+/// The one spelling of the set. Module-level so `is_borrow_ret_builtin` --
+/// called once per call site across the whole program -- does not rebuild it
+/// per query (it was the profiled top __rt_arr_push producer of the codegen
+/// phase). Never hand this array itself to a caller that mutates it; that is
+/// what the slice in `borrow_ret_builtin_names` is for.
+let borrow_ret_builtin_name_table: Array[String] = [
+  "Array::get",
+  "MutList::get",
+  "Map::get",
+  "Map::iter_get",
+  "Map::__iter_get_unchecked",
+  "__index",
+  "__rec_field"
+]
+
 /// Returns a fresh array on each call because
 /// compute_borrow_returning_names' fixed-point worklist pushes discovered user
 /// functions into the one it is given.
 export fn borrow_ret_builtin_names() -> Array[String] {
-  [
-    "Array::get",
-    "MutList::get",
-    "Map::get",
-    "Map::iter_get",
-    "Map::__iter_get_unchecked",
-    "__index",
-    "__rec_field"
-  ]
+  Array::slice(borrow_ret_builtin_name_table, 0, Array::length(borrow_ret_builtin_name_table))
 }
 
 /// Membership in `borrow_ret_builtin_names`, before source ownership is
@@ -739,10 +746,11 @@ export fn borrow_ret_builtin_names() -> Array[String] {
 /// other silently reintroduced exactly the drift this consolidation exists to
 /// remove -- and the two partial updates fail in opposite directions (miss it
 /// in the list and wrappers of it classify as owned; miss it in the predicate
-/// and direct calls do). Five string compares over a five-element array is the
-/// same work the chain did, plus the array.
+/// and direct calls do). Scans the shared module-level table directly: this
+/// predicate runs once per call site across the whole program, so it must not
+/// allocate a fresh copy per query.
 export fn is_borrow_ret_builtin(name: String) -> Bool {
-  let names = borrow_ret_builtin_names()
+  let names = borrow_ret_builtin_name_table
   let mut i = 0
   let mut found = false
   while i < Array::length(names) {
