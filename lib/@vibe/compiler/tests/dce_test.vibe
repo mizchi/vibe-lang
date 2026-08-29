@@ -155,3 +155,63 @@ test "SBench expression refs are kept" {
   let result = dce_stmts(stmts, array_empty())
   assert(eq(Array::length(result), 2))
 }
+
+//# #2348: a WAT body's `call $name` edges
+
+/// The parser's inline-wasm marker: `fn <name>(...) = wasm "<wat>"` reaches
+/// every AST pass as `SFnDecl(.., EFn(.., ECall(EIdent("%wasm"), [EString])))`.
+fn iw_marker_fn(name: String, wat: String) -> Stmt {
+  SFnDecl(false, name, EFn(array_empty(), array_empty(), array_empty(), no_ty(), None, ECall(EIdent("%wasm", -1), [
+    EString(wat)
+  ], -1)), array_empty(), array_empty())
+}
+
+test "#2348 dce: a helper only a WAT `call` names is reachable" {
+  // Before the WAT scan, `collect_refs_into` answered `EString(_) => 0` and
+  // this dropped `helper` -- out from under a live call. Codegen then reported
+  // it missing while `vibe check`, which runs on the UNPRUNED statements,
+  // reported clean.
+  let stmts = [
+    iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
+    iw_marker_fn("caller", "(call $helper (local.get $a) (i64.const 8))"),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+  ]
+  let result = dce_stmts(stmts, ["main"])
+  assert(eq(Array::length(result), 3))
+}
+
+test "#2348 dce: an inline-wasm fn nothing calls is still pruned" {
+  // The control. Without it the test above would pass just as well if the
+  // scan had been replaced by "never prune an inline-wasm fn".
+  let stmts = [
+    iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
+    iw_marker_fn("caller", "(i64.add (local.get $a) (i64.const 8))"),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+  ]
+  let result = dce_stmts(stmts, ["main"])
+  assert(eq(Array::length(result), 2))
+}
+
+test "#2348 dce: a local spelled like a fn is not a reference" {
+  // The scan keys on the `call` keyword, not on `$name` anywhere, so
+  // `(local.get $helper)` does not keep `helper` alive.
+  let stmts = [
+    iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
+    iw_marker_fn("caller", "(i64.add (local.get $helper) (i64.const 8))"),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+  ]
+  let result = dce_stmts(stmts, ["main"])
+  assert(eq(Array::length(result), 2))
+}
+
+test "#2348 dce: every callee of a multi-call body is reachable" {
+  let stmts = [
+    iw_marker_fn("h1", "(i64.sub (local.get $a) (local.get $b))"),
+    iw_marker_fn("h2", "(i64.add (local.get $a) (local.get $b))"),
+    iw_marker_fn("unused", "(i64.mul (local.get $a) (local.get $b))"),
+    iw_marker_fn("caller", "(call $h1 (call $h2 (local.get $a) (i64.const 2)) (i64.const 8))"),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+  ]
+  let result = dce_stmts(stmts, ["main"])
+  assert(eq(Array::length(result), 4))
+}

@@ -16,6 +16,7 @@ import @vibe/compiler/core {
   collect_import_value_renames,
   export_plan_renames_for,
   namespace_exported_name,
+  namespace_private_value_stmts,
   trait_import_local_operation_renames
 }
 
@@ -478,4 +479,46 @@ test "later aliased re-export blocks an earlier import reference rename" {
   ], main_path)
   let renames = collect_import_value_renames(plan, facade_path, facade_stmts)
   assert(Array::length(renames) == 0)
+}
+
+//# #2348: a WAT body's `call $name` survives the merge rename
+
+/// The name a top-level value statement binds, however it is spelled.
+fn iw_stmt_binding_name(stmt: Stmt) -> String {
+  match stmt {
+    SFnDecl(_, name, _, _, _) => name,
+    SLet(_, _, name, _, _) => name,
+    _ => ""
+  }
+}
+
+test "#2348 merge: a WAT callee is renamed together with its definition" {
+  // A private inline-wasm helper gets a namespaced name when its file is
+  // merged. The `$helper` token lives inside an EString, so the generic
+  // rewrite could not see it and the caller was left naming a fn that no
+  // longer existed -- a program whose per-file `vibe check` is clean.
+  let stmts = parse_program(lex("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nexport fn caller(a: Int) -> Int = wasm\"(call $helper (local.get $a) (i64.const 8))\"\n"))
+  let renamed = namespace_private_value_stmts("dep.vibe", stmts)
+  let helper_name = iw_stmt_binding_name(Array::get(renamed, 0))
+  // The definition really was renamed; without this the assertion below
+  // would hold vacuously on a build where nothing is namespaced at all.
+  assert(helper_name != "helper")
+  assert(String::length(helper_name) > 6)
+  let printed = print_program(renamed)
+  // The callee token now names exactly the renamed definition ...
+  assert(String::contains(printed, String::concat("call $", helper_name)))
+  // ... and no longer the original spelling. The trailing space matters:
+  // `call $helper` is a prefix of `call $helper_dep_vibe`.
+  assert(!String::contains(printed, "call $helper "))
+}
+
+test "#2348 merge: a local spelled like a private fn is left alone" {
+  // The rewrite keys on the `call` keyword, not on `$name` anywhere, so a
+  // local or label that happens to share a renamed fn's name keeps its
+  // spelling -- renaming it would silently change which slot the body reads.
+  let stmts = parse_program(lex("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nexport fn caller(a: Int) -> Int = wasm\"(i64.add (local.get $helper) (i64.const 8))\"\n"))
+  let renamed = namespace_private_value_stmts("dep.vibe", stmts)
+  assert(iw_stmt_binding_name(Array::get(renamed, 0)) != "helper")
+  let printed = print_program(renamed)
+  assert(String::contains(printed, "local.get $helper)"))
 }
