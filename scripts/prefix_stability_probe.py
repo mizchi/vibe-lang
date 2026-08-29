@@ -161,13 +161,21 @@ def main():
     )
     with tempfile.TemporaryDirectory() as td:
         # The tweaked entry must sit in the same directory so its relative
-        # imports resolve identically.
-        tweak = os.path.join(
-            os.path.dirname(entry), "__prefix_probe_tweak_test.vibe"
-        )
+        # imports resolve identically. mkstemp gives exclusive creation with
+        # a unique name, so a stale sibling is never truncated and
+        # concurrent probe runs cannot clobber each other's input.
         with open(entry) as f:
             src = f.read()
-        with open(tweak, "w") as f:
+        fd, tweak_abs = tempfile.mkstemp(
+            dir=os.path.dirname(entry),
+            prefix="__prefix_probe_",
+            suffix="_test.vibe",
+        )
+        # The runner resolves paths relative to VIBE_PREOPEN_DIR (the repo
+        # root), so hand it the repo-relative spelling, not mkstemp's
+        # absolute one.
+        tweak = os.path.relpath(tweak_abs)
+        with os.fdopen(fd, "w") as f:
             f.write(src)
             f.write('\n\ntest "prefix stability probe" {\n  inspect(1 + 1, "2")\n}\n')
         wa = os.path.join(td, "a.wasm")
@@ -188,12 +196,15 @@ def main():
     print(f"bodies: {len(bodies_a)} vs {len(bodies_b)}; compared {n}")
     print(f"identical at same index: {n - len(diffs)}/{n}; differing: {len(diffs)}")
     # Attribution: #716 renames every exported def of a non-entry file to
-    # name_exp_<path> / name_dep_<path>, so a mangled name marks a body from a
-    # module OTHER than the edited entry (entry defs are never renamed).
+    # name_exp_<sanitized path> / name_dep_<sanitized path>, so a mangled
+    # name marks a body from a module OTHER than the edited entry (entry
+    # defs are never renamed). The sanitized path carries no `lib/` prefix
+    # requirement -- an entry under fixtures/ pulls `_exp_fixtures_...`
+    # names -- so match the mangling markers alone.
     foreign = []
     for i in diffs:
         nm = names.get(i + imports, "?")
-        if "_exp_lib_" in nm or "_dep_lib_" in nm:
+        if "_exp_" in nm or "_dep_" in nm:
             foreign.append((i, nm))
     for i, nm in foreign[:15]:
         a, b = bodies_a[i], bodies_b[i]
