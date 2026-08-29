@@ -19,7 +19,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_impl
+  compile_wasi_module_impl, compile_wasi_module_linked_impl
 }
 
 import ../codegen_gc.vibe {
@@ -28,6 +28,10 @@ import ../codegen_gc.vibe {
 
 import @vibe/compiler/codegen {
   compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full
+}
+
+import @vibe/compiler/codegen/common_base {
+  codegen_body_cache_new, empty_dbg_prov
 }
 
 //# Functions
@@ -410,4 +414,37 @@ test "#2348 inline wasm: call_indirect and return_call stay unsupported" {
   assert(String::contains(ci, "'call_indirect' is not supported"))
   let rc = call_err("return_call $dbl")
   assert(String::contains(rc, "'return_call' is not supported"))
+}
+
+/// #2348: compile through the LATE-DCE lane -- `enable_late_dce = true`, the
+/// argument `compile_file_wasi_linked_artifacts` passes. Returns "ok" or the
+/// thrown message.
+fn late_dce_compile(src: String) -> String {
+  handle {
+    let stmts = parse_program(lex(src))
+    let wasm = compile_wasi_module_linked_impl(stmts, "main", array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+    if Bytes::length(wasm) > 0 {
+      "ok"
+    } else {
+      "empty wasm"
+    }
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "#2348 late dce: a helper only a WAT call names survives the post-extraction pass" {
+  // `effect_lowering_prelude` replaces every WAT body with a neutral EInt(0)
+  // BEFORE the late `dce_stmts` runs, so that pass cannot see the call edge
+  // the early one reads out of the marker. It does not need to:
+  // `lc_late_dce_roots` roots every top-level name except the pipeline's own
+  // derive helpers (#1666). This pins that -- if the late pass ever starts
+  // pruning user functions, the assembler throws `no inline-wasm fn named
+  // 'helper'` here instead of at someone's `vibe run`.
+  assert(late_dce_compile("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nfn caller(a: Int) -> Int = wasm\"(call $helper (local.get $a) (i64.const 8))\"\nfn main() -> Int { caller(10) }\n") == "ok")
+}
+
+test "#2348 late dce: the lane compiles a kernel nobody calls too" {
+  // The control: "ok" above must not be an artifact of the lane accepting
+  // anything -- this variant has the same two kernels with no `call` between
+  // them, and also compiles.
+  assert(late_dce_compile("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nfn caller(a: Int) -> Int = wasm\"(i64.add (local.get $a) (i64.const 8))\"\nfn main() -> Int { caller(10) }\n") == "ok")
 }
