@@ -77,11 +77,50 @@ mkdir -p "$ROOT_DIR/_build/vibe_run"
 
 # 1. compile (FS import resolution) via the seed. VIBE_COVERAGE=$coverage selects
 #    the instrumented codegen when --coverage.
+#
+# The compile step says WHY it failed in two places, neither of them the
+# program's stdout: `cli_main` writes its diagnostics to the `<output>.diag`
+# sidecar (emit_compile_diag), and a runner-level failure (bad wasm, missing
+# host import, a node stack) lands on the invoke's stdout, which is otherwise
+# just the result code. Both are reported below on failure -- #2361, where this
+# wrapper sent stdout to /dev/null and exited 1 having explained nothing.
+#
+# Delete last run's artifacts first. A stale `.diag` would otherwise be printed
+# as this run's reason, and a stale wasm would satisfy the emptiness check below.
+compile_out="$ROOT_DIR/$out_rel"
+compile_diag="$compile_out.diag"
+rm -f "$compile_out" "$compile_diag"
+
+compile_log="$ROOT_DIR/_build/vibe_run/$(basename "${src_rel%.vibex}").compile.log"
+compile_status=0
 VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-  --invoke cli_main "$seed" "$src_rel" "$out_rel" "$entry" >/dev/null
+  --invoke cli_main "$seed" "$src_rel" "$out_rel" "$entry" >"$compile_log" || compile_status=$?
 
-[ -s "$ROOT_DIR/$out_rel" ] || { echo "vibe_run.sh: compile produced no wasm" >&2; exit 1; }
+if [ "$compile_status" -ne 0 ] || [ ! -s "$compile_out" ]; then
+  # Framed the same way `runtime/vibe` and `format_check_report`
+  # (lib/@vibe/cli/entry.vibe) frame it: `error: ` starts a diagnostic, and a
+  # `hint:` or already-indented line is a CONTINUATION of the one above, so it
+  # is indented rather than prefixed. Prefixing every line turned one
+  # two-line diagnostic into two, which is what `grep -c '^error: '` counts.
+  #
+  # `awk`, not `sed`: emit_compile_diag ends the sidecar WITHOUT a trailing
+  # newline, and sed would leave the last diagnostic glued to the summary line
+  # below. awk terminates every record it prints.
+  if [ -s "$compile_diag" ]; then
+    awk '{ if ($0 ~ /^hint:/ || $0 ~ /^[[:space:]]/) print "  " $0; else print "error: " $0 }' "$compile_diag" >&2
+  elif [ -s "$compile_log" ]; then
+    # No diagnostic: the compiler did not reach the point of writing one, so
+    # relay whatever the invoke printed rather than exiting silently.
+    awk '{ print "vibe_run.sh: compile output: " $0 }' "$compile_log" >&2
+  fi
+  if [ "$compile_status" -ne 0 ]; then
+    echo "vibe_run.sh: compilation failed: $src_rel" >&2
+  else
+    echo "vibe_run.sh: compile produced no wasm: $out_rel" >&2
+  fi
+  exit 1
+fi
 
 # 2. execute the compiled program. Under --coverage, VIBE_COV_OUT makes the runner
 #    dump the hit bitmap (functions + branches) after the run, before it exits —

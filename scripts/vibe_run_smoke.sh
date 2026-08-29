@@ -43,4 +43,60 @@ grep -q ".vibex entry is always main" "$entry_err" || {
   echo "[vibe-run-smoke] FAIL: missing custom-entry rejection diagnostic" >&2; exit 1
 }
 
-echo "[vibe-run-smoke] ok (single=10, multi-file=42)"
+# #2361: a program that does not compile must say WHY on stderr. The compile
+# step's reason lives in the `<output>.diag` sidecar, and the wrapper used to
+# send its stdout to /dev/null and exit 1 having printed nothing -- "the file is
+# broken", "the wrapper does not support this" and "the toolchain is not built"
+# were indistinguishable from the output.
+#
+# Two shapes, because they are produced by different parts of the compiler and
+# a wrapper can lose one while relaying the other.
+check_explains() { # <label> <source text> <expected substring>
+  local label="$1" src="$2" needle="$3" err="$WORK/$1.err"
+  printf '%s' "$src" > "$WORK/$label.vibex"
+  if bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/$label.vibex" > /dev/null 2> "$err"; then
+    echo "[vibe-run-smoke] FAIL $label: a program that does not compile exited 0" >&2; exit 1
+  fi
+  grep -q "$needle" "$err" || {
+    echo "[vibe-run-smoke] FAIL $label: the failure was not explained on stderr (#2361)" >&2
+    echo "    expected substring: $needle" >&2
+    echo "    stderr was:" >&2
+    sed 's/^/      /' "$err" >&2
+    exit 1
+  }
+}
+
+# A checker diagnostic.
+check_explains missing_effect_row \
+  'fn main() -> Unit {
+  println("hi")
+}
+' \
+  "requires an explicit effect row"
+
+# A parse error, which is reported by an earlier phase.
+check_explains parse_error \
+  'fn main() -> Unit with () {
+  let x = (
+}
+' \
+  "unexpected token"
+
+# A diagnostic with a `hint:` continuation is ONE diagnostic. `runtime/vibe` and
+# `format_check_report` both frame it that way so `grep -c '^error: '` is an
+# exact count; prefixing every relayed line would make this program look like
+# two errors.
+printf 'fn helper() -> Unit with () {\n  println("hi")\n}\nfn main() -> Unit with Stdout {\n  helper()\n}\n' > "$WORK/hint_shape.vibex"
+hint_err="$WORK/hint_shape.err"
+if bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/hint_shape.vibex" > /dev/null 2> "$hint_err"; then
+  echo "[vibe-run-smoke] FAIL hint_shape: a program that does not compile exited 0" >&2; exit 1
+fi
+starts="$(grep -c '^error: ' "$hint_err" || true)"
+hints="$(grep -c '^  hint: ' "$hint_err" || true)"
+if [ "$starts" != "1" ] || [ "$hints" != "1" ]; then
+  echo "[vibe-run-smoke] FAIL hint_shape: expected 1 diagnostic start and 1 indented hint, got $starts and $hints (#2361)" >&2
+  sed 's/^/      /' "$hint_err" >&2
+  exit 1
+fi
+
+echo "[vibe-run-smoke] ok (single=10, multi-file=42, compile failures explained)"
