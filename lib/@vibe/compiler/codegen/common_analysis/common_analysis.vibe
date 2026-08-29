@@ -1670,25 +1670,26 @@ fn md_is_borrow_arg1_call(f: String) -> Bool {
   f == "Bytes::index_of_bytes" || f == "Bytes::compare"
 }
 
-/// Which parameter positions of callee `f` are borrowed: the builtin
-/// arg0 list unioned with the user set's per-position mask. `bfns` is
-/// sorted and `bmasks` is aligned to it (compute_borrow_param_user_fns).
-fn md_borrow_mask_of(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+/// Which parameter positions of callee `f` are borrowed. A name present in
+/// `bfns` is authoritative, including a zero mask: source definitions of a
+/// shadowable builtin must be allowed to consume arguments that the compiler
+/// builtin only borrows. Otherwise the builtin mask is used. `bfns` is sorted
+/// and `bmasks` is aligned to it (compute_borrow_param_user_fns).
+export fn md_borrow_mask_of(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
   let bi = bsearch_leftmost(bfns, f)
-  let user = if bi >= 0 && bi < Array::length(bmasks) {
+  if bi >= 0 && bi < Array::length(bmasks) {
     Array::get(bmasks, bi)
   } else {
-    0
-  }
-  let m0 = if md_is_borrow_arg0_call(f) {
-    user|1
-  } else {
-    user
-  }
-  if md_is_borrow_arg1_call(f) {
-    m0|2
-  } else {
-    m0
+    let m0 = if md_is_borrow_arg0_call(f) {
+      1
+    } else {
+      0
+    }
+    if md_is_borrow_arg1_call(f) {
+      m0|2
+    } else {
+      m0
+    }
   }
 }
 
@@ -3203,8 +3204,7 @@ fn ca_walk_stmts_nonident_args(stmts: Array[Stmt], out: Array[String], out_pos: 
 /// are never borrowed -- Int is 62-bit tagged, and a 32-param ceiling keeps
 /// every shift far inside it with no arity check at the query sites.
 ///
-/// Kept in sync with the identical helpers in perceus/perceus.vibe and
-/// codegen/expr/compile_call.vibe (same convention as is_borrow_arg0_call).
+/// Shared by Perceus, call emission, and linked-compile analysis.
 export fn bmask_max_param() -> Int {
   32
 }
@@ -3364,10 +3364,12 @@ fn bp_calls_round0_borrow_arms(arms: Array[(Pat, Expr)], round0_names: Array[Str
 /// This deliberately stops after one extra layer: deeper closure is a possible
 /// future worklist extension, while every intermediate result stays sound.
 ///
-/// Returns the SORTED name array of fns with a non-zero mask and fills
-/// `out_masks` aligned to it, so a single `bsearch_leftmost` on the names
-/// indexes straight into the masks. Sorting and alignment happen here
-/// together -- a caller that sorted the names itself would silently
+/// Returns the SORTED name array and fills `out_masks` aligned to it, so a
+/// single `bsearch_leftmost` on the names indexes straight into the masks.
+/// Ordinary entries have a non-zero inferred borrow mask. A source definition
+/// that shadows a compiler-owned accessor is retained with an authoritative
+/// zero mask when it consumes every parameter. Sorting and alignment happen
+/// here together -- a caller that sorted the names itself would silently
 /// misattribute every mask.
 export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
   let valued = array_empty()
@@ -3397,9 +3399,27 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   let excluded_srt = sorted_names_of(exclude)
   let names = array_empty()
   let masks: MutMap[String, Int] = MutMap::new_string()
+  // Source-owned compiler intrinsics need an authoritative entry even when
+  // their inferred mask is zero. Keep this as two scalar bits and collect it
+  // during the analysis' existing statement pass: no extra compiler-sized
+  // scan or per-function allocation is added.
+  let mut source_shadow_mask = 0
   let mut si = 0
   while si < Array::length(stmts) {
-    match Array::get(stmts, si) {
+    let stmt = Array::get(stmts, si)
+    let source_name = match stmt {
+      SLet(_, _, name, _, _) => name,
+      SFnDecl(_, name, _, _, _) => name,
+      _ => ""
+    }
+    if source_name == "Map::iter_get" {
+      source_shadow_mask = source_shadow_mask|1
+    } else if source_name == "Map::__iter_get_unchecked" {
+      source_shadow_mask = source_shadow_mask|2
+    } else {
+      ()
+    }
+    match stmt {
       SLet(_, _, fname, _, fval) => match fval {
         EFn(_, _, fps, _, _, fbody) => if bsearch_leftmost(valued_srt, fname) < 0 && bsearch_leftmost(excluded_srt, fname) < 0 {
           let owned_bits = match MutMap::get(nonident, fname) {
@@ -3502,6 +3522,31 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
       _ => ()
     }
     si = si + 1
+  }
+  // A zero-mask entry is an ownership override, not a borrowed ABI. Callers
+  // distinguish it by looking up the aligned mask instead of testing name
+  // membership alone.
+  if (source_shadow_mask&1) != 0 {
+    match MutMap::get(masks, "Map::iter_get") {
+      Some(_) => (),
+      None => {
+        Array::push(names, "Map::iter_get")
+        MutMap::set(masks, "Map::iter_get", 0)
+      }
+    }
+  } else {
+    ()
+  }
+  if (source_shadow_mask&2) != 0 {
+    match MutMap::get(masks, "Map::__iter_get_unchecked") {
+      Some(_) => (),
+      None => {
+        Array::push(names, "Map::__iter_get_unchecked")
+        MutMap::set(masks, "Map::__iter_get_unchecked", 0)
+      }
+    }
+  } else {
+    ()
   }
   let names_srt = sorted_names_of(names)
   let mut oi = 0

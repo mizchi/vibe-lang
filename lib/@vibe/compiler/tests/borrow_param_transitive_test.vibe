@@ -3,7 +3,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  compute_borrow_param_user_fns
+  compute_borrow_param_user_fns, md_consume_count_pre
 }
 
 fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {
@@ -49,4 +49,31 @@ test "a local callee shadow does not inherit the top-level borrow ABI" {
   let names = compute_borrow_param_user_fns([reader, shadowed], [], masks)
   assert_eq(mask_for(names, masks, "reader"), 1)
   assert_eq(mask_for(names, masks, "shadowed"), 0)
+}
+
+test "#2379 review: a source-owned Map accessor overrides the builtin borrow seed" {
+  let checked = one_param_fn("Map::iter_get", "m", EIdent("m", -1))
+  let unchecked = one_param_fn("Map::__iter_get_unchecked", "m", EIdent("m", -1))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([checked, unchecked], [], masks)
+  assert_eq(mask_for(names, masks, "Map::iter_get"), 0)
+  assert_eq(mask_for(names, masks, "Map::__iter_get_unchecked"), 0)
+  assert_eq(Array::length(names), 2)
+  let checked_call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1)], -1)
+  let unchecked_call = ECall(EIdent("Map::__iter_get_unchecked", -1), [
+    EIdent("m", -1)
+  ], -1)
+  assert_eq(md_consume_count_pre(checked_call, "m", names, masks), 1)
+  assert_eq(md_consume_count_pre(unchecked_call, "m", names, masks), 1)
+}
+
+test "#2379 review: a source-owned Map accessor may still infer a borrowed receiver" {
+  let borrowed = one_param_fn("Map::iter_get", "m", ECall(EIdent("Array::length", -1), [
+    EIdent("m", -1)
+  ], -1))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([borrowed], [], masks)
+  assert_eq(mask_for(names, masks, "Map::iter_get"), 1)
+  let call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1)], -1)
+  assert_eq(md_consume_count_pre(call, "m", names, masks), 0)
 }
