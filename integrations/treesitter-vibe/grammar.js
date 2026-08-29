@@ -344,7 +344,7 @@ module.exports = grammar({
       prec(
         PREC.UNARY,
         seq(
-          field("operator", choice("-", "!")),
+          field("operator", choice("-", "!", "~")),
           field("operand", $._expression),
         ),
       ),
