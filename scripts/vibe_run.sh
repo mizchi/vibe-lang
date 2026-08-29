@@ -98,11 +98,17 @@ VIBE_COVERAGE="$coverage" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IM
   --invoke cli_main "$seed" "$src_rel" "$out_rel" "$entry" >"$compile_log" || compile_status=$?
 
 if [ "$compile_status" -ne 0 ] || [ ! -s "$compile_out" ]; then
+  # Framed the same way `runtime/vibe` and `format_check_report`
+  # (lib/@vibe/cli/entry.vibe) frame it: `error: ` starts a diagnostic, and a
+  # `hint:` or already-indented line is a CONTINUATION of the one above, so it
+  # is indented rather than prefixed. Prefixing every line turned one
+  # two-line diagnostic into two, which is what `grep -c '^error: '` counts.
+  #
   # `awk`, not `sed`: emit_compile_diag ends the sidecar WITHOUT a trailing
   # newline, and sed would leave the last diagnostic glued to the summary line
   # below. awk terminates every record it prints.
   if [ -s "$compile_diag" ]; then
-    awk '{ print "error: " $0 }' "$compile_diag" >&2
+    awk '{ if ($0 ~ /^hint:/ || $0 ~ /^[[:space:]]/) print "  " $0; else print "error: " $0 }' "$compile_diag" >&2
   elif [ -s "$compile_log" ]; then
     # No diagnostic: the compiler did not reach the point of writing one, so
     # relay whatever the invoke printed rather than exiting silently.
