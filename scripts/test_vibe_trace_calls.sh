@@ -68,5 +68,11 @@ printf '%s\n' "$traced" | grep -qF "trace: helper (prog.vibex:1)" && ok "trace n
 helper_hits="$(printf '%s\n' "$traced" | grep -cF "trace: helper (prog.vibex:1)")"
 [ "$helper_hits" -ge 2 ] && ok "helper appears >=2 times (called twice)" || bad "helper appeared $helper_hits time(s), expected >=2"
 
+# 3. Debug instrumentation outranks an inherited GC backend selector. The
+# selected artifact must still carry the trace log rather than silently using
+# ordinary GC codegen.
+gc_traced="$(VIBE_BACKEND=gc "$VIBE" run --trace "$proj/prog.vibex" 2>&1)"
+printf '%s\n' "$gc_traced" | grep -qF "trace: helper (prog.vibex:1)" && ok "trace overrides VIBE_BACKEND=gc" || bad "VIBE_BACKEND=gc suppressed trace instrumentation"
+
 echo "[test_vibe_trace_calls] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1
