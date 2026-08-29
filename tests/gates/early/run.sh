@@ -322,6 +322,74 @@ if ! printf '%s\n' "$hm_out" | grep -qF "filling"; then
 fi
 echo "[compiler-gate] insert_raw bounded probe ok (terminated, rc=$hm_rc)"
 
+# 4g. #2343: `declarations.vibe` declares ~50 low-level wasm opcodes that user
+#     code cannot spell. The file called itself "Single Source of Truth for all
+#     builtin function signatures" and recorded nothing about reachability, so
+#     a reader looking for a ctz found `declare int_ctz(Int) -> Int`, wrote it,
+#     and got `unknown name`. The block now says it is codegen-internal; this
+#     checks the claim rather than trusting the comment.
+#
+#     The oracle is the CHECKER, one probe per name -- not a lookup in
+#     `core/builtin_registry.vibe`, which decides only some names (the rest go
+#     through per-namespace checker lookups), so a registry cross-reference
+#     would answer a different question than the one the comment makes.
+#
+#     A control runs alongside: `simd_skip_ws`, declared in the same file two
+#     blocks down, MUST resolve. Without it, a probe harness that silently
+#     failed to compile anything would report all-unreachable and pass.
+echo "[compiler-gate] 4g the WASM-intrinsics block is codegen-internal, as it claims (#2343)"
+dcldir="_build/_gate_declarations_reach"
+rm -rf "$dcldir"; mkdir -p "$dcldir"
+decl_src="lib/@vibe/compiler/builtins/declarations.vibe"
+# The block runs from its own banner to the next one.
+intrinsic_names="$(awk '
+  /^\/\/# WASM intrinsics/ { inblock = 1; next }
+  inblock && /^\/\/#/ { inblock = 0; next }
+  inblock && /^declare / { sub(/^declare /, ""); sub(/\(.*$/, ""); print }
+' "$decl_src")"
+intrinsic_count="$(printf '%s\n' "$intrinsic_names" | grep -c .)"
+if [ "$intrinsic_count" -lt 40 ]; then
+  echo "[compiler-gate] FAIL: found only $intrinsic_count names under the WASM-intrinsics banner in $decl_src -- the block moved or the scan broke, and an empty scan would pass this section vacuously (#2343)" >&2
+  exit 1
+fi
+# A floor catches an empty scan; it does not catch one that runs PAST the block
+# and swallows the reachable names below it (which is what the first version of
+# this scan did, reporting Fs:: and Env:: as unreachable intrinsics). The
+# control name lives two blocks down, so its presence here means exactly that.
+if printf '%s\n' "$intrinsic_names" | grep -qx "simd_skip_ws"; then
+  echo "[compiler-gate] FAIL: the #2343 scan ran past the WASM-intrinsics block -- it collected simd_skip_ws, which is declared under a later banner" >&2
+  exit 1
+fi
+reachable=""
+for n in $intrinsic_names; do
+  printf 'fn probe() -> Int {\n  let _x = %s\n  0\n}\n' "$n" > "$dcldir/p.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dcldir/p.vibe" "$dcldir/p.wasm" __no_entry__ >/dev/null 2>&1 || true
+  if [ -s "$dcldir/p.wasm" ]; then
+    reachable="$reachable $n"
+  fi
+  rm -f "$dcldir/p.wasm" "$dcldir/p.wasm.diag"
+done
+# The control: a name from the same file that IS reachable.
+printf 'fn probe(b: Bytes) -> Int {\n  simd_skip_ws(b, 0, 1)\n}\n' > "$dcldir/ctl.vibe"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$dcldir/ctl.vibe" "$dcldir/ctl.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ ! -s "$dcldir/ctl.wasm" ]; then
+  echo "[compiler-gate] FAIL: the #2343 control did not compile -- simd_skip_ws is declared in $decl_src and must resolve, so this harness is reporting 'unreachable' for everything" >&2
+  cat "$dcldir/ctl.wasm.diag" >&2 2>/dev/null || true
+  rm -rf "$dcldir"
+  exit 1
+fi
+rm -rf "$dcldir"
+if [ -n "$reachable" ]; then
+  echo "[compiler-gate] FAIL: these names are under the codegen-internal WASM-intrinsics banner in $decl_src but DO resolve from user code:$reachable" >&2
+  echo "    Either move them out of that block, or drop the claim. The banner says the block is unreachable (#2343)." >&2
+  exit 1
+fi
+echo "[compiler-gate] declarations.vibe reachability claim ok ($intrinsic_count intrinsics unreachable, control resolves)"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that
