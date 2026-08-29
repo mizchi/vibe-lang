@@ -340,8 +340,12 @@ export -f trace_begin trace_end trace_rand_hex trace_now_ns trace_json_escape
 
 # awk rather than `grep -v`: grep exits 1 when it filters everything out, and
 # under `set -o pipefail` that would kill an all-skip run.
-awk -F'\t' '$4 != "skip"' "$worklist" \
-  | xargs -r -P "$JOBS" -I{} bash -c 'doctest_block "$1"' _ {}
+# BSD xargs normalizes tabs in `-I` input before substitution, which destroys
+# the work-list record and makes the worker treat the complete line as seq_no.
+# NUL-delimit each record so tabs reach `doctest_block` unchanged on both BSD
+# and GNU xargs.
+awk -F'\t' '$4 != "skip" { printf "%s%c", $0, 0 }' "$worklist" \
+  | xargs -0 -r -P "$JOBS" -I{} bash -c 'doctest_block "$1"' _ {}
 
 # Phase 3 (serial): replay the work list in source order. Output is identical
 # to the serial version's, whatever order the workers finished in.

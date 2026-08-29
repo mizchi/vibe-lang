@@ -378,9 +378,13 @@ let b = greet("hi", 3)     // => "hi x3"
 
 <!-- doctest-skip: 未定義名 (xs) を参照する構文提示の断片 -->
 ```vibe skip
-Array::map(xs, x -> x * 2)
-Array::map(xs, _ * 2)         // placeholder
-Array::fold(xs, 0, _ + _)
+import @vibe/builtin {
+  trait Iterator
+}
+
+Iterator::map(xs, x -> x * 2)
+Iterator::map(xs, _ * 2)         // placeholder
+Iterator::fold(xs, 0, _ + _)
 ```
 
 ## Operators (precedence: high to low)
@@ -538,8 +542,9 @@ s |> String::trim |> String::length
 Without a `_`, the piped value becomes the **first** argument. A bare `_` in
 the call's arguments substitutes the value at that position instead (no
 prepend). A *compound* placeholder such as `_ * 2` is a section lambda
-(`(v) -> v * 2`), not a pipe slot — so `xs |> Array::map(_, _ * 2)` reads as
-`Array::map(xs, (v) -> v * 2)`.
+(`(v) -> v * 2`), not a pipe slot — so
+`xs |> Iterator::map(_, _ * 2)` reads as
+`Iterator::map(xs, (v) -> v * 2)` after importing `trait Iterator`.
 
 Every method-bearing trait exposes its operations through the trait namespace:
 `Trait::operation(value, args)` or `value |> Trait::operation(args)`. The
@@ -554,7 +559,9 @@ Implementing `iter_length` and `iter_get` activates its eager operations
 (ADR-0110):
 
 ```vibe
-import @vibe/builtin { trait Iterator }
+import @vibe/builtin {
+  trait Iterator
+}
 
 let arrays = [1, 2]
   |> Iterator::map((x) -> { x + 1 })
@@ -635,11 +642,15 @@ import them before use (`import ./func.vibe { compose, identity, flip }`).
 
 <!-- doctest-skip: 未定義名 (f / g / xs / parse / render) を参照する構文提示の断片 -->
 ```vibe skip
+import @vibe/builtin {
+  compose, flip, identity, trait Iterator
+}
+
 // vibe has no `>>` compose operator (`>>` is arithmetic shift) — use functions
 compose(f, g)            // (x) -> g(f(x))   apply f then g
 identity                 // (x) -> x         no-op stage / default
 flip(f)                  // (b, a) -> f(a, b)
-Array::map(xs, compose(parse, render))
+Iterator::map(xs, compose(parse, render))
 ```
 
 > Runnable reference for the pipe `_` slot, combinators, `let*`, and `tap`:
@@ -952,6 +963,10 @@ selects a witness for the constructor itself, while `F[A]` and `F[B]` remain
 ordinary applied value types:
 
 ```vibe
+import @vibe/builtin {
+  trait Iterator
+}
+
 trait LocalFunctor[F[_]] {
   map[A, B](F[A], (A) -> B) -> F[B]
 }
@@ -992,11 +1007,15 @@ both targets.
 ## Collections
 
 ```vibe
+import @vibe/builtin {
+  trait Iterator
+}
+
 // Array
 let a = [1, 2, 3]
 let first = a[0]              // index
 let len = Array::length(a)
-let doubled = Array::map(a, _ * 2)
+let doubled = Iterator::map(a, _ * 2)
 
 // Tuple
 let t = (1, "two", true)
@@ -1698,9 +1717,10 @@ resolves as one.
 - **Array**: `length`, `get`, `slice`, `concat`
 
 `Map::get` / `has_key` / `keys` / `values` / `set` / `size` and the Array
-HOFs (`map`, `filter`, `fold`, `find`, `any`, `all`, `reverse`) are call-only
-operations, not first-class values (`Array::map(xs, f)`, not
-`let g = Array::map`). They live in the Signature reference; they are not
+compatibility operations (`map`, `filter`, `fold`, `find`, `any`, `all`,
+`reverse`) are call-only, not first-class values. New generic code imports
+`trait Iterator` and calls `Iterator::*`; the `Array::*` spellings remain a
+compatibility surface. They live in the Signature reference; they are not
 indexed here because the freeze probe is a bare reference.
 
 `String` is a byte string: `length`, indexes and slices use byte counts and
@@ -1902,7 +1922,10 @@ different, currently nonexistent function.
 `slice: (Array[T], Int, Int) -> Array[T]`,
 `concat: (Array[T], Array[T]) -> Array[T]`, `reverse: (Array[T]) -> Array[T]`.
 
-**Array** (prelude; collection first, function last):
+**Array compatibility operations** (prelude; collection first, function
+last). New generic code should import `trait Iterator` and use the matching
+`Iterator::*` operation. These direct Array specializations remain available
+for compatibility:
 
 | function | signature |
 |---|---|
@@ -2029,6 +2052,10 @@ test "shell" {
 その結果を vibe の関数へ繋ぐ:
 
 ```vibe
+import @vibe/builtin {
+  trait Iterator
+}
+
 let pipes: () -> Array[String] with Process = () -> {
   let a = sh_lines("echo hello | cat")
   let b = sh_lines("printf 'a\\nb\\nc' | sort -r")
@@ -2037,7 +2064,7 @@ let pipes: () -> Array[String] with Process = () -> {
 
 let count_txt: () -> Int with Process = () -> {
   sh_lines("ls /tmp")
-  |> Array::filter((s) -> { String::contains(s, ".txt") })
+  |> Iterator::filter((s) -> { String::contains(s, ".txt") })
   |> Array::length
 }
 // Works because |> inserts value as first arg, matching collection-first order
@@ -2068,6 +2095,10 @@ note: posix-mode command-head desugar: ls -> sh_lines("ls")
 
 <!-- doctest-skip: 未定義名 (read_config / parse / process / risky / xs / parse_int 等) を参照するイディオム断片 -->
 ```vibe skip
+import @vibe/builtin {
+  trait Iterator
+}
+
 // Failure composition: the row carries it, so stages just chain
 // (fn read_config() -> Config with Exception[String] etc.)
 let result = read_config() |> parse |> process
@@ -2090,7 +2121,7 @@ let doubled = for x in xs { x * 2 }
 input
   |> String::trim
   |> String::split(",")
-  |> Array::map(_, parse_int)
+  |> Iterator::map(_, parse_int)
 ```
 
 ## Conditional Compilation (`#cfg`)

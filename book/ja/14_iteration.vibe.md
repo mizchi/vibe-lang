@@ -11,17 +11,16 @@ vibe の反復はほとんどが「配列を一度なめる eager な一巡」�
 ## 配列を一度なめる
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn main with Console {
-  let xs = [
-    1,
-    2,
-    3,
-    4
-  ]
-  let evens = Array::filter(xs, (n) -> {
+  let xs = [1, 2, 3, 4]
+  let evens = Iterator::filter(xs, (n) -> {
     n % 2 == 0
   })
-  let sum = Array::fold(xs, 0, _ + _)
+  let sum = Iterator::fold(xs, 0, _ + _)
   let doubled = for x in xs {
     x * 2
   }
@@ -41,8 +40,10 @@ doubled[3] = 8
 コレクション）なら、このループは式で、その値は `Array[T]` になる。だから
 `doubled` は添字で引ける。`for i, x in xs` と書けば添字も束縛される。
 
-`Array::map` / `Array::filter` / `Array::fold` は同じ仕事を関数として
-行う。呼び出し側で読みやすい方を選べばよく、どちらも同じ一巡。
+`Iterator::map` / `Iterator::filter` / `Iterator::fold` は import した
+trait が提供する eager operation。`Array` は `Iterator` を実装しており、
+receiver が静的に Array と分かる場合は dictionary dispatch を経由せず、
+Array 専用処理と同じ直接ループへコンパイルされる。
 
 ## パイプ
 
@@ -50,14 +51,14 @@ doubled[3] = 8
 そこに入る。
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn main with Console {
   let n = "  vibe  " |> String::trim |> String::length
-  let xs = [
-    1,
-    2,
-    3
-  ]
-  let ys = xs |> Array::map(_, _ * 10)
+  let xs = [1, 2, 3]
+  let ys = xs |> Iterator::map(_, _ * 10)
   println("trimmed length = \{n}")
   println("ys[1] = \{Array::get(ys, 1)}")
 }
@@ -68,13 +69,14 @@ trimmed length = 4
 ys[1] = 20
 ```
 
-`xs |> Array::map(_, _ * 10)` は `Array::map(xs, (v) -> v * 10)` と読む。
+`xs |> Iterator::map(_, _ * 10)` は
+`Iterator::map(xs, (v) -> v * 10)` と読む。
 2つの `_` は別物で、1つ目はパイプの差し込み位置、2つ目はセクション —
 その引数についてのラムダの略記。
 
 ## 配列でない場合
 
-組み立てるべき遅延コンビネータの鎖は無い。`Array::*` の呼び出しと `for`
+組み立てるべき遅延コンビネータの鎖は無い。`Iterator::*` の呼び出しと `for`
 が eager 層であり、それで全部。
 
 もう一つの層は、値が時間をかけて届く場合 — ストリーム、ソケット、分割して

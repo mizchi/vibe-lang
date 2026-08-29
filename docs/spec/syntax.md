@@ -58,7 +58,7 @@ Rules:
 - `r#keyword` forces identifier interpretation for reserved words. Exception:
   `fn` has no raw-identifier escape (#1280) — `r#fn` still lexes as the `fn`
   keyword, so no binding/parameter/type/member can be named `fn`.
-- Qualified names use `::`: `Array::map`, `Module::name`, `Point::{ ... }`.
+- Qualified names use `::`: `Iterator::map`, `Module::name`, `Point::{ ... }`.
 - Field and tuple access use `.`: `record.name`, `tuple.0`.
 - Package/module refs after `@` may contain `/` and `-`: `@pkg/path`.
 
@@ -486,9 +486,13 @@ Rules:
 
 ```vibe skip
 // doctest-skip: form catalogue: bare surface forms, not a compilable program
+import @vibe/builtin {
+  trait Iterator
+}
+
 f(x)
 f(x=1, y=2)
-Array::map(xs, _ * 2)
+Iterator::map(xs, _ * 2)
 point.x
 tuple.0
 arr[0]

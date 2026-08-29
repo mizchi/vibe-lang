@@ -13,15 +13,15 @@ the end of this chapter.
 `Array` is the primitive sequence: index it, map over it, push to it.
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn main with Console {
-  let xs = [
-    1,
-    2,
-    3
-  ]
+  let xs = [1, 2, 3]
   println("xs[0] = \{xs[0]}")
   println("length = \{Array::length(xs)}")
-  let doubled = Array::map(xs, _ * 2)
+  let doubled = Iterator::map(xs, _ * 2)
   println("doubled[2] = \{Array::get(doubled, 2)}")
   Array::push(xs, 4)
   println("after push, length = \{Array::length(xs)}")
@@ -88,7 +88,9 @@ and `::new_int` pick a key specialization, so the common cases need no
 hash or equality closure from you.
 
 ```vibe run
-import @vibe/core { struct MutMap }
+import @vibe/core {
+  struct MutMap
+}
 
 fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
   match o {

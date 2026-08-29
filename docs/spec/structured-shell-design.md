@@ -150,12 +150,13 @@ vibe shell の典型的な開発ワークフロー:
 ### 1. REPL で探索的にコードを書く
 
 ```
+vibe> import @vibe/builtin { trait Iterator }
 vibe> let data = cat data.csv |> from_csv
 vibe> let filtered = data |> where age > 30
 vibe> let names = filtered |> select name
 vibe> Array::length(names)
 last: 5
-vibe> let avg = Array::fold(filtered |> select age, 0, (acc, x) -> acc + x) / 5
+vibe> let avg = Iterator::fold(filtered |> select age, 0, (acc, x) -> acc + x) / 5
 last: 42
 ```
 

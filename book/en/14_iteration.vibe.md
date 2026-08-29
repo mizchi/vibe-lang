@@ -12,17 +12,16 @@ hold.
 ## One pass over an array
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn main with Console {
-  let xs = [
-    1,
-    2,
-    3,
-    4
-  ]
-  let evens = Array::filter(xs, (n) -> {
+  let xs = [1, 2, 3, 4]
+  let evens = Iterator::filter(xs, (n) -> {
     n % 2 == 0
   })
-  let sum = Array::fold(xs, 0, _ + _)
+  let sum = Iterator::fold(xs, 0, _ + _)
   let doubled = for x in xs {
     x * 2
   }
@@ -43,9 +42,10 @@ builtin collection, the loop is an expression whose value is `Array[T]` —
 which is why `doubled` can be indexed. `for i, x in xs` binds the index
 too.
 
-`Array::map`, `Array::filter` and `Array::fold` do the same work as
-plain functions. Pick whichever reads better at the call site; both are
-the same single pass.
+`Iterator::map`, `Iterator::filter`, and `Iterator::fold` are eager operations
+provided by the imported trait. `Array` implements `Iterator`, and statically
+known Array receivers compile to the same direct loops as the Array
+specializations, without dictionary-dispatch overhead.
 
 ## Piping
 
@@ -53,14 +53,14 @@ the same single pass.
 unless a bare `_` marks the slot:
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn main with Console {
   let n = "  vibe  " |> String::trim |> String::length
-  let xs = [
-    1,
-    2,
-    3
-  ]
-  let ys = xs |> Array::map(_, _ * 10)
+  let xs = [1, 2, 3]
+  let ys = xs |> Iterator::map(_, _ * 10)
   println("trimmed length = \{n}")
   println("ys[1] = \{Array::get(ys, 1)}")
 }
@@ -71,13 +71,14 @@ trimmed length = 4
 ys[1] = 20
 ```
 
-`xs |> Array::map(_, _ * 10)` reads as `Array::map(xs, (v) -> v * 10)`.
+`xs |> Iterator::map(_, _ * 10)` reads as
+`Iterator::map(xs, (v) -> v * 10)`.
 The two underscores are different things: the first is the pipe slot,
 the second is a section — shorthand for a lambda over that argument.
 
 ## When it is not an array
 
-There is no lazy combinator chain to assemble. An `Array::*` call and a
+There is no lazy combinator chain to assemble. An `Iterator::*` call and a
 `for` are the eager layer, and they are the whole of it.
 
 The second layer is for values that arrive over time — a stream, a

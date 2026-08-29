@@ -178,14 +178,14 @@ hi x3
 `_` は引数の代わりに置けます。ラムダが演算子1つ分の幅なら読みやすくなります:
 
 ```vibe run
+import @vibe/builtin {
+  trait Iterator
+}
+
 fn main with Console {
-  let xs = [
-    1,
-    2,
-    3
-  ]
-  let doubled = Array::map(xs, _ * 2)
-  let total = Array::fold(xs, 0, _ + _)
+  let xs = [1, 2, 3]
+  let doubled = Iterator::map(xs, _ * 2)
+  let total = Iterator::fold(xs, 0, _ + _)
   println("doubled = [\{Array::get(doubled, 0)}, \{Array::get(doubled, 1)}, \{Array::get(doubled, 2)}]")
   println("fold sum = \{total}")
 }
