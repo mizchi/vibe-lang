@@ -110,6 +110,8 @@ fn main with Console {
   println("1 << 4 = \{1 << 4}")
   let neg = 0 - 8
   println("(-8) >> 1 = \{neg >> 1}")
+  println("~5 = \{~5}")
+  println("~(-8) = \{~neg}")
 }
 ```
 
@@ -119,13 +121,17 @@ max + 1 = -4611686018427387904
 hex 0xFF = 255
 1 << 4 = 16
 (-8) >> 1 = -4
+~5 = -6
+~(-8) = 7
 ```
 
-Three things that differ from C-family languages:
+Three things to know coming from a C-family language:
 
 - `>>` is arithmetic — it sign-extends. There is no `>>>`; for a logical
   shift, mask afterwards.
-- There is no `~`. Write `x ^ mask`.
+- `~` is the complement over the 63-bit value, so `~x == -x - 1` and it is
+  its own inverse. It binds like the other prefix operators, tighter than
+  the infix ones.
 - Nothing is promoted silently. When you need more than 63 bits, reach
   for `BigInt` in `@vibe/core` deliberately.
 

@@ -226,10 +226,15 @@ the 63-bit width — `popcount(-1)` is 63, not 64 — with the zero cases define
 rather than inherited. Together they unblock every bit-level structure in §4
 without any SIMD at all.
 
-`~` (bit-not) is still missing: `CLAUDE.md` tells readers to spell it
-`x ^ mask`, and measured, `~x` is a parse error ("unexpected token: ~"). It is
-a new **operator**, touching the lexer, parser and printer, so it is tracked as
-its own slice rather than bundled with a builtin addition.
+`~` (bit-not) landed as slice C. It is the complement over the 63-bit two's
+complement `Int`, so `~x == -x - 1` and it is its own inverse. Being an
+**operator** rather than a builtin, it was tracked as its own slice: the token
+already existed (it is the labeled-parameter marker, `x~: Int`), so only the
+expression-start position was free, and the checker types it rather than the
+parser desugaring it to `x ^ -1` — a desugar would report a type error naming
+`^`, an operator the author never wrote. The lowering IS `x ^ -1`, but the
+constant is lane-dependent: under RC an `Int` is `n<<1`, so complementing the
+tagged value needs tagged(-1) = `-2`.
 
 ### 3.3 There is no packed numeric buffer
 

@@ -591,7 +591,7 @@ Precedence is high to low.
 | Prec | Operators | Assoc | Notes |
 |------|-----------|-------|-------|
 | 1 | `.`, `()`, `[]` | left | field, call, index |
-| 2 | unary `-`, `!` | right | numeric negation, bool not |
+| 2 | unary `-`, `!`, `~` | right | numeric negation, bool not, bit-not |
 | 3 | `*`, `/`, `%` | left | |
 | 4 | `+`, `-` | left | |
 | 5 | `<<`, `>>` | left | `>>` is arithmetic shift |
@@ -863,4 +863,3 @@ These forms may parse today but should not be used in new documentation:
   `Type::method(recv, ...)` when the receiver type is locally recoverable.
   Builtins use qualified or pipe-style calls; function-valued fields require
   `(obj.field)(...)`.
-- `~` bit-not is not supported; use `x ^ mask`.
