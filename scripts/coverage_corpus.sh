@@ -139,7 +139,7 @@ acc_run() {
 # Base: self-compile (compile) + flat self-compile under RC are heavy; include
 # the plain self-compile as the backbone, then the corpus broadens it.
 echo "[corpus] base: self-compile" >&2
-acc_run env VIBE_IMPORT_ABI=raw bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$FLAT" "$OUT_DIR/o.wasm" cli_main || true
+acc_run env VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_IMPORT_ABI=raw bash "$RUNNER" --invoke cli_main "$COMPILER_COV" "$FLAT" "$OUT_DIR/o.wasm" cli_main || true
 
 # RC-stress: small heap-heavy programs RC-compiled (VIBE_RC=1) to exercise the
 # Perceus dup/drop/alias codegen (pc_count/pc_emit/elaborate_rw...), which a

@@ -90,7 +90,7 @@ fi
 echo "[repro-715] (b) RC self-compiling flat source with stage2 (VIBE_RC=1) ..."
 STAGE_RC="$OUT_DIR/stage_rc.wasm"
 rm -f "$STAGE_RC"
-if ! VIBE_RC=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+if ! VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=1 VIBE_IMPORT_ABI=raw bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
     "$STAGE2" "$FLAT_SRC" "$STAGE_RC" cli_main; then
   echo "[repro-715] FAIL: step (b) itself crashed (RC self-compile of the whole flat source) -- this is a DIFFERENT/earlier failure than #715's usual landing site, investigate separately" >&2
   exit 2

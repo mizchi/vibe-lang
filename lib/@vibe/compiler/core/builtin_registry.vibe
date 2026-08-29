@@ -706,12 +706,11 @@ export fn builtin_allocates(name: String) -> Bool {
 /// a result, and functions whose tails reduce to these are themselves
 /// borrow-returning (#707).
 ///
-/// SINGLE SOURCE OF TRUTH (#1979): the perceus classifiers
-/// (is_borrow_ret_fname, compute_borrow_returning_names' seed) and every
-/// codegen call-shape check (compile_call / compile_match /
-/// compile_expr_tail / common_analysis) reach the set through this function or
-/// the predicate below, which SCANS it -- there is one spelling of the names,
-/// not two that must be kept equal. The set used to live as five hardcoded
+/// SINGLE SOURCE OF TRUTH (#1979): the Perceus seed and every codegen
+/// call-shape check reach the intrinsic set through this function or the
+/// predicate below, which SCANS it -- there is one spelling of the names, not
+/// two that must be kept equal. Perceus removes a source-owned shadowable name
+/// from this seed before classifying calls. The set used to live as five hardcoded
 /// copies, and two of them drifted when MutList::get landed: a wrapper of the
 /// missing builtin then classifies as owned-returning and RC callers drop an
 /// interior view, a silent double-free caught only by review (#1932). Add new
@@ -721,10 +720,19 @@ export fn builtin_allocates(name: String) -> Bool {
 /// compute_borrow_returning_names' fixed-point worklist pushes discovered user
 /// functions into the one it is given.
 export fn borrow_ret_builtin_names() -> Array[String] {
-  ["Array::get", "MutList::get", "Map::get", "__index", "__rec_field"]
+  [
+    "Array::get",
+    "MutList::get",
+    "Map::get",
+    "Map::iter_get",
+    "Map::__iter_get_unchecked",
+    "__index",
+    "__rec_field"
+  ]
 }
 
-/// Membership in `borrow_ret_builtin_names`, for the direct-call classifiers.
+/// Membership in `borrow_ret_builtin_names`, before source ownership is
+/// applied by the whole-program Perceus classifier.
 ///
 /// A linear scan rather than the `||` chain this replaced: the chain was a
 /// second spelling of the list above, so adding a builtin to one and not the
@@ -752,7 +760,7 @@ fn builtin_is_non_allocating(name: String) -> Bool {
   name == "String::length" || name == "String::equals" || name == "String::char_code_at" || name == "String::ends_with" || name == "String::starts_with" || name == "String::contains" || name == "String::index_of" || name == "Bytes::index_of_bytes" || name == "Bytes::index_of" || name == "Bytes::count" || name == "Bytes::last_index_of" || name == "Bytes::compare" || name == "String::last_index_of" ||
   // Indexed container access. `set`/`blit`/`fill` write into storage that is
   // already there; `truncate` only lowers a length.
-  name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::truncate" || name == "FrozenArray::get" || name == "FrozenArray::length" || name == "FixedArray::length" || name == "FixedArray::get" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "FixedArray::blit" || name == "Int64Array::length" || name == "Int64Array::get" || name == "Int64Array::set" || name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::blit" || name == "Bytes::fill" ||
+  name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::truncate" || name == "FrozenArray::get" || name == "FrozenArray::length" || name == "FixedArray::length" || name == "FixedArray::get" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "FixedArray::blit" || name == "Int64Array::length" || name == "Int64Array::get" || name == "Int64Array::set" || name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::blit" || name == "Bytes::fill" || name == "Map::iter_get" || name == "Map::__iter_get_unchecked" ||
   // Membership questions that return a Bool, not a value.
   name == "MapBuilder::has_key" || name == "map_has" ||
   // Int-domain conversions (Char/Int stay unboxed; the Float family does NOT

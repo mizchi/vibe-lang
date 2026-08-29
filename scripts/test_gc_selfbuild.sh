@@ -231,7 +231,7 @@ BUNDLE_SRC="lib/@vibe/compiler/_cli_adapter_module_source.vibe"
 BUNDLE_OUT="$OUT_DIR/bundle_gc.wasm"
 rm -f "$BUNDLE_OUT" "$BUNDLE_OUT.diag"
 env VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
+  VIBE_INTERNAL_TRUSTED_SOURCE=1 bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$CLI_WASM" \
   "$BUNDLE_SRC" "${BUNDLE_OUT#"$ROOT_DIR"/}" cli_main >/dev/null 2>&1
 if [ -s "$BUNDLE_OUT" ]; then
   if command -v wasm-tools >/dev/null 2>&1; then
@@ -324,7 +324,8 @@ if VIBE_TEST_CLI_WASM="$CLI_WASM" VIBE_TEST_BACKEND=gc \
     fixtures/bytes_index_of_bytes_test.vibe \
     fixtures/bytes_index_of_byte_test.vibe \
     fixtures/bytes_count_last_index_of_test.vibe \
-    fixtures/bytes_compare_test.vibe > "$gcfx_log" 2>&1; then
+    fixtures/bytes_compare_test.vibe \
+    fixtures/iterator_map_direct_key_gc_test.vibe > "$gcfx_log" 2>&1; then
   sed 's/^/[gc-selfbuild]   /' "$gcfx_log"
   echo "[gc-selfbuild] gc runtime fixtures ok"
 else

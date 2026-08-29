@@ -1323,6 +1323,33 @@ test "#2357: a value alias does not activate a projected trait namespace" {
   inspect(env_lookup(checked, "Marker::mark") == None, content = "true")
 }
 
+test "#2357: importing a trait activates exported namespace helpers but not bare names" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Iterator[T] { iter_length(Self) -> Int\n  iter_get(Self, Int) -> T }\nexport fn Iterator::count[C: Iterator, T](values: C) -> Int { C::iter_length(values) }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Iterator }"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Iterator::count") != None, content = "true")
+  inspect(env_lookup(checked, "count") == None, content = "true")
+}
+
+test "#2357: a trait alias renames its exported namespace helpers" {
+  let dep_path = "workspace/dep.vibe"
+  let dep_source = "export trait Iterator[T] { iter_length(Self) -> Int\n  iter_get(Self, Int) -> T }\nexport fn Iterator::count[C: Iterator, T](values: C) -> Int { C::iter_length(values) }"
+  let dep_env = checked_test_env(dep_source)
+  let source = "import ./dep.vibe { trait Iterator as Iter }"
+  let projected = projected_import_env_for_test(source, "workspace/main.vibe", [
+    dep_path
+  ], [(dep_path, dep_env)])
+  let checked = check_program_with_projected_import_env_result(parse_program_with_path("workspace/main.vibe", source), projected).final_env
+  inspect(env_lookup(checked, "Iter::count") != None, content = "true")
+  inspect(env_lookup(checked, "Iterator::count") == None, content = "true")
+  inspect(env_lookup(checked, "count") == None, content = "true")
+}
+
 test "#2357: imported trait namespaces reject conflicting local operations" {
   let dep_path = "workspace/dep.vibe"
   let dep_source = "export trait Measurable { measure(Self) -> Int }\nimpl Measurable for Int { measure(self) -> Int { self } }"

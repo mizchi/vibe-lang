@@ -61,6 +61,7 @@ import @vibe/compiler/core {
   env_type_defs,
   env_value_binding,
   has_standard_effect_policy,
+  is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
   lookup_registry_builtin,
   normalize_path,
@@ -298,8 +299,8 @@ fn selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_nam
   }
 }
 
-fn bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], enum_name: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
-  let qual_prefix = String::concat(enum_name, "::")
+fn bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: String, dep_bindings: Array[(String, Type)], source_owner: String, local_owner: String, trait_mappings: Array[(String, String)], reexport_surface_only: Bool) -> TypeEnv {
+  let qual_prefix = String::concat(source_owner, "::")
   let mut out = acc
   // #1908: the dep's flat bindings can carry a name twice — the authoritative
   // generalized scheme first, then a stale shadowed duplicate from the dep's
@@ -316,12 +317,17 @@ fn bind_enum_constructor_companions(acc: TypeEnv, dep_env: TypeEnv, resolved: St
   let mut i = 0
   while i < Array::length(dep_bindings) {
     let (candidate_name, candidate_ty) = Array::get(dep_bindings, i)
-    if candidate_name != enum_name && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, enum_name) || String::starts_with(candidate_name, qual_prefix)) {
+    if candidate_name != source_owner && starts_with_upper(candidate_name) && (type_returns_name(candidate_ty, source_owner) || String::starts_with(candidate_name, qual_prefix)) {
       if contains_str(seen, candidate_name) {
         ()
       } else {
         Array::push(seen, candidate_name)
-        out = env_bind_with_origin(out, candidate_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(dep_env, resolved, candidate_name, reexport_surface_only))
+        let local_name = if source_owner != local_owner && String::starts_with(candidate_name, qual_prefix) {
+          String::concat(local_owner, String::substring(candidate_name, String::length(source_owner), String::length(candidate_name)))
+        } else {
+          candidate_name
+        }
+        out = env_bind_with_origin(out, local_name, trait_projection_map_type_bounds(candidate_ty, trait_mappings), selected_module_binding_origin(dep_env, resolved, candidate_name, reexport_surface_only))
       }
     }
     i = i + 1
@@ -1250,9 +1256,9 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
         }
       }
       let with_companions = match ty {
-        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, enum_name, trait_mappings, surface_only_item),
+        CtEnum(enum_name) => bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, enum_name, bound_name, trait_mappings, surface_only_item),
         _ => if starts_with_upper(name) {
-          bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, name, trait_mappings, surface_only_item)
+          bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, name, bound_name, trait_mappings, surface_only_item)
         } else {
           with_name
         }
@@ -1323,7 +1329,9 @@ fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Arr
       (local_acc, surface_acc)
     } else {
       let (next_local, next_surface) = match Array::get(stmts, i) {
-        SImport(raw_path, names) => {
+        SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+          (local_acc, surface_acc)
+        } else {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
           (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false), surface_acc)
         },
@@ -4724,7 +4732,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
   let len = Array::length(stmts)
   while i < len {
     match Array::get(stmts, i) {
-      SImport(raw_path, _) => if String::length(raw_path) > 0 {
+      SImport(raw_path, _) => if String::length(raw_path) > 0 && !is_builtin_iterator_serialized_boundary_path(raw_path) {
         let resolved = resolve_import_path(base_dir, raw_path)
         if !contains_str(out, resolved) {
           Array::push(out, resolved)

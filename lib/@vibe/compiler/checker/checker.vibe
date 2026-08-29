@@ -3308,6 +3308,11 @@ fn head_kind(t: Type) -> Int {
       // unify-fail and then be swallowed — `type_no_named` is false and
       // `nominal_name_of` treats a still-open `T` as non-concrete.
       16
+    } else if name == "Map" {
+      // Map's runtime representation is compiler-owned just like MutList's.
+      // Keeping it in the unresolved CtNamed bucket lets direct builtins such
+      // as `Map::iter_get(1, 0)` reinterpret an arbitrary scalar as a map.
+      17
     } else {
       0
     },
@@ -5176,7 +5181,7 @@ fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "String::equals" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "Array::any" || name == "Array::all" || name == "Array::contains" || name == "Map::has_key" || name == "map_has" || name == "MapBuilder::has_key" || name == "Path::is_absolute" || name == "Fs::exists" || name == "Fs::is_dir" || name == "Fs::is_file" || name == "eq" || name == "not" {
     Some(CtBool)
   }
-  else if name == "String::concat" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::join" || name == "Array::join" || name == "Path::to_string" || name == "Path::resolve" || name == "PromptText::new" || name == "Stdin::read_stream" || name == "Env::get" || name == "Env::args_get" || name == "Fs::read_file" || name == "Fs::getcwd" || name == "sh" || name == "Lines::stringify" || name == "__to_string" {
+  else if name == "String::concat" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::join" || name == "Array::join" || name == "Path::to_string" || name == "Path::resolve" || name == "PromptText::new" || name == "Stdin::read_stream" || name == "Env::get" || name == "Env::args_get" || name == "Fs::read_file" || name == "Fs::getcwd" || name == "sh" || name == "Lines::stringify" || name == "Map::iter_get" || name == "__to_string" {
     Some(CtString)
   }
   else if name == "__len" {
@@ -5185,7 +5190,7 @@ fn direct_builtin_return(name: String) -> Option[Type] {
   else if name == "String::iter_get" {
     Some(CtInt)
   }
-  else if name == "iter_get" || name == "Map::iter_get" || name == "iter_require" || name == "__neg" {
+  else if name == "iter_get" || name == "iter_require" || name == "__neg" {
     Some(CtUnknown)
   }
   else if name == "Bytes::new" || name == "Bytes::concat" || name == "Bytes::slice" || name == "Bytes::from_array" || name == "Fs::read_bytes" {
@@ -5252,6 +5257,8 @@ fn builtin_first_arg_head(name: String) -> Int {
     4
   } else if name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::to_array" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" {
     7
+  } else if name == "Map::iter_length" || name == "Map::iter_get" {
+    17
   } else if name == "Int64Array::make" || name == "FixedArray::make" {
     // #989 review: the make length is arg 0, so the rest-position table
     // never sees it — `Int64Array::make("4", 0)` compiled with the String
@@ -5326,6 +5333,12 @@ fn builtin_arg_head_rest(name: String, i: Int) -> Int {
     } else {
       0
     }
+  } else if name == "Map::iter_get" {
+    if i == 1 {
+      1
+    } else {
+      0
+    }
   } else if name == "Int64Array::set" {
     if i == 1 || i == 2 {
       1
@@ -5355,7 +5368,7 @@ fn builtin_fixed_arity(name: String) -> Int {
   let name = canonical_builtin_name(name)
   if name == "Array::length" || name == "Array::reverse" || name == "String::length" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::iter_length" || name == "Bytes::length" || name == "Bytes::to_array" || name == "Bytes::from_array" || name == "Map::keys" || name == "Map::iter_length" || name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" || name == "Double::from_i64_bits" || name == "Int::to_double" || name == "not" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "__to_string" || name == "FixedArray::length" || name == "Int64Array::length" {
     1
-  } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::contains" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::join" || name == "Array::foreach" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "map_has" || name == "MapBuilder::has_key" || name == "MapBuilder::get" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" || name == "Int64Array::get" || name == "Int64Array::make" {
+  } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::contains" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::join" || name == "Array::foreach" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "Map::iter_get" || name == "map_has" || name == "MapBuilder::has_key" || name == "MapBuilder::get" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" || name == "Int64Array::get" || name == "Int64Array::make" {
     2
   } else if name == "Array::set" || name == "Array::slice" || name == "String::substring" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" {
     3
@@ -10261,7 +10274,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       //     dropping element-type safety.
       let it_resolved = subst_apply(s1, it)
       // #1679: only the residual builtin EForIn lowering collects body values.
-      // Trait iterators, pull closures, HostStream and indexed user Iterables
+      // Trait iterators, pull closures, HostStream and indexed user Iterators
       // are rewritten after checking to a Unit-valued EWhile.  Claiming
       // CtArray here for those shapes let a Unit zero be reinterpreted as an
       // Array pointer.  Keep statement-position loops working, but reject a
@@ -10294,7 +10307,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         _ => 0
       }
       // Two non-collecting lowerings deliberately preserve
-      // `for index, value in ...`: indexed-Iterable binds its generated loop
+      // `for index, value in ...`: indexed-Iterator binds its generated loop
       // counter, and build_pull_for_in creates/increments an index cell.  The
       // next-based and HostStream lowerings do not, which is the silent index
       // drop diagnosed below (#1763 review).
@@ -10652,7 +10665,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             let marker = String::concat(fapp_formal_marker_prefix, tpname)
             // HKT formals (`F`/`A` in `F[A]`) are rigid so F[A] is not
             // assignable to F[B] or Array[Int]. Plain `T` and trait-bounded
-            // formals stay unification vars (#2130 local annotations, Iterable
+            // formals stay unification vars (#2130 local annotations, Iterator
             // dispatch, region provenance).
             let body_ty = if Array::length(bounds) == 0 && string_array_has(hkt_related, tpname) {
               CtNamed(String::concat("#hktformal.", tpname), array_empty())

@@ -25,10 +25,10 @@ ENVV=(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw)
 
 echo "[rc-selfhost] cli=$CLI"
 rm -f "$OUT"/ref.wasm* "$OUT"/rcstage.wasm* "$OUT"/rcout.wasm*
-env "${ENVV[@]}" VIBE_RC=0 $RUN --invoke cli_main "$CLI" "$BUNDLE" "$OUT/ref.wasm" cli_main >/dev/null 2>&1
-env "${ENVV[@]}" VIBE_RC=1 $RUN --invoke cli_main "$CLI" "$BUNDLE" "$OUT/rcstage.wasm" cli_main >/dev/null 2>&1
+env "${ENVV[@]}" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=0 $RUN --invoke cli_main "$CLI" "$BUNDLE" "$OUT/ref.wasm" cli_main >/dev/null 2>&1
+env "${ENVV[@]}" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=1 $RUN --invoke cli_main "$CLI" "$BUNDLE" "$OUT/rcstage.wasm" cli_main >/dev/null 2>&1
 [ -s "$OUT/ref.wasm" ] && [ -s "$OUT/rcstage.wasm" ] || { echo "[rc-selfhost] FAIL: stage build produced no output" >&2; exit 1; }
-timeout 600 env "${ENVV[@]}" VIBE_RC=0 $RUN --invoke cli_main "$OUT/rcstage.wasm" "$BUNDLE" "$OUT/rcout.wasm" cli_main >/dev/null 2>&1
+timeout 600 env "${ENVV[@]}" VIBE_INTERNAL_TRUSTED_SOURCE=1 VIBE_RC=0 $RUN --invoke cli_main "$OUT/rcstage.wasm" "$BUNDLE" "$OUT/rcout.wasm" cli_main >/dev/null 2>&1
 if [ -s "$OUT/rcout.wasm" ] && cmp -s "$OUT/rcout.wasm" "$OUT/ref.wasm"; then
   echo "[rc-selfhost] OK: RC-built compiler output is byte-identical ($(wc -c <"$OUT/rcout.wasm") bytes)"
   exit 0

@@ -25,10 +25,13 @@ import @vibe/compiler/core {
   Expr,
   Source,
   Stmt,
+  append_builtin_iterator_plan_operation_markers,
   append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
   apply_export_renames_stmts,
   build_export_rename_plan,
+  builtin_iterator_namespace_markers,
+  builtin_iterator_serialized_boundary_from_markers,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_aliases,
@@ -36,6 +39,7 @@ import @vibe/compiler/core {
   dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
+  is_builtin_iterator_serialized_boundary_path,
   namespace_private_value_stmts,
   namespace_rename_originals_reset,
   path_set_add,
@@ -45,7 +49,9 @@ import @vibe/compiler/core {
   resolve_import_path_candidates,
   resolve_import_path_probe,
   rewrite_imported_value_stmt_to_local,
-  stmts_have_import_deep
+  stmts_have_import_deep,
+  trait_import_local_operation_renames,
+  trait_import_local_operation_renames_preserving_exports
 }
 
 import ./path_utils.vibe {
@@ -262,7 +268,9 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
     let mut i = 0
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
-        SImport(raw_path, _) => {
+        SImport(raw_path, _) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+          ()
+        } else {
           let resolved = resolve_existing_import_path(base_dir, raw_path, path)
           collect_parsed_sources_recursive(resolved, file_paths, file_stmts, visited)
         },
@@ -280,10 +288,16 @@ fn collect_parsed_sources_recursive(path: String, file_paths: Array[String], fil
 }
 
 fn transformed_file_stmts(entry_path: String, path: String, stmts: Array[Stmt], plan: ExportRenamePlan) -> Array[Stmt] {
-  let export_renamed = if path == entry_path {
-    stmts
+  let collision_renames = if path == entry_path {
+    trait_import_local_operation_renames_preserving_exports(stmts, path)
   } else {
-    apply_export_renames_stmts(stmts, export_plan_renames_for(plan, path))
+    trait_import_local_operation_renames(stmts, path)
+  }
+  let collision_renamed = apply_export_renames_stmts(stmts, collision_renames)
+  let export_renamed = if path == entry_path {
+    collision_renamed
+  } else {
+    apply_export_renames_stmts(collision_renamed, export_plan_renames_for(plan, path))
   }
   if path == entry_path {
     export_renamed
@@ -371,14 +385,20 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     let path = Array::get(file_paths, fi)
     let stmts = Array::get(file_stmts, fi)
     let namespaced_stmts = transformed_file_stmts(entry_path, path, stmts, plan)
+    let import_renames = if stmts_have_import_deep(stmts) {
+      collect_import_value_renames(plan, path, stmts)
+    } else {
+      array_empty()
+    }
     // Imports and re-exports disappear from the executable merged AST. Keep
     // each source's locally visible names separate from aliased surface-only
     // names, without blocking builtins in the next unit (#2287).
     let (reexport_locals, reexport_surface_only, retained_originals) = reexport_source_boundary(stmts, path == entry_path)
+    append_unique_strings(reexport_locals, builtin_iterator_namespace_markers(stmts))
+    append_builtin_iterator_plan_operation_markers(reexport_locals, import_renames, plan)
     validate_retained_entry_source_names(stmts, retained_originals)
     Array::push(merged, SReExportSourceBoundary(reexport_locals, reexport_surface_only))
     if stmts_have_import_deep(stmts) {
-      let import_renames = collect_import_value_renames(plan, path, stmts)
       let retained_collision_locals = import_rename_locals_targeting(collect_import_aliases(stmts), reexport_surface_only)
       append_unique_strings(retained_collision_locals, import_rename_locals_targeting(import_renames, reexport_surface_only))
       let active_import_renames = import_renames_without_locals(import_renames, retained_collision_locals)
@@ -396,6 +416,17 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
     fi = fi + 1
   }
   plan
+}
+
+fn serialize_builtin_iterator_boundaries(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExportSourceBoundary(markers, _) => Array::set(stmts, i, builtin_iterator_serialized_boundary_from_markers(markers)),
+      _ => ()
+    }
+    i = i + 1
+  }
 }
 
 fn collect_merged_stmts_recursive(entry_path: String, merged: Array[Stmt], visited: Array[Array[String]]) -> Unit with Exception + Fs {
@@ -719,11 +750,12 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
   let driver_stmts = parse_program(lex(driver_source))
   // The driver is a separate source unit from the compiler entry that precedes
   // it, so source-scoped builtin classification must start a fresh range.
-  Array::push(merged, SReExportSourceBoundary(array_empty(), array_empty()))
+  Array::push(merged, SReExportSourceBoundary(builtin_iterator_namespace_markers(driver_stmts), array_empty()))
   append_coverage_driver_stmts(entry_path, driver_path, driver_stmts, file_paths, file_stmts, plan, merged)
   validate_serializable_reexport_references(merged)
   desugar_inspect_calls(merged)
   expand_interp_stmts(merged)
+  serialize_builtin_iterator_boundaries(merged)
   print_program(merged)
 }
 
@@ -744,11 +776,14 @@ export fn merged_program_source_fs(entry_path: String) -> String with Exception 
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
   // Complete source-scoped special-call rewrites while the in-memory boundary
-  // metadata still exists. The printed program needs no sentinel syntax and
-  // can be reparsed as ordinary user source without a lexer/parser exception.
+  // metadata still exists. The printed program carries a parseable internal
+  // sentinel so the trusted single-source bundle lane can preserve Iterator
+  // devirtualization. Ordinary FS ingestion rejects that reserved syntax: a
+  // source file cannot prove from its own bytes that the compiler produced it.
   validate_serializable_reexport_references(stmts)
   desugar_inspect_calls(stmts)
   expand_interp_stmts(stmts)
+  serialize_builtin_iterator_boundaries(stmts)
   print_program(stmts)
 }
 
