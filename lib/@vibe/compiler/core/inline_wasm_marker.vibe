@@ -1,0 +1,145 @@
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+/// #805 (ADR-0072): the marker call the parser emits for an inline-wasm fn
+/// body, `%wasm("<WAT text>")`. A `%`-ident can never be parsed in expression
+/// position, so user source cannot forge it.
+export fn inline_wasm_marker_name() -> String {
+  "%wasm"
+}
+
+fn wat_is_delim(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 40 || c == 41
+}
+
+fn wat_token_end(wat: String, start: Int, len: Int) -> Int {
+  let mut i = start
+  while i < len && !wat_is_delim(String::char_code_at(wat, i)) {
+    i = i + 1
+  }
+  i
+}
+
+fn wat_skip_delims(wat: String, start: Int, len: Int) -> Int {
+  let mut i = start
+  while i < len && wat_is_delim(String::char_code_at(wat, i)) {
+    i = i + 1
+  }
+  i
+}
+
+fn wat_name_index(names: Array[String], name: String) -> Int {
+  let n = Array::length(names)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < n {
+    if Array::get(names, i) == name {
+      found = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2348: the fn names a WAT body references through `call $name`.
+///
+/// The WAT text reaches every AST pass as an opaque `EString`, so a pass that
+/// needs to know what a kernel depends on has to read the names out of the
+/// text: DCE, whose reachability would otherwise drop a helper only a `call`
+/// mentions, and the merge rename plan, which would otherwise mangle a
+/// helper's DEFINITION and leave the `$helper` token in the caller pointing
+/// at a name that no longer exists.
+///
+/// The scan is deliberately looser than the assembler's: it tracks neither
+/// comments nor nesting, so it can report a name the assembler would never
+/// resolve. That direction is safe for both callers — DCE keeps a function it
+/// did not have to, and a rename rewrites a token inside a comment, which
+/// changes nothing. The other direction is not: a MISSED name is a function
+/// DCE drops out from under a live call, or a callee the merge leaves
+/// dangling. When in doubt this over-reports.
+export fn wat_callee_names(wat: String) -> Array[String] {
+  let out = array_empty()
+  let len = String::length(wat)
+  let mut i = 0
+  while i < len {
+    let start = wat_skip_delims(wat, i, len)
+    if start >= len {
+      i = len
+    } else {
+      let stop = wat_token_end(wat, start, len)
+      if String::substring(wat, start, stop) == "call" {
+        let name_start = wat_skip_delims(wat, stop, len)
+        if name_start < len && String::char_code_at(wat, name_start) == 36 {
+          let name_stop = wat_token_end(wat, name_start, len)
+          if name_stop > name_start + 1 {
+            Array::push(out, String::substring(wat, name_start + 1, name_stop))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = stop
+    }
+  }
+  out
+}
+
+/// #2348: `wat` with every `call $name` callee that appears in `from`
+/// replaced by the matching entry of `to`. Only the callee token is touched —
+/// a local or label spelled the same way is left alone, which is why this
+/// looks for the `call` keyword rather than for `$name` anywhere.
+export fn wat_rewrite_callees(wat: String, from: Array[String], to: Array[String]) -> String {
+  if Array::length(from) == 0 {
+    wat
+  } else {
+    let len = String::length(wat)
+    let mut out = ""
+    let mut copied = 0
+    let mut i = 0
+    while i < len {
+      let start = wat_skip_delims(wat, i, len)
+      if start >= len {
+        i = len
+      } else {
+        let stop = wat_token_end(wat, start, len)
+        if String::substring(wat, start, stop) == "call" {
+          let name_start = wat_skip_delims(wat, stop, len)
+          if name_start < len && String::char_code_at(wat, name_start) == 36 {
+            let name_stop = wat_token_end(wat, name_start, len)
+            let slot = wat_name_index(from, String::substring(wat, name_start + 1, name_stop))
+            if slot >= 0 {
+              out = String::concat(out, String::substring(wat, copied, name_start + 1))
+              out = String::concat(out, Array::get(to, slot))
+              copied = name_stop
+            } else {
+              ()
+            }
+            i = name_stop
+          } else {
+            i = stop
+          }
+        } else {
+          i = stop
+        }
+      }
+    }
+    String::concat(out, String::substring(wat, copied, len))
+  }
+}
+
+//# Misc
+
+export {
+  inline_wasm_marker_name, wat_callee_names, wat_rewrite_callees
+}
