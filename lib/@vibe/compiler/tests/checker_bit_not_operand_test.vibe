@@ -1,0 +1,53 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Misc
+
+// #2344 slice C / #2403 review. `~` is Int-only, and the guard that decides
+// whether a non-Int operand is an ERROR or is left alone runs on
+// `type_is_ground`, which answers `false` for EVERY `CtNamed`. That is
+// deliberate for a rigid type formal -- `T` in `fn f[T](x: T)` -- but a name
+// that resolves to a declared struct or enum is not a type formal and can
+// never be `Int`.
+//
+// Measured before the fix: `~x` on a `Cell[Int]` produced `-241` at runtime,
+// the complemented struct pointer, with no diagnostic at all.
+
+test "#2403 `~` rejects a declared generic struct operand" {
+  let src = "struct Cell[T] { v: T }\nfn f(x: Cell[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects a declared generic enum operand" {
+  let src = "enum E[T] { A(T); B }\nfn f(x: E[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects a declared struct through the enclosing fn's own param" {
+  // The operand is `Cell[T]` with T still rigid, so the head is what decides;
+  // the argument being unresolved must not buy the operand an exemption.
+  let src = "struct Cell[T] { v: T }\nfn f[T](x: Cell[T]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` keeps accepting an alias that resolves to Int" {
+  // The carve-out this fix must NOT swallow: `Wrap[Bool]` IS an `Int`, and it
+  // reaches the guard as a `CtNamed` with arguments -- the same shape as
+  // `Cell[Int]`. Only the DECLARATION tells the two apart, which is why the
+  // fix consults `find_typedef` rather than testing for applied arguments.
+  let src = "type Wrap[T] = Int\nfn f(x: Wrap[Bool]) -> Int { ~x }"
+  assert(check_source_ok(src))
+}
+
+test "#2403 `~` stays permissive for a bare rigid type formal" {
+  // Unchanged, and matching what `!` and prefix `-` do for the same shape.
+  let src = "fn f[T](x: T) -> Int { ~x }"
+  assert(check_source_ok(src))
+}
+
+test "#2403 `~` on a plain Int is still clean" {
+  assert(check_source_ok("fn f(x: Int) -> Int { ~x }"))
+}

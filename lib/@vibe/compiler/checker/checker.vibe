@@ -9784,6 +9784,22 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           other => {
             let flag = match other {
               CtUnknown => false,
+              // #2403 review: `type_is_ground` answers `false` for EVERY
+              // `CtNamed`, because a bare `CtNamed(nm, [])` may be a rigid type
+              // formal -- `T` in `fn f[T](x: T)` -- and rejecting those would
+              // reject generic code. But a name that resolves to a DECLARED
+              // struct or enum is not a type formal and can never be `Int`, so
+              // it is an error with no ambiguity to preserve. Measured:
+              // `struct Cell[T]` then `~x` on a `Cell[Int]` produced `-241` --
+              // the complemented pointer -- with no diagnostic.
+              // `TDAlias` deliberately stays permissive: `type Wrap[T] = Int`
+              // applied as `Wrap[Bool]` IS an Int, and rejecting it here would
+              // break a program that works today.
+              CtNamed(nm, _) => match find_typedef(defs, nm) {
+                Some(TDStruct(_, _, _, _)) => true,
+                Some(TDEnum(_, _, _)) => true,
+                _ => false
+              },
               _ => type_is_ground(other)
             }
             if flag {
