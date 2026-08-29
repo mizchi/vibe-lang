@@ -86,3 +86,19 @@ test "zero_alloc assume is a caller trust boundary but fail-closed on its own bo
   assert(String::contains(hide_msg, "dirty"))
   assert(String::contains(hide_msg, "array literal"))
 }
+
+test "#2379 review: zero_alloc resolves source-owned Map accessors before builtins" {
+  let iter_get = "fn Map::iter_get(_map: Int, _index: Int) -> Array[Int] { [1] }\n#zero_alloc\nfn hot() -> Array[Int] { Map::iter_get(0, 0) }\n"
+  let iter_get_msg = zero_alloc_check(parse_program(lex(iter_get)))
+  assert(String::contains(iter_get_msg, "Map::iter_get"))
+  assert(String::contains(iter_get_msg, "array literal"))
+  let unchecked = "fn Map::__iter_get_unchecked(_map: Int, _index: Int) -> Array[Int] { [1] }\n#zero_alloc\nfn hot() -> Array[Int] { Map::__iter_get_unchecked(0, 0) }\n"
+  let unchecked_msg = zero_alloc_check(parse_program(lex(unchecked)))
+  assert(String::contains(unchecked_msg, "Map::__iter_get_unchecked"))
+  assert(String::contains(unchecked_msg, "array literal"))
+}
+
+test "#2379 review: zero_alloc keeps intrinsic Map accessors allocation-free" {
+  let source = "#zero_alloc\nfn hot(m: Map[String, Int]) -> String { Map::iter_get(m, 0) }\n"
+  assert_eq(zero_alloc_check(parse_program(lex(source))), "")
+}

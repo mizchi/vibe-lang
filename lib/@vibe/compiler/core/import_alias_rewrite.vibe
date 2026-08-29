@@ -2695,16 +2695,22 @@ fn plan_triple_lookup(tpaths: Array[String], tnames: Array[String], tvalues: Arr
 
 /// Re-export edges of one file: `export ./dep.vibe { a, b as c }` plus the
 /// `import { x } ... export { x }` facade idiom (an `export {}` item with no
-/// local let def but a matching import). Pushed as parallel arrays
+/// local declaration but a matching import). Pushed as parallel arrays
 /// (from-path, public-name, target-path, target-name).
 fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Array[String], edge_from: Array[String], edge_pub: Array[String], edge_tpath: Array[String], edge_tname: Array[String], builtin_iterator_paths: Array[String]) -> Unit {
   let base_dir = dir_of_path(path)
-  let let_names = empty_strings()
+  let local_names = empty_strings()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, name, _, _) => Array::push(let_names, name),
-      SLetMut(name, _, _) => Array::push(let_names, name),
+      SLet(_, _, name, _, _) => Array::push(local_names, name),
+      SLetMut(name, _, _) => Array::push(local_names, name),
+      SExternLet(name, _) => Array::push(local_names, name),
+      SStruct(_, name, _, _, _, _) => Array::push(local_names, name),
+      SEnum(_, name, _, _, _) => Array::push(local_names, name),
+      STrait(_, name, _, _, _, _) => Array::push(local_names, name),
+      STypeAlias(_, name, _, _) => Array::push(local_names, name),
+      SSuberror(_, name, _) => Array::push(local_names, name),
       _ => ()
     }
     i = i + 1
@@ -2763,10 +2769,14 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
         let mut j = 0
         while j < Array::length(items) {
           let name = Array::get(items, j)
-          if !string_array_contains(let_names, name) {
-            let mut ri = 0
+          if !string_array_contains(local_names, name) {
+            // Imports bind in source order, so a later import with the same
+            // local spelling owns the facade export. Walk the already-built
+            // reference list backwards; this adds no module-sized scan.
+            let mut ri = Array::length(import_refs)
             let mut done = false
-            while ri < Array::length(import_refs) && !done {
+            while ri > 0 && !done {
+              ri = ri - 1
               let (raw_path, original, local) = Array::get(import_refs, ri)
               if local == name {
                 Array::push(edge_from, path)
@@ -2775,7 +2785,7 @@ fn collect_reexport_edges_into(path: String, stmts: Array[Stmt], known_paths: Ar
                 Array::push(edge_tname, original)
                 done = true
               } else {
-                ri = ri + 1
+                ()
               }
             }
           } else {
