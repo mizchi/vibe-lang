@@ -1,0 +1,232 @@
+//# String interning (#2387 Phase 1)
+
+// Hash-consing for the identifier-shaped strings the front end produces.
+//
+// Why this exists: a `String` is a packed non-owning `(ptr<<32)|len` view and
+// is never RC-tracked (perceus `type_name_is_heap` -> false), so two equal
+// identifiers almost never share a pointer -- every occurrence of `foo` is a
+// different view into its source buffer, and every occurrence of `Foo::bar`
+// used to be a fresh `String::concat` allocation in the parser. Downstream,
+// every name comparison (env lookup, builtin dispatch ladders, table scans)
+// therefore pays a byte compare; `__rt_str_eq`'s identity fast path can only
+// fire when both sides hold the same object. Interning canonicalizes each
+// distinct spelling to ONE shared String, so equal names compare in a single
+// i64 equality and the per-occurrence qualified-name concat disappears.
+//
+// Safety: strings are immortal within a compile (never dropped, bump lane
+// never reclaims mid-compile; the RC lane does not track String at all), so a
+// module-level table holding views into source buffers cannot dangle. The
+// table is correctness-free by construction -- every probe re-compares the
+// actual bytes before answering, so a hash collision or a stale slot can only
+// cost an extra probe, never return the wrong string (the same fail-safe shape
+// as the perceus pctx_cache: verify content, never trust the index).
+
+//# Table state
+
+// Open addressing, linear probing, power-of-two capacity, "" = empty slot.
+// Module-level `let` initializes once (fixtures/module_let_memo_test.vibe).
+// An identifier is never empty, so "" is unambiguous as the empty sentinel;
+// the public entry points hand empty requests back without touching the
+// table.
+let intern_slots: Array[String] = []
+let intern_count_cell: Array[Int] = []
+
+fn intern_ensure() -> Unit {
+  if Array::length(intern_slots) == 0 {
+    let mut i = 0
+    while i < 65536 {
+      Array::push(intern_slots, "")
+      i = i + 1
+    }
+    Array::push(intern_count_cell, 0)
+  } else {
+    ()
+  }
+}
+
+//# Hashing
+
+// FNV-1a over bytes, masked to 30 bits each step so the 63-bit wrap (#1877)
+// is never reached: 2^30 * 16777619 < 2^55. The mask keeps the value positive
+// for the power-of-two index mask below.
+fn fnv_step(h: Int, b: Int) -> Int {
+  ((h^b) * 16777619)&0x3FFFFFFF
+}
+
+fn fnv_slice(s: String, start: Int, end: Int) -> Int {
+  let mut h = 84696351
+  let mut i = start
+  while i < end {
+    h = fnv_step(h, String::char_code_at(s, i))
+    i = i + 1
+  }
+  h
+}
+
+//# Probing
+
+fn intern_slice_matches(key: String, s: String, start: Int, end: Int) -> Bool {
+  let klen = String::length(key)
+  if klen != end - start {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < klen {
+      ok = String::char_code_at(key, i) == String::char_code_at(s, start + i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+// key == ns ++ "::" ++ member, compared piecewise so a hit allocates nothing.
+fn intern_qualified_matches(key: String, ns: String, member: String) -> Bool {
+  let nlen = String::length(ns)
+  let mlen = String::length(member)
+  if String::length(key) != nlen + 2 + mlen {
+    false
+  } else if String::char_code_at(key, nlen) != ':' || String::char_code_at(key, nlen + 1) != ':' {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while ok && i < nlen {
+      ok = String::char_code_at(key, i) == String::char_code_at(ns, i)
+      i = i + 1
+    }
+    let mut j = 0
+    while ok && j < mlen {
+      ok = String::char_code_at(key, nlen + 2 + j) == String::char_code_at(member, j)
+      j = j + 1
+    }
+    ok
+  }
+}
+
+// Reinsert `key` into a table known to have a free slot (grow path only:
+// every key is already unique, so no compare is needed -- first empty slot
+// on the probe path is the home).
+fn intern_reinsert(key: String) -> Unit {
+  let cap = Array::length(intern_slots)
+  let mut idx = fnv_slice(key, 0, String::length(key))&(cap - 1)
+  while String::length(Array::get(intern_slots, idx)) != 0 {
+    idx = (idx + 1)&(cap - 1)
+  }
+  Array::set(intern_slots, idx, key)
+}
+
+// Keep load factor under 1/2 so probe chains stay short. Strings are not
+// RC-tracked, so Array::truncate/Array::set on the slot table cannot leak.
+fn intern_grow_if_needed() -> Unit {
+  let cap = Array::length(intern_slots)
+  if Array::get(intern_count_cell, 0) * 2 >= cap {
+    let keys: Array[String] = []
+    let mut i = 0
+    while i < cap {
+      let k = Array::get(intern_slots, i)
+      if String::length(k) != 0 {
+        Array::push(keys, k)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    Array::truncate(intern_slots, 0)
+    let mut j = 0
+    while j < cap * 2 {
+      Array::push(intern_slots, "")
+      j = j + 1
+    }
+    let mut r = 0
+    while r < Array::length(keys) {
+      intern_reinsert(Array::get(keys, r))
+      r = r + 1
+    }
+  } else {
+    ()
+  }
+}
+
+//# Entry points
+
+/// The canonical shared String for `s[start:end]`. A hit returns the stored
+/// object (so every equal spelling compares by identity downstream); a miss
+/// stores the zero-copy substring view. Never allocates a new buffer either
+/// way -- substring is a packed view (gen_str_substring_body).
+export fn intern_slice(s: String, start: Int, end: Int) -> String {
+  if end <= start {
+    ""
+  } else {
+    intern_ensure()
+    intern_grow_if_needed()
+    let cap = Array::length(intern_slots)
+    let mut idx = fnv_slice(s, start, end)&(cap - 1)
+    let mut out = ""
+    let mut done = false
+    while !done {
+      let k = Array::get(intern_slots, idx)
+      if String::length(k) == 0 {
+        let fresh = String::substring(s, start, end)
+        Array::set(intern_slots, idx, fresh)
+        Array::set(intern_count_cell, 0, Array::get(intern_count_cell, 0) + 1)
+        out = fresh
+        done = true
+      } else if intern_slice_matches(k, s, start, end) {
+        out = k
+        done = true
+      } else {
+        idx = (idx + 1)&(cap - 1)
+      }
+    }
+    out
+  }
+}
+
+/// intern_slice over a whole string.
+export fn intern_str(s: String) -> String {
+  intern_slice(s, 0, String::length(s))
+}
+
+/// The canonical shared String for `ns ++ "::" ++ member`, without building
+/// the concatenation on a hit. This is the parser's qualified-name shape
+/// (`Array::push`, `Iterator::map`, ...): it used to allocate a fresh concat
+/// per OCCURRENCE; now each distinct spelling allocates once, ever.
+export fn intern_qualified(ns: String, member: String) -> String {
+  if String::length(ns) == 0 && String::length(member) == 0 {
+    ""
+  } else {
+    intern_ensure()
+    intern_grow_if_needed()
+    let nlen = String::length(ns)
+    let mut h = fnv_slice(ns, 0, nlen)
+    h = fnv_step(h, ':')
+    h = fnv_step(h, ':')
+    let mlen = String::length(member)
+    let mut mi = 0
+    while mi < mlen {
+      h = fnv_step(h, String::char_code_at(member, mi))
+      mi = mi + 1
+    }
+    let cap = Array::length(intern_slots)
+    let mut idx = h&(cap - 1)
+    let mut out = ""
+    let mut done = false
+    while !done {
+      let k = Array::get(intern_slots, idx)
+      if String::length(k) == 0 {
+        let fresh = String::concat(ns, String::concat("::", member))
+        Array::set(intern_slots, idx, fresh)
+        Array::set(intern_count_cell, 0, Array::get(intern_count_cell, 0) + 1)
+        out = fresh
+        done = true
+      } else if intern_qualified_matches(k, ns, member) {
+        out = k
+        done = true
+      } else {
+        idx = (idx + 1)&(cap - 1)
+      }
+    }
+    out
+  }
+}
