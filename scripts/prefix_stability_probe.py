@@ -248,9 +248,17 @@ def main():
     # are the entry's own defs plus compiler-synthesized helpers
     # (comparators, specializations) -- those still count as failures, since
     # an unchanged synthesized body shifting means the tail is not pinned.
-    shared = [nm for nm in by_name_a if nm in by_name_b]
-    only_a = [nm for nm in by_name_a if nm not in by_name_b]
-    only_b = [nm for nm in by_name_b if nm not in by_name_a]
+    # #slot_pad_* entries are the #2388 capacity pads (unspellable `#` prefix,
+    # so no user function can share the name): the boundary pad is consumed by
+    # (or freed for) the added function BY CONSTRUCTION, and a pad body is a
+    # constant nothing references, so pads churning at the boundary is the
+    # mechanism working, not an unpaired-body hazard.
+    def is_pad(nm):
+        return nm.startswith("#slot_pad_")
+
+    shared = [nm for nm in by_name_a if nm in by_name_b and not is_pad(nm)]
+    only_a = [nm for nm in by_name_a if nm not in by_name_b and not is_pad(nm)]
+    only_b = [nm for nm in by_name_b if nm not in by_name_a and not is_pad(nm)]
     glue = {"_start", "run"}
     # Groups sharing one name pair positionally (index order); a group whose
     # size changed cannot be paired and fails below rather than dropping the
