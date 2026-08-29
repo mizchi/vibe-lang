@@ -1880,64 +1880,6 @@ fn resolve_qualified_ctor_ident(name: String, env: TypeEnv, defs: Array[TypeDef]
   }
 }
 
-/// Legacy carrier decoder path retained for compatibility with its isolated
-/// codec tests. No checker/import path calls it; EnvTypeDefs is authoritative.
-fn resolve_qualified_parameterized_ctor(ename: String, params: Array[String], member: String, env: TypeEnv, c: Int) -> Option[Type] {
-  match env_lookup(env, enum_def_env_name(ename)) {
-    Some(carrier) => match decode_enum_def(carrier) {
-      Some((carrier_params, carrier_variants)) => {
-        // The carrier and the `TDEnum` must agree on the arity, or the
-        // substitution below would leave a formal unbound. They disagree only
-        // if the two were written by different declarations of the same name,
-        // which is exactly when guessing is wrong.
-        if Array::length(carrier_params) != Array::length(params) {
-          env_lookup(env, member)
-        } else {
-          let param_var_ids = array_empty()
-          let param_var_types = array_empty()
-          let mut pi = 0
-          while pi < Array::length(carrier_params) {
-            Array::push(param_var_ids, c + pi)
-            Array::push(param_var_types, CtVar(c + pi))
-            pi = pi + 1
-          }
-          let result_ty = CtNamed(ename, param_var_types)
-          let mut found = false
-          let mut payloads = array_empty()
-          let mut vi = 0
-          while vi < Array::length(carrier_variants) {
-            let (vname, vtypes) = Array::get(carrier_variants, vi)
-            if vname == member {
-              found = true
-              payloads = vtypes
-            } else {
-              ()
-            }
-            vi = vi + 1
-          }
-          if found {
-            let subst_payloads = for pt in payloads {
-              subst_type_params(pt, carrier_params, param_var_types)
-            }
-            let ctor_ty = if Array::length(subst_payloads) == 0 {
-              result_ty
-            } else {
-              CtFn(subst_payloads, result_ty, None)
-            }
-            Some(CtForAll(param_var_ids, array_empty(), ctor_ty))
-          } else {
-            // The `TDEnum` says the variant exists but the carrier does not
-            // list it. Do not invent a scheme for it.
-            None
-          }
-        }
-      },
-      None => env_lookup(env, member)
-    },
-    None => env_lookup(env, member)
-  }
-}
-
 fn expr_ident_name_or_empty(expr: Expr) -> String {
   match expr {
     EIdent(name, _) => name,
@@ -3231,8 +3173,16 @@ export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: 
 }
 
 fn env_has_active_region(env: TypeEnv) -> Bool {
+  // Only the real region skolem (a CtNamed bound by the `region` checker path)
+  // counts as active. env_cache seeds every acceleration index with a negative
+  // CtUnit-typed `__active_region__` entry so this common query answers from
+  // the index instead of walking the whole chain on a miss; that marker (and
+  // any other non-CtNamed value) means NO active region.
   match env_lookup(env, "__active_region__") {
-    Some(_) => true,
+    Some(ty) => match ty {
+      CtNamed(_, _) => true,
+      _ => false
+    },
     None => false
   }
 }
