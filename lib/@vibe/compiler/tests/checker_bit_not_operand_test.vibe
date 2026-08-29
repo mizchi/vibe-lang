@@ -64,12 +64,42 @@ test "#2403 `~` rejects an identity alias carrying a non-Int argument" {
   assert(check_source_err_contains(src, "operand of `~` must be Int"))
 }
 
-test "#2403 `~` stays permissive for a bare rigid type formal" {
-  // Unchanged, and matching what `!` and prefix `-` do for the same shape.
-  // Those two accept the DECLARED cases above as well and complement the
-  // pointer -- pre-existing, filed as #2408, deliberately not changed here.
-  let src = "fn f[T](x: T) -> Int { ~x }"
+// A `[T]` parameter is an inference variable, not a rigid name, so `~x` does
+// not fall through permissively -- it takes the `CtVar` arm and UNIFIES the
+// parameter with `Int`. The declaration below is clean because `f` has become
+// `(Int) -> Int`, and the call-site tests are what prove that reading: an
+// instantiation with anything else is refused, with both types named.
+//
+// This is not what `!` and prefix `-` do with a DECLARED struct or enum, which
+// they accept and then complement the pointer (#2408, pre-existing, out of
+// scope here). Nothing about `[T]` is in that hole.
+
+test "#2403 `~` on a `[T]` parameter constrains it to Int" {
+  assert(check_source_ok("fn f[T](x: T) -> Int { ~x }"))
+}
+
+test "#2403 an Int instantiation of that function is accepted" {
+  let src = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f(5) }"
   assert(check_source_ok(src))
+}
+
+test "#2403 a String instantiation is refused at the call site" {
+  let src = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f(\"abc\") }"
+  assert(check_source_err_contains(src, "expected Int, got String"))
+}
+
+test "#2403 a heap instantiation is refused at the call site" {
+  // A tuple and an array are the shapes whose pointer `~` would complement if
+  // the constraint above did not hold; the diagnostic names the actual type.
+  let tup = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f((1, 2)) }"
+  assert(check_source_err_contains(tup, "expected Int, got (Int, Int)"))
+  let arr = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f([1, 2]) }"
+  assert(check_source_err_contains(arr, "expected Int, got Array[Int]"))
+}
+
+test "#2403 a declared-struct instantiation is refused at the call site" {
+  let src = "struct Box { v: Int }\nfn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f(Box::{ v: 7 }) }"
+  assert(check_source_err_contains(src, "expected Int, got Box"))
 }
 
 test "#2403 `~` on a plain Int is still clean" {
