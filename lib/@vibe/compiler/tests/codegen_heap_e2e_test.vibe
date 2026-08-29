@@ -114,6 +114,20 @@ test "#2379 review: a bound unchecked Map helper is not an intrinsic" {
   assert_result_all_backends(src, "main", "bound_map_iter_get_unchecked", "42")
 }
 
+test "#2379 review: a bound eager Array iterator is not an intrinsic" {
+  let src = "fn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 42 }\nfn main() -> Int { Array::iter_eager([1], (_x: Int) -> Unit { () }) }\n"
+  assert_result_all_backends(src, "main", "bound_array_iter_eager", "42")
+}
+
+test "#2379 review: an eager Array helper cannot capture Iterator::iter" {
+  let entry = "import ./provider.vibe { trait Iterator }\nfn Array::iter_eager(_xs: Array[Int], _f: (Int) -> Unit) -> Int { 77 }\nfn main() -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }"
+  let provider = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], _f: (Int) -> Unit) -> Int { Array::length(xs) }"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("provider.vibe", provider)
+  ])
+  assert_result_all_backends(print_program(merged), "main", "bound_array_iter_eager_does_not_capture_iterator", "3")
+}
+
 test "#2379 review: an entry Iterator export wins over its aliased provider" {
   let entry = "import ./provider.vibe { trait Iterator as Iter }\nexport fn Iterator::map(xs: Array[Int], _f: (Int) -> Int) -> Array[Int] { [77] }\nfn main() -> Int { Array::get(Iterator::map([1], (x: Int) -> Int { x }), 0) + Array::length(Iter::map([1], (x: Int) -> Int { x })) }"
   let provider = "export trait Iterator[T]\nexport fn Iterator::map(xs: Array[Int], f: (Int) -> Int) -> Array[Int] { Array::map(xs, f) }"
@@ -152,6 +166,16 @@ test "#2379 review: Iterator iter over Array stays direct on every backend" {
   ])
   desugar_trait_dicts(merged)
   assert_result_all_backends(print_program(merged), "main", "iterator_iter_direct", "36")
+}
+
+test "#2379 review: direct Iterator iter remains direct inside a closure" {
+  let entry = "import @vibe/builtin { trait Iterator }\nfn main() -> Int {\n  let run = () -> Int { Iterator::iter([1, 2, 3], (_x: Int) -> Unit { () }) }\n  run()\n}"
+  let builtin = "export trait Iterator[T]\nexport fn Iterator::iter(xs: Array[Int], f: (Int) -> Unit) -> Int {\n  let len = Array::length(xs)\n  let mut i = 0\n  while i < len { f(Array::get(xs, i)); i = i + 1 }\n  i\n}"
+  let merged = closure_merged_stmts(entry, "main.vibe", [
+    ("@vibe/builtin.vibe", builtin)
+  ])
+  desugar_trait_dicts(merged)
+  assert_result_all_backends(print_program(merged), "main", "iterator_iter_direct_in_closure", "3")
 }
 
 // #1967: `continue` in a collecting `for-in` used to `br` to the loop
