@@ -57,16 +57,20 @@ struct PCtx {
   // reclamation guard), while a view-returning callee's binding must not
   // release a reference it never acquired. Same COPY discipline.
   view_ret_user: Array[String];
-  uses: Array[Int];
-  borrows: Array[Int];
-  scalar: Array[Bool];
-  remaining: Array[Int];
+  // The per-plan working state below is `mut` so a cached PCtx (see
+  // pctx_cache) can be reset between plan builds by assigning fresh empty
+  // arrays -- assignment drops the previous plan's arrays instead of leaking
+  // their elements the way an in-place truncate would.
+  mut uses: Array[Int];
+  mut borrows: Array[Int];
+  mut scalar: Array[Bool];
+  mut remaining: Array[Int];
   // True for a let-binding whose VALUE is a call to a borrow-arg0 fn (user
   // set or builtin list) -- the class whose result may be an unowned
   // interior view. With the borrow set empty this is never set, so the fix
   // is inert while lc_borrow_arg0_enabled is off.
-  view_call_let: Array[Bool];
-  actions: Array[PerceusAction]
+  mut view_call_let: Array[Bool];
+  mut actions: Array[PerceusAction]
 }
 
 struct HeapInferCtx {
@@ -162,6 +166,79 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     view_call_let: [],
     actions: [],
   }
+}
+
+/// The PCtx built for the most recent whole-program table set, reused across
+/// plan builds. pctx_new's four Array::slice copies were the single largest
+/// __rt_arr_slice caller in a full-closure compile profile (~7% of total CPU):
+/// one plan is built per top-level function AND per lambda, and each paid a
+/// fresh copy of the same four program-wide tables. The cache is keyed by
+/// CONTENT: build_perceus_plan_with_params_split verifies all four incoming
+/// tables element-by-element against the cached copies (cheap -- the elements
+/// are the same string objects, so __rt_str_eq answers on its identity fast
+/// path) and falls back to a fresh PCtx on any mismatch. Correctness therefore
+/// never depends on a set/reset discipline; a stale or half-built cache entry
+/// can only cause a miss, never a wrong table.
+let pctx_cache: Array[PCtx] = []
+
+fn same_str_table(a: Array[String], b: Array[String]) -> Bool {
+  let la = Array::length(a)
+  if la != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < la {
+      if Array::get(a, i) == Array::get(b, i) {
+        i = i + 1
+      } else {
+        same = false
+      }
+    }
+    same
+  }
+}
+
+fn same_int_table(a: Array[Int], b: Array[Int]) -> Bool {
+  let la = Array::length(a)
+  if la != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < la {
+      if Array::get(a, i) == Array::get(b, i) {
+        i = i + 1
+      } else {
+        same = false
+      }
+    }
+    same
+  }
+}
+
+fn pctx_cache_matches(ctx: PCtx, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Bool {
+  same_str_table(ctx.pctx_names, borrow_ret_names) && same_str_table(ctx.borrow_param_user, borrow_param_fns) && same_int_table(ctx.borrow_param_mask, borrow_param_masks) && same_str_table(ctx.view_ret_user, view_ret_fns)
+}
+
+/// Clear the per-plan working state of a cached PCtx. Fresh empty arrays (not
+/// truncates): assignment drops the previous plan's arrays and their elements.
+fn pctx_reset(ctx: PCtx) -> Int {
+  ctx.next_id = 0
+  ctx.seq_id = 0
+  let uses0: Array[Int] = []
+  ctx.uses = uses0
+  let borrows0: Array[Int] = []
+  ctx.borrows = borrows0
+  let scalar0: Array[Bool] = []
+  ctx.scalar = scalar0
+  let remaining0: Array[Int] = []
+  ctx.remaining = remaining0
+  let view0: Array[Bool] = []
+  ctx.view_call_let = view0
+  let actions0: Array[PerceusAction] = []
+  ctx.actions = actions0
+  0
 }
 
 /// Perf: this snapshot runs in every branch/match arm of the perceus plan --
@@ -2680,7 +2757,19 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
 export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
-  let ctx = pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
+  // Reuse the cached PCtx when the caller's four whole-program tables are
+  // content-identical to the cached copies (the per-program common case: one
+  // plan per function/lambda, all against the same tables); otherwise build a
+  // fresh one and make it the cache. Either way `ctx` is read back out of the
+  // cache cell so it is uniformly a borrowed view of the cache-owned PCtx.
+  if Array::length(pctx_cache) == 0 {
+    Array::push(pctx_cache, pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns))
+  } else if pctx_cache_matches(Array::get(pctx_cache, 0), borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns) {
+    pctx_reset(Array::get(pctx_cache, 0))
+  } else {
+    Array::set(pctx_cache, 0, pctx_new(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns))
+  }
+  let ctx = Array::get(pctx_cache, 0)
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
   while pi < Array::length(params) {
@@ -2718,7 +2807,10 @@ export fn build_perceus_plan_with_params_split(params: Array[(String, Option[Typ
     pe_scope_end(ctx, Array::get(param_ids, pk), pname)
     pk = pk + 1
   }
-  ctx.actions
+  // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
+  // resets) its own actions array, while callers hold the returned plan
+  // across subsequent plan builds.
+  Array::slice(ctx.actions, 0, Array::length(ctx.actions))
 }
 
 /// The plan without the param-drop split index, for callers that do not
