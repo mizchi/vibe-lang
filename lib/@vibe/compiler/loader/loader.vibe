@@ -507,25 +507,6 @@ fn strip_trailing_cr(line: String) -> String {
   }
 }
 
-fn string_to_bytes(s: String) -> Bytes {
-  let out = Bytes::new()
-  let len = String::length(s)
-  let mut i = 0
-  while i < len {
-    Bytes::push(out, String::char_code_at(s, i))
-    i = i + 1
-  }
-  out
-}
-
-fn special_bundle_header(path: String) -> Option[(Array[String], Array[String])] {
-  if String::ends_with(path, "compiler_sources_bundle.vibe") {
-    Some((array_empty(), ["compiler_sources", "compiler_source_groups"]))
-  } else {
-    None
-  }
-}
-
 fn split_tsv_fields(line: String) -> Array[String] {
   let fields = array_empty()
   let len = String::length(line)
@@ -544,47 +525,6 @@ fn split_tsv_fields(line: String) -> Array[String] {
     i = i + 1
   }
   fields
-}
-
-let header_value_separator = String::from_char_code(31)
-
-fn join_header_values(values: Array[String]) -> String {
-  // O(N) via StringBuilder (previous accumulator was O(N^2)).
-  let sb = StringBuilder::new()
-  let mut i = 0
-  while i < Array::length(values) {
-    if i > 0 {
-      StringBuilder::push(sb, header_value_separator)
-    }
-    StringBuilder::push(sb, Array::get(values, i))
-    i = i + 1
-  }
-  StringBuilder::freeze(sb)
-}
-
-fn split_header_values(text: String) -> Array[String] {
-  let values = array_empty()
-  if String::length(text) == 0 {
-    values
-  } else {
-    let sep = String::char_code_at(header_value_separator, 0)
-    let len = String::length(text)
-    let mut start = 0
-    let mut i = 0
-    while i <= len {
-      let at_value_end = if i == len {
-        true
-      } else {
-        String::char_code_at(text, i) == sep
-      }
-      if at_value_end {
-        Array::push(values, text[start: i])
-        start = i + 1
-      }
-      i = i + 1
-    }
-    values
-  }
 }
 
 fn empty_source_specs() -> Array[(String, String)] {
@@ -1696,32 +1636,6 @@ fn manifest_path_of(manifest: Option[(String, String, String)]) -> Option[String
   }
 }
 
-fn load_persistent_sources_from_group_cache_if_valid(entry_path: String) -> Option[(Option[String], Array[(String, String)])] with Exception + Fs {
-  let cache_path = persistent_source_group_cache_path(entry_path)
-  if !(Fs::exists(cache_path)) {
-    None
-  } else {
-    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
-    if !(resolution_context_is_valid(resctx, entry_path, group_cache_row_paths(rows))) {
-      None
-    } else if !(manifest_cache_is_valid(manifest)) {
-      None
-    } else {
-      let specs = empty_source_cache_specs()
-      let mut i = 0
-      while i < Array::length(rows) {
-        let (_, path, stat_token_text, source_fingerprint) = Array::get(rows, i)
-        Array::push(specs, (path, stat_token_text, source_fingerprint))
-        i = i + 1
-      }
-      match load_cached_sources_rec(specs, 0, empty_source_specs()) {
-        Some(sources) => Some((manifest_path_of(manifest), sources)),
-        None => None
-      }
-    }
-  }
-}
-
 fn load_persistent_source_groups_from_source_list_cache_if_valid(entry_path: String) -> Option[(Option[String], Array[(String, Array[(String, String)])])] with Exception + Fs {
   let cache_path = persistent_source_list_cache_path(entry_path)
   if !(Fs::exists(cache_path)) {
@@ -1891,22 +1805,6 @@ fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: 
   StringBuilder::freeze(sb)
 }
 
-fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array[String] with Fs {
-  let deps = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SImport(raw_path, _) => if !is_builtin_iterator_serialized_boundary_path(raw_path) {
-        Array::push(deps, resolve_path_fs(base_dir, raw_path))
-      },
-      SReExport(raw_path, _) => Array::push(deps, resolve_path_fs(base_dir, raw_path)),
-      _ => ()
-    }
-    i = i + 1
-  }
-  deps
-}
-
 export fn load_or_parse_module_header_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Exception + Fs {
   load_or_parse_module_header_fs_impl(path, source, parse_count)
 }
@@ -1944,64 +1842,6 @@ fn flatten_group_sources(groups: Array[(String, Array[(String, String)])]) -> Ar
     gi = gi + 1
   }
   out
-}
-
-fn filter_group_sources(groups: Array[(String, Array[(String, String)])], ordered_sources: Array[(String, String)]) -> Array[(String, Array[(String, String)])] {
-  let filtered = empty_grouped_sources()
-  let mut gi = 0
-  while gi < Array::length(groups) {
-    let (group_name, sources) = Array::get(groups, gi)
-    let next_sources = empty_source_specs()
-    let mut si = 0
-    while si < Array::length(sources) {
-      let pair = Array::get(sources, si)
-      let (path, _) = pair
-      match source_lookup(ordered_sources, path) {
-        Some(_) => Array::push(next_sources, pair),
-        None => ()
-      }
-      si = si + 1
-    }
-    if Array::length(next_sources) > 0 {
-      Array::push(filtered, (group_name, next_sources))
-    }
-    gi = gi + 1
-  }
-  filtered
-}
-
-fn special_bundle_source_groups(entry_path: String) -> Option[Array[(String, Array[(String, String)])]] {
-  let _ = entry_path
-  None
-}
-
-fn normalize_bundle_source_groups(groups: Array[(String, Array[(String, String)])], main_path: String, main_source: String) -> Array[(String, Array[(String, String)])] {
-  let normalized = empty_grouped_sources()
-  let mut found = false
-  let mut gi = 0
-  while gi < Array::length(groups) {
-    let (group_name, sources) = Array::get(groups, gi)
-    let next_sources = empty_source_specs()
-    let mut si = 0
-    while si < Array::length(sources) {
-      let (path, source) = Array::get(sources, si)
-      if path == main_path {
-        Array::push(next_sources, (path, main_source))
-        found = true
-      } else {
-        Array::push(next_sources, (path, source))
-      }
-      si = si + 1
-    }
-    Array::push(normalized, (group_name, next_sources))
-    gi = gi + 1
-  }
-  if !found {
-    let entry_sources = empty_source_specs()
-    Array::push(entry_sources, (main_path, main_source))
-    Array::push(normalized, ("entry", entry_sources))
-  }
-  normalized
 }
 
 fn special_manifest_sources(entry_path: String) -> Option[(String, Array[(String, String)])] {
