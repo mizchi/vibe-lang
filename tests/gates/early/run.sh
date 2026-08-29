@@ -322,6 +322,140 @@ if ! printf '%s\n' "$hm_out" | grep -qF "filling"; then
 fi
 echo "[compiler-gate] insert_raw bounded probe ok (terminated, rc=$hm_rc)"
 
+# 4g. #2343: `declarations.vibe` declares ~50 low-level wasm opcodes that user
+#     code cannot spell. The file called itself "Single Source of Truth for all
+#     builtin function signatures" and recorded nothing about reachability, so
+#     a reader looking for a ctz found `declare int_ctz(Int) -> Int`, wrote it,
+#     and got `unknown name`. The block now says it is codegen-internal; this
+#     checks the claim rather than trusting the comment.
+#
+#     The oracle is the CHECKER, one probe per name -- not a lookup in
+#     `core/builtin_registry.vibe`, which decides only some names (the rest go
+#     through per-namespace checker lookups), so a registry cross-reference
+#     would answer a different question than the one the comment makes.
+#
+#     Each name is probed in BOTH the value form (`let _x = n`) and the call
+#     form (`n(a0, ...)` at the declared arity). They are not the same question:
+#     the checker's `ECall` arm resolves the callee through `direct_call_return`
+#     and does not re-check the callee `EIdent`, so a name reached only by that
+#     fast path type-checks as a call while the value form still reports
+#     `unknown name`. Measured on `__len`, which is in `direct_builtin_return`:
+#     `let _x = __len` gives `unknown name: __len`, `__len(a)` gives no
+#     diagnostic at all. A value-only probe therefore certifies as unreachable
+#     a name user code can call -- exactly the state this section exists to
+#     catch (Codex review). A name counts as unreachable only when BOTH forms
+#     report it unknown.
+#
+#     The call probe spells each declared parameter type verbatim as an
+#     annotation. If that spelling is ever wrong (a parameter type containing a
+#     top-level comma would split badly), the checker answers with some OTHER
+#     diagnostic, not `unknown name`, and the name is reported reachable -- the
+#     section fails loudly rather than passing on a probe that never compiled.
+#
+#     Controls run alongside: `simd_skip_ws`, declared in the same file two
+#     blocks down, MUST resolve in both forms. Without them, a probe harness
+#     that silently failed to compile anything would report all-unreachable and
+#     pass.
+echo "[compiler-gate] 4g the WASM-intrinsics block is codegen-internal, as it claims (#2343)"
+dcldir="_build/_gate_declarations_reach"
+rm -rf "$dcldir"; mkdir -p "$dcldir"
+decl_src="lib/@vibe/compiler/builtins/declarations.vibe"
+# The block runs from its own banner to the next one. `name|T0,T1,...`.
+intrinsic_decls="$(awk '
+  /^\/\/# WASM intrinsics/ { inblock = 1; next }
+  inblock && /^\/\/#/ { inblock = 0; next }
+  inblock && /^declare / {
+    line = $0
+    sub(/^declare /, "", line)
+    name = line; sub(/\(.*$/, "", name)
+    params = line; sub(/^[^(]*\(/, "", params); sub(/\).*$/, "", params)
+    gsub(/ /, "", params)
+    print name "|" params
+  }
+' "$decl_src")"
+intrinsic_names="$(printf '%s\n' "$intrinsic_decls" | sed 's/|.*$//' | grep . || true)"
+intrinsic_count="$(printf '%s\n' "$intrinsic_names" | grep -c . || true)"
+if [ "$intrinsic_count" -lt 40 ]; then
+  echo "[compiler-gate] FAIL: found only $intrinsic_count names under the WASM-intrinsics banner in $decl_src -- the block moved or the scan broke, and an empty scan would pass this section vacuously (#2343)" >&2
+  exit 1
+fi
+# A floor catches an empty scan; it does not catch one that runs PAST the block
+# and swallows the reachable names below it (which is what the first version of
+# this scan did, reporting Fs:: and Env:: as unreachable intrinsics). The
+# control name lives two blocks down, so its presence here means exactly that.
+if printf '%s\n' "$intrinsic_names" | grep -qx "simd_skip_ws"; then
+  echo "[compiler-gate] FAIL: the #2343 scan ran past the WASM-intrinsics block -- it collected simd_skip_ws, which is declared under a later banner" >&2
+  exit 1
+fi
+# The CHECK lane, and the diagnostic itself -- not "was a wasm produced?".
+# Those differ: a name that becomes checker-visible but has no linear
+# function-table entry RESOLVES and still emits no wasm, so an
+# artifact-existence test would file it under "unreachable" -- a false pass on
+# exactly the state this section exists to catch (Codex review). `unknown
+# name: <n>` is the checker saying it, and nothing else produces that line.
+decl_probe_reports_unknown() { # <probe-source> <name>
+  local src="$1" name="$2"
+  rm -f "$dcldir/p.vibe" "$dcldir/p.out" "$dcldir/p.out.diag"
+  cp "$src" "$dcldir/p.vibe"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dcldir/p.vibe" "$dcldir/p.out" __no_entry__ check >/dev/null 2>&1 || true
+  grep -qF "unknown name: $name" "$dcldir/p.out.diag" 2>/dev/null
+}
+reachable=""
+while IFS='|' read -r n params; do
+  [ -n "$n" ] || continue
+  printf 'fn probe() -> Int {\n  let _x = %s\n  0\n}\n' "$n" > "$dcldir/value.vibe"
+  sig=""; args=""; argno=0
+  if [ -n "$params" ]; then
+    saved_ifs="$IFS"
+    IFS=','
+    for pty in $params; do
+      if [ -n "$sig" ]; then sig="$sig, "; args="$args, "; fi
+      sig="${sig}a${argno}: ${pty}"
+      args="${args}a${argno}"
+      argno=$((argno + 1))
+    done
+    IFS="$saved_ifs"
+  fi
+  printf 'fn probe(%s) -> Int {\n  let _r = %s(%s)\n  0\n}\n' "$sig" "$n" "$args" > "$dcldir/call.vibe"
+  if decl_probe_reports_unknown "$dcldir/value.vibe" "$n" \
+     && decl_probe_reports_unknown "$dcldir/call.vibe" "$n"; then
+    :
+  else
+    reachable="$reachable $n"
+  fi
+done <<DECLS
+$intrinsic_decls
+DECLS
+# The controls: a name from the same file that IS reachable -- both forms must
+# produce NO diagnostic. Without them, a harness whose probes all failed to run
+# would report every name unreachable and pass.
+for ctl_form in value call; do
+  if [ "$ctl_form" = "value" ]; then
+    printf 'fn probe() -> Int {\n  let _x = simd_skip_ws\n  0\n}\n' > "$dcldir/ctl.vibe"
+  else
+    printf 'fn probe(b: Bytes) -> Int {\n  simd_skip_ws(b, 0, 1)\n}\n' > "$dcldir/ctl.vibe"
+  fi
+  rm -f "$dcldir/ctl.out" "$dcldir/ctl.out.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check >/dev/null 2>&1 || true
+  if [ -s "$dcldir/ctl.out.diag" ]; then
+    echo "[compiler-gate] FAIL: the #2343 $ctl_form-form control reported a diagnostic -- simd_skip_ws is declared in $decl_src and must resolve, so this harness is calling everything unreachable" >&2
+    cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
+    rm -rf "$dcldir"
+    exit 1
+  fi
+done
+rm -rf "$dcldir"
+if [ -n "$reachable" ]; then
+  echo "[compiler-gate] FAIL: these names are under the codegen-internal WASM-intrinsics banner in $decl_src but the checker resolved them in the value form, the call form, or both:$reachable" >&2
+  echo "    Either move them out of that block, or drop the claim. The banner says the block is unreachable (#2343)." >&2
+  exit 1
+fi
+echo "[compiler-gate] declarations.vibe reachability claim ok ($intrinsic_count intrinsics unreachable in both value and call form, controls resolve)"
+
 # 5. test-block regression (#594): a file with only `test {}` blocks (no entry)
 #    must compile to a valid module whose `_start` runs every test; a passing
 #    file exits clean and a failing assert traps. Guards the codegen fix that

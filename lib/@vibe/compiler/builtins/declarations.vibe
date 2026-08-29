@@ -1,6 +1,16 @@
 // lib/@vibe/compiler/builtins/declarations.vibe
-// Single Source of Truth for all builtin function signatures.
-// This file is parsed by the binary encoder to generate builtin_table.bin.
+// Single source of truth for builtin SIGNATURES. It is parsed by the binary
+// encoder to generate builtin_table.bin.
+//
+// It is NOT the source of truth for REACHABILITY. A declaration here says what
+// a name's type is if it resolves, not that user code can spell it: what the
+// checker sees is decided by `core/builtin_registry.vibe` (a checker_visible
+// row) and the per-namespace checker lookups. The two differ block by block --
+// `simd_skip_ws` below resolves, and every name under "WASM intrinsics
+// (low-level)" does not -- and the file used to record neither, so a reader
+// looking for "how do I get a ctz" found a declaration, wrote the name, and
+// got `unknown name` (#2343). Each block that is codegen-internal now says so,
+// and `tests/gates/early/run.sh` (section 4g) checks that the claim is true.
 
 //# Operators (internal)
 declare __add(T, T) -> T
@@ -160,6 +170,17 @@ declare Double::floor(Double) -> Double
 declare Double::ceil(Double) -> Double
 
 //# WASM intrinsics (low-level)
+// CODEGEN-INTERNAL: not reachable from user code. These are the raw wasm
+// opcodes the backends emit through; they have no checker_visible registry row
+// and no namespace lookup, so spelling one in vibe source is `unknown name`.
+// Measured: all 49 of them, uniformly.
+//
+// Wanting one of these is a real need (#2344 wants ctz and popcount) -- the
+// answer is a designed `Int::` surface with defined edge cases, routed through
+// the registry the way `simd_skip_ws` is, NOT un-hiding the raw opcode name.
+//
+// `//#` starts a section and `//` does not: the gate reads this block by
+// banner, so these lines must stay plain comments.
 declare i32_eqz(Int) -> Int
 declare i32_shr_u(Int, Int) -> Int
 declare i32_eq(Int, Int) -> Int
