@@ -35,7 +35,7 @@ fn builtin_iterator_origin_marker_prefix() -> String {
 }
 
 fn iterator_namespace_operation(name: String, namespace: String) -> Bool {
-  name == String::concat(namespace, "::map") || name == String::concat(namespace, "::filter") || name == String::concat(namespace, "::fold") || name == String::concat(namespace, "::find") || name == String::concat(namespace, "::any") || name == String::concat(namespace, "::all") || name == String::concat(namespace, "::flatmap")
+  name == String::concat(namespace, "::map") || name == String::concat(namespace, "::filter") || name == String::concat(namespace, "::fold") || name == String::concat(namespace, "::iter") || name == String::concat(namespace, "::find") || name == String::concat(namespace, "::any") || name == String::concat(namespace, "::all") || name == String::concat(namespace, "::flatmap")
 }
 
 fn trait_namespace_operation(name: String, namespace: String) -> Bool {
@@ -78,6 +78,70 @@ fn stmts_define_iterator_namespace_operation(stmts: Array[Stmt], namespace: Stri
   found
 }
 
+/// Import bindings use source order: the last trait imported into a local
+/// namespace is the one whose companion operations that namespace denotes.
+/// Provenance must follow that same winner. Retaining the builtin marker after
+/// a custom trait replaces it would silently turn the custom operation back
+/// into an Array intrinsic during dictionary desugaring.
+fn builtin_iterator_trait_wins_namespace(stmts: Array[Stmt], namespace: String) -> Bool {
+  let mut wins = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if explicit_trait && local == namespace {
+            wins = path == "@vibe/builtin" && item.name == "Iterator"
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SReExport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let explicit_trait = match item.kind {
+            Some(ImportTrait) => true,
+            _ => false
+          }
+          let local = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if explicit_trait && local == namespace {
+            // Only a direct @vibe/builtin import carries authenticated
+            // provenance here. A re-export may name any provider.
+            wins = false
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      STrait(_, name, _, _, _, _) => if name == namespace {
+        wins = false
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  wins
+}
+
 /// Compiler-only provenance carried in an existing source-boundary marker.
 /// It is emitted only when this source unit explicitly imports the standard
 /// Iterator trait and does not replace any optimized namespace operation.
@@ -104,12 +168,17 @@ export fn builtin_iterator_namespace_markers(stmts: Array[Stmt]) -> Array[String
             // occurrences canonicalize to the provider. Therefore a local
             // canonical `Iterator::*` helper is independent and cannot block
             // provenance for the imported alias.
-            if !stmts_define_iterator_namespace_operation(stmts, local) {
+            if builtin_iterator_trait_wins_namespace(stmts, local) && !stmts_define_iterator_namespace_operation(stmts, local) {
               // Imported trait-operation wrappers keep the local namespace:
               // `trait Iterator as Iter` materializes `Iter::map`. Recording
               // the local spelling keeps optimization scoped to that wrapper
               // and cannot authorize a distinct local `Iterator::map`.
-              Array::push(out, String::concat(builtin_iterator_origin_marker_prefix(), local))
+              let marker = String::concat(builtin_iterator_origin_marker_prefix(), local)
+              if !string_array_contains(out, marker) {
+                Array::push(out, marker)
+              } else {
+                ()
+              }
             } else {
               ()
             }
