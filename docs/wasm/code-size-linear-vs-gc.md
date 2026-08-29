@@ -181,19 +181,25 @@ struct, roughly," and should be read as an order-of-magnitude guide.
 ```bash
 bash scripts/measure_backend_code_size.sh [stage2.wasm]
 MEASURE_SCALES="10 20 40 80" bash scripts/measure_backend_code_size.sh
+# Resolve imports before both final backends (for application measurements):
+MEASURE_FS_COMPILE=1 bash scripts/measure_backend_code_size.sh
 node scripts/wasm_section_sizes.mjs _build/backend_code_size/empty.gc.wasm
 ```
 
-Two things are easy to step on when remeasuring. Both **silently produce a
-wrong number**, so keep them recognizable from the shape of the result.
+Two things are easy to step on when remeasuring. Both can produce a wrong
+number, so keep them recognizable from the shape of the result.
 
-**1. `VIBE_FS_COMPILE=1` disables the gc lane.** The gc backend is
-direct-source-compile only; FS-import mode and the special instrumentation
-modes are linear-only (`cli_adapter` comments). Measure both with that set
-and **the two lanes match byte-for-byte** — that is not "no difference," it
-is "you measured linear twice." If you see a match, suspect this first.
-A consequence: **this measurement only covers single files with no imports**,
-so it is a slope estimate, not a measurement of a real application.
+**1. Select module loading and codegen independently.** Use
+`VIBE_FS_COMPILE=1` for filesystem imports; choose the final backend separately
+with `VIBE_BACKEND=linear` or `VIBE_BACKEND=gc`. This resolves and projects the
+same module graph before either code generator runs. The measurement script's
+default keeps direct compilation for reproducibility with the committed table;
+set `MEASURE_FS_COMPILE=1` to measure both backends after filesystem resolution.
+The committed cases remain import-free on purpose: they isolate the per-copy
+codegen slope and keep the historical series comparable, rather than reflecting
+a compiler limit.
+If the two artifacts match byte-for-byte, backend selection did not take
+effect; a valid gc artifact includes a distinct gc prelude.
 
 **2. The entry name must be `main`.** The `__no_entry__` sentinel that
 doctests use works on linear and fails on gc with

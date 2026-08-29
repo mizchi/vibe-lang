@@ -21,7 +21,7 @@ the only behavior.**
 | reclamation | Perceus dup/drop, **eager and deterministic** (bounded heap: `heap(N1) == heap(N2)`) | **none (leaks linearly)** | **none for current user-value allocations**; Wasmtime tracing GC has no user allocations to reclaim yet |
 | object lifetime | deterministic, eager | n/a (never freed) | current user values live to instance teardown; future Wasm-GC values will be non-deterministic/lazy |
 | cycles | **leak (permanent RC limitation)** | n/a (nothing is freed) | current bump allocations are retained; future Wasm-GC cycles are intended to be collected |
-| known gaps | cycles leak; a matched heap field bound but **unused** over-keeps (write `_`); replay-based handlers spill past ~16K performs per `handle` | — | single-file only (referencing an imported name fails with `@gc_call ... unresolved`; an unused import is fine); `bench` blocks unsupported (#1701); builtin parity tracked in `scripts/builtin_parity_classification.tsv`; not CLI-reachable |
+| known gaps | cycles leak; a matched heap field bound but **unused** over-keeps (write `_`); replay-based handlers spill past ~16K performs per `handle` | — | public test/bench lanes resolve the filesystem module graph (#2376), while the lower-level direct-source API remains single-file; builtin parity is tracked in `scripts/builtin_parity_classification.tsv`; not exposed as a compile flag |
 | intended status | production default | escape hatch and bump-vs-RC baseline | long-term primary target |
 
 The defaults above are exercised by the gate

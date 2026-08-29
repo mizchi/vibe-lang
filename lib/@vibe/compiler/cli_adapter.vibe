@@ -77,6 +77,7 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_bump_heap_marked,
   compile_file_fs_mode_cached_artifact_input_trace,
   compile_file_fs_mode_coverage,
+  compile_file_fs_mode_gc,
   compile_file_fs_mode_rc,
   compile_file_fs_mode_rc_heap_marked,
   compile_file_fs_mode_rc_shadow,
@@ -1426,14 +1427,24 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // are unaffected by the RC cutover. The normal compile then defaults to
       // the Perceus RC backend (#493 cutover, #705 parity) unless VIBE_RC=0
       // selects the legacy bump path (which carries the #634 testmeta variant).
-      let (bytes, artifact_input_trace) = if Env::get("VIBE_COVERAGE") == "1" {
+      let fs_backend = Env::get("VIBE_BACKEND")
+      let fs_coverage_selected = Env::get("VIBE_COVERAGE") == "1"
+      let fs_debug_break_selected = !fs_coverage_selected && Env::get("VIBE_DEBUG_BREAK") == "1"
+      let fs_debug_trace_selected = !fs_coverage_selected && !fs_debug_break_selected && Env::get("VIBE_DEBUG") == "1"
+      // Instrumentation selectors have higher precedence than VIBE_BACKEND.
+      // Record the lane that will actually produce `bytes`; raw Env presence
+      // is not an artifact property when selectors are combined.
+      let fs_gc_selected = !fs_coverage_selected && !fs_debug_break_selected && !fs_debug_trace_selected && fs_backend == "gc"
+      let (bytes, artifact_input_trace) = if fs_coverage_selected {
         (compile_file_fs_mode_coverage(input_path, entry_name), "")
-      } else if Env::get("VIBE_DEBUG_BREAK") == "1" {
+      } else if fs_gc_selected {
+        (compile_file_fs_mode_gc(input_path, entry_name), "")
+      } else if fs_debug_break_selected {
         // debugger breakpoint (DAP P1): `vibe run --break` sets VIBE_DEBUG_BREAK=1
         // so the user file is compiled with `vibe::dbg_break` host-hook calls at
         // each user function entry; the runner pauses on the named breakpoints.
         (compile_file_fs_mode_break(input_path, entry_name), "")
-      } else if Env::get("VIBE_DEBUG") == "1" {
+      } else if fs_debug_trace_selected {
         (compile_file_fs_mode_trace(input_path, entry_name), "")
       } else if Env::get("VIBE_RC") == "shadow" {
         // #715/#768: shadow-liveness double-free traps for import-resolving
@@ -1477,7 +1488,7 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // trace / break / rc-shadow) are debug artifacts whose tooling reads
       // both, so they stay untouched; so do `__no_entry__` test/bench builds
       // (gated inside strip_executable_wasm_env).
-      let fs_instrumented = Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_DEBUG_BREAK") == "1" || Env::get("VIBE_DEBUG") == "1" || Env::get("VIBE_RC") == "shadow"
+      let fs_instrumented = fs_coverage_selected || fs_gc_selected || fs_debug_break_selected || fs_debug_trace_selected || Env::get("VIBE_RC") == "shadow"
       let core_bytes = if fs_instrumented {
         bytes
       } else {
@@ -1487,8 +1498,10 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // Never publish its component-private provider ABI as a standalone core:
       // instrumentation lanes fail before the write, while the ordinary lane
       // safely composes the exact parsed imports after executable stripping.
-      let out_bytes = if fs_instrumented {
-        reject_stdin_provider_core(core_bytes, if Env::get("VIBE_COVERAGE") == "1" {
+      let out_bytes = if fs_gc_selected {
+        core_bytes
+      } else if fs_instrumented {
+        reject_stdin_provider_core(core_bytes, if fs_coverage_selected {
           "VIBE_COVERAGE=1"
         } else {
           "this instrumentation mode"

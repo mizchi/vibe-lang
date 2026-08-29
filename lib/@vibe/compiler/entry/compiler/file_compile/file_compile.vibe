@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, parse_program, parse_program_located
+  lex, lex_with_offsets, parse_program, parse_program_located, shift_stmt_offsets, shift_stmts_offsets
 }
 
 // #897: this used to also import `empty_stmt_array` via a leaf path into
@@ -60,6 +60,10 @@ import @vibe/compiler/codegen/common_base {
 
 import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl, compile_wasi_module_no_dce_impl, effect_lowering_prelude
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_generated_stmts_gc_only
 }
 
 import @vibe/compiler/loader {
@@ -190,13 +194,13 @@ fn string_array_contains(items: Array[String], target: String) -> Bool {
   found
 }
 
-fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) -> Option[String] {
+fn lookup_source_stmts_by_path(sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], target_path: String) -> Option[Array[Stmt]] {
   let mut i = 0
   let mut found = None
   while i < Array::length(sources) {
-    let (path, source) = Array::get(sources, i)
+    let (path, _) = Array::get(sources, i)
     if path == target_path {
-      found = Some(source)
+      found = Some(Array::get(source_stmts, i))
       i = Array::length(sources)
     } else {
       i = i + 1
@@ -219,7 +223,7 @@ fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Exce
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Exception {
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, excluded_locals: Array[String]) -> Unit with Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -228,15 +232,30 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
     let (raw_path, original, local) = Array::get(refs, i)
     if !string_array_contains(emitted, local) && !string_array_contains(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
-      match lookup_source_by_path(sources, resolved) {
-        Some(source) => {
-          let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parse_program_for_path(resolved, source), export_plan_renames_for(plan, resolved)))
+      match lookup_source_stmts_by_path(sources, source_stmts, resolved) {
+        Some(parsed_source_stmts) => {
+          // Reuse the merge's authoritative parsed copy. In the GC lane this
+          // copy already carries the provider file's rebased offsets; reparsing
+          // the raw source here would silently return to source-relative
+          // offsets only for alias-collision fallback definitions.
+          let provider_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parsed_source_stmts, export_plan_renames_for(plan, resolved)))
           let mut j = 0
           let mut done = false
-          while j < Array::length(source_stmts) && !done {
-            match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
+          while j < Array::length(provider_stmts) && !done {
+            match rewrite_imported_value_stmt_to_local(Array::get(provider_stmts, j), original, local) {
               Some(local_stmt) => {
-                Array::push(merged, local_stmt)
+                let located_local_stmt = if fallback_clone_offset_span > 0 {
+                  // A fallback is a real second copy of the provider body, so
+                  // it needs a second location range too. Reusing the provider
+                  // offsets would make the fail-closed call-result filter drop
+                  // both the original and the clone's Double observations.
+                  let delta = Array::get(fallback_clone_offset_delta, 0)
+                  Array::set(fallback_clone_offset_delta, 0, delta + fallback_clone_offset_span)
+                  shift_stmt_offsets(local_stmt, delta)
+                } else {
+                  local_stmt
+                }
+                Array::push(merged, located_local_stmt)
                 Array::push(emitted, local)
                 done = true
               },
@@ -273,7 +292,7 @@ fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], 
 /// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
 /// (entry keeps its private names), and `plan`/`sources` drive the export-name
 /// rewriting and the collision-def fallback.
-fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)]) -> Unit with Exception {
+fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int) -> Unit with Exception {
   // Preserve the proof that an optimized trait namespace came from the
   // standard module. Desugaring consumes this source-local marker before
   // codegen; it is not part of the runtime program.
@@ -303,7 +322,7 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
   if stmts_have_import_deep(stmts) {
     let skipped_locals = collect_import_alias_collision_locals(stmts)
-    append_import_alias_collision_defs_from_sources(merged, path, stmts, sources, plan, import_value_rename_locals(import_renames))
+    append_import_alias_collision_defs_from_sources(merged, path, stmts, sources, source_stmts, plan, fallback_clone_offset_delta, fallback_clone_offset_span, import_value_rename_locals(import_renames))
     append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
   } else {
     append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
@@ -326,6 +345,7 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
     entry_path
   }
   let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let fallback_clone_offset_delta = [0]
   let mut si = 0
   while si < source_count {
     let path = Array::get(file_paths, si)
@@ -334,13 +354,13 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
     } else {
       path == entry_path
     }
-    append_merged_stmts_for_file(merged, path, Array::get(file_stmts, si), is_entry_source, plan, sources)
+    append_merged_stmts_for_file(merged, path, Array::get(file_stmts, si), is_entry_source, plan, sources, file_stmts, fallback_clone_offset_delta, 0)
     si = si + 1
   }
   merged
 }
 
-fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool) -> Array[Stmt] with Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
@@ -348,6 +368,29 @@ fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, Strin
   // flat source list is parsed once here and reused per group.
   let flat_sources = flatten_source_groups_local(source_groups)
   let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
+  let fallback_clone_offset_delta = [0]
+  // Keep one authoritative parsed copy per file for both the ordinary merge
+  // contribution and alias-collision fallback definitions. The GC variant
+  // rebases the whole table up front, so no later helper can accidentally
+  // reintroduce source-relative offsets by reparsing a provider.
+  let located_file_stmts = if disjoint_offset_spaces {
+    let out = array_empty()
+    let mut offset_base = 0
+    let mut source_idx = 0
+    while source_idx < Array::length(flat_sources) {
+      Array::push(out, shift_stmts_offsets(Array::get(file_stmts, source_idx), offset_base))
+      let (_, source) = Array::get(flat_sources, source_idx)
+      // A source of N bytes occupies [base, base + N). The extra byte keeps
+      // even an offset exactly at EOF disjoint from the following file.
+      offset_base = offset_base + String::length(source) + 1
+      source_idx = source_idx + 1
+    }
+    Array::set(fallback_clone_offset_delta, 0, offset_base)
+    out
+  } else {
+    file_stmts
+  }
+  let fallback_clone_offset_span = Array::get(fallback_clone_offset_delta, 0)
   let plan_entry = if Array::length(file_paths) > 0 {
     Array::get(file_paths, Array::length(file_paths) - 1)
   } else {
@@ -369,14 +412,26 @@ fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, Strin
     let mut si = 0
     while si < source_count {
       let path = Array::get(file_paths, flat_idx)
-      let stmts = Array::get(file_stmts, flat_idx)
-      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources)
+      let stmts = Array::get(located_file_stmts, flat_idx)
+      // Every parser offset is relative to one file. The GC checker's
+      // call-result table is keyed by those offsets, so merging files without
+      // rebasing lets one file's Double call classify another file's Int call.
+      // Shift before the namespace/import rewrites; they preserve locations.
+      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span)
       flat_idx = flat_idx + 1
       si = si + 1
     }
     gi = gi + 1
   }
   merged
+}
+
+fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+  build_grouped_merged_stmts_impl(source_groups, false)
+}
+
+fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
+  build_grouped_merged_stmts_impl(source_groups, true)
 }
 
 /// Interior-line breakpoints (span-arc step5): the basename of a file path (text
@@ -442,6 +497,7 @@ fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, 
     ""
   }
   let plan = build_export_rename_plan(file_paths, file_stmts, plan_entry)
+  let fallback_clone_offset_delta = [0]
   let mut flat_idx = 0
   let mut gi = 0
   while gi < Array::length(source_groups) {
@@ -456,7 +512,7 @@ fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, 
       let before = Array::length(merged)
       // #740: last-of-WHOLE-merge, not last-of-group (see the note in
       // build_grouped_merged_stmts).
-      append_merged_stmts_for_file(merged, path, Array::get(file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources)
+      append_merged_stmts_for_file(merged, path, Array::get(file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, file_stmts, fallback_clone_offset_delta, 0)
       let after = Array::length(merged)
       let mut k = before
       while k < after {
@@ -573,6 +629,20 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
+}
+
+/// Import-resolving wasm-gc compilation. Module discovery, projected import
+/// environments, and namespace projection are the same ones used by the
+/// linear filesystem lane. The GC variant additionally rebases every file's
+/// located AST into a disjoint offset range before merging. The checker and
+/// codegen can then share a call-result table without either transferring a
+/// Double classification to an Int call or discarding a valid Double hint.
+export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Bytes with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let _ = next_db
+  let merged_stmts = build_grouped_merged_stmts_gc(source_groups)
+  compile_generated_stmts_gc_only(merged_stmts, entry_name)
 }
 
 /// #701 RC variant: same load/merge as compile_file_fs_mode "no-dce" but routes

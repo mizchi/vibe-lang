@@ -72,5 +72,9 @@ printf '%s\n' "$broke" | grep -E "at main" >/dev/null && ok "call stack mentions
 # The program still completes and prints 42 (breakpoint continued).
 [ "$(printf '%s' "$broke" | tr -dc '0-9' | grep -o '42' | head -1)" = "42" ] && ok "broke run still computes 42 (continued)" || bad "broke run did not print 42 (got: $broke)"
 
+# 3. Break instrumentation outranks an inherited GC backend selector.
+gc_broke="$(VIBE_BACKEND=gc VIBE_BREAK_AUTO=1 "$VIBE" run --break helper "$proj/prog.vibex" 2>&1)"
+printf '%s\n' "$gc_broke" | grep -qF "breakpoint hit: helper" && ok "break overrides VIBE_BACKEND=gc" || bad "VIBE_BACKEND=gc suppressed breakpoint instrumentation"
+
 echo "[test_vibe_break] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

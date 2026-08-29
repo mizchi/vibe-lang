@@ -1000,9 +1000,11 @@ fn gc_imported_spellings(stmts: Array[Stmt]) -> Array[String] {
 
 /// #1976: the codegen "unresolved name" internal error tells the reader that
 /// the compiler is at fault and asks them to report it. For ONE shape that is
-/// false and misleading: this lane compiles a single file, so a name the file
-/// imported was never going to reach codegen. That is the lane's behaviour,
-/// not a bug, and it is the most common way to hit this backend.
+/// false and misleading: direct source compilation deliberately analyzes one
+/// file, so a name the file imported was never going to reach codegen. That is
+/// the direct mode's behaviour, not a bug. The filesystem compile path resolves
+/// imports before selecting this backend (#2376), so it never reaches this
+/// diagnostic for a valid import.
 ///
 /// The rewrite is deliberately narrow. It fires only when the message is the
 /// unresolved-name error AND the name in it is one this file imports; anything
@@ -1013,11 +1015,9 @@ fn gc_imported_spellings(stmts: Array[Stmt]) -> Array[String] {
 /// imported struct or enum fails in the checker with its own (already clear)
 /// message. Only an imported function reaches this diagnostic.
 ///
-/// The remediation names all THREE gc selectors because codegen cannot see
-/// which one is set: `vibe test` reads VIBE_TEST_BACKEND, `vibe bench` reads
-/// VIBE_BENCH_BACKEND, and both lower to VIBE_BACKEND, which callers (the gate
-/// among them) also set directly. Naming only the test one sent a `vibe bench`
-/// reader to unset a variable they never set, leaving them on gc.
+/// The remediation keeps the GC backend selected and asks for filesystem
+/// loading. Dropping the backend would hide a parity problem instead of
+/// compiling the requested program on the requested backend.
 fn gc_unresolved_import_message(err: String, stmts: Array[Stmt]) -> Option[String] {
   if !String::starts_with(err, codegen_unresolved_name_prefix()) {
     None
@@ -1035,7 +1035,7 @@ fn gc_unresolved_import_message(err: String, stmts: Array[Stmt]) -> Option[Strin
     if String::length(hit) == 0 {
       None
     } else {
-      Some(String::concat("`", String::concat(hit, "` is imported, and the wasm-gc backend compiles one file at a time -- an imported name cannot be reached from it.\n  Run this file on the default (linear) backend instead: drop whichever gc selector got you here -- VIBE_TEST_BACKEND=gc (`vibe test`), VIBE_BENCH_BACKEND=gc (`vibe bench`), or VIBE_BACKEND=gc.\n  (An import is only a problem when the name is USED; an unused import is fine.)")))
+      Some(String::concat("`", String::concat(hit, "` is imported, but this wasm-gc invocation is direct single-file mode, so the imported name cannot be reached.\n  Resolve the filesystem module graph before GC codegen: use `VIBE_TEST_BACKEND=gc vibe test` or set VIBE_FS_COMPILE=1 together with VIBE_BACKEND=gc.\n  (Direct single-file mode remains available for isolated sources; an unused import is fine.)")))
     }
   }
 }

@@ -109,10 +109,12 @@ the edit that fixes them rather than an internal pass name.
 ## Backends and runtime
 
 - The **linear-memory backend is the stable surface**. The wasm-gc backend is
-  opt-in (`VIBE_BACKEND=gc`) and experimental: it compiles one file at a time,
-  so using an imported name fails — with a diagnostic that says so and points at
-  the linear backend (#1976). Remaining builtin-level differences each have a
-  row in `scripts/builtin_parity_classification.tsv`, enforced at the gate.
+  opt-in (`VIBE_BACKEND=gc`) and experimental. `VIBE_TEST_BACKEND=gc` and
+  `VIBE_BENCH_BACKEND=gc` resolve the same filesystem module graph as their
+  linear lanes before selecting GC codegen (#2376). Explicit direct-source GC
+  compilation still analyzes one file; using an imported name there fails with
+  an actionable diagnostic (#1976). Remaining builtin-level differences each have a row in
+  `scripts/builtin_parity_classification.tsv`, enforced at the gate.
 - Generated wasm declares the feature level it requires
   ([wasm/feature-levels.md](wasm/feature-levels.md)); `--allow-*` const-folds and
   DCEs away the code for capabilities that were not granted.

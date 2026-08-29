@@ -408,14 +408,12 @@ compile_to() {
   # funcmap annotator below matches frames by those names).
   local names_env=""
   [ "$keep_names" = "1" ] && names_env="VIBE_WASM_NAMES=1"
-  # The wasm-gc lane is a SINGLE-FILE compile, so it selects VIBE_BACKEND=gc
-  # instead of VIBE_FS_COMPILE=1 rather than alongside it -- the same pairing
-  # scripts/vibe_test.sh uses for VIBE_TEST_BACKEND=gc. Anything other than
-  # "gc" keeps the default linear lane untouched.
+  # Filesystem module loading and final codegen are independent selectors.
+  # Both backends resolve the same module graph; VIBE_BACKEND only chooses the
+  # final lowering after that graph has been projected and merged (#2376).
   local fs_env="VIBE_FS_COMPILE=1"
   local backend_env=""
   if [ "$backend" = "gc" ]; then
-    fs_env=""
     backend_env="VIBE_BACKEND=gc"
   fi
   # #2243: this arm selects its adapter branch through VARIABLES, so the
@@ -427,8 +425,9 @@ compile_to() {
   # The clear set follows whichever branch this lane is actually selecting:
   # the gc lane targets VIBE_BACKEND (evaluated last, so every selector is a
   # predecessor), the default lane targets VIBE_FS_COMPILE. Assignments come
-  # after the -u flags and win over them, which is what lets $debug_env still
-  # set VIBE_DEBUG / VIBE_COVERAGE here.
+  # after the -u flags and win over them, which is what lets the gc lane set
+  # VIBE_FS_COMPILE again after clearing predecessor selectors, and lets
+  # $debug_env still set VIBE_DEBUG / VIBE_COVERAGE here.
   # The clears are spelled INLINE in each invocation, never routed through a
   # variable -- so the two lanes are two calls rather than one call and a
   # branch. That is deliberate duplication.
@@ -441,7 +440,7 @@ compile_to() {
   # one arrived. Inline has no such surface: the clears are lexically part of
   # the command that uses them, which a scanner CAN check.
   if [ "$backend" = "gc" ]; then
-    env $(selector_clears_before VIBE_BACKEND) $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
+    env $(selector_clears_before VIBE_BACKEND) $fs_env $backend_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
       "$RUNNER" "$cli" "$src" "$out" "$entry" >/dev/null 2>"$rerr" || true
   else
     env $(selector_clears_before VIBE_FS_COMPILE) $fs_env VIBE_IMPORT_ABI=raw $debug_env $names_env \
@@ -1010,7 +1009,7 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $mem_env $alloc_env "${profile_env[@]}" $funcmap_env $breakfile_env "$RUNNER" "$out" \
+    env $trace_env $break_env $mem_env $alloc_env ${profile_env[@]+"${profile_env[@]}"} $funcmap_env $breakfile_env "$RUNNER" "$out" \
       ${extra_args[@]+"${extra_args[@]}"} 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"

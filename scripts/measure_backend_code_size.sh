@@ -18,14 +18,17 @@
 # 使い方:
 #   bash scripts/measure_backend_code_size.sh [stage2.wasm]
 #   MEASURE_SCALES="10 20 40 80" bash scripts/measure_backend_code_size.sh
+#   MEASURE_FS_COMPILE=1 bash scripts/measure_backend_code_size.sh
 #
 # stage2 を省略した場合は最新の generations stage2 → _build/_unit_test_gen →
 # seed の順で探す。
 #
-# 注意: **gc レーンは direct source compile 専用**である。`VIBE_FS_COMPILE=1`
-# を付けると `VIBE_BACKEND=gc` は黙って無視され linear が出る (両レーンが
-# バイト単位で一致したらこれを疑うこと)。したがってここで測れるのは import を
-# 持たない単一ファイルだけで、実アプリの実測ではなく**傾きの推定**である。
+# Filesystem module loading and codegen are orthogonal (#2376). The default
+# keeps direct compilation so this script reproduces the committed historical
+# table. MEASURE_FS_COMPILE=1 resolves the same filesystem module graph for
+# both lanes, while VIBE_BACKEND still selects only the final lowering. The
+# committed cases are import-free to isolate the codegen slope, not because
+# the gc lane is limited to a single source file.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,13 +58,14 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 #
 # レーンを決める変数は**呼び出し元の環境から継承させず、両レーンで明示的に**
 # 与える。継承すると測定が黙って壊れる: `VIBE_BACKEND=gc` が export されていれば
-# linear のつもりの呼び出しも gc になり、`VIBE_FS_COMPILE=1` が export されて
-# いれば gc 側が linear に落ちる。どちらも「両レーンが同一」という結果になり、
-# 傾き 0・交点なしという無意味な答えを green のまま返してしまう。
+# linear のつもりの呼び出しも gc になる。両方が「同じレーンを 2 回測る」結果に
+# なり、傾き 0・交点なしという無意味な答えを green のまま返してしまう。
 compile_one() { # <lane> <src> <out>
   local lane="$1" src="$2" out="$3" backend=linear
+  local -a module_env=(-u VIBE_FS_COMPILE)
   [ "$lane" = "gc" ] && backend=gc
-  env -u VIBE_FS_COMPILE VIBE_BACKEND="$backend" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  [ "${MEASURE_FS_COMPILE:-0}" = "1" ] && module_env=(VIBE_FS_COMPILE=1)
+  env "${module_env[@]}" VIBE_BACKEND="$backend" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$src" "$out" main >/dev/null 2>&1 || true
 }
 

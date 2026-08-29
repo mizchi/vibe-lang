@@ -625,34 +625,19 @@ vibe bench foo_bench.vibe                       # default: linear
 VIBE_BENCH_BACKEND=gc vibe bench foo_bench.vibe # opt-in: wasm-gc
 ```
 
-**The gc lane compiles one file as self-contained.** That is the reason behind
-the overwhelming majority of "this test does not pass on gc". It fails when an
-imported name is **actually used**, not merely because an `import` is present:
+**The public gc test and bench lanes resolve imports.** `compile_to` always
+selects filesystem module loading first, then chooses linear or gc only for the
+final codegen (#2376). A test or bench may therefore call names from relative,
+package, transitive, or re-exported imports exactly as on the linear lane.
+Host-import restrictions still apply: use these selectors for pure programs
+that need no HTTP/FS host imports.
 
-```console
-$ VIBE_TEST_BACKEND=gc vibe test lib/@vibe/core/sha1_test.vibe
-error: `sha1` is imported, and the wasm-gc backend compiles one file at a time -- an imported name cannot be reached from it.
-  Run this file on the default (linear) backend instead: drop whichever gc selector got you here -- VIBE_TEST_BACKEND=gc (`vibe test`), VIBE_BENCH_BACKEND=gc (`vibe bench`), or VIBE_BACKEND=gc.
-  (An import is only a problem when the name is USED; an unused import is fine.)
-```
-
-`sha1_test.vibe` has `import ./sha1.vibe { sha1 }` and calls it. Nothing is
-wrong with `sha1` itself. The boundary, measured on a minimal example
-(2026-08-16):
-
-| | gc | linear |
-|---|---|---|
-| **calls** an imported function | **fails** | ok |
-| imports it but does **not use** it | ok | ok |
-| calls a function in the same file | ok | ok |
-
-Until #1976 this shape answered with the codegen internal error — "this is a
-bug in the compiler and not in your program -- please report the source that
-triggers it". All three claims were false, and while that message hid the
-cause, three separate wrong explanations for it reached the docs (corrected in
-#1929). The rewrite is narrow on purpose: it fires only when the unresolved
-name is one **this file imports**. An unresolved name that is not import-derived
-still gets the internal error, and that one is genuine — report it.
+The lower-level direct-source GC API remains deliberately single-file. It is
+used by compiler-internal parity fixtures that provide one self-contained
+source string; using an imported name there is rejected with the actionable
+diagnostic added in #1976. Do not infer that restriction from a failure in the
+public `vibe test` / `vibe bench` commands: those commands take the
+import-resolving filesystem lane.
 
 **`bench` blocks DO run on the gc lane** — #1701 landed the gc backend's
 per-block `__bench_<name>` exports (`codegen/gc/backend_body.vibe`). Measured

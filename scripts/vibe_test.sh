@@ -45,12 +45,10 @@ seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
 outdir="$ROOT_DIR/_build/vibe_test"
 mkdir -p "$outdir"
 
-# #683: VIBE_TEST_BACKEND=gc compiles each test file on the wasm-gc backend
-# (VIBE_BACKEND=gc, direct single-file compile — no FS import resolution) and
-# runs it under wasmtime with the gc feature flags instead of the node host
-# runner. Self-contained *_test.vibe files only; files with imports fail to
-# compile on this lane. Not combinable with --coverage (linear-only
-# instrumentation).
+# #683/#2376: VIBE_TEST_BACKEND=gc resolves the same filesystem module graph as
+# the linear lane and selects wasm-gc only at the final codegen boundary. It
+# runs the result under wasmtime with the gc feature flags instead of the node
+# host runner. Not combinable with --coverage (linear-only instrumentation).
 backend="${VIBE_TEST_BACKEND:-linear}"
 if [ "$backend" = "gc" ] && [ "$coverage" = "1" ]; then
   echo "vibe_test.sh: --coverage is linear-backend only (unset VIBE_TEST_BACKEND=gc)" >&2
@@ -455,10 +453,11 @@ vt_worker() {
   # Compile with a sentinel entry name that does not exist in the file, so the
   # compiler takes the no-entry path and emits a test-running `_start`.
   # VIBE_COVERAGE=$coverage selects the instrumented codegen when --coverage.
-  # VIBE_TEST_BACKEND=gc: single-file wasm-gc compile (no VIBE_FS_COMPILE).
+  # Backend selection is independent from filesystem module loading: both
+  # lanes resolve imports, while VIBE_BACKEND selects only the final codegen.
   local compile_env
   if [ "$backend" = "gc" ]; then
-    compile_env=(VIBE_BACKEND=gc)
+    compile_env=(VIBE_FS_COMPILE=1 VIBE_BACKEND=gc)
   else
     compile_env=(VIBE_FS_COMPILE=1)
   fi

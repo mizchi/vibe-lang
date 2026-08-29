@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Pat, TypeExpr, trait_ref_key
+  Expr, Pat, Stmt, TypeExpr, trait_ref_key
 }
 
 import ./intern.vibe {
@@ -122,6 +122,43 @@ fn map_arm_exprs(arms: Array[(Pat, Expr)], f: (Int) -> Int, context: Option[Pars
   for a in arms {
     let (p, e) = a
     (p, map_expr_offsets(e, f, context))
+  }
+}
+
+/// Shift every located expression offset by `delta`, preserving synthetic -1
+/// offsets. Filesystem compilation uses this when several independently
+/// parsed files become one AST and therefore need disjoint location spaces.
+export fn shift_expr_offsets(expr: Expr, delta: Int) -> Expr {
+  map_expr_offsets(expr, (off) -> off + delta, None)
+}
+
+fn shift_expr_offset_array(exprs: Array[Expr], delta: Int) -> Array[Expr] {
+  for expr in exprs {
+    shift_expr_offsets(expr, delta)
+  }
+}
+
+/// Shift every expression location carried by a statement. The match is
+/// exhaustive over expression-bearing statement variants; declarations with
+/// no expression locations are returned unchanged.
+export fn shift_stmt_offsets(stmt: Stmt, delta: Int) -> Stmt {
+  match stmt {
+    SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, shift_expr_offsets(expr, delta)),
+    SLetMut(name, annotation, expr) => SLetMut(name, annotation, shift_expr_offsets(expr, delta)),
+    STest(name, expr) => STest(name, shift_expr_offsets(expr, delta)),
+    SBench(name, expr) => SBench(name, shift_expr_offsets(expr, delta)),
+    SExample(name, expr) => SExample(name, shift_expr_offsets(expr, delta)),
+    SExpr(expr) => SExpr(shift_expr_offsets(expr, delta)),
+    SLetPat(pattern, expr) => SLetPat(pattern, shift_expr_offsets(expr, delta)),
+    SModule(exported, name, stmts) => SModule(exported, name, shift_stmts_offsets(stmts, delta)),
+    SFnDecl(exported, name, expr, requires, ensures) => SFnDecl(exported, name, shift_expr_offsets(expr, delta), shift_expr_offset_array(requires, delta), shift_expr_offset_array(ensures, delta)),
+    _ => stmt
+  }
+}
+
+export fn shift_stmts_offsets(stmts: Array[Stmt], delta: Int) -> Array[Stmt] {
+  for stmt in stmts {
+    shift_stmt_offsets(stmt, delta)
   }
 }
 
