@@ -4107,6 +4107,15 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   if num_user_funcs == 0 {
     throw("no functions found to compile")
   }
+  // #2388: lambda-slot region base -- num_user_funcs rounded up to the next
+  // multiple of 1024. Every closure-creation site embeds `base + planned_index`
+  // as an immediate; anchoring the base to a capacity ceiling instead of the
+  // exact function count means adding a named function (up to the ceiling)
+  // leaves every existing lambda-slot immediate byte-identical — the
+  // prefix-stability invariant per-module codegen caching builds on. Measured
+  // before this change (one added test in the entry): 581 of 4214 function
+  // bodies differed, every one only in a slot immediate.
+  let lambda_slot_base = ((num_user_funcs + 1023) / 1024) * 1024
   let mut entry_user_idx = -1
   let mut ei = 0
   while ei < num_user_funcs {
@@ -6588,6 +6597,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
           },
           lambda_table: lt_w,
           num_user_funcs: num_user_funcs,
+          lambda_slot_base: lambda_slot_base,
           func_offset: func_offset,
           ref_cell_names: lc_fresh_string_array(),
           ctor_table: CtorTable::{
@@ -8176,7 +8186,14 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     throw("WASI codegen internal error: function section and code section count mismatch")
   }
   emit_function_section(out, func_type_indices)
-  let total_table_entries = num_user_funcs + num_lambdas
+  // #2388: lambdas sit at [lambda_slot_base, +num_lambdas) — see the
+  // lambda_slot_base doc on CompileCtx. Slots in the reserved gap
+  // [num_user_funcs, lambda_slot_base) are never used and stay ref.null.
+  let total_table_entries = if num_user_funcs + num_lambdas > 0 {
+    lambda_slot_base + num_lambdas
+  } else {
+    0
+  }
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
@@ -8384,7 +8401,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
         Array::push(table_func_indices, if tei < num_user_funcs {
           func_offset + tei
         } else {
-          run_func_idx + 1 + (tei - num_user_funcs)
+          run_func_idx + 1 + (tei - lambda_slot_base)
         })
       } else {
         ()
