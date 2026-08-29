@@ -4222,6 +4222,20 @@ fn fapp_applied_formals_across(tes: Array[TypeExpr], formals: Array[String]) -> 
   applied
 }
 
+/// An applied formal (`F[A]`) in a trait method signature whose parameter is
+/// declared as a COMPLETE type. Such a trait can be declared but never
+/// implemented: measured, every impl head that supplies a constructor for it is
+/// rejected ("type parameter `F` of `Functor` expects a complete type, but
+/// `Array` is a constructor with 1 argument(s)"). The declaration is therefore
+/// where to say so, and the fix is to declare the parameter kinded -- a kinded
+/// `F[_]` applied as `F[A]` stays legal (#2351).
+fn fapp_unkinded_application_error(tname: String, mname: String, formal: String) -> String {
+  let head = String::concat(String::concat("constructor parameter `", formal), "` is applied in ")
+  let mid = String::concat(String::concat(", but `", formal), "` is declared as a complete type that no impl can satisfy")
+  let tail = String::concat(String::concat("; declare it as a type constructor -- spell it `", formal), String::concat(String::concat("[_]` in trait `", tname), "`'s parameter list"))
+  String::concat(String::concat(head, fapp_decl_label(tname, mname)), String::concat(mid, tail))
+}
+
 fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -4293,14 +4307,15 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
             if applied_name == "Self" {
               Array::push(errors, String::concat(String::concat("`Self` is a complete type and cannot be applied in ", fapp_decl_label(tname, mname)), "; write `Self`, not `Self[...]`"))
             } else {
-              Array::push(errors, String::concat(String::concat(String::concat("constructor parameter in trait method `", tname), String::concat("::", mname)), "` is not supported until parameterized trait dispatch can preserve its arguments"))
+              Array::push(errors, fapp_unkinded_application_error(tname, mname, applied_name))
             }
             afi = afi + 1
           }
-          if Array::length(fapp_applied_formals_across(method_tes, tparams)) > 0 {
-            Array::push(errors, String::concat(String::concat(String::concat("constructor parameter in trait method `", tname), String::concat("::", mname)), "` is not supported until parameterized trait dispatch can preserve its arguments"))
-          } else {
-            ()
+          let applied_header_formals = fapp_applied_formals_across(method_tes, tparams)
+          let mut ahi = 0
+          while ahi < Array::length(applied_header_formals) {
+            Array::push(errors, fapp_unkinded_application_error(tname, mname, Array::get(applied_header_formals, ahi)))
+            ahi = ahi + 1
           }
           mi = mi + 1
         }
