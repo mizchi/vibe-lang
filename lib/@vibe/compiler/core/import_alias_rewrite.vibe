@@ -16,6 +16,10 @@ import ./module_graph_path.vibe {
   dir_of_path, is_contract_ext, resolve_import_path_candidates
 }
 
+import ./inline_wasm_marker.vibe {
+  inline_wasm_marker_name, wat_callee_names, wat_rewrite_callees
+}
+
 //# Functions
 
 fn empty_aliases() -> Array[(String, String)] {
@@ -1124,6 +1128,56 @@ fn rewrite_alias_param_types(params: Array[(String, Option[TypeExpr])], am: Alia
   }
 }
 
+/// #2348: is this expression an inline-wasm marker call, `%wasm("<WAT>")`?
+fn is_inline_wasm_marker_body(body: Expr) -> Bool {
+  match body {
+    ECall(callee, args, _) => is_inline_wasm_marker(callee, args),
+    _ => false
+  }
+}
+
+/// #2348: is this call the parser's inline-wasm marker, `%wasm("<WAT>")`?
+fn is_inline_wasm_marker(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(cname, _) => if cname == inline_wasm_marker_name() && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        EString(_) => true,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// #2348: rename the `call $name` callees inside an inline-wasm marker's WAT
+/// text with the same map the surrounding rewrite applies to identifiers, so
+/// a kernel keeps calling the helper it named after the helper is renamed.
+fn rewrite_wat_marker_args(args: Array[Expr], am: AliasIdx) -> Array[Expr] {
+  match Array::get(args, 0) {
+    EString(wat) => {
+      let names = wat_callee_names(wat)
+      let from = array_empty()
+      let to = array_empty()
+      let mut i = 0
+      while i < Array::length(names) {
+        let name = Array::get(names, i)
+        match MutMap::get(am.idx, name) {
+          Some(renamed) => {
+            Array::push(from, name)
+            Array::push(to, renamed)
+          },
+          None => ()
+        }
+        i = i + 1
+      }
+      [EString(wat_rewrite_callees(wat, from, to))]
+    },
+    _ => args
+  }
+}
+
 fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   // Perf: with no aliases the rewrite is the identity, but the match below
   // still rebuilt EVERY node of the tree. Alias maps only shrink on the way
@@ -1195,9 +1249,18 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         }
         EForIn(name, index_name, rewrite_alias_expr_ix(iter, am), rewrite_alias_expr_ix(body, body_aliases))
       },
-      ECall(callee, args, off) => ECall(rewrite_alias_expr_ix(callee, am), for arg in args {
-        rewrite_alias_expr_ix(arg, am)
-      }, off),
+      // #2348: an inline-wasm body is `%wasm("<WAT text>")`, and a
+      // `(call $helper ...)` inside that text names a fn of this module. The
+      // generic rewrite below cannot see it -- the text is an EString -- so a
+      // private helper's DEFINITION was renamed by the merge while the
+      // `$helper` token was left pointing at a name that no longer existed.
+      ECall(callee, args, off) => if is_inline_wasm_marker(callee, args) {
+        ECall(rewrite_alias_expr_ix(callee, am), rewrite_wat_marker_args(args, am), off)
+      } else {
+        ECall(rewrite_alias_expr_ix(callee, am), for arg in args {
+          rewrite_alias_expr_ix(arg, am)
+        }, off)
+      },
       EBinOp(op, left, right) => EBinOp(op, rewrite_alias_expr_ix(left, am), rewrite_alias_expr_ix(right, am)),
       EUnaryOp(op, value) => EUnaryOp(op, rewrite_alias_expr_ix(value, am)),
       EFn(type_params, bounds, params, ret_ty, effect, body) => {
@@ -1206,7 +1269,18 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // namespaces while canonicalizing imported contract aliases in fn
         // parameter and return annotations (#1539 StdinStream as S).
         let type_am = aliasidx_without_names(am, type_params)
-        EFn(type_params, rewrite_alias_bounds(bounds, type_am), rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, aliasidx_without_params(am, params)))
+        // #2348: a WAT body's `$name` callees are wasm FUNCTION names, a
+        // namespace of their own -- `fn caller(helper: Int) = wasm"(call
+        // $helper (local.get $helper))"` calls the fn and reads the param, and
+        // the assembler already keeps those apart. So the marker body is
+        // rewritten with the UNSHADOWED map: passing it the params-removed one
+        // left the callee spelled for a definition the merge had renamed.
+        let body_am = if is_inline_wasm_marker_body(body) {
+          am
+        } else {
+          aliasidx_without_params(am, params)
+        }
+        EFn(type_params, rewrite_alias_bounds(bounds, type_am), rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, body_am))
       },
       // #897: `mod.x` written against a qualified-import namespace (`import
       // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see

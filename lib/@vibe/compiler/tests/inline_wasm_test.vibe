@@ -19,7 +19,7 @@ import @vibe/compiler/checker {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_impl
+  compile_wasi_module_impl, compile_wasi_module_linked_impl
 }
 
 import ../codegen_gc.vibe {
@@ -27,7 +27,11 @@ import ../codegen_gc.vibe {
 }
 
 import @vibe/compiler/codegen {
-  compile_inline_wat, compile_inline_wat_full
+  compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full
+}
+
+import @vibe/compiler/codegen/common_base {
+  codegen_body_cache_new, empty_dbg_prov
 }
 
 //# Functions
@@ -66,6 +70,24 @@ fn wat_err(wat: String) -> String {
     let _ = compile_inline_wat("probe", wat, ["a", "b"])
     ""
   } with { Exception::Throw(msg) => msg }
+}
+
+/// #2348: a two-entry callee table -- `dbl` at wasm index 7 taking 1 param,
+/// `sub2` at wasm index 9 taking 2.
+fn iw_test_callees() -> Array[(String, Int, Int)] {
+  [("dbl", 7, 1), ("sub2", 9, 2)]
+}
+
+fn call_err(wat: String) -> String {
+  handle {
+    let _ = compile_inline_wat_calls("probe", wat, ["a", "b"], 3, iw_test_callees())
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn call_bytes(wat: String) -> Bytes with Exception {
+  let (out, _n32, _n64, _nv) = compile_inline_wat_calls("probe", wat, ["a", "b"], 3, iw_test_callees())
+  out
 }
 
 //# Misc
@@ -116,8 +138,13 @@ test "inline wasm assembler: malformed WAT is a located error" {
   assert(String::contains(e3, "missing ')'"))
   let e4 = wat_err("(br $nowhere)")
   assert(String::contains(e4, "unknown label '$nowhere'"))
+  // #2348: `call` resolves against the module's inline-wasm fns. `wat_err`
+  // passes no callee table, so nothing is callable and the error says so --
+  // this used to read "not supported", when no body could call anything.
   let e5 = wat_err("(call $f)")
-  assert(String::contains(e5, "not supported"))
+  assert(String::contains(e5, "no inline-wasm fn named 'f'"))
+  let e5b = wat_err("(call_indirect (local.get $a))")
+  assert(String::contains(e5b, "not supported"))
   let e6 = wat_err("block")
   assert(String::contains(e6, "folded form"))
 }
@@ -297,4 +324,198 @@ test "inline wasm: printer round-trips the = wasm form" {
   // and the printed form re-parses to the same print
   let stmts2 = parse_program_preserving(lex(printed))
   assert(print_stmt(Array::get(stmts2, 0)) == printed)
+}
+
+test "#2348 inline wasm: folded call emits operands, the env slot, then the call" {
+  // `(call $dbl (local.get $a))` is the same sequence compile_call.vibe emits
+  // for a static call: the argument, `i64.const 0` for the closure-env slot
+  // every user function carries as its last wasm param, then `call <idx>`.
+  let bytes = call_bytes("(call $dbl (local.get $a))")
+  assert(Bytes::length(bytes) == 6)
+  assert(bytes[0] == 0x20)
+  assert(bytes[1] == 0x00)
+  assert(bytes[2] == 0x42)
+  assert(bytes[3] == 0x00)
+  assert(bytes[4] == 0x10)
+  assert(bytes[5] == 7)
+}
+
+test "#2348 inline wasm: call operands keep source order" {
+  // Deliberately a NON-commutative callee: `sub2` would assemble identically
+  // under a swap if this used an add, and an argument-order bug would survive
+  // the test (CLAUDE.md, "never test argument order with a commutative
+  // operator").
+  let bytes = call_bytes("(call $sub2 (local.get $a) (local.get $b))")
+  assert(Bytes::length(bytes) == 8)
+  assert(bytes[0] == 0x20)
+  assert(bytes[1] == 0x00)
+  assert(bytes[2] == 0x20)
+  assert(bytes[3] == 0x01)
+  assert(bytes[4] == 0x42)
+  assert(bytes[5] == 0x00)
+  assert(bytes[6] == 0x10)
+  assert(bytes[7] == 9)
+}
+
+test "#2348 inline wasm: a call nests inside another call and inside an operator" {
+  let nested = call_bytes("(call $dbl (call $dbl (local.get $a)))")
+  assert(Bytes::length(nested) == 10)
+  assert(nested[4] == 0x10)
+  assert(nested[5] == 7)
+  assert(nested[8] == 0x10)
+  assert(nested[9] == 7)
+  let inside = call_bytes("(i64.add (call $dbl (local.get $a)) (local.get $b))")
+  assert(Bytes::length(inside) == 9)
+  assert(inside[8] == 0x7C)
+}
+
+test "#2348 inline wasm: call arity is checked against the callee" {
+  let too_few = call_err("(call $sub2 (local.get $a))")
+  assert(String::contains(too_few, "'sub2' takes 2 argument(s), called with 1"))
+  let too_many = call_err("(call $dbl (local.get $a) (local.get $b))")
+  assert(String::contains(too_many, "'dbl' takes 1 argument(s), called with 2"))
+}
+
+test "#2348 inline wasm: an unknown callee names what IS callable" {
+  let e = call_err("(call $nope (local.get $a))")
+  assert(String::contains(e, "no inline-wasm fn named 'nope'"))
+  assert(String::contains(e, "callable: dbl, sub2"))
+}
+
+test "#2348 inline wasm: with no callee table nothing is callable" {
+  // What the two back-compat entries pass, and what every `call` met before
+  // this issue.
+  let e = handle {
+    let _ = compile_inline_wat("probe", "(call $dbl (local.get $a))", ["a", "b"])
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(e, "no inline-wasm fn named 'dbl'"))
+  assert(String::contains(e, "callable: (none)"))
+}
+
+test "#2348 inline wasm: flat-form call is rejected, with the fix in the message" {
+  // Folded-only on purpose: the flat spelling's operand count is not knowable
+  // in the assembler, so its arity could not be checked and the mismatch
+  // would surface as a wasm validation failure at module load.
+  let e = call_err("local.get $a call $dbl")
+  assert(String::contains(e, "'call' must be written in folded form"))
+  assert(String::contains(e, "(call $f (local.get $a) ...)"))
+}
+
+test "#2348 inline wasm: the callee must be spelled $name" {
+  let e = call_err("(call dbl (local.get $a))")
+  assert(String::contains(e, "'call' callee must be written as $name"))
+  let bare = call_err("(call)")
+  assert(String::contains(bare, "'call' needs a callee name"))
+}
+
+test "#2348 inline wasm: call_indirect and return_call stay unsupported" {
+  let ci = call_err("(call_indirect (local.get $a))")
+  assert(String::contains(ci, "'call_indirect' is not supported"))
+  let rc = call_err("return_call $dbl")
+  assert(String::contains(rc, "'return_call' is not supported"))
+}
+
+/// #2348: compile through the LATE-DCE lane -- `enable_late_dce = true`, the
+/// argument `compile_file_wasi_linked_artifacts` passes. Returns "ok" or the
+/// thrown message.
+fn late_dce_compile(src: String) -> String {
+  handle {
+    let stmts = parse_program(lex(src))
+    let wasm = compile_wasi_module_linked_impl(stmts, "main", array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+    if Bytes::length(wasm) > 0 {
+      "ok"
+    } else {
+      "empty wasm"
+    }
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "#2348 late dce: a helper only a WAT call names survives the post-extraction pass" {
+  // `effect_lowering_prelude` replaces every WAT body with a neutral EInt(0)
+  // BEFORE the late `dce_stmts` runs, so that pass cannot see the call edge
+  // the early one reads out of the marker. It does not need to:
+  // `lc_late_dce_roots` roots every top-level name except the pipeline's own
+  // derive helpers (#1666). This pins that -- if the late pass ever starts
+  // pruning user functions, the assembler throws `no inline-wasm fn named
+  // 'helper'` here instead of at someone's `vibe run`.
+  assert(late_dce_compile("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nfn caller(a: Int) -> Int = wasm\"(call $helper (local.get $a) (i64.const 8))\"\nfn main() -> Int { caller(10) }\n") == "ok")
+}
+
+test "#2348 late dce: the lane compiles a kernel nobody calls too" {
+  // The control: "ok" above must not be an artifact of the lane accepting
+  // anything -- this variant has the same two kernels with no `call` between
+  // them, and also compiles.
+  assert(late_dce_compile("fn helper(a: Int, b: Int) -> Int = wasm\"(i64.sub (local.get $a) (local.get $b))\"\nfn caller(a: Int) -> Int = wasm\"(i64.add (local.get $a) (i64.const 8))\"\nfn main() -> Int { caller(10) }\n") == "ok")
+}
+
+/// #2348: assemble with the two-entry callee table; "ok" or the thrown error.
+fn call_result(wat: String) -> String {
+  handle {
+    let (out, _n32, _n64, _nv) = compile_inline_wat_calls("probe", wat, [
+      "a",
+      "b"
+    ], 3, iw_test_callees())
+    if Bytes::length(out) > 0 {
+      "ok"
+    } else {
+      "empty"
+    }
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "#2348 inline wasm: a call operand that leaves nothing on the stack is rejected" {
+  // Counting parenthesized operands is not an arity check on its own:
+  // `(drop ...)` is one operand that pushes NOTHING, so the call would be
+  // assembled a value short and the module would fail wasm validation at load
+  // -- clean `vibe check`, broken artifact.
+  assert(String::contains(call_result("(call $dbl (drop (local.get $a)))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (nop))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (local.set $a (i64.const 2)))"), "does not produce an i64"))
+  assert(String::contains(call_result("(call $dbl (i64.store (local.get $a) (local.get $b)))"), "does not produce an i64"))
+  // A block yields a value only with an explicit `(result ...)`.
+  assert(String::contains(call_result("(call $dbl (block (i64.const 1)))"), "does not produce an i64"))
+  // The message names WHICH argument.
+  assert(String::contains(call_result("(call $sub2 (local.get $a) (drop (local.get $b)))"), "argument 2"))
+}
+
+test "#2348 inline wasm: a call operand of the wrong result type is rejected" {
+  // "pushes something" is not a type check either: every inline-wasm parameter
+  // is an i64 slot, so an i32 or v128 operand assembles a module that fails
+  // validation at load just as surely as a missing one. The message names the
+  // type it found.
+  assert(String::contains(call_result("(call $dbl (i32.const 1))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (v128.const i32x4 0 0 0 0))"), "produces v128"))
+  assert(String::contains(call_result("(call $dbl (i32.wrap_i64 (local.get $a)))"), "produces i32"))
+  // A comparison is i32 whatever its operand width -- a prefix rule alone
+  // would type `i64.eq` as i64.
+  assert(String::contains(call_result("(call $dbl (i64.eq (local.get $a) (local.get $b)))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (f64.abs (f64.reinterpret_i64 (local.get $a))))"), "produces f64"))
+  // A SIMD reduction is i32; a lane extract is the lane's scalar type.
+  assert(String::contains(call_result("(call $dbl (i8x16.all_true (v128.load (local.get $a))))"), "produces i32"))
+  assert(String::contains(call_result("(call $dbl (block (result i32) (i32.const 1)))"), "produces i32"))
+}
+
+test "#2348 inline wasm: a declared local's type decides, not just its name" {
+  // Params are i64 by construction (the parser admits only Int and Bytes), but
+  // a declared `(local $p i32)` is not -- the locals table carries the type so
+  // `local.get` can be typed instead of assumed.
+  assert(call_result("(local $t i64) (call $dbl (local.get $t))") == "ok")
+  assert(String::contains(call_result("(local $p i32) (call $dbl (local.get $p))"), "produces i32"))
+  assert(String::contains(call_result("(local $v v128) (call $dbl (local.get $v))"), "produces v128"))
+}
+
+test "#2348 inline wasm: i64 call operands still assemble" {
+  // The control for the three tests above: the check must not reject the
+  // ordinary shapes. A local, an arithmetic head, a nested call, a block WITH
+  // an i64 result, a load, local.tee, an i64 lane extract, and a widening
+  // conversion.
+  assert(call_result("(call $dbl (local.get $a))") == "ok")
+  assert(call_result("(call $dbl (i64.add (local.get $a) (local.get $b)))") == "ok")
+  assert(call_result("(call $dbl (call $dbl (local.get $a)))") == "ok")
+  assert(call_result("(call $dbl (block (result i64) (i64.const 1)))") == "ok")
+  assert(call_result("(call $dbl (i64.load (local.get $a)))") == "ok")
+  assert(call_result("(call $dbl (local.tee $a (i64.const 2)))") == "ok")
+  assert(call_result("(call $dbl (i64x2.extract_lane 0 (v128.load (local.get $a))))") == "ok")
+  assert(call_result("(call $dbl (i64.extend_i32_s (i32.const 1)))") == "ok")
 }

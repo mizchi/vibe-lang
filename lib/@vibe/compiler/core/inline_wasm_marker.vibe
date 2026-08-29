@@ -1,0 +1,193 @@
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+/// #805 (ADR-0072): the marker call the parser emits for an inline-wasm fn
+/// body, `%wasm("<WAT text>")`. A `%`-ident can never be parsed in expression
+/// position, so user source cannot forge it.
+export fn inline_wasm_marker_name() -> String {
+  "%wasm"
+}
+
+/// The assembler's own word terminators: whitespace, `(`, `)` and `;`
+/// (inline_wat.vibe's tokenizer ends a word at any of these). `;` matters:
+/// `(call $helper;; why` is valid WAT whose callee is `helper`, and a scan
+/// that stopped only at whitespace read `helper;;` and matched nothing.
+fn wat_is_delim(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 40 || c == 41 || c == 59
+}
+
+fn wat_token_end(wat: String, start: Int, len: Int) -> Int {
+  let mut i = start
+  while i < len && !wat_is_delim(String::char_code_at(wat, i)) {
+    i = i + 1
+  }
+  i
+}
+
+/// Advance past delimiters AND comments, the two forms the assembler accepts:
+/// `;;` to end of line and `(; ... ;)`. Skipping them is what lets the `call`
+/// keyword be recognized after one, and keeps a `call $x` written INSIDE a
+/// comment from being recorded as an edge.
+fn wat_skip_delims(wat: String, start: Int, len: Int) -> Int {
+  let mut i = start
+  let mut moving = true
+  while moving {
+    if i >= len {
+      moving = false
+    } else if wat_is_delim(String::char_code_at(wat, i)) {
+      // `;;` runs to the end of the line; a lone `;` is just a terminator.
+      if String::char_code_at(wat, i) == 59 && i + 1 < len && String::char_code_at(wat, i + 1) == 59 {
+        let mut j = i + 2
+        while j < len && String::char_code_at(wat, j) != 10 {
+          j = j + 1
+        }
+        i = j
+      } else if String::char_code_at(wat, i) == 40 && i + 1 < len && String::char_code_at(wat, i + 1) == 59 {
+        // `(; ... ;)`. An unterminated one is the assembler's error to
+        // report, not this scan's: treat the rest of the text as comment.
+        let mut j = i + 2
+        let mut closed = false
+        while j + 1 < len && !closed {
+          if String::char_code_at(wat, j) == 59 && String::char_code_at(wat, j + 1) == 41 {
+            closed = true
+            j = j + 2
+          } else {
+            j = j + 1
+          }
+        }
+        i = if closed {
+          j
+        } else {
+          len
+        }
+      } else {
+        i = i + 1
+      }
+    } else {
+      moving = false
+    }
+  }
+  i
+}
+
+fn wat_name_index(names: Array[String], name: String) -> Int {
+  let n = Array::length(names)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < n {
+    if Array::get(names, i) == name {
+      found = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2348: the fn names a WAT body references through `call $name`.
+///
+/// The WAT text reaches every AST pass as an opaque `EString`, so a pass that
+/// needs to know what a kernel depends on has to read the names out of the
+/// text: DCE, whose reachability would otherwise drop a helper only a `call`
+/// mentions, and the merge rename plan, which would otherwise mangle a
+/// helper's DEFINITION and leave the `$helper` token in the caller pointing
+/// at a name that no longer exists.
+///
+/// It reads the same tokens the assembler does — a word ends at whitespace,
+/// `(`, `)` or `;`, and both comment forms (`;;` to end of line, `(; ... ;)`)
+/// are skipped. That is not cosmetic: `(call $helper;; why` is valid WAT whose
+/// callee is `helper`, and a scan that stopped only at whitespace read
+/// `helper;;`, matched nothing, and let DCE prune the live helper.
+///
+/// Nesting is the one thing it does not track, and does not need to: it keys
+/// on the `call` keyword, and `call` is only ever an instruction. Where it
+/// still differs from the assembler it errs toward reporting a name — DCE
+/// keeps a function it did not have to, a rename rewrites a token that was
+/// already spelled right. The other direction is not safe: a MISSED name is a
+/// function DCE drops out from under a live call, or a callee the merge leaves
+/// dangling.
+export fn wat_callee_names(wat: String) -> Array[String] {
+  let out = array_empty()
+  let len = String::length(wat)
+  let mut i = 0
+  while i < len {
+    let start = wat_skip_delims(wat, i, len)
+    if start >= len {
+      i = len
+    } else {
+      let stop = wat_token_end(wat, start, len)
+      if String::substring(wat, start, stop) == "call" {
+        let name_start = wat_skip_delims(wat, stop, len)
+        if name_start < len && String::char_code_at(wat, name_start) == 36 {
+          let name_stop = wat_token_end(wat, name_start, len)
+          if name_stop > name_start + 1 {
+            Array::push(out, String::substring(wat, name_start + 1, name_stop))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = stop
+    }
+  }
+  out
+}
+
+/// #2348: `wat` with every `call $name` callee that appears in `from`
+/// replaced by the matching entry of `to`. Only the callee token is touched —
+/// a local or label spelled the same way is left alone, which is why this
+/// looks for the `call` keyword rather than for `$name` anywhere.
+export fn wat_rewrite_callees(wat: String, from: Array[String], to: Array[String]) -> String {
+  if Array::length(from) == 0 {
+    wat
+  } else {
+    let len = String::length(wat)
+    let mut out = ""
+    let mut copied = 0
+    let mut i = 0
+    while i < len {
+      let start = wat_skip_delims(wat, i, len)
+      if start >= len {
+        i = len
+      } else {
+        let stop = wat_token_end(wat, start, len)
+        if String::substring(wat, start, stop) == "call" {
+          let name_start = wat_skip_delims(wat, stop, len)
+          if name_start < len && String::char_code_at(wat, name_start) == 36 {
+            let name_stop = wat_token_end(wat, name_start, len)
+            let slot = wat_name_index(from, String::substring(wat, name_start + 1, name_stop))
+            if slot >= 0 {
+              out = String::concat(out, String::substring(wat, copied, name_start + 1))
+              out = String::concat(out, Array::get(to, slot))
+              copied = name_stop
+            } else {
+              ()
+            }
+            i = name_stop
+          } else {
+            i = stop
+          }
+        } else {
+          i = stop
+        }
+      }
+    }
+    String::concat(out, String::substring(wat, copied, len))
+  }
+}
+
+//# Misc
+
+export {
+  inline_wasm_marker_name, wat_callee_names, wat_rewrite_callees
+}

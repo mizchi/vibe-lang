@@ -4,6 +4,10 @@ import ./ast.vibe {
   Expr, Pat, Stmt, TypeExpr
 }
 
+import ./inline_wasm_marker.vibe {
+  inline_wasm_marker_name, wat_callee_names
+}
+
 import @vibe/core {
   array_empty, struct MutMap, struct MutSet
 }
@@ -89,6 +93,39 @@ fn collect_pat_bindings(pat: Pat, bound: Array[String]) -> Int {
   }
 }
 
+/// #2348: add the `call $name` callees of an inline-wasm marker call
+/// (`%wasm("<WAT>")`) to `out`. A no-op for every other call.
+fn collect_wat_callee_refs(callee: Expr, args: Array[Expr], bound: Array[String], out: Array[String]) -> Int {
+  match callee {
+    EIdent(cname, _) => if cname == inline_wasm_marker_name() && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        EString(wat) => {
+          let names = wat_callee_names(wat)
+          let mut i = 0
+          while i < Array::length(names) {
+            // NOT add_ref: `bound` holds the expression's value binders, and a
+            // WAT `$name` callee is a wasm FUNCTION name, a namespace of its
+            // own. `fn caller(helper: Int) = wasm"(call $helper (local.get
+            // $helper))"` calls the fn and reads the param, and the assembler
+            // already keeps those apart -- filtering by `bound` here dropped
+            // the call edge and DCE then pruned the live helper.
+            let name = Array::get(names, i)
+            if not(dce_array_contains_str(out, name)) {
+              Array::push(out, name)
+            }
+            i = i + 1
+          }
+          0
+        },
+        _ => 0
+      }
+    } else {
+      0
+    },
+    _ => 0
+  }
+}
+
 fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> Int {
   match expr {
     EIdent(name, _) => add_ref(out, bound, name),
@@ -133,6 +170,13 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
     },
     ECall(callee, args, _) => {
       collect_refs_into(callee, bound, out)
+      // #2348: an inline-wasm body reaches here as `%wasm("<WAT text>")`, and
+      // the text is an EString, which contributes nothing below. A
+      // `(call $helper ...)` inside it is a real reference, so without this
+      // arm DCE prunes a helper that only a kernel calls and codegen then
+      // reports it missing -- while `vibe check`, which runs on the unpruned
+      // statements, reports clean.
+      collect_wat_callee_refs(callee, args, bound, out)
       let mut i = 0
       while i < Array::length(args) {
         collect_refs_into(Array::get(args, i), bound, out)

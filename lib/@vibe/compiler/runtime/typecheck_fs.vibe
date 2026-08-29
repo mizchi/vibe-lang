@@ -77,7 +77,7 @@ import @vibe/compiler/core {
 // #946(4): inline-wasm codegen validation (lane/align/etc. errors) runs as
 // part of `collect_all_diagnostics` too — see check_inline_wasm_fns below.
 import @vibe/compiler/codegen {
-  compile_inline_wat
+  compile_inline_wat_calls
 }
 
 // #1948: the same Show-interpolation contract `vibe check` runs via
@@ -5600,7 +5600,21 @@ fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[S
   }
   out
 }
-/// #946(4): validate every inline-wasm fn body (compile_inline_wat — the same
+/// #2348: the callee table for the CHECK lane -- one entry per inline-wasm fn
+/// in this module, carrying its position where codegen carries a wasm function
+/// index (see check_inline_wasm_fns for why that is sound here).
+fn check_iw_callee_table(fns: Array[(String, String, Array[String])]) -> Array[(String, Int, Int)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(fns) {
+    let (fn_name, _wat, pnames) = Array::get(fns, i)
+    Array::push(out, (fn_name, i, Array::length(pnames)))
+    i = i + 1
+  }
+  out
+}
+
+/// #946(4): validate every inline-wasm fn body (compile_inline_wat_calls — the same
 /// assembler codegen uses) and return the FIRST located error, or None when
 /// every inline-wasm fn assembles cleanly. `compile` surfaced these (e.g. a bad
 /// SIMD lane index) as a located error while `vibe diagnostics` reported clean
@@ -5610,6 +5624,14 @@ fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[S
 export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
   let fns = collect_inline_wasm_fns(stmts)
   let n = Array::length(fns)
+  // #2348: the same callee table codegen builds, so `vibe check` accepts
+  // exactly the `(call $f ...)` bodies codegen accepts. The wasm function
+  // INDEX is not knowable here -- module layout is decided in
+  // linked_compile.vibe -- so each entry carries its position in this list.
+  // That is sound because the assembled bytes are discarded below (`let _`):
+  // this lane checks that the callee resolves and the arity matches, and
+  // nothing reads the index it encoded.
+  let iw_callees = check_iw_callee_table(fns)
   let mut i = 0
   let mut result = None
   let mut done = false
@@ -5619,7 +5641,7 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
     } else {
       let (fn_name, wat, pnames) = Array::get(fns, i)
       let outcome = handle {
-        let _ = compile_inline_wat(fn_name, wat, pnames)
+        let _ = compile_inline_wat_calls(fn_name, wat, pnames, Array::length(pnames) + 1, iw_callees)
         None
       } with { Exception::Throw(msg) => Some(msg) }
       match outcome {

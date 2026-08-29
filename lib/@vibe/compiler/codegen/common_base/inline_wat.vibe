@@ -55,8 +55,14 @@ import @vibe/core {
 //     replace_lane, i8x16.shuffle (16 lane-byte immediates 0..31), integer
 //     lane arithmetic + compares, bitwise, all_true / any_true / bitmask,
 //     swizzle, shifts
-//   - NOT supported (clear errors): call / call_indirect / br_table /
-//     global.get/set / f32.const / f64.const
+//   - folded `(call $f <operands...>)` to another inline-wasm fn in the SAME
+//     module (#2348), arity-checked against the callee's declared params.
+//     The closure-env slot and the call opcode are emitted by the assembler;
+//     the WAT author writes only the real arguments. Folded form only --
+//     the flat spelling's operand count is not knowable here, so it could
+//     not be checked
+//   - NOT supported (clear errors): flat-form call / call_indirect /
+//     return_call / br_table / global.get/set / f32.const / f64.const
 
 fn iw_err(fn_name: String, msg: String, off: Int) -> String {
   "inline wasm (fn \{fn_name}): \{msg} (WAT offset \{off})"
@@ -70,7 +76,15 @@ fn iw_fresh_strings() -> Array[String] {
   array_empty()
 }
 
-fn iw_fresh_locals() -> Array[(String, Int)] {
+/// #2348: `(name, wasm local index, wasm valtype byte)`. The type is what
+/// lets a folded `call` reject `(call $f (local.get $v))` when `$v` is an
+/// i32 or v128 local -- every inline-wasm parameter slot is an i64.
+fn iw_fresh_locals() -> Array[(String, Int, Int)] {
+  array_empty()
+}
+
+/// #2348: the empty callee table — a body that may not `call` anything.
+fn iw_fresh_callees() -> Array[(String, Int, Int)] {
   array_empty()
 }
 
@@ -652,14 +666,38 @@ fn iw_mem_lookup(name: String) -> (Int, Int) {
 /// (indexed from the caller's extra_base past the closure-env slot) — or a
 /// bare numeric index (indices between the params and extra_base are the
 /// codegen's own, e.g. the env slot — named access is the safe spelling).
-fn iw_local_idx(fn_name: String, locals: Array[(String, Int)], tok: String, off: Int) -> Int with Exception {
+/// #2348: the wasm valtype byte of `$name`, or 0 when it is not a known local
+/// (a numeric index, or an unknown name -- both refuse to answer rather than
+/// guess).
+fn iw_local_valtype(locals: Array[(String, Int, Int)], tok: String) -> Int {
+  if String::length(tok) > 0 && String::char_code_at(tok, 0) == 36 {
+    let want = String::substring(tok, 1, String::length(tok))
+    let n = Array::length(locals)
+    let mut i = 0
+    let mut found = 0
+    while i < n {
+      let (ln, _li, lt) = Array::get(locals, i)
+      if ln == want {
+        found = lt
+        i = n
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  } else {
+    0
+  }
+}
+
+fn iw_local_idx(fn_name: String, locals: Array[(String, Int, Int)], tok: String, off: Int) -> Int with Exception {
   if String::length(tok) > 0 && String::char_code_at(tok, 0) == '$' {
     let want = String::substring(tok, 1, String::length(tok))
     let n = Array::length(locals)
     let mut i = 0
     let mut found = 0 - 1
     while i < n {
-      let (ln, li) = Array::get(locals, i)
+      let (ln, li, _lt) = Array::get(locals, i)
       if ln == want {
         found = li
         i = n
@@ -825,7 +863,7 @@ fn iw_v128_const(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[St
 
 /// Emit ONE plain (non-control) instruction word at `pos` plus its immediates
 /// into `buf`. Returns the position after the instruction + immediates.
-fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
+fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
   let name = Array::get(texts, pos)
   let off = Array::get(offs, pos)
   if name == "block" || name == "loop" || name == "if" || name == "else" || name == "end" || name == "then" {
@@ -894,8 +932,16 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
     leb128_encode_u32(buf, align)
     leb128_encode_u32(buf, offset)
     next
-  } else if name == "call" || name == "call_indirect" || name == "return_call" {
-    throw(iw_err(fn_name, "'\{name}' is not supported in inline wasm (v0.3 slice: bodies cannot reference other functions)", off))
+  } else if name == "call" {
+    // #2348: `call` is FOLDED-FORM ONLY, and iw_item routes `(call ...)` to
+    // iw_folded_call before this arm is reached. Reaching it means the flat
+    // spelling, whose operand count the assembler cannot know -- so it could
+    // not check the callee's arity and would hand a wasm validator the
+    // mismatch instead (the #2341 shape: passes `vibe check`, fails at module
+    // load). Structured control is folded-only for the same reason.
+    throw(iw_err(fn_name, "'call' must be written in folded form so its arity can be checked: (call $f (local.get $a) ...)", off))
+  } else if name == "call_indirect" || name == "return_call" {
+    throw(iw_err(fn_name, "'\{name}' is not supported in inline wasm (v0.3 slice: only a direct `call` to another inline-wasm fn in the same module)", off))
   } else if name == "global.get" || name == "global.set" {
     throw(iw_err(fn_name, "'\{name}' is not supported in inline wasm (v0.3 slice: runtime globals are not addressable)", off))
   } else if name == "br_table" {
@@ -965,9 +1011,292 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
   }
 }
 
+/// #2348: position of `name` in the module's inline-wasm callee table, or -1.
+/// Entries are `(source name without `$`, wasm function index, declared param
+/// count)`; the table holds ONLY inline-wasm fns, so a `call` can never reach
+/// an ordinary vibe fn (whose effect row, RC accounting and closure env this
+/// assembler does not model).
+fn iw_callee_find(callees: Array[(String, Int, Int)], name: String) -> Int {
+  let n = Array::length(callees)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < n {
+    let (cn, _ci, _ca) = Array::get(callees, i)
+    if cn == name {
+      found = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2348: the callable names, comma-joined, for a "no such callee" error.
+/// An empty table prints as `(none)` rather than an empty tail, so the
+/// message reads the same whether the module defines no other kernel or the
+/// caller passed no table at all.
+fn iw_callee_names(callees: Array[(String, Int, Int)]) -> String {
+  let n = Array::length(callees)
+  if n == 0 {
+    "(none)"
+  } else {
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+      let (cn, _ci, _ca) = Array::get(callees, i)
+      out = if i == 0 {
+        cn
+      } else {
+        String::concat(out, String::concat(", ", cn))
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #2348: is `name` one of the comparison instructions, whose result is i32
+/// whatever its operand width? `i64.eq` and `f64.lt` yield i32, not i64/f64,
+/// so a prefix rule alone would type them wrong.
+/// #2348: the spelling of a wasm valtype byte, for a diagnostic.
+fn iw_valtype_name(code: Int) -> String {
+  if code == 0x7F {
+    "i32"
+  } else if code == 0x7E {
+    "i64"
+  } else if code == 0x7D {
+    "f32"
+  } else if code == 0x7C {
+    "f64"
+  } else if code == 0x7B {
+    "v128"
+  } else {
+    "nothing"
+  }
+}
+
+fn iw_is_compare_op(name: String) -> Bool {
+  String::ends_with(name, ".eq") || String::ends_with(name, ".ne") || String::ends_with(name, ".eqz") || String::ends_with(name, ".lt_s") || String::ends_with(name, ".lt_u") || String::ends_with(name, ".gt_s") || String::ends_with(name, ".gt_u") || String::ends_with(name, ".le_s") || String::ends_with(name, ".le_u") || String::ends_with(name, ".ge_s") || String::ends_with(name, ".ge_u") || String::ends_with(name, ".lt") || String::ends_with(name, ".gt") || String::ends_with(name, ".le") || String::ends_with(name, ".ge")
+}
+
+/// #2348: the wasm valtype byte a core-table instruction leaves on the stack,
+/// or 0 for the four that leave nothing. Comparisons are i32 regardless of
+/// width; otherwise the `iNN.` / `fNN.` prefix is the result type, which holds
+/// for every remaining entry (arithmetic, conversions, reinterprets, the
+/// sign-extensions -- a conversion is named for what it produces).
+fn iw_core_result_valtype(name: String) -> Int {
+  if name == "unreachable" || name == "nop" || name == "return" || name == "drop" {
+    0
+  } else if iw_is_compare_op(name) {
+    0x7F
+  } else if String::starts_with(name, "i32.") {
+    0x7F
+  } else if String::starts_with(name, "i64.") {
+    0x7E
+  } else if String::starts_with(name, "f32.") {
+    0x7D
+  } else if String::starts_with(name, "f64.") {
+    0x7C
+  } else {
+    // `select` is the only one left, and its result type is its operands'.
+    // Refusing to answer costs a rejected `(call $f (select ...))` and keeps
+    // the classifier from guessing.
+    0
+  }
+}
+
+/// #2348: the wasm valtype byte a SIMD instruction leaves, or 0.
+fn iw_simd_result_valtype(name: String) -> Int {
+  if String::ends_with(name, ".all_true") || String::ends_with(name, ".any_true") || String::ends_with(name, ".bitmask") {
+    0x7F
+  } else if String::contains(name, ".extract_lane") {
+    // The lane's scalar type, named by the shape.
+    if String::starts_with(name, "i8x16.") || String::starts_with(name, "i16x8.") || String::starts_with(name, "i32x4.") {
+      0x7F
+    } else if String::starts_with(name, "i64x2.") {
+      0x7E
+    } else if String::starts_with(name, "f32x4.") {
+      0x7D
+    } else if String::starts_with(name, "f64x2.") {
+      0x7C
+    } else {
+      0
+    }
+  } else if String::ends_with(name, ".store") {
+    0
+  } else {
+    // Everything else in the SIMD tables -- lane arithmetic, bitwise,
+    // splat, replace_lane, shuffle, swizzle, shifts, v128.load -- is v128.
+    0x7B
+  }
+}
+
+/// #2348: the wasm valtype byte the folded operand starting at `pos` (its `(`)
+/// leaves on the stack, or 0 when it leaves nothing, is stack-polymorphic, or
+/// is not recognized.
+///
+/// A folded call counts parenthesized operands, and counting alone is not an
+/// arity check, nor is "it pushes something" a type check. Both were measured
+/// as modules that pass `vibe check` and fail wasm validation at load:
+/// `(call $f (drop (local.get $a)))` assembles one value short, and
+/// `(call $f (i32.const 1))` assembles an i32 into an i64 parameter slot. That
+/// is the #2341 shape this section exists to avoid.
+///
+/// Answers 0 for anything it does not recognize, so an unknown or newly added
+/// instruction is rejected rather than assumed. Two deliberate conservatisms:
+/// `unreachable` / `return` / `br` are stack-polymorphic and wasm would accept
+/// them here, and a result-less `block` / `loop` / `if` is rejected rather
+/// than analyzed. Both reject a program wasm would take; the opposite
+/// direction is what produces the broken module.
+fn iw_operand_valtype(kinds: Array[Int], texts: Array[String], pos: Int, end: Int, locals: Array[(String, Int, Int)]) -> Int {
+  if pos + 1 >= end || Array::get(kinds, pos + 1) != 3 {
+    0
+  } else {
+    let head = Array::get(texts, pos + 1)
+    if head == "block" || head == "loop" || head == "if" {
+      // A value only with an explicit `(result T)`, after an optional label.
+      let mut q = pos + 2
+      if q < end && Array::get(kinds, q) == 3 && String::length(Array::get(texts, q)) > 0 && String::char_code_at(Array::get(texts, q), 0) == 36 {
+        q = q + 1
+      } else {
+        ()
+      }
+      if q + 2 < end && Array::get(kinds, q) == 1 && Array::get(kinds, q + 1) == 3 && Array::get(texts, q + 1) == "result" && Array::get(kinds, q + 2) == 3 {
+        match Array::get(texts, q + 2) {
+          "i32" => 0x7F,
+          "i64" => 0x7E,
+          "f32" => 0x7D,
+          "f64" => 0x7C,
+          "v128" => 0x7B,
+          _ => 0
+        }
+      } else {
+        0
+      }
+    } else if head == "local.get" || head == "local.tee" {
+      if pos + 2 < end && Array::get(kinds, pos + 2) == 3 {
+        iw_local_valtype(locals, Array::get(texts, pos + 2))
+      } else {
+        0
+      }
+    } else if head == "call" {
+      // Every inline-wasm fn returns Int, a raw tagged i64 (parser-enforced).
+      0x7E
+    } else if head == "br" || head == "br_if" || head == "local.set" || head == "global.set" || head == "global.get" {
+      0
+    } else if head == "i32.const" {
+      0x7F
+    } else if head == "i64.const" {
+      0x7E
+    } else if head == "v128.const" || head == "v128.load" || head == "i8x16.shuffle" {
+      0x7B
+    } else if head == "v128.store" {
+      0
+    } else if head == "memory.size" || head == "memory.grow" {
+      0x7F
+    } else if iw_lookup(iw_core_table(), head) >= 0 {
+      iw_core_result_valtype(head)
+    } else if iw_lookup(iw_simd_lane_table(), head) >= 0 || iw_lookup(iw_simd_table(), head) >= 0 {
+      iw_simd_result_valtype(head)
+    } else {
+      let (mem_opc, _mem_align) = iw_mem_lookup(head)
+      if mem_opc < 0 || String::contains(head, ".store") {
+        0
+      } else if String::starts_with(head, "i32.") {
+        0x7F
+      } else if String::starts_with(head, "i64.") {
+        0x7E
+      } else if String::starts_with(head, "f32.") {
+        0x7D
+      } else if String::starts_with(head, "f64.") {
+        0x7C
+      } else {
+        0
+      }
+    }
+  }
+}
+
+/// #2348: folded `(call $f <operand exprs...>)` to another inline-wasm fn in
+/// the same module.
+///
+/// Operands are emitted first (folded-form semantics, same as iw_folded_op),
+/// then the closure-env slot every user function carries as its LAST wasm
+/// param, then the call itself -- exactly the sequence compile_call.vibe emits
+/// for a static call (args, `i64.const 0` when needs_env, `call`). Every
+/// inline-wasm fn is a user function, so needs_env is true and the result is
+/// one i64; there is no arm here for the other shapes because the parser does
+/// not admit them.
+///
+/// The operand count is checked against the callee's declared arity. That is
+/// the whole reason `call` is folded-only: in the flat spelling the count is
+/// not knowable here, and an unchecked call would surface as a wasm validation
+/// failure at module load instead of a located error.
+fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
+  let head_off = Array::get(offs, pos)
+  if pos + 2 >= end || Array::get(kinds, pos + 2) != 3 {
+    throw(iw_err(fn_name, "'call' needs a callee name: (call $f ...)", head_off))
+  } else {
+    ()
+  }
+  let tok = Array::get(texts, pos + 2)
+  let name_off = Array::get(offs, pos + 2)
+  if String::length(tok) < 2 || String::char_code_at(tok, 0) != 36 {
+    throw(iw_err(fn_name, "'call' callee must be written as $name, not '\{tok}'", name_off))
+  } else {
+    ()
+  }
+  let callee = String::substring(tok, 1, String::length(tok))
+  let slot = iw_callee_find(callees, callee)
+  if slot < 0 {
+    throw(iw_err(fn_name, "no inline-wasm fn named '\{callee}' in this module; inline wasm can only call another `fn ... = wasm` here (callable: \{iw_callee_names(callees)})", name_off))
+  } else {
+    ()
+  }
+  let (_cn, cidx, carity) = Array::get(callees, slot)
+  let mut p = pos + 3
+  let mut argc = 0
+  let mut done = false
+  while !done {
+    if p >= end {
+      throw(iw_err(fn_name, "missing ')' closing '(call $\{callee}'", head_off))
+    } else if Array::get(kinds, p) == 2 {
+      done = true
+    } else if Array::get(kinds, p) == 1 {
+      let operand_ty = iw_operand_valtype(kinds, texts, p, end, locals)
+      if operand_ty != 0x7E {
+        let why = if operand_ty == 0 {
+          "does not produce an i64 value (it leaves nothing on the stack, or the assembler cannot type it; a `(block ...)`/`(if ...)` operand needs an explicit `(result i64)`)"
+        } else {
+          "produces \{iw_valtype_name(operand_ty)}, but every inline-wasm parameter is an i64 slot"
+        }
+        throw(iw_err(fn_name, "argument \{argc + 1} of '(call $\{callee}' \{why}", Array::get(offs, p)))
+      } else {
+        ()
+      }
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
+      argc = argc + 1
+    } else {
+      throw(iw_err(fn_name, "unexpected '\{Array::get(texts, p)}' inside '(call $\{callee}' — operands must be parenthesized", Array::get(offs, p)))
+    }
+  }
+  if argc != carity {
+    throw(iw_err(fn_name, "'\{callee}' takes \{carity} argument(s), called with \{argc}", head_off))
+  } else {
+    ()
+  }
+  // The closure-env slot: every user function's last wasm param.
+  bytebuf_push(out, 0x42)
+  leb128_encode_s64(out, 0)
+  bytebuf_push(out, 0x10)
+  leb128_encode_u32(out, cidx)
+  p + 1
+}
+
 /// One sequence item at `pos`: either a folded `(...)` expression or a plain
 /// instruction word. Returns the position after the item.
-fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
+fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
   let k = Array::get(kinds, pos)
   if k == 3 {
     iw_plain_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
@@ -978,14 +1307,16 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
       ()
     }
     let head = Array::get(texts, pos + 1)
-    if head == "block" || head == "loop" {
-      iw_folded_block(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
+    if head == "call" {
+      iw_folded_call(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
+    } else if head == "block" || head == "loop" {
+      iw_folded_block(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
     } else if head == "if" {
-      iw_folded_if(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
+      iw_folded_if(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
     } else if head == "then" || head == "else" || head == "result" {
       throw(iw_err(fn_name, "misplaced '(\{head} ...)' clause", Array::get(offs, pos)))
     } else {
-      iw_folded_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
+      iw_folded_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
     }
   } else {
     throw(iw_err(fn_name, "unexpected ')'", Array::get(offs, pos)))
@@ -993,7 +1324,7 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
 }
 
 /// A sequence of items up to (not consuming) a closing ')' or the end.
-fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
+fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
   let mut p = pos
   let mut done = false
   while !done {
@@ -1002,7 +1333,7 @@ fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], 
     } else if Array::get(kinds, p) == 2 {
       done = true
     } else {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
     }
   }
   p
@@ -1010,7 +1341,7 @@ fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], 
 
 /// Folded `(op <immediates> <operand exprs...>)`: real folded-form semantics —
 /// the operand expressions are emitted FIRST, then the op itself.
-fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
+fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
   let opb = bytebuf_new()
   let after_imm = iw_plain_op(opb, fn_name, kinds, texts, offs, pos + 1, end, locals, lbl_names, lbl_depths, depth)
   let mut p = after_imm
@@ -1021,7 +1352,7 @@ fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
     } else if Array::get(kinds, p) == 2 {
       done = true
     } else if Array::get(kinds, p) == 1 {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
     } else {
       throw(iw_err(fn_name, "unexpected '\{Array::get(texts, p)}' inside folded '\{Array::get(texts, pos + 1)}' — operands must be parenthesized", Array::get(offs, p)))
     }
@@ -1031,7 +1362,7 @@ fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
 }
 
 /// Folded `(block $l? (result T)? ...)` / `(loop $l? (result T)? ...)`.
-fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
+fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
   let head = Array::get(texts, pos + 1)
   bytebuf_push(out, if head == "loop" {
     0x03
@@ -1049,7 +1380,7 @@ fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[
   }
   let (bt, after_bt) = iw_blocktype(fn_name, kinds, texts, offs, q, end)
   bytebuf_push(out, bt)
-  let bq = iw_seq(out, fn_name, kinds, texts, offs, after_bt, end, locals, lbl_names, lbl_depths, depth + 1)
+  let bq = iw_seq(out, fn_name, kinds, texts, offs, after_bt, end, locals, lbl_names, lbl_depths, depth + 1, callees)
   if bq >= end || Array::get(kinds, bq) != 2 {
     throw(iw_err(fn_name, "missing ')' closing '\{head}'", Array::get(offs, pos)))
   } else {
@@ -1063,7 +1394,7 @@ fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[
 
 /// Folded `(if $l? (result T)? <cond exprs...> (then ...) (else ...)?)`.
 /// The condition is emitted first, then 0x04 + blocktype, then the branches.
-fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
+fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
   let lbl_mark = Array::length(lbl_names)
   let mut q = pos + 2
   if q < end && Array::get(kinds, q) == 3 && String::length(Array::get(texts, q)) > 0 && String::char_code_at(Array::get(texts, q), 0) == '$' {
@@ -1083,7 +1414,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
     } else if Array::get(kinds, p) == 1 && p + 1 < end && Array::get(kinds, p + 1) == 3 && Array::get(texts, p + 1) == "then" {
       cond_done = true
     } else if Array::get(kinds, p) == 1 {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
     } else {
       throw(iw_err(fn_name, "unexpected token in folded 'if' condition (condition operands must be parenthesized)", Array::get(offs, p)))
     }
@@ -1091,7 +1422,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
   bytebuf_push(out, 0x04)
   bytebuf_push(out, bt)
   // then branch: p is at '(' of (then ...)
-  let tq = iw_seq(out, fn_name, kinds, texts, offs, p + 2, end, locals, lbl_names, lbl_depths, depth + 1)
+  let tq = iw_seq(out, fn_name, kinds, texts, offs, p + 2, end, locals, lbl_names, lbl_depths, depth + 1, callees)
   if tq >= end || Array::get(kinds, tq) != 2 {
     throw(iw_err(fn_name, "missing ')' closing '(then ...)'", Array::get(offs, p)))
   } else {
@@ -1100,7 +1431,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
   let mut r = tq + 1
   if r + 1 < end && Array::get(kinds, r) == 1 && Array::get(kinds, r + 1) == 3 && Array::get(texts, r + 1) == "else" {
     bytebuf_push(out, 0x05)
-    let eq = iw_seq(out, fn_name, kinds, texts, offs, r + 2, end, locals, lbl_names, lbl_depths, depth + 1)
+    let eq = iw_seq(out, fn_name, kinds, texts, offs, r + 2, end, locals, lbl_names, lbl_depths, depth + 1, callees)
     if eq >= end || Array::get(kinds, eq) != 2 {
       throw(iw_err(fn_name, "missing ')' closing '(else ...)'", Array::get(offs, r)))
     } else {
@@ -1126,7 +1457,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
 /// encodes one run per type, so interleaved declarations would silently
 /// renumber). Each declared local joins `locals` at wasm index
 /// `extra_base + running position`. Returns (body_start, n_i32, n_i64, n_v128).
-fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], end: Int, locals: Array[(String, Int)], extra_base: Int) -> (Int, Int, Int, Int) with Exception {
+fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], end: Int, locals: Array[(String, Int, Int)], extra_base: Int) -> (Int, Int, Int, Int) with Exception {
   let mut p = 0
   let mut n32 = 0
   let mut n64 = 0
@@ -1156,10 +1487,17 @@ fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String]
       if rank < last_rank {
         throw(iw_err(fn_name, "(local ...) declarations must be grouped by type in the order i32, i64, v128", decl_off))
       }
+      let ty = if rank == 0 {
+        0x7F
+      } else if rank == 1 {
+        0x7E
+      } else {
+        0x7B
+      }
       let want = String::substring(name_tok, 1, String::length(name_tok))
       let mut di = 0
       while di < Array::length(locals) {
-        let (dn, _dx) = Array::get(locals, di)
+        let (dn, _dx, _dt) = Array::get(locals, di)
         if dn == want {
           throw(iw_err(fn_name, "duplicate local name '\{name_tok}'", decl_off))
         } else {
@@ -1167,7 +1505,7 @@ fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String]
         }
         di = di + 1
       }
-      Array::push(locals, (want, extra_base + n32 + n64 + nv))
+      Array::push(locals, (want, extra_base + n32 + n64 + nv, ty))
       if rank == 0 {
         n32 = n32 + 1
       } else if rank == 1 {
@@ -1194,6 +1532,16 @@ fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String]
 /// `extra_base` is the wasm-local index the FIRST declared local lands on —
 /// the caller's total param-slot count including the closure-env slot.
 export fn compile_inline_wat_full(fn_name: String, wat: String, param_names: Array[String], extra_base: Int) -> (Bytes, Int, Int, Int) with Exception {
+  compile_inline_wat_calls(fn_name, wat, param_names, extra_base, iw_fresh_callees())
+}
+
+/// #2348 entry: same as `compile_inline_wat_full`, plus the module's
+/// inline-wasm callee table — `(source name, wasm function index, declared
+/// param count)` per entry — that a folded `(call $f ...)` in this body may
+/// name. An empty table means "this body may not call anything", which is
+/// what the two back-compat entries above pass and what the assembler
+/// reported for every `call` before this issue.
+export fn compile_inline_wat_calls(fn_name: String, wat: String, param_names: Array[String], extra_base: Int, callees: Array[(String, Int, Int)]) -> (Bytes, Int, Int, Int) with Exception {
   let (kinds, texts, offs) = iw_tokenize(fn_name, wat)
   let out = bytebuf_new()
   let lbl_names = iw_fresh_strings()
@@ -1207,7 +1555,7 @@ export fn compile_inline_wat_full(fn_name: String, wat: String, param_names: Arr
   let locals = iw_fresh_locals()
   let mut pi = 0
   while pi < Array::length(param_names) {
-    Array::push(locals, (Array::get(param_names, pi), pi))
+    Array::push(locals, (Array::get(param_names, pi), pi, 0x7E))
     pi = pi + 1
   }
   let (body_start, n32, n64, nv) = iw_parse_local_decls(fn_name, kinds, texts, offs, end, locals, extra_base)
@@ -1216,7 +1564,7 @@ export fn compile_inline_wat_full(fn_name: String, wat: String, param_names: Arr
   } else {
     ()
   }
-  let final_pos = iw_seq(out, fn_name, kinds, texts, offs, body_start, end, locals, lbl_names, lbl_depths, 0)
+  let final_pos = iw_seq(out, fn_name, kinds, texts, offs, body_start, end, locals, lbl_names, lbl_depths, 0, callees)
   if final_pos != end {
     throw(iw_err(fn_name, "unbalanced ')'", Array::get(offs, final_pos)))
   } else {
@@ -1235,5 +1583,5 @@ export fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[St
 //# Misc
 
 export {
-  compile_inline_wat, compile_inline_wat_full
+  compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full
 }
