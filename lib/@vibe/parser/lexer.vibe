@@ -1177,6 +1177,51 @@ export fn lex_with_offsets(source: String) -> (Array[Token], Array[Int], Array[I
   }
 }
 
+/// #2347: `lex_with_offsets` without the `ends` array.
+///
+/// Identical tokens and identical `starts`; the only difference is that the
+/// end-offset column is not built. That column is one tagged slot per token,
+/// and the census behind #2347 found that EVERY caller on the compile lane
+/// discards it -- loader, header cache, preprocess_compile, cli_support and
+/// typecheck_fs all destructure it as `_ends`. Only the editor-query lanes
+/// (type_at, symbol_spans, escape_spans, alloc_spans, grep) read it.
+///
+/// This is the cheap half of #2347: that issue proposed a packed `I32Column`
+/// to halve the offset tables, and measuring its own nominated workload showed
+/// the compiler point-accesses them and never reduces over them, so the type
+/// would ship with no in-tree callers. Not building a column nobody reads
+/// captures the same memory with no new public type and no new contract.
+export fn lex_with_starts(source: String) -> (Array[Token], Array[Int]) with Exception {
+  let len = String::length(source)
+  {
+    let b = ArrayBuilder::new()
+    let starts = ArrayBuilder::new()
+    let mut prev_tok = TEof
+    let first_skip = skip_ws_with_newline(source, len, skip_bom(source, len))
+    let mut pos = first_skip>>1
+    let mut nl_before = (first_skip&1) == 1
+    while pos < len {
+      let c = String::char_code_at(source, pos)
+      let (tok, next) = lex_one_token(source, len, pos)
+      if needs_synthetic_semicolon(c, nl_before, prev_tok) {
+        ArrayBuilder::push(b, TSemicolon)
+        ArrayBuilder::push(starts, pos)
+      } else {
+        ()
+      }
+      ArrayBuilder::push(b, tok)
+      ArrayBuilder::push(starts, pos)
+      prev_tok = tok
+      let skipped = skip_ws_with_newline(source, len, next)
+      pos = skipped>>1
+      nl_before = (skipped&1) == 1
+    }
+    ArrayBuilder::push(b, TEof)
+    ArrayBuilder::push(starts, len)
+    (ArrayBuilder::freeze(b), ArrayBuilder::freeze(starts))
+  }
+}
+
 /// #946: recovering variant of `lex_with_offsets` — NEVER throws. On a lex
 /// error (unexpected character, bad escape, unterminated string, ...) it
 /// records the 0-based char offset of the offending position plus the raw

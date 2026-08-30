@@ -120,6 +120,7 @@ import @vibe/compiler/syntax {
   Token,
   lex_with_offsets,
   lex_with_offsets_recovering,
+  lex_with_starts,
   offset_to_line_col,
   parse_program_located,
   parse_program_recovering,
@@ -3281,7 +3282,7 @@ let parse_memo_paths: Array[String] = [] let parse_memo_sources: Array[String] =
       // [@off=N] marker (decoded by locate_type_error). The plain
       // `parse_program(lex(source))` passed an empty starts array, leaving every
       // offset at -1, so located type errors fell back to a first-occurrence scan.
-      let (tokens, starts, _ends) = lex_with_offsets(source)
+      let (tokens, starts) = lex_with_starts(source)
       parse_program_located(tokens, starts, source)
     } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), msg)) }
     // Bound the memo. It is process-wide, and `vibe --daemon` (the #906
@@ -5750,7 +5751,7 @@ export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, sou
   } else {
     // The scan must never COST diagnostics. `collect_all_diagnostics` above
     // uses the RECOVERING lexer and returns a lex error as a diagnostic;
-    // `unstable_import_diagnostics` uses `lex_with_offsets`, which throws on
+    // `unstable_import_diagnostics` uses `lex_with_starts`, which throws on
     // one. Letting that throw escape took the whole call down, and
     // `lsp_diagnostics_safe_with_unstable` turns a throw into `[]` -- so a
     // buffer with any syntax error published as CLEAN. Measured: an invalid
@@ -6557,7 +6558,7 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
 //# called in place from here.
 
 export fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stmt]] with Exception {
-  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let (tokens, starts) = lex_with_starts(source)
   if is_contract_ext(input_path) {
     handle {
       let (_, _, stmts) = parse_contract_program(tokens)
@@ -6859,7 +6860,7 @@ fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[T
 /// instead of pointing at a line the reader would find nothing on (#1445).
 export fn unstable_import_diagnostics(input_path: String, detected: String, located: String) -> Array[String] with Exception {
   let out = array_empty()
-  let (tokens, starts, _ends) = lex_with_offsets(located)
+  let (tokens, starts) = lex_with_starts(located)
   match checked_warning_stmts(input_path, detected) {
     Some(stmts) => {
       // #2289: count before walking. The deficit per package is
