@@ -2307,6 +2307,46 @@ fn dtd_tuple_index_of(field: String) -> Option[Int] {
   }
 }
 
+/// #2410: the result type of an arithmetic `EBinOp`, but ONLY when it is one
+/// the checker resolves to a builtin itself.
+///
+/// `+ - * /` are operand-typed: the checker tries Int, then Double, then (for
+/// `+`) String, and only then a user `Add`/`Sub`/`Mul`/`Div` impl. The first
+/// three give a result equal to the operand type, so recursing into both
+/// operands and requiring them to agree answers exactly. The trait case does
+/// NOT: `infer_named_trait_binop` returns the impl's resolved output, which a
+/// trait is free to declare different from its input, so a user type answers
+/// None here rather than a guess. Guessing would be worse than the None this
+/// replaces -- a wrong name synthesizes a witness for the wrong impl, where
+/// None only fails to synthesize one.
+fn dtd_binop_builtin_operand_type(bl: Expr, br: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  let lt = dtd_type_name_or_empty(bl, struct_sets, var_types, fn_returns)
+  let rt = dtd_type_name_or_empty(br, struct_sets, var_types, fn_returns)
+  if lt == rt && dtd_is_builtin_arith_type(lt) {
+    Some(lt)
+  } else {
+    None
+  }
+}
+
+/// `infer_arg_type_name` with the unknown case flattened to "" -- the same
+/// convention `dtd_scalar_shape` uses in this file, so an agreement test is a
+/// string comparison rather than two nested `Option` matches.
+fn dtd_type_name_or_empty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+    Some(t) => t,
+    None => ""
+  }
+}
+
+/// The types an arithmetic `EBinOp` resolves to WITHOUT going through a user
+/// trait impl -- i.e. the ones whose result the checker takes from the operands
+/// (`unify_binop_candidate` against Int, then Double, then String for `+`).
+/// "" is not one of them, so an unknown operand answers false here.
+fn dtd_is_builtin_arith_type(t: String) -> Bool {
+  t == "Int" || t == "Double" || t == "String"
+}
+
 fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   match arg {
     EInt(_) => Some("Int"),
@@ -2330,8 +2370,16 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
       if lstr || rstr {
         Some("String")
       } else {
-        None
+        dtd_binop_builtin_operand_type(bl, br, struct_sets, var_types, fn_returns)
       }
+    } else if bop == "-" || bop == "*" || bop == "/" {
+      dtd_binop_builtin_operand_type(bl, br, struct_sets, var_types, fn_returns)
+    } else if bop == "%" || bop == "&" || bop == "|" || bop == "^" || bop == "<<" || bop == ">>" {
+      // The checker types these as Int whatever the operands are (`operands
+      // must be Int`), so if the program checks at all, the result is Int.
+      Some("Int")
+    } else if bop == "==" || bop == "!=" || bop == "<" || bop == ">" || bop == "<=" || bop == ">=" || bop == "&&" || bop == "||" {
+      Some("Bool")
     } else {
       None
     },
