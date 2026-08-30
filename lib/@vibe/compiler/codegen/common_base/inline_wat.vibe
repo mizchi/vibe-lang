@@ -63,6 +63,16 @@ import @vibe/core {
 //     not be checked
 //   - NOT supported (clear errors): flat-form call / call_indirect /
 //     return_call / br_table / global.get/set / f32.const / f64.const
+//
+// #2401: the assembler also TYPES the body. It walks an abstract value stack
+// (IwStack below) checking each instruction's operands against its signature,
+// each block/loop/if against its declared `(result T)`, and the depth in both
+// directions -- including that the body leaves the single i64 the fn returns.
+// Before that, `(i64.add (i32.const 1) (i64.const 2))` assembled, `vibe check`
+// reported the file clean, and the mismatch surfaced only when a runtime
+// validated the module. Everything else in this file already worked that way
+// (#2341: a located error, not a broken artifact); the operand stacks were
+// the hole.
 
 fn iw_err(fn_name: String, msg: String, off: Int) -> String {
   "inline wasm (fn \{fn_name}): \{msg} (WAT offset \{off})"
@@ -1218,6 +1228,524 @@ fn iw_operand_valtype(kinds: Array[Int], texts: Array[String], pos: Int, end: In
   }
 }
 
+/// #2401: the assembler's abstract value stack.
+///
+/// `vals` holds one wasm valtype byte per value currently on the stack. 0
+/// means "a value whose type the assembler could not determine" -- today only
+/// a numeric `local.get 3`, or a `select` over two such values -- and it
+/// matches any expected type, so an unknown never manufactures an error.
+///
+/// `frames` holds one entry per enclosing block/loop/if PLUS one for the
+/// function body itself, so it is never empty:
+/// `(stack height at frame entry, result valtype or 0, 1 for a loop, 1 once
+/// the frame is stack-polymorphic)`. The height is a FLOOR, not just a
+/// bookkeeping number: it is what stops an instruction inside a block from
+/// consuming a value produced outside it, which wasm forbids and this
+/// assembler used to emit.
+struct IwStack {
+  vals: Array[Int];
+  frames: Array[(Int, Int, Int, Int)]
+}
+
+fn iw_fresh_frames() -> Array[(Int, Int, Int, Int)] {
+  array_empty()
+}
+
+/// A fresh stack whose function-body frame declares `result_ty`.
+fn iw_st_new(result_ty: Int) -> IwStack {
+  let fr = iw_fresh_frames()
+  Array::push(fr, (0, result_ty, 0, 0))
+  IwStack::{ vals: iw_fresh_ints(), frames: fr }
+}
+
+fn iw_st_base(st: IwStack) -> Int {
+  let (b, _r, _l, _p) = Array::get(st.frames, Array::length(st.frames) - 1)
+  b
+}
+
+fn iw_st_poly(st: IwStack) -> Bool {
+  let (_b, _r, _l, p) = Array::get(st.frames, Array::length(st.frames) - 1)
+  p == 1
+}
+
+/// Enter the stack-polymorphic state, exactly as the spec's validation
+/// algorithm does after `unreachable` / `br` / `return`: drop back to the
+/// frame's floor and set the flag. Instructions AFTER this point are still
+/// type-checked against what they push themselves -- wasm rejects
+/// `unreachable i32.const 1 i64.add` too -- but they may pop values the frame
+/// never had.
+fn iw_st_mark_poly(st: IwStack) -> Unit {
+  let n = Array::length(st.frames) - 1
+  let (b, r, l, _p) = Array::get(st.frames, n)
+  Array::set(st.frames, n, (b, r, l, 1))
+  Array::truncate(st.vals, b)
+}
+
+fn iw_st_push(st: IwStack, ty: Int) -> Unit {
+  Array::push(st.vals, ty)
+}
+
+/// Pop one value, or 0 when the frame's floor is already reached -- which
+/// only happens in the polymorphic state, since `iw_apply` refuses to
+/// underflow otherwise.
+fn iw_st_pop_raw(st: IwStack) -> Int {
+  let h = Array::length(st.vals)
+  if h <= iw_st_base(st) {
+    0
+  } else {
+    let v = Array::get(st.vals, h - 1)
+    Array::truncate(st.vals, h - 1)
+    v
+  }
+}
+
+/// #2401: apply one instruction's stack effect -- pop `params` (listed
+/// DEEPEST first, i.e. the order they were pushed) and push `result` unless
+/// it is 0.
+fn iw_apply(st: IwStack, fn_name: String, name: String, params: Array[Int], result: Int, off: Int) -> Unit with Exception {
+  let n = Array::length(params)
+  let avail = Array::length(st.vals) - iw_st_base(st)
+  if avail < n && !iw_st_poly(st) {
+    throw(iw_err(fn_name, "'\{name}' takes \{n} operand(s), but only \{avail} value(s) are on the stack here", off))
+  } else {
+    ()
+  }
+  let mut i = n - 1
+  while i >= 0 {
+    let want = Array::get(params, i)
+    let got = iw_st_pop_raw(st)
+    if want != 0 && got != 0 && got != want {
+      throw(iw_err(fn_name, "'\{name}' expects \{iw_valtype_name(want)} for operand \{i + 1} of \{n}, but the value there is \{iw_valtype_name(got)}", off))
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  if result != 0 {
+    iw_st_push(st, result)
+  } else {
+    ()
+  }
+}
+
+/// #2401: close the innermost frame, checking it leaves exactly what it
+/// declared, then drop back to its floor. The caller pushes the result.
+///
+/// Same two steps, in the same order, as the spec's `pop_ctrl`: pop the
+/// declared result, then require the stack to be back AT the floor.
+/// Polymorphism relaxes only the first step -- a frame whose values a `br` or
+/// `unreachable` carried away can supply a missing result from the floor. It
+/// does NOT excuse the second: values pushed after that point are live at
+/// `end`, and wasm rejects `(block unreachable (i64.const 1))` for the extra
+/// i64 exactly as it rejects `(block (i64.const 1))`. Skipping the whole
+/// check when the flag was set is what this used to do.
+fn iw_st_close(st: IwStack, fn_name: String, what: String, hint: String, off: Int) -> Unit with Exception {
+  let n = Array::length(st.frames) - 1
+  let (base, res, _l, poly) = Array::get(st.frames, n)
+  if res != 0 {
+    let h0 = Array::length(st.vals)
+    if h0 <= base {
+      if poly == 1 {
+        ()
+      } else {
+        throw(iw_err(fn_name, "\{what} must leave exactly one \{iw_valtype_name(res)} but leaves 0 value(s) on the stack\{hint}", off))
+      }
+    } else {
+      let got = Array::get(st.vals, h0 - 1)
+      Array::truncate(st.vals, h0 - 1)
+      if got != 0 && got != res {
+        throw(iw_err(fn_name, "\{what} must leave \{iw_valtype_name(res)} but leaves \{iw_valtype_name(got)}\{hint}", off))
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+  let left = Array::length(st.vals) - base
+  if left != 0 {
+    if res == 0 {
+      throw(iw_err(fn_name, "\{what} declares no result but leaves \{left} value(s) on the stack\{hint}", off))
+    } else {
+      throw(iw_err(fn_name, "\{what} must leave exactly one \{iw_valtype_name(res)} but leaves \{left + 1} value(s) on the stack\{hint}", off))
+    }
+  } else {
+    ()
+  }
+  Array::truncate(st.vals, base)
+  Array::truncate(st.frames, n)
+}
+
+/// #2401: index of the first '.' in an instruction name, or -1.
+fn iw_dot_pos(name: String) -> Int {
+  let n = String::length(name)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < n {
+    if String::char_code_at(name, i) == '.' {
+      found = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2401: the valtype an `iNN.` / `fNN.` name prefix denotes, or 0.
+fn iw_prefix_valtype(name: String) -> Int {
+  if String::starts_with(name, "i32.") {
+    0x7F
+  } else if String::starts_with(name, "i64.") {
+    0x7E
+  } else if String::starts_with(name, "f32.") {
+    0x7D
+  } else if String::starts_with(name, "f64.") {
+    0x7C
+  } else {
+    0
+  }
+}
+
+/// #2401: the SOURCE valtype named inside a conversion mnemonic --
+/// `wrap_i64`, `trunc_f32_s`, `extend_i32_u`, `convert_i64_s`, `demote_f64`,
+/// `promote_f32`, `reinterpret_f64`. 0 when the mnemonic names no source
+/// type: `extend8_s` / `extend16_s` / `extend32_s` widen from their own
+/// prefix type, and "8" / "16" / "32" are not type names.
+fn iw_conv_source_valtype(mn: String) -> Int {
+  if String::contains(mn, "_i32") {
+    0x7F
+  } else if String::contains(mn, "_i64") {
+    0x7E
+  } else if String::contains(mn, "_f32") {
+    0x7D
+  } else if String::contains(mn, "_f64") {
+    0x7C
+  } else {
+    0
+  }
+}
+
+/// #2401: core mnemonics taking ONE operand of the name's prefix type.
+fn iw_core_unary_mnemonic(mn: String) -> Bool {
+  mn == "eqz" || mn == "clz" || mn == "ctz" || mn == "popcnt" || mn == "abs" || mn == "neg" || mn == "ceil" || mn == "floor" || mn == "trunc" || mn == "nearest" || mn == "sqrt" || mn == "extend8_s" || mn == "extend16_s" || mn == "extend32_s"
+}
+
+/// #2401: core mnemonics taking TWO operands of the name's prefix type.
+/// Comparisons are here too -- they consume the prefix width and yield i32,
+/// which is what `iw_core_result_valtype` already encodes.
+fn iw_core_binary_mnemonic(mn: String) -> Bool {
+  mn == "eq" || mn == "ne" || mn == "lt_s" || mn == "lt_u" || mn == "gt_s" || mn == "gt_u" || mn == "le_s" || mn == "le_u" || mn == "ge_s" || mn == "ge_u" || mn == "lt" || mn == "gt" || mn == "le" || mn == "ge" || mn == "add" || mn == "sub" || mn == "mul" || mn == "div" || mn == "div_s" || mn == "div_u" || mn == "rem_s" || mn == "rem_u" || mn == "and" || mn == "or" || mn == "xor" || mn == "shl" || mn == "shr_s" || mn == "shr_u" || mn == "rotl" || mn == "rotr" || mn == "min" || mn == "max" || mn == "copysign"
+}
+
+/// #2401: the operand valtypes a core-table instruction pops, deepest first.
+///
+/// THROWS for a name it cannot classify. That is the point: a row added to
+/// `iw_core_table` with no signature here must fail loudly rather than skip
+/// the operand check and go back to emitting a module the runtime rejects.
+/// `inline_wat_unclassified_instructions` reports exactly the names that
+/// reach this throw, and the compiler test asserts that list is empty.
+fn iw_core_op_params(fn_name: String, name: String, off: Int) -> Array[Int] with Exception {
+  let out = iw_fresh_ints()
+  if name == "unreachable" || name == "nop" {
+    out
+  } else if name == "return" {
+    // The fn's single i64 result; the rest of the frame is polymorphic.
+    Array::push(out, 0x7E)
+    out
+  } else if name == "drop" {
+    Array::push(out, 0)
+    out
+  } else if name == "select" {
+    // Handled specially by iw_stack_effect (its result is its operands'
+    // type); the shape is here so the coverage self-check sees it typed.
+    Array::push(out, 0)
+    Array::push(out, 0)
+    Array::push(out, 0x7F)
+    out
+  } else {
+    let t = iw_prefix_valtype(name)
+    let d = iw_dot_pos(name)
+    if t == 0 || d < 0 {
+      throw(iw_err(fn_name, "the assembler has no operand signature for '\{name}'", off))
+    } else {
+      let mn = String::substring(name, d + 1, String::length(name))
+      let src = iw_conv_source_valtype(mn)
+      if src != 0 {
+        Array::push(out, src)
+        out
+      } else if iw_core_unary_mnemonic(mn) {
+        Array::push(out, t)
+        out
+      } else if iw_core_binary_mnemonic(mn) {
+        Array::push(out, t)
+        Array::push(out, t)
+        out
+      } else {
+        throw(iw_err(fn_name, "the assembler has no operand signature for '\{name}'", off))
+      }
+    }
+  }
+}
+
+/// #2401: the scalar valtype a SIMD shape's lanes hold.
+fn iw_shape_scalar_valtype(name: String) -> Int {
+  if String::starts_with(name, "i8x16.") || String::starts_with(name, "i16x8.") || String::starts_with(name, "i32x4.") {
+    0x7F
+  } else if String::starts_with(name, "i64x2.") {
+    0x7E
+  } else if String::starts_with(name, "f32x4.") {
+    0x7D
+  } else if String::starts_with(name, "f64x2.") {
+    0x7C
+  } else {
+    0
+  }
+}
+
+/// #2401: SIMD mnemonics taking ONE v128.
+fn iw_simd_unary_mnemonic(mn: String) -> Bool {
+  mn == "not" || mn == "any_true" || mn == "all_true" || mn == "bitmask" || mn == "abs" || mn == "neg" || mn == "popcnt" || mn == "sqrt"
+}
+
+/// #2401: SIMD mnemonics taking TWO v128.
+fn iw_simd_binary_mnemonic(mn: String) -> Bool {
+  mn == "eq" || mn == "ne" || mn == "lt_s" || mn == "lt_u" || mn == "gt_s" || mn == "gt_u" || mn == "le_s" || mn == "le_u" || mn == "ge_s" || mn == "ge_u" || mn == "lt" || mn == "gt" || mn == "le" || mn == "ge" || mn == "and" || mn == "andnot" || mn == "or" || mn == "xor" || mn == "add" || mn == "add_sat_s" || mn == "add_sat_u" || mn == "sub" || mn == "sub_sat_s" || mn == "sub_sat_u" || mn == "mul" || mn == "div" || mn == "min" || mn == "max" || mn == "min_s" || mn == "min_u" || mn == "max_s" || mn == "max_u" || mn == "avgr_u" || mn == "dot_i16x8_s" || mn == "swizzle"
+}
+
+/// #2401: the operand valtypes an `iw_simd_table` instruction pops. Same
+/// fail-loud contract as `iw_core_op_params`.
+fn iw_simd_op_params(fn_name: String, name: String, off: Int) -> Array[Int] with Exception {
+  let out = iw_fresh_ints()
+  let d = iw_dot_pos(name)
+  if d < 0 {
+    throw(iw_err(fn_name, "the assembler has no operand signature for '\{name}'", off))
+  } else {
+    let mn = String::substring(name, d + 1, String::length(name))
+    if mn == "splat" {
+      Array::push(out, iw_shape_scalar_valtype(name))
+      out
+    } else if mn == "shl" || mn == "shr_s" || mn == "shr_u" {
+      // A lane shift takes the vector and an i32 shift amount.
+      Array::push(out, 0x7B)
+      Array::push(out, 0x7F)
+      out
+    } else if mn == "bitselect" {
+      Array::push(out, 0x7B)
+      Array::push(out, 0x7B)
+      Array::push(out, 0x7B)
+      out
+    } else if iw_simd_unary_mnemonic(mn) {
+      Array::push(out, 0x7B)
+      out
+    } else if iw_simd_binary_mnemonic(mn) {
+      Array::push(out, 0x7B)
+      Array::push(out, 0x7B)
+      out
+    } else {
+      throw(iw_err(fn_name, "the assembler has no operand signature for '\{name}'", off))
+    }
+  }
+}
+
+/// #2401: one v128 operand, for the shorthand used by several arms below.
+fn iw_params1(a: Int) -> Array[Int] {
+  let out = iw_fresh_ints()
+  Array::push(out, a)
+  out
+}
+
+fn iw_params2(a: Int, b: Int) -> Array[Int] {
+  let out = iw_fresh_ints()
+  Array::push(out, a)
+  Array::push(out, b)
+  out
+}
+
+/// #2401: apply the stack effect of the plain instruction whose name word is
+/// at `pos`. Dispatch mirrors `iw_plain_op` arm for arm; that function runs
+/// FIRST and rejects every unknown or unsupported spelling, so the trailing
+/// throw here is reached only if the two ever drift apart.
+///
+/// Folded form calls this AFTER walking the operand expressions (the operands
+/// are on the stack by then, which is the whole point); flat form calls it at
+/// the instruction, where the operands are already on the stack too.
+fn iw_stack_effect(st: IwStack, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Unit with Exception {
+  let name = Array::get(texts, pos)
+  let off = Array::get(offs, pos)
+  if name == "local.get" {
+    iw_st_push(st, iw_local_valtype(locals, Array::get(texts, pos + 1)))
+  } else if name == "local.set" {
+    iw_apply(st, fn_name, name, iw_params1(iw_local_valtype(locals, Array::get(texts, pos + 1))), 0, off)
+  } else if name == "local.tee" {
+    // `local.tee` always leaves its operand, so the push is unconditional.
+    // It cannot go through iw_apply's `result`, where 0 means "pushes
+    // nothing" -- a different thing from the 0 a numeric `local.tee 0` gets
+    // back from iw_local_valtype, which means "pushes a value of unknown
+    // type". Conflating the two rejected that valid body for leaving nothing.
+    let lt = iw_local_valtype(locals, Array::get(texts, pos + 1))
+    iw_apply(st, fn_name, name, iw_params1(lt), 0, off)
+    iw_st_push(st, lt)
+  } else if name == "br" || name == "br_if" {
+    let rel = iw_label_rel(fn_name, lbl_names, lbl_depths, Array::get(texts, pos + 1), depth, Array::get(offs, pos + 1))
+    let ti = Array::length(st.frames) - 1 - rel
+    if ti < 0 {
+      throw(iw_err(fn_name, "'\{name}' targets a label \{rel} level(s) out, which is outside this function body", off))
+    } else {
+      ()
+    }
+    // A `br` to a loop restarts it, so the loop's label takes no value; a
+    // block/if label takes the block's declared result.
+    let (_tb, tres, tloop, _tp) = Array::get(st.frames, ti)
+    let arity = if tloop == 1 {
+      0
+    } else {
+      tres
+    }
+    if name == "br_if" {
+      iw_apply(st, fn_name, name, iw_params1(0x7F), 0, off)
+      // The branch value must be there, and stays there for the fallthrough.
+      if arity != 0 {
+        iw_apply(st, fn_name, name, iw_params1(arity), arity, off)
+      } else {
+        ()
+      }
+    } else {
+      if arity != 0 {
+        iw_apply(st, fn_name, name, iw_params1(arity), 0, off)
+      } else {
+        ()
+      }
+      iw_st_mark_poly(st)
+    }
+  } else if name == "i32.const" {
+    iw_st_push(st, 0x7F)
+  } else if name == "i64.const" {
+    iw_st_push(st, 0x7E)
+  } else if name == "memory.size" {
+    iw_st_push(st, 0x7F)
+  } else if name == "memory.grow" {
+    iw_apply(st, fn_name, name, iw_params1(0x7F), 0x7F, off)
+  } else if name == "v128.const" {
+    iw_st_push(st, 0x7B)
+  } else if name == "v128.load" {
+    iw_apply(st, fn_name, name, iw_params1(0x7F), 0x7B, off)
+  } else if name == "v128.store" {
+    iw_apply(st, fn_name, name, iw_params2(0x7F, 0x7B), 0, off)
+  } else if name == "i8x16.shuffle" {
+    iw_apply(st, fn_name, name, iw_params2(0x7B, 0x7B), 0x7B, off)
+  } else if iw_lookup(iw_core_table(), name) >= 0 {
+    if name == "select" {
+      // `select`'s result is its operands' type, so it is the one core
+      // instruction whose signature is not a constant.
+      iw_apply(st, fn_name, name, iw_params1(0x7F), 0, off)
+      if Array::length(st.vals) - iw_st_base(st) < 2 && !iw_st_poly(st) {
+        throw(iw_err(fn_name, "'select' takes 3 operand(s), but only \{Array::length(st.vals) - iw_st_base(st) + 1} value(s) are on the stack here", off))
+      } else {
+        ()
+      }
+      let b = iw_st_pop_raw(st)
+      let a = iw_st_pop_raw(st)
+      if a != 0 && b != 0 && a != b {
+        throw(iw_err(fn_name, "'select' needs both value operands to have the same type, got \{iw_valtype_name(a)} and \{iw_valtype_name(b)}", off))
+      } else {
+        ()
+      }
+      iw_st_push(st, if a != 0 {
+        a
+      } else {
+        b
+      })
+    } else {
+      iw_apply(st, fn_name, name, iw_core_op_params(fn_name, name, off), iw_core_result_valtype(name), off)
+      if name == "unreachable" || name == "return" {
+        iw_st_mark_poly(st)
+      } else {
+        ()
+      }
+    }
+  } else if iw_lookup(iw_simd_lane_table(), name) >= 0 {
+    if String::contains(name, ".extract_lane") {
+      iw_apply(st, fn_name, name, iw_params1(0x7B), iw_simd_result_valtype(name), off)
+    } else {
+      iw_apply(st, fn_name, name, iw_params2(0x7B, iw_shape_scalar_valtype(name)), 0x7B, off)
+    }
+  } else {
+    let (mem_opc, _mem_align) = iw_mem_lookup(name)
+    if mem_opc >= 0 {
+      let vt = iw_prefix_valtype(name)
+      if String::contains(name, ".store") {
+        iw_apply(st, fn_name, name, iw_params2(0x7F, vt), 0, off)
+      } else {
+        iw_apply(st, fn_name, name, iw_params1(0x7F), vt, off)
+      }
+    } else if iw_lookup(iw_simd_table(), name) >= 0 {
+      iw_apply(st, fn_name, name, iw_simd_op_params(fn_name, name, off), iw_simd_result_valtype(name), off)
+    } else {
+      throw(iw_err(fn_name, "the assembler has no operand signature for '\{name}'", off))
+    }
+  }
+}
+
+/// #2401 coverage self-check: the instruction names this file assembles but
+/// cannot give an operand signature, i.e. the ones whose operands would go
+/// unchecked. It must stay EMPTY -- a new row in one of the tables without a
+/// matching signature rule shows up here, and
+/// `inline wasm assembler: every table instruction has an operand signature`
+/// in lib/@vibe/compiler/tests/inline_wasm_test.vibe fails.
+///
+/// This is exported rather than tested through a synthesized body because the
+/// body would need the very signature under test to be written correctly.
+export fn inline_wat_unclassified_instructions() -> Array[String] {
+  let out = iw_fresh_strings()
+  let core = iw_core_table()
+  let mut i = 0
+  while i < Array::length(core) {
+    let (cn, _co) = Array::get(core, i)
+    handle {
+      let _ = iw_core_op_params("probe", cn, 0)
+      ()
+    } with { Exception::Throw(_) => Array::push(out, cn) }
+    i = i + 1
+  }
+  let simd = iw_simd_table()
+  let mut j = 0
+  while j < Array::length(simd) {
+    let (sn, _so) = Array::get(simd, j)
+    handle {
+      let _ = iw_simd_op_params("probe", sn, 0)
+      ()
+    } with { Exception::Throw(_) => Array::push(out, sn) }
+    j = j + 1
+  }
+  // The lane and memory tables are typed from their shape/prefix alone, so a
+  // new row there can still be unclassified: a shape this file does not know
+  // types its scalar as 0 ("any"), which silently disables the check.
+  let lane = iw_simd_lane_table()
+  let mut k = 0
+  while k < Array::length(lane) {
+    let (ln, _lo) = Array::get(lane, k)
+    if iw_shape_scalar_valtype(ln) == 0 {
+      Array::push(out, ln)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  let mem = iw_mem_table()
+  let mut m = 0
+  while m < Array::length(mem) {
+    let (mn, _mo, _ma) = Array::get(mem, m)
+    if iw_prefix_valtype(mn) == 0 {
+      Array::push(out, mn)
+    } else {
+      ()
+    }
+    m = m + 1
+  }
+  out
+}
+
 /// #2348: folded `(call $f <operand exprs...>)` to another inline-wasm fn in
 /// the same module.
 ///
@@ -1233,7 +1761,7 @@ fn iw_operand_valtype(kinds: Array[Int], texts: Array[String], pos: Int, end: In
 /// the whole reason `call` is folded-only: in the flat spelling the count is
 /// not knowable here, and an unchecked call would surface as a wasm validation
 /// failure at module load instead of a located error.
-fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
+fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let head_off = Array::get(offs, pos)
   if pos + 2 >= end || Array::get(kinds, pos + 2) != 3 {
     throw(iw_err(fn_name, "'call' needs a callee name: (call $f ...)", head_off))
@@ -1275,7 +1803,7 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
       } else {
         ()
       }
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees, st)
       argc = argc + 1
     } else {
       throw(iw_err(fn_name, "unexpected '\{Array::get(texts, p)}' inside '(call $\{callee}' — operands must be parenthesized", Array::get(offs, p)))
@@ -1286,6 +1814,15 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
   } else {
     ()
   }
+  // #2401: the arguments are on the stack now. Every inline-wasm parameter
+  // and result is an i64, so the effect is `carity` i64s in, one i64 out.
+  let cps = iw_fresh_ints()
+  let mut cpi = 0
+  while cpi < carity {
+    Array::push(cps, 0x7E)
+    cpi = cpi + 1
+  }
+  iw_apply(st, fn_name, "call $\{callee}", cps, 0x7E, head_off)
   // The closure-env slot: every user function's last wasm param.
   bytebuf_push(out, 0x42)
   leb128_encode_s64(out, 0)
@@ -1296,10 +1833,14 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
 
 /// One sequence item at `pos`: either a folded `(...)` expression or a plain
 /// instruction word. Returns the position after the item.
-fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
+fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let k = Array::get(kinds, pos)
   if k == 3 {
-    iw_plain_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
+    // #2401: flat form -- the operands are already on the stack, so the
+    // instruction's effect applies right here.
+    let next = iw_plain_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
+    iw_stack_effect(st, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth)
+    next
   } else if k == 1 {
     if pos + 1 >= end || Array::get(kinds, pos + 1) != 3 {
       throw(iw_err(fn_name, "expected an instruction name after '('", Array::get(offs, pos)))
@@ -1308,15 +1849,15 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
     }
     let head = Array::get(texts, pos + 1)
     if head == "call" {
-      iw_folded_call(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
+      iw_folded_call(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees, st)
     } else if head == "block" || head == "loop" {
-      iw_folded_block(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
+      iw_folded_block(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees, st)
     } else if head == "if" {
-      iw_folded_if(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
+      iw_folded_if(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees, st)
     } else if head == "then" || head == "else" || head == "result" {
       throw(iw_err(fn_name, "misplaced '(\{head} ...)' clause", Array::get(offs, pos)))
     } else {
-      iw_folded_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees)
+      iw_folded_op(out, fn_name, kinds, texts, offs, pos, end, locals, lbl_names, lbl_depths, depth, callees, st)
     }
   } else {
     throw(iw_err(fn_name, "unexpected ')'", Array::get(offs, pos)))
@@ -1324,7 +1865,7 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
 }
 
 /// A sequence of items up to (not consuming) a closing ')' or the end.
-fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
+fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let mut p = pos
   let mut done = false
   while !done {
@@ -1333,7 +1874,7 @@ fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], 
     } else if Array::get(kinds, p) == 2 {
       done = true
     } else {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees, st)
     }
   }
   p
@@ -1341,7 +1882,7 @@ fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], 
 
 /// Folded `(op <immediates> <operand exprs...>)`: real folded-form semantics —
 /// the operand expressions are emitted FIRST, then the op itself.
-fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
+fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let opb = bytebuf_new()
   let after_imm = iw_plain_op(opb, fn_name, kinds, texts, offs, pos + 1, end, locals, lbl_names, lbl_depths, depth)
   let mut p = after_imm
@@ -1352,17 +1893,21 @@ fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
     } else if Array::get(kinds, p) == 2 {
       done = true
     } else if Array::get(kinds, p) == 1 {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees, st)
     } else {
       throw(iw_err(fn_name, "unexpected '\{Array::get(texts, p)}' inside folded '\{Array::get(texts, pos + 1)}' — operands must be parenthesized", Array::get(offs, p)))
     }
   }
+  // #2401: the operands are on the stack only now, which is where a folded
+  // op's effect belongs -- the iw_plain_op call above consumed its immediates
+  // and emitted its opcode into a side buffer, nothing more.
+  iw_stack_effect(st, fn_name, kinds, texts, offs, pos + 1, end, locals, lbl_names, lbl_depths, depth)
   bytebuf_push_buf(out, opb)
   p + 1
 }
 
 /// Folded `(block $l? (result T)? ...)` / `(loop $l? (result T)? ...)`.
-fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
+fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let head = Array::get(texts, pos + 1)
   bytebuf_push(out, if head == "loop" {
     0x03
@@ -1380,13 +1925,29 @@ fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[
   }
   let (bt, after_bt) = iw_blocktype(fn_name, kinds, texts, offs, q, end)
   bytebuf_push(out, bt)
-  let bq = iw_seq(out, fn_name, kinds, texts, offs, after_bt, end, locals, lbl_names, lbl_depths, depth + 1, callees)
+  let bres = if bt == 0x40 {
+    0
+  } else {
+    bt
+  }
+  Array::push(st.frames, (Array::length(st.vals), bres, if head == "loop" {
+    1
+  } else {
+    0
+  }, 0))
+  let bq = iw_seq(out, fn_name, kinds, texts, offs, after_bt, end, locals, lbl_names, lbl_depths, depth + 1, callees, st)
   if bq >= end || Array::get(kinds, bq) != 2 {
     throw(iw_err(fn_name, "missing ')' closing '\{head}'", Array::get(offs, pos)))
   } else {
     ()
   }
   bytebuf_push(out, 0x0B)
+  iw_st_close(st, fn_name, "'\{head}'", "", Array::get(offs, pos))
+  if bres != 0 {
+    iw_st_push(st, bres)
+  } else {
+    ()
+  }
   Array::truncate(lbl_names, lbl_mark)
   Array::truncate(lbl_depths, lbl_mark)
   bq + 1
@@ -1394,7 +1955,7 @@ fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[
 
 /// Folded `(if $l? (result T)? <cond exprs...> (then ...) (else ...)?)`.
 /// The condition is emitted first, then 0x04 + blocktype, then the branches.
-fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)]) -> Int with Exception {
+fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let lbl_mark = Array::length(lbl_names)
   let mut q = pos + 2
   if q < end && Array::get(kinds, q) == 3 && String::length(Array::get(texts, q)) > 0 && String::char_code_at(Array::get(texts, q), 0) == '$' {
@@ -1414,30 +1975,51 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
     } else if Array::get(kinds, p) == 1 && p + 1 < end && Array::get(kinds, p + 1) == 3 && Array::get(texts, p + 1) == "then" {
       cond_done = true
     } else if Array::get(kinds, p) == 1 {
-      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees)
+      p = iw_item(out, fn_name, kinds, texts, offs, p, end, locals, lbl_names, lbl_depths, depth, callees, st)
     } else {
       throw(iw_err(fn_name, "unexpected token in folded 'if' condition (condition operands must be parenthesized)", Array::get(offs, p)))
     }
   }
+  // #2401: the condition is on the stack now, and the two branches type
+  // against a frame whose floor sits BELOW it.
+  iw_apply(st, fn_name, "if", iw_params1(0x7F), 0, Array::get(offs, pos))
   bytebuf_push(out, 0x04)
   bytebuf_push(out, bt)
+  let bres = if bt == 0x40 {
+    0
+  } else {
+    bt
+  }
   // then branch: p is at '(' of (then ...)
-  let tq = iw_seq(out, fn_name, kinds, texts, offs, p + 2, end, locals, lbl_names, lbl_depths, depth + 1, callees)
+  Array::push(st.frames, (Array::length(st.vals), bres, 0, 0))
+  let tq = iw_seq(out, fn_name, kinds, texts, offs, p + 2, end, locals, lbl_names, lbl_depths, depth + 1, callees, st)
   if tq >= end || Array::get(kinds, tq) != 2 {
     throw(iw_err(fn_name, "missing ')' closing '(then ...)'", Array::get(offs, p)))
   } else {
     ()
   }
+  iw_st_close(st, fn_name, "the 'then' branch", "", Array::get(offs, p))
   let mut r = tq + 1
   if r + 1 < end && Array::get(kinds, r) == 1 && Array::get(kinds, r + 1) == 3 && Array::get(texts, r + 1) == "else" {
     bytebuf_push(out, 0x05)
-    let eq = iw_seq(out, fn_name, kinds, texts, offs, r + 2, end, locals, lbl_names, lbl_depths, depth + 1, callees)
+    Array::push(st.frames, (Array::length(st.vals), bres, 0, 0))
+    let eq = iw_seq(out, fn_name, kinds, texts, offs, r + 2, end, locals, lbl_names, lbl_depths, depth + 1, callees, st)
     if eq >= end || Array::get(kinds, eq) != 2 {
       throw(iw_err(fn_name, "missing ')' closing '(else ...)'", Array::get(offs, r)))
     } else {
       ()
     }
+    iw_st_close(st, fn_name, "the 'else' branch", "", Array::get(offs, r))
     r = eq + 1
+  } else {
+    if bres != 0 {
+      throw(iw_err(fn_name, "a folded 'if' declaring (result \{iw_valtype_name(bres)}) needs an (else ...) branch, so the value exists on both paths", Array::get(offs, pos)))
+    } else {
+      ()
+    }
+  }
+  if bres != 0 {
+    iw_st_push(st, bres)
   } else {
     ()
   }
@@ -1564,12 +2146,16 @@ export fn compile_inline_wat_calls(fn_name: String, wat: String, param_names: Ar
   } else {
     ()
   }
-  let final_pos = iw_seq(out, fn_name, kinds, texts, offs, body_start, end, locals, lbl_names, lbl_depths, 0, callees)
+  // #2401: the body's own frame. The parser admits only `-> Int`, so the
+  // body must leave exactly one i64.
+  let st = iw_st_new(0x7E)
+  let final_pos = iw_seq(out, fn_name, kinds, texts, offs, body_start, end, locals, lbl_names, lbl_depths, 0, callees, st)
   if final_pos != end {
     throw(iw_err(fn_name, "unbalanced ')'", Array::get(offs, final_pos)))
   } else {
     ()
   }
+  iw_st_close(st, fn_name, "the inline wasm body", " (an inline-wasm fn returns Int, so its body leaves one i64)", 0)
   (out, n32, n64, nv)
 }
 
@@ -1583,5 +2169,5 @@ export fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[St
 //# Misc
 
 export {
-  compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full
+  compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full, inline_wat_unclassified_instructions
 }

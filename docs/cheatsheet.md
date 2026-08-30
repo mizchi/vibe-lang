@@ -2249,6 +2249,26 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   check errs toward rejecting: `unreachable` / `return` / `br` are
   stack-polymorphic and wasm would accept them there, and `select` is not
   typed.
+- **Operand types and stack depth are checked** (#2401): the assembler walks
+  an abstract value stack, so a body that is not valid wasm is a located error
+  from `vibe check` rather than a module that fails when a runtime loads it.
+  `(i64.add (i32.const 1) (i64.const 2))` and
+  `(block (result i64) (i32.const 1))` both used to assemble. What is checked:
+  each instruction's operands against its signature (a lane shift takes an
+  i32 amount, a load/store addresses through an i32, `replace_lane` takes the
+  shape's scalar, a comparison yields i32 whatever its operand width); a
+  `block` / `loop` / `if` actually leaving what its `(result T)` declares, and
+  leaving nothing without one; an `if` with a `(result T)` having an `(else
+  ...)`; and the depth, in both directions — too few operands for an
+  instruction, and a body that leaves other than the single i64 an
+  inline-wasm fn returns. A block's frame is a floor, so an instruction inside
+  it cannot consume a value produced outside it. Dead code after
+  `unreachable` / `br` / `return` is stack-polymorphic but still typed, which
+  is what wasm does too — polymorphism lets a frame's declared result come
+  from the floor, it does not let values pushed afterwards survive to the
+  frame's `end`. Two deliberate gaps, both erring toward accepting: a
+  numeric `local.get 3` types as unknown (the locals table is keyed by name)
+  and an unknown matches anything, and `br_table` is not in the slice at all.
 - **Locals**: the fn's own params (`$name` or index), plus `(local $name
   TYPE)` declarations at the START of the body — types `i32`/`i64`/`v128`,
   grouped in that order (a located error enforces the grouping); declared
