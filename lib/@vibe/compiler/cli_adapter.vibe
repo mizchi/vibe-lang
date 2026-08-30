@@ -79,6 +79,7 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_coverage,
   compile_file_fs_mode_gc,
   compile_file_fs_mode_rc,
+  compile_file_fs_mode_rc_body_cached,
   compile_file_fs_mode_rc_heap_marked,
   compile_file_fs_mode_rc_shadow,
   compile_file_fs_mode_testmeta,
@@ -1460,7 +1461,16 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
         if mark_memory {
           (compile_file_fs_mode_rc_heap_marked(input_path, entry_name), "")
         } else {
-          (compile_file_fs_mode_rc(input_path, entry_name), "")
+          // #2388 step 3: opt-in cross-compile codegen body cache. "verify"
+          // double-compiles and byte-compares (trust building); "on" replays
+          // persisted bodies. Env is read here, keeping file_compile Env-free
+          // (#634). Any other value keeps the exact production lane.
+          let body_cache_mode = Env::get("VIBE_CODEGEN_BODY_CACHE")
+          if body_cache_mode == "verify" || body_cache_mode == "on" {
+            (compile_file_fs_mode_rc_body_cached(input_path, entry_name, body_cache_mode), "")
+          } else {
+            (compile_file_fs_mode_rc(input_path, entry_name), "")
+          }
         }
       } else {
         // Legacy bump path (VIBE_RC=0). #634 (ADR-0026): only when `vibe test`

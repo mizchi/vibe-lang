@@ -1,7 +1,19 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, __to_string, apply_perm_strings, bsearch_leftmost, bytebuf_push, leb128_encode_u32, sort_perm_by_names
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  __to_string,
+  apply_perm_strings,
+  bsearch_leftmost,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_to_bytes,
+  leb128_encode_u32,
+  sort_perm_by_names
 }
 
 import @vibe/ast {
@@ -145,7 +157,55 @@ export struct CodegenBodyCache {
   /// section than a compiled one. The consumer builds a flag set, so order and
   /// duplicates do not matter, which is what lets slices merge freely.
   slot_owner: Array[Int];
-  slot_values: Array[Int]
+  slot_values: Array[Int];
+  /// #2388 step 3: the merged-statement index each cached function was
+  /// compiled from, parallel to fn_indices (-1 when the recording site has
+  /// no statement, e.g. tests that record synthetic entries). Replay ignores
+  /// it; the cross-compile persistence layer uses it to keep only the
+  /// entries whose source-group prefix is unchanged.
+  fn_src_stmts: Array[Int];
+  /// #2388 step 3 guards. Cross-compile replay is only sound while the
+  /// layout facts every cached body's immediates were emitted against still
+  /// hold in the consuming compile. `guard_meta` is exactly
+  /// `[pin_src_n, pin_capacity, lambda_slot_base, num_imported_funcs,
+  /// num_generated]` when the recording compile ran the #2388 step-2 pin
+  /// reorder, and empty otherwise -- an empty guard makes the cache
+  /// in-process-only (the consumer treats it as unusable across compiles).
+  /// The import/generated counts pin `func_offset`, the base every user
+  /// call immediate is built on. `guard_synth_names`/`guard_synth_stmts`
+  /// are the synthesized region's function names and their merged-statement
+  /// positions: a prelude whose synthesized output changed in CONTENT keeps
+  /// name and position, so synthesized entries are never replayed across
+  /// compiles at all -- these lists exist to pin their count, order, and
+  /// insertion positions, which is what keeps every pre-pass table
+  /// (string pool, signatures) and the synth index region aligned for the
+  /// source bodies that ARE replayed. `guard_import_names` is the sorted
+  /// used-builtin-name set plus the linked-import names: the gated host
+  /// imports are assigned indices by a fixed code sequence of
+  /// `Map::has_key(used_builtin_names, ...)` tests, so set equality (not
+  /// merely count equality -- two different sets of the same size assign
+  /// DIFFERENT indices to each import) pins the whole import vector.
+  /// `guard_borrow_names`/`guard_borrow_masks` are the ADR-0092 program-wide
+  /// borrow-parameter inference (sorted names, masks aligned): it is
+  /// CALL-SITE sensitive -- a position ever passed a non-ident argument is
+  /// disqualified -- so an edit anywhere can flip an unchanged function's
+  /// owned/borrowed parameter ABI, changing both its own drop obligations
+  /// and every caller's dup obligations. Replay is only sound while the
+  /// whole vector is unchanged.
+  /// `guard_unmangled_names` closes the global name-membership class:
+  /// compile_call's `prefer_bound_call` and the func-table name lookups are
+  /// cross-file matches on the spelled name, and only builtin-spelled names
+  /// take those branches. Prefix defs are #716 path-mangled, so the names
+  /// that can flip such a branch are the unmangled source-region ones;
+  /// `__test_`/`__bench_` blocks are excluded (nothing calls them by name),
+  /// which is what keeps the append-a-test edit inside the cache.
+  guard_meta: Array[Int];
+  guard_synth_names: Array[String];
+  guard_synth_stmts: Array[Int];
+  guard_import_names: Array[String];
+  guard_borrow_names: Array[String];
+  guard_borrow_masks: Array[Int];
+  guard_unmangled_names: Array[String]
 }
 
 /// An empty cache. Threading one of these in means "compile everything, cache
@@ -165,7 +225,15 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     lam_meta_i32: array_empty(),
     lam_meta_i64: array_empty(),
     slot_owner: array_empty(),
-    slot_values: array_empty()
+    slot_values: array_empty(),
+    fn_src_stmts: array_empty(),
+    guard_meta: array_empty(),
+    guard_synth_names: array_empty(),
+    guard_synth_stmts: array_empty(),
+    guard_import_names: array_empty(),
+    guard_borrow_names: array_empty(),
+    guard_borrow_masks: array_empty(),
+    guard_unmangled_names: array_empty()
   }
 }
 
@@ -190,12 +258,13 @@ export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int
 /// Reads the LAST entry of `bodies` / `meta_i32` / `meta_i64` -- the loop has
 /// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
 /// exactly the range the plan assigned this function.
-export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int) -> Unit {
+export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, src_stmt: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int) -> Unit {
   let n = Array::length(bodies)
   if n == 0 {
     ()
   } else {
     Array::push(cache.fn_indices, fn_index)
+    Array::push(cache.fn_src_stmts, src_stmt)
     Array::push(cache.fn_bodies, Array::get(bodies, n - 1))
     Array::push(cache.fn_meta_i32, Array::get(meta_i32, Array::length(meta_i32) - 1))
     Array::push(cache.fn_meta_i64, Array::get(meta_i64, Array::length(meta_i64) - 1))
@@ -242,6 +311,7 @@ export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> 
     let mut i = 0
     while i < fn_n {
       Array::push(out.fn_indices, Array::get(src.fn_indices, i))
+      Array::push(out.fn_src_stmts, Array::get(src.fn_src_stmts, i))
       Array::push(out.fn_bodies, Array::get(src.fn_bodies, i))
       Array::push(out.fn_meta_i32, Array::get(src.fn_meta_i32, i))
       Array::push(out.fn_meta_i64, Array::get(src.fn_meta_i64, i))
@@ -269,7 +339,103 @@ export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> 
     }
     si = si + 1
   }
+  // Guards are compile-level facts, not per-entry data: slices harvested
+  // from the same compile carry identical guards, so take one side's
+  // (preferring a non-empty one) rather than concatenating.
+  let gsrc = if Array::length(a.guard_meta) > 0 {
+    a
+  } else {
+    b
+  }
+  bcc_copy_guards(gsrc, out)
   out
+}
+
+/// #2388 step 3: does `cache`'s recorded synthesized region match the
+/// current compile's -- same names in the same order at the same merged-
+/// statement positions? `names`/`stmt_indices` are the post-reorder
+/// function lists, `[lo, hi)` the synthesized region.
+export fn bcc_guard_synth_matches(cache: CodegenBodyCache, names: Array[String], stmt_indices: Array[Int], lo: Int, hi: Int) -> Bool {
+  let mut ok = Array::length(cache.guard_synth_names) == hi - lo
+  let mut i = lo
+  while ok && i < hi {
+    if Array::get(cache.guard_synth_names, i - lo) != Array::get(names, i) || Array::get(cache.guard_synth_stmts, i - lo) != Array::get(stmt_indices, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn bcc_copy_guards(src: CodegenBodyCache, out: CodegenBodyCache) -> Unit {
+  let mut gi = 0
+  while gi < Array::length(src.guard_meta) {
+    Array::push(out.guard_meta, Array::get(src.guard_meta, gi))
+    gi = gi + 1
+  }
+  let mut gj = 0
+  while gj < Array::length(src.guard_synth_names) {
+    Array::push(out.guard_synth_names, Array::get(src.guard_synth_names, gj))
+    gj = gj + 1
+  }
+  let mut gk = 0
+  while gk < Array::length(src.guard_synth_stmts) {
+    Array::push(out.guard_synth_stmts, Array::get(src.guard_synth_stmts, gk))
+    gk = gk + 1
+  }
+  let mut gm = 0
+  while gm < Array::length(src.guard_import_names) {
+    Array::push(out.guard_import_names, Array::get(src.guard_import_names, gm))
+    gm = gm + 1
+  }
+  let mut gb = 0
+  while gb < Array::length(src.guard_borrow_names) {
+    Array::push(out.guard_borrow_names, Array::get(src.guard_borrow_names, gb))
+    gb = gb + 1
+  }
+  let mut gc = 0
+  while gc < Array::length(src.guard_borrow_masks) {
+    Array::push(out.guard_borrow_masks, Array::get(src.guard_borrow_masks, gc))
+    gc = gc + 1
+  }
+  let mut gu = 0
+  while gu < Array::length(src.guard_unmangled_names) {
+    Array::push(out.guard_unmangled_names, Array::get(src.guard_unmangled_names, gu))
+    gu = gu + 1
+  }
+}
+
+/// #2388 step 3: exact int-list equality, the mask half of the borrow guard.
+export fn bcc_int_lists_equal(a: Array[Int], b: Array[Int]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    if Array::get(a, i) != Array::get(b, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// #2388 step 3: exact string-list equality, used by the guard validation
+/// (synth-name and import-name lists must match elementwise, in order).
+export fn bcc_string_lists_equal(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    if Array::get(a, i) != Array::get(b, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
 }
 
 /// Replay cache entry `at` into the whole-program accumulators, in place of
@@ -309,6 +475,470 @@ export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Ar
       ()
     }
     si = si + 1
+  }
+}
+
+/// #2388 step 3: the subset of `cache` whose recorded merged-statement index
+/// is below `limit` -- the caller's proven-unchanged source prefix. Entries
+/// past the limit (edited modules, capacity pads, appended derived lets)
+/// are dropped and recompile. Prelude-synthesized functions can sit BELOW
+/// the limit (trait dispatchers are inserted after the last impl, which may
+/// be mid-prefix) while their content depends on the WHOLE program, so the
+/// filter also requires the entry to be in the recorded source-function
+/// region (`fn_index < guard_meta[0]`); a cache with no recorded guards
+/// filters to empty -- it was never meant to cross compiles. Returns a
+/// fresh cache carrying the input's guards; the input is not mutated.
+export fn codegen_body_cache_filter_src_below(cache: CodegenBodyCache, limit: Int) -> CodegenBodyCache {
+  let out = codegen_body_cache_new()
+  let keep_fn = array_empty()
+  let src_region_n = if Array::length(cache.guard_meta) == 5 {
+    Array::get(cache.guard_meta, 0)
+  } else {
+    0
+  }
+  let mut i = 0
+  while i < Array::length(cache.fn_indices) {
+    let src_stmt = Array::get(cache.fn_src_stmts, i)
+    if src_stmt >= 0 && src_stmt < limit && Array::get(cache.fn_indices, i) < src_region_n {
+      let fni = Array::get(cache.fn_indices, i)
+      Array::push(keep_fn, fni)
+      Array::push(out.fn_indices, fni)
+      Array::push(out.fn_src_stmts, src_stmt)
+      Array::push(out.fn_bodies, Array::get(cache.fn_bodies, i))
+      Array::push(out.fn_meta_i32, Array::get(cache.fn_meta_i32, i))
+      Array::push(out.fn_meta_i64, Array::get(cache.fn_meta_i64, i))
+      Array::push(out.fn_meta_v128, Array::get(cache.fn_meta_v128, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(cache.lam_owner) {
+    let owner = Array::get(cache.lam_owner, j)
+    if array_contains_int_bcc(keep_fn, owner) {
+      Array::push(out.lam_owner, owner)
+      Array::push(out.lam_indices, Array::get(cache.lam_indices, j))
+      Array::push(out.lam_bodies, Array::get(cache.lam_bodies, j))
+      Array::push(out.lam_param_counts, Array::get(cache.lam_param_counts, j))
+      Array::push(out.lam_captures, Array::get(cache.lam_captures, j))
+      Array::push(out.lam_meta_i32, Array::get(cache.lam_meta_i32, j))
+      Array::push(out.lam_meta_i64, Array::get(cache.lam_meta_i64, j))
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  let mut k = 0
+  while k < Array::length(cache.slot_owner) {
+    let sowner = Array::get(cache.slot_owner, k)
+    if array_contains_int_bcc(keep_fn, sowner) {
+      Array::push(out.slot_owner, sowner)
+      Array::push(out.slot_values, Array::get(cache.slot_values, k))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  bcc_copy_guards(cache, out)
+  out
+}
+
+fn array_contains_int_bcc(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(xs) {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+//# CodegenBodyCache codec (#2388 step 3)
+
+// Length-prefixed binary layout, "VBC1" magic. Every integer is LEB128 of
+// (value + 1), so -1 (a recording site with no statement) round-trips and
+// any other negative -- which no field legitimately holds -- fails loudly at
+// encode time instead of corrupting the stream. Deserialize is fail-safe:
+// anything malformed returns None and the caller compiles from scratch; a
+// damaged artifact can cost a cache miss, never a wrong body.
+
+fn bcc_push_int(buf: Bytes, v: Int) -> Unit with Exception {
+  if v < 0 - 1 {
+    throw(String::concat("body-cache codec: negative field ", __to_string(v)))
+  } else {
+    ()
+  }
+  leb128_encode_u32(buf, v + 1)
+}
+
+fn bcc_push_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_push_int(buf, Array::get(xs, i))
+    i = i + 1
+  }
+}
+
+fn bcc_push_bytes(buf: Bytes, b: Bytes) -> Unit with Exception {
+  bcc_push_int(buf, Bytes::length(b))
+  bytebuf_push_buf(buf, b)
+}
+
+fn bcc_push_bytes_array(buf: Bytes, xs: Array[Bytes]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_push_bytes(buf, Array::get(xs, i))
+    i = i + 1
+  }
+}
+
+fn bcc_push_string(buf: Bytes, s: String) -> Unit with Exception {
+  bcc_push_int(buf, String::length(s))
+  let mut i = 0
+  while i < String::length(s) {
+    bytebuf_push(buf, String::char_code_at(s, i))
+    i = i + 1
+  }
+}
+
+fn bcc_push_string_array(buf: Bytes, xs: Array[String]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_push_string(buf, Array::get(xs, i))
+    i = i + 1
+  }
+}
+
+fn bcc_push_string_arrays(buf: Bytes, xs: Array[Array[String]]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    let inner = Array::get(xs, i)
+    bcc_push_int(buf, Array::length(inner))
+    let mut j = 0
+    while j < Array::length(inner) {
+      bcc_push_string(buf, Array::get(inner, j))
+      j = j + 1
+    }
+    i = i + 1
+  }
+}
+
+export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exception {
+  let buf = bytebuf_new()
+  bytebuf_push(buf, 'V')
+  bytebuf_push(buf, 'B')
+  bytebuf_push(buf, 'C')
+  bytebuf_push(buf, '1')
+  bcc_push_int_array(buf, cache.fn_indices)
+  bcc_push_int_array(buf, cache.fn_src_stmts)
+  bcc_push_bytes_array(buf, cache.fn_bodies)
+  bcc_push_int_array(buf, cache.fn_meta_i32)
+  bcc_push_int_array(buf, cache.fn_meta_i64)
+  bcc_push_int_array(buf, cache.fn_meta_v128)
+  bcc_push_int_array(buf, cache.lam_owner)
+  bcc_push_int_array(buf, cache.lam_indices)
+  bcc_push_bytes_array(buf, cache.lam_bodies)
+  bcc_push_int_array(buf, cache.lam_param_counts)
+  bcc_push_string_arrays(buf, cache.lam_captures)
+  bcc_push_int_array(buf, cache.lam_meta_i32)
+  bcc_push_int_array(buf, cache.lam_meta_i64)
+  bcc_push_int_array(buf, cache.slot_owner)
+  bcc_push_int_array(buf, cache.slot_values)
+  bcc_push_int_array(buf, cache.guard_meta)
+  bcc_push_string_array(buf, cache.guard_synth_names)
+  bcc_push_int_array(buf, cache.guard_synth_stmts)
+  bcc_push_string_array(buf, cache.guard_import_names)
+  bcc_push_string_array(buf, cache.guard_borrow_names)
+  bcc_push_int_array(buf, cache.guard_borrow_masks)
+  bcc_push_string_array(buf, cache.guard_unmangled_names)
+  bytebuf_to_bytes(buf)
+}
+
+// Reader state: (value, next_pos), pos = -1 on malformed input. Every reader
+// checks bounds before consuming; a bad stream degrades to None at the top.
+fn bcc_read_int(b: Bytes, pos: Int) -> (Int, Int) {
+  let n = Bytes::length(b)
+  let mut p = pos
+  let mut shift = 0
+  let mut acc = 0
+  let mut done = false
+  let mut bad = false
+  while !done && !bad {
+    if p >= n || shift > 34 {
+      bad = true
+    } else {
+      let byte = Bytes::get(b, p)
+      p = p + 1
+      acc = acc|((byte&127)<<shift)
+      shift = shift + 7
+      if (byte&128) == 0 {
+        done = true
+      } else {
+        ()
+      }
+    }
+  }
+  if bad {
+    (0, 0 - 1)
+  } else {
+    (acc - 1, p)
+  }
+}
+
+fn bcc_read_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (v, np) = bcc_read_int(b, p)
+      if np < 0 {
+        p = 0 - 1
+      } else {
+        Array::push(out, v)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+fn bcc_read_bytes(b: Bytes, pos: Int) -> (Bytes, Int) {
+  let (len, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || len < 0 || p0 + len > Bytes::length(b) {
+    (bytebuf_new(), 0 - 1)
+  } else {
+    (Bytes::slice(b, p0, p0 + len), p0 + len)
+  }
+}
+
+fn bcc_read_bytes_array(b: Bytes, pos: Int, out: Array[Bytes]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (v, np) = bcc_read_bytes(b, p)
+      if np < 0 {
+        p = 0 - 1
+      } else {
+        Array::push(out, v)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+fn bcc_read_string(b: Bytes, pos: Int) -> (String, Int) {
+  let (len, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || len < 0 || p0 + len > Bytes::length(b) {
+    ("", 0 - 1)
+  } else {
+    let parts = array_empty()
+    let mut i = 0
+    while i < len {
+      Array::push(parts, String::from_byte(Bytes::get(b, p0 + i)))
+      i = i + 1
+    }
+    (String::join(parts, ""), p0 + len)
+  }
+}
+
+fn bcc_read_string_array(b: Bytes, pos: Int, out: Array[String]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (s, np) = bcc_read_string(b, p)
+      if np < 0 {
+        p = 0 - 1
+      } else {
+        Array::push(out, s)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (ilen, np0) = bcc_read_int(b, p)
+      if np0 < 0 || ilen < 0 {
+        p = 0 - 1
+      } else {
+        let inner = array_empty()
+        let mut p2 = np0
+        let mut j = 0
+        while p2 >= 0 && j < ilen {
+          let (s, np) = bcc_read_string(b, p2)
+          if np < 0 {
+            p2 = 0 - 1
+          } else {
+            Array::push(inner, s)
+            p2 = np
+          }
+          j = j + 1
+        }
+        if p2 < 0 {
+          p = 0 - 1
+        } else {
+          Array::push(out, inner)
+          p = p2
+        }
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '1' {
+    None
+  } else {
+    let out = codegen_body_cache_new()
+    let mut p = 4
+    p = bcc_read_int_array(b, p, out.fn_indices)
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_src_stmts)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_bytes_array(b, p, out.fn_bodies)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_meta_i32)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_meta_i64)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_meta_v128)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_owner)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_indices)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_bytes_array(b, p, out.lam_bodies)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_param_counts)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_arrays(b, p, out.lam_captures)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_meta_i32)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_meta_i64)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.slot_owner)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.slot_values)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_meta)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_synth_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_synth_stmts)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_import_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_borrow_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_borrow_masks)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_unmangled_names)
+    } else {
+      ()
+    }
+    let fn_n = Array::length(out.fn_indices)
+    let lam_n = Array::length(out.lam_owner)
+    let guard_n = Array::length(out.guard_meta)
+    if p < 0 || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) {
+      None
+    } else {
+      Some(out)
+    }
   }
 }
 
