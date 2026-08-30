@@ -60,6 +60,31 @@ test "#2403 `~` rejects a compiler-owned nominal head" {
   assert(check_source_err_contains(sb, "operand of `~` must be Int"))
 }
 
+test "#2403 `~` rejects the low-level width primitives" {
+  // `i64` / `u8` / `u16` / `u32` / `u64` / `i16` / `v128` resolve to
+  // `CtNamed(name, [])` -- a named head with NEITHER a `TypeDef` nor a
+  // `compiler_owned_type_arity` entry -- so they fell through the permissive
+  // default. A raw `i64` is not a 63-bit tagged `Int`; complementing it with
+  // the tagged constant is wrong.
+  let i64t = "fn f(x: i64) -> Int { ~x }"
+  assert(check_source_err_contains(i64t, "operand of `~` must be Int"))
+  let u32t = "fn f(x: u32) -> Int { ~x }"
+  assert(check_source_err_contains(u32t, "operand of `~` must be Int"))
+  let u8t = "fn f(x: u8) -> Int { ~x }"
+  assert(check_source_err_contains(u8t, "operand of `~` must be Int"))
+  let v128t = "fn f(x: v128) -> Int { ~x }"
+  assert(check_source_err_contains(v128t, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` still accepts Int and its `i32` spelling" {
+  // The non-regression that matters for the arm above: `is_builtin_type_name`
+  // is true for "Int" and "i32" too, and rejecting THOSE would break the
+  // operator entirely. They never reach it -- both resolve to `CtInt` and are
+  // taken by the arm above -- but nothing else was holding that down.
+  assert(check_source_ok("fn f(x: Int) -> Int { ~x }"))
+  assert(check_source_ok("fn f(x: i32) -> Int { ~x }"))
+}
+
 test "#2403 `~` rejects a container whose ELEMENT is still generic" {
   // `type_is_ground` asks about the CONTENTS, so `Array[T]` with `T` generic
   // answered `false` and the declaration was accepted. Measured before the

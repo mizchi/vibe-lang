@@ -13,6 +13,7 @@ import @vibe/compiler/core {
   canonical_builtin_name,
   collect_tvars,
   compiler_owned_type_arity,
+  is_builtin_type_name,
   env_bind,
   env_bind_mut,
   env_cache_binding,
@@ -9817,10 +9818,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // error with nothing to preserve. `Array` and `Option` never
                 // reach here -- they are `CtArray` / `CtOption`, refused by
                 // `type_is_ground` below.
-                _ => match compiler_owned_type_arity(nm) {
-                  Some(_) => true,
-                  None => false
-                }
+                // `is_builtin_type_name` is the union of `resolve_builtin`
+                // and `compiler_owned_type_arity`, which is what this needs:
+                // the low-level width names (`i64`, `u8`, `u16`, `u32`, `u64`,
+                // `i16`, `v128`) resolve to `CtNamed(name, [])` -- a named head
+                // with NEITHER a `TypeDef` nor an arity entry -- so they used
+                // to fall through here and be accepted. A raw `i64` is not a
+                // 63-bit tagged `Int`, so complementing it with the tagged
+                // constant is wrong. `Int` and `i32` cannot reach this arm:
+                // they resolve to `CtInt` and are taken by the arm above.
+                _ => is_builtin_type_name(nm)
               },
               // The OUTER constructor settles it on its own: an `Array` /
               // `Option` / tuple / function value is never an `Int` whatever it
