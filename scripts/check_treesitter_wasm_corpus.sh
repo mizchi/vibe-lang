@@ -48,11 +48,22 @@ WTS_SPEC="$(node -e '
 # wasm does not parse the corpus". Failing for a reason unrelated to the
 # property, with a message naming the property, is the defect in #2252, met
 # here in the gate written under its rule.
-STAGE_IN="${VIBE_TREESITTER_WTS_DIR:-$ROOT/_build/.wts}"
-case "$STAGE_IN" in
-  /*) STAGE="$STAGE_IN" ;;
-  *)  STAGE="$ROOT/$STAGE_IN" ;;
+STAGE_BASE_IN="${VIBE_TREESITTER_WTS_DIR:-$ROOT/_build/.wts}"
+case "$STAGE_BASE_IN" in
+  /*) STAGE_BASE="$STAGE_BASE_IN" ;;
+  *)  STAGE_BASE="$ROOT/$STAGE_BASE_IN" ;;
 esac
+
+# The stage is keyed BY the requested spec, not merely checked against it. A
+# presence-only test ("does node_modules/web-tree-sitter exist") reused an old
+# install after playground/package.json changed version, so the gate proved the
+# artifacts against the wrong loader and the stamper could stamp on that basis
+# (#2422 review). Reusing the answer to "does a directory exist" for "is this
+# the loader we asked for" is a proxy; keying the path on the spec removes the
+# question instead of adding a second check for it. A changed spec is a
+# different directory, so a stale stage cannot be picked up at all.
+STAGE_KEY="$(printf '%s' "$WTS_SPEC" | tr -c 'A-Za-z0-9._-' '_')"
+STAGE="$STAGE_BASE/$STAGE_KEY"
 
 if [ ! -d "$STAGE/node_modules/web-tree-sitter" ]; then
   mkdir -p "$STAGE"
@@ -64,6 +75,16 @@ if [ ! -d "$STAGE/node_modules/web-tree-sitter" ]; then
   This gate parses the corpus with the real loader; it does not have a
   degraded mode, because a skipped run and a passing run must not look alike."
 fi
+
+# Belt as well as braces: a range resolves to different versions over time, so
+# the directory key alone does not pin the actual build. Report which one
+# answered, and refuse if it cannot be read.
+WTS_VERSION="$(node -e '
+  process.stdout.write(require(process.argv[1] + "/node_modules/web-tree-sitter/package.json").version);
+' "$STAGE" 2>/dev/null)" || WTS_VERSION=""
+[ -n "$WTS_VERSION" ] || fail "cannot read the staged web-tree-sitter version in $STAGE
+  This is a toolchain problem, NOT a verdict about the committed artifacts --
+  remove that directory and re-run."
 
 # Separate "the loader is not usable" from "the artifacts are wrong" while the
 # two can still be told apart. Past this point every failure is about a wasm.
@@ -82,7 +103,8 @@ done
 # shellcheck disable=SC2086
 VIBE_WTS_REQUIRE_BASE="$STAGE/package.json" \
   node "$CHECKER" "$CORPUS" $WASMS \
-  || fail "a committed wasm does not parse the corpus the way the grammar says.
+  || fail "a committed wasm does not parse the corpus the way the grammar says
+  (loader: web-tree-sitter $WTS_VERSION, from spec $WTS_SPEC).
   Rebuild both wasm files from the current src/ and restamp:
     cd integrations/treesitter-vibe && pnpm install && pnpm run build:wasm
   (needs emcc on PATH or a running docker daemon). Do not restamp without

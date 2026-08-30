@@ -148,6 +148,52 @@ else
   expect_fail "a corpus the wasm does not match" "$d"
 fi
 
+# The loader stage must follow playground/package.json. A presence-only check
+# ("does node_modules/web-tree-sitter exist") reused an old install after the
+# pin changed, so the gate proved the artifacts against the wrong loader
+# (#2422 review). Drive both specs against ONE stage base and assert the second
+# run staged the second version -- under the old logic it would still read the
+# first.
+echo "[ts-corpus-test] the loader stage follows the playground's pin"
+SPEC_STAGE="$WORK/spec_stage"
+d="$(fresh_tree spec_a)"
+if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$SPEC_STAGE" bash "$GATE" >/dev/null 2>&1; then
+  d2="$(fresh_tree spec_b)"
+  # A version this repository does not pin, so reuse of the first stage is
+  # visible rather than coincidentally right.
+  OTHER="0.25.10"
+  node -e '
+    const fs = require("node:fs");
+    const p = process.argv[1];
+    const d = JSON.parse(fs.readFileSync(p, "utf8"));
+    d.dependencies["web-tree-sitter"] = process.argv[2];
+    fs.writeFileSync(p, JSON.stringify(d, null, 2));
+  ' "$d2/$PKG_REL" "$OTHER"
+  # Verify the mutation landed before believing anything that follows.
+  if ! grep -q "\"web-tree-sitter\": \"$OTHER\"" "$d2/$PKG_REL"; then
+    echo "  BUG in this test: the pin mutation did not land" >&2
+    fails=$((fails + 1))
+  elif VIBE_TREESITTER_CORPUS_ROOT="$d2" VIBE_TREESITTER_WTS_DIR="$SPEC_STAGE" bash "$GATE" >/dev/null 2>&1; then
+    staged="$(node -e '
+      try {
+        process.stdout.write(require(process.argv[1] + "/" + process.argv[2] + "/node_modules/web-tree-sitter/package.json").version);
+      } catch (e) { process.stdout.write(""); }
+    ' "$SPEC_STAGE" "$OTHER" 2>/dev/null)"
+    if [ "$staged" = "$OTHER" ]; then
+      echo "  ok: the changed pin staged web-tree-sitter $staged, not the first install"
+    else
+      echo "  FAIL: the changed pin did not stage $OTHER (found '$staged')" >&2
+      fails=$((fails + 1))
+    fi
+  else
+    echo "  FAIL: the gate did not run under the changed pin" >&2
+    fails=$((fails + 1))
+  fi
+else
+  echo "  FAIL: the gate did not run under the repository's own pin" >&2
+  fails=$((fails + 1))
+fi
+
 echo "[ts-corpus-test] a missing artifact"
 d="$(fresh_tree missing)"
 rm -f "$d/$PLAY_REL"
