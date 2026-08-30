@@ -86,10 +86,19 @@ fn iw_fresh_strings() -> Array[String] {
   array_empty()
 }
 
-/// #2348: `(name, wasm local index, wasm valtype byte)`. The type is what
-/// lets a folded `call` reject `(call $f (local.get $v))` when `$v` is an
-/// i32 or v128 local -- every inline-wasm parameter slot is an i64.
-fn iw_fresh_locals() -> Array[(String, Int, Int)] {
+/// #2348: `(name, wasm local index, wasm valtype byte, kind)`. The type is
+/// what lets a folded `call` reject `(call $f (local.get $v))` when `$v` is
+/// an i32 or v128 local -- every inline-wasm parameter slot is an i64.
+///
+/// `kind` is 0 for an ordinary local or param and 1 for an `Array[Int]`
+/// param (#2348 part 2). An array param is stored in its slot exactly as the
+/// caller passed it, which is TAGGED on the RC lane and untagged on the bump
+/// lane; `local.get` of one therefore masks the tag off so the body sees the
+/// same `[capacity@0][length@4][data_ptr@8]` header address on both lanes.
+/// The mask lives here rather than in a prologue that rewrites the slot
+/// because the slot is what RC drops at the epilogue -- overwriting it with
+/// an untagged pointer would hand rc_drop something it cannot classify.
+fn iw_fresh_locals() -> Array[(String, Int, Int, Int)] {
   array_empty()
 }
 
@@ -679,14 +688,14 @@ fn iw_mem_lookup(name: String) -> (Int, Int) {
 /// #2348: the wasm valtype byte of `$name`, or 0 when it is not a known local
 /// (a numeric index, or an unknown name -- both refuse to answer rather than
 /// guess).
-fn iw_local_valtype(locals: Array[(String, Int, Int)], tok: String) -> Int {
+fn iw_local_valtype(locals: Array[(String, Int, Int, Int)], tok: String) -> Int {
   if String::length(tok) > 0 && String::char_code_at(tok, 0) == 36 {
     let want = String::substring(tok, 1, String::length(tok))
     let n = Array::length(locals)
     let mut i = 0
     let mut found = 0
     while i < n {
-      let (ln, _li, lt) = Array::get(locals, i)
+      let (ln, _li, lt, _lk) = Array::get(locals, i)
       if ln == want {
         found = lt
         i = n
@@ -700,14 +709,62 @@ fn iw_local_valtype(locals: Array[(String, Int, Int)], tok: String) -> Int {
   }
 }
 
-fn iw_local_idx(fn_name: String, locals: Array[(String, Int, Int)], tok: String, off: Int) -> Int with Exception {
+fn iw_name_listed(names: Array[String], want: String) -> Bool {
+  let n = Array::length(names)
+  let mut i = 0
+  let mut found = false
+  while i < n {
+    if Array::get(names, i) == want {
+      found = true
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2348 part 2: is the local at wasm index `idx` an `Array[Int]` param?
+///
+/// Keyed by the RESOLVED INDEX, not by the `$name` token, so the two
+/// spellings of the same parameter cannot answer differently. Keying it by
+/// name looked harmless -- the mask is a property of the declared type, and
+/// `local.get 3` has no declared type to read -- but "not an array" is not
+/// the safe default here: it would leave `local.get 0` handing the body the
+/// TAGGED pointer, so `i32.load offset=4` would read one byte past the
+/// header on the RC lane and return a plausible wrong number, and
+/// `local.set 0` would slip past the read-only check and overwrite the slot
+/// the RC epilogue drops. Both are silent-wrong, which this repository ranks
+/// above every other way of breaking.
+///
+/// This is deliberately NOT the same call as the valtype lookup, which stays
+/// keyed by name and answers "unknown" for a numeric index (#2401). That gap
+/// errs toward ACCEPTING a body wasm would accept; this one erred toward
+/// miscompiling it.
+fn iw_local_at_is_array(locals: Array[(String, Int, Int, Int)], idx: Int) -> Bool {
+  let n = Array::length(locals)
+  let mut i = 0
+  let mut found = 0
+  while i < n {
+    let (_ln, li, _lt, lk) = Array::get(locals, i)
+    if li == idx {
+      found = lk
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found == 1
+}
+
+fn iw_local_idx(fn_name: String, locals: Array[(String, Int, Int, Int)], tok: String, off: Int) -> Int with Exception {
   if String::length(tok) > 0 && String::char_code_at(tok, 0) == '$' {
     let want = String::substring(tok, 1, String::length(tok))
     let n = Array::length(locals)
     let mut i = 0
     let mut found = 0 - 1
     while i < n {
-      let (ln, li, _lt) = Array::get(locals, i)
+      let (ln, li, _lt, _lk) = Array::get(locals, i)
       if ln == want {
         found = li
         i = n
@@ -873,7 +930,7 @@ fn iw_v128_const(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[St
 
 /// Emit ONE plain (non-control) instruction word at `pos` plus its immediates
 /// into `buf`. Returns the position after the instruction + immediates.
-fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
+fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Int with Exception {
   let name = Array::get(texts, pos)
   let off = Array::get(offs, pos)
   if name == "block" || name == "loop" || name == "if" || name == "else" || name == "end" || name == "then" {
@@ -888,8 +945,27 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
     }
     let t = iw_want_word(fn_name, kinds, texts, offs, pos + 1, end, name)
     let idx = iw_local_idx(fn_name, locals, t, Array::get(offs, pos + 1))
+    let is_array = iw_local_at_is_array(locals, idx)
+    // #2348 part 2: an `Array[Int]` param is the caller's live object. Writing
+    // to its slot would hand the RC epilogue a value it did not allocate, so
+    // the two writing forms are refused rather than silently mis-freed.
+    if is_array && name != "local.get" {
+      throw(iw_err(fn_name, "'\{name}' cannot write to '\{t}': an Array[Int] param is read-only inside an inline wasm body (copy it into a declared (local $tmp i64) first)", off))
+    } else {
+      ()
+    }
     bytebuf_push(buf, opc)
     leb128_encode_u32(buf, idx)
+    if is_array {
+      // Mask the RC tag bit off, so the body reads one header address on both
+      // lanes. A bump-lane array pointer is already even, so the mask is a
+      // no-op there rather than a second spelling of this instruction.
+      bytebuf_push(buf, 0x42)
+      leb128_encode_s64(buf, 0 - 2)
+      bytebuf_push(buf, 0x83)
+    } else {
+      ()
+    }
     pos + 2
   } else if name == "br" || name == "br_if" {
     let t = iw_want_word(fn_name, kinds, texts, offs, pos + 1, end, name)
@@ -1159,7 +1235,7 @@ fn iw_simd_result_valtype(name: String) -> Int {
 /// them here, and a result-less `block` / `loop` / `if` is rejected rather
 /// than analyzed. Both reject a program wasm would take; the opposite
 /// direction is what produces the broken module.
-fn iw_operand_valtype(kinds: Array[Int], texts: Array[String], pos: Int, end: Int, locals: Array[(String, Int, Int)]) -> Int {
+fn iw_operand_valtype(kinds: Array[Int], texts: Array[String], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)]) -> Int {
   if pos + 1 >= end || Array::get(kinds, pos + 1) != 3 {
     0
   } else {
@@ -1570,7 +1646,7 @@ fn iw_params2(a: Int, b: Int) -> Array[Int] {
 /// Folded form calls this AFTER walking the operand expressions (the operands
 /// are on the stack by then, which is the whole point); flat form calls it at
 /// the instruction, where the operands are already on the stack too.
-fn iw_stack_effect(st: IwStack, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Unit with Exception {
+fn iw_stack_effect(st: IwStack, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int) -> Unit with Exception {
   let name = Array::get(texts, pos)
   let off = Array::get(offs, pos)
   if name == "local.get" {
@@ -1761,7 +1837,7 @@ export fn inline_wat_unclassified_instructions() -> Array[String] {
 /// the whole reason `call` is folded-only: in the flat spelling the count is
 /// not knowable here, and an unchecked call would surface as a wasm validation
 /// failure at module load instead of a located error.
-fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
+fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let head_off = Array::get(offs, pos)
   if pos + 2 >= end || Array::get(kinds, pos + 2) != 3 {
     throw(iw_err(fn_name, "'call' needs a callee name: (call $f ...)", head_off))
@@ -1833,7 +1909,7 @@ fn iw_folded_call(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[S
 
 /// One sequence item at `pos`: either a folded `(...)` expression or a plain
 /// instruction word. Returns the position after the item.
-fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
+fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let k = Array::get(kinds, pos)
   if k == 3 {
     // #2401: flat form -- the operands are already on the stack, so the
@@ -1865,7 +1941,7 @@ fn iw_item(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String],
 }
 
 /// A sequence of items up to (not consuming) a closing ')' or the end.
-fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
+fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let mut p = pos
   let mut done = false
   while !done {
@@ -1882,7 +1958,7 @@ fn iw_seq(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], 
 
 /// Folded `(op <immediates> <operand exprs...>)`: real folded-form semantics —
 /// the operand expressions are emitted FIRST, then the op itself.
-fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
+fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let opb = bytebuf_new()
   let after_imm = iw_plain_op(opb, fn_name, kinds, texts, offs, pos + 1, end, locals, lbl_names, lbl_depths, depth)
   let mut p = after_imm
@@ -1907,7 +1983,7 @@ fn iw_folded_op(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
 }
 
 /// Folded `(block $l? (result T)? ...)` / `(loop $l? (result T)? ...)`.
-fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
+fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let head = Array::get(texts, pos + 1)
   bytebuf_push(out, if head == "loop" {
     0x03
@@ -1955,7 +2031,7 @@ fn iw_folded_block(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[
 
 /// Folded `(if $l? (result T)? <cond exprs...> (then ...) (else ...)?)`.
 /// The condition is emitted first, then 0x04 + blocktype, then the branches.
-fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
+fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], pos: Int, end: Int, locals: Array[(String, Int, Int, Int)], lbl_names: Array[String], lbl_depths: Array[Int], depth: Int, callees: Array[(String, Int, Int)], st: IwStack) -> Int with Exception {
   let lbl_mark = Array::length(lbl_names)
   let mut q = pos + 2
   if q < end && Array::get(kinds, q) == 3 && String::length(Array::get(texts, q)) > 0 && String::char_code_at(Array::get(texts, q), 0) == '$' {
@@ -2039,7 +2115,7 @@ fn iw_folded_if(out: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Str
 /// encodes one run per type, so interleaved declarations would silently
 /// renumber). Each declared local joins `locals` at wasm index
 /// `extra_base + running position`. Returns (body_start, n_i32, n_i64, n_v128).
-fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], end: Int, locals: Array[(String, Int, Int)], extra_base: Int) -> (Int, Int, Int, Int) with Exception {
+fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String], offs: Array[Int], end: Int, locals: Array[(String, Int, Int, Int)], extra_base: Int) -> (Int, Int, Int, Int) with Exception {
   let mut p = 0
   let mut n32 = 0
   let mut n64 = 0
@@ -2079,7 +2155,7 @@ fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String]
       let want = String::substring(name_tok, 1, String::length(name_tok))
       let mut di = 0
       while di < Array::length(locals) {
-        let (dn, _dx, _dt) = Array::get(locals, di)
+        let (dn, _dx, _dt, _dk) = Array::get(locals, di)
         if dn == want {
           throw(iw_err(fn_name, "duplicate local name '\{name_tok}'", decl_off))
         } else {
@@ -2087,7 +2163,7 @@ fn iw_parse_local_decls(fn_name: String, kinds: Array[Int], texts: Array[String]
         }
         di = di + 1
       }
-      Array::push(locals, (want, extra_base + n32 + n64 + nv, ty))
+      Array::push(locals, (want, extra_base + n32 + n64 + nv, ty, 0))
       if rank == 0 {
         n32 = n32 + 1
       } else if rank == 1 {
@@ -2124,6 +2200,24 @@ export fn compile_inline_wat_full(fn_name: String, wat: String, param_names: Arr
 /// what the two back-compat entries above pass and what the assembler
 /// reported for every `call` before this issue.
 export fn compile_inline_wat_calls(fn_name: String, wat: String, param_names: Array[String], extra_base: Int, callees: Array[(String, Int, Int)]) -> (Bytes, Int, Int, Int) with Exception {
+  compile_inline_wat_array_params(fn_name, wat, param_names, iw_fresh_strings(), extra_base, callees)
+}
+
+/// #2348 part 2 entry: same as `compile_inline_wat_calls`, plus the subset of
+/// `param_names` declared `Array[Int]`. Those params hold the caller's array
+/// value as-is -- tagged on the RC lane, untagged on the bump lane -- so every
+/// `local.get` of one is assembled with the tag masked off and the body reads
+/// the same `[capacity@0][length@4][data_ptr@8]` header on both lanes.
+///
+/// The ELEMENTS at `data_ptr + i*8` are NOT normalized, and cannot be: they
+/// are `Int` values in the lane's own representation, tagged `n<<1` under RC
+/// and raw under bump -- exactly the trap a scalar `Int` param already has.
+/// Addition and subtraction over slots are tag-transparent; multiplication,
+/// division and shifts are not.
+///
+/// An empty list means "no array params", which is what the back-compat
+/// entries above pass.
+export fn compile_inline_wat_array_params(fn_name: String, wat: String, param_names: Array[String], array_param_names: Array[String], extra_base: Int, callees: Array[(String, Int, Int)]) -> (Bytes, Int, Int, Int) with Exception {
   let (kinds, texts, offs) = iw_tokenize(fn_name, wat)
   let out = bytebuf_new()
   let lbl_names = iw_fresh_strings()
@@ -2137,7 +2231,12 @@ export fn compile_inline_wat_calls(fn_name: String, wat: String, param_names: Ar
   let locals = iw_fresh_locals()
   let mut pi = 0
   while pi < Array::length(param_names) {
-    Array::push(locals, (Array::get(param_names, pi), pi, 0x7E))
+    let pname = Array::get(param_names, pi)
+    Array::push(locals, (pname, pi, 0x7E, if iw_name_listed(array_param_names, pname) {
+      1
+    } else {
+      0
+    }))
     pi = pi + 1
   }
   let (body_start, n32, n64, nv) = iw_parse_local_decls(fn_name, kinds, texts, offs, end, locals, extra_base)
@@ -2169,5 +2268,9 @@ export fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[St
 //# Misc
 
 export {
-  compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full, inline_wat_unclassified_instructions
+  compile_inline_wat,
+  compile_inline_wat_array_params,
+  compile_inline_wat_calls,
+  compile_inline_wat_full,
+  inline_wat_unclassified_instructions
 }

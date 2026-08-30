@@ -27,11 +27,19 @@ import ../codegen_gc.vibe {
 }
 
 import @vibe/compiler/codegen {
-  compile_inline_wat, compile_inline_wat_calls, compile_inline_wat_full, inline_wat_unclassified_instructions
+  compile_inline_wat,
+  compile_inline_wat_array_params,
+  compile_inline_wat_calls,
+  compile_inline_wat_full,
+  inline_wat_unclassified_instructions
 }
 
 import @vibe/compiler/codegen/common_base {
   codegen_body_cache_new, empty_dbg_prov
+}
+
+import @vibe/compiler/runtime {
+  check_inline_wasm_fns
 }
 
 //# Functions
@@ -88,6 +96,35 @@ fn call_err(wat: String) -> String {
 fn call_bytes(wat: String) -> Bytes with Exception {
   let (out, _n32, _n64, _nv) = compile_inline_wat_calls("probe", wat, ["a", "b"], 3, iw_test_callees())
   out
+}
+
+/// #2348 part 2: assemble with `xs` declared `Array[Int]` and `n` an ordinary
+/// `Int`, the shape a kernel over a real array takes.
+fn arr_bytes(wat: String) -> Bytes with Exception {
+  let (out, _n32, _n64, _nv) = compile_inline_wat_array_params("probe", wat, [
+    "xs",
+    "n"
+  ], ["xs"], 3, iw_test_callees())
+  out
+}
+
+fn arr_err(wat: String) -> String {
+  handle {
+    let _ = arr_bytes(wat)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+/// The `vibe check` lane's answer for `src` — "" when every inline-wasm fn in
+/// it assembles, otherwise the first located error. Same assembler entry
+/// codegen takes, reached the way `collect_all_diagnostics` reaches it.
+fn check_lane_err(src: String) -> String {
+  handle {
+    match check_inline_wasm_fns(parse_program(lex(src))) {
+      Some(msg) => msg,
+      None => ""
+    }
+  } with { Exception::Throw(msg) => msg }
 }
 
 //# Misc
@@ -663,4 +700,106 @@ test "#2401 inline wasm: the ordinary shapes still assemble" {
   // `result`, where 0 means "pushes nothing" rather than "pushes an unknown",
   // and rejected this valid body for leaving nothing (Codex on #2418).
   assert(wat_err("(local.tee 0 (i64.const 1))") == "")
+}
+
+test "#2348 part 2: local.get of an Array[Int] param masks the RC tag off" {
+  // `local.get 0` then `i64.const -2` then `i64.and` — the body sees the
+  // untagged `[capacity@0][length@4][data_ptr@8]` header address on the RC
+  // lane, and the same address on the bump lane where the pointer is already
+  // even and the mask is a no-op.
+  let masked = arr_bytes("(local.get $xs)")
+  assert(Bytes::length(masked) == 5)
+  assert(masked[0] == 0x20)
+  assert(masked[1] == 0x00)
+  assert(masked[2] == 0x42)
+  // -2 is one signed LEB128 byte.
+  assert(masked[3] == 0x7E)
+  assert(masked[4] == 0x83)
+  let all = arr_bytes("(i64.add (local.get $xs) (i64.const 0))")
+  assert(Bytes::length(all) == 8)
+  assert(all[4] == 0x83)
+  assert(all[7] == 0x7C)
+}
+
+test "#2348 part 2: an ordinary Int param in the same fn is NOT masked" {
+  // The mask follows the declared type, not the position: `n` is the second
+  // param of the same kernel and reads exactly as it always did.
+  let plain = arr_bytes("(local.get $n)")
+  assert(Bytes::length(plain) == 2)
+  assert(plain[0] == 0x20)
+  assert(plain[1] == 0x01)
+  // And a fn with no array params at all assembles byte-identically to the
+  // back-compat entry.
+  let same = compile_inline_wat_array_params("probe", "(local.get $a)", [
+    "a",
+    "b"
+  ], [], 3, iw_test_callees())
+  let (same_bytes, _s32, _s64, _sv) = same
+  assert(Bytes::length(same_bytes) == 2)
+}
+
+test "#2348 part 2: an Array[Int] param is read-only inside the body" {
+  // Writing to the slot would hand the RC epilogue a value it did not
+  // allocate, so both writing forms are refused with the edit that fixes it.
+  let set_err = arr_err("(local.set $xs (i64.const 0)) (local.get $n)")
+  assert(String::index_of(set_err, "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(set_err, "(local $tmp i64)") >= 0)
+  let tee_err = arr_err("(local.tee $xs (i64.const 0))")
+  assert(String::index_of(tee_err, "an Array[Int] param is read-only") >= 0)
+  // The same instruction on the ordinary Int param stays accepted.
+  assert(arr_err("(local.tee $n (i64.const 0))") == "")
+}
+
+test "#2348 part 2: the numeric spelling of an array param behaves identically" {
+  // Keying the mask by `$name` would have let `local.get 0` hand the body the
+  // TAGGED pointer -- a plausible wrong number out of `i32.load offset=4` on
+  // the RC lane, not an error -- and let `local.set 0` overwrite the slot the
+  // RC epilogue drops. Both spellings resolve to the same wasm index, so they
+  // answer the same.
+  let by_name = arr_bytes("(local.get $xs)")
+  let by_index = arr_bytes("(local.get 0)")
+  assert(Bytes::length(by_index) == Bytes::length(by_name))
+  assert(by_index[2] == 0x42)
+  assert(by_index[3] == 0x7E)
+  assert(by_index[4] == 0x83)
+  assert(String::index_of(arr_err("(local.set 0 (i64.const 0)) (local.get $n)"), "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(arr_err("(local.tee 0 (i64.const 0))"), "an Array[Int] param is read-only") >= 0)
+  // The ordinary Int param at index 1 is still untouched either way.
+  assert(Bytes::length(arr_bytes("(local.get 1)")) == 2)
+  assert(arr_err("(local.tee 1 (i64.const 0))") == "")
+}
+
+test "#2348 part 2: the masked read is still typed as one i64" {
+  // The two extra instructions must not disturb the #2401 stack walk: the
+  // body still leaves exactly one i64, and an arity error is still reported.
+  assert(arr_err("(local.get $xs)") == "")
+  let two = arr_err("(local.get $xs) (local.get $n)")
+  assert(String::index_of(two, "leaves 2 value(s)") >= 0)
+  // And a masked array pointer is an i64 where an i32 is required.
+  let wrong = arr_err("(i64.extend_i32_s (local.get $xs))")
+  assert(String::index_of(wrong, "expects i32") >= 0)
+}
+
+test "#2348 part 2: an Array[Int] param is admitted, and only Array[Int]" {
+  assert(compiles_linear("fn k(xs: Array[Int]) -> Int = wasm \"(i64.extend_i32_u (i32.load offset=4 (i32.wrap_i64 (local.get $xs))))\"\nfn use_it() -> Int { k([1, 2]) }"))
+  // The element type is part of the contract, not decoration: an element the
+  // body would have to chase a pointer for is not the flat block this admits.
+  let str_elem = parse_err("fn k(xs: Array[String]) -> Int = wasm \"(i64.const 0)\"")
+  assert(String::index_of(str_elem, "must be typed Int, Bytes, or Array[Int]") >= 0)
+  let bare = parse_err("fn k(xs: Array) -> Int = wasm \"(i64.const 0)\"")
+  assert(String::index_of(bare, "must be typed Int, Bytes, or Array[Int]") >= 0)
+}
+
+test "#2348 part 2: vibe check refuses the same bodies the build refuses" {
+  // #1567's contract for this area: the check lane and codegen must not
+  // disagree about a body, so the array-param knowledge reaches both.
+  let ok = "fn k(xs: Array[Int]) -> Int = wasm \"(i64.extend_i32_u (i32.load offset=4 (i32.wrap_i64 (local.get $xs))))\""
+  assert(check_lane_err(ok) == "")
+  let write = "fn k(xs: Array[Int]) -> Int = wasm \"(local.set $xs (i64.const 0)) (i64.const 0)\""
+  assert(String::index_of(check_lane_err(write), "an Array[Int] param is read-only") >= 0)
+  assert(!compiles_linear(String::concat(write, "\nfn use_it() -> Int { k([1, 2]) }")))
+  // The mask is not free typing: reading the header address as an i32 operand
+  // still needs the explicit wrap, and forgetting it is a located error.
+  let unwrapped = "fn k(xs: Array[Int]) -> Int = wasm \"(i64.extend_i32_u (i32.load offset=4 (local.get $xs)))\""
+  assert(String::index_of(check_lane_err(unwrapped), "expects i32") >= 0)
 }
