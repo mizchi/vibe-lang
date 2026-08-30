@@ -46,6 +46,7 @@ import @vibe/compiler/perceus {
   pa_is_alias_dup,
   pa_is_drop,
   pa_is_dup,
+  pa_is_reuse_token,
   param_is_heap_in_body
 }
 
@@ -6788,6 +6789,8 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
         let rc_drops = array_empty()
         let rc_alias_dups = array_empty()
         let rc_dups = array_empty()
+        let rc_reuse_names = lc_fresh_string_array()
+        let rc_reuse_arities = lc_fresh_int_array()
         let lc_heap_params = lc_fresh_string_array()
         // #715: computed once, unconditionally (regardless of `enable_rc`), and
         // reused below both for the Perceus plan and for the actual codegen call
@@ -6881,6 +6884,12 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
               Array::push(rc_alias_dups, pa.name)
             } else if pa_is_dup(pa) {
               Array::push(rc_dups, pa.name)
+            } else if pa_is_reuse_token(pa) {
+              // ADR-0092 / #2389: plan-side reuse candidates; the arity
+              // rides in `extra`. PaReuseAlloc rows are informational here
+              // (the consuming site is found while compiling the arm).
+              Array::push(rc_reuse_names, pa.name)
+              Array::push(rc_reuse_arities, pa.extra)
             } else {
               ()
             }
@@ -7003,6 +7012,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
           loop_consumed_names: lc_fresh_string_array(),
           reuse_scrutinee_names: lc_fresh_string_array(),
           reuse_flag_locals: lc_fresh_int_array(),
+          rc_reuse_token_names: rc_reuse_names,
+          rc_reuse_token_arities: rc_reuse_arities,
+          reuse_tok_locals: lc_fresh_int_array(),
+          reuse_tok_arities: lc_fresh_int_array(),
+          reuse_tok_emitted: lc_fresh_int_array(),
           borrow_ret_names: lc_borrow_ret_names,
           borrow_param_user: lc_borrow_param_user_srt,
           borrow_param_mask: lc_borrow_param_mask,

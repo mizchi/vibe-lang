@@ -143,6 +143,60 @@ Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が
   drop specialization の残り site 系統(match 内 drop 等)、KPI 再計測は
   各段で #1262 に記録。
 
+## Implementation notes (2026-08-30, #2389): plan-level pairing + wide fusion
+
+The planner vocabulary landed. `PerceusActionKind` gained
+`PaReuseToken`/`PaReuseAlloc` (pattern/constructor arity carried in the new
+`extra` field of the transparent `PerceusAction`), emitted as a post-pass of
+`build_perceus_plan_with_params_split` for every `match <ident>` whose
+scrutinee has a planned drop and whose arm (a) decomposes with an
+all-PBind/PWild `PCtor` pattern whose every bind is consumed exactly once
+AND owes the plan no action of its own, (b) never mentions the scrutinee
+again, (c) contains no control transfer that could skip the arm's tail
+(return/break/continue/perform; a lambda interior is exempt), and (d) ends
+through any let spine in a call of the same arity. `vibe rc-plan` prints the
+pair as `reuse_token`/`reuse_alloc` rows; the bump and wasm-gc lanes ignore
+the kinds entirely.
+
+The RC codegen consumes the candidates as the **wide fusion**
+(`mr_reuse_wide_eligible`/`mr_compile_reuse_arm_wide`,
+`compile_match.vibe`): where the Phase-1 narrow path declines because the
+arm's let spine carries planned RC actions (the compiler's own rebuild hot
+shape — tracked intermediates), the wide path stages the token with the
+SAME prelude as the narrow one (raw payload binds, shadow-lane probe,
+rc-word uniqueness test, flag set), then compiles the arm body through the
+ORDINARY expression machinery with the token armed on the ctx stacks
+(`reuse_tok_locals`/`_arities`/`_emitted`), and `compile_call`'s
+constructor path allocates from the token at the first same-arity site —
+`token == 0` (shared path, or an earlier site consumed it) falls into the
+byte-identical fresh emission. The spine-tail constructor is the guaranteed
+consumer, so an armed token cannot leak, and an armed-but-never-emitted
+token is a compile-time error rather than a silent leak. The narrow path
+keeps precedence, so previously fused arms stay byte-identical.
+
+Two deliberate exclusions, both measured against the compiler's own plan
+output rather than guessed:
+
+- **Borrow-classified callees decline.** `let a2 = walk(a)` where `walk`
+  is in the borrow-param ABI leaves the pattern bind `a` a plan-side
+  scope-end drop the raw ownership transfer would not honor; both the
+  planner (action-free-binds requirement) and the codegen (bind not in
+  rc_drop/dup/alias names) refuse, so the accounting the plan committed to
+  is never broken. Extending the transfer to emit those drops at arm end is
+  the next slice — it is where the compiler's own arms mostly live.
+- **Scalar-payload rebuilds decline** (`Leaf(v) => Leaf(v + 1)`): a scalar
+  bind's consume count is 0, and without type knowledge the planner cannot
+  distinguish it from an unused heap payload, which would leak on the
+  unique path.
+
+Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
+semantics, ineligible shapes) and `tests/perceus_reuse_e2e_test.vibe`
+(bump/RC output agreement on the unique chain, the shared source surviving
+intact, and the tracked-spine arm where an interior same-arity constructor
+consumes the token before the tail and the reused block is then dropped —
+plus a non-vacuity check that the rc-word uniqueness-test constant appears
+in the RC wasm and not the bump wasm).
+
 ## Implementation notes (2026-08-03, #1262 continued)
 
 ### 計測手順の訂正 — `selfcompile_kpi_rc_lane.sh` は ratio を過小に出していた

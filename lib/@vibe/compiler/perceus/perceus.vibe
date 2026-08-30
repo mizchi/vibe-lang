@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, md_borrow_mask_of
+  collect_free_vars, md_borrow_mask_of, md_consume_count_pre, md_shadow_zeroed_bmasks
 }
 
 import @vibe/core {
@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, borrow_ret_builtin_names, bsearch_leftmost, is_exception_throw_operation, sorted_names_of
+  Expr, Pat, Stmt, TypeExpr, borrow_ret_builtin_names, bsearch_leftmost, expr_children, is_exception_throw_operation, sorted_names_of
 }
 
 //# Types
@@ -22,7 +22,19 @@ export enum PerceusActionKind {
   // reference. Keyed by the ALIAS name `a` (not the source), which makes it
   // occurrence-precise without tree-order bookkeeping: the codegen dups the
   // source exactly at `let a = …`. (docs/spec/selfhost-rc-port.md)
-  PaAliasDup
+  PaAliasDup;
+  // ADR-0092 / #2389 reuse pairing. `PaReuseToken(name)` marks a binding
+  // whose planned drop is a candidate to become a reuse token when it is
+  // consumed by a match arm that decomposes it (all-PBind/PWild pattern,
+  // each PBind consumed exactly once, scrutinee otherwise unused);
+  // `PaReuseAlloc(name)` marks that the same arm's spine-tail constructor
+  // call has the SAME arity and may allocate from the token. Both carry the
+  // arity in `extra`. The pairing is a PLAN-side candidate: the RC codegen
+  // re-validates against the ctor table (constructor-ness, float fields)
+  // and stages the runtime rc==1 test; the bump and wasm-gc lanes ignore
+  // both kinds entirely, so a pair degrades to today's drop + fresh alloc.
+  PaReuseToken;
+  PaReuseAlloc
 }
 
 // PerceusAction is defined transparently in this package's contract
@@ -122,9 +134,20 @@ fn pe_push_for(ctx: PCtx, kind: PerceusActionKind, name: String, binding_id: Int
     kind: kind,
     name: name,
     binding_id: binding_id,
-    use_offset: use_offset
+    use_offset: use_offset,
+    extra: 0
   })
   0
+}
+
+fn pr_push_reuse(actions: Array[PerceusAction], kind: PerceusActionKind, name: String, arity: Int) -> Unit {
+  Array::push(actions, PerceusAction::{
+    kind: kind,
+    name: name,
+    binding_id: 0 - 1,
+    use_offset: 0,
+    extra: arity
+  })
 }
 
 fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> Int {
@@ -257,8 +280,21 @@ fn copy_ints(src: Array[Int]) -> Array[Int] {
 export fn pa_is_dup(a: PerceusAction) -> Bool {
   match a.kind {
     PaDup => true,
-    PaDrop => false,
-    PaAliasDup => false
+    _ => false
+  }
+}
+
+export fn pa_is_reuse_token(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaReuseToken => true,
+    _ => false
+  }
+}
+
+export fn pa_is_reuse_alloc(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaReuseAlloc => true,
+    _ => false
   }
 }
 
@@ -300,8 +336,7 @@ fn pat_names(pat: Pat, out: Array[String]) -> Int {
 export fn pa_is_drop(a: PerceusAction) -> Bool {
   match a.kind {
     PaDrop => true,
-    PaDup => false,
-    PaAliasDup => false
+    _ => false
   }
 }
 
@@ -1337,8 +1372,7 @@ fn analyze_calls(name: String, e_in: Expr, env_in: Map[String, Bool], calls: Arr
 export fn pa_is_alias_dup(a: PerceusAction) -> Bool {
   match a.kind {
     PaAliasDup => true,
-    PaDup => false,
-    PaDrop => false
+    _ => false
   }
 }
 
@@ -2756,6 +2790,192 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
   }
 }
 
+//# ADR-0092 / #2389: plan-level reuse pairing.
+//
+// Post-pass over the function body: every `match <ident>` whose scrutinee
+// has a planned drop is scanned for arms that (a) decompose the value with
+// an all-PBind/PWild `PCtor` pattern whose every PBind is consumed exactly
+// once, (b) never mention the scrutinee again, (c) contain no control
+// transfer that could skip the arm's tail (return/break/continue/perform
+// -- a lambda's interior is exempt: its body runs in its own frame), and
+// (d) end (through any let spine) in a call of the SAME arity as the
+// pattern -- the same-size constructor rebuild FBIP targets. Such an arm
+// gets a PaReuseToken/PaReuseAlloc pair (arity in `extra`). Constructor-
+// ness and float-field layout are NOT known here (no ctor table in the
+// planner); the RC codegen re-validates both and quietly declines, so a
+// false candidate costs nothing and a printed pair in `vibe rc-plan` reads
+// as "candidate", never as a promise.
+
+fn reuse_spine_tail(e: Expr) -> Expr {
+  match e {
+    ELet(_, _, lbody, _) => reuse_spine_tail(lbody),
+    _ => e
+  }
+}
+
+/// Any node that can transfer control past the arm's spine tail. EFn does
+/// not recurse: a return/perform inside a lambda leaves the LAMBDA, not
+/// this arm, and the lambda body compiles in its own frame with its own
+/// (empty) token state.
+fn reuse_arm_has_blocker(e: Expr) -> Bool {
+  match e {
+    EReturn(_) => true,
+    EBreak(_) => true,
+    EContinue(_) => true,
+    EFn(_, _, _, _, _, _) => false,
+    ECall(callee, args, _) => {
+      let callee_blocks = match callee {
+        EIdent(f, _) => f == "perform" || is_exception_throw_operation(f) || f == "throw",
+        _ => reuse_arm_has_blocker(callee)
+      }
+      if callee_blocks {
+        true
+      } else {
+        let mut i = 0
+        let mut found = false
+        while !found && i < Array::length(args) {
+          if reuse_arm_has_blocker(Array::get(args, i)) {
+            found = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        found
+      }
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut found = false
+      while !found && i < Array::length(kids) {
+        if reuse_arm_has_blocker(Array::get(kids, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_param_fns: Array[String], borrow_param_masks: Array[Int], action_names: Array[String]) -> Int {
+  match pat {
+    PCtor(_, pargs) => {
+      let arity = Array::length(pargs)
+      let tail = reuse_spine_tail(arm_body)
+      let tail_ok = match tail {
+        ECall(callee, targs, _) => match callee {
+          EIdent(_, _) => Array::length(targs) == arity,
+          _ => false
+        },
+        _ => false
+      }
+      if arity >= 1 && tail_ok && !reuse_arm_has_blocker(arm_body) {
+        let bmasks = md_shadow_zeroed_bmasks(arm_body, borrow_param_fns, borrow_param_masks)
+        let mut ok = true
+        let mut i = 0
+        while ok && i < arity {
+          match Array::get(pargs, i) {
+            // A payload bind must be consumed EXACTLY once AND owe the plan
+            // no action of its own (a borrow-classified callee leaves the
+            // bind with a scope-end drop; raw ownership transfer would then
+            // break the accounting the plan already committed to -- the
+            // borrow-callee extension is a separate slice). Name-keyed
+            // against the whole fn's action names, so a same-named binding
+            // elsewhere declines conservatively.
+            PBind(bn) => if md_consume_count_pre(arm_body, bn, borrow_param_fns, bmasks) != 1 || name_in(action_names, bn) {
+              ok = false
+            } else {
+              ()
+            },
+            PWild => (),
+            _ => ok = false
+          }
+          i = i + 1
+        }
+        let no_params: Array[String] = []
+        let no_fns: Array[String] = []
+        if ok && !name_in(collect_free_vars(arm_body, no_params, no_fns), sname) {
+          arity
+        } else {
+          0 - 1
+        }
+      } else {
+        0 - 1
+      }
+    },
+    _ => 0 - 1
+  }
+}
+
+fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], action_names: Array[String], actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
+  match e {
+    EMatch(scrut, arms) => {
+      match scrut {
+        EIdent(sname, _) => if name_in(drop_names, sname) {
+          let mut ai = 0
+          while ai < Array::length(arms) {
+            let (apat, abody) = Array::get(arms, ai)
+            let arity = reuse_arm_candidate_arity(sname, apat, abody, borrow_param_fns, borrow_param_masks, action_names)
+            if arity >= 1 {
+              pr_push_reuse(actions, PaReuseToken, sname, arity)
+              pr_push_reuse(actions, PaReuseAlloc, sname, arity)
+            } else {
+              ()
+            }
+            ai = ai + 1
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let kids = expr_children(e)
+      let mut i = 0
+      while i < Array::length(kids) {
+        plan_reuse_pairs_walk(Array::get(kids, i), drop_names, action_names, actions, borrow_param_fns, borrow_param_masks)
+        i = i + 1
+      }
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      while i < Array::length(kids) {
+        plan_reuse_pairs_walk(Array::get(kids, i), drop_names, action_names, actions, borrow_param_fns, borrow_param_masks)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
+  let drop_names: Array[String] = []
+  let action_names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(actions) {
+    let a = Array::get(actions, i)
+    if pa_is_drop(a) && !name_in(drop_names, a.name) {
+      Array::push(drop_names, a.name)
+    } else {
+      ()
+    }
+    if !name_in(action_names, a.name) {
+      Array::push(action_names, a.name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(drop_names) > 0 {
+    plan_reuse_pairs_walk(body, drop_names, action_names, actions, borrow_param_fns, borrow_param_masks)
+  } else {
+    ()
+  }
+}
+
 /// Build the plan for a function whose parameters are owned heap values. Params
 /// are declared as bindings (in count + emit lockstep, same ids) so the existing
 /// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
@@ -2821,6 +3041,11 @@ export fn build_perceus_plan_with_params_split(params: Array[(String, Option[Typ
     pe_scope_end(ctx, Array::get(param_ids, pk), pname)
     pk = pk + 1
   }
+  // ADR-0092 / #2389: append the reuse-pairing candidates AFTER the
+  // param-drop suffix -- out_param_drop_start's "drops from here on are the
+  // params' own" contract only speaks about drops, and reuse rows are
+  // neither drops nor dups, so every existing consumer skips them.
+  plan_reuse_pairs(body, ctx.actions, borrow_param_fns, borrow_param_masks)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.

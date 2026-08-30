@@ -1,0 +1,92 @@
+//# Imports
+
+// ADR-0092 / #2389: end-to-end semantics of the plan-guided wide reuse.
+// Each program compiles through BOTH the bump lane and the RC lane of THIS
+// checkout's codegen and runs under wasmtime (the printed entry return
+// value is the oracle, codegen_heap_e2e_test's convention). The shapes
+// cover the unique path (in-place reuse), the shared path (the source
+// value must stay intact), and a tracked-spine arm the narrow Phase 1
+// fusion declines (a spine let with a planned drop), where the interior
+// same-arity constructor consumes the token before the tail.
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_reuse_e2e_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_bump_rc_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
+  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  inspect(bump, content = expected)
+  inspect(rc, content = expected)
+  0
+}
+
+/// `i32.const 16777217` (opcode 0x41 + sLEB 0x81 0x80 0x80 0x08): the
+/// rc-word uniqueness test's immediate.
+fn contains_token_test(b: Bytes) -> Bool {
+  let n = Bytes::length(b)
+  let mut i = 0
+  let mut found = false
+  while !found && i + 4 < n {
+    if Bytes::get(b, i) == 65 && Bytes::get(b, i + 1) == 129 && Bytes::get(b, i + 2) == 128 && Bytes::get(b, i + 3) == 128 && Bytes::get(b, i + 4) == 8 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn tree_prelude() -> String {
+  "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec build: (Int) -> Node = (d) -> {\n  if d <= 0 {\n    Leaf(1)\n  } else {\n    Pair(build(d - 1), build(d - 1))\n  }\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n"
+}
+
+test "unique rebuild chain: in-place reuse answers like the bump lane" {
+  let src = String::concat(tree_prelude(), "let rec incr: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = incr(a)\n      let b2 = incr(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  total(incr(incr(build(6))))\n}")
+  assert_bump_rc_agree(src, "unique_chain", "192")
+}
+
+test "shared source survives a rebuild untouched" {
+  let src = String::concat(tree_prelude(), "let rec incr: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = incr(a)\n      let b2 = incr(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(4)\n  let r = incr(t)\n  total(t) * 1000 + total(r)\n}")
+  assert_bump_rc_agree(src, "shared_src", "16032")
+}
+
+test "tracked-spine arm: interior consumer plus dropped intermediate stays correct" {
+  // `let l = Pair(a2, a2)` gives the spine a planned drop (l is unused), so
+  // the narrow fusion declines and the wide path stages the token; the
+  // interior Pair is a same-arity site and consumes it FIRST, the reused
+  // block is then dropped with `l`, and the tail allocates fresh. Every
+  // reference count in that dance must balance for bump and RC to agree.
+  // The `incr(Leaf(0))` call passes a non-ident argument, which disqualifies
+  // incr's position 0 from the borrow-param ABI program-wide -- the binds
+  // then genuinely CONSUME, which is what the wide fusion's ownership
+  // transfer requires (a borrow-classified callee leaves the binds plan-side
+  // drops and both the planner and the codegen decline).
+  let src = String::concat(tree_prelude(), "let rec incr: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = incr(a)\n      let l = Pair(a2, a2)\n      let b2 = incr(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(5)\n  let r = incr(t)\n  let z = incr(Leaf(0))\n  total(t) * 1000 + total(r) + total(z)\n}")
+  assert_bump_rc_agree(src, "tracked_spine", "32065")
+  // Non-vacuity: the wide fusion is the ONLY thing in this program that can
+  // emit the rc-word uniqueness test (`i32.const 16777217`; the narrow
+  // fusion declines every arm here -- the rebuild spine carries a planned
+  // drop, and no other arm is a rebuild). Its LEB spelling in the RC wasm
+  // proves the token staging fired rather than the arm quietly taking the
+  // normal path.
+  let rc_wasm = compile_wasi_rc(src, "main")
+  assert(contains_token_test(rc_wasm))
+  // ...and the bump lane must NOT contain it (tokens are an RC-only device).
+  let bump_wasm = compile_wasi(src, "main")
+  assert(!contains_token_test(bump_wasm))
+}

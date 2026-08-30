@@ -584,6 +584,197 @@ fn mr_binds_before(pargs: Array[Pat], idx: Int) -> Int {
   n
 }
 
+//# ADR-0092 / #2389: plan-guided WIDE reuse. The narrow fusion above needs
+//# an action-free let spine; the wide path lifts that restriction by
+//# compiling the arm body through the ORDINARY machinery with the token
+//# armed on the ctx stacks, and letting compile_call's constructor path
+//# consume it at the first same-arity allocation. The spine-tail
+//# constructor is the guaranteed consumer (the planner refused arms with
+//# any control transfer that could skip it), so an armed token cannot
+//# leak; an interior same-arity constructor consuming it first is equally
+//# sound -- the token is just a same-size block, and consuming zeroes the
+//# local so later sites allocate fresh.
+
+/// Does the Perceus plan carry a PaReuseToken candidate for (name, arity)?
+fn mr_reuse_plan_has(ctx: CompileCtx, name: String, arity: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(ctx.rc_reuse_token_names) {
+    if Array::get(ctx.rc_reuse_token_names, i) == name && Array::get(ctx.rc_reuse_token_arities, i) == arity {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Wide-fusion eligibility: everything mr_reuse_eligible requires EXCEPT
+/// the action-free let spine and the target ctor's float exclusion -- the
+/// tail constructor compiles through compile_call's ordinary path, whose
+/// stores are byte-identical between a fresh block and a reused one. The
+/// SOURCE pattern's float exclusion stays (the raw payload binds below
+/// bypass bind_match_pat's float_local_slots registration). Additionally
+/// gated on the plan's PaReuseToken candidate, whose analysis also proved
+/// the arm free of control transfers that could skip the tail. Returns the
+/// pattern arity, or -1.
+fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> Int with Exception {
+  let mr_tail = mr_spine_tail(body)
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 {
+    let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
+    let pargs = get_pctor_args(p)
+    let arity = Array::length(pargs)
+    if get_eident_name(scrutinee) == sname && mr_reuse_plan_has(ctx, sname, arity) {
+      let callee = get_ecall_callee(mr_tail)
+      if arity >= 1 && is_eident(callee) {
+        let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
+        let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
+        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity {
+          let mut shape_ok = true
+          let mr_bmasks = md_shadow_zeroed_bmasks(body, ctx.borrow_param_user, ctx.borrow_param_mask)
+          let mut fj = 0
+          while fj < arity {
+            let pa = Array::get(pargs, fj)
+            if ctor_field_is_float(ctx, src_ci, fj) {
+              shape_ok = false
+            } else if is_pbind(pa) {
+              // Consumed exactly once AND action-free in the plan: a
+              // borrow-classified callee leaves the bind a scope-end drop
+              // the raw ownership transfer below would not honor (the
+              // borrow-callee extension is a separate slice).
+              let __wbn = get_pbind_name(pa)
+              if md_consume_count_pre(body, __wbn, ctx.borrow_param_user, mr_bmasks) != 1 || array_contains_str(ctx.rc_drop_names, __wbn) || array_contains_str(ctx.rc_dup_names, __wbn) || array_contains_str(ctx.rc_alias_dup_names, __wbn) {
+                shape_ok = false
+              } else {
+                ()
+              }
+            } else if is_pwild(pa) {
+              ()
+            } else {
+              shape_ok = false
+            }
+            fj = fj + 1
+          }
+          let __no_params: Array[String] = []
+          let __no_fns: Array[String] = []
+          if shape_ok && !array_contains_str(collect_free_vars(body, __no_params, __no_fns), sname) {
+            arity
+          } else {
+            0 - 1
+          }
+        } else {
+          0 - 1
+        }
+      } else {
+        0 - 1
+      }
+    } else {
+      0 - 1
+    }
+  } else {
+    0 - 1
+  }
+}
+
+/// Compile a wide-eligible arm: the token-staging prelude is byte-for-byte
+/// the narrow path's steps 1-3 (raw payload binds; the shadow-lane
+/// dup+drop probe; the rc-word uniqueness test that either keeps the block
+/// as `__reuse_tk` -- dropping PWild children we now own -- or dups the
+/// PBind payloads, releases the shared reference, and zeroes the token;
+/// the flag set so the staging ELet skips its scope-end drop). The body
+/// then compiles through the ORDINARY expression machinery with the token
+/// armed on the ctx stacks; compile_call's constructor path consumes it.
+/// A token no site could consume is a compile-time error -- by
+/// construction the spine-tail constructor consumes it, so this throwing
+/// means the eligibility and the emission disagree, never a user error.
+fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag_local: Int, arity: Int, local_names: Array[String], ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let pargs = get_pctor_args(pat)
+  let mut bi = 0
+  while bi < arity {
+    let pa = Array::get(pargs, bi)
+    if is_pbind(pa) {
+      let bl = Array::length(local_names)
+      emit_local_get(buf, scrut_local)
+      emit_i64_const(buf, 0 - 2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 8 + bi * 8)
+      emit_local_set(buf, bl)
+      Array::push(local_names, get_pbind_name(pa))
+    } else {
+      ()
+    }
+    bi = bi + 1
+  }
+  if ctx.rc_shadow {
+    emit_rc_dup_guarded(buf, scrut_local, true, ctx.rc_dup_func_idx)
+    emit_local_get(buf, scrut_local)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+  let tk = Array::length(local_names)
+  Array::push(local_names, "__reuse_tk")
+  emit_local_get(buf, scrut_local)
+  emit_i64_const(buf, 0 - 2)
+  emit_i64_and(buf)
+  emit_i64_const(buf, 8)
+  emit_i64_sub(buf)
+  emit_local_set(buf, tk)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 4)
+  emit_i32_const(buf, 16777217)
+  emit_i32_eq(buf)
+  emit_if_void(buf)
+  let mut wj = 0
+  while wj < arity {
+    if is_pwild(Array::get(pargs, wj)) {
+      emit_local_get(buf, tk)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 16 + wj * 8)
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      ()
+    }
+    wj = wj + 1
+  }
+  emit_else(buf)
+  let mut dj = 0
+  while dj < arity {
+    if is_pbind(Array::get(pargs, dj)) {
+      let nbinds_before = mr_binds_before(pargs, dj)
+      emit_rc_dup_guarded(buf, tk - mr_bind_count(pargs) + nbinds_before, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    } else {
+      ()
+    }
+    dj = dj + 1
+  }
+  emit_local_get(buf, scrut_local)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, tk)
+  emit_end(buf)
+  emit_i64_const(buf, 1)
+  emit_local_set(buf, flag_local)
+  Array::push(ctx.reuse_tok_locals, tk)
+  Array::push(ctx.reuse_tok_arities, arity)
+  Array::push(ctx.reuse_tok_emitted, 0)
+  let nl2 = ce(buf, body, local_names, Array::length(local_names), ctx, ld)
+  let __rt_at = Array::length(ctx.reuse_tok_emitted) - 1
+  let __rt_emitted = Array::get(ctx.reuse_tok_emitted, __rt_at)
+  Array::truncate(ctx.reuse_tok_locals, __rt_at)
+  Array::truncate(ctx.reuse_tok_arities, __rt_at)
+  Array::truncate(ctx.reuse_tok_emitted, __rt_at)
+  if __rt_emitted == 0 {
+    throw("internal: ADR-0092 wide reuse armed a token no constructor site consumed -- eligibility and emission disagree")
+  } else {
+    ()
+  }
+  nl2
+}
+
 /// Emit `n` guarded rc_dups of `local_idx` (one per owning consume of a matched
 /// field; see md_consume_count). n<=0 emits nothing.
 fn emit_rc_dup_guarded_n(buf: Bytes, local_idx: Int, n: Int, rc_shadow: Bool, dup_fn_idx: Int) -> Unit {
@@ -1347,8 +1538,18 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
         let __mr_flag = Array::get(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
         mr_compile_reuse_arm(buf, __arm_body, __cond_p, scrut_local, __mr_flag, Array::length(get_pctor_args(__cond_p)), __mr_ci, local_names, ctx, ld_arm, ce)
       } else {
-        bind_match_pat(buf, scrut_local, __cond_p, true, local_names, ctx, __arm_body, md_shadow_zeroed_bmasks(__arm_body, ctx.borrow_param_user, ctx.borrow_param_mask))
-        ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
+        // ADR-0092 / #2389: the wide fusion covers arms the narrow path
+        // declines because their let spine carries planned RC actions --
+        // the compiler's own rebuild hot path. Narrow keeps precedence so
+        // previously fused arms stay byte-identical.
+        let __mr_wci = mr_reuse_wide_eligible(__cond_p, __arm_body, __match_scrutinee, ctx)
+        if __mr_wci >= 0 {
+          let __mr_wflag = Array::get(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
+          mr_compile_reuse_arm_wide(buf, __arm_body, __cond_p, scrut_local, __mr_wflag, __mr_wci, local_names, ctx, ld_arm, ce)
+        } else {
+          bind_match_pat(buf, scrut_local, __cond_p, true, local_names, ctx, __arm_body, md_shadow_zeroed_bmasks(__arm_body, ctx.borrow_param_user, ctx.borrow_param_mask))
+          ce(buf, __arm_body, local_names, Array::length(local_names), ctx, ld_arm)
+        }
       }
     } else if is_ptuple(__cond_p) {
       // A bare tuple arm pattern with literal siblings (`(false, n) => ..`):

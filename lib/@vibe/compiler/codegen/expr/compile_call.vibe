@@ -1557,21 +1557,60 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       }
       if ctx.enable_rc {
         let total = 16 + fc * 8
-        emit_i64_const(buf, total)
-        emit_call(buf, ctx.rc_alloc_func_idx)
-        emit_local_set(buf, ptr_local)
-        emit_local_get(buf, ptr_local)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, total)
-        emit_i32_store(buf, 2, 0)
-        emit_local_get(buf, ptr_local)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store(buf, 2, 4)
-        emit_local_get(buf, ptr_local)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 1)
-        emit_i32_store8(buf, 0, 7)
+        // ADR-0092 / #2389 (plan-guided wide reuse): while a same-arity
+        // token is armed (compile_match staged the unique scrutinee block
+        // of the enclosing rebuild arm), allocate from it. The token local
+        // is 0 on the shared path and after an earlier site consumed it;
+        // either way the fresh branch below is byte-identical to the
+        // unarmed emission, and a reused block only needs the tag/arity
+        // rewrite -- its size, rc word, and class byte are already exactly
+        // a fresh same-size block's.
+        let __rt_top = Array::length(ctx.reuse_tok_locals) - 1
+        let __rt_use = __rt_top >= 0 && Array::get(ctx.reuse_tok_arities, __rt_top) == fc
+        if __rt_use {
+          Array::set(ctx.reuse_tok_emitted, __rt_top, Array::get(ctx.reuse_tok_emitted, __rt_top) + 1)
+          let __rt_tok = Array::get(ctx.reuse_tok_locals, __rt_top)
+          emit_local_get(buf, __rt_tok)
+          emit_i64_eqz(buf)
+          emit_if_void(buf)
+          emit_i64_const(buf, total)
+          emit_call(buf, ctx.rc_alloc_func_idx)
+          emit_local_set(buf, ptr_local)
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, total)
+          emit_i32_store(buf, 2, 0)
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 1)
+          emit_i32_store(buf, 2, 4)
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 1)
+          emit_i32_store8(buf, 0, 7)
+          emit_else(buf)
+          emit_local_get(buf, __rt_tok)
+          emit_local_set(buf, ptr_local)
+          emit_i64_const(buf, 0)
+          emit_local_set(buf, __rt_tok)
+          emit_end(buf)
+        } else {
+          emit_i64_const(buf, total)
+          emit_call(buf, ctx.rc_alloc_func_idx)
+          emit_local_set(buf, ptr_local)
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, total)
+          emit_i32_store(buf, 2, 0)
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 1)
+          emit_i32_store(buf, 2, 4)
+          emit_local_get(buf, ptr_local)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 1)
+          emit_i32_store8(buf, 0, 7)
+        }
         emit_local_get(buf, ptr_local)
         emit_i32_wrap_i64(buf)
         emit_i32_const(buf, tag)
