@@ -2874,6 +2874,51 @@ export fn reuse_arm_has_blocker(e: Expr) -> Bool {
   }
 }
 
+/// Every occurrence of `name` as an identifier in `e`, lambdas and
+/// shadowed regions INCLUDED -- deliberately an overcount. The admission
+/// below compares it against the consume count, and an overcount can only
+/// DECLINE an arm, never admit one whose reads it missed.
+fn reuse_ident_occurrences(e: Expr, name: String) -> Int {
+  match e {
+    EIdent(n, _) => if n == name {
+      1
+    } else {
+      0
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(kids) {
+        acc = acc + reuse_ident_occurrences(Array::get(kids, i), name)
+        i = i + 1
+      }
+      acc
+    }
+  }
+}
+
+/// The admission mode of one payload bind for the reuse fusion: 1 = pure
+/// consume (consumed exactly once and that consume is its ONLY occurrence),
+/// 0 = pure borrow (never consumed; every read precedes the arm-end
+/// release), -1 = inadmissible. A bind with one consume PLUS borrow reads
+/// is refused (PR #2416 review): the raw-transferred child dies at the
+/// consume, so a read sequenced after it -- later spine let, conditional --
+/// would be use-after-free on the unique path. The normal path never has
+/// this hazard (the container outlives the arm), so declining just takes
+/// the normal path. Exported: the narrow and wide codegen tiers re-run the
+/// same predicate on the arm they fuse.
+export fn reuse_bind_mode(arm_body: Expr, bn: String, borrow_param_fns: Array[String], bmasks: Array[Int]) -> Int {
+  let cc = md_consume_count_pre(arm_body, bn, borrow_param_fns, bmasks)
+  if cc == 0 {
+    0
+  } else if cc == 1 && reuse_ident_occurrences(arm_body, bn) == 1 {
+    1
+  } else {
+    0 - 1
+  }
+}
+
 fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_param_fns: Array[String], borrow_param_masks: Array[Int], alias_names: Array[String]) -> Int {
   match pat {
     PCtor(_, pargs) => {
@@ -2903,13 +2948,10 @@ fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_par
             // declines -- aliasing can hide an extra owner the consume
             // count does not see; name-keyed, so a same-named alias
             // elsewhere declines conservatively.
-            PBind(bn) => {
-              let __cc = md_consume_count_pre(arm_body, bn, borrow_param_fns, bmasks)
-              if (__cc != 0 && __cc != 1) || name_in(alias_names, bn) {
-                ok = false
-              } else {
-                ()
-              }
+            PBind(bn) => if reuse_bind_mode(arm_body, bn, borrow_param_fns, bmasks) < 0 || name_in(alias_names, bn) {
+              ok = false
+            } else {
+              ()
             },
             PWild => (),
             _ => ok = false

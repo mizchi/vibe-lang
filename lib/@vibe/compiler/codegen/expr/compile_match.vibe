@@ -29,7 +29,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/perceus {
-  reuse_arm_has_blocker
+  reuse_arm_has_blocker, reuse_bind_mode
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -330,7 +330,12 @@ fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> In
             if ctor_field_is_float(ctx, ci, fj) || ctor_field_is_float(ctx, src_ci, fj) {
               shape_ok = false
             } else if is_pbind(pa) {
-              if md_consume_count_pre(body, get_pbind_name(pa), ctx.borrow_param_user, mr_bmasks) != 1 {
+              // Mode 1 only for the narrow tier (a raw transfer whose
+              // single consume is the bind's ONLY occurrence): a mixed
+              // consume-plus-borrow bind could be read after the consume
+              // freed the transferred child (PR #2416 review); the wide
+              // tier additionally admits mode 0.
+              if reuse_bind_mode(body, get_pbind_name(pa), ctx.borrow_param_user, mr_bmasks) != 1 {
                 shape_ok = false
               } else {
                 ()
@@ -651,18 +656,16 @@ fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) 
             if ctor_field_is_float(ctx, src_ci, fj) {
               shape_ok = false
             } else if is_pbind(pa) {
-              // Consume count 1: ownership transfers raw and the single
-              // consume releases it. Consume count 0 (every use borrows --
-              // e.g. borrow-classified callees): the staging compensates,
-              // dup-skipping it on the shared path (it stays a view of the
-              // still-live block) and the arm end drops it when the block
-              // was unique (the raw transfer's ref nobody consumed). 2+
-              // declines -- the normal path's dup-per-consume has no
-              // raw-transfer equivalent. An alias-bound name declines:
-              // aliasing can hide an owner the consume count doesn't see.
+              // Mode 1 (pure consume: the raw transfer's single consume is
+              // the bind's only occurrence) or mode 0 (pure borrow: the
+              // staging dups it on the shared path and the arm end drops
+              // it on both). A mixed consume-plus-borrow bind is refused
+              // -- a read sequenced after the consume would be
+              // use-after-free on the unique path (PR #2416 review) --
+              // and so is an alias-bound name: aliasing can hide an owner
+              // the consume count doesn't see.
               let __wbn = get_pbind_name(pa)
-              let __wcc = md_consume_count_pre(body, __wbn, ctx.borrow_param_user, mr_bmasks)
-              if (__wcc != 0 && __wcc != 1) || array_contains_str(ctx.rc_alias_dup_names, __wbn) {
+              if reuse_bind_mode(body, __wbn, ctx.borrow_param_user, mr_bmasks) < 0 || array_contains_str(ctx.rc_alias_dup_names, __wbn) {
                 shape_ok = false
               } else {
                 ()
@@ -721,7 +724,7 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   while ci < arity {
     let cpa = Array::get(pargs, ci)
     if is_pbind(cpa) {
-      let __cn = md_consume_count_pre(body, get_pbind_name(cpa), ctx.borrow_param_user, __wcc_bmasks)
+      let __cn = reuse_bind_mode(body, get_pbind_name(cpa), ctx.borrow_param_user, __wcc_bmasks)
       Array::push(bind_consumes, __cn)
       if __cn == 0 {
         has_borrow_bind = true
