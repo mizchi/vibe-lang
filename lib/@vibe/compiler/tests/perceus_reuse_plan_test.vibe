@@ -60,6 +60,19 @@ test "a lifted non-ident scrutinee reports its reuse pair on the lifted temp" {
   assert(String::contains(plan, "crunch __m_scrut_0 reuse_alloc:2 1"))
 }
 
+test "a nested lambda's rebuild match never pairs into the enclosing plan" {
+  // The match lives in the lambda's frame: compile_lambda plans (and may
+  // fuse) it there, while the enclosing plan sees the EFn only as capture
+  // uses. The pairing walk must stop at the EFn boundary -- recursing in
+  // would print the row under `outer` and hand the enclosing codegen a
+  // candidate it cannot realize (#2411 review). `t` is used in outer's own
+  // tail too, so it carries an enclosing-plan drop -- the gate a
+  // lambda-only capture (which moves ownership) never opens.
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet outer: (Node) -> Int = (n) -> {\n  let t = Pair(n, Leaf(1))\n  let f = (x: Int) -> {\n    match t {\n      Pair(a, b) => {\n        let a2 = a\n        let b2 = b\n        Pair(a2, b2)\n      },\n      _ => Leaf(0)\n    }\n  }\n  match t {\n    Pair(_, _) => 1,\n    _ => 0\n  }\n}\nlet main: () -> Int = () -> 0"
+  let plan = plan_of(src)
+  assert(!String::contains(plan, "outer t reuse_token"))
+}
+
 test "a control transfer inside the arm blocks the pairing" {
   // The return can skip the arm's tail, so the token could leak; the
   // planner must decline. A lambda-interior return must NOT block (it
