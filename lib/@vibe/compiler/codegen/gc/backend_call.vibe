@@ -324,7 +324,21 @@ fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> 
     } else {
       false
     },
-    EUnaryOp(op, _) => op == "!" || op == "~",
+    // `!` and `~` are Int/Bool whatever they wrap. `-` and `+` are NOT: they
+    // carry the operand's type, exactly as `+ - * /` do above, so they recurse
+    // -- `bc_expr_is_floatish` already recursed for `-` and this arm did not,
+    // and that asymmetry is the bug: `eq(-(64 << 32), -(65 << 32))` answered
+    // false here, fell through to `String::equals`, and read two negative
+    // integers as packed (ptr, len) pairs. Measured, gc lane: it traps, while
+    // the same values without the negation are fine and the same negation over
+    // small values is fine (the invented address happens to land in bounds).
+    EUnaryOp(op, x) => if op == "!" || op == "~" {
+      true
+    } else if op == "-" || op == "+" {
+      bc_expr_is_intish(x, local_names, ctx)
+    } else {
+      false
+    },
     // #2405: a bare ident has no shape to read, so it is answered from the
     // slot log `gc_compile_let_i64` writes -- resolved through the CURRENT
     // slot (find_local_slot) first, exactly as `bc_expr_is_floatish` above
