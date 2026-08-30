@@ -17,6 +17,15 @@
 # last built together, so regenerating the C parser without rebuilding the wasm
 # moves parser.c's hash off its stamp and fails here.
 #
+# What this gate does NOT prove: that the wasm implements the current grammar.
+# Every value in the comparison lives in the tree, so restamping after a
+# parser-only regeneration makes all three agree while the wasm is still stale
+# (#2422 review reproduced that against this gate). Hashing cannot close it --
+# scripts/check_treesitter_wasm_corpus.sh does, by parsing the corpus with each
+# wasm, and scripts/stamp_treesitter_artifacts.sh refuses to write unless that
+# passes. This gate is the cheap always-on half: it catches the pairing and the
+# ABI without a node install.
+#
 # The second failure this gate catches is the ABI. `tree-sitter-cli` 0.24.x
 # emits `LANGUAGE_VERSION 14` with a `.version` field; everything committed here
 # is 15 with `.abi_version`. Generating with the wrong CLI produces a

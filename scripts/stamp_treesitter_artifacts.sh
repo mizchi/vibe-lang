@@ -1,15 +1,40 @@
 #!/usr/bin/env bash
 # Rewrite integrations/treesitter-vibe/generated.sha256 from the artifacts on
-# disk. Run this ONLY after regenerating all three together -- the stamp is what
-# check_treesitter_artifacts.sh compares against, so restamping a half-rebuilt
-# tree launders exactly the drift that gate exists to catch (#2409).
+# disk, after PROVING the wasm artifacts still parse the corpus correctly.
+#
+# The proof is not optional, and that is the whole design. A stamp is a file in
+# the tree, so "run this only after regenerating all three together" is a
+# convention, and a convention is not a check: regenerating src/parser.c alone
+# and then restamping records the new parser hash beside the unchanged wasm
+# hashes, and check_treesitter_artifacts.sh accepts all three because it only
+# ever compares them with this same rewritable manifest (#2422 review, which
+# reproduced exactly that). Hashing cannot close that -- every value in the
+# comparison is under the same hand.
+#
+# Behaviour is not under that hand. A wasm built before a grammar change parses
+# the new corpus case wrongly, so the corpus check below fails and this script
+# refuses to write. Restamping a half-rebuilt tree is no longer possible.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(dirname "$SCRIPT_DIR")"
+# Overridable ONLY so this script's own red test can stage a stale wasm without
+# putting one in the real tree. Its first attempt did not override it, so the
+# stamper proved the real (green) tree while the scratch copy held the stale
+# artifact -- it "refused" for an unrelated reason and the test recorded a pass
+# that meant nothing. Unset on every real invocation.
+ROOT="${VIBE_TREESITTER_STAMP_ROOT:-$(dirname "$SCRIPT_DIR")}"
 cd "$ROOT"
 
 STAMP="integrations/treesitter-vibe/generated.sha256"
+
+# Refuse before touching the stamp, not after.
+if ! VIBE_TREESITTER_CORPUS_ROOT="$ROOT" bash "$SCRIPT_DIR/check_treesitter_wasm_corpus.sh"; then
+  echo "[stamp-treesitter] REFUSING to stamp: the committed wasm artifacts do not" >&2
+  echo "  parse the corpus the way the grammar says. Rebuild them from the current" >&2
+  echo "  src/ first:  cd integrations/treesitter-vibe && pnpm run build:wasm" >&2
+  echo "  (that script runs this stamper itself once the build succeeds)." >&2
+  exit 1
+fi
 
 sha256_of() {
   if sha256sum </dev/null >/dev/null 2>&1; then
