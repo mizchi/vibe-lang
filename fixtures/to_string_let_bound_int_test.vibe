@@ -1,0 +1,103 @@
+// #2406 regression: an `Int` reaching `__to_string` THROUGH A `let` BINDING
+// must stringify as an integer, exactly as the same expression written
+// inline already did.
+//
+// `__to_string` has no runtime type tag to consult, so it guesses: a value
+// that looks like the packed `(ptr << 32) | len` string encoding is returned
+// unchanged. `ts_known_int`
+// (lib/@vibe/compiler/codegen/expr/compile_call.vibe) is the static override
+// that keeps known integers off that heuristic -- and it had no bare-ident
+// arm, so a `let`-bound integer with a zero low word (the shape a real hash
+// or packed offset takes) was emitted as the EMPTY STRING while the identical
+// expression written inline printed correctly. The classification was already
+// being computed and logged per slot at every `let` site; nothing read it.
+//
+// Linear lane. The gc lane's `gc_expr_is_intish` takes no locals, so it
+// cannot classify an ident even in principle (#2406 fix 2), and a
+// pathological value additionally traps `__to_string` there (#2405).
+
+// Expected renderings are `inspect(value, content)` snapshots, per #1571 --
+// `vibe test --update` can rewrite them if the rendering contract changes.
+// The relational checks stay `assert`: "let-bound agrees with inline" and
+// "two different values render differently" are properties, not snapshots,
+// and a snapshot of either would record the answer while dropping the
+// comparison that makes it mean something.
+
+fn idf(s: String) -> String {
+  s
+}
+
+test "#2406 a let-bound Int with a zero low word stringifies as an Int" {
+  let via_let = ((0 - (64<<32)) - 1)^(0 - 1)
+  inspect(via_let, "274877906944")
+  inspect("\{via_let}", "274877906944")
+}
+
+test "#2406 let-bound and inline agree" {
+  let a = ((0 - (64<<32)) - 1)^(0 - 1)
+  let b = ((0 - (65<<32)) - 1)^(0 - 1)
+  assert(__to_string(a) == __to_string(((0 - (64<<32)) - 1)^(0 - 1)))
+  assert(__to_string(b) == __to_string(((0 - (65<<32)) - 1)^(0 - 1)))
+  assert(__to_string(a) != __to_string(b))
+}
+
+test "#2406 ordinary let-bound ints are unchanged" {
+  let n = 42
+  let m = 1<<40
+  inspect(n, "42")
+  inspect(m, "1099511627776")
+  inspect("\{n}-\{m}", "42-1099511627776")
+}
+
+// The three guards below are what stops the ident arm from being written as
+// `slot_is_intish` (the "bit 0 set" test `expr_is_intish` uses for `==`).
+// That predicate is TRUE for kind 3 (Bool) as well as kind 1 (Int), because
+// Bool and Int share the tagged-int runtime representation -- correct for
+// `==`, wrong for `__to_string`, which must print "false" and not "0".
+// `ts_known_int` reads the kind exactly.
+
+test "#2406 a bool-bound ident still prints true/false" {
+  let f = 1 == 2
+  let t = 1 < 2
+  inspect(f, "false")
+  inspect(t, "true")
+  inspect("\{f}/\{t}", "false/true")
+}
+
+test "#2406 a string-bound ident still prints itself" {
+  let j = String::join([], "-")
+  let s = "hi"
+  inspect(j, "")
+  inspect(s, "hi")
+  inspect("[\{j}]", "[]")
+}
+
+test "#2406 a float-bound ident still prints as a double" {
+  let d = 1.5
+  inspect(d, "1.5")
+}
+
+// D/E/F below are the discriminating guards for the ident arm, not decoration.
+// The arm reads `ctx.int_local_slots`, and `expr_is_intish` -- the predicate
+// that fills that log -- returns true for `EBinOp("+", ..)` whenever neither
+// operand is floatish, which reads on paper as though a String `+` would be
+// logged kind 1 and then forced down the integer path by this very fix.
+// Measured against main's stage2 before the change: it is not. A String-typed
+// `let` gets no kind-1 entry, which `E` and `F` pin from the other side --
+// they would answer `false` (an i64.eq on two distinct string fat-pointers)
+// the moment one did.
+
+test "#2406 a concat-bound ident still prints the string" {
+  let cat = "a" + "b"
+  inspect(cat, "ab")
+}
+
+test "#2406 a concat-bound ident still compares by content" {
+  let cat = "a" + "b"
+  assert(cat == "ab")
+}
+
+test "#2406 a call-concat-bound ident still compares by content" {
+  let cat2 = idf("a") + idf("b")
+  assert(cat2 == "ab")
+}
