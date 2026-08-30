@@ -208,6 +208,46 @@ else
   fails=$((fails + 1))
 fi
 
+# The gate and this self-test are sibling pkfire dependencies and run
+# CONCURRENTLY, so staging is a check-then-act on shared state: both can see
+# nothing installed and race over the same node_modules (#2422 review).
+#
+# The race itself is NOT what this asserts. Six concurrent cold runs passed
+# under the old logic as readily as under the new one -- scheduling decides,
+# so such a case would pass while proving nothing, which is the failure this
+# file exists to avoid. What IS deterministic is the consequence: a second
+# process observing a half-written stage. The marker is what makes that safe,
+# and its absence is exactly what the old presence test could not see.
+echo "[ts-corpus-test] a half-written stage is repaired, not inherited"
+PARTIAL="$WORK/partial_stage"
+rm -rf "$PARTIAL"
+# What an interrupted install leaves behind: the directory and the package path
+# exist, the package does not.
+mkdir -p "$PARTIAL/$(cat "$ROOT/$LOCK_REL" | node -e '
+  const lines = require("node:fs").readFileSync(0, "utf8").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s+web-tree-sitter:\s*$/.test(lines[i])) continue;
+    for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+      const m = /^\s+version:\s*(\S+)\s*$/.exec(lines[j]);
+      if (m) { process.stdout.write(m[1].split("(")[0]); process.exit(0); }
+    }
+  }
+  process.exit(3);
+')/node_modules/web-tree-sitter"
+# Verify the fixture is actually half-written before believing the verdict.
+if [ -n "$(find "$PARTIAL" -name 'package.json' -path '*web-tree-sitter*' 2>/dev/null)" ]; then
+  echo "  BUG in this test: the partial stage contains a real package" >&2
+  fails=$((fails + 1))
+else
+  d="$(fresh_tree partial)"
+  if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$PARTIAL" bash "$GATE" >/dev/null 2>&1; then
+    echo "  ok: the gate reinstalled over a half-written stage"
+  else
+    echo "  FAIL: the gate inherited a half-written stage" >&2
+    fails=$((fails + 1))
+  fi
+fi
+
 echo "[ts-corpus-test] a tree with no lockfile"
 d="$(fresh_tree no_lock)"
 rm -f "$d/$LOCK_REL"

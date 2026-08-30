@@ -82,15 +82,58 @@ esac
 STAGE_KEY="$(printf '%s' "$WTS_SPEC" | tr -c 'A-Za-z0-9._-' '_')"
 STAGE="$STAGE_BASE/$STAGE_KEY"
 
-if [ ! -d "$STAGE/node_modules/web-tree-sitter" ]; then
-  mkdir -p "$STAGE"
+# This gate and its self-test are sibling dependencies, and pkfire runs siblings
+# CONCURRENTLY. A presence test followed by an install is a check-then-act on
+# shared state: both can see nothing installed and then race over the same
+# package.json / node_modules (#2422 review). So the stage is claimed atomically
+# and published with a readiness marker -- `mkdir` either creates the directory
+# or fails, indivisibly, on every POSIX filesystem.
+#
+# The marker is what makes the loser safe. Without it a second process could
+# find a directory that exists but holds a half-written install, which is the
+# same class of bug one level down.
+STAGE_READY="$STAGE/.ready"
+wts_install() {
   echo '{"name":"vibe-wts-stage","private":true}' > "$STAGE/package.json"
   # Never skipped when unavailable. A gate that cannot run has not answered,
   # and "unchecked" must not be able to look like "safe" (#2248).
-  (cd "$STAGE" && npm install --no-audit --no-fund --silent "web-tree-sitter@$WTS_SPEC" >/dev/null 2>&1) \
-    || fail "could not install web-tree-sitter@$WTS_SPEC into $STAGE
+  if ! (cd "$STAGE" && npm install --no-audit --no-fund --silent "web-tree-sitter@$WTS_SPEC" >/dev/null 2>&1); then
+    # Leave no claimed-but-empty stage behind: the next run must be able to
+    # claim it rather than wait forever on a marker that will never appear.
+    rm -rf "$STAGE"
+    fail "could not install web-tree-sitter@$WTS_SPEC into $STAGE
   This gate parses the corpus with the real loader; it does not have a
   degraded mode, because a skipped run and a passing run must not look alike."
+  fi
+  : > "$STAGE_READY"
+}
+
+if [ ! -f "$STAGE_READY" ]; then
+  mkdir -p "$STAGE_BASE"
+  if mkdir "$STAGE" 2>/dev/null; then
+    wts_install
+  else
+    # Someone else claimed it. Wait for their marker rather than touching the
+    # directory. Bounded, and a timeout is a FAILURE, not a quiet fall-through
+    # into a possibly half-installed stage.
+    waited=0
+    while [ ! -f "$STAGE_READY" ] && [ "$waited" -lt 180 ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    if [ ! -f "$STAGE_READY" ]; then
+      # A crashed writer leaves a claimed stage that never becomes ready, which
+      # would wedge every later run. Reclaim it once instead of failing forever.
+      rm -rf "$STAGE"
+      if mkdir "$STAGE" 2>/dev/null; then
+        wts_install
+      else
+        fail "timed out waiting for another process to stage web-tree-sitter in $STAGE
+  This is a toolchain problem, NOT a verdict about the committed artifacts --
+  remove that directory and re-run."
+      fi
+    fi
+  fi
 fi
 
 # The spec is an exact version now, so the staged install can be compared to it
