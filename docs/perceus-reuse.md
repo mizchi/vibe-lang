@@ -191,16 +191,26 @@ claim and the tail leaks without corrupting, the same window the narrow
 fusion's spine calls have always had and the "safe leak, never
 use-after-free" class ADR-0055 accepts on unwind paths.
 
-Two deliberate exclusions, both measured against the compiler's own plan
-output rather than guessed:
+Per-bind admission (the borrow-callee slice, follow-up on the first #2389
+round): a payload bind is admitted at consume count **1** — ownership
+transfers raw and the single consume releases it — or **0**, a bind whose
+every use borrows (e.g. all its callees are borrow-classified, the shape
+the first slice declined and where the compiler's own arms mostly live).
+For a consume-0 bind the codegen compensates on both paths of the SAME
+compiled body: the shared path's staging dup gives the bind its own
+reference (a borrowed view would depend on the OTHER reference surviving
+the arm, which arm code can release — the scrutinee's ref is dropped at
+staging), and an unconditional arm-end drop releases that ref on the
+shared path and the raw-transferred child on the unique path, where
+nothing in the body consumes it and the token overwrite would otherwise
+leak it. Consume counts 2+ decline (dup-per-consume has no raw-transfer
+equivalent), as does an alias-bound name (aliasing can hide an owner the
+consume count does not see). The fusion inside a borrow-classified
+FUNCTION stays impossible by construction — its parameter carries no
+plan drop, so the scrutinee gate never opens on a block the caller owns.
 
-- **Borrow-classified callees decline.** `let a2 = walk(a)` where `walk`
-  is in the borrow-param ABI leaves the pattern bind `a` a plan-side
-  scope-end drop the raw ownership transfer would not honor; both the
-  planner (action-free-binds requirement) and the codegen (bind not in
-  rc_drop/dup/alias names) refuse, so the accounting the plan committed to
-  is never broken. Extending the transfer to emit those drops at arm end is
-  the next slice — it is where the compiler's own arms mostly live.
+One deliberate exclusion, measured against the compiler's own plan
+output rather than guessed:
 - **Scalar-payload rebuilds pair when the bind is consumed once, decline
   when it is not.** Measured (this section previously claimed the
   opposite): `Leaf(v) => Leaf(v + 1)` reads a consume count of 1 for `v`

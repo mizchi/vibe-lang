@@ -651,12 +651,18 @@ fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) 
             if ctor_field_is_float(ctx, src_ci, fj) {
               shape_ok = false
             } else if is_pbind(pa) {
-              // Consumed exactly once AND action-free in the plan: a
-              // borrow-classified callee leaves the bind a scope-end drop
-              // the raw ownership transfer below would not honor (the
-              // borrow-callee extension is a separate slice).
+              // Consume count 1: ownership transfers raw and the single
+              // consume releases it. Consume count 0 (every use borrows --
+              // e.g. borrow-classified callees): the staging compensates,
+              // dup-skipping it on the shared path (it stays a view of the
+              // still-live block) and the arm end drops it when the block
+              // was unique (the raw transfer's ref nobody consumed). 2+
+              // declines -- the normal path's dup-per-consume has no
+              // raw-transfer equivalent. An alias-bound name declines:
+              // aliasing can hide an owner the consume count doesn't see.
               let __wbn = get_pbind_name(pa)
-              if md_consume_count_pre(body, __wbn, ctx.borrow_param_user, mr_bmasks) != 1 || array_contains_str(ctx.rc_drop_names, __wbn) || array_contains_str(ctx.rc_dup_names, __wbn) || array_contains_str(ctx.rc_alias_dup_names, __wbn) {
+              let __wcc = md_consume_count_pre(body, __wbn, ctx.borrow_param_user, mr_bmasks)
+              if (__wcc != 0 && __wcc != 1) || array_contains_str(ctx.rc_alias_dup_names, __wbn) {
                 shape_ok = false
               } else {
                 ()
@@ -702,6 +708,31 @@ fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) 
 /// means the eligibility and the emission disagree, never a user error.
 fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag_local: Int, arity: Int, local_names: Array[String], ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let pargs = get_pctor_args(pat)
+  // Per-bind consume counts (0 or 1, eligibility guarantees it), indexed by
+  // PATTERN position. A consume-1 bind's raw-transferred ref is released by
+  // its one consume; a consume-0 bind's is released by the arm-end
+  // conditional drop below (unique path) or never taken (shared path: the
+  // bind stays a borrowed view of the block the other reference keeps
+  // alive, exactly like bind_match_pat's dup-per-consume model with n=0).
+  let __wcc_bmasks = md_shadow_zeroed_bmasks(body, ctx.borrow_param_user, ctx.borrow_param_mask)
+  let bind_consumes: Array[Int] = []
+  let mut has_borrow_bind = false
+  let mut ci = 0
+  while ci < arity {
+    let cpa = Array::get(pargs, ci)
+    if is_pbind(cpa) {
+      let __cn = md_consume_count_pre(body, get_pbind_name(cpa), ctx.borrow_param_user, __wcc_bmasks)
+      Array::push(bind_consumes, __cn)
+      if __cn == 0 {
+        has_borrow_bind = true
+      } else {
+        ()
+      }
+    } else {
+      Array::push(bind_consumes, 0 - 1)
+    }
+    ci = ci + 1
+  }
   let mut bi = 0
   while bi < arity {
     let pa = Array::get(pargs, bi)
@@ -756,6 +787,12 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   let mut dj = 0
   while dj < arity {
     if is_pbind(Array::get(pargs, dj)) {
+      // EVERY bind is dup'd into ownership on the shared path -- including
+      // a consume-0 one. The scrutinee's reference is dropped right below,
+      // so a bind left as a borrowed view would depend on the OTHER
+      // reference surviving the whole arm, which arm code can release (a
+      // container the arm mutates, say). Owning the ref makes the bind
+      // self-sufficient; the arm-end drop below releases it on both paths.
       let nbinds_before = mr_binds_before(pargs, dj)
       emit_rc_dup_guarded(buf, tk - mr_bind_count(pargs) + nbinds_before, ctx.rc_shadow, ctx.rc_dup_func_idx)
     } else {
@@ -774,6 +811,26 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   Array::push(ctx.reuse_tok_arities, arity)
   Array::push(ctx.reuse_tok_emitted, 0)
   let nl2 = ce(buf, body, local_names, Array::length(local_names), ctx, ld)
+  // Arm-end release of every consume-0 bind's owned ref (raw-transferred on
+  // the unique path, dup'd on the shared path -- both exactly one). Nothing
+  // in the body consumed it; without this the token overwrite leaks the
+  // child on the unique path. Emitted after the body value, which stays on
+  // the wasm stack untouched (rc_drop returns nothing). A scalar payload
+  // no-ops inside rc_drop (even tag).
+  if has_borrow_bind {
+    let mut fj = 0
+    while fj < arity {
+      if is_pbind(Array::get(pargs, fj)) && Array::get(bind_consumes, fj) == 0 {
+        emit_local_get(buf, tk - mr_bind_count(pargs) + mr_binds_before(pargs, fj))
+        emit_call(buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
+      fj = fj + 1
+    }
+  } else {
+    ()
+  }
   let __rt_at = Array::length(ctx.reuse_tok_emitted) - 1
   let __rt_emitted = Array::get(ctx.reuse_tok_emitted, __rt_at)
   Array::truncate(ctx.reuse_tok_locals, __rt_at)
