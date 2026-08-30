@@ -357,14 +357,53 @@ local lintTrackedExperimentNames = new Task {
   cmd = "bash scripts/lint_tracked_experiment_names.sh"
   cache = false
 }
-local checkTreesitterArtifacts =
-  scriptTask("check-treesitter-artifacts", "scripts/check_treesitter_artifacts.sh")
-local testCheckTreesitterArtifacts =
-  scriptTask("test-check-treesitter-artifacts", "scripts/check_treesitter_artifacts_test.sh")
-local checkTreesitterWasmCorpus =
-  scriptTask("check-treesitter-wasm-corpus", "scripts/check_treesitter_wasm_corpus.sh")
-local testCheckTreesitterWasmCorpus =
-  scriptTask("test-check-treesitter-wasm-corpus", "scripts/check_treesitter_wasm_corpus_test.sh")
+// These four read GENERATED ARTIFACTS, which `scriptTask` does not key on: its
+// inputs are the compiler identity plus `scripts/**`, so a changed wasm, corpus
+// or loader manifest is invisible to the cache and a stale verdict could replay
+// (#2422 review). That is the #2165 defect aimed at data instead of at the
+// compiler -- a task still passing, from cache, after the very change it exists
+// to catch. So they are spelled out, and each keys on what it actually reads.
+// `compilerProbeInputs` is kept as the safe over-approximation the ratchet
+// wants: a needless re-run costs time, an under-approximation costs a wrong
+// answer.
+local treesitterArtifactInputs: Listing<String> = new {
+  "integrations/treesitter-vibe/generated.sha256"
+  "integrations/treesitter-vibe/src/parser.c"
+  "playground/public/tree-sitter-vibe.wasm"
+  "integrations/zed-vibe/grammars/vibe.wasm"
+}
+// The corpus gate additionally parses with the loader the playground pins, and
+// its self-test drives a committed stale artifact.
+local treesitterCorpusInputs: Listing<String> = new {
+  ...treesitterArtifactInputs
+  "integrations/treesitter-vibe/test/corpus/*.txt"
+  "integrations/treesitter-vibe/test/fixtures/*.wasm"
+  "playground/package.json"
+}
+local checkTreesitterArtifacts = new Task {
+  name = "check-treesitter-artifacts"
+  description = "the tree-sitter C parser and both wasm artifacts move together, at ABI 15"
+  cmd = "bash scripts/check_treesitter_artifacts.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources; ...treesitterArtifactInputs }
+}
+local testCheckTreesitterArtifacts = new Task {
+  name = "test-check-treesitter-artifacts"
+  description = "red test: the artifact-pairing gate must reject a half-rebuilt tree"
+  cmd = "bash scripts/check_treesitter_artifacts_test.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources; ...treesitterArtifactInputs }
+}
+local checkTreesitterWasmCorpus = new Task {
+  name = "check-treesitter-wasm-corpus"
+  description = "each committed tree-sitter wasm parses the corpus the way the grammar says"
+  cmd = "bash scripts/check_treesitter_wasm_corpus.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources; ...treesitterCorpusInputs }
+}
+local testCheckTreesitterWasmCorpus = new Task {
+  name = "test-check-treesitter-wasm-corpus"
+  description = "red test: the corpus gate must reject a stale wasm, and the stamper must refuse it"
+  cmd = "bash scripts/check_treesitter_wasm_corpus_test.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources; ...treesitterCorpusInputs }
+}
 local checkGatePortability =
   scriptTask("check-gate-portability", "scripts/check_gate_portability.sh")
 local testCheckGatePortability =
