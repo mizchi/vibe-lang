@@ -54,8 +54,9 @@ compares all three against `generated.sha256` and fails when one moves alone.
 Hashing alone would not be enough — `generated.sha256` is a file in the tree, so
 regenerating `src/parser.c` and then restamping makes every hash agree while the
 wasm is still stale. So `scripts/check_treesitter_wasm_corpus.sh` proves each
-wasm by **parsing** `test/corpus/*.txt` with it, using the loader version
-`playground/package.json` pins, and the stamper refuses to write unless that
+wasm by **parsing** `test/corpus/*.txt` with it, using the loader version the
+playground actually ships — the resolution in `playground/pnpm-lock.yaml`, not
+the range in its `package.json` — and the stamper refuses to write unless that
 passes. Behaviour is not rewritable: a wasm built before a grammar change parses
 the new corpus case wrongly.
 

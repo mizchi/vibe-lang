@@ -30,6 +30,7 @@ CORPUS_REL="integrations/treesitter-vibe/test/corpus"
 PLAY_REL="playground/public/tree-sitter-vibe.wasm"
 ZED_REL="integrations/zed-vibe/grammars/vibe.wasm"
 PKG_REL="playground/package.json"
+LOCK_REL="playground/pnpm-lock.yaml"
 
 # Share one web-tree-sitter install across the cases so this stays fast.
 STAGE="$ROOT/_build/.wts"
@@ -42,6 +43,7 @@ fresh_tree() {
   cp "$ROOT/$PLAY_REL" "$d/$PLAY_REL"
   cp "$ROOT/$ZED_REL"  "$d/$ZED_REL"
   cp "$ROOT/$PKG_REL"  "$d/$PKG_REL"
+  cp "$ROOT/$LOCK_REL" "$d/$LOCK_REL"
   # The stamper writes these two, so a tree it is pointed at needs them.
   mkdir -p "$d/integrations/treesitter-vibe/src"
   cp "$ROOT/integrations/treesitter-vibe/src/parser.c" "$d/integrations/treesitter-vibe/src/parser.c"
@@ -154,7 +156,7 @@ fi
 # (#2422 review). Drive both specs against ONE stage base and assert the second
 # run staged the second version -- under the old logic it would still read the
 # first.
-echo "[ts-corpus-test] the loader stage follows the playground's pin"
+echo "[ts-corpus-test] the loader stage follows the playground's LOCKFILE"
 SPEC_STAGE="$WORK/spec_stage"
 d="$(fresh_tree spec_a)"
 if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$SPEC_STAGE" bash "$GATE" >/dev/null 2>&1; then
@@ -162,16 +164,28 @@ if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$SPEC_STAGE" bash "
   # A version this repository does not pin, so reuse of the first stage is
   # visible rather than coincidentally right.
   OTHER="0.25.10"
+  # Mutate the LOCKFILE -- that is what the gate reads, because it is what the
+  # playground ships. The range in package.json is left alone on purpose, so
+  # this case also proves the range is NOT what is followed.
   node -e '
     const fs = require("node:fs");
     const p = process.argv[1];
-    const d = JSON.parse(fs.readFileSync(p, "utf8"));
-    d.dependencies["web-tree-sitter"] = process.argv[2];
-    fs.writeFileSync(p, JSON.stringify(d, null, 2));
-  ' "$d2/$PKG_REL" "$OTHER"
+    const lines = fs.readFileSync(p, "utf8").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!/^\s+web-tree-sitter:\s*$/.test(lines[i])) continue;
+      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+        if (/^\s+version:\s*\S+\s*$/.test(lines[j])) {
+          lines[j] = lines[j].replace(/version:\s*\S+\s*$/, "version: " + process.argv[2]);
+          fs.writeFileSync(p, lines.join("\n"));
+          process.exit(0);
+        }
+      }
+    }
+    process.exit(3);
+  ' "$d2/$LOCK_REL" "$OTHER"
   # Verify the mutation landed before believing anything that follows.
-  if ! grep -q "\"web-tree-sitter\": \"$OTHER\"" "$d2/$PKG_REL"; then
-    echo "  BUG in this test: the pin mutation did not land" >&2
+  if ! grep -q "version: $OTHER" "$d2/$LOCK_REL"; then
+    echo "  BUG in this test: the lockfile mutation did not land" >&2
     fails=$((fails + 1))
   elif VIBE_TREESITTER_CORPUS_ROOT="$d2" VIBE_TREESITTER_WTS_DIR="$SPEC_STAGE" bash "$GATE" >/dev/null 2>&1; then
     staged="$(node -e '
@@ -180,19 +194,24 @@ if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$SPEC_STAGE" bash "
       } catch (e) { process.stdout.write(""); }
     ' "$SPEC_STAGE" "$OTHER" 2>/dev/null)"
     if [ "$staged" = "$OTHER" ]; then
-      echo "  ok: the changed pin staged web-tree-sitter $staged, not the first install"
+      echo "  ok: the changed lockfile staged web-tree-sitter $staged (the range was left at ^0.26.7)"
     else
-      echo "  FAIL: the changed pin did not stage $OTHER (found '$staged')" >&2
+      echo "  FAIL: the changed lockfile did not stage $OTHER (found '$staged')" >&2
       fails=$((fails + 1))
     fi
   else
-    echo "  FAIL: the gate did not run under the changed pin" >&2
+    echo "  FAIL: the gate did not run under the changed lockfile" >&2
     fails=$((fails + 1))
   fi
 else
-  echo "  FAIL: the gate did not run under the repository's own pin" >&2
+  echo "  FAIL: the gate did not run under the repository's own lockfile" >&2
   fails=$((fails + 1))
 fi
+
+echo "[ts-corpus-test] a tree with no lockfile"
+d="$(fresh_tree no_lock)"
+rm -f "$d/$LOCK_REL"
+expect_fail "no lockfile (must not fall back to the range)" "$d"
 
 echo "[ts-corpus-test] a missing artifact"
 d="$(fresh_tree missing)"

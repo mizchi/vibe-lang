@@ -32,15 +32,32 @@ fail() { echo "[treesitter-wasm-corpus] FAIL: $*" >&2; exit 1; }
 # `command -v` lookup and fails this gate for an unrelated reason.
 node --version >/dev/null 2>&1 || fail "node is required to load a tree-sitter wasm grammar"
 
-# The loader version is the PLAYGROUND'S, read from its manifest rather than
-# pinned here -- checking against a different loader than the one that ships
-# would answer a question nobody asked.
+# The loader version is the PLAYGROUND'S -- and specifically the one it SHIPS,
+# which is the resolution in its lockfile, not the range in its manifest. Those
+# differ: `^0.26.7` currently installs 0.26.13 while the playground is locked to
+# 0.26.7, so reading the range would bless the artifacts with a runtime no user
+# receives (#2422 review). Nothing here pins a version of its own; checking
+# against a loader other than the one that ships answers a question nobody
+# asked.
 WTS_SPEC="$(node -e '
-  const d = require("./playground/package.json");
-  const v = (d.dependencies || {})["web-tree-sitter"];
-  if (!v) { process.exit(3); }
-  process.stdout.write(v);
-' 2>/dev/null)" || fail "playground/package.json declares no web-tree-sitter dependency"
+  const fs = require("node:fs");
+  const lines = fs.readFileSync("playground/pnpm-lock.yaml", "utf8").split("\n");
+  // The importers section spells a dependency as three lines:
+  //     web-tree-sitter:
+  //       specifier: <range>
+  //       version: <resolved>
+  // Read the resolved one. pnpm may append peer context in parentheses.
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s+web-tree-sitter:\s*$/.test(lines[i])) continue;
+    for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+      const m = /^\s+version:\s*(\S+)\s*$/.exec(lines[j]);
+      if (m) { process.stdout.write(m[1].split("(")[0]); process.exit(0); }
+    }
+  }
+  process.exit(3);
+' 2>/dev/null)" || fail "cannot read the resolved web-tree-sitter version from playground/pnpm-lock.yaml
+  Refusing to fall back to the RANGE in package.json: that is the defect this
+  reads the lockfile to avoid, and a quiet fallback would hide it."
 
 # Resolved to an absolute path BEFORE it is used. An override may be absolute
 # or relative, and pasting either onto $ROOT produced `/scratch//home/...`,
@@ -76,15 +93,21 @@ if [ ! -d "$STAGE/node_modules/web-tree-sitter" ]; then
   degraded mode, because a skipped run and a passing run must not look alike."
 fi
 
-# Belt as well as braces: a range resolves to different versions over time, so
-# the directory key alone does not pin the actual build. Report which one
-# answered, and refuse if it cannot be read.
+# The spec is an exact version now, so the staged install can be compared to it
+# outright rather than merely reported. The directory key makes a stale stage
+# unreachable; this catches the rest -- a partial install, a hand-edited stage,
+# a registry that served something else.
 WTS_VERSION="$(node -e '
   process.stdout.write(require(process.argv[1] + "/node_modules/web-tree-sitter/package.json").version);
 ' "$STAGE" 2>/dev/null)" || WTS_VERSION=""
 [ -n "$WTS_VERSION" ] || fail "cannot read the staged web-tree-sitter version in $STAGE
   This is a toolchain problem, NOT a verdict about the committed artifacts --
   remove that directory and re-run."
+if [ "$WTS_VERSION" != "$WTS_SPEC" ]; then
+  fail "staged web-tree-sitter $WTS_VERSION, but playground/pnpm-lock.yaml resolves $WTS_SPEC
+  Again a toolchain problem, not a verdict about the artifacts. Remove $STAGE
+  and re-run."
+fi
 
 # Separate "the loader is not usable" from "the artifacts are wrong" while the
 # two can still be told apart. Past this point every failure is about a wasm.
@@ -104,7 +127,7 @@ done
 VIBE_WTS_REQUIRE_BASE="$STAGE/package.json" \
   node "$CHECKER" "$CORPUS" $WASMS \
   || fail "a committed wasm does not parse the corpus the way the grammar says
-  (loader: web-tree-sitter $WTS_VERSION, from spec $WTS_SPEC).
+  (loader: web-tree-sitter $WTS_VERSION, as playground/pnpm-lock.yaml resolves it).
   Rebuild both wasm files from the current src/ and restamp:
     cd integrations/treesitter-vibe && pnpm install && pnpm run build:wasm
   (needs emcc on PATH or a running docker daemon). Do not restamp without
