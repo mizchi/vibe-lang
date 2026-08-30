@@ -1939,8 +1939,11 @@ echo "[compiler-gate] untyped-empty equality answers after a push ok"
 #        Linear lane (the production default) only: the gc `eq` arm has no
 #        scalar guard at all and traps on ANY distinct large-Int pair, with no
 #        `~` involved -- #2407, not something `~` introduced.
+#        `fixtures/bitwise_test.vibe` joins it here for the same reason it was
+#        found: it was referenced by no gate either, and carried a "~ is not
+#        supported, use x ^ mask" test that had been false since slice C landed.
 echo '[compiler-gate] 15b-2/15 bit-not ~ (#2344)'
-run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe
+run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe fixtures/bitwise_test.vibe
 echo '[compiler-gate] bit-not ~ ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a

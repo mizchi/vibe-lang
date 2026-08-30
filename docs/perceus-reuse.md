@@ -1112,9 +1112,10 @@ if ctx.enable_rc && array_contains_str(ctx.ref_cell_names, cap_name) {
 
 **`expr_is_intish` が false のとき、この 2 つが食い違う。**
 
-`expr_is_intish` は tag 6 (EUnaryOp) では `op == "!"` しか true にしない
-(`compile_expr_tail.vibe:777`)。つまり **`let mut i = -1` で十分に外れる**
-(`-1` は `EUnaryOp("-", EInt(1))`)。`""` / `None` / 関数呼び出しの初期値も同様。
+`expr_is_intish` は tag 6 (EUnaryOp) では `op == "!"` と `op == "~"`
+(#2344) しか true にしない (`compile_expr_tail.vibe`)。つまり
+**`let mut i = -1` で十分に外れる** (`-1` は `EUnaryOp("-", EInt(1))`。
+単項 `-` は float 否定でもありうるので、`~` と違い無条件には足せない)。`""` / `None` / 関数呼び出しの初期値も同様。
 
 ### 何が起きるか
 

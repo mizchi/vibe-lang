@@ -230,7 +230,10 @@ From the investigation, the integer/value surface is the whole numeric path:
   `EBool` (tag 1 → `0`/`2`), `EFloat` (tag 2, boxing).
 - **`EBinOp`** (`compile_expr.vibe` tag 5 + `common_base::emit_binop_op`).
 - **`EUnaryOp`** (tag 6): unary `-` (`0 - a` — already tag-correct since `0` is
-  tagged-0 and `a` tagged), `!` (needs result re-tag, see table).
+  tagged-0 and `a` tagged), `!` (needs result re-tag, see table), `~` (#2344 —
+  lowers to `x ^ -1`, and the constant is where the tagging shows: complementing
+  a tagged `n<<1` needs tagged(-1) = `-2`, so xoring with a raw `-1` sets the tag
+  bit and yields a malformed `Int`. The untagged lanes use `-1`).
 - **Inline `if`-condition comparisons** (`compile_expr.vibe` tag 7) — a second,
   duplicated comparison path; conditions consume tagged bools (`true`=2 is
   non-zero → `i32_wrap` truthiness still works, no change needed there).
