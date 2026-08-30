@@ -19,6 +19,10 @@ import @vibe/compiler/syntax {
   lex, parse_program
 }
 
+import @vibe/compiler/normalize {
+  lift_match_scrutinees, uniquify_shadowed_bindings_fresh
+}
+
 import @vibe/compiler/codegen/wasi {
   effect_lowering_prelude
 }
@@ -241,16 +245,35 @@ export fn rc_plan_source(source: String, fn_filter: String) -> String with Excep
   let view_ret = rcq_view_ret(stmts)
   let acc = StringBuilder::new()
   let first: Array[Bool] = [true]
+  // #2411 review: the RC codegen plans the NORMALIZED body -- shadow
+  // uniquify, then scrutinee lift (`match f() {..}` becomes
+  // `let __m_scrut_N = f(); match __m_scrut_N {..}`), with one counter cell
+  // each shared across the file's functions in declaration order, exactly
+  // as linked_compile's planned-bodies loop does. Planning the raw body
+  // here made this surface omit rows the compiler actually acts on --
+  // reuse pairs on lifted scrutinees most visibly.
+  let uq_shadow_counter = [0]
+  let m_scrut_counter = [0]
   let mut matched = false
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) => match value {
-        EFn(_, _, params, _, _, body) => {
+        EFn(_, _, _, _, _, _) => {
+          // Normalize EVERY function (not only the filtered one): the two
+          // counters are shared across the file, so the fresh names a
+          // function receives depend on every function before it. A filter
+          // that skipped the transform for non-emitted functions would
+          // print `__m_scrut_N` numbers the codegen never uses.
+          let seen: Array[String] = []
+          let norm = lift_match_scrutinees(uniquify_shadowed_bindings_fresh(value, uq_shadow_counter, seen), m_scrut_counter)
           let take = fn_filter == "" || fn_filter == name
           if take {
             matched = true
-            rcq_emit_fn_plan(acc, first, name, params, body, borrow_ret, borrow_param, masks, view_ret)
+            match norm {
+              EFn(_, _, nparams, _, _, nbody) => rcq_emit_fn_plan(acc, first, name, nparams, nbody, borrow_ret, borrow_param, masks, view_ret),
+              _ => ()
+            }
           } else {
             ()
           }
