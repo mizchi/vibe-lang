@@ -2529,7 +2529,14 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // merged defs no longer contain (merge-layer private-struct rename).
     // #2266: `-999999` is EUnaryOp("-", EInt), not EInt. Without this arm the
     // expected side of `assert_eq(s, -999999)` rendered `<unprintable>`.
-    EUnaryOp(op, inner) => if op == "-" || op == "+" {
+    // #2344: `~` is Int by construction, so it does NOT recurse into the
+    // operand the way `-` / `+` do -- their result type is the operand's,
+    // while `~` is an Int whatever it wraps. Without this arm a user-trait
+    // call `show(~5)` reached codegen with no witness and produced invalid
+    // wasm; `show(-5)` and `show(5)` were fine, which is what isolates it.
+    EUnaryOp(op, inner) => if op == "~" {
+      Some("Int")
+    } else if op == "-" || op == "+" {
       infer_arg_type_name(inner, struct_sets, var_types, fn_returns)
     } else {
       None

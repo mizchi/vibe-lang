@@ -1943,7 +1943,7 @@ echo "[compiler-gate] untyped-empty equality answers after a push ok"
 #        found: it was referenced by no gate either, and carried a "~ is not
 #        supported, use x ^ mask" test that had been false since slice C landed.
 echo '[compiler-gate] 15b-2/15 bit-not ~ (#2344)'
-run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe fixtures/bitwise_test.vibe
+run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe fixtures/bitwise_test.vibe fixtures/bit_not_trait_witness_test.vibe
 echo '[compiler-gate] bit-not ~ ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a

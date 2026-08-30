@@ -1,0 +1,41 @@
+// #2344 / #2403 review: a `~` expression passed to a BOUNDED generic.
+//
+// `infer_arg_type_name` names the argument's type so `synth_dicts` can pass
+// the trait witness. Its `EUnaryOp` arm handled `-` and `+` by recursing into
+// the operand, and `~` fell to `None` -- the call reached codegen with no
+// witness and produced INVALID WASM ("failed to compile: wasm[0]::function").
+//
+// `~` does not recurse: `-x` and `+x` have their operand's type, while `~x` is
+// an `Int` whatever it wraps.
+//
+// Measured, same file, argument varied:
+//   show(-5)  ok        show(~5)  invalid wasm before, ok after
+//   show(5)   ok
+//
+// NOTE the gap this does NOT cover: `show(5 + 1)` and `show(5 & 1)` are
+// invalid wasm on both sides of this change -- arithmetic operands have never
+// resolved here, with no `~` involved. #2410.
+
+trait Desc {
+  describe(Self) -> String
+}
+
+impl Desc for Int {
+  describe(x: Int) -> String {
+    "int"
+  }
+}
+
+fn show[T: Desc](x: T) -> String {
+  T::describe(x)
+}
+
+//# Misc
+
+test "#2344 a `~` argument resolves its trait witness" {
+  assert(show(~5) == "int")
+  assert(show(~(0 - 6)) == "int")
+  // The two arms that already worked, as the controls that place the fix.
+  assert(show(-5) == "int")
+  assert(show(5) == "int")
+}
