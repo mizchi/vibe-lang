@@ -155,8 +155,12 @@ AND owes the plan no action of its own, (b) never mentions the scrutinee
 again, (c) contains no control transfer that could skip the arm's tail
 (return/break/continue/perform; a lambda interior is exempt), and (d) ends
 through any let spine in a call of the same arity. `vibe rc-plan` prints the
-pair as `reuse_token`/`reuse_alloc` rows; the bump and wasm-gc lanes ignore
-the kinds entirely.
+pair as `reuse_token:<arity>`/`reuse_alloc:<arity>` rows (the arity is the
+codegen's authorization key next to the name, and it joins the collapse key,
+so same-scrutinee arms of different arities stay distinguishable), planned
+on the SAME normalized body the RC codegen plans (shadow uniquify +
+scrutinee lift, so `match f() {..}` reports on its lifted `__m_scrut_N`);
+the bump and wasm-gc lanes ignore the kinds entirely.
 
 The RC codegen consumes the candidates as the **wide fusion**
 (`mr_reuse_wide_eligible`/`mr_compile_reuse_arm_wide`,
