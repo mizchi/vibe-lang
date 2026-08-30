@@ -210,6 +210,10 @@ test "env_cache handles empty env" {
 }
 
 test "env_bind keeps cached env lookup path" {
+  // Non-shadowing binds tuck BEHIND a head cache so hot lookups of cached
+  // (imported) names keep hitting the index first. #2390 measured the
+  // always-in-front alternative and it regressed ~+20% on
+  // env_lookup_binding; head adjacency is a deliberate property.
   let base = env_cache(env_bind(EnvEmpty, "base", CtInt))
   let env = env_bind(base, "x", CtString)
   match env {
@@ -218,6 +222,32 @@ test "env_bind keeps cached env lookup path" {
   }
   match env_lookup(env, "x") {
     Some(t) => assert(types_equal(t, CtString)),
+    None => assert(false)
+  }
+  match env_lookup(env, "base") {
+    Some(t) => assert(types_equal(t, CtInt)),
+    None => assert(false)
+  }
+}
+
+test "an inner single-entry cache survives an outer env_cache (#2390)" {
+  // env_cache_binding's accelerator holds its entry in the ARRAYS ONLY --
+  // the real `#active_region` skolem rides one. The outer env_cache walk
+  // must collect inner cache arrays: skipping them would seed the outer
+  // index with the negative CtUnit marker and hide the real skolem from
+  // every region-sensitive check -- silently wrong.
+  let inner = env_cache_binding(env_bind(EnvEmpty, "v", CtInt), "#active_region", CtNamed("#region_r", array_empty()))
+  let outer = env_cache(inner)
+  match env_lookup(outer, "#active_region") {
+    Some(t) => match t {
+      CtNamed(n, _) => assert(n == "#region_r"),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+  // ...and chain entries below the inner accelerator still answer.
+  match env_lookup(outer, "v") {
+    Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)
   }
 }
