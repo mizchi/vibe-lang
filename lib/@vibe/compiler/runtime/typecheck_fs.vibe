@@ -268,9 +268,29 @@ export fn module_float_call_offsets_for_path(path: String) -> Option[Array[Int]]
   found
 }
 
+/// Order-sensitive checksum over the offset rows, kept non-negative so it
+/// round-trips through the digit-only row parser below. The mask constant is
+/// spelled by arithmetic because the committed seed still enforces the old
+/// 2^61-1 literal bound (see CLAUDE.md's Int notes).
+fn module_float_offsets_checksum(offsets: Array[Int]) -> Int {
+  let mask = (1<<60) - 1
+  let n = Array::length(offsets)
+  let mut h = 17
+  let mut i = 0
+  while i < n {
+    h = ((h * 131) + Array::get(offsets, i) + 1)&mask
+    i = i + 1
+  }
+  h
+}
+
 fn module_float_offsets_text(offsets: Array[Int]) -> String {
   let parts = array_empty()
-  Array::push(parts, "module_float_call_offsets\tv1")
+  // v2 (#2425 review round 3): the header DECLARES the row count and an
+  // order-sensitive checksum, so a torn write (header plus only some rows)
+  // or a digit-level corruption decodes as a miss instead of silently
+  // changing which call sites the compile classifies.
+  Array::push(parts, String::concat("module_float_call_offsets\tv2\t", String::concat(__to_string(Array::length(offsets)), String::concat("\t", __to_string(module_float_offsets_checksum(offsets))))))
   let n = Array::length(offsets)
   let mut i = 0
   while i < n {
@@ -280,46 +300,75 @@ fn module_float_offsets_text(offsets: Array[Int]) -> String {
   String::concat(String::join(parts, "\n"), "\n")
 }
 
-/// Tolerant decode: any deviation from the exact v1 shape is `None` (an
-/// ordinary cold-cache miss that re-checks the module), never a throw and
-/// never a partial answer.
-fn parse_module_float_offsets_text(text: String) -> Option[Array[Int]] {
-  let lines = String::split(normalize_persistent_cache_text(text), "\n")
-  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_float_call_offsets\tv1" {
+/// Digit-only row decode; any other character poisons the whole parse.
+fn module_float_offsets_parse_nat(line: String) -> Option[Int] {
+  let len = String::length(line)
+  if len == 0 {
     None
   } else {
-    let out: Array[Int] = []
+    let mut value = 0
     let mut ok = true
-    let mut i = 1
-    while i < Array::length(lines) {
-      let line = Array::get(lines, i)
-      if String::length(line) == 0 {
-        ()
+    let mut j = 0
+    while j < len && ok {
+      let c = String::char_code_at(line, j)
+      if c >= 48 && c <= 57 {
+        value = value * 10 + (c - 48)
       } else {
-        let mut value = 0
-        let mut j = 0
-        let len = String::length(line)
-        while j < len && ok {
-          let c = String::char_code_at(line, j)
-          if c >= 48 && c <= 57 {
-            value = value * 10 + (c - 48)
-          } else {
-            ok = false
-          }
-          j = j + 1
-        }
-        if ok {
-          Array::push(out, value)
-        } else {
-          ()
-        }
+        ok = false
       }
-      i = i + 1
+      j = j + 1
     }
     if ok {
-      Some(out)
+      Some(value)
     } else {
       None
+    }
+  }
+}
+
+/// Strict v2 decode: the header's declared count and checksum must both match
+/// the rows actually present, or the answer is `None` -- an ordinary
+/// cold-cache miss that re-checks the module. A truncated file fails the
+/// count, a corrupted row fails the checksum (or the digit parse), and a v1
+/// or foreign header fails outright; none of them can change what a compile
+/// emits.
+fn parse_module_float_offsets_text(text: String) -> Option[Array[Int]] {
+  let lines = String::split(normalize_persistent_cache_text(text), "\n")
+  if Array::length(lines) == 0 {
+    None
+  } else {
+    let header = String::split(Array::get(lines, 0), "\t")
+    if Array::length(header) != 4 || Array::get(header, 0) != "module_float_call_offsets" || Array::get(header, 1) != "v2" {
+      None
+    } else {
+      match module_float_offsets_parse_nat(Array::get(header, 2)) {
+        None => None,
+        Some(declared_count) => match module_float_offsets_parse_nat(Array::get(header, 3)) {
+          None => None,
+          Some(declared_checksum) => {
+            let out: Array[Int] = []
+            let mut ok = true
+            let mut i = 1
+            while i < Array::length(lines) && ok {
+              let line = Array::get(lines, i)
+              if String::length(line) == 0 {
+                ()
+              } else {
+                match module_float_offsets_parse_nat(line) {
+                  Some(value) => Array::push(out, value),
+                  None => ok = false
+                }
+              }
+              i = i + 1
+            }
+            if ok && Array::length(out) == declared_count && module_float_offsets_checksum(out) == declared_checksum {
+              Some(out)
+            } else {
+              None
+            }
+          }
+        }
+      }
     }
   }
 }

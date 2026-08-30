@@ -9202,5 +9202,33 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   cat "$ffsdir/run.log" >&2 || true
   exit 1
 fi
+# Torn/corrupted sidecars must decode as MISSES, not as partial answers
+# (#2425 review round 3): truncate every offsets sidecar in the warm cache to
+# its header line plus at most one row, then compile again. The v2 envelope's
+# declared count/checksum rejects the truncation, the affected modules
+# re-check, and the output stays byte-identical; a decoder that accepted the
+# torn file would drop classifications and change the bytes.
+found_sidecar=0
+while IFS= read -r sc_file; do
+  found_sidecar=1
+  head -2 "$sc_file" > "$sc_file.torn" && mv "$sc_file.torn" "$sc_file"
+done < <(grep -rl "^module_float_call_offsets" "$ffsdir/cache" 2>/dev/null)
+if [ "$found_sidecar" != "1" ]; then
+  echo "[compiler-gate] FAIL: no float-offsets sidecars found to corrupt (#2391) -- the probe went stale" >&2
+  exit 1
+fi
+VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/torn.wasm" __no_entry__ \
+  >/dev/null 2>&1 || true
+if [ ! -s "$ffsdir/torn.wasm" ]; then
+  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over torn sidecars (#2391)" >&2
+  cat "$ffsdir/torn.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/torn.wasm"; then
+  echo "[compiler-gate] FAIL: a torn float-offsets sidecar changed the emitted bytes (#2391)" >&2
+  exit 1
+fi
 rm -rf "$ffsdir"
 echo "[compiler-gate] FS-lane Double call-result offsets + cache-state byte identity ok (#2391)"
