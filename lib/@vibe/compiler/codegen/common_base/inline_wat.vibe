@@ -724,31 +724,37 @@ fn iw_name_listed(names: Array[String], want: String) -> Bool {
   found
 }
 
-/// #2348 part 2: is `tok` (`$name`, or a bare index) an `Array[Int]` param?
-/// A bare numeric local index answers false: the mask is a property of the
-/// DECLARED param type, and a numeric slot carries no declared type here.
-/// Spelling an array param numerically therefore reads it tagged -- the same
-/// shape `local.tee 0` already has for its valtype, and the reason the
-/// diagnostic for a numeric local names the `$name` spelling.
-fn iw_local_is_array(locals: Array[(String, Int, Int, Int)], tok: String) -> Bool {
-  if String::length(tok) > 0 && String::char_code_at(tok, 0) == 36 {
-    let want = String::substring(tok, 1, String::length(tok))
-    let n = Array::length(locals)
-    let mut i = 0
-    let mut found = 0
-    while i < n {
-      let (ln, _li, _lt, lk) = Array::get(locals, i)
-      if ln == want {
-        found = lk
-        i = n
-      } else {
-        i = i + 1
-      }
+/// #2348 part 2: is the local at wasm index `idx` an `Array[Int]` param?
+///
+/// Keyed by the RESOLVED INDEX, not by the `$name` token, so the two
+/// spellings of the same parameter cannot answer differently. Keying it by
+/// name looked harmless -- the mask is a property of the declared type, and
+/// `local.get 3` has no declared type to read -- but "not an array" is not
+/// the safe default here: it would leave `local.get 0` handing the body the
+/// TAGGED pointer, so `i32.load offset=4` would read one byte past the
+/// header on the RC lane and return a plausible wrong number, and
+/// `local.set 0` would slip past the read-only check and overwrite the slot
+/// the RC epilogue drops. Both are silent-wrong, which this repository ranks
+/// above every other way of breaking.
+///
+/// This is deliberately NOT the same call as the valtype lookup, which stays
+/// keyed by name and answers "unknown" for a numeric index (#2401). That gap
+/// errs toward ACCEPTING a body wasm would accept; this one erred toward
+/// miscompiling it.
+fn iw_local_at_is_array(locals: Array[(String, Int, Int, Int)], idx: Int) -> Bool {
+  let n = Array::length(locals)
+  let mut i = 0
+  let mut found = 0
+  while i < n {
+    let (_ln, li, _lt, lk) = Array::get(locals, i)
+    if li == idx {
+      found = lk
+      i = n
+    } else {
+      i = i + 1
     }
-    found == 1
-  } else {
-    false
   }
+  found == 1
 }
 
 fn iw_local_idx(fn_name: String, locals: Array[(String, Int, Int, Int)], tok: String, off: Int) -> Int with Exception {
@@ -939,7 +945,7 @@ fn iw_plain_op(buf: Bytes, fn_name: String, kinds: Array[Int], texts: Array[Stri
     }
     let t = iw_want_word(fn_name, kinds, texts, offs, pos + 1, end, name)
     let idx = iw_local_idx(fn_name, locals, t, Array::get(offs, pos + 1))
-    let is_array = iw_local_is_array(locals, t)
+    let is_array = iw_local_at_is_array(locals, idx)
     // #2348 part 2: an `Array[Int]` param is the caller's live object. Writing
     // to its slot would hand the RC epilogue a value it did not allocate, so
     // the two writing forms are refused rather than silently mis-freed.

@@ -750,6 +750,25 @@ test "#2348 part 2: an Array[Int] param is read-only inside the body" {
   assert(arr_err("(local.tee $n (i64.const 0))") == "")
 }
 
+test "#2348 part 2: the numeric spelling of an array param behaves identically" {
+  // Keying the mask by `$name` would have let `local.get 0` hand the body the
+  // TAGGED pointer -- a plausible wrong number out of `i32.load offset=4` on
+  // the RC lane, not an error -- and let `local.set 0` overwrite the slot the
+  // RC epilogue drops. Both spellings resolve to the same wasm index, so they
+  // answer the same.
+  let by_name = arr_bytes("(local.get $xs)")
+  let by_index = arr_bytes("(local.get 0)")
+  assert(Bytes::length(by_index) == Bytes::length(by_name))
+  assert(by_index[2] == 0x42)
+  assert(by_index[3] == 0x7E)
+  assert(by_index[4] == 0x83)
+  assert(String::index_of(arr_err("(local.set 0 (i64.const 0)) (local.get $n)"), "an Array[Int] param is read-only") >= 0)
+  assert(String::index_of(arr_err("(local.tee 0 (i64.const 0))"), "an Array[Int] param is read-only") >= 0)
+  // The ordinary Int param at index 1 is still untouched either way.
+  assert(Bytes::length(arr_bytes("(local.get 1)")) == 2)
+  assert(arr_err("(local.tee 1 (i64.const 0))") == "")
+}
+
 test "#2348 part 2: the masked read is still typed as one i64" {
   // The two extra instructions must not disturb the #2401 stack walk: the
   // body still leaves exactly one i64, and an arity error is still reported.

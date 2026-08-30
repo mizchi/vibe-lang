@@ -2236,7 +2236,11 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   kernel author pick. The mask is why the slot itself is read-only — writing
   to it would hand RC's epilogue a value it did not allocate — so
   `local.set $xs` / `local.tee $xs` are located errors; copy into a declared
-  `(local $tmp i64)` instead. What is NOT normalized, and cannot be, is the
+  `(local $tmp i64)` instead. Both spellings of the parameter behave the same:
+  the mask is keyed by the resolved wasm index, so `local.get 0` masks exactly
+  as `local.get $xs` does. (The valtype lookup is still keyed by name, so the
+  numeric spelling types as unknown — #2401's gap, which errs toward accepting
+  a body wasm would accept, not toward miscompiling one.) What is NOT normalized, and cannot be, is the
   **element** at `data_ptr + i*8`: it is an `Int` in the lane's own
   representation, tagged `n<<1` under RC and raw under bump, exactly the trap
   a scalar `Int` param already has. So `i64x2.add` straight over the slots is
