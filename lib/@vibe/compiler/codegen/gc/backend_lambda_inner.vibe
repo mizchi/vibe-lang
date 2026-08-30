@@ -30,13 +30,35 @@ import ./backend_lambda_sig.vibe {
 
 //# Functions
 
+/// #2404: a labeled (`x~`) or optional (`x?`) parameter is parsed with the
+/// marker ON THE NAME (parser_base.vibe's parse_one_param_with_binder_context),
+/// while the body refers to plain `x`. Every place that binds parameters to
+/// slots has to be told the name the body uses.
+///
+/// A local copy of the linear lane's `strip_param_label_marker`
+/// (codegen/expr/compile_lambda.vibe), copied rather than imported for the
+/// reason that function's doc comment records.
+fn gli_strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
 export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, captures: Array[String], user_params: Int, ctx: CompileCtxGc, compile_fn: CompileLambdaGcFn, ld: Int) -> (Bytes, Int, Array[Int]) with Exception {
   let lam_buf = bytebuf_new()
   let lam_locals = array_empty()
   let mut lpi = 0
   while lpi < user_params {
     let (lpname, _) = Array::get(params, lpi)
-    Array::push(lam_locals, lpname)
+    Array::push(lam_locals, gli_strip_param_label_marker(lpname))
     lpi = lpi + 1
   }
   Array::push(lam_locals, "[gc-temp]__env")

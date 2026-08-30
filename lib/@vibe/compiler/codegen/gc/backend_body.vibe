@@ -259,6 +259,28 @@ import @vibe/compiler/codegen/wasi {
 
 /// Unit entry values have no observable result. Keep this in sync with the
 /// linear WASI entry policy so `fn main {}` does not print its tagged zero.
+/// #2404: a labeled (`x~`) or optional (`x?`) parameter is parsed with the
+/// marker ON THE NAME (parser_base.vibe's parse_one_param_with_binder_context),
+/// while the body refers to plain `x`. Every place that binds parameters to
+/// slots has to be told the name the body uses.
+///
+/// A local copy of the linear lane's `strip_param_label_marker`
+/// (codegen/expr/compile_lambda.vibe), copied rather than imported for the
+/// reason that function's doc comment records.
+fn gb_strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
 fn gc_type_expr_is_unit(t: TypeExpr) -> Bool {
   match t {
     TyUnit => true,
@@ -2163,7 +2185,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
           let mut ppi = 0
           while ppi < Array::length(params) {
             let (pname, _) = Array::get(params, ppi)
-            Array::push(local_names, pname)
+            Array::push(local_names, gb_strip_param_label_marker(pname))
             ppi = ppi + 1
           }
           Array::push(local_names, "[gc-temp]__env")

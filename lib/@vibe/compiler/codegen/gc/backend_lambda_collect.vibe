@@ -22,6 +22,28 @@ import @vibe/compiler/codegen/common_base {
 
 //# Functions
 
+/// #2404: a labeled (`x~`) or optional (`x?`) parameter is parsed with the
+/// marker ON THE NAME (parser_base.vibe's parse_one_param_with_binder_context),
+/// while the body refers to plain `x`. Every place that binds parameters to
+/// slots has to be told the name the body uses.
+///
+/// A local copy of the linear lane's `strip_param_label_marker`
+/// (codegen/expr/compile_lambda.vibe), copied rather than imported for the
+/// reason that function's doc comment records.
+fn glc_strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
 export fn collect_lambda_captures_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, ctx: CompileCtxGc) -> (Array[String], Int, Int) {
   let param_names_arr = array_empty()
   let func_table = ctx.func_table
@@ -29,7 +51,7 @@ export fn collect_lambda_captures_gc(params: Array[(String, Option[TypeExpr])], 
   let mut pi = 0
   while pi < Array::length(params) {
     let (pname, _) = Array::get(params, pi)
-    Array::push(param_names_arr, pname)
+    Array::push(param_names_arr, glc_strip_param_label_marker(pname))
     pi = pi + 1
   }
   let mut globals = Array::concat(func_table.names, ctor_table.names)
