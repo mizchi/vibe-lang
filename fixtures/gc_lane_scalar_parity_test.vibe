@@ -97,6 +97,34 @@ test "#2405 a slot reused by a sibling scope is not read stale" {
   assert(r2 == "str")
 }
 
+// #2405 follow-up: the integer renderer is emitted ONCE per module as a shared
+// body and called, instead of inlined at every statically-int call site (that
+// cost int_wrap +23% of its wasm). The body is pushed between the 56
+// unconditional builtin bodies and the two conditional region-arena ones, so a
+// module holding BOTH has to resolve all three indices correctly -- and a
+// mis-derived index is a call into someone else's code, which builds fine and
+// only shows up here.
+fn region_len(n: Int) -> Int {
+  region r {
+    let xs = MutList::empty(r)
+    let mut i = 0
+    while i < n {
+      MutList::push(xs, i * 2)
+      i = i + 1
+    }
+    MutList::length(xs)
+  }
+}
+
+test "#2405 the shared renderer and the region arena bodies coexist" {
+  assert(region_len(5) == 5)
+  assert(__to_string(64<<32) == "274877906944")
+  assert(__to_string(region_len(3) * 1) == "3")
+  let big = 1<<40
+  assert(__to_string(big) == "1099511627776")
+  assert(region_len(7) == 7)
+}
+
 test "#2407 eq answers on two distinct large Ints" {
   // The gc `eq` arm sent every non-bit-identical pair to `String::equals`,
   // which reads its operands as `(ptr << 32) | len` fat pointers -- an

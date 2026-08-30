@@ -2360,22 +2360,37 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // "274877906944". A statically-int argument therefore skips the
         // heuristic entirely and renders directly -- the same answer the
         // linear lane reaches through `ts_known_int` (compile_call.vibe).
-        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
-        let ts_val = nl
-        let ts_neg = nl + 1
-        let ts_cur = nl + 2
-        let ts_abs = nl + 3
-        let ts_hp = nl + 4
-        let ts_len = nl + 5
-        Array::push(local_names, "[gc-temp]__ts_val")
-        Array::push(local_names, "[gc-temp]__ts_neg")
-        Array::push(local_names, "[gc-temp]__ts_cur")
-        Array::push(local_names, "[gc-temp]__ts_abs")
-        Array::push(local_names, "[gc-temp]__ts_hp")
-        Array::push(local_names, "[gc-temp]__ts_len")
-        emit_local_set(buf, ts_val)
-        gc_emit_int_to_string(buf, ts_val, ts_neg, ts_cur, ts_abs, ts_hp, ts_len)
-        nl + 6
+        // The renderer is ~182 bytes. When the module carries the shared body
+        // (`gc_gen_to_string_int_body`, pushed by backend_body.vibe whenever a
+        // statically-int argument appears anywhere in it) this is one call;
+        // int_wrap has eight such sites and paid for eight copies before.
+        // The -1 case is not a fallback that can be wrong: the pre-pass that
+        // decides to push the body classifies by shape alone and cannot see
+        // the `gc_int_locals` slot log this arm also reads, so a bare-ident
+        // site in a module with no shape-int site still inlines -- correct,
+        // just bigger. A call to a body that was not pushed cannot happen.
+        if ctx.gc_to_string_int_func_idx >= 0 {
+          let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+          emit_call(buf, ctx.gc_to_string_int_func_idx)
+          nl
+        } else {
+          let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+          let ts_val = nl
+          let ts_neg = nl + 1
+          let ts_cur = nl + 2
+          let ts_abs = nl + 3
+          let ts_hp = nl + 4
+          let ts_len = nl + 5
+          Array::push(local_names, "[gc-temp]__ts_val")
+          Array::push(local_names, "[gc-temp]__ts_neg")
+          Array::push(local_names, "[gc-temp]__ts_cur")
+          Array::push(local_names, "[gc-temp]__ts_abs")
+          Array::push(local_names, "[gc-temp]__ts_hp")
+          Array::push(local_names, "[gc-temp]__ts_len")
+          emit_local_set(buf, ts_val)
+          gc_emit_int_to_string(buf, ts_val, ts_neg, ts_cur, ts_abs, ts_hp, ts_len)
+          nl + 6
+        }
       }
       else if fname == "Int::to_string" || fname == "__to_string" {
         let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")

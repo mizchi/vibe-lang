@@ -232,7 +232,7 @@ import ./backend_builtins_array_set.vibe {
 }
 
 import ./backend_builtins_numeric.vibe {
-  gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body, gc_gen_to_string_body
+  gc_emit_int_to_string, gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body, gc_gen_to_string_body
 }
 
 import ./backend_builtins_print.vibe {
@@ -646,6 +646,118 @@ fn gc_name_is_called(expr: Expr, name: String) -> Bool {
     }
     found
   }
+}
+
+/// #2405 follow-up: `gc_emit_int_to_string` as a standalone function body, so
+/// a statically-int call site can CALL the renderer instead of inlining ~182
+/// bytes of it. Same slots the runtime-dispatching `__to_string` body uses
+/// (param 0 = value, locals 1..5), minus the string heuristic -- which is the
+/// whole point.
+///
+/// Defined HERE rather than beside the emitter it wraps in
+/// backend_builtins_numeric.vibe: a brand-new cross-file export and its first
+/// cross-file caller in the same change do not survive the merge/flatten
+/// (`generate_bundle: unknown name: gc_gen_to_string_int_body`), the gotcha
+/// `edp_strip_tilde` in codegen/common_base/inline_direct_perform.vibe
+/// records. `gc_emit_int_to_string` itself already has a caller, so calling it
+/// from a second file is fine.
+fn gc_gen_to_string_int_body() -> Bytes {
+  let b = bytebuf_new()
+  gc_emit_int_to_string(b, 0, 1, 2, 3, 4, 5)
+  b
+}
+
+/// #2405 follow-up: is `e` an argument this lane classifies as statically Int
+/// by SHAPE alone?
+///
+/// A deliberate subset of `bc_expr_is_intish` (backend_call.vibe): the ident
+/// arm needs `local_names` + the ctx slot log, neither of which exists during
+/// this pre-pass. Missing an ident case is safe -- see
+/// `gc_stmts_need_to_string_int` for why the two are allowed to disagree in
+/// exactly this direction.
+fn gc_expr_is_shape_intish(e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EBool(_) => true,
+    EBinOp(op, _, _) => op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" || op == "+" || op == "-" || op == "*" || op == "/",
+    EUnaryOp(op, _) => op == "!" || op == "~",
+    _ => false
+  }
+}
+
+fn gc_expr_needs_to_string_int(expr: Expr) -> Bool {
+  let direct = match expr {
+    ECall(EIdent(callee, _), cargs, _) => (callee == "__to_string" || callee == "Int::to_string") && Array::length(cargs) == 1 && gc_expr_is_shape_intish(Array::get(cargs, 0)),
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    let children = expr_children(expr)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(children) {
+      if gc_expr_needs_to_string_int(Array::get(children, i)) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// #2405 follow-up: does this module have a `__to_string` argument that is Int
+/// by shape, i.e. one the call-site arm would otherwise INLINE the ~182-byte
+/// renderer for?
+///
+/// Decides whether `gc_gen_to_string_int_body` is emitted at all. The scan and
+/// the call site are allowed to disagree, but only ONE WAY: the call site also
+/// classifies a bare ident (through the `gc_int_locals` slot log), which this
+/// scan cannot see, so it may find nothing where the call site later finds
+/// something. That case falls back to inlining, which is correct and merely
+/// bigger. The reverse -- the call site emitting a `call` to a body this scan
+/// declined to push -- cannot happen, because the call site only calls when
+/// the ctx carries a non-negative index, and only this scan sets it.
+///
+/// Modules with no such argument (six of the nine `bench/exec` samples) carry
+/// no helper and are byte-identical to before.
+fn gc_stmts_need_to_string_int(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, value) => if gc_expr_needs_to_string_int(value) {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(_, _, value) => if gc_expr_needs_to_string_int(value) {
+        found = true
+      } else {
+        ()
+      },
+      SExpr(value) => if gc_expr_needs_to_string_int(value) {
+        found = true
+      } else {
+        ()
+      },
+      STest(_, body) => if gc_expr_needs_to_string_int(body) {
+        found = true
+      } else {
+        ()
+      },
+      SBench(_, body) => if gc_expr_needs_to_string_int(body) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn gc_name_is_called_in_stmts(stmts: Array[Stmt], name: String) -> Bool {
@@ -1640,10 +1752,21 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // past the end. Written as base + arena so appending is one edit, not two.
   // #2344 raised the base 48 -> 51 for Int::popcount / ctz / clz.
   let gc_unconditional_body_count = 56
-  let num_generated = if need_region_arena {
-    gc_unconditional_body_count + 2
+  // #2405 follow-up: the shared integer renderer, pushed only when the module
+  // has a statically-int `__to_string` argument. Conditional for the same
+  // reason the arena pair below is: a module that never needs it should not
+  // carry ~182 bytes of it (six of the nine bench/exec samples are in that
+  // group and stay byte-identical).
+  let need_to_string_int = gc_stmts_need_to_string_int(stmts)
+  let ts_int_extra = if need_to_string_int {
+    1
   } else {
-    gc_unconditional_body_count
+    0
+  }
+  let num_generated = if need_region_arena {
+    gc_unconditional_body_count + ts_int_extra + 2
+  } else {
+    gc_unconditional_body_count + ts_int_extra
   }
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
@@ -1675,6 +1798,14 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // for call", which is the same symptom the hbo comment above describes.
   // Derived from num_generated rather than written as literals so appending
   // another body cannot silently point these at someone else's code.
+  // Pushed AFTER the 56 unconditional bodies and BEFORE the arena pair, so its
+  // ordinal is fixed by the unconditional count alone and the arena indices
+  // below stay derived from `num_generated` (which now includes it).
+  let to_string_int_idx = if need_to_string_int {
+    hbo + gc_unconditional_body_count + 1
+  } else {
+    -1
+  }
   let region_arr_new_idx = if need_region_arena {
     hbo + num_generated - 1
   } else {
@@ -2153,6 +2284,15 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   push_gc_builtin(gen_bytes_count_byte_body(false), 1, 4, 4)
   push_gc_builtin(gen_bytes_last_index_of_byte_body(false), 1, 3, 4)
   push_gc_builtin(gen_bytes_compare_body(false), 2, 4, 4)
+  // #2405 follow-up: ordinal 57, immediately after the unconditional 56 and
+  // before the arena pair -- `to_string_int_idx` above encodes exactly that.
+  // Same shape as the runtime-dispatching `__to_string` body (one i64 param,
+  // five i64 locals, type index 3), minus the string heuristic.
+  if need_to_string_int {
+    push_gc_builtin(gc_gen_to_string_int_body(), 0, 5, 3)
+  } else {
+    ()
+  }
   // ADR-0090 (#1262) tier 2: the arena allocators, appended LAST and only
   // when the module has a region -- `num_generated` above counts them the
   // same way, so ordinals 0..48 (every `hbo + N` reference above) are
@@ -2328,6 +2468,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
             gc_float_call_offsets: gc_float_call_offsets,
             gc_bool_locals: gc_bool_slots_f,
             gc_int_locals: array_empty(),
+            gc_to_string_int_func_idx: to_string_int_idx,
             gc_native_array_locals: direct_param_slots_f,
             gc_native_array_local_types: array_empty(),
             gc_native_array_type_idx: gc_native_array_type_idx,
@@ -2428,6 +2569,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
       gc_float_call_offsets: gc_float_call_offsets,
       gc_bool_locals: array_empty(),
       gc_int_locals: array_empty(),
+      gc_to_string_int_func_idx: to_string_int_idx,
       gc_native_array_locals: array_empty(),
       gc_native_array_local_types: array_empty(),
       // Module-level initializers compile into `_start`, which is registered
