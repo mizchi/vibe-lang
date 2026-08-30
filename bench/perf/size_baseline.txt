@@ -174,8 +174,36 @@
 # The wasm-gc lane is the opposite and is NOT gated here: it links builtins
 # unconditionally, so these four cost it +2.2..3.1% on every perf scenario
 # including programs that never search bytes. That is #2359, not this file.
-closure_indirect 2681
-fib 1020
-fizzbuzz 1609
-hello_world 1056
-variant_float 4513
+
+# 2026-08-30 rebaseline (#2359, whole-module function pruning): the linear
+# lane now DROPS unreachable functions and renumbers, instead of shrinking
+# their bodies to a 3-byte `unreachable` stub and keeping the index slot.
+# closure_indirect 2701->1887, fib 1026->648, fizzbuzz 1615->1247,
+# hello_world 1062->684, variant_float 4530->3309. Ratcheted DOWN per this
+# file's header so the gate protects the win.
+#
+# Note the "before" column is the CURRENT measured size, not the row that was
+# committed below (fib 1020, hello_world 1056, fizzbuzz 1609,
+# closure_indirect 2681, variant_float 4513). Those were stale: #2403 (`~`)
+# moved every sample +6..+20 B without rebaselining, which the gate allowed
+# because each stayed inside +2%. Ratcheting from the stale numbers would
+# have quietly credited this change with #2403's drift.
+#
+# The tax this removes is the one the NOTE above predicted. That note tracked
+# fib 755 -> 1000 across five rebaselines and attributed 230 of the 245 bytes
+# to builtins linked unconditionally that the sample never calls. Measured
+# exactly, it was larger than the note estimated: 75 of fib's 79 functions are
+# unreachable, 378 B = 36.8% of the file. Four of the five samples were more
+# than a fifth index slots for functions that can never run.
+#
+# Two of those bytes-per-sample figures are NOT stub slots. The older
+# body-stubbing pass finds call targets by scanning body bytes for 0x10/0xd2,
+# which over-approximates: measured, it leaves 9 dead functions with real
+# bodies in variant_float (909 B) and 5 in closure_indirect (467 B). The new
+# pass decodes instructions properly, so it finds those too.
+
+closure_indirect 1887
+fib 648
+fizzbuzz 1247
+hello_world 684
+variant_float 3309
