@@ -3,10 +3,16 @@
 #
 # The decisive case is the one a reviewer reproduced against the hash-only gate
 # (#2422): regenerate src/parser.c alone, restamp, and every hash agrees while
-# the wasm is still stale. This gate is what sees that, so its self-test uses
-# the REAL historical artifacts -- the pre-`~` wasm from before the rebuild --
-# rather than a synthetic mutation. Nothing models a stale binary as well as an
-# actually stale binary.
+# the wasm is still stale. This gate is what sees that, so its self-test uses a
+# REAL stale artifact -- the pre-`~` playground wasm -- rather than a synthetic
+# mutation. Nothing models a stale binary as well as an actually stale binary.
+#
+# That artifact is a committed fixture, not `git show HEAD~1:...`. The first
+# version read it from history, which works in a full clone and fails on CI's
+# shallow checkout: the run died with "could not read HEAD~1's wasm", a failure
+# about the clone rather than about the property. That is the #2252 defect,
+# committed inside the self-test written to enforce its sibling rule. A gate
+# must not assume the environment it runs in.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -61,17 +67,21 @@ echo "[ts-corpus-test] control"
 d="$(fresh_tree control)"
 expect_pass "the committed artifacts" "$d"
 
-# THE case: a wasm from before the grammar change. Taken from git rather than
-# invented, so it is the artifact that actually shipped stale.
+# THE case: a wasm from before the grammar change. A committed fixture, so it is
+# the artifact that actually shipped stale and it is readable however the
+# repository was cloned.
 echo "[ts-corpus-test] a wasm from before the grammar change"
-STALE="$WORK/stale_play.wasm"
-if git -C "$ROOT" show "HEAD~1:$PLAY_REL" > "$STALE" 2>/dev/null && [ -s "$STALE" ]; then
+STALE="$ROOT/integrations/treesitter-vibe/test/fixtures/pre_tilde_playground.wasm"
+if [ ! -s "$STALE" ]; then
+  # Never a skip. A red test that cannot find its input has not passed.
+  echo "  BUG in this test: missing fixture $STALE" >&2
+  fails=$((fails + 1))
+else
   if cmp -s "$STALE" "$ROOT/$PLAY_REL"; then
-    # HEAD~1 no longer carries a pre-rebuild wasm (this test outlived the
-    # commit). Say so instead of passing on a comparison that proves nothing.
-    echo "  BUG in this test: HEAD~1's wasm is identical to the current one," >&2
-    echo "    so the 'stale' fixture is not stale. Repoint it at a commit" >&2
-    echo "    before the wasm rebuild." >&2
+    # Someone "refreshed" the fixture. It is only useful while it is stale, so
+    # say so instead of passing on a comparison that proves nothing.
+    echo "  BUG in this test: the fixture is byte-identical to the committed" >&2
+    echo "    wasm, so it is not stale and this case proves nothing." >&2
     fails=$((fails + 1))
   else
     d="$(fresh_tree stale)"
@@ -109,9 +119,6 @@ if git -C "$ROOT" show "HEAD~1:$PLAY_REL" > "$STALE" 2>/dev/null && [ -s "$STALE
       fails=$((fails + 1))
     fi
   fi
-else
-  echo "  BUG in this test: could not read HEAD~1's wasm" >&2
-  fails=$((fails + 1))
 fi
 
 # A wasm that does not load is the sharpest form of stale, and the committed Zed
