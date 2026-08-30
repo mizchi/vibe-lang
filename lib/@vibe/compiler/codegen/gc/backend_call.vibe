@@ -206,7 +206,7 @@ import ./backend_builtins_array_set.vibe {
 }
 
 import ./backend_builtins_numeric.vibe {
-  gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body
+  gc_emit_int_to_string, gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body
 }
 
 import ./backend_builtins_print.vibe {
@@ -281,6 +281,25 @@ export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fna
     false
   } else {
     array_contains_str(ctx.gc_float_ret_fns, fname)
+  }
+}
+
+/// #2407: local mirror of backend_expr.vibe's `gc_expr_is_intish` -- the same
+/// shape-based "is this statically a scalar" test `==` routes on, kept here
+/// for the same reason `bc_expr_is_floatish` above is (importing across the
+/// two files would be a cycle).
+///
+/// The point of using the SAME predicate rather than a fresh one is that
+/// `eq(a, b)` and `a == b` must answer identically: `emit_gc_eq_value` sends
+/// an intish pair to a raw `i64.eq`, and this arm now does too, so the two
+/// spellings of one concept cannot diverge on a value.
+fn bc_expr_is_intish(e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EBool(_) => true,
+    EBinOp(op, _, _) => op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" || op == "+" || op == "-" || op == "*" || op == "/",
+    EUnaryOp(op, _) => op == "!" || op == "~",
+    _ => false
   }
 }
 
@@ -2206,27 +2225,47 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // equality instead of its own function. `let eq = (a: Int, b: Int) ->
         // Int { a + b }` then `eq(1, 2)` answered 0. Same guard as the assert
         // arms below, same reason.
-        // Content-based equality: i64_eq fast path, then str_eq fallback
-        let (str_eq_idx, _, _) = resolve_func(ctx.func_table, "String::equals")
-        let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
-        nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
-        let eq_a = nl
-        let eq_b = nl + 1
-        Array::push(local_names, "[gc-temp]__eq_a")
-        Array::push(local_names, "[gc-temp]__eq_b")
-        emit_local_set(buf, eq_b)
-        emit_local_set(buf, eq_a)
-        emit_local_get(buf, eq_a)
-        emit_local_get(buf, eq_b)
-        emit_i64_eq(buf)
-        emit_if_i64(buf)
-        emit_i64_const(buf, 1)
-        emit_else(buf)
-        emit_local_get(buf, eq_a)
-        emit_local_get(buf, eq_b)
-        emit_call_resolved(buf, ctx, str_eq_idx)
-        emit_end(buf)
-        nl + 2
+        // #2407: a provably scalar operand takes a bare `i64.eq` and never
+        // reaches the string fallback below. Without this the fallback ran for
+        // every pair that is not bit-identical, reading both values as
+        // `(ptr << 32) | len` fat pointers -- so `eq(64 << 32, 65 << 32)`
+        // loaded from whatever address the high word happened to name and
+        // trapped. Small values were fine only because the bogus address
+        // happened to be in bounds, which is why this went unnoticed.
+        //
+        // The linear lane has had this guard since #705 (`cc_arg_is_scalarish`
+        // in compile_call.vibe); it was never ported here. One operand is
+        // enough: `==` already routes that way (`emit_gc_eq_value`), and a
+        // scalar can only be equal to another scalar's bit pattern.
+        if bc_expr_is_intish(Array::get(args, 0)) || bc_expr_is_intish(Array::get(args, 1)) {
+          let mut snl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+          snl = ce(buf, Array::get(args, 1), local_names, snl, ld)
+          emit_i64_eq(buf)
+          emit_i64_extend_i32_s(buf)
+          snl
+        } else {
+          // Content-based equality: i64_eq fast path, then str_eq fallback
+          let (str_eq_idx, _, _) = resolve_func(ctx.func_table, "String::equals")
+          let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+          nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+          let eq_a = nl
+          let eq_b = nl + 1
+          Array::push(local_names, "[gc-temp]__eq_a")
+          Array::push(local_names, "[gc-temp]__eq_b")
+          emit_local_set(buf, eq_b)
+          emit_local_set(buf, eq_a)
+          emit_local_get(buf, eq_a)
+          emit_local_get(buf, eq_b)
+          emit_i64_eq(buf)
+          emit_if_i64(buf)
+          emit_i64_const(buf, 1)
+          emit_else(buf)
+          emit_local_get(buf, eq_a)
+          emit_local_get(buf, eq_b)
+          emit_call_resolved(buf, ctx, str_eq_idx)
+          emit_end(buf)
+          nl + 2
+        }
       }
       else if fname == "not" && !gc_name_is_user_defined(ctx, local_names, fname) {
         // #2309: same as `eq` above. Measured -- `let not = (a: Int) -> Int
@@ -2301,6 +2340,32 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // this whole branch inert, falling through to the ordinary bound
         // call below untouched.
         ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
+      }
+      else if (fname == "Int::to_string" || fname == "__to_string") && Array::length(args) == 1 && bc_expr_is_intish(Array::get(args, 0)) {
+        // #2405: the builtin decides Int-vs-String by a HEURISTIC on the bit
+        // pattern (`gc_gen_to_string_body`), so an Int whose high word is a
+        // plausible address is returned unchanged instead of rendered:
+        // `__to_string(64 << 32)` reads as (ptr 64, len 0) and produced the
+        // EMPTY STRING on this lane while the linear lane printed
+        // "274877906944". A statically-int argument therefore skips the
+        // heuristic entirely and renders directly -- the same answer the
+        // linear lane reaches through `ts_known_int` (compile_call.vibe).
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        let ts_val = nl
+        let ts_neg = nl + 1
+        let ts_cur = nl + 2
+        let ts_abs = nl + 3
+        let ts_hp = nl + 4
+        let ts_len = nl + 5
+        Array::push(local_names, "[gc-temp]__ts_val")
+        Array::push(local_names, "[gc-temp]__ts_neg")
+        Array::push(local_names, "[gc-temp]__ts_cur")
+        Array::push(local_names, "[gc-temp]__ts_abs")
+        Array::push(local_names, "[gc-temp]__ts_hp")
+        Array::push(local_names, "[gc-temp]__ts_len")
+        emit_local_set(buf, ts_val)
+        gc_emit_int_to_string(buf, ts_val, ts_neg, ts_cur, ts_abs, ts_hp, ts_len)
+        nl + 6
       }
       else if fname == "Int::to_string" || fname == "__to_string" {
         let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")
