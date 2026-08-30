@@ -693,9 +693,30 @@ fn gc_expr_is_shape_intish(e: Expr) -> Bool {
   }
 }
 
+/// Is this argument one the call site MIGHT classify as Int?
+///
+/// Deliberately looser than `gc_expr_is_shape_intish`: a bare ident counts,
+/// because the call site resolves those through the `gc_int_locals` slot log
+/// (annotated Int params, `let`/`let mut` bindings, aliases) and this pre-pass
+/// has no slot log to consult.
+///
+/// Over-approximating is the safe direction and the cheap one. Too WIDE costs
+/// one unused ~182-byte body in a module whose idents all turn out to be
+/// Strings. Too NARROW costs an inline copy at every site the call site does
+/// classify -- measured before this arm existed, that was sieve +15.31% and
+/// records_pipeline +13.50% against baseline, because their `__to_string`
+/// arguments are all idents. It can never cause a call to a body that was not
+/// pushed: the call site emits a call only when the ctx index is non-negative.
+fn gc_to_string_arg_may_be_int(e: Expr) -> Bool {
+  match e {
+    EIdent(_, _) => true,
+    _ => gc_expr_is_shape_intish(e)
+  }
+}
+
 fn gc_expr_needs_to_string_int(expr: Expr) -> Bool {
   let direct = match expr {
-    ECall(EIdent(callee, _), cargs, _) => (callee == "__to_string" || callee == "Int::to_string") && Array::length(cargs) == 1 && gc_expr_is_shape_intish(Array::get(cargs, 0)),
+    ECall(EIdent(callee, _), cargs, _) => (callee == "__to_string" || callee == "Int::to_string") && Array::length(cargs) == 1 && gc_to_string_arg_may_be_int(Array::get(cargs, 0)),
     _ => false
   }
   if direct {
@@ -2353,6 +2374,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
           // loop).
           let gc_float_slots_f = array_empty()
           let gc_bool_slots_f = array_empty()
+          let gc_int_slots_f = array_empty()
           let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
           let mut psi = 0
           while psi < Array::length(params) {
@@ -2392,11 +2414,17 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
                 } else {
                   ()
                 }
+                // #2422: Int-typed params, the same gap the linear lane had
+                // (see linked_compile.vibe). `bc_expr_is_intish` resolves an
+                // ident through this log, so without an entry an annotated
+                // Int param reached `__to_string` and `eq` unclassified.
                 match pte {
                   TyName(ptn) => if ptn == "Float" || ptn == "Double" {
                     Array::push(gc_float_slots_f, psi)
                   } else if ptn == "Bool" {
                     Array::push(gc_bool_slots_f, psi)
+                  } else if ptn == "Int" {
+                    Array::push(gc_int_slots_f, psi)
                   } else {
                     ()
                   },
@@ -2475,7 +2503,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
             gc_float_ret_fns: gc_float_ret_fn_names,
             gc_float_call_offsets: gc_float_call_offsets,
             gc_bool_locals: gc_bool_slots_f,
-            gc_int_locals: array_empty(),
+            gc_int_locals: gc_int_slots_f,
             gc_to_string_int_func_idx: to_string_int_idx,
             gc_native_array_locals: direct_param_slots_f,
             gc_native_array_local_types: array_empty(),

@@ -116,6 +116,52 @@ fn region_len(n: Int) -> Int {
   }
 }
 
+/// #2422: a large Int reaching `__to_string` / `eq` through an annotated
+/// parameter rather than a literal. Both lanes classify an ident through a
+/// slot log, and both logs seeded Float and Bool params but not Int ones.
+fn via_param(n: Int) -> String {
+  __to_string(n)
+}
+
+fn eq_params(a: Int, b: Int) -> Bool {
+  eq(a, b)
+}
+
+fn via_string(s: String) -> String {
+  __to_string(s)
+}
+
+fn via_bool(b: Bool) -> String {
+  __to_string(b)
+}
+
+fn via_double(d: Double) -> String {
+  __to_string(d)
+}
+
+test "#2422 a large Int survives every binding form" {
+  // Each of these reached the runtime string-pointer heuristic before, on one
+  // lane or both, and rendered garbage or the empty string. Measured on the
+  // committed seed: every one of them, so none is new here.
+  assert(via_param(274877906944) == "274877906944")
+  assert(!eq_params(64<<32, 65<<32))
+  assert(eq_params(64<<32, 64<<32))
+  let mut m = 64<<32
+  assert(__to_string(m) == "274877906944")
+  m = m + 1
+  assert(__to_string(m) == "274877906945")
+  let x = 64<<32
+  let y = x
+  let z = y
+  assert(__to_string(y) == "274877906944")
+  assert(__to_string(z) == "274877906944")
+  // The other annotated types must keep their own classification: Bool and
+  // Int share this lane's representation, so a Bool read as an Int prints 1.
+  assert(via_string("hi") == "hi")
+  assert(via_bool(true) == "true")
+  assert(via_double(1.5) == "1.5")
+}
+
 test "#2405 polymorphic arithmetic is not assumed to be Int" {
   // `+ - * /` are resolved from the OPERANDS by the checker (Int, then Double,
   // then String for `+`, then a user impl), so the operator alone says

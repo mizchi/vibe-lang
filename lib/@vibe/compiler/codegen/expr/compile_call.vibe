@@ -458,10 +458,17 @@ export fn cc_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
 /// this, `eq(int, int)` falls through to the generic bound `eq` whose
 /// `looks_like_string`/str_eq fallback reads OOB on ints resembling fat-pointers
 /// (#678 residual) — e.g. leb128's `eq(val, 0)` trapped under RC (#705).
-fn cc_arg_is_scalarish(e: Expr) -> Bool with Exception {
+fn cc_arg_is_scalarish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let t = expr_tag(e)
   if t == 0 || t == 1 {
     true
+  } else if t == 4 {
+    // #2422: a bare ident, answered from the same slot log `ts_known_int`
+    // reads. Without this an annotated `Int` PARAMETER was not scalar here, so
+    // `fn eqp(a: Int, b: Int) -> Bool { eq(a, b) }` reached the string
+    // fallback and read two large Ints as (ptr, len) pairs. Measured on the
+    // committed seed, so long-standing.
+    cc_ident_slot_kind(e, local_names, ctx) == 1
   } else if t == 5 {
     let op = get_ebinop_op(e)
     op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||"
@@ -474,7 +481,7 @@ fn cc_arg_is_scalarish(e: Expr) -> Bool with Exception {
     // string fallback misreads: `~((0 - (64 << 32)) - 1)` has a zero low word,
     // so two DISTINCT values both looked like the empty string and
     // `eq(~a, ~b)` answered `true`.
-    uop == "!" || uop == "~" || (uop == "-" && cc_arg_is_scalarish(get_eunaryop_expr(e)))
+    uop == "!" || uop == "~" || (uop == "-" && cc_arg_is_scalarish(get_eunaryop_expr(e), local_names, ctx))
   } else {
     false
   }
@@ -1757,7 +1764,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_shl(buf)
       nl
     }
-    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0)) || cc_arg_is_scalarish(Array::get(args, 1))) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
+    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0), local_names, ctx) || cc_arg_is_scalarish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
       // Direct i64.eq for `eq(a, b)` when it is the builtin and at least one
       // operand is provably scalar. This sidesteps the bound `eq`'s string
       // fallback, which reads OOB on Int values resembling fat-pointers (#705):

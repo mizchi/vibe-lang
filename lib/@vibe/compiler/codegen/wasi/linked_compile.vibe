@@ -7830,11 +7830,26 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
                 // codegen/expr/compile_call.vibe nor `"\{b}"` interpolation can
                 // recognize it as Bool -- both fall through to the generic
                 // runtime bit-pattern heuristic and mis-render `true` as `"1"`.
+                //
+                // #2422: Int-typed params were the gap left by those two.
+                // `ts_known_int` resolves an ident through this very log, so
+                // without a kind-1 entry an annotated Int param was NOT known
+                // to be an Int, and a large value took the runtime
+                // string-pointer heuristic. Measured on the committed seed,
+                // so this is long-standing:
+                //
+                //   fn via(n: Int) -> String { __to_string(n) }
+                //   via(274877906944)  ->  "" (empty), not "274877906944"
+                //
+                // and the same param feeding `eq(a, b)` reached the string
+                // fallback, which reads the value as a (ptr, len) pair.
                 match pte {
                   TyName(ptn) => if ptn == "Float" || ptn == "Double" {
                     Array::push(compile_ctx.float_local_slots, psi * 2 + 1)
                   } else if ptn == "Bool" {
                     Array::push(compile_ctx.int_local_slots, psi * 4 + 3)
+                  } else if ptn == "Int" {
+                    Array::push(compile_ctx.int_local_slots, psi * 4 + 1)
                   } else {
                     ()
                   },

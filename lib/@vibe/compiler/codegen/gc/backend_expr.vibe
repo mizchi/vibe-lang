@@ -276,6 +276,22 @@ fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -
 /// so this static classification is the only way to route a Bool argument to
 /// the "true"/"false" formatter instead of the generic runtime `__to_string`
 /// dispatch, which cannot tell them apart.
+/// #2422: `gc_expr_is_intish` plus the ident arm, so a binding whose value is
+/// ANOTHER int-bound name (`let y = x`) is classified too. The shape-only test
+/// answers false for a bare ident, which left an alias unlogged and sent a
+/// large Int through the runtime string-pointer heuristic. Resolved through the
+/// CURRENT slot, exactly as gc_expr_is_boolish above does, so a name rebound in
+/// a sibling scope is not read through its stale entry.
+fn gc_value_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match e {
+    EIdent(iname, _) => {
+      let slot = find_local_slot(local_names, iname)
+      slot >= 0 && array_contains_int(ctx.gc_int_locals, slot)
+    },
+    _ => gc_expr_is_intish(e)
+  }
+}
+
 fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EBool(_) => true,
@@ -888,7 +904,7 @@ fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, bod
     Array::push(ctx.gc_float_locals, local_idx)
   } else if gc_expr_is_boolish(value, local_names, ctx) {
     Array::push(ctx.gc_bool_locals, local_idx)
-  } else if gc_expr_is_intish(value) {
+  } else if gc_value_is_intish(value, local_names, ctx) {
     // #2405: last, so a value that is both boolish and intish by shape (a
     // comparison) keeps its boolish classification -- that one renders
     // "true"/"false", and Bool and Int share this lane's representation, so
@@ -1577,6 +1593,16 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           // #1015: logged by SLOT (local_idx), not name -- see
           // gc_bool_locals' doc comment on CompileCtxGc.
           Array::push(ctx.gc_bool_locals, local_idx)
+        } else if gc_value_is_intish(value, local_names, ctx) {
+          // #2422: `let mut` was the third binding form the int log missed
+          // (annotated params and aliases were the other two), so
+          // `let mut x = 64 << 32` rendered as the empty string.
+          //
+          // Only the non-ref-cell branch: a `let mut` captured by a closure
+          // becomes a heap CELL whose local holds the cell ADDRESS, not the
+          // value, and classifying the address as an Int would be exactly the
+          // confusion this log exists to prevent.
+          Array::push(ctx.gc_int_locals, local_idx)
         } else {
           ()
         }
