@@ -293,12 +293,21 @@ export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fna
 /// `eq(a, b)` and `a == b` must answer identically: `emit_gc_eq_value` sends
 /// an intish pair to a raw `i64.eq`, and this arm now does too, so the two
 /// spellings of one concept cannot diverge on a value.
-fn bc_expr_is_intish(e: Expr) -> Bool {
+fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EInt(_) => true,
     EBool(_) => true,
     EBinOp(op, _, _) => op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" || op == "+" || op == "-" || op == "*" || op == "/",
     EUnaryOp(op, _) => op == "!" || op == "~",
+    // #2405: a bare ident has no shape to read, so it is answered from the
+    // slot log `gc_compile_let_i64` writes -- resolved through the CURRENT
+    // slot (find_local_slot) first, exactly as `bc_expr_is_floatish` above
+    // does, so a name rebound in a sibling scope is not read through its
+    // stale entry.
+    EIdent(iname, _) => {
+      let slot = find_local_slot(local_names, iname)
+      slot >= 0 && array_contains_int(ctx.gc_int_locals, slot)
+    },
     _ => false
   }
 }
@@ -561,6 +570,7 @@ fn gc_reset_join_arm_slots(local_names: Array[String], ctx: CompileCtxGc, names_
   Array::truncate(local_names, names_len_before)
   agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
   gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
+  gc_slot_log_reset_above(ctx.gc_int_locals, names_len_before)
   gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
   gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
   gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
@@ -2237,7 +2247,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // in compile_call.vibe); it was never ported here. One operand is
         // enough: `==` already routes that way (`emit_gc_eq_value`), and a
         // scalar can only be equal to another scalar's bit pattern.
-        if bc_expr_is_intish(Array::get(args, 0)) || bc_expr_is_intish(Array::get(args, 1)) {
+        if bc_expr_is_intish(Array::get(args, 0), local_names, ctx) || bc_expr_is_intish(Array::get(args, 1), local_names, ctx) {
           let mut snl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
           snl = ce(buf, Array::get(args, 1), local_names, snl, ld)
           emit_i64_eq(buf)
@@ -2341,7 +2351,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // call below untouched.
         ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
       }
-      else if (fname == "Int::to_string" || fname == "__to_string") && Array::length(args) == 1 && bc_expr_is_intish(Array::get(args, 0)) {
+      else if (fname == "Int::to_string" || fname == "__to_string") && Array::length(args) == 1 && bc_expr_is_intish(Array::get(args, 0), local_names, ctx) {
         // #2405: the builtin decides Int-vs-String by a HEURISTIC on the bit
         // pattern (`gc_gen_to_string_body`), so an Int whose high word is a
         // plausible address is returned unchanged instead of rendered:

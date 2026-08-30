@@ -1,0 +1,118 @@
+// #2404 / #2405 / #2407: three places the wasm-gc lane answered differently
+// from the linear lane on ORDINARY values. Every assertion here must hold on
+// BOTH lanes, which is the point -- each of these compiled and ran on linear
+// and either trapped, refused to compile, or answered wrongly on gc.
+//
+// Run on both lanes by tests/gates/early/run.sh. A gc-only or linear-only
+// run would miss exactly the divergence this file exists to catch.
+
+// #2404: a labeled parameter is parsed with the marker ON THE NAME (`x~`)
+// while the body says `x`. The gc backend bound the raw name, so this fn
+// reported "internal compiler error: `x` (gc ident) reached code generation
+// unresolved ... please report the source" for a valid program.
+//
+// Subtraction, not addition, so a reordering bug cannot pass (CLAUDE.md).
+fn labeled_sub(x~: Int, y~: Int) -> Int {
+  x - y
+}
+
+// The same for an optional parameter, which carries `x?`.
+fn optional_sub(x?: Int, y?: Int) -> Int {
+  match x {
+    Some(a) => match y {
+      Some(b) => a - b,
+      None => a
+    },
+    None => 0
+  }
+}
+
+//# Misc
+
+test "#2404 a labeled parameter binds the name the body uses" {
+  assert(labeled_sub(x = 10, y = 3) == 7)
+  assert(labeled_sub(y = 3, x = 10) == 7)
+  assert(optional_sub(x = 10, y = 3) == 7)
+  // A lambda is a SEPARATE binding site, and its free-variable scan is a
+  // third. With only the first fixed, the body's `x` became a bogus capture
+  // and the call returned 0 with no diagnostic.
+  let f = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  assert(f(x = 10, y = 3) == 7)
+  assert(f(x = 3, y = 10) == 0 - 7)
+}
+
+test "#2405 a large Int renders as a number, not as an empty string" {
+  // `__to_string` resolves to a builtin that decides Int-vs-String by a
+  // heuristic on the bit pattern. `64 << 32` reads as (ptr 64, len 0), so it
+  // was returned unchanged and rendered as "" on the gc lane.
+  assert(__to_string(274877906944) == "274877906944")
+  assert(__to_string(64<<32) == "274877906944")
+  assert(__to_string(1<<40) == "1099511627776")
+  // A bare ident has no shape to classify, so it needs the slot log rather
+  // than the expression test -- this case survived the first fix.
+  let x = 274877906944
+  assert(__to_string(x) == "274877906944")
+  let y = 0 - 274877906944
+  assert(__to_string(y) == "-274877906944")
+  // Controls: the small values that always worked, and zero.
+  assert(__to_string(123) == "123")
+  assert(__to_string(0) == "0")
+  assert(__to_string(0 - 7) == "-7")
+}
+
+test "#2405 the int slot log does not swallow the other types" {
+  // Bool and Int share this lane's representation, so a boolish binding must
+  // keep its own classification or `true` renders as "1".
+  let b = 1 < 2
+  assert(__to_string(b) == "true")
+  let c = 3 < 2
+  assert(__to_string(c) == "false")
+  let s = "hi"
+  assert(__to_string(s) == "hi")
+  let d = 1.5
+  assert(__to_string(d) == "1.5")
+}
+
+test "#2405 a slot reused by a sibling scope is not read stale" {
+  // The two branches bind DIFFERENT `v`s to the same reused slot. Reading the
+  // else branch through the then branch's log entry would render a string as
+  // a number.
+  let r = if 1 < 2 {
+    let v = 274877906944
+    __to_string(v)
+  } else {
+    let v = "str"
+    __to_string(v)
+  }
+  assert(r == "274877906944")
+  let r2 = if 1 > 2 {
+    let v = 274877906944
+    __to_string(v)
+  } else {
+    let v = "str"
+    __to_string(v)
+  }
+  assert(r2 == "str")
+}
+
+test "#2407 eq answers on two distinct large Ints" {
+  // The gc `eq` arm sent every non-bit-identical pair to `String::equals`,
+  // which reads its operands as `(ptr << 32) | len` fat pointers -- an
+  // out-of-bounds load for an Int whose high word is a plausible address.
+  assert(!eq(64<<32, 65<<32))
+  assert(eq(64<<32, 64<<32))
+  assert(!eq((0 - (64<<32)) - 1, (0 - (65<<32)) - 1))
+  assert(!eq(0 - 274877906945, 0 - 279172874241))
+  // Small values, which always worked because the bogus address happened to
+  // be in bounds.
+  assert(!eq(1, 2))
+  assert(eq(3, 3))
+  // A genuinely string `eq` still compares content.
+  assert(eq("ab", "ab"))
+  assert(!eq("ab", "ac"))
+  // `eq` and `==` must answer the same on every one of these.
+  assert(eq(64<<32, 65<<32) == ((64<<32) == (65<<32)))
+  assert(eq(3, 3) == (3 == 3))
+}

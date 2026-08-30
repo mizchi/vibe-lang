@@ -1793,6 +1793,36 @@ run_test_block_fixtures() {
   done
 }
 
+# #2404/#2405/#2407: the same fixtures, compiled through the WASM-GC backend.
+# A divergence between the two lanes is invisible to a single-lane run by
+# construction, and all three of those issues were exactly that: a program that
+# compiled and answered correctly on linear and trapped, refused to compile, or
+# answered wrongly on gc. VIBE_BACKEND=gc selects gc codegen for the final
+# stage only -- module loading is unchanged (#2376).
+run_test_block_fixtures_gc() {
+  local label="$1"; shift
+  local fx fxout
+  [ "$#" -gt 0 ] || { echo "[compiler-gate] FAIL: $label matched no fixtures" >&2; exit 1; }
+  for fx in "$@"; do
+    [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
+    fxout="_build/_gate_tbfgc_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    VIBE_BACKEND=gc VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile on the gc lane ($label)" >&2
+      cat "$fxout.diag" 2>/dev/null >&2; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test on the gc lane (assert trapped) ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+  done
+}
+
 # 15b. extended derive(...) regression (#638 / #694): enum `derive(Ord/Show)`,
 #      struct + enum `derive(Default)`, `derive(Eq)`, and `derive(Hash)`
 #      including transparent Map keys — `map_key_to_string = [K: Hash](key) ->
@@ -1936,15 +1966,27 @@ echo "[compiler-gate] untyped-empty equality answers after a push ok"
 #        `ts_known_int` for `__to_string`, `cc_arg_is_scalarish` for an explicit
 #        `eq(a, b)`. Each classifier is separate, so each one missing `~`
 #        produced a different silent-wrong answer on the same values.
-#        Linear lane (the production default) only: the gc `eq` arm has no
-#        scalar guard at all and traps on ANY distinct large-Int pair, with no
-#        `~` involved -- #2407, not something `~` introduced.
 #        `fixtures/bitwise_test.vibe` joins it here for the same reason it was
 #        found: it was referenced by no gate either, and carried a "~ is not
 #        supported, use x ^ mask" test that had been false since slice C landed.
+#        This step was LINEAR-ONLY while #2407 stood (the gc `eq` arm had no
+#        scalar guard and trapped on any distinct large-Int pair, with no `~`
+#        involved). That is fixed, so the `eq` assertions now run on both lanes,
+#        which is what #2407 asked for.
 echo '[compiler-gate] 15b-2/15 bit-not ~ (#2344)'
 run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe fixtures/bitwise_test.vibe fixtures/bit_not_trait_witness_test.vibe
+run_test_block_fixtures_gc "bit-not (gc)" fixtures/bit_not_test.vibe fixtures/bitwise_test.vibe
 echo '[compiler-gate] bit-not ~ ok'
+
+# 15b-3. gc-lane scalar parity (#2404 / #2405 / #2407). One fixture, run on
+#        BOTH lanes: every assertion in it held on linear and failed on gc --
+#        a labeled parameter reported an internal compiler error, a large Int
+#        rendered as the empty string, and `eq` on two distinct large Ints
+#        trapped. A single-lane run cannot see any of them.
+echo '[compiler-gate] 15b-3/15 gc-lane scalar parity (#2404/#2405/#2407)'
+run_test_block_fixtures "gc-lane scalar parity (linear)" fixtures/gc_lane_scalar_parity_test.vibe
+run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_parity_test.vibe
+echo '[compiler-gate] gc-lane scalar parity ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
