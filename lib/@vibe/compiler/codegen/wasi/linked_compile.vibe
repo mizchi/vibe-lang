@@ -4273,6 +4273,28 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
     if Array::length(keep) == nbodies {
       // Nothing to drop: leave the bytes untouched rather than re-emitting
       // an identical module.
+      //
+      // This early-out is deliberately exact and NOT a dead-fraction
+      // threshold. A threshold looks attractive because the re-emit costs
+      // compile-time heap in proportion to module size while the saving is
+      // only the dead bodies' bytes, so skipping a barely-dead module looks
+      // free. It is not free: skipping always buys transient compile heap
+      // with permanent OUTPUT size, which is backwards for a pass whose
+      // purpose is output size. At the selfcompile KPI input -- 2.3% dead,
+      // 180 of 4305 bodies, 89752 B of 3.85 MB -- the rate is 29848504 heap
+      // bytes saved for 104420 output bytes added, and not worth taking
+      // while the heap gate still allows 14.8% of growth (its ceiling is
+      // the committed baseline + 10%, ci.yml).
+      //
+      // That rate is not constant, so do not extrapolate this one point. The
+      // re-emit's cost tracks module size while the saving tracks
+      // dead_fraction * module size, so skipping gets relatively cheaper as
+      // the dead fraction falls: the compiler's own module (0.4% dead) costs
+      // 10374 output bytes to skip, a tenth of the KPI's. A threshold is
+      // therefore unmeasured here, not refuted -- justifying one needs heap
+      // numbers from the barely-dead inputs that motivate it. What is settled
+      // is the direction: skipping never saves output bytes, so the only free
+      // case is nothing to drop at all, which is the test above.
       mod_bytes
     } else {
       // --- rebuilt code + function sections --------------------------------
