@@ -5589,21 +5589,8 @@ export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with Except
   check_program_type_defs_observation_impl(stmts, None, None).checked_program
 }
 
-/// Check once and retain only source-located primary call results whose
-/// checker-confirmed instantiated type is Double, plus the two counts that say
-/// whether the AST was located at all: how many primary call results the
-/// program has, and how many of those carry a source offset.
-///
-/// The counts exist because an EMPTY offset array is ambiguous. `check_program`
-/// records an occurrence for every primary call result either way, but
-/// `tab_call_ty` (checker.vibe) only files one under an offset when that offset
-/// is `>= 0` -- so an AST built by `parse_program(lex(source))` produces an
-/// empty table BY CONSTRUCTION, indistinguishable from a program that simply
-/// has no Double call results. A caller that cannot tell those apart wires the
-/// channel up green and inert; `check_program_double_call_result_located_observation`
-/// below is the caller-facing form that refuses the first case.
-fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int)] with Exception {
-  let capture = TypedOccurrenceRoleLaneCapture::{
+fn double_call_result_role_lane_capture() -> TypedOccurrenceRoleLaneCapture {
+  TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
@@ -5616,7 +5603,14 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
     frame_depth: 0,
     complete: true
   }
-  let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
+}
+
+/// Shared extraction half of the #2158 observation: retain only source-located
+/// primary call results whose checker-confirmed instantiated type is Double,
+/// plus the two counts that say whether the AST was located at all. `None`
+/// means the capture did not line up with the typed occurrences and nothing
+/// can be classified.
+fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> Option[(Array[Int], Int, Int)] {
   if Array::length(capture.entries) != Array::length(checked.typed_occurrences) {
     None
   } else {
@@ -5665,7 +5659,58 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
       }
       i = i + 1
     }
-    Some((checked, out, primary_calls, located_primary_calls))
+    Some((out, primary_calls, located_primary_calls))
+  }
+}
+
+/// Check once and retain only source-located primary call results whose
+/// checker-confirmed instantiated type is Double, plus the two counts that say
+/// whether the AST was located at all: how many primary call results the
+/// program has, and how many of those carry a source offset.
+///
+/// The counts exist because an EMPTY offset array is ambiguous. `check_program`
+/// records an occurrence for every primary call result either way, but
+/// `tab_call_ty` (checker.vibe) only files one under an offset when that offset
+/// is `>= 0` -- so an AST built by `parse_program(lex(source))` produces an
+/// empty table BY CONSTRUCTION, indistinguishable from a program that simply
+/// has no Double call results. A caller that cannot tell those apart wires the
+/// channel up green and inert; `check_program_double_call_result_located_observation`
+/// below is the caller-facing form that refuses the first case.
+fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int)] with Exception {
+  let capture = double_call_result_role_lane_capture()
+  let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
+  match double_call_result_offsets_from_capture(checked, capture) {
+    None => None,
+    Some((out, primary_calls, located_primary_calls)) => Some((checked, out, primary_calls, located_primary_calls))
+  }
+}
+
+/// #2391: the modular form of the #2158 observation, for the per-module check
+/// the FS lanes already run (check_module). One checker invocation answers
+/// both questions: the CheckedProgram every consumer of the module check needs,
+/// and this module's source-located Double call-result offsets, in the module's
+/// OWN offset space (the FS merge rebases them per file before codegen).
+///
+/// The offsets are `None` exactly when the located form below would refuse the
+/// channel: the program has primary call results and not one is located (an
+/// unlocated `parse_program(lex(source))` AST), or the capture did not line up.
+/// `Some([])` stays the honest "located, and no call result is a Double".
+///
+/// `initial_env` follows check_module's two production entries: `EnvEmpty`
+/// delegates to the plain whole-program check, anything else takes the
+/// projected-import-env path (`imports_already_projected`), so the checked
+/// program is identical to what check_program_result /
+/// check_program_with_projected_import_env_result produce today.
+export fn check_program_with_projected_import_env_double_call_result_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]]) with Exception {
+  let capture = double_call_result_role_lane_capture()
+  let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(capture), true).checked_program
+  match double_call_result_offsets_from_capture(checked, capture) {
+    None => (checked, None),
+    Some((out, primary_calls, located_primary_calls)) => if primary_calls > 0 && located_primary_calls == 0 {
+      (checked, None)
+    } else {
+      (checked, Some(out))
+    }
   }
 }
 

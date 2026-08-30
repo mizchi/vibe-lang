@@ -5909,11 +5909,12 @@ echo "[compiler-gate] generic transparent alias + opaque control ok (#1700)"
 #
 #      Compiled through the SINGLE-SOURCE lane on purpose -- no
 #      VIBE_FS_COMPILE, so `compile_source_wasi_only` runs, which is the linear
-#      entry that supplies the offsets. `scripts/vibe_test.sh` and
-#      `scripts/unit_test_runner.sh` both set VIBE_FS_COMPILE=1 and would take
-#      the FS merge lane, where the channel is not wired; running the fixture
-#      there would assert the wrong thing (and fail). The fixture is named
-#      without a `_test` suffix so the unit runner's glob does not pick it up.
+#      entry whose offsets come out of its whole-program check. The FS merge
+#      lane carries the channel too since #2391 (fed by the modular check;
+#      pinned by block 125 below and by the unit suite's
+#      float_call_offset_fs_lane_test.vibe); this fixture pins the
+#      single-source supply specifically, and is named without a `_test`
+#      suffix so the unit runner's glob does not route it to the other lane.
 echo "[compiler-gate] 105/105 checker Double call-result offsets on the linear source lane (#2158)"
 fcodir="_build/_gate_float_call_offsets"
 rm -rf "$fcodir"; mkdir -p "$fcodir"
@@ -9164,3 +9165,42 @@ for probe in clean local; do
 done
 rm -rf "$utdir"
 echo "[compiler-gate] unknown contract field/payload types are refused by both lanes at the declaration; builtin and local provenance stay clean ok (#2317)"
+
+# 125. #2391: FS-lane Double call-result offsets ride the MODULAR check
+#      (compile_file_fs_mode_rc -- the lane `vibe test` / `vibe run` take by
+#      default), and persistent-cache state must not change the emitted bytes.
+#
+#      Cold compile (empty cache: every module is checked in-process, offsets
+#      come from the memo) vs warm compile (typing cache + offsets sidecars
+#      hit: offsets come from the persistent sidecars) must emit byte-identical
+#      wasm -- the reuse arms in runtime/typecheck_fs.vibe require BOTH cache
+#      halves, so a half-populated cache re-checks instead of silently
+#      degrading. Running the warm artifact proves the rendered Doubles (the
+#      test file's inspect snapshots, including a call to an IMPORTED Double
+#      function -- the shape only this lane has).
+echo "[compiler-gate] 125/125 FS-lane Double call-result offsets ride the modular check (#2391)"
+ffsdir="_build/_gate_float_call_offsets_fs"
+rm -rf "$ffsdir"; mkdir -p "$ffsdir/cache"
+for pass in cold warm; do
+  VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/$pass.wasm" __no_entry__ \
+    >/dev/null 2>&1 || true
+  if [ ! -s "$ffsdir/$pass.wasm" ]; then
+    echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile ($pass, #2391)" >&2
+    cat "$ffsdir/$pass.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/warm.wasm"; then
+  echo "[compiler-gate] FAIL: FS-lane output depends on persistent-cache state (#2391)" >&2
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$ffsdir/warm.wasm" >"$ffsdir/run.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a Double reaching __to_string through a call renders as raw bits on the FS lane (#2391)" >&2
+  cat "$ffsdir/run.log" >&2 || true
+  exit 1
+fi
+rm -rf "$ffsdir"
+echo "[compiler-gate] FS-lane Double call-result offsets + cache-state byte identity ok (#2391)"
