@@ -6137,15 +6137,39 @@ export struct TypedOccurrenceRoleLaneCapture {
   frame_direct_recorded: Array[Bool];
   direct_entries: Array[(Array[Int], Array[Int], Type)];
   direct_enabled: Bool;
+  // #2391/#2425: false = record ONLY the (role, lane) entries and skip the
+  // whole frame/provenance machinery. Every capture function below funnels
+  // through provenance_capture, so a disabled capture never allocates a
+  // per-expression path array or a per-occurrence provenance row -- that
+  // allocation, run once per module across a compiler-sized closure, grew
+  // the selfcompile bump high-water past the CI KPI heap gate (+11.5%).
+  // The Double call-result observation only needs entries aligned with
+  // typed_occurrences; `complete` is meaningless when this is false.
+  provenance_enabled: Bool;
   mut frame_depth: Int;
   mut complete: Bool
+}
+
+/// The single guard for the frame/provenance half of a capture: a capture
+/// constructed with provenance_enabled = false behaves as None for every
+/// function below, while append_legacy_typed_occurrence still records its
+/// (role, lane) entries.
+fn provenance_capture(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Option[TypedOccurrenceRoleLaneCapture] {
+  match capture {
+    Some(c) => if c.provenance_enabled {
+      capture
+    } else {
+      None
+    },
+    None => None
+  }
 }
 
 /// Start one retained statement's expression root. This mutable state exists
 /// only for explicit provenance observations; the production checker passes
 /// None and performs no path allocation.
 export fn typed_occurrence_capture_begin_statement(capture: Option[TypedOccurrenceRoleLaneCapture], statement_path: Array[Int]) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => {
       c.statement_path = Array::slice(statement_path, 0, Array::length(statement_path))
       c.frame_depth = 0
@@ -6157,7 +6181,7 @@ export fn typed_occurrence_capture_begin_statement(capture: Option[TypedOccurren
 /// End a retained statement. Clearing the logical stack prevents a later
 /// statement from ever inheriting an expression coordinate.
 export fn typed_occurrence_capture_end_statement(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => {
       // Every statement root must have exited before the statement boundary.
       // Do not let a checker traversal-order divergence leak into the next
@@ -6174,7 +6198,7 @@ export fn typed_occurrence_capture_end_statement(capture: Option[TypedOccurrence
 }
 
 fn typed_occurrence_capture_enter_expression(capture: Option[TypedOccurrenceRoleLaneCapture], expr: Expr) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => {
       let path = if c.frame_depth == 0 {
         // The statement coordinate is captured independently at append time;
@@ -6207,7 +6231,7 @@ fn typed_occurrence_capture_enter_expression(capture: Option[TypedOccurrenceRole
 }
 
 fn typed_occurrence_capture_exit_expression(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => {
       if c.frame_depth > 0 {
         let index = c.frame_depth - 1
@@ -6229,7 +6253,7 @@ fn typed_occurrence_capture_exit_expression(capture: Option[TypedOccurrenceRoleL
 /// recurse into (for example a recognized call callee). The next actual
 /// recursive child then still receives its `expr_children` index.
 fn typed_occurrence_capture_skip_children(capture: Option[TypedOccurrenceRoleLaneCapture], count: Int) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => {
       if c.frame_depth > 0 {
         let parent_index = c.frame_depth - 1
@@ -6252,7 +6276,7 @@ fn typed_occurrence_capture_skip_children(capture: Option[TypedOccurrenceRoleLan
 /// rather than through `check_expr_capture`. This is needed for the right
 /// spine of sequence/let expressions and for specialized call traversal.
 fn typed_occurrence_capture_enter_virtual_child(capture: Option[TypedOccurrenceRoleLaneCapture], expected_child: Int, expected_children: Int) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => {
       if c.frame_depth > 0 {
         let parent_index = c.frame_depth - 1
@@ -6289,7 +6313,7 @@ fn typed_occurrence_capture_enter_virtual_child(capture: Option[TypedOccurrenceR
 /// Restore a virtual traversal stack to its entry depth. Any imbalance is
 /// incomplete rather than a fabricated provenance path.
 fn typed_occurrence_capture_restore_frame_depth(capture: Option[TypedOccurrenceRoleLaneCapture], expected_depth: Int) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => {
       if c.frame_depth < expected_depth {
         c.complete = false
@@ -6316,7 +6340,7 @@ fn typed_occurrence_capture_restore_frame_depth(capture: Option[TypedOccurrenceR
 }
 
 fn typed_occurrence_capture_record_direct_return(capture: Option[TypedOccurrenceRoleLaneCapture], ty: Type, lane: String) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => if c.direct_enabled {
       if c.frame_depth <= 0 || lane != "Primary" {
         c.complete = false
@@ -6338,7 +6362,7 @@ fn typed_occurrence_capture_record_direct_return(capture: Option[TypedOccurrence
 }
 
 fn typed_occurrence_capture_record_virtual_spine_returns(capture: Option[TypedOccurrenceRoleLaneCapture], start_depth: Int, ty: Type, lane: String) -> Unit {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => if c.direct_enabled {
       let mut index = start_depth
       while index < c.frame_depth {
@@ -6359,7 +6383,7 @@ fn typed_occurrence_capture_record_virtual_spine_returns(capture: Option[TypedOc
 }
 
 fn typed_occurrence_capture_frame_depth(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Int {
-  match capture {
+  match provenance_capture(capture) {
     Some(c) => c.frame_depth,
     None => -1
   }
@@ -6372,7 +6396,11 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
   match capture {
     Some(capture_entries) => {
       Array::push(capture_entries.entries, (role, lane))
-      if lane == "SyntheticRewrite" || lane == "AuxiliaryResumeValueRecheck" || capture_entries.frame_depth == 0 {
+      if !capture_entries.provenance_enabled {
+        // #2391: entries-only mode -- no provenance row, no completeness
+        // bookkeeping (see the field's note on the struct).
+        ()
+      } else if lane == "SyntheticRewrite" || lane == "AuxiliaryResumeValueRecheck" || capture_entries.frame_depth == 0 {
         capture_entries.complete = false
       } else {
         let expression_path = Array::get(capture_entries.frame_paths, capture_entries.frame_depth - 1)
