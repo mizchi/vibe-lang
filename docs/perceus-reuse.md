@@ -174,6 +174,19 @@ consumer, so an armed token cannot leak, and an armed-but-never-emitted
 token is a compile-time error rather than a silent leak. The narrow path
 keeps precedence, so previously fused arms stay byte-identical.
 
+The plan row is keyed `(scrutinee name, arity)`, which cannot tell sibling
+arms apart — so BOTH fusion tiers re-run the planner's exported
+`reuse_arm_has_blocker` on the very arm they are about to fuse (PR #2411
+review): an eligible arm's row must never authorize a same-shape sibling
+whose `return` inside a spine-let value could skip the consuming tail and
+leak the claimed block. The blocker predicate's scope is direct
+perform/throw/return/break/continue only; a spine call whose callee
+unwinds internally is not blocked — every call can throw on this lane, so
+transitive blocking would reject every arm, and an unwind between the
+claim and the tail leaks without corrupting, the same window the narrow
+fusion's spine calls have always had and the "safe leak, never
+use-after-free" class ADR-0055 accepts on unwind paths.
+
 Two deliberate exclusions, both measured against the compiler's own plan
 output rather than guessed:
 
@@ -184,18 +197,24 @@ output rather than guessed:
   rc_drop/dup/alias names) refuse, so the accounting the plan committed to
   is never broken. Extending the transfer to emit those drops at arm end is
   the next slice — it is where the compiler's own arms mostly live.
-- **Scalar-payload rebuilds decline** (`Leaf(v) => Leaf(v + 1)`): a scalar
-  bind's consume count is 0, and without type knowledge the planner cannot
-  distinguish it from an unused heap payload, which would leak on the
-  unique path.
+- **Scalar-payload rebuilds pair when the bind is consumed once, decline
+  when it is not.** Measured (this section previously claimed the
+  opposite): `Leaf(v) => Leaf(v + 1)` reads a consume count of 1 for `v`
+  and fuses — the raw transfer moves a tagged scalar exactly as it moves a
+  pointer, the shared-path dup no-ops on the even tag, and the
+  shared-source e2e proves the source tree intact. What declines is a
+  bind consumed zero times (unused, or reread through the scrutinee),
+  which without type knowledge is indistinguishable from an unused heap
+  payload that would leak on the unique path.
 
 Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
 semantics, ineligible shapes) and `tests/perceus_reuse_e2e_test.vibe`
 (bump/RC output agreement on the unique chain, the shared source surviving
-intact, and the tracked-spine arm where an interior same-arity constructor
-consumes the token before the tail and the reused block is then dropped —
-plus a non-vacuity check that the rc-word uniqueness-test constant appears
-in the RC wasm and not the bump wasm).
+intact, the tracked-spine arm where an interior same-arity constructor
+consumes the token before the tail and the reused block is then dropped,
+and the sibling arm whose conditional return must never be authorized by
+another arm's plan row — the last two counting occurrences of the rc-word
+uniqueness-test constant in the RC wasm, with the bump wasm holding none).
 
 ## Implementation notes (2026-08-03, #1262 continued)
 

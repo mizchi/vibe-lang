@@ -51,6 +51,23 @@ fn contains_token_test(b: Bytes) -> Bool {
   found
 }
 
+/// Count occurrences of the rc-word uniqueness test's immediate: each fused
+/// arm (narrow or wide) emits exactly one.
+fn count_token_tests(b: Bytes) -> Int {
+  let n = Bytes::length(b)
+  let mut i = 0
+  let mut cnt = 0
+  while i + 4 < n {
+    if Bytes::get(b, i) == 65 && Bytes::get(b, i + 1) == 129 && Bytes::get(b, i + 2) == 128 && Bytes::get(b, i + 3) == 128 && Bytes::get(b, i + 4) == 8 {
+      cnt = cnt + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  cnt
+}
+
 fn tree_prelude() -> String {
   "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec build: (Int) -> Node = (d) -> {\n  if d <= 0 {\n    Leaf(1)\n  } else {\n    Pair(build(d - 1), build(d - 1))\n  }\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n"
 }
@@ -78,15 +95,32 @@ test "tracked-spine arm: interior consumer plus dropped intermediate stays corre
   // drops and both the planner and the codegen decline).
   let src = String::concat(tree_prelude(), "let rec incr: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = incr(a)\n      let l = Pair(a2, a2)\n      let b2 = incr(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(5)\n  let r = incr(t)\n  let z = incr(Leaf(0))\n  total(t) * 1000 + total(r) + total(z)\n}")
   assert_bump_rc_agree(src, "tracked_spine", "32065")
-  // Non-vacuity: the wide fusion is the ONLY thing in this program that can
-  // emit the rc-word uniqueness test (`i32.const 16777217`; the narrow
-  // fusion declines every arm here -- the rebuild spine carries a planned
-  // drop, and no other arm is a rebuild). Its LEB spelling in the RC wasm
-  // proves the token staging fired rather than the arm quietly taking the
-  // normal path.
+  // Non-vacuity, counted: the Pair arm's rebuild spine carries a planned
+  // drop, so the narrow fusion declines it and only the WIDE path can fuse
+  // it; the Leaf arm (`Leaf(v) => Leaf(v + 1)`, scalar payload consumed
+  // once) fuses narrowly. Exactly two rc-word uniqueness tests
+  // (`i32.const 16777217`) therefore prove the wide staging fired -- one
+  // alone would mean the Pair arm quietly took the normal path.
   let rc_wasm = compile_wasi_rc(src, "main")
-  assert(contains_token_test(rc_wasm))
+  inspect(count_token_tests(rc_wasm), content = "2")
   // ...and the bump lane must NOT contain it (tokens are an RC-only device).
   let bump_wasm = compile_wasi(src, "main")
   assert(!contains_token_test(bump_wasm))
+}
+
+test "a sibling arm with a conditional return is never authorized by the eligible arm's plan row" {
+  // The plan's reuse row is keyed (scrutinee, arity). `B(y)` and
+  // `L(v) => L(v + d)` are eligible arity-1 rebuilds (a scalar payload
+  // consumed exactly once transfers raw just like a heap one), so the plan
+  // carries `(n, 1)` rows -- and `A(x)` is an arity-1 rebuild over the
+  // SAME scrutinee whose spine can `return` before the consuming tail.
+  // If those rows (or the narrow fusion's own shape check, which never
+  // scanned arm bodies for control transfers) authorized the A arm, the
+  // return path would leak the claimed block. Exactly TWO uniqueness
+  // tests may appear in the RC wasm: the B arm's and the L arm's; a
+  // third means the A arm was fused by a sibling's authorization.
+  let src = "enum Node {\n  A(Node);\n  B(Node);\n  L(Int)\n}\nlet rec step: (Node, Int) -> Node = (n, d) -> {\n  match n {\n    A(x) => {\n      let g = {\n        if d > 100 {\n          return L(9)\n        } else {\n          ()\n        }\n        0\n      }\n      A(step(x, d + g))\n    },\n    B(y) => B(step(y, d)),\n    L(v) => L(v + d)\n  }\n}\nlet rec val2: (Node) -> Int = (n) -> {\n  match n {\n    A(x) => 2 * val2(x) + 1,\n    B(y) => 3 * val2(y) + 2,\n    L(v) => v\n  }\n}\nfn main() -> Int {\n  let t = A(B(L(5)))\n  let r = step(t, 1)\n  let z = step(L(0), 3)\n  val2(r) * 10 + val2(z)\n}"
+  assert_bump_rc_agree(src, "sibling_return", "413")
+  let rc_wasm = compile_wasi_rc(src, "main")
+  inspect(count_token_tests(rc_wasm), content = "2")
 }

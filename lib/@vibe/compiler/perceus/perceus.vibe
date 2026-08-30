@@ -2816,8 +2816,18 @@ fn reuse_spine_tail(e: Expr) -> Expr {
 /// Any node that can transfer control past the arm's spine tail. EFn does
 /// not recurse: a return/perform inside a lambda leaves the LAMBDA, not
 /// this arm, and the lambda body compiles in its own frame with its own
-/// (empty) token state.
-fn reuse_arm_has_blocker(e: Expr) -> Bool {
+/// (empty) token state. Exported: the RC codegen re-runs this same
+/// predicate on the arm it is about to fuse, so a plan row produced by one
+/// arm can never authorize a same-scrutinee same-arity SIBLING arm that
+/// carries a control transfer (the pairing key is (name, arity), not an
+/// arm identity). Scope is DIRECT perform/throw only: a spine call whose
+/// callee unwinds internally is not blocked -- every call can throw on
+/// this lane (Array::get, arithmetic traps), so transitive blocking would
+/// reject every arm, and an unwind between the claim and the tail leaks
+/// the block without ever corrupting it, the same window the narrow
+/// fusion's spine calls (#1265) have always had and the same "safe leak,
+/// never use-after-free" class ADR-0055 accepts on unwind paths.
+export fn reuse_arm_has_blocker(e: Expr) -> Bool {
   match e {
     EReturn(_) => true,
     EBreak(_) => true,

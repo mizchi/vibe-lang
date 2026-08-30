@@ -28,6 +28,10 @@ import @vibe/compiler/codegen/common_analysis {
   md_shadow_zeroed_bmasks
 }
 
+import @vibe/compiler/perceus {
+  reuse_arm_has_blocker
+}
+
 import @vibe/compiler/codegen/common_base {
   CompileCtx,
   CtorTable,
@@ -300,7 +304,10 @@ fn mr_spine_lets_ok(e: Expr, ctx: CompileCtx) -> Bool with Exception {
 /// compile through the normal borrow-bind path (scope-end drop covers it).
 fn mr_reuse_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> Int with Exception {
   let mr_tail = mr_spine_tail(body)
-  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 && mr_spine_lets_ok(body, ctx) {
+  // #2389 review: a `return` inside a spine-let VALUE could skip the
+  // consuming tail after the block is claimed; the planner's blocker
+  // predicate covers that shape for both fusion tiers.
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 && mr_spine_lets_ok(body, ctx) && !reuse_arm_has_blocker(body) {
     let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
     if get_eident_name(scrutinee) == sname {
       let pargs = get_pctor_args(p)
@@ -590,8 +597,10 @@ fn mr_binds_before(pargs: Array[Pat], idx: Int) -> Int {
 //# armed on the ctx stacks, and letting compile_call's constructor path
 //# consume it at the first same-arity allocation. The spine-tail
 //# constructor is the guaranteed consumer (the planner refused arms with
-//# any control transfer that could skip it), so an armed token cannot
-//# leak; an interior same-arity constructor consuming it first is equally
+//# any control transfer that could skip it, and the eligibility check
+//# below re-proves that on the very arm being fused -- the plan row's
+//# (name, arity) key cannot tell sibling arms apart), so an armed token
+//# cannot leak; an interior same-arity constructor consuming it first is equally
 //# sound -- the token is just a same-size block, and consuming zeroes the
 //# local so later sites allocate fresh.
 
@@ -616,16 +625,19 @@ fn mr_reuse_plan_has(ctx: CompileCtx, name: String, arity: Int) -> Bool {
 /// stores are byte-identical between a fresh block and a reused one. The
 /// SOURCE pattern's float exclusion stays (the raw payload binds below
 /// bypass bind_match_pat's float_local_slots registration). Additionally
-/// gated on the plan's PaReuseToken candidate, whose analysis also proved
-/// the arm free of control transfers that could skip the tail. Returns the
-/// pattern arity, or -1.
+/// gated on the plan's PaReuseToken candidate AND on re-running the
+/// planner's own `reuse_arm_has_blocker` on THIS arm: the plan row is
+/// keyed (name, arity), which cannot distinguish sibling arms, so an
+/// eligible arm's row must never authorize a same-shape sibling whose
+/// `return` could skip the consuming tail and leak the claimed block.
+/// Returns the pattern arity, or -1.
 fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> Int with Exception {
   let mr_tail = mr_spine_tail(body)
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 {
     let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
     let pargs = get_pctor_args(p)
     let arity = Array::length(pargs)
-    if get_eident_name(scrutinee) == sname && mr_reuse_plan_has(ctx, sname, arity) {
+    if get_eident_name(scrutinee) == sname && mr_reuse_plan_has(ctx, sname, arity) && !reuse_arm_has_blocker(body) {
       let callee = get_ecall_callee(mr_tail)
       if arity >= 1 && is_eident(callee) {
         let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
