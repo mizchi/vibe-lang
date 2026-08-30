@@ -1083,39 +1083,41 @@ list に乗っているということは、rc_alloc の呼び出し側のどこ
 **RC 管理でない (ヘッダなしの) box を、クロージャ側が RC オブジェクトとして
 扱っていた。**
 
-### 壊れていた契約
+### The contract that was broken
 
-`compile_expr_tail.vibe` の ELetMut ref-cell 経路:
+The ELetMut ref-cell path in `compile_expr_tail.vibe`:
 
 ```vibe
 if mut_needs_ref_cell(body, name) {
-  Array::push(ctx.ref_cell_names, name)        // ← 無条件
+  Array::push(ctx.ref_cell_names, name)        // <- unconditional
   if ctx.enable_rc && rc_alloc_idx >= 0 && rc_drop_idx >= 0
-     && expr_is_intish(value, local_names, ctx) {   // ← 条件付き
+     && expr_is_intish(value, local_names, ctx) {   // <- conditional
     // rc_alloc(16) + [alloc_size@0][rc@4|class8@7][payload@8]
   } else {
-    // global0 を 8 だけ生バンプ。ヘッダなし。
+    // a raw bump of global0 by 8. No header.
   }
 }
 ```
 
-一方 `compile_lambda.vibe:658` は **`ref_cell_names` だけ**を見て
-「RC が所有する capture」として扱う:
+`compile_lambda.vibe` meanwhile looks at **`ref_cell_names` alone** to decide
+that a capture is RC-owned:
 
 ```vibe
 if ctx.enable_rc && array_contains_str(ctx.ref_cell_names, cap_name) {
-  // capture slot に odd タグ付きで格納
+  // store into the capture slot with the odd tag
   emit_rc_word_inc_saturating(buf, () -> { ... cap - 4 ... })
-  // → クロージャの class-7 drop が __rt_rc_drop を呼ぶ
+  // -> the closure's class-7 drop calls __rt_rc_drop
 }
 ```
 
-**`expr_is_intish` が false のとき、この 2 つが食い違う。**
+**When `expr_is_intish` is false, those two disagree.**
 
-`expr_is_intish` は tag 6 (EUnaryOp) では `op == "!"` と `op == "~"`
-(#2344) しか true にしない (`compile_expr_tail.vibe`)。つまり
-**`let mut i = -1` で十分に外れる** (`-1` は `EUnaryOp("-", EInt(1))`。
-単項 `-` は float 否定でもありうるので、`~` と違い無条件には足せない)。`""` / `None` / 関数呼び出しの初期値も同様。
+`expr_is_intish` answers true at tag 6 (EUnaryOp) only for `op == "!"` and
+`op == "~"` (#2344, `compile_expr_tail.vibe`). So **`let mut i = -1` is
+already enough to fall out of it** — `-1` is `EUnaryOp("-", EInt(1))`, and
+unary `-` cannot be added unconditionally the way `~` was, because it may be a
+float negation. An initial value of `""` / `None` / a function call falls out
+the same way.
 
 ### 何が起きるか
 
