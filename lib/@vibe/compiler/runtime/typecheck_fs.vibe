@@ -15,7 +15,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  TypeExpr, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
+  TypeExpr, trait_ref_from_key, trait_ref_key, trait_ref_name, type_expr_is_array_of_int, type_param_arity, type_param_name
 }
 
 import @vibe/compiler/checker {
@@ -77,7 +77,7 @@ import @vibe/compiler/core {
 // #946(4): inline-wasm codegen validation (lane/align/etc. errors) runs as
 // part of `collect_all_diagnostics` too — see check_inline_wasm_fns below.
 import @vibe/compiler/codegen {
-  compile_inline_wat_calls
+  compile_inline_wat_array_params
 }
 
 // #1948: the same Show-interpolation contract `vibe check` runs via
@@ -5563,7 +5563,7 @@ fn dedupe_diagnostics(diags: Array[String]) -> Array[String] {
 /// read-only (no mutation: diagnostics discards `stmts` after this scan, and
 /// running it before codegen would blow away the marker codegen depends on).
 /// Returns (fn_name, wat_text, param_names) triples in declaration order.
-fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[String])] {
+fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[String], Array[String])] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -5575,13 +5575,26 @@ fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[S
               match Array::get(iw_args, 0) {
                 EString(iw_wat) => {
                   let pnames = array_empty()
+                  // #2348 part 2: the `Array[Int]` params, so this lane
+                  // assembles the body the way codegen does -- a `local.set`
+                  // on an array param is refused here too, and not first seen
+                  // at build time.
+                  let parrays = array_empty()
                   let mut pi = 0
                   while pi < Array::length(iw_params) {
-                    let (pn, _) = Array::get(iw_params, pi)
+                    let (pn, pt) = Array::get(iw_params, pi)
                     Array::push(pnames, pn)
+                    match pt {
+                      Some(ptv) => if type_expr_is_array_of_int(ptv) {
+                        Array::push(parrays, pn)
+                      } else {
+                        ()
+                      },
+                      None => ()
+                    }
                     pi = pi + 1
                   }
-                  Array::push(out, (iw_name, iw_wat, pnames))
+                  Array::push(out, (iw_name, iw_wat, pnames, parrays))
                 },
                 _ => ()
               }
@@ -5603,19 +5616,19 @@ fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[S
 /// #2348: the callee table for the CHECK lane -- one entry per inline-wasm fn
 /// in this module, carrying its position where codegen carries a wasm function
 /// index (see check_inline_wasm_fns for why that is sound here).
-fn check_iw_callee_table(fns: Array[(String, String, Array[String])]) -> Array[(String, Int, Int)] {
+fn check_iw_callee_table(fns: Array[(String, String, Array[String], Array[String])]) -> Array[(String, Int, Int)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(fns) {
-    let (fn_name, _wat, pnames) = Array::get(fns, i)
+    let (fn_name, _wat, pnames, _parrays) = Array::get(fns, i)
     Array::push(out, (fn_name, i, Array::length(pnames)))
     i = i + 1
   }
   out
 }
 
-/// #946(4): validate every inline-wasm fn body (compile_inline_wat_calls — the same
-/// assembler codegen uses) and return the FIRST located error, or None when
+/// #946(4): validate every inline-wasm fn body (the same assembler entry
+/// codegen uses) and return the FIRST located error, or None when
 /// every inline-wasm fn assembles cleanly. `compile` surfaced these (e.g. a bad
 /// SIMD lane index) as a located error while `vibe diagnostics` reported clean
 /// — diagnostics only ran the typechecker, never this codegen-adjacent
@@ -5639,9 +5652,9 @@ export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
     if i >= n {
       done = true
     } else {
-      let (fn_name, wat, pnames) = Array::get(fns, i)
+      let (fn_name, wat, pnames, parrays) = Array::get(fns, i)
       let outcome = handle {
-        let _ = compile_inline_wat_calls(fn_name, wat, pnames, Array::length(pnames) + 1, iw_callees)
+        let _ = compile_inline_wat_array_params(fn_name, wat, pnames, parrays, Array::length(pnames) + 1, iw_callees)
         None
       } with { Exception::Throw(msg) => Some(msg) }
       match outcome {

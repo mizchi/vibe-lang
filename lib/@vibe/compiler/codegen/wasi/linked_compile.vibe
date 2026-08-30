@@ -26,6 +26,10 @@ import @vibe/compiler/core {
   verify_lane_builtins
 }
 
+import @vibe/ast {
+  type_expr_is_array_of_int
+}
+
 import @vibe/core {
   array_empty
 }
@@ -169,7 +173,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_new,
   codegen_body_cache_record,
   codegen_body_cache_replay,
-  compile_inline_wat_calls,
+  compile_inline_wat_array_params,
   compute_agg_returning,
   ctor_sorted_index,
   desugar_trait_dicts,
@@ -698,7 +702,7 @@ fn gen_heap_grow_check_body() -> Bytes {
 /// scalar-return classification, string-table collection, coverage) sees an
 /// ordinary trivial body and the WAT text never leaks into the data section.
 /// The per-fn codegen loop then splices the assembled instruction bytes
-/// (compile_inline_wat_calls) instead of running compile_expr for these names.
+/// (compile_inline_wat_array_params) instead of running compile_expr for them.
 fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -773,7 +777,7 @@ fn lc_build_iw_callees(iw_names: Array[String], ft_names: Array[String], ft_indi
 /// depth of the flattened module source ("unknown name" on every later
 /// reference, tuple/mut/plain-Int alike), while reads through an
 /// already-in-scope array provably survive (meta_i32 itself is one).
-fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], param_count: Int, iw_extra_cell: Array[Int], iw_callees: Array[(String, Int, Int)]) -> Unit with Exception {
+fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], iw_array_params: Array[String], param_count: Int, iw_extra_cell: Array[Int], iw_callees: Array[(String, Int, Int)]) -> Unit with Exception {
   Array::set(iw_extra_cell, 0, 0)
   Array::set(iw_extra_cell, 1, 0)
   Array::set(iw_extra_cell, 2, 0)
@@ -783,7 +787,7 @@ fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[Strin
     // Declared `(local ...)` runs index from param_count (params + the
     // closure-env slot), matching the i32/i64/v128 header runs the meta
     // arrays receive at the code-section assembly.
-    let (iw_bytes, iw_n32, iw_n64, iw_nv) = compile_inline_wat_calls(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names, param_count, iw_callees)
+    let (iw_bytes, iw_n32, iw_n64, iw_nv) = compile_inline_wat_array_params(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names, iw_array_params, param_count, iw_callees)
     bytebuf_push_buf(body_buf, iw_bytes)
     Array::set(iw_extra_cell, 0, iw_n32)
     Array::set(iw_extra_cell, 1, iw_n64)
@@ -7913,13 +7917,26 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
             0 - 1
           }
           let iw_param_names = lc_fresh_string_array()
+          // #2348 part 2: the params declared `Array[Int]`, read from the same
+          // declared types the parser admitted -- so the mask the assembler
+          // emits for `local.get $xs` covers exactly the params that carry a
+          // possibly-tagged array value.
+          let iw_array_params = lc_fresh_string_array()
           let mut iw_pi = 0
           while iw_pi < Array::length(lc_norm_params) {
-            let (iw_pn, _) = Array::get(lc_norm_params, iw_pi)
+            let (iw_pn, iw_pt) = Array::get(lc_norm_params, iw_pi)
             Array::push(iw_param_names, iw_pn)
+            match iw_pt {
+              Some(iw_ptv) => if type_expr_is_array_of_int(iw_ptv) {
+                Array::push(iw_array_params, iw_pn)
+              } else {
+                ()
+              },
+              None => ()
+            }
             iw_pi = iw_pi + 1
           }
-          lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, param_count, iw_extra_cell, iw_callees)
+          lc_compile_iw_body(body_buf, fn_name_dbg, iw_wats, iw_found, iw_param_names, iw_array_params, param_count, iw_extra_cell, iw_callees)
           let final_nl = if iw_found >= 0 {
             param_count
           } else {

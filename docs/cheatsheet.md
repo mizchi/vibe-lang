@@ -2220,13 +2220,30 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 - **Linear backend only** — the wasm-gc backend rejects it with a compile
   error. The declared signature is trusted (extern-let style).
 - **v0.3 slice restrictions**: monomorphic only (no `[T]`), empty effect row,
-  no `where` contracts, params typed literally `Int` or `Bytes`, return type
-  `Int`. A `Bytes` param passes the RAW untagged object pointer (linear heap
-  layout: length at `obj+4`, data pointer at `obj+8`) — the body can
+  no `where` contracts, params typed `Int`, `Bytes` or `Array[Int]`, return
+  type `Int`. A `Bytes` param passes the RAW untagged object pointer (linear
+  heap layout: length at `obj+4`, data pointer at `obj+8`) — the body can
   `i32.load offset=8` the data pointer and feed `v128.load`/`v128.store`
   (the pointer is only valid while the Bytes is alive and un-grown). No
   `call_indirect` / `return_call` / `global.*` / `br_table` / `f32.const` /
   `f64.const`.
+- **`Array[Int]` params** (#2348): `local.get $xs` yields the array's header
+  address — `[capacity@0][length@4][data_ptr@8]`, so the length is
+  `i32.load offset=4` and the element block starts at `i32.load offset=8`.
+  The **same address on both lanes**: an array value is odd under `VIBE_RC=1`
+  (the production default) and even on the bump lane, and the assembler masks
+  the tag off every `local.get` of an array param rather than making the
+  kernel author pick. The mask is why the slot itself is read-only — writing
+  to it would hand RC's epilogue a value it did not allocate — so
+  `local.set $xs` / `local.tee $xs` are located errors; copy into a declared
+  `(local $tmp i64)` instead. What is NOT normalized, and cannot be, is the
+  **element** at `data_ptr + i*8`: it is an `Int` in the lane's own
+  representation, tagged `n<<1` under RC and raw under bump, exactly the trap
+  a scalar `Int` param already has. So `i64x2.add` straight over the slots is
+  correct on both lanes (addition is tag-transparent) while a multiply or a
+  shift is not, and an index arriving as a tagged `Int` scales by 4 under RC
+  where it scales by 8 on bump. The pointer is only valid while the array is
+  alive and un-grown — `Array::push` may reallocate the element block.
 - **Calling another kernel** (#2348): a body may `call` another inline-wasm
   `fn` in the same module — `(call $other (local.get $a) (local.get $b))`.
   Write only the real arguments: the assembler adds the closure-env slot

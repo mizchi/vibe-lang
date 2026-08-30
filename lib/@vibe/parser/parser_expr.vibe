@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/ast {
-  Expr, Pat, Stmt, TypeExpr, trait_ref_key
+  Expr, Pat, Stmt, TypeExpr, trait_ref_key, type_expr_is_array_of_int
 }
 
 import ./parser_base.vibe {
@@ -869,8 +869,9 @@ export fn parse_fn_stmt_with_binder_context(tokens: Array[Token], starts: Array[
 /// the mod operator — so user source cannot forge it). Multiple adjacent
 /// string literals are joined with newlines (the lexer has no raw/multiline
 /// strings). v0.3 slice restrictions enforced here: monomorphic, empty
-/// effect row, no where-contracts, and every param + the return type spelled
-/// literally `Int` (raw 62-bit tagged i64 at the boundary, ADR-0055).
+/// effect row, no where-contracts, the return type spelled literally `Int`
+/// (raw 62-bit tagged i64 at the boundary, ADR-0055), and every param typed
+/// `Int`, `Bytes` or `Array[Int]`.
 fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: String, tps: Array[String], tbs: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], ret_ty: TypeExpr, eff_opt: Option[String], reqs: Array[Expr], enss: Array[Expr], context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   // pos is at the token AFTER `= wasm`.
   if Array::length(tps) > 0 {
@@ -894,12 +895,20 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
     // Bytes params (#805 SIMD follow-up) pass the raw UNTAGGED object
     // pointer — the WAT body reads the length at obj+4 and the data pointer
     // at obj+8 (linear backend heap layout), e.g. to feed v128.load.
+    // Array[Int] params (#2348 part 2) reach the body as the same UNTAGGED
+    // header pointer: an array value is odd on the RC lane and even on the
+    // bump lane, so the assembler masks the tag off every `local.get` of an
+    // array param and the body sees one lane-independent
+    // `[capacity@0][length@4][data_ptr@8]` block either way. What is NOT
+    // lane-independent is the ELEMENT at `data_ptr + i*8`, tagged exactly
+    // like a scalar Int param -- see docs/cheatsheet.md "Inline wasm".
     let ok = match pt {
       Some(TyName(tn)) => tn == "Int" || tn == "Bytes",
+      Some(other) => type_expr_is_array_of_int(other),
       _ => false
     }
     if !ok {
-      throw("inline wasm fn '\{name}': param '\{pn}' must be typed Int or Bytes (raw i64 at the boundary) at #\{pos}")
+      throw("inline wasm fn '\{name}': param '\{pn}' must be typed Int, Bytes, or Array[Int] (raw i64 at the boundary) at #\{pos}")
     } else {
       ()
     }
