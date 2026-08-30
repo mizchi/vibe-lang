@@ -688,7 +688,20 @@ fn gc_expr_is_shape_intish(e: Expr) -> Bool {
     } else {
       false
     },
-    EUnaryOp(op, _) => op == "!" || op == "~",
+    // Same split as `bc_expr_is_intish`: `!` and `~` are their own type, while
+    // `-` and `+` carry the operand's. Leaving `-` out here did not make a
+    // module WRONG -- the call site would find the argument Int, see the ctx
+    // index at -1 and inline -- but a module whose only statically-Int renders
+    // are written `__to_string(-(64 << 32))` then paid the ~182-byte inline
+    // copy at every site, which is the growth the shared body exists to remove
+    // (#2422 review).
+    EUnaryOp(op, x) => if op == "!" || op == "~" {
+      true
+    } else if op == "-" || op == "+" {
+      gc_expr_is_shape_intish(x)
+    } else {
+      false
+    },
     _ => false
   }
 }
