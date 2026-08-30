@@ -108,6 +108,41 @@ test "tracked-spine arm: interior consumer plus dropped intermediate stays corre
   assert(!contains_token_test(bump_wasm))
 }
 
+test "a pure-borrow bind fuses: raw-transferred child released at arm end" {
+  // `a` is only ever BORROW-read (total is borrow-classified: every call
+  // site passes an ident), so its consume count is 0 -- the shape the
+  // first slice declined. The wide fusion now admits it: on the unique
+  // path the raw-transferred child is dropped at arm end (nothing in the
+  // body consumes it; without that drop the token overwrite leaks it), on
+  // the shared path the staging dup gives the bind its own ref and the
+  // same arm-end drop releases it. `reshape(Leaf(0))` keeps reshape
+  // owning; b stays a plain consume-1 transfer in the same arm.
+  let src = String::concat(tree_prelude(), "let rec reshape: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let b2 = reshape(b)\n      Pair(Leaf(w), b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(4)\n  let r = reshape(t)\n  let z = reshape(Leaf(0))\n  total(r) * 10 + total(z)\n}")
+  assert_bump_rc_agree(src, "borrow_bind_unique", "171")
+  // Two fused arms: the Pair arm through the WIDE path (a's consume count
+  // is 0, so the narrow tier declines), the Leaf arm narrowly.
+  let rc_wasm = compile_wasi_rc(src, "main")
+  inspect(count_token_tests(rc_wasm), content = "2")
+}
+
+test "a shared source survives a pure-borrow-bind rebuild untouched" {
+  // Same reshape, but the source tree stays live across the rebuild: the
+  // shared path must leave t's structure intact while the consume-0 bind
+  // (dup'd at staging, dropped at arm end) reads through it.
+  let src = String::concat(tree_prelude(), "let rec reshape: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let b2 = reshape(b)\n      Pair(Leaf(w), b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(3)\n  let r = reshape(t)\n  let z = reshape(Leaf(0))\n  total(t) * 1000 + total(r) + total(z)\n}")
+  assert_bump_rc_agree(src, "borrow_bind_shared", "8010")
+}
+
+test "a bind both borrowed and consumed still transfers cleanly" {
+  // `a` is read by borrow-classified total AND consumed by the recursive
+  // incr2 -- consume count 1 with extra borrow reads. The transfer hands
+  // the child to the consume; the borrow reads happen before it.
+  let src = String::concat(tree_prelude(), "let rec incr2: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let a2 = incr2(a)\n      let b2 = incr2(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(3)\n  let r = incr2(t)\n  let z = incr2(Leaf(9))\n  total(r) * 100 + total(z)\n}")
+  assert_bump_rc_agree(src, "borrow_and_consume", "1610")
+  let rc_wasm = compile_wasi_rc(src, "main")
+  inspect(count_token_tests(rc_wasm), content = "2")
+}
+
 test "a sibling arm with a conditional return is never authorized by the eligible arm's plan row" {
   // The plan's reuse row is keyed (scrutinee, arity). `B(y)` and
   // `L(v) => L(v + d)` are eligible arity-1 rebuilds (a scalar payload

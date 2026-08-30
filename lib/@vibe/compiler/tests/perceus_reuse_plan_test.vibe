@@ -38,6 +38,19 @@ test "rows carry the arity the codegen authorizes by" {
   assert(String::contains(plan, "walk n reuse_alloc:2 1"))
 }
 
+test "a pure-borrow bind pairs; a doubly-consumed bind does not" {
+  // In reshape's Pair arm, `a` is only borrow-read (total3 is
+  // borrow-classified) -- consume count 0, admitted since the
+  // borrow-callee slice; the codegen compensates with a staging dup on
+  // the shared path and an arm-end drop. In dbl's arm `a` is consumed
+  // TWICE by the owning `own` -- no raw-transfer equivalent exists for
+  // dup-per-consume, so it must stay unpaired.
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total3: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total3(a) + total3(b),\n    Leaf(v) => v\n  }\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\nlet rec reshape: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total3(a)\n      let b2 = reshape(b)\n      Pair(Leaf(w), b2)\n    },\n    _ => Leaf(1)\n  }\n}\nlet dbl: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, _) => Pair(own(a), own(a)),\n    _ => Leaf(1)\n  }\n}\nlet main: () -> Int = () -> {\n  match reshape(Leaf(0)) {\n    _ => match dbl(own(Leaf(1))) {\n      _ => 0\n    }\n  }\n}"
+  let plan = plan_of(src)
+  assert(String::contains(plan, "reshape n reuse_token:2 1"))
+  assert(!String::contains(plan, "dbl n reuse_token"))
+}
+
 test "arms that keep the scrutinee alive or change arity stay unpaired" {
   // `keep` mentions the scrutinee in the arm body; `shrink`'s constructor
   // arm rebuilds at a DIFFERENT arity and its other arm is a wildcard

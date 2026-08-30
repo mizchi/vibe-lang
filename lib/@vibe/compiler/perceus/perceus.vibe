@@ -2794,8 +2794,11 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 //
 // Post-pass over the function body: every `match <ident>` whose scrutinee
 // has a planned drop is scanned for arms that (a) decompose the value with
-// an all-PBind/PWild `PCtor` pattern whose every PBind is consumed exactly
-// once, (b) never mention the scrutinee again, (c) contain no control
+// an all-PBind/PWild `PCtor` pattern whose every PBind is consumed at most
+// once (consume 1 transfers raw; consume 0 -- a bind only borrow-read by
+// its uses, e.g. every callee borrow-classified -- is compensated by the
+// codegen and aliased binds decline), (b) never mention the scrutinee
+// again, (c) contain no control
 // transfer that could skip the arm's tail (return/break/continue/perform
 // -- a lambda's interior is exempt: its body runs in its own frame), and
 // (d) end (through any let spine) in a call of the SAME arity as the
@@ -2871,7 +2874,7 @@ export fn reuse_arm_has_blocker(e: Expr) -> Bool {
   }
 }
 
-fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_param_fns: Array[String], borrow_param_masks: Array[Int], action_names: Array[String]) -> Int {
+fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_param_fns: Array[String], borrow_param_masks: Array[Int], alias_names: Array[String]) -> Int {
   match pat {
     PCtor(_, pargs) => {
       let arity = Array::length(pargs)
@@ -2889,17 +2892,24 @@ fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_par
         let mut i = 0
         while ok && i < arity {
           match Array::get(pargs, i) {
-            // A payload bind must be consumed EXACTLY once AND owe the plan
-            // no action of its own (a borrow-classified callee leaves the
-            // bind with a scope-end drop; raw ownership transfer would then
-            // break the accounting the plan already committed to -- the
-            // borrow-callee extension is a separate slice). Name-keyed
-            // against the whole fn's action names, so a same-named binding
+            // A payload bind is admitted at consume count 1 (ownership
+            // transfers raw and the single consume releases it) or 0 (pure
+            // borrow reads; the codegen compensates -- on the unique path
+            // the arm-end conditional drop releases the raw-transferred
+            // child, on the shared path the bind stays a borrowed view of
+            // the still-live block). 2+ declines: the normal path's
+            // dup-per-consume has no raw-transfer equivalent. An
+            // alias-bound name (PaAliasDup row anywhere in the fn) also
+            // declines -- aliasing can hide an extra owner the consume
+            // count does not see; name-keyed, so a same-named alias
             // elsewhere declines conservatively.
-            PBind(bn) => if md_consume_count_pre(arm_body, bn, borrow_param_fns, bmasks) != 1 || name_in(action_names, bn) {
-              ok = false
-            } else {
-              ()
+            PBind(bn) => {
+              let __cc = md_consume_count_pre(arm_body, bn, borrow_param_fns, bmasks)
+              if (__cc != 0 && __cc != 1) || name_in(alias_names, bn) {
+                ok = false
+              } else {
+                ()
+              }
             },
             PWild => (),
             _ => ok = false
@@ -2921,7 +2931,7 @@ fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_par
   }
 }
 
-fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], action_names: Array[String], actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
+fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[String], actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
   match e {
     // A nested lambda's body plans in its OWN frame (compile_lambda builds
     // a separate plan whose post-pass pairs its matches there), exactly as
@@ -2937,7 +2947,7 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], action_names: Array
           let mut ai = 0
           while ai < Array::length(arms) {
             let (apat, abody) = Array::get(arms, ai)
-            let arity = reuse_arm_candidate_arity(sname, apat, abody, borrow_param_fns, borrow_param_masks, action_names)
+            let arity = reuse_arm_candidate_arity(sname, apat, abody, borrow_param_fns, borrow_param_masks, alias_names)
             if arity >= 1 {
               pr_push_reuse(actions, PaReuseToken, sname, arity)
               pr_push_reuse(actions, PaReuseAlloc, sname, arity)
@@ -2954,7 +2964,7 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], action_names: Array
       let kids = expr_children(e)
       let mut i = 0
       while i < Array::length(kids) {
-        plan_reuse_pairs_walk(Array::get(kids, i), drop_names, action_names, actions, borrow_param_fns, borrow_param_masks)
+        plan_reuse_pairs_walk(Array::get(kids, i), drop_names, alias_names, actions, borrow_param_fns, borrow_param_masks)
         i = i + 1
       }
     },
@@ -2962,7 +2972,7 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], action_names: Array
       let kids = expr_children(e)
       let mut i = 0
       while i < Array::length(kids) {
-        plan_reuse_pairs_walk(Array::get(kids, i), drop_names, action_names, actions, borrow_param_fns, borrow_param_masks)
+        plan_reuse_pairs_walk(Array::get(kids, i), drop_names, alias_names, actions, borrow_param_fns, borrow_param_masks)
         i = i + 1
       }
     }
@@ -2971,7 +2981,7 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], action_names: Array
 
 fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
   let drop_names: Array[String] = []
-  let action_names: Array[String] = []
+  let alias_names: Array[String] = []
   let mut i = 0
   while i < Array::length(actions) {
     let a = Array::get(actions, i)
@@ -2980,15 +2990,15 @@ fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction], borrow_param_fns:
     } else {
       ()
     }
-    if !name_in(action_names, a.name) {
-      Array::push(action_names, a.name)
+    if pa_is_alias_dup(a) && !name_in(alias_names, a.name) {
+      Array::push(alias_names, a.name)
     } else {
       ()
     }
     i = i + 1
   }
   if Array::length(drop_names) > 0 {
-    plan_reuse_pairs_walk(body, drop_names, action_names, actions, borrow_param_fns, borrow_param_masks)
+    plan_reuse_pairs_walk(body, drop_names, alias_names, actions, borrow_param_fns, borrow_param_masks)
   } else {
     ()
   }
