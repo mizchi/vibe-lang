@@ -392,7 +392,7 @@ Iterator::fold(xs, 0, _ + _)
 | Prec | Operators | Notes |
 |------|-----------|-------|
 | 1 | `.` `()` `[]` | field, call, index |
-| 2 | `-x` `!x` | unary |
+| 2 | `-x` `!x` `~x` | unary (`~` is bit-not, #2344) |
 | 3 | `*` `/` `%` | |
 | 4 | `+` `-` | |
 | 5 | `<<` `>>` | >> is arithmetic (sign-extending) |
