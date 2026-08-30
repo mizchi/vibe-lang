@@ -210,16 +210,46 @@ test "env_cache handles empty env" {
 }
 
 test "env_bind keeps cached env lookup path" {
+  // Non-shadowing binds tuck BEHIND a head cache so hot lookups of cached
+  // (imported) names keep hitting the index first. #2390 measured the
+  // always-in-front alternative and it regressed ~+20% on
+  // env_lookup_binding; head adjacency is a deliberate property.
   let base = env_cache(env_bind(EnvEmpty, "base", CtInt))
   let env = env_bind(base, "x", CtString)
   match env {
     EnvCached(_, _, _) => assert(true),
     _ => assert(false)
   }
-  match env_lookup(env, "x") {
-    Some(t) => assert(types_equal(t, CtString)),
-    None => assert(false)
-  }
+  inspect(match env_lookup(env, "x") {
+    Some(t) => type_to_string(t),
+    None => "absent"
+  }, "String")
+  inspect(match env_lookup(env, "base") {
+    Some(t) => type_to_string(t),
+    None => "absent"
+  }, "Int")
+}
+
+test "a region accelerator recaches through env_cache (real entry shape)" {
+  // The checker's region entry chain-binds the real `#active_region`
+  // skolem and puts env_cache_binding's accelerator OVER it -- the arrays
+  // are a mirror, never the only copy. That is what lets env_cache skip
+  // inner cache arrays (the chain is the truth; a stale array must never
+  // out-shadow a refreshed chain entry -- #2390 review). Pin the contract:
+  // an outer env_cache over the real shape keeps answering the real
+  // skolem, not the negative CtUnit marker it seeds for cache-less envs.
+  let region_ty = CtNamed("#region_r", array_empty())
+  let chain = env_bind(env_bind(EnvEmpty, "v", CtInt), "#active_region", region_ty)
+  let inner = env_cache_binding(chain, "#active_region", region_ty)
+  let outer = env_cache(inner)
+  inspect(match env_lookup(outer, "#active_region") {
+    Some(t) => type_to_string(t),
+    None => "absent"
+  }, "#region_r")
+  inspect(match env_lookup(outer, "v") {
+    Some(t) => type_to_string(t),
+    None => "absent"
+  }, "Int")
 }
 
 test "env_bind shadowing a cached name wins env_lookup (#1583)" {
