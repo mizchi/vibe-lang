@@ -20,7 +20,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/perceus {
-  build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, param_is_heap_in_body
+  build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup, pa_is_reuse_token, param_is_heap_in_body
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -380,6 +380,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_alias_dups = array_empty()
   let lam_dups = array_empty()
   let lam_heap_params = array_empty()
+  let lam_reuse_names = array_empty()
+  let lam_reuse_arities = array_empty()
   if ctx.enable_rc {
     let lam_plan = build_perceus_plan_with_params(norm_params, fn_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
     let mut ldi = 0
@@ -391,6 +393,10 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
         Array::push(lam_alias_dups, lpa.name)
       } else if pa_is_dup(lpa) {
         Array::push(lam_dups, lpa.name)
+      } else if pa_is_reuse_token(lpa) {
+        // ADR-0092 / #2389 plan-side reuse candidates (arity in `extra`).
+        Array::push(lam_reuse_names, lpa.name)
+        Array::push(lam_reuse_arities, lpa.extra)
       } else {
         ()
       }
@@ -491,6 +497,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     loop_consumed_names: array_empty(),
     reuse_scrutinee_names: array_empty(),
     reuse_flag_locals: array_empty(),
+    rc_reuse_token_names: lam_reuse_names,
+    rc_reuse_token_arities: lam_reuse_arities,
+    reuse_tok_locals: array_empty(),
+    reuse_tok_arities: array_empty(),
+    reuse_tok_emitted: array_empty(),
     borrow_ret_names: ctx.borrow_ret_names,
     borrow_param_user: ctx.borrow_param_user,
     borrow_param_mask: ctx.borrow_param_mask,
