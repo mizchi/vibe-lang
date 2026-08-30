@@ -95,6 +95,7 @@ export const vibeMonarchLanguage: monaco.languages.IMonarchLanguage = {
     "&",
     "|",
     "^",
+    "~",
     "<<",
     ">>",
     "+=",

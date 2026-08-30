@@ -1,0 +1,171 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Misc
+
+// #2344 slice C / #2403 review. `~` is Int-only, and the guard that decides
+// whether a non-Int operand is an ERROR or is left alone runs on
+// `type_is_ground`, which answers `false` for EVERY `CtNamed`. That is
+// deliberate for a rigid type formal -- `T` in `fn f[T](x: T)` -- but a name
+// that resolves to a declared struct or enum is not a type formal and can
+// never be `Int`.
+//
+// Measured before the fix: `~x` on a `Cell[Int]` produced `-241` at runtime,
+// the complemented struct pointer, with no diagnostic at all.
+
+test "#2403 `~` rejects a declared generic struct operand" {
+  let src = "struct Cell[T] { v: T }\nfn f(x: Cell[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects a declared generic enum operand" {
+  let src = "enum E[T] { A(T); B }\nfn f(x: E[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects a declared struct through the enclosing fn's own param" {
+  // The operand is `Cell[T]` with T still rigid, so the head is what decides;
+  // the argument being unresolved must not buy the operand an exemption.
+  let src = "struct Cell[T] { v: T }\nfn f[T](x: Cell[T]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` keeps accepting an alias that resolves to Int" {
+  // `Wrap[Bool]` IS an `Int`. It is accepted because `subst_apply` expands the
+  // alias before the guard runs, so it arrives as `CtInt` -- NOT because the
+  // declared-type match lets aliases through. Measured: making `TDAlias` an
+  // error there leaves this answer unchanged.
+  let src = "type Wrap[T] = Int\nfn f(x: Wrap[Bool]) -> Int { ~x }"
+  assert(check_source_ok(src))
+}
+
+// The same expansion is what rejects an alias to a NON-Int, which is the half
+// that has to keep working for the acceptance above to be safe rather than
+// lucky. All three of these resolve through the alias to a concrete type the
+// `type_is_ground` guard already refuses.
+
+test "#2403 `~` rejects a compiler-owned nominal head" {
+  // `Map` / `MutMap` / `StringBuilder` have no `TypeDef`, so `find_typedef`
+  // answers `None` and they used to reach the permissive default. Measured
+  // before the fix: `~x` on a `Map[String, Int]` returned -233 at runtime --
+  // the complemented map pointer -- with no diagnostic.
+  let m = "fn f(x: Map[String, Int]) -> Int { ~x }"
+  assert(check_source_err_contains(m, "operand of `~` must be Int"))
+  let mm = "fn f(x: MutMap[String, Int]) -> Int { ~x }"
+  assert(check_source_err_contains(mm, "operand of `~` must be Int"))
+  let sb = "fn f(x: StringBuilder) -> Int { ~x }"
+  assert(check_source_err_contains(sb, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects the low-level width primitives" {
+  // `i64` / `u8` / `u16` / `u32` / `u64` / `i16` / `v128` resolve to
+  // `CtNamed(name, [])` -- a named head with NEITHER a `TypeDef` nor a
+  // `compiler_owned_type_arity` entry -- so they fell through the permissive
+  // default. A raw `i64` is not a 63-bit tagged `Int`; complementing it with
+  // the tagged constant is wrong.
+  let i64t = "fn f(x: i64) -> Int { ~x }"
+  assert(check_source_err_contains(i64t, "operand of `~` must be Int"))
+  let u32t = "fn f(x: u32) -> Int { ~x }"
+  assert(check_source_err_contains(u32t, "operand of `~` must be Int"))
+  let u8t = "fn f(x: u8) -> Int { ~x }"
+  assert(check_source_err_contains(u8t, "operand of `~` must be Int"))
+  let v128t = "fn f(x: v128) -> Int { ~x }"
+  assert(check_source_err_contains(v128t, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` still accepts Int and its `i32` spelling" {
+  // The non-regression that matters for the arm above: `is_builtin_type_name`
+  // is true for "Int" and "i32" too, and rejecting THOSE would break the
+  // operator entirely. They never reach it -- both resolve to `CtInt` and are
+  // taken by the arm above -- but nothing else was holding that down.
+  assert(check_source_ok("fn f(x: Int) -> Int { ~x }"))
+  assert(check_source_ok("fn f(x: i32) -> Int { ~x }"))
+}
+
+test "#2403 `~` rejects a container whose ELEMENT is still generic" {
+  // `type_is_ground` asks about the CONTENTS, so `Array[T]` with `T` generic
+  // answered `false` and the declaration was accepted. Measured before the
+  // fix: `~x` on an `Array[T]`, called with `[1, 2, 3]`, returned -237 at
+  // runtime -- the complemented array pointer. The OUTER constructor settles
+  // it on its own; the contents never mattered.
+  let a = "fn f[T](x: Array[T]) -> Int { ~x }"
+  assert(check_source_err_contains(a, "operand of `~` must be Int"))
+  let o = "fn f[T](x: Option[T]) -> Int { ~x }"
+  assert(check_source_err_contains(o, "operand of `~` must be Int"))
+  let t = "fn f[T](x: (T, Int)) -> Int { ~x }"
+  assert(check_source_err_contains(t, "operand of `~` must be Int"))
+  let fnv = "fn f[T](x: (T) -> Int) -> Int { ~x }"
+  assert(check_source_err_contains(fnv, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects Array and Option, which never reach that arm" {
+  // These are `CtArray` / `CtOption`, not `CtNamed`, so `type_is_ground`
+  // refuses them without consulting any declaration. Pinned so a future
+  // rearrangement of the arms cannot drop them silently.
+  let a = "fn f(x: Array[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(a, "operand of `~` must be Int"))
+  let o = "fn f(x: Option[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(o, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects an alias to a non-Int type" {
+  let src = "type Text = String\nfn f(x: Text) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects a generic alias applied to a non-Int body" {
+  let src = "type WrapS[T] = String\nfn f(x: WrapS[Bool]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects an identity alias carrying a non-Int argument" {
+  // `Id[String]` expands to `String` through the alias's OWN type parameter,
+  // so the argument decides and the head name cannot be trusted alone.
+  let src = "type Id[T] = T\nfn f(x: Id[String]) -> Int { ~x }"
+  assert(check_source_err_contains(src, "operand of `~` must be Int"))
+}
+
+// A `[T]` parameter is an inference variable, not a rigid name, so `~x` does
+// not fall through permissively -- it takes the `CtVar` arm and UNIFIES the
+// parameter with `Int`. The declaration below is clean because `f` has become
+// `(Int) -> Int`, and the call-site tests are what prove that reading: an
+// instantiation with anything else is refused, with both types named.
+//
+// This is not what `!` and prefix `-` do with a DECLARED struct or enum, which
+// they accept and then complement the pointer (#2408, pre-existing, out of
+// scope here). Nothing about `[T]` is in that hole.
+
+test "#2403 `~` on a `[T]` parameter constrains it to Int" {
+  assert(check_source_ok("fn f[T](x: T) -> Int { ~x }"))
+}
+
+test "#2403 an Int instantiation of that function is accepted" {
+  let src = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f(5) }"
+  assert(check_source_ok(src))
+}
+
+test "#2403 a String instantiation is refused at the call site" {
+  let src = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f(\"abc\") }"
+  assert(check_source_err_contains(src, "expected Int, got String"))
+}
+
+test "#2403 a heap instantiation is refused at the call site" {
+  // A tuple and an array are the shapes whose pointer `~` would complement if
+  // the constraint above did not hold; the diagnostic names the actual type.
+  let tup = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f((1, 2)) }"
+  assert(check_source_err_contains(tup, "expected Int, got (Int, Int)"))
+  let arr = "fn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f([1, 2]) }"
+  assert(check_source_err_contains(arr, "expected Int, got Array[Int]"))
+}
+
+test "#2403 a declared-struct instantiation is refused at the call site" {
+  let src = "struct Box { v: Int }\nfn f[T](x: T) -> Int { ~x }\nfn main() -> Int { f(Box::{ v: 7 }) }"
+  assert(check_source_err_contains(src, "expected Int, got Box"))
+}
+
+test "#2403 `~` on a plain Int is still clean" {
+  assert(check_source_ok("fn f(x: Int) -> Int { ~x }"))
+}

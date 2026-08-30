@@ -615,3 +615,42 @@ test "2126: ...and at the other binder positions" {
     i = i + 1
   }
 }
+
+//# #2344 slice C: `~` in expression position
+
+/// The printed program, so a parse can be asserted by its shape.
+fn tilde_printed(src: String) -> String {
+  handle {
+    print_program(parse_program(lex(src)))
+  } with { Exception::Throw(msg) => String::concat("THROW: ", msg) }
+}
+
+test "#2344 `~` parses as a prefix operator" {
+  assert(String::contains(tilde_printed("let a = ~x"), "~"))
+  // Prefix, so it binds to the operand and not to the whole infix expression.
+  assert(String::contains(tilde_printed("let a = ~x + 1"), "(~x)"))
+  assert(String::contains(tilde_printed("let a = ~(~x)"), "(~(~x))"))
+}
+
+test "#2344 `~` did not disturb the labeled-parameter use of the same token" {
+  // `~` was already the labeled-parameter marker; only the expression-START
+  // slot was free. Both spellings must still parse, in the same program.
+  let both = tilde_printed("fn labeled(x~: Int, y~: Int) -> Int { x - y }\nlet a = ~z\nlet b = labeled(x = 10, y = 3)")
+  assert(!String::starts_with(both, "THROW"))
+  assert(String::contains(both, "x~"))
+  assert(String::contains(both, "~z"))
+}
+
+test "#2344 a parenthesized `~` operand does not steal a control brace" {
+  // Review (#2403): `untyped_brace_lambda_param` listed `TNot` but not
+  // `TTilde` as an owner of the following brace, so `if ~(n) { ... }` was read
+  // as a lambda `(n) { ... }` and rejected with `lambda parameter `n` needs a
+  // type` -- a diagnostic naming a construct the program does not contain.
+  // `if !(b) { ... }` is the counterpart that always worked.
+  assert(!String::starts_with(tilde_printed("fn main() -> Unit { if ~(n) { g() } }"), "THROW"))
+  assert(!String::starts_with(tilde_printed("fn main() -> Unit { while ~(n) { g() } }"), "THROW"))
+  assert(!String::starts_with(tilde_printed("fn main() -> Unit { if !(b) { g() } }"), "THROW"))
+  // The lambda reading is still available where no prefix operator precedes
+  // the parens -- this is what the `TTilde` row must not have broken.
+  assert(String::starts_with(tilde_printed("fn main() -> Unit { let f = (n) { n } }"), "THROW"))
+}

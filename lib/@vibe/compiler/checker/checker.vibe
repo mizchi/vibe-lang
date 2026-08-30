@@ -29,6 +29,7 @@ import @vibe/compiler/core {
   hkt_apply_ctor,
   instantiate,
   is_alias_constructor,
+  is_builtin_type_name,
   is_exception_effect_name,
   is_exception_label,
   is_exception_throw_handler_name,
@@ -9764,6 +9765,85 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             }
             if flag {
               Array::push(errors, "operand of unary `-` must be Int or Double")
+            } else {
+              ()
+            }
+            (CtUnknown, s1, c1)
+          }
+        }
+      } else if op == "~" {
+        // #2344 slice C. Int only -- unlike unary `-` there is no Double form,
+        // because the value being complemented is the 63-bit two's complement
+        // integer. Typed here rather than after the `x ^ -1` lowering so the
+        // diagnostic names the operator the author actually wrote.
+        match subst_apply(s1, operand_ty) {
+          CtInt => (CtInt, s1, c1),
+          CtVar(_) => match unify(operand_ty, CtInt, s1) {
+            Some(s2) => (CtInt, s2, c1),
+            None => (CtUnknown, s1, c1)
+          },
+          other => {
+            let flag = match other {
+              CtUnknown => false,
+              // #2403 review: `type_is_ground` answers `false` for EVERY
+              // `CtNamed`, because a bare `CtNamed(nm, [])` may be a rigid type
+              // formal -- `T` in `fn f[T](x: T)` -- and rejecting those would
+              // reject generic code. But a name that resolves to a DECLARED
+              // struct or enum is not a type formal and can never be `Int`, so
+              // it is an error with no ambiguity to preserve. Measured:
+              // `struct Cell[T]` then `~x` on a `Cell[Int]` produced `-241` --
+              // the complemented pointer -- with no diagnostic.
+              // An alias never needs an arm: `subst_apply` has already expanded
+              // it, so `type Text = String` arrives as `CtString` and is
+              // rejected by `type_is_ground` below, while `type Wrap[T] = Int`
+              // applied as `Wrap[Bool]` arrives as `CtInt` and is accepted by
+              // the `CtInt` arm above. Measured -- making `TDAlias` an error
+              // here changes neither answer, because neither reaches this
+              // match. The `_ => false` is the conservative default for a name
+              // with no struct or enum declaration behind it. A `[T]` function
+              // parameter is NOT one of those: it arrives as a `CtVar` and the
+              // arm above unifies it with `Int`, so `fn f[T](x: T) -> Int { ~x
+              // }` becomes `(Int) -> Int` and a non-Int instantiation is
+              // refused at the CALL site, naming both types.
+              CtNamed(nm, _) => match find_typedef(defs, nm) {
+                Some(TDStruct(_, _, _, _)) => true,
+                Some(TDEnum(_, _, _)) => true,
+                // A compiler-owned head has no `TypeDef`, so `find_typedef`
+                // answers `None` for `Map` / `MutMap` / `StringBuilder` and the
+                // rest -- and they used to land in the default below and be
+                // accepted. Measured: `~x` on a `Map[String, Int]` returned
+                // -233, the complemented map pointer. Not one of the names in
+                // `compiler_owned_type_arity` is ever an `Int` (they are
+                // containers, builders and handles), so the whole set is an
+                // error with nothing to preserve. `Array` and `Option` never
+                // reach here -- they are `CtArray` / `CtOption`, refused by
+                // `type_is_ground` below.
+                // `is_builtin_type_name` is the union of `resolve_builtin`
+                // and `compiler_owned_type_arity`, which is what this needs:
+                // the low-level width names (`i64`, `u8`, `u16`, `u32`, `u64`,
+                // `i16`, `v128`) resolve to `CtNamed(name, [])` -- a named head
+                // with NEITHER a `TypeDef` nor an arity entry -- so they used
+                // to fall through here and be accepted. A raw `i64` is not a
+                // 63-bit tagged `Int`, so complementing it with the tagged
+                // constant is wrong. `Int` and `i32` cannot reach this arm:
+                // they resolve to `CtInt` and are taken by the arm above.
+                _ => is_builtin_type_name(nm)
+              },
+              // The OUTER constructor settles it on its own: an `Array` /
+              // `Option` / tuple / function value is never an `Int` whatever it
+              // contains. `type_is_ground` asks about the CONTENTS, so
+              // `Array[T]` with `T` still generic answered `false` and was
+              // accepted -- measured, `~x` on an `Array[T]` called with
+              // `[1, 2, 3]` returned -237, the complemented array pointer.
+              // Only a bare `CtVar` / `CtNamed` may still be an `Int`.
+              CtArray(_) => true,
+              CtOption(_) => true,
+              CtTuple(_) => true,
+              CtFn(_, _, _) => true,
+              _ => type_is_ground(other)
+            }
+            if flag {
+              Array::push(errors, "operand of `~` must be Int")
             } else {
               ()
             }

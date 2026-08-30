@@ -1234,6 +1234,22 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_i64_shl(buf)
       }
       nl
+    } else if op == "~" {
+      // #2344 slice C: bit-not of the 63-bit two's complement Int, as
+      // `x ^ -1`. The constant is the LANE's spelling of -1, which is the
+      // whole tag dance here: under RC the value is `n<<1`, so complementing
+      // it needs tagged(-1) = -2 -- xoring the tagged value with a raw -1
+      // would set the tag bit and hand every consumer a malformed Int.
+      // Untagged lanes use -1 directly. No renorm: `~` cannot leave the
+      // 63-bit range (it maps [-2^62, 2^62-1] onto itself).
+      let nl = compile_expr(buf, operand, local_names, next_local, ctx, ld)
+      emit_i64_const(buf, if ctx.enable_rc {
+        0 - 2
+      } else {
+        0 - 1
+      })
+      emit_i64_xor(buf)
+      nl
     } else {
       throw(String::concat("unsupported unary op: ", op))
     }

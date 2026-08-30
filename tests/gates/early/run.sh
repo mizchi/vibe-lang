@@ -1929,6 +1929,23 @@ fi
 rm -rf "$eqansdir"
 echo "[compiler-gate] untyped-empty equality answers after a push ok"
 
+# 15b-2. `~` (bit-not), #2344 slice C. The lowering is `x ^ -1` with a
+#        LANE-DEPENDENT constant (tagged -2 under RC, raw -1 untagged), and `~`
+#        also has to be registered in every "is this expression an Int?"
+#        classifier -- `expr_is_intish` / `gc_expr_is_intish` for `==`,
+#        `ts_known_int` for `__to_string`, `cc_arg_is_scalarish` for an explicit
+#        `eq(a, b)`. Each classifier is separate, so each one missing `~`
+#        produced a different silent-wrong answer on the same values.
+#        Linear lane (the production default) only: the gc `eq` arm has no
+#        scalar guard at all and traps on ANY distinct large-Int pair, with no
+#        `~` involved -- #2407, not something `~` introduced.
+#        `fixtures/bitwise_test.vibe` joins it here for the same reason it was
+#        found: it was referenced by no gate either, and carried a "~ is not
+#        supported, use x ^ mask" test that had been false since slice C landed.
+echo '[compiler-gate] 15b-2/15 bit-not ~ (#2344)'
+run_test_block_fixtures "bit-not" fixtures/bit_not_test.vibe fixtures/bitwise_test.vibe fixtures/bit_not_trait_witness_test.vibe
+echo '[compiler-gate] bit-not ~ ok'
+
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
 #      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The

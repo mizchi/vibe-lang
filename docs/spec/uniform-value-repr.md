@@ -230,7 +230,10 @@ From the investigation, the integer/value surface is the whole numeric path:
   `EBool` (tag 1 → `0`/`2`), `EFloat` (tag 2, boxing).
 - **`EBinOp`** (`compile_expr.vibe` tag 5 + `common_base::emit_binop_op`).
 - **`EUnaryOp`** (tag 6): unary `-` (`0 - a` — already tag-correct since `0` is
-  tagged-0 and `a` tagged), `!` (needs result re-tag, see table).
+  tagged-0 and `a` tagged), `!` (needs result re-tag, see table), `~` (#2344 —
+  lowers to `x ^ -1`, and the constant is where the tagging shows: complementing
+  a tagged `n<<1` needs tagged(-1) = `-2`, so xoring with a raw `-1` sets the tag
+  bit and yields a malformed `Int`. The untagged lanes use `-1`).
 - **Inline `if`-condition comparisons** (`compile_expr.vibe` tag 7) — a second,
   duplicated comparison path; conditions consume tagged bools (`true`=2 is
   non-zero → `i32_wrap` truthiness still works, no change needed there).
@@ -253,9 +256,10 @@ Worked out from `emit_binop_op` (operands arrive tagged; `a=x<<1`, `b=y<<1`):
 | `>>`          | `(2x)>>y ≠ 2(x>>y)` when bit `y-1` set     | untag **both**, shift, **re-tag** result |
 | `== != < > <= >=` | order/equality preserved by `<<1`     | result is a bool → `<< 1` (tag 0/2) |
 | unary `!`     | `eqz`→0/1                                  | result `<< 1` |
+| unary `~`     | `~(x<<1)` keeps bit 0 clear                | **the CONSTANT is tagged**: `x ^ -2`, not `x ^ -1` |
 
-So only `* / << >>` and the comparison/`!` **bool results** need touching;
-`+ - & \| ^ % && \|\|` are free. Comparison results MUST be tagged or a `1`
+So only `* / << >>`, the comparison/`!` **bool results**, and `~`'s xor
+constant need touching; `+ - & \| ^ % && \|\|` are free. Comparison results MUST be tagged or a `1`
 (true) in a heap field would be misread as an odd pointer.
 
 ### Boundary inventory (untag tagged→raw / tag raw→tagged)

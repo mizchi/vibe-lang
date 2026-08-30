@@ -392,7 +392,7 @@ Iterator::fold(xs, 0, _ + _)
 | Prec | Operators | Notes |
 |------|-----------|-------|
 | 1 | `.` `()` `[]` | field, call, index |
-| 2 | `-x` `!x` | unary |
+| 2 | `-x` `!x` `~x` | unary (`~` is bit-not, #2344) |
 | 3 | `*` `/` `%` | |
 | 4 | `+` `-` | |
 | 5 | `<<` `>>` | >> is arithmetic (sign-extending) |
@@ -1970,8 +1970,13 @@ positive `Int` (2^62-1) tops out at bit 61, giving it a popcount of 62 and a
 answers 64): `Int::ctz(0)` and `Int::clz(0)` are both 63. `Int::select1(x, k)`
 gives the position of the `k`-th set bit counting from 0, or -1 when `x` has
 fewer than `k + 1` set bits — so `Int::select1(x, 0)` agrees with `Int::ctz(x)`
-for every non-zero `x`. `~` (bit-not) is still not a thing; spell it
-`x ^ mask`.
+for every non-zero `x`. `~x` (prefix bit-not, #2344) completes the set: it is
+the complement over the 63-bit two's complement `Int`, so `~x == -x - 1`
+(`~0 == -1`, `~5 == -6`, and `~` is its own inverse). It binds like the other
+prefix operators, and `Int` is its only operand type — there is no `Double`
+form, and `~true` is rejected as `operand of \`~\` must be Int`. The same `~`
+still marks a labeled parameter (`x~: Int`); only the expression-start
+position is the operator.
 
 **Conversion**: `Int::to_float`, `Int::to_double`, `Float::to_int`,
 `Float::to_double`, `Double::to_int`, `Double::to_float`,
