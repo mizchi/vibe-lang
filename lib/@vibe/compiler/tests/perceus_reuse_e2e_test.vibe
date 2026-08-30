@@ -133,14 +133,31 @@ test "a shared source survives a pure-borrow-bind rebuild untouched" {
   assert_bump_rc_agree(src, "borrow_bind_shared", "8010")
 }
 
-test "a bind both borrowed and consumed still transfers cleanly" {
+test "a bind both borrowed and consumed declines (mixed mode is refused)" {
   // `a` is read by borrow-classified total AND consumed by the recursive
-  // incr2 -- consume count 1 with extra borrow reads. The transfer hands
-  // the child to the consume; the borrow reads happen before it.
+  // incr2 -- consume count 1 with an extra borrow read. Only pure modes
+  // are admitted: a read sequenced AFTER the consume would be
+  // use-after-free on the unique path, and no ordering analysis exists,
+  // so the whole mixed class declines and takes the normal path. Exactly
+  // ONE uniqueness test remains (the Leaf arm's narrow fusion).
   let src = String::concat(tree_prelude(), "let rec incr2: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let a2 = incr2(a)\n      let b2 = incr2(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(3)\n  let r = incr2(t)\n  let z = incr2(Leaf(9))\n  total(r) * 100 + total(z)\n}")
   assert_bump_rc_agree(src, "borrow_and_consume", "1610")
   let rc_wasm = compile_wasi_rc(src, "main")
-  inspect(count_token_tests(rc_wasm), content = "2")
+  inspect(count_token_tests(rc_wasm), content = "1")
+}
+
+test "a borrow read AFTER the consume never fuses (use-after-free shape)" {
+  // `swap(a)` consumes `a` (and, being itself a fused same-arity rebuild,
+  // swaps the block IN PLACE when unique); `lv(a)` then reads the leftmost
+  // leaf. If the arm fused, the unique path's raw transfer would let that
+  // read see the freed-and-reused block -- the in-place swap makes the
+  // corruption DETERMINISTIC: lv would answer the right child's 7 instead
+  // of 3. The mixed-mode refusal keeps the arm on the normal path, where
+  // the container's reference holds `a` alive past the consume.
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec lv: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, _) => lv(a),\n    Leaf(v) => v\n  }\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\nlet swap: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => Pair(b, a),\n    Leaf(v) => Leaf(v)\n  }\n}\nlet use_after: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let x = swap(a)\n      let w = lv(a)\n      Pair(x, Leaf(w))\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nfn main() -> Int {\n  let r = use_after(Pair(Pair(Leaf(3), Leaf(7)), Leaf(1)))\n  let s = swap(Leaf(0))\n  total(r) + total(s)\n}"
+  // r = Pair(swap(Pair(3,7)), Leaf(lv(original a))) = Pair(Pair(7,3), Leaf(3));
+  // total(r) = 13, total(s) = 0 -> 13. A fused arm would read w = 7 -> 17.
+  assert_bump_rc_agree(src, "borrow_after_consume", "13")
 }
 
 test "a sibling arm with a conditional return is never authorized by the eligible arm's plan row" {
