@@ -2469,6 +2469,49 @@ fn type_is_ground(t: Type) -> Bool {
 /// substitutes with fresh inference vars before use). Any other CtNamed /
 /// CtVar / CtForAll keeps the conservative fresh-var fallback, exactly like
 /// type_is_ground does for non-generic effects.
+/// True when a UNARY operator's operand is concrete enough to reject: the
+/// operand cannot be the primitive the operator needs, whatever else is still
+/// unresolved about it. Shared by `!`, unary `-` and `~` (#2408) -- they take
+/// different primitives, but each has already matched its own accepting arms
+/// (`CtBool` / `CtInt` / `CtDouble` / `CtVar`) before consulting this, so the
+/// question left is the same one for all three.
+///
+/// `type_is_ground` alone is NOT that question, and the gap was silently
+/// wrong: it answers `false` for every `CtNamed` and for a container whose
+/// element is not ground, so `-x` on a `Cell[Int]` or a `Map` compiled clean
+/// and complemented the heap pointer, returning -237 as an ordinary `Int`.
+///
+/// The four rows below are the routes into that `false`, each measured
+/// separately (#2403 found them one at a time for `~`):
+///   * a name that resolves to a DECLARED struct or enum -- not a type formal,
+///     so never a primitive
+///   * a name with no `TypeDef` at all but which IS a builtin head -- `Map`,
+///     `MutMap`, `StringBuilder`, and the width primitives `i64`/`u8`/`v128`.
+///     A raw `i64` is not a 63-bit tagged `Int`
+///   * a container / tuple / function value -- the OUTER constructor settles
+///     it; `type_is_ground` asks about the contents, so `Array[T]` slipped
+///   * anything else ground
+///
+/// What must stay permissive: a bare `CtNamed(nm, [])` with no declaration is
+/// a rigid type formal and may yet be the primitive. `Int` / `i32` / `Bool` /
+/// `Double` never arrive here at all -- they resolve to `CtInt` / `CtBool` /
+/// `CtDouble` and are taken by the accepting arms above.
+fn unary_operand_is_definitely_wrong(t: Type, defs: Array[TypeDef]) -> Bool {
+  match t {
+    CtUnknown => false,
+    CtNamed(nm, _) => match find_typedef(defs, nm) {
+      Some(TDStruct(_, _, _, _)) => true,
+      Some(TDEnum(_, _, _)) => true,
+      _ => is_builtin_type_name(nm)
+    },
+    CtArray(_) => true,
+    CtOption(_) => true,
+    CtTuple(_) => true,
+    CtFn(_, _, _) => true,
+    _ => type_is_ground(t)
+  }
+}
+
 fn type_is_ground_except(t: Type, allowed: Array[String]) -> Bool {
   match t {
     CtNamed(nm, targs) => if Array::length(targs) == 0 {
@@ -9735,11 +9778,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           },
           other => {
             // `!x` on a concrete non-Bool operand (`!5`) was accepted silently.
-            // A non-ground/Unknown operand is tolerated (may resolve to Bool).
-            let flag = match other {
-              CtUnknown => false,
-              _ => type_is_ground(other)
-            }
+            // A type formal / Unknown operand is tolerated (may resolve to
+            // Bool); #2408 widened "concrete" to the declared, builtin-head and
+            // container routes that `type_is_ground` answers `false` for.
+            let flag = unary_operand_is_definitely_wrong(other, defs)
             if flag {
               Array::push(errors, "operand of `!` must be Bool")
             } else {
@@ -9758,11 +9800,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           },
           other => {
             // Unary `-` on a concrete non-numeric operand (`-"hi"`) was accepted
-            // silently. A non-ground / Unknown operand is tolerated.
-            let flag = match other {
-              CtUnknown => false,
-              _ => type_is_ground(other)
-            }
+            // silently. A type formal / Unknown operand is tolerated; #2408
+            // widened "concrete" -- `-x` on a `Cell[Int]` used to compile clean
+            // and return -237, the complemented struct pointer.
+            let flag = unary_operand_is_definitely_wrong(other, defs)
             if flag {
               Array::push(errors, "operand of unary `-` must be Int or Double")
             } else {
@@ -9783,65 +9824,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             None => (CtUnknown, s1, c1)
           },
           other => {
-            let flag = match other {
-              CtUnknown => false,
-              // #2403 review: `type_is_ground` answers `false` for EVERY
-              // `CtNamed`, because a bare `CtNamed(nm, [])` may be a rigid type
-              // formal -- `T` in `fn f[T](x: T)` -- and rejecting those would
-              // reject generic code. But a name that resolves to a DECLARED
-              // struct or enum is not a type formal and can never be `Int`, so
-              // it is an error with no ambiguity to preserve. Measured:
-              // `struct Cell[T]` then `~x` on a `Cell[Int]` produced `-241` --
-              // the complemented pointer -- with no diagnostic.
-              // An alias never needs an arm: `subst_apply` has already expanded
-              // it, so `type Text = String` arrives as `CtString` and is
-              // rejected by `type_is_ground` below, while `type Wrap[T] = Int`
-              // applied as `Wrap[Bool]` arrives as `CtInt` and is accepted by
-              // the `CtInt` arm above. Measured -- making `TDAlias` an error
-              // here changes neither answer, because neither reaches this
-              // match. The `_ => false` is the conservative default for a name
-              // with no struct or enum declaration behind it. A `[T]` function
-              // parameter is NOT one of those: it arrives as a `CtVar` and the
-              // arm above unifies it with `Int`, so `fn f[T](x: T) -> Int { ~x
-              // }` becomes `(Int) -> Int` and a non-Int instantiation is
-              // refused at the CALL site, naming both types.
-              CtNamed(nm, _) => match find_typedef(defs, nm) {
-                Some(TDStruct(_, _, _, _)) => true,
-                Some(TDEnum(_, _, _)) => true,
-                // A compiler-owned head has no `TypeDef`, so `find_typedef`
-                // answers `None` for `Map` / `MutMap` / `StringBuilder` and the
-                // rest -- and they used to land in the default below and be
-                // accepted. Measured: `~x` on a `Map[String, Int]` returned
-                // -233, the complemented map pointer. Not one of the names in
-                // `compiler_owned_type_arity` is ever an `Int` (they are
-                // containers, builders and handles), so the whole set is an
-                // error with nothing to preserve. `Array` and `Option` never
-                // reach here -- they are `CtArray` / `CtOption`, refused by
-                // `type_is_ground` below.
-                // `is_builtin_type_name` is the union of `resolve_builtin`
-                // and `compiler_owned_type_arity`, which is what this needs:
-                // the low-level width names (`i64`, `u8`, `u16`, `u32`, `u64`,
-                // `i16`, `v128`) resolve to `CtNamed(name, [])` -- a named head
-                // with NEITHER a `TypeDef` nor an arity entry -- so they used
-                // to fall through here and be accepted. A raw `i64` is not a
-                // 63-bit tagged `Int`, so complementing it with the tagged
-                // constant is wrong. `Int` and `i32` cannot reach this arm:
-                // they resolve to `CtInt` and are taken by the arm above.
-                _ => is_builtin_type_name(nm)
-              },
-              // The OUTER constructor settles it on its own: an `Array` /
-              // `Option` / tuple / function value is never an `Int` whatever it
-              // contains. `type_is_ground` asks about the CONTENTS, so
-              // `Array[T]` with `T` still generic answered `false` and was
-              // accepted -- measured, `~x` on an `Array[T]` called with
-              // `[1, 2, 3]` returned -237, the complemented array pointer.
-              // Only a bare `CtVar` / `CtNamed` may still be an `Int`.
-              CtArray(_) => true,
-              CtOption(_) => true,
-              CtTuple(_) => true,
-              CtFn(_, _, _) => true,
-              _ => type_is_ground(other)
-            }
+            // #2408: the four routes this used to spell out inline are now
+            // the shared predicate, because `!` and unary `-` had the
+            // identical hole and were fixed by pointing at the same one.
+            let flag = unary_operand_is_definitely_wrong(other, defs)
             if flag {
               Array::push(errors, "operand of `~` must be Int")
             } else {
