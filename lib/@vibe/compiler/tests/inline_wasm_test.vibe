@@ -608,6 +608,20 @@ test "#2401 inline wasm: unreachable code is polymorphic but still typed" {
   assert(wat_err("(loop $l (br $l)) (local.get $a)") == "")
   // ... but wasm still types what FOLLOWS it, and so does this.
   assert(String::contains(wat_err("unreachable (i32.const 1) (i64.add (i64.const 2))"), "'i64.add' expects i64 for operand 1 of 2"))
+  // Polymorphism relaxes only the POP at a frame's end -- a missing result can
+  // come from the floor. Values pushed after the `unreachable` are live at
+  // `end`, and wasm rejects those exactly as it would without it. The first
+  // cut of this pass skipped the whole end-of-frame check once the flag was
+  // set, so each of these assembled (Codex on #2418).
+  assert(String::contains(wat_err("(block unreachable (i64.const 1)) (local.get $a)"), "'block' declares no result but leaves 1 value(s) on the stack"))
+  assert(String::contains(wat_err("(loop $l (br $l) (i64.const 1)) (local.get $a)"), "'loop' declares no result but leaves 1 value(s) on the stack"))
+  assert(String::contains(wat_err("(block (result i64) unreachable (i64.const 1) (i64.const 2))"), "'block' must leave exactly one i64 but leaves 2 value(s)"))
+  assert(String::contains(wat_err("unreachable (i32.const 1)"), "the inline wasm body must leave i64 but leaves i32"))
+  // The other side of the same rule: one value of the declared type after an
+  // `unreachable` is what the frame asked for, and stays accepted.
+  assert(wat_err("(block (result i64) unreachable (i64.const 1))") == "")
+  assert(wat_err("unreachable") == "")
+  assert(wat_err("(if (result i64) (i32.const 1) (then unreachable) (else (local.get $b)))") == "")
 }
 
 test "#2401 inline wasm: the ordinary shapes still assemble" {

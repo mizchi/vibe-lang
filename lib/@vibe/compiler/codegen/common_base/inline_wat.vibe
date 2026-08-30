@@ -1330,27 +1330,47 @@ fn iw_apply(st: IwStack, fn_name: String, name: String, params: Array[Int], resu
 
 /// #2401: close the innermost frame, checking it leaves exactly what it
 /// declared, then drop back to its floor. The caller pushes the result.
+///
+/// Same two steps, in the same order, as the spec's `pop_ctrl`: pop the
+/// declared result, then require the stack to be back AT the floor.
+/// Polymorphism relaxes only the first step -- a frame whose values a `br` or
+/// `unreachable` carried away can supply a missing result from the floor. It
+/// does NOT excuse the second: values pushed after that point are live at
+/// `end`, and wasm rejects `(block unreachable (i64.const 1))` for the extra
+/// i64 exactly as it rejects `(block (i64.const 1))`. Skipping the whole
+/// check when the flag was set is what this used to do.
 fn iw_st_close(st: IwStack, fn_name: String, what: String, hint: String, off: Int) -> Unit with Exception {
   let n = Array::length(st.frames) - 1
   let (base, res, _l, poly) = Array::get(st.frames, n)
-  let h = Array::length(st.vals)
-  if poly == 1 {
-    ()
-  } else if res == 0 {
-    if h != base {
-      throw(iw_err(fn_name, "\{what} declares no result but leaves \{h - base} value(s) on the stack\{hint}", off))
+  if res != 0 {
+    let h0 = Array::length(st.vals)
+    if h0 <= base {
+      if poly == 1 {
+        ()
+      } else {
+        throw(iw_err(fn_name, "\{what} must leave exactly one \{iw_valtype_name(res)} but leaves 0 value(s) on the stack\{hint}", off))
+      }
     } else {
-      ()
+      let got = Array::get(st.vals, h0 - 1)
+      Array::truncate(st.vals, h0 - 1)
+      if got != 0 && got != res {
+        throw(iw_err(fn_name, "\{what} must leave \{iw_valtype_name(res)} but leaves \{iw_valtype_name(got)}\{hint}", off))
+      } else {
+        ()
+      }
     }
-  } else if h != base + 1 {
-    throw(iw_err(fn_name, "\{what} must leave exactly one \{iw_valtype_name(res)} but leaves \{h - base} value(s) on the stack\{hint}", off))
   } else {
-    let got = Array::get(st.vals, h - 1)
-    if got != 0 && got != res {
-      throw(iw_err(fn_name, "\{what} must leave \{iw_valtype_name(res)} but leaves \{iw_valtype_name(got)}\{hint}", off))
+    ()
+  }
+  let left = Array::length(st.vals) - base
+  if left != 0 {
+    if res == 0 {
+      throw(iw_err(fn_name, "\{what} declares no result but leaves \{left} value(s) on the stack\{hint}", off))
     } else {
-      ()
+      throw(iw_err(fn_name, "\{what} must leave exactly one \{iw_valtype_name(res)} but leaves \{left + 1} value(s) on the stack\{hint}", off))
     }
+  } else {
+    ()
   }
   Array::truncate(st.vals, base)
   Array::truncate(st.frames, n)

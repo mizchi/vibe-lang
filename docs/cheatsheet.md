@@ -2264,7 +2264,9 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   inline-wasm fn returns. A block's frame is a floor, so an instruction inside
   it cannot consume a value produced outside it. Dead code after
   `unreachable` / `br` / `return` is stack-polymorphic but still typed, which
-  is what wasm does too. Two deliberate gaps, both erring toward accepting: a
+  is what wasm does too — polymorphism lets a frame's declared result come
+  from the floor, it does not let values pushed afterwards survive to the
+  frame's `end`. Two deliberate gaps, both erring toward accepting: a
   numeric `local.get 3` types as unknown (the locals table is keyed by name)
   and an unknown matches anything, and `br_table` is not in the slice at all.
 - **Locals**: the fn's own params (`$name` or index), plus `(local $name
