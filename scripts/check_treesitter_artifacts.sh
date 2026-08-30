@@ -85,10 +85,35 @@ fi
 # ---- 2. The three artifacts still hash to what they had when built together ---
 # Read as `<sha256>  <path>`, the sha256sum output format, so the stamp can be
 # refreshed with a plain `sha256sum ... > generated.sha256`.
-checked=0
+# Each EXPECTED path must appear exactly once. Counting lines was a proxy for
+# that and it broke exactly as a proxy does: a stamp that lost the Zed entry and
+# gained a second playground entry still reached three, so the gate reported
+# "3 artifacts match" while never looking at the Zed wasm at all -- measured
+# with that wasm deliberately corrupted, and it still passed (#2422 review).
+# A merge-damaged manifest could therefore disable one side of the very pairing
+# this gate exists to enforce.
+seen_parser=0
+seen_play=0
+seen_zed=0
 while read -r want path; do
   case "$want" in ''|\#*) continue ;; esac
   [ -n "$path" ] || fail "malformed stamp line in $STAMP: missing path for $want"
+  case "$path" in
+    integrations/treesitter-vibe/src/parser.c)
+      [ "$seen_parser" -eq 0 ] || fail "$STAMP lists $path more than once"
+      seen_parser=1 ;;
+    playground/public/tree-sitter-vibe.wasm)
+      [ "$seen_play" -eq 0 ] || fail "$STAMP lists $path more than once"
+      seen_play=1 ;;
+    integrations/zed-vibe/grammars/vibe.wasm)
+      [ "$seen_zed" -eq 0 ] || fail "$STAMP lists $path more than once"
+      seen_zed=1 ;;
+    *)
+      fail "$STAMP stamps an unexpected path: $path
+  The three artifacts are fixed. An entry outside them means the manifest was
+  edited or merged by hand; regenerate it with
+  scripts/stamp_treesitter_artifacts.sh." ;;
+  esac
   [ -f "$path" ] || fail "stamped artifact is missing: $path"
   got="$(sha256_of "$path")"
   if [ "$got" != "$want" ]; then
@@ -107,14 +132,19 @@ while read -r want path; do
   If you cannot build it, do not restamp -- leave this red, which is the state
   #2409 exists to make visible."
   fi
-  checked=$((checked + 1))
 done < "$STAMP"
 
 # A stamp that lists nothing passes every comparison it makes. Silence is
-# "unchecked", not "safe", and the two must not look alike (#2248).
-if [ "$checked" -lt 3 ]; then
-  fail "$STAMP stamps only $checked artifact(s); all 3 (parser.c + both wasm)
-  must be listed, or the pairing this gate exists to enforce is not enforced."
+# "unchecked", not "safe", and the two must not look alike (#2248). Named
+# rather than counted, so a duplicate cannot stand in for a missing one.
+missing=""
+[ "$seen_parser" -eq 1 ] || missing="$missing integrations/treesitter-vibe/src/parser.c"
+[ "$seen_play" -eq 1 ] || missing="$missing playground/public/tree-sitter-vibe.wasm"
+[ "$seen_zed" -eq 1 ] || missing="$missing integrations/zed-vibe/grammars/vibe.wasm"
+if [ -n "$missing" ]; then
+  fail "$STAMP does not stamp:$missing
+  All three must be listed, or the pairing this gate exists to enforce is not
+  enforced for the one that is absent."
 fi
 
-echo "[treesitter-artifacts] ok: ABI $abi, $checked artifacts match the stamp"
+echo "[treesitter-artifacts] ok: ABI $abi, all 3 stamped artifacts match"

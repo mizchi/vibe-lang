@@ -135,6 +135,42 @@ else
   expect_fail "stamp listing fewer than 3 artifacts" "$d"
 fi
 
+# Counting stamp lines was a proxy for "all three are covered", and it broke as
+# proxies do: a stamp that lost the Zed entry and gained a second playground
+# entry still reached three (#2422 review). Measured with the Zed wasm ALSO
+# corrupted -- the gate reported ok and never looked at it.
+echo "[ts-artifacts-test] a duplicate entry standing in for a missing one"
+d="$(fresh_tree dup_stamp)"
+sed -e 's#integrations/zed-vibe/grammars/vibe.wasm#playground/public/tree-sitter-vibe.wasm#' \
+  "$d/$STAMP_REL" > "$d/$STAMP_REL.new" && mv "$d/$STAMP_REL.new" "$d/$STAMP_REL"
+# Corrupt the now-unstamped artifact, so a gate that really checks all three
+# must reject this tree on either ground.
+printf 'x' >> "$d/$ZED_REL"
+if [ "$(grep -c 'playground/public/tree-sitter-vibe.wasm' "$d/$STAMP_REL")" -ne 2 ]; then
+  echo "  BUG in this test: the stamp does not hold the duplicate" >&2
+  fails=$((fails + 1))
+else
+  expect_fail "a stamp with a duplicate and a missing entry" "$d"
+fi
+
+# The alien entry must name a file that EXISTS and whose hash is CORRECT.
+# Otherwise the old counting form rejects it too -- for "missing artifact" or a
+# hash mismatch -- and the case passes without isolating the path check at all.
+echo "[ts-artifacts-test] a stamp naming a path outside the three"
+d="$(fresh_tree alien_stamp)"
+mkdir -p "$d/some/other"
+printf 'not an artifact\n' > "$d/some/other/file.txt"
+alien_hash="$( (sha256sum "$d/some/other/file.txt" 2>/dev/null || shasum -a 256 "$d/some/other/file.txt") | awk '{print $1}' )"
+printf '%s  some/other/file.txt\n' "$alien_hash" >> "$d/$STAMP_REL"
+# Verify the fixture is one the OLD form would have accepted: the file is there
+# and its hash matches, so nothing but the path check can reject it.
+if [ ! -f "$d/some/other/file.txt" ] || [ -z "$alien_hash" ]; then
+  echo "  BUG in this test: the alien fixture is not a hashable existing file" >&2
+  fails=$((fails + 1))
+else
+  expect_fail "a stamp naming an unexpected path" "$d"
+fi
+
 echo "[ts-artifacts-test] a stamped artifact deleted"
 d="$(fresh_tree missing)"
 rm -f "$d/$ZED_REL"
