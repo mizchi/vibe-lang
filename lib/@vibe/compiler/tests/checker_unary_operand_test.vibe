@@ -1,0 +1,84 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Misc
+
+// #2408: prefix `-` and `!` had the same hole `~` was fixed for in #2403.
+// Their guard ran on `type_is_ground`, which answers `false` for every
+// `CtNamed` and for a container whose element is not ground, so a heap value
+// compiled clean and codegen complemented its pointer:
+//
+//   struct Cell[T] { v: T }
+//   fn bad(x: Cell[Int]) -> Int { -x }    // clean check; -237 at runtime
+//   fn bad(x: Cell[Int]) -> Bool { !x }   // clean check; false
+//
+// All three operators now share `unary_operand_is_definitely_wrong`, so a
+// route found for one is closed for all three. That is the point of the
+// shared predicate: #2403 found these four routes ONE AT A TIME, each
+// invisible to the probes that found the last.
+
+test "#2408 unary `-` rejects a declared struct or enum" {
+  let st = "struct Cell[T] { v: T }\nfn f(x: Cell[Int]) -> Int { -x }"
+  assert(check_source_err_contains(st, "operand of unary `-` must be Int or Double"))
+  let en = "enum E[T] { A(T); B }\nfn f(x: E[Int]) -> Int { -x }"
+  assert(check_source_err_contains(en, "operand of unary `-` must be Int or Double"))
+}
+
+test "#2408 `!` rejects a declared struct or enum" {
+  let st = "struct Cell[T] { v: T }\nfn f(x: Cell[Int]) -> Bool { !x }"
+  assert(check_source_err_contains(st, "operand of `!` must be Bool"))
+  let en = "enum E[T] { A(T); B }\nfn f(x: E[Int]) -> Bool { !x }"
+  assert(check_source_err_contains(en, "operand of `!` must be Bool"))
+}
+
+test "#2408 both reject a compiler-owned nominal head" {
+  // No `TypeDef` at all, so `find_typedef` misses and only the builtin-head
+  // test catches them.
+  let m = "fn f(x: Map[String, Int]) -> Int { -x }"
+  assert(check_source_err_contains(m, "operand of unary `-` must be Int or Double"))
+  let mb = "fn f(x: Map[String, Int]) -> Bool { !x }"
+  assert(check_source_err_contains(mb, "operand of `!` must be Bool"))
+  let sb = "fn f(x: StringBuilder) -> Int { -x }"
+  assert(check_source_err_contains(sb, "operand of unary `-` must be Int or Double"))
+}
+
+test "#2408 both reject a container whose element is still generic" {
+  // The OUTER constructor settles it; `type_is_ground` asks about contents.
+  let a = "fn f[T](x: Array[T]) -> Int { -x }"
+  assert(check_source_err_contains(a, "operand of unary `-` must be Int or Double"))
+  let o = "fn f[T](x: Option[T]) -> Bool { !x }"
+  assert(check_source_err_contains(o, "operand of `!` must be Bool"))
+  let t = "fn f[T](x: (T, Int)) -> Int { -x }"
+  assert(check_source_err_contains(t, "operand of unary `-` must be Int or Double"))
+}
+
+test "#2408 unary `-` rejects the low-level width primitives" {
+  // A raw `i64` is not a 63-bit tagged `Int`.
+  let i = "fn f(x: i64) -> Int { -x }"
+  assert(check_source_err_contains(i, "operand of unary `-` must be Int or Double"))
+  let v = "fn f(x: v128) -> Int { -x }"
+  assert(check_source_err_contains(v, "operand of unary `-` must be Int or Double"))
+}
+
+// The acceptances are what make the rejections above safe rather than lucky:
+// each operator's own primitives, and the rigid type formal that may still
+// turn out to be one.
+
+test "#2408 each operator still accepts its own primitives" {
+  assert(check_source_ok("fn f(x: Int) -> Int { -x }"))
+  assert(check_source_ok("fn f(x: Double) -> Double { -x }"))
+  assert(check_source_ok("fn f(x: Bool) -> Bool { !x }"))
+  assert(check_source_ok("fn f(x: Int) -> Int { ~x }"))
+}
+
+test "#2408 all three stay permissive for a bare type formal" {
+  // `[T]` is an inference variable, so each operator CONSTRAINS it rather
+  // than giving up -- a non-matching instantiation is refused at the call
+  // site, which is what `checker_bit_not_operand_test.vibe` pins for `~`.
+  assert(check_source_ok("fn f[T](x: T) -> Int { -x }"))
+  assert(check_source_ok("fn f[T](x: T) -> Bool { !x }"))
+  assert(check_source_ok("fn f[T](x: T) -> Int { ~x }"))
+}
