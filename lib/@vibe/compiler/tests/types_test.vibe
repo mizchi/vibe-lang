@@ -230,13 +230,17 @@ test "env_bind keeps cached env lookup path" {
   }
 }
 
-test "an inner single-entry cache survives an outer env_cache (#2390)" {
-  // env_cache_binding's accelerator holds its entry in the ARRAYS ONLY --
-  // the real `#active_region` skolem rides one. The outer env_cache walk
-  // must collect inner cache arrays: skipping them would seed the outer
-  // index with the negative CtUnit marker and hide the real skolem from
-  // every region-sensitive check -- silently wrong.
-  let inner = env_cache_binding(env_bind(EnvEmpty, "v", CtInt), "#active_region", CtNamed("#region_r", array_empty()))
+test "a region accelerator recaches through env_cache (real entry shape)" {
+  // The checker's region entry chain-binds the real `#active_region`
+  // skolem and puts env_cache_binding's accelerator OVER it -- the arrays
+  // are a mirror, never the only copy. That is what lets env_cache skip
+  // inner cache arrays (the chain is the truth; a stale array must never
+  // out-shadow a refreshed chain entry -- #2390 review). Pin the contract:
+  // an outer env_cache over the real shape keeps answering the real
+  // skolem, not the negative CtUnit marker it seeds for cache-less envs.
+  let region_ty = CtNamed("#region_r", array_empty())
+  let chain = env_bind(env_bind(EnvEmpty, "v", CtInt), "#active_region", region_ty)
+  let inner = env_cache_binding(chain, "#active_region", region_ty)
   let outer = env_cache(inner)
   match env_lookup(outer, "#active_region") {
     Some(t) => match t {
@@ -245,7 +249,6 @@ test "an inner single-entry cache survives an outer env_cache (#2390)" {
     },
     None => assert(false)
   }
-  // ...and chain entries below the inner accelerator still answer.
   match env_lookup(outer, "v") {
     Some(t) => assert(types_equal(t, CtInt)),
     None => assert(false)

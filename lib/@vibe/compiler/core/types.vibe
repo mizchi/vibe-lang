@@ -530,25 +530,18 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           }
           done = true
         },
-        EnvCached(inames, ibindings, rest) => {
-          // The arrays can hold entries with NO chain node behind them --
-          // env_cache_binding's single-entry accelerator carries the real
-          // `#active_region` skolem in its array only -- so collect them.
-          // Skipping them (the old behavior) built an index that hid those
-          // entries from every query answered here: the region marker case
-          // seeded the negative CtUnit `#active_region` sentinel OVER a
-          // live region's real skolem, and every region-sensitive check
-          // answered "no active region" -- silently wrong. Same-named
-          // entries keep the node's own leftmost-first (innermost-first)
-          // order; entries mirrored by chain nodes below are collected
-          // twice, which the stable sort + leftmost bsearch resolves to
-          // the same winner.
-          let mut ci = 0
-          while ci < Array::length(inames) {
-            ArrayBuilder::push(names, Array::get(inames, ci))
-            ArrayBuilder::push(types, Array::get(ibindings, ci))
-            ci = ci + 1
-          }
+        EnvCached(_, _, rest) => {
+          // Skip the arrays: they are ACCELERATORS whose entries the
+          // authoritative chain below also carries -- env_cache_binding's
+          // region accelerator included (the checker chain-binds the real
+          // `#active_region` skolem right under it). Collecting them was
+          // tried (#2390 review): it double-indexes every mirrored entry
+          // on each recache, and worse, a node whose REST was refreshed
+          // while its arrays went stale (replace_first_env_binding,
+          // refresh_type_env_prefix) would have its STALE array copy
+          // collected ahead of the refreshed chain entry -- recaching
+          // would silently undo the refresh. The chain is the truth; only
+          // it is read.
           cur = rest
         }
       }
@@ -1059,7 +1052,7 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
       },
       EnvCached(_, _, rest) => {
         // The authoritative chain retains surface-only entries even though
-        // single-entry accelerator arrays may omit them.
+        // the acceleration arrays intentionally omit them.
         cur = rest
       }
     }
