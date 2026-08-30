@@ -116,6 +116,34 @@ fn region_len(n: Int) -> Int {
   }
 }
 
+test "#2405 polymorphic arithmetic is not assumed to be Int" {
+  // `+ - * /` are resolved from the OPERANDS by the checker (Int, then Double,
+  // then String for `+`, then a user impl), so the operator alone says
+  // nothing. The gc scalar predicate answered Int for all four when it was
+  // first copied over; the Codex review on #2422 caught it.
+  //
+  // No String `+` reaches codegen today -- `desugar_trait_dicts` rewrites
+  // every measured shape into `String::concat` -- so these are the reachable
+  // half, plus the concat forms as the control that they stay right.
+  assert(__to_string(1.5 + 2.5) == "4")
+  assert(__to_string(2.5 * 2.0) == "5")
+  assert(__to_string(1.5 - 0.5) == "1")
+  assert(eq("a" + "b", "ab"))
+  assert(!eq("a" + "b", "ba"))
+  assert(("a" + "b") == "ab")
+  assert(__to_string("a" + "b") == "ab")
+  let sa = "x"
+  let sb = "y"
+  assert(eq(sa + sb, "xy"))
+  assert(__to_string(sa + sb) == "xy")
+  // Int arithmetic over int-bound locals still resolves, which is what keeps
+  // the shared renderer reachable for the eight sites in bench/exec/int_wrap.
+  let i = 64<<32
+  let j = 1
+  assert(__to_string(i + j) == "274877906945")
+  assert(__to_string(i * 1) == "274877906944")
+}
+
 test "#2405 the shared renderer and the region arena bodies coexist" {
   assert(region_len(5) == 5)
   assert(__to_string(64<<32) == "274877906944")

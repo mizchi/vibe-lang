@@ -297,7 +297,33 @@ fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> 
   match e {
     EInt(_) => true,
     EBool(_) => true,
-    EBinOp(op, _, _) => op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" || op == "+" || op == "-" || op == "*" || op == "/",
+    // Int-only by the checker's own rule (`operands must be Int`), whatever
+    // the operands are.
+    EBinOp(op, l, r) => if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" {
+      true
+    } else if op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+      // Bool, which shares this lane's Int representation.
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      // POLYMORPHIC: the checker resolves these from the operands (Int, then
+      // Double, then String for `+`, then a user impl), so the operator alone
+      // says nothing. Recursing is both safer and sharper than the linear
+      // lane's blanket exclusion (`cc_arg_is_scalarish`): `b61 + b61` over
+      // two int-bound locals still answers Int, while `1.5 + 2.5` answers
+      // false at the EFloat leaf and a String `+` answers false at EString.
+      //
+      // Answering `true` unconditionally, as this arm did when it was copied
+      // from `gc_expr_is_intish`, would send a Double pair to a raw `i64.eq`
+      // (bit equality, so -0.0 != 0.0) and a packed string pointer through
+      // the integer renderer. No String `+` reaches codegen today --
+      // `desugar_trait_dicts` rewrites every one measured, literals,
+      // parameters, projections, call results and match bindings alike, into
+      // `String::concat` -- but a predicate that is only correct because
+      // another pass happens to run first is a proxy, not a guarantee.
+      bc_expr_is_intish(l, local_names, ctx) && bc_expr_is_intish(r, local_names, ctx)
+    } else {
+      false
+    },
     EUnaryOp(op, _) => op == "!" || op == "~",
     // #2405: a bare ident has no shape to read, so it is answered from the
     // slot log `gc_compile_let_i64` writes -- resolved through the CURRENT

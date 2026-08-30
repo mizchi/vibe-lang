@@ -1153,7 +1153,29 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
     cc_ident_slot_kind(e, local_names, ctx) == 1
   } else if tag == 5 {
     let op = get_ebinop_op(e)
-    op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%"
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" {
+      // Int by the checker's own rule, whatever the operands are.
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      // #2422: these four are resolved from the OPERANDS (Int, then Double,
+      // then String for `+`, then a user impl), so excluding them outright --
+      // which this arm did -- left a statically-known Int falling through to
+      // the runtime string-pointer heuristic below. Measured on the committed
+      // seed, so this is long-standing and not new here:
+      //
+      //   let i = 64 << 32   let j = 1
+      //   "\{i + j}"  ->  "x " (garbage bytes)
+      //   "\{i * 1}"  ->  ""   (empty)
+      //
+      // versus "274877906945" / "274877906944" once the operands are read.
+      // Recursing is what makes them known: both leaves are Int, so the
+      // result is, while `1.5 + 2.5` stops at the float leaf and a String
+      // `+` (rewritten to String::concat before codegen anyway) stops at the
+      // string one.
+      ts_known_int(get_ebinop_lhs(e), local_names, ctx) && ts_known_int(get_ebinop_rhs(e), local_names, ctx)
+    } else {
+      false
+    }
   } else if tag == 6 {
     // #2344: `~` is Int by construction, and its result is exactly the shape
     // the runtime string-pointer heuristic misreads -- `~((0 - (64 << 32)) - 1)`
