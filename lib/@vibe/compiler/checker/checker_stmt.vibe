@@ -5493,6 +5493,7 @@ fn direct_expression_return_observation_from_capture(checked: CheckedProgram, ca
 fn direct_expression_return_capture() -> TypedOccurrenceRoleLaneCapture {
   TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    entries_flags: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5536,6 +5537,7 @@ export fn check_program_statement_root_type_observation(stmts: Array[Stmt]) -> O
 export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    entries_flags: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5557,6 +5559,7 @@ export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt
 export fn check_program_typed_occurrence_expression_path_observation(stmts: Array[Stmt]) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    entries_flags: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5592,9 +5595,35 @@ export fn check_program_result(stmts: Array[Stmt]) -> CheckedProgram with Except
   check_program_type_defs_observation_impl(stmts, None, None).checked_program
 }
 
+/// ONE process-wide entries-only capture for the Double observations, reset
+/// before every use. A fresh capture per module made the bump high-water grow
+/// with the SUM of every module's typed occurrences; truncating and reusing
+/// the same backing arrays bounds it by the LARGEST module instead, which is
+/// what keeps the wasm32 CLI-core build (already within a few MB of the 4GB
+/// linear-memory ceiling) standing. The wave loop runs module checks
+/// serially, and every consumer copies its answer out before the next reset.
+let shared_double_call_capture: TypedOccurrenceRoleLaneCapture = double_call_result_role_lane_capture()
+
+fn reset_double_call_capture() -> TypedOccurrenceRoleLaneCapture {
+  let capture = shared_double_call_capture
+  Array::truncate(capture.entries, 0)
+  Array::truncate(capture.entries_flags, 0)
+  Array::truncate(capture.provenance_entries, 0)
+  Array::truncate(capture.statement_path, 0)
+  Array::truncate(capture.frame_paths, 0)
+  Array::truncate(capture.frame_next_children, 0)
+  Array::truncate(capture.frame_expected_children, 0)
+  Array::truncate(capture.frame_direct_recorded, 0)
+  Array::truncate(capture.direct_entries, 0)
+  capture.frame_depth = 0
+  capture.complete = true
+  capture
+}
+
 fn double_call_result_role_lane_capture() -> TypedOccurrenceRoleLaneCapture {
   TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    entries_flags: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5618,9 +5647,11 @@ fn double_call_result_role_lane_capture() -> TypedOccurrenceRoleLaneCapture {
 /// primary call results whose checker-confirmed instantiated type is Double,
 /// plus the two counts that say whether the AST was located at all. `None`
 /// means the capture did not line up with the typed occurrences and nothing
-/// can be classified.
+/// can be classified. Reads the entries-only FLAG array (one Int per
+/// occurrence; see the struct's entries_flags note), not the role/lane
+/// tuples -- the Double captures run with provenance_enabled = false.
 fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> Option[(Array[Int], Int, Int)] {
-  if Array::length(capture.entries) != Array::length(checked.typed_occurrences) {
+  if Array::length(capture.entries_flags) != Array::length(checked.typed_occurrences) {
     None
   } else {
     let out: Array[Int] = []
@@ -5629,17 +5660,17 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
     let mut i = 0
     while i < Array::length(checked.typed_occurrences) {
       let (off, raw_ty) = Array::get(checked.typed_occurrences, i)
-      let (role, lane) = Array::get(capture.entries, i)
-      // The role/lane test comes FIRST, and the type query is the cheap head
-      // form. Both are about cost, and the cost is not incidental: this loop
-      // used to resolve EVERY typed occurrence through `subst_apply`, which
-      // rebuilds the whole substituted type, and then throw all but the head
-      // away. On a single file that is invisible; on a merged program it is
-      // quadratic, because `subst_lookup` walks a substitution that grows with
-      // the program. Measured on `lib/@vibe/compiler/tests/compiler_fs_test.vibe`
-      // (import closure: the whole compiler), compiling it went 6.1s -> 77.5s
-      // with the old shape and back to a small delta with this one.
-      if role == "CallResult" && lane == "Primary" {
+      // The primary-call-result test comes FIRST, and the type query is the
+      // cheap head form. Both are about cost, and the cost is not
+      // incidental: this loop used to resolve EVERY typed occurrence through
+      // `subst_apply`, which rebuilds the whole substituted type, and then
+      // throw all but the head away. On a single file that is invisible; on
+      // a merged program it is quadratic, because `subst_lookup` walks a
+      // substitution that grows with the program. Measured on
+      // `lib/@vibe/compiler/tests/compiler_fs_test.vibe` (import closure:
+      // the whole compiler), compiling it went 6.1s -> 77.5s with the old
+      // shape and back to a small delta with this one.
+      if Array::get(capture.entries_flags, i) == 1 {
         primary_calls = primary_calls + 1
         if off >= 0 {
           located_primary_calls = located_primary_calls + 1
@@ -5686,7 +5717,7 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
 /// channel up green and inert; `check_program_double_call_result_located_observation`
 /// below is the caller-facing form that refuses the first case.
 fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int)] with Exception {
-  let capture = double_call_result_role_lane_capture()
+  let capture = reset_double_call_capture()
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
     None => None,
@@ -5711,7 +5742,7 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
 /// program is identical to what check_program_result /
 /// check_program_with_projected_import_env_result produce today.
 export fn check_program_with_projected_import_env_double_call_result_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]]) with Exception {
-  let capture = double_call_result_role_lane_capture()
+  let capture = reset_double_call_capture()
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(capture), true).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
     None => (checked, None),
@@ -5901,6 +5932,7 @@ export fn check_program_with_env_statement_root_type_observation(stmts: Array[St
 export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceRoleLaneObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    entries_flags: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5920,6 +5952,7 @@ export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: A
 export fn check_program_with_env_typed_occurrence_expression_path_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> Option[CheckedTypedOccurrenceExpressionPathObservation] with Exception {
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
+    entries_flags: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),

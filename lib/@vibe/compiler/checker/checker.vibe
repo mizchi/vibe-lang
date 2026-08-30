@@ -6129,6 +6129,14 @@ fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
 // legacy `(offset, Type)` table as its only output.
 export struct TypedOccurrenceRoleLaneCapture {
   entries: Array[(String, String)];
+  // #2391/#2425 KPI: with provenance_enabled = false, append_legacy records
+  // into THIS flag array instead of `entries` -- one Int (1 = a primary
+  // call result, 0 = anything else) per typed occurrence, so an
+  // entries-only capture allocates no per-occurrence tuple block at all.
+  // The wasm32 CLI-core build sits within a few MB of the 4GB linear-memory
+  // ceiling (tests/gates/bootstrap/stage2_oracles.sh), so the per-module
+  // capture has to stay allocation-free beyond this one flat array.
+  entries_flags: Array[Int];
   provenance_entries: Array[(Array[Int], Array[Int], String, String, Type)];
   mut statement_path: Array[Int];
   frame_paths: Array[Array[Int]];
@@ -6395,14 +6403,19 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
   Array::push(tytab, (offset, ty))
   match capture {
     Some(capture_entries) => {
-      Array::push(capture_entries.entries, (role, lane))
       if !capture_entries.provenance_enabled {
-        // #2391: entries-only mode -- no provenance row, no completeness
-        // bookkeeping (see the field's note on the struct).
-        ()
+        // #2391: entries-only mode -- one flag, no tuple, no provenance row,
+        // no completeness bookkeeping (see the field's note on the struct).
+        Array::push(capture_entries.entries_flags, if role == "CallResult" && lane == "Primary" {
+          1
+        } else {
+          0
+        })
       } else if lane == "SyntheticRewrite" || lane == "AuxiliaryResumeValueRecheck" || capture_entries.frame_depth == 0 {
+        Array::push(capture_entries.entries, (role, lane))
         capture_entries.complete = false
       } else {
+        Array::push(capture_entries.entries, (role, lane))
         let expression_path = Array::get(capture_entries.frame_paths, capture_entries.frame_depth - 1)
         Array::push(capture_entries.provenance_entries, (Array::slice(capture_entries.statement_path, 0, Array::length(capture_entries.statement_path)), Array::slice(expression_path, 0, Array::length(expression_path)), role, lane, ty))
       }
