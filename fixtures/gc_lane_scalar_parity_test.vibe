@@ -43,6 +43,42 @@ test "#2404 a labeled parameter binds the name the body uses" {
   assert(f(x = 3, y = 10) == 0 - 7)
 }
 
+test "#2422 a let rec lambda binds its labeled parameter" {
+  // The ELetRec branch rescans the body with `collect_free_vars` to find the
+  // self-capture, and it passed the RAW parameter names (`n~`) as the bound
+  // set. The body's `n` was therefore not bound, became a bogus capture, every
+  // later capture shifted, and `self_cap_idx` named the wrong slot -- the
+  // self-closure was stored outside its environment and the call trapped with
+  // "uninitialized element" on gc while running fine on linear.
+  let rec countdown = (n~: Int) -> Int {
+    if n <= 0 {
+      0
+    } else {
+      countdown(n = n - 1)
+    }
+  }
+  assert(countdown(n = 5) == 0)
+  // Subtraction, so a reordering bug cannot pass, and two labels so the
+  // capture list has something to shift.
+  let rec sub_until = (a~: Int, b~: Int) -> Int {
+    if a <= b {
+      a - b
+    } else {
+      sub_until(a = a - 1, b = b)
+    }
+  }
+  assert(sub_until(a = 5, b = 3) == 0)
+  // The unlabeled control, which worked before and must keep working.
+  let rec plain = (n: Int) -> Int {
+    if n <= 0 {
+      0
+    } else {
+      plain(n - 1)
+    }
+  }
+  assert(plain(5) == 0)
+}
+
 test "#2405 a large Int renders as a number, not as an empty string" {
   // `__to_string` resolves to a builtin that decides Int-vs-String by a
   // heuristic on the bit pattern. `64 << 32` reads as (ptr 64, len 0), so it
@@ -234,6 +270,15 @@ test "#2407 eq answers on two distinct large Ints" {
   // Unary `-` over small values, which worked before for the same accidental
   // reason the small positive ones did.
   assert(!eq(-5, -6))
+  // Through BINDINGS, which is a separate path: the call-site classifier reads
+  // a bare ident from the slot log, and the log is written by a predicate that
+  // had the same unary gap. `eq` over two let-bound negated Ints reached the
+  // string fallback (#2422 review).
+  let na = -(64<<32)
+  let nb = -(65<<32)
+  assert(!eq(na, nb))
+  assert(eq(na, na))
+  assert(__to_string(na) == "-274877906944")
   // Small values, which always worked because the bogus address happened to
   // be in bounds.
   assert(!eq(1, 2))

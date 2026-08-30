@@ -282,11 +282,43 @@ fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -
 /// large Int through the runtime string-pointer heuristic. Resolved through the
 /// CURRENT slot, exactly as gc_expr_is_boolish above does, so a name rebound in
 /// a sibling scope is not read through its stale entry.
+fn gbe_strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
 fn gc_value_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EIdent(iname, _) => {
       let slot = find_local_slot(local_names, iname)
       slot >= 0 && array_contains_int(ctx.gc_int_locals, slot)
+    },
+    // `-x` carries the operand's type, so it is logged only when the operand
+    // is. Handled HERE rather than in `gc_expr_is_intish` on purpose: that one
+    // also routes the `==` operator, where widening `-` would change how float
+    // comparisons lower, and this fixes the measured defect without touching
+    // that path. Measured: two `let` bindings from unary-negated large Ints
+    // sent `eq(a, b)` to the string fallback (#2422 review). A Double stops at
+    // the `EFloat` leaf, and the let-logging consults floatish first anyway.
+    //
+    // No `+` arm: unary `+` is not vibe syntax at all -- `+(64 << 32)` is
+    // `unexpected token: +`, measured. An arm for it would be dead code that
+    // reads like coverage.
+    EUnaryOp(op, x) => if op == "!" || op == "~" {
+      true
+    } else if op == "-" {
+      gc_value_is_intish(x, local_names, ctx)
+    } else {
+      false
     },
     _ => gc_expr_is_intish(e)
   }
@@ -1537,7 +1569,20 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           let mut bpi = 0
           while bpi < Array::length(params) {
             let (pn, _) = Array::get(params, bpi)
-            Array::push(param_names_bp, pn)
+            // The parser keeps the label marker ON THE NAME (`n~`), while the
+            // body says `n`. Pushing the raw name leaves `n` unbound for
+            // `collect_free_vars`, so it becomes a bogus capture, every later
+            // capture shifts, and `self_cap_idx` names the wrong slot -- the
+            // self-closure is then stored outside its environment and the call
+            // traps with "uninitialized element". Measured: a `let rec` lambda
+            // with a labeled parameter trapped on gc and ran on linear; the
+            // same lambda without the label was fine on both (#2422 review).
+            //
+            // This is the fourth binding site in the #2404 family. Defined
+            // beside its caller rather than imported: a brand-new cross-file
+            // export plus its first cross-file caller in one change does not
+            // survive the merge-flatten (the gotcha `edp_strip_tilde` records).
+            Array::push(param_names_bp, gbe_strip_param_label_marker(pn))
             bpi = bpi + 1
           }
           let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.gc_ctor_table.names))
