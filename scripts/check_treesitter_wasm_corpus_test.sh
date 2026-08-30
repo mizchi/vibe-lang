@@ -60,6 +60,36 @@ expect_fail() {
   if run_gate "$2"; then echo "  FAIL: gate accepted '$1'" >&2; fails=$((fails + 1));
   else echo "  ok: gate rejected '$1'"; fi
 }
+
+# A nonzero exit is not enough. A gate that dies of a shell error -- an unbound
+# variable under `set -u`, say -- exits nonzero exactly like one that rejected
+# the input, so asserting only the status accepts a gate that has stopped
+# explaining itself. That happened: the rebuild guidance was replaced by
+# "WTS_VERSION: unbound variable" and every case here still reported ok
+# (#2422 review). So the message is asserted too, wherever the message IS the
+# point of the case.
+expect_fail_saying() {
+  local label="$1" dir="$2" needle="$3" out
+  out="$(VIBE_TREESITTER_CORPUS_ROOT="$dir" VIBE_TREESITTER_WTS_DIR="$STAGE" \
+    bash "$GATE" 2>&1 >/dev/null || true)"
+  if VIBE_TREESITTER_CORPUS_ROOT="$dir" VIBE_TREESITTER_WTS_DIR="$STAGE" bash "$GATE" >/dev/null 2>&1; then
+    echo "  FAIL: gate accepted '$label'" >&2
+    fails=$((fails + 1))
+    return
+  fi
+  case "$out" in
+    *"unbound variable"*|*"command not found"*|*"syntax error"*)
+      echo "  FAIL: '$label' died of a shell error, not a verdict:" >&2
+      echo "$out" | tail -2 >&2
+      fails=$((fails + 1)) ;;
+    *"$needle"*)
+      echo "  ok: gate rejected '$label' AND said how to fix it" ;;
+    *)
+      echo "  FAIL: '$label' was rejected without saying '$needle'" >&2
+      echo "$out" | tail -3 >&2
+      fails=$((fails + 1)) ;;
+  esac
+}
 expect_pass() {
   if run_gate "$2"; then echo "  ok: gate accepted '$1'";
   else echo "  FAIL: gate rejected '$1'" >&2; fails=$((fails + 1)); fi
@@ -147,7 +177,9 @@ if ! grep -q 'no_such_node' "$d/$CORPUS_REL/expressions.txt"; then
   echo "  BUG in this test: the corpus mutation did not land" >&2
   fails=$((fails + 1))
 else
-  expect_fail "a corpus the wasm does not match" "$d"
+  # This is the stale-artifact case the gate exists to diagnose, so its MESSAGE
+  # is the deliverable, not just its exit status.
+  expect_fail_saying "a corpus the wasm does not match" "$d" "pnpm run build:wasm"
 fi
 
 # The loader stage must follow playground/package.json. A presence-only check

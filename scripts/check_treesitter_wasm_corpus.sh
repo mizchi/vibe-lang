@@ -152,6 +152,27 @@ node -e '
   This is a toolchain problem, NOT a verdict about the committed artifacts --
   remove that directory and re-run so it is reinstalled."
 
+# Read the staged version back and compare it OUTRIGHT. This block was lost in
+# the rewrite that replaced the claim-and-wait staging with rename publication:
+# the replaced range swallowed it, so `WTS_VERSION` went unassigned while the
+# failure message below still referenced it. Under `set -u` that killed the
+# script with "unbound variable" on the one path this gate exists to explain --
+# a stale artifact -- and took the rebuild guidance with it (#2422 review).
+#
+# The self-test did not catch it because it asserted only a nonzero exit, and a
+# gate that dies of a shell error exits nonzero too. It asserts the message now.
+WTS_VERSION="$(node -e '
+  process.stdout.write(require(process.argv[1] + "/node_modules/web-tree-sitter/package.json").version);
+' "$STAGE" 2>/dev/null)" || WTS_VERSION=""
+[ -n "$WTS_VERSION" ] || fail "cannot read the staged web-tree-sitter version in $STAGE
+  This is a toolchain problem, NOT a verdict about the committed artifacts --
+  remove that directory and re-run."
+if [ "$WTS_VERSION" != "$WTS_SPEC" ]; then
+  fail "staged web-tree-sitter $WTS_VERSION, but playground/pnpm-lock.yaml resolves $WTS_SPEC
+  Again a toolchain problem, not a verdict about the artifacts. Remove $STAGE
+  and re-run."
+fi
+
 for w in $WASMS; do
   [ -f "$w" ] || fail "missing wasm artifact: $w"
 done
