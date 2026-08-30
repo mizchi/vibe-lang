@@ -47,6 +47,29 @@ test "#2403 `~` keeps accepting an alias that resolves to Int" {
 // lucky. All three of these resolve through the alias to a concrete type the
 // `type_is_ground` guard already refuses.
 
+test "#2403 `~` rejects a compiler-owned nominal head" {
+  // `Map` / `MutMap` / `StringBuilder` have no `TypeDef`, so `find_typedef`
+  // answers `None` and they used to reach the permissive default. Measured
+  // before the fix: `~x` on a `Map[String, Int]` returned -233 at runtime --
+  // the complemented map pointer -- with no diagnostic.
+  let m = "fn f(x: Map[String, Int]) -> Int { ~x }"
+  assert(check_source_err_contains(m, "operand of `~` must be Int"))
+  let mm = "fn f(x: MutMap[String, Int]) -> Int { ~x }"
+  assert(check_source_err_contains(mm, "operand of `~` must be Int"))
+  let sb = "fn f(x: StringBuilder) -> Int { ~x }"
+  assert(check_source_err_contains(sb, "operand of `~` must be Int"))
+}
+
+test "#2403 `~` rejects Array and Option, which never reach that arm" {
+  // These are `CtArray` / `CtOption`, not `CtNamed`, so `type_is_ground`
+  // refuses them without consulting any declaration. Pinned so a future
+  // rearrangement of the arms cannot drop them silently.
+  let a = "fn f(x: Array[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(a, "operand of `~` must be Int"))
+  let o = "fn f(x: Option[Int]) -> Int { ~x }"
+  assert(check_source_err_contains(o, "operand of `~` must be Int"))
+}
+
 test "#2403 `~` rejects an alias to a non-Int type" {
   let src = "type Text = String\nfn f(x: Text) -> Int { ~x }"
   assert(check_source_err_contains(src, "operand of `~` must be Int"))

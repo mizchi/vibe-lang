@@ -9807,7 +9807,20 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               CtNamed(nm, _) => match find_typedef(defs, nm) {
                 Some(TDStruct(_, _, _, _)) => true,
                 Some(TDEnum(_, _, _)) => true,
-                _ => false
+                // A compiler-owned head has no `TypeDef`, so `find_typedef`
+                // answers `None` for `Map` / `MutMap` / `StringBuilder` and the
+                // rest -- and they used to land in the default below and be
+                // accepted. Measured: `~x` on a `Map[String, Int]` returned
+                // -233, the complemented map pointer. Not one of the names in
+                // `compiler_owned_type_arity` is ever an `Int` (they are
+                // containers, builders and handles), so the whole set is an
+                // error with nothing to preserve. `Array` and `Option` never
+                // reach here -- they are `CtArray` / `CtOption`, refused by
+                // `type_is_ground` below.
+                _ => match compiler_owned_type_arity(nm) {
+                  Some(_) => true,
+                  None => false
+                }
               },
               _ => type_is_ground(other)
             }
