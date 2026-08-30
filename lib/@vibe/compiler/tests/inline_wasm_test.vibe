@@ -570,6 +570,10 @@ test "#2401 inline wasm: operands are typed against the instruction" {
   assert(String::contains(wat_err("(i64.add (i64.eq (local.get $a) (local.get $b)) (local.get $b))"), "the value there is i32"))
   // A declared local's type is the one that counts.
   assert(String::contains(wat_err("(local $p i32) (local.set $p (local.get $a)) (local.get $a)"), "'local.set' expects i32"))
+  assert(String::contains(wat_err("(local $p i32) (i64.extend_i32_s (local.tee $p (i64.const 1)))"), "'local.tee' expects i32"))
+  // ... and `local.tee` leaves that type, not an unknown that matches
+  // anything: an i32 local's tee cannot be the body's i64 result.
+  assert(String::contains(wat_err("(local $p i32) (local.tee $p (i32.const 1))"), "the inline wasm body must leave i64 but leaves i32"))
   // `return` and `select` are the two whose signature is not a plain table row.
   assert(String::contains(wat_err("(return (i32.const 1))"), "'return' expects i64 for operand 1 of 1"))
   assert(String::contains(wat_err("(select (local.get $a) (i32.const 1) (i32.const 1))"), "'select' needs both value operands to have the same type, got i64 and i32"))
@@ -653,4 +657,10 @@ test "#2401 inline wasm: the ordinary shapes still assemble" {
   // guessed: `locals` is keyed by name, and an unknown matches any expected
   // type, so it can never manufacture an error.
   assert(wat_err("(i64.add (local.get 0) (local.get 1))") == "")
+  assert(wat_err("(local.set 0 (i64.const 1)) (local.get $a)") == "")
+  // `local.tee` always leaves its operand, so it pushes even when the local's
+  // type is unknown. The first cut routed that push through iw_apply's
+  // `result`, where 0 means "pushes nothing" rather than "pushes an unknown",
+  // and rejected this valid body for leaving nothing (Codex on #2418).
+  assert(wat_err("(local.tee 0 (i64.const 1))") == "")
 }
