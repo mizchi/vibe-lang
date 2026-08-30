@@ -16,28 +16,63 @@ This grammar is used by the Helix, Zed, and Neovim editor integrations.
 
 ## Build
 
+Use the CLI pinned in `package.json`, not a globally installed one. `tree-sitter-cli`
+0.24.x emits `LANGUAGE_VERSION 14` with a `.version` field, while everything
+committed here is 15 with `.abi_version` — generating with the wrong version
+produces a plausible-looking diff and no error, silently downgrading the ABI for
+every consumer.
+
 ```bash
 cd integrations/treesitter-vibe
 
-# Install dependencies
 pnpm install --ignore-scripts
 
-# Generate parser from grammar.js
-tree-sitter generate
-
-# Run tests (9 corpus tests)
-tree-sitter test
-
-# Parse a file
-tree-sitter parse ../../examples/syntax.vibe
+pnpm exec tree-sitter generate          # regenerate src/ from grammar.js
+pnpm exec tree-sitter test              # corpus suite (10 cases)
+pnpm exec tree-sitter parse ../../examples/syntax.vibe
 ```
+
+### The three artifacts move together
+
+One `grammar.js` produces three committed artifacts, and they are only correct
+as a set:
+
+| artifact | consumer |
+| :--- | :--- |
+| `src/parser.c` | the corpus suite, Neovim, the Rust/Node bindings |
+| `../../playground/public/tree-sitter-vibe.wasm` | the playground editor |
+| `../zed-vibe/grammars/vibe.wasm` | the Zed extension |
+
+They had always been regenerated in the same commit until #2403 added prefix
+`~` in an environment with no emscripten, so only the C parser could be rebuilt.
+The two wasm files went stale and `~x` stayed a syntax error in the playground
+and in Zed while the corpus suite was green — nothing detected it, because the
+pairing was a habit rather than a check. It is a check now:
+`scripts/check_treesitter_artifacts.sh` (run in CI's `structural-lint` job)
+compares all three against `generated.sha256` and fails when one moves alone.
+
+So after any `tree-sitter generate`, rebuild the wasm from the same `src/` and
+restamp:
+
+```bash
+pnpm run build:wasm     # builds both wasm files and restamps generated.sha256
+```
+
+That needs `emcc` on `PATH` or a running docker daemon. If you cannot build it,
+**do not restamp** — leave the gate red, which is the state it exists to make
+visible.
+
+The Zed extension additionally pins a commit SHA in
+`integrations/zed-vibe/extension.toml`; Zed compiles the grammar itself from
+that revision, so bump the `rev` after pushing a grammar change.
 
 ### Install tree-sitter CLI
 
+Prefer `pnpm exec tree-sitter` inside this directory, which resolves the pinned
+version. A globally installed CLI must match that pin:
+
 ```bash
-cargo install tree-sitter-cli
-# or
-brew install tree-sitter  # library only, CLI needs cargo
+cargo install tree-sitter-cli --version 0.25.10
 ```
 
 ## Use with Helix
