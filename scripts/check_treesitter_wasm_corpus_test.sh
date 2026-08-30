@@ -218,9 +218,13 @@ fi
 # file exists to avoid. What IS deterministic is the consequence: a stage left
 # behind incomplete. Publication is atomic now (install into a private
 # temporary directory, rename it into place), so a published stage is complete
-# by construction and an incomplete one is definitively broken -- this case
-# asserts the gate rebuilds it rather than reading it.
-echo "[ts-corpus-test] a half-written stage is repaired, not inherited"
+# by construction and an incomplete one is damaged. The gate REFUSES such a
+# stage rather than repairing it: repairing means deleting a shared destination
+# after a non-atomic test, and that test can go stale -- another process may
+# publish a good stage in the gap and a third may already be reading it (#2422
+# review). Refusing is the safer guarantee and an equally strong one: an
+# incomplete stage is never read.
+echo "[ts-corpus-test] a damaged stage is refused, not inherited"
 PARTIAL="$WORK/partial_stage"
 rm -rf "$PARTIAL"
 # What an interrupted install leaves behind: the directory and the package path
@@ -243,9 +247,16 @@ if [ -n "$(find "$PARTIAL" -name 'package.json' -path '*web-tree-sitter*' 2>/dev
 else
   d="$(fresh_tree partial)"
   if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$PARTIAL" bash "$GATE" >/dev/null 2>&1; then
-    echo "  ok: the gate reinstalled over a half-written stage"
+    echo "  FAIL: the gate accepted a damaged stage" >&2
+    fails=$((fails + 1))
   else
-    echo "  FAIL: the gate inherited a half-written stage" >&2
+    echo "  ok: the gate refused a damaged stage"
+  fi
+  # And it must not have deleted it -- that is the operation this refuses to do.
+  if [ -d "$PARTIAL" ]; then
+    echo "  ok: the refusal left the shared directory alone"
+  else
+    echo "  FAIL: the refusal removed the shared directory" >&2
     fails=$((fails + 1))
   fi
 fi

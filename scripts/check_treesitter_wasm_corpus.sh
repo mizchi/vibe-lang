@@ -101,10 +101,23 @@ STAGE="$STAGE_BASE/$STAGE_KEY"
 # instead of sharing one. That is the right trade for a gate: redundant work is
 # cheap, an exposed partial stage is a wrong answer.
 if [ ! -f "$STAGE/node_modules/web-tree-sitter/package.json" ]; then
+  # A stage that EXISTS without the package is damaged (publication is atomic,
+  # so the current scheme cannot produce one) -- but repairing it would mean
+  # deleting a shared destination after a non-atomic test, and that test can go
+  # stale: another process may publish a good stage in the gap, and a third may
+  # already be reading it (#2422 review). So this refuses instead of repairing.
+  # Nothing here ever removes $STAGE; the only way it changes is a rename of a
+  # finished tree onto an absent path.
+  if [ -d "$STAGE" ]; then
+    fail "the staged loader in $STAGE is incomplete
+  It holds no node_modules/web-tree-sitter/package.json. A stage published by
+  this gate is complete by construction, so this one was left by an interrupted
+  older run or damaged by hand. Refusing to delete a shared directory that
+  another process may be publishing or reading -- remove it yourself and re-run:
+    rm -rf $STAGE
+  This is a toolchain problem, NOT a verdict about the committed artifacts."
+  fi
   mkdir -p "$STAGE_BASE"
-  # Only reachable when $STAGE is absent or definitively broken -- publication
-  # is atomic, so there is no "mid-install" state for this to race against.
-  rm -rf "$STAGE"
   wts_tmp="$STAGE_BASE/.tmp.$$"
   rm -rf "$wts_tmp"
   mkdir -p "$wts_tmp"
