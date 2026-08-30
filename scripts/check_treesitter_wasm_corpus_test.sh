@@ -22,7 +22,6 @@ GATE="$SCRIPT_DIR/check_treesitter_wasm_corpus.sh"
 # An exported override from a session hook would point every case at the real
 # tree and turn the whole suite into a no-op (#2252).
 unset VIBE_TREESITTER_CORPUS_ROOT
-unset VIBE_TREESITTER_WTS_WAIT_SECS
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_ts_corpus.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -216,9 +215,11 @@ fi
 # The race itself is NOT what this asserts. Six concurrent cold runs passed
 # under the old logic as readily as under the new one -- scheduling decides,
 # so such a case would pass while proving nothing, which is the failure this
-# file exists to avoid. What IS deterministic is the consequence: a second
-# process observing a half-written stage. The marker is what makes that safe,
-# and its absence is exactly what the old presence test could not see.
+# file exists to avoid. What IS deterministic is the consequence: a stage left
+# behind incomplete. Publication is atomic now (install into a private
+# temporary directory, rename it into place), so a published stage is complete
+# by construction and an incomplete one is definitively broken -- this case
+# asserts the gate rebuilds it rather than reading it.
 echo "[ts-corpus-test] a half-written stage is repaired, not inherited"
 PARTIAL="$WORK/partial_stage"
 rm -rf "$PARTIAL"
@@ -241,13 +242,7 @@ if [ -n "$(find "$PARTIAL" -name 'package.json' -path '*web-tree-sitter*' 2>/dev
   fails=$((fails + 1))
 else
   d="$(fresh_tree partial)"
-  # The fixture is a claimed-but-unready stage with NO writer behind it, so the
-  # gate must wait out its timeout before reclaiming. Shorten it here: the path
-  # under test is claim-fails -> wait -> reclaim -> install, and how long the
-  # wait lasts is not what this case asserts. At the production 180s it cost
-  # every healthy release-check and CI run three minutes.
-  if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$PARTIAL" \
-      VIBE_TREESITTER_WTS_WAIT_SECS=2 bash "$GATE" >/dev/null 2>&1; then
+  if VIBE_TREESITTER_CORPUS_ROOT="$d" VIBE_TREESITTER_WTS_DIR="$PARTIAL" bash "$GATE" >/dev/null 2>&1; then
     echo "  ok: the gate reinstalled over a half-written stage"
   else
     echo "  FAIL: the gate inherited a half-written stage" >&2

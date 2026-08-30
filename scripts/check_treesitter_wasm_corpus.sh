@@ -83,80 +83,50 @@ STAGE_KEY="$(printf '%s' "$WTS_SPEC" | tr -c 'A-Za-z0-9._-' '_')"
 STAGE="$STAGE_BASE/$STAGE_KEY"
 
 # This gate and its self-test are sibling dependencies, and pkfire runs siblings
-# CONCURRENTLY. A presence test followed by an install is a check-then-act on
-# shared state: both can see nothing installed and then race over the same
-# package.json / node_modules (#2422 review). So the stage is claimed atomically
-# and published with a readiness marker -- `mkdir` either creates the directory
-# or fails, indivisibly, on every POSIX filesystem.
+# CONCURRENTLY, so staging is shared state. The first attempt was a presence
+# test followed by an install -- check-then-act, both could install at once
+# (#2422 review). The second added an atomic `mkdir` claim, a `.ready` marker,
+# a bounded wait and a reclaim on timeout, and the reclaim was WORSE than the
+# problem: a writer that is merely slow cannot be told from a crashed one, so
+# its directory got deleted underneath it, and it could then publish `.ready`
+# into the replacement and expose a half-installed stage as ready.
 #
-# The marker is what makes the loser safe. Without it a second process could
-# find a directory that exists but holds a half-written install, which is the
-# same class of bug one level down.
-STAGE_READY="$STAGE/.ready"
-wts_install() {
-  echo '{"name":"vibe-wts-stage","private":true}' > "$STAGE/package.json"
+# So there is no claim, no marker, no wait and no reclaim. Each process installs
+# into its OWN temporary directory and publishes by RENAMING it into place.
+# `$STAGE` is therefore only ever created complete: a reader either does not see
+# it, or sees a finished tree. Nothing to time out, nothing to reclaim, and the
+# 180s wait that made every healthy run slow cannot exist.
+#
+# The cost is that N concurrent cold processes each install (a few seconds)
+# instead of sharing one. That is the right trade for a gate: redundant work is
+# cheap, an exposed partial stage is a wrong answer.
+if [ ! -f "$STAGE/node_modules/web-tree-sitter/package.json" ]; then
+  mkdir -p "$STAGE_BASE"
+  # Only reachable when $STAGE is absent or definitively broken -- publication
+  # is atomic, so there is no "mid-install" state for this to race against.
+  rm -rf "$STAGE"
+  wts_tmp="$STAGE_BASE/.tmp.$$"
+  rm -rf "$wts_tmp"
+  mkdir -p "$wts_tmp"
+  echo '{"name":"vibe-wts-stage","private":true}' > "$wts_tmp/package.json"
   # Never skipped when unavailable. A gate that cannot run has not answered,
   # and "unchecked" must not be able to look like "safe" (#2248).
-  if ! (cd "$STAGE" && npm install --no-audit --no-fund --silent "web-tree-sitter@$WTS_SPEC" >/dev/null 2>&1); then
-    # Leave no claimed-but-empty stage behind: the next run must be able to
-    # claim it rather than wait forever on a marker that will never appear.
-    rm -rf "$STAGE"
-    fail "could not install web-tree-sitter@$WTS_SPEC into $STAGE
+  if ! (cd "$wts_tmp" && npm install --no-audit --no-fund --silent "web-tree-sitter@$WTS_SPEC" >/dev/null 2>&1); then
+    rm -rf "$wts_tmp"
+    fail "could not install web-tree-sitter@$WTS_SPEC into $STAGE_BASE
   This gate parses the corpus with the real loader; it does not have a
   degraded mode, because a skipped run and a passing run must not look alike."
   fi
-  : > "$STAGE_READY"
-}
-
-if [ ! -f "$STAGE_READY" ]; then
-  mkdir -p "$STAGE_BASE"
-  if mkdir "$STAGE" 2>/dev/null; then
-    wts_install
+  if [ -d "$STAGE" ]; then
+    # Someone published while we were installing. Theirs is complete by
+    # construction, so drop ours rather than disturbing it.
+    rm -rf "$wts_tmp"
   else
-    # Someone else claimed it. Wait for their marker rather than touching the
-    # directory. Bounded, and a timeout is a FAILURE, not a quiet fall-through
-    # into a possibly half-installed stage.
-    # Overridable ONLY so the self-test can drive the reclaim path without
-    # paying the production timeout: its fixture is a claimed-but-unready stage
-    # with no writer behind it, so every healthy run waited the full 180s --
-    # measured at 184s for the suite, on a step that is in release-check and in
-    # CI (#2422 review). A slow gate gets skipped, which is how a gate stops
-    # being enforced. Unset on every real invocation.
-    wait_limit="${VIBE_TREESITTER_WTS_WAIT_SECS:-180}"
-    waited=0
-    while [ ! -f "$STAGE_READY" ] && [ "$waited" -lt "$wait_limit" ]; do
-      sleep 1
-      waited=$((waited + 1))
-    done
-    if [ ! -f "$STAGE_READY" ]; then
-      # A crashed writer leaves a claimed stage that never becomes ready, which
-      # would wedge every later run. Reclaim it once instead of failing forever.
-      rm -rf "$STAGE"
-      if mkdir "$STAGE" 2>/dev/null; then
-        wts_install
-      else
-        fail "timed out waiting for another process to stage web-tree-sitter in $STAGE
-  This is a toolchain problem, NOT a verdict about the committed artifacts --
-  remove that directory and re-run."
-      fi
-    fi
+    mv "$wts_tmp" "$STAGE" 2>/dev/null || rm -rf "$wts_tmp"
   fi
-fi
-
-# The spec is an exact version now, so the staged install can be compared to it
-# outright rather than merely reported. The directory key makes a stale stage
-# unreachable; this catches the rest -- a partial install, a hand-edited stage,
-# a registry that served something else.
-WTS_VERSION="$(node -e '
-  process.stdout.write(require(process.argv[1] + "/node_modules/web-tree-sitter/package.json").version);
-' "$STAGE" 2>/dev/null)" || WTS_VERSION=""
-[ -n "$WTS_VERSION" ] || fail "cannot read the staged web-tree-sitter version in $STAGE
-  This is a toolchain problem, NOT a verdict about the committed artifacts --
-  remove that directory and re-run."
-if [ "$WTS_VERSION" != "$WTS_SPEC" ]; then
-  fail "staged web-tree-sitter $WTS_VERSION, but playground/pnpm-lock.yaml resolves $WTS_SPEC
-  Again a toolchain problem, not a verdict about the artifacts. Remove $STAGE
-  and re-run."
+  # `mv src dst` nests when dst appeared between the test and the move. Cosmetic,
+  # but it must not be left inside a published stage.
+  rm -rf "$STAGE"/.tmp.* 2>/dev/null || true
 fi
 
 # Separate "the loader is not usable" from "the artifacts are wrong" while the
