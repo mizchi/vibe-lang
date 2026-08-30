@@ -116,8 +116,15 @@ if [ ! -f "$STAGE_READY" ]; then
     # Someone else claimed it. Wait for their marker rather than touching the
     # directory. Bounded, and a timeout is a FAILURE, not a quiet fall-through
     # into a possibly half-installed stage.
+    # Overridable ONLY so the self-test can drive the reclaim path without
+    # paying the production timeout: its fixture is a claimed-but-unready stage
+    # with no writer behind it, so every healthy run waited the full 180s --
+    # measured at 184s for the suite, on a step that is in release-check and in
+    # CI (#2422 review). A slow gate gets skipped, which is how a gate stops
+    # being enforced. Unset on every real invocation.
+    wait_limit="${VIBE_TREESITTER_WTS_WAIT_SECS:-180}"
     waited=0
-    while [ ! -f "$STAGE_READY" ] && [ "$waited" -lt 180 ]; do
+    while [ ! -f "$STAGE_READY" ] && [ "$waited" -lt "$wait_limit" ]; do
       sleep 1
       waited=$((waited + 1))
     done
