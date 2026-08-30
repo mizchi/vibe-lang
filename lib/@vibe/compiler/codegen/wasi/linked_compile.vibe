@@ -160,6 +160,9 @@ import @vibe/compiler/codegen/common_base {
   agg_info_of_type_expr,
   append_hidden_attempt_constructors,
   await_poll_pass,
+  bcc_guard_synth_matches,
+  bcc_int_lists_equal,
+  bcc_string_lists_equal,
   codegen_body_cache_find,
   codegen_body_cache_merge,
   codegen_body_cache_new,
@@ -3815,7 +3818,16 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   //     The gate pins exactly this (ADR-0069 entry hardening), and it is what
   //     caught the first version of this guard, which special-cased only the
   //     sentinel.
+  // #2388 step 3: when late DCE actually removes statements, the statement
+  // index space compacts, and the body cache's file-prefix limit -- summed
+  // in PRE-prelude merged coordinates -- no longer bounds it from below (an
+  // edited entry function can compact DOWN under the limit). A pruned
+  // compile therefore neither records cross-compile guards nor consumes a
+  // persisted cache. The `vibe test` lane (`__no_entry__`) never prunes and
+  // keeps full reuse.
+  let mut late_dce_pruned = false
   if enable_late_dce && late_dce_has_entry {
+    let late_dce_pre_len = Array::length(stmts)
     let dce_pruned = dce_stmts(stmts, late_dce_roots)
     // `stmts` is threaded onward by reference, so the pruned program has to
     // replace its contents rather than rebind the name. `dce_stmts` builds a
@@ -3826,6 +3838,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
       Array::push(stmts, Array::get(dce_pruned, dce_i))
       dce_i = dce_i + 1
     }
+    late_dce_pruned = Array::length(stmts) != late_dce_pre_len
   } else {
     ()
   }
@@ -4066,6 +4079,10 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // uncovered functions (measured: a one-test file answered
   // "functions 2/1025"). Coverage is a measurement lane; edit-stable indices
   // buy it nothing.
+  // #2388 step 3: the pin region's shape, exposed for the body-cache guards
+  // below (-1 = the reorder did not run, so no cross-compile reuse).
+  let mut pin_region_src_n = 0 - 1
+  let mut pin_region_capacity = 0 - 1
   if !library_mode && !coverage {
     let __pp_sorted = sorted_names_of(pre_prelude_let_names)
     let __pin_total = Array::length(fn_names_list)
@@ -4083,6 +4100,8 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     if Array::length(__pin_synth_idx) > 0 {
       let __pin_src_n = Array::length(__pin_src_idx)
       let __pin_capacity = ((__pin_src_n + 1023) / 1024) * 1024
+      pin_region_src_n = __pin_src_n
+      pin_region_capacity = __pin_capacity
       let __new_names = lc_fresh_string_array()
       let __new_params = lc_fresh_int_array()
       let __new_env = lc_fresh_bool_array()
@@ -4320,7 +4339,29 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   if entry_user_idx < 0 && !library_mode && entry_name != "__no_entry__" {
     throw("entry `\{entry_name}` not found: no exported function named `\{entry_name}` (use __no_entry__ to build a test runner)")
   }
-  let str_strs = collect_strings_stmts(stmts)
+  // #2402: the empty string is seeded at pool slot 0, BEFORE the source
+  // strings. It is the one compiler-materialised string that user bodies
+  // embed (StringBuilder::freeze's join separator, ByteStream::to_string's
+  // accumulator); seeded after the source strings it moved whenever an edit
+  // added a novel literal, shifting the offset inside every unchanged body
+  // that embeds it and defeating cross-compile replay. "" is zero-length,
+  // so fronting it changes no other string's data offset. The remaining
+  // seeded strings (the #2199 OOB fragments below) stay where they are:
+  // only the generated builtin bodies reference them, and those are rebuilt
+  // by every compile.
+  let str_collected = collect_strings_stmts(stmts)
+  let str_strs = lc_fresh_string_array()
+  Array::push(str_strs, "")
+  let mut __sc = 0
+  while __sc < Array::length(str_collected) {
+    let __scs = Array::get(str_collected, __sc)
+    if String::length(__scs) > 0 {
+      Array::push(str_strs, __scs)
+    } else {
+      ()
+    }
+    __sc = __sc + 1
+  }
   let rec add_map_keys_expr: (Expr) -> Unit = (e) -> {
     match e {
       EMap(fields) => {
@@ -4384,13 +4425,8 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
     }
     __mk = __mk + 1
   }
-  // Always seed the empty string so codegen that materialises "" (e.g.
-  // StringBuilder::freeze's join separator, ByteStream::to_string's accumulator)
-  // can rely on str_table_lookup("") succeeding even when the source never
-  // mentions "" literally.
-  if !array_contains_str(str_strs, "") {
-    Array::push(str_strs, "")
-  }
+  // ("" is seeded at pool slot 0 above -- see the #2402 note at the pool's
+  // construction.)
   // #2199: every bounds-checked builtin's OOB abort prints
   // `<operation>: index <idx> out of bounds for length <len>` before its
   // `unreachable` (a bare trap reads as a compiler bug). Seed the message
@@ -5797,6 +5833,103 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
+  // #2388 step 3: record the layout facts this compile's bodies are emitted
+  // against, and validate an incoming cross-compile cache against the same
+  // facts. A cached body's immediates assume the pin region's shape, the
+  // lambda-slot base, the host-import/generated-builtin index layout below
+  // func_offset, and the synthesized functions' names AND merged-statement
+  // positions (their positions decide the statement-ordered pre-pass tables
+  // -- string pool, signatures -- every body offset is computed from). The
+  // import vector is pinned by the sorted used-builtin-name SET, not its
+  // size: the gated imports are assigned indices by a fixed sequence of
+  // has_key tests, so two different sets of equal size would assign each
+  // import a different index while every count still matched. Any mismatch
+  // makes replay unsound, so the cache is dropped wholesale: a miss costs a
+  // recompile, never a wrong body.
+  let guard_import_names_now = sorted_names_of(Map::keys(used_builtin_names))
+  let mut __gim = 0
+  while __gim < Array::length(linked_import_names) {
+    Array::push(guard_import_names_now, Array::get(linked_import_names, __gim))
+    __gim = __gim + 1
+  }
+  // Global name-membership guard: compile_call's `prefer_bound_call` and the
+  // func-table lookups match the SPELLED name across the whole program, and
+  // only builtin-spelled names take those branches. Prefix defs are #716
+  // path-mangled (`_exp_`/`_dep_` marker), so the names that can flip such a
+  // branch are the unmangled source-region ones. `__test_`/`__bench_` blocks
+  // are excluded -- nothing calls a test by name -- which is what keeps the
+  // append-a-test edit inside the cache.
+  let guard_unmangled_now = if pin_region_capacity >= 0 {
+    let raw = lc_fresh_string_array()
+    let mut __gun = 0
+    while __gun < pin_region_src_n {
+      let __gname = Array::get(fn_names_list, __gun)
+      if !String::contains(__gname, "_exp_") && !String::contains(__gname, "_dep_") && !String::starts_with(__gname, "__test_") && !String::starts_with(__gname, "__bench_") {
+        Array::push(raw, __gname)
+      } else {
+        ()
+      }
+      __gun = __gun + 1
+    }
+    sorted_names_of(raw)
+  } else {
+    lc_fresh_string_array()
+  }
+  if pin_region_capacity >= 0 && !late_dce_pruned {
+    Array::push(body_cache_out.guard_meta, pin_region_src_n)
+    Array::push(body_cache_out.guard_meta, pin_region_capacity)
+    Array::push(body_cache_out.guard_meta, lambda_slot_base)
+    Array::push(body_cache_out.guard_meta, num_imported_funcs)
+    Array::push(body_cache_out.guard_meta, num_generated)
+    let mut __gsy = pin_region_capacity
+    while __gsy < num_user_funcs {
+      Array::push(body_cache_out.guard_synth_names, Array::get(fn_names_list, __gsy))
+      Array::push(body_cache_out.guard_synth_stmts, Array::get(fn_stmt_indices, __gsy))
+      __gsy = __gsy + 1
+    }
+    let mut __gin = 0
+    while __gin < Array::length(guard_import_names_now) {
+      Array::push(body_cache_out.guard_import_names, Array::get(guard_import_names_now, __gin))
+      __gin = __gin + 1
+    }
+    // ADR-0092 borrow-parameter ABI (call-site sensitive: an edit anywhere
+    // can flip an unchanged function's owned/borrowed parameter, changing
+    // its drop obligations and every caller's dup obligations). Names are
+    // sorted with masks aligned by construction.
+    let mut __gbn = 0
+    while __gbn < Array::length(lc_borrow_param_user_srt) {
+      Array::push(body_cache_out.guard_borrow_names, Array::get(lc_borrow_param_user_srt, __gbn))
+      Array::push(body_cache_out.guard_borrow_masks, Array::get(lc_borrow_param_mask, __gbn))
+      __gbn = __gbn + 1
+    }
+    let mut __gum = 0
+    while __gum < Array::length(guard_unmangled_now) {
+      Array::push(body_cache_out.guard_unmangled_names, Array::get(guard_unmangled_now, __gum))
+      __gum = __gum + 1
+    }
+  }
+  let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
+    true
+  } else if pin_region_capacity < 0 {
+    // This compile did not run the pin reorder. Either the stmts were
+    // already lowered by an earlier compile in this same process (#1259's
+    // replay/sliced lanes re-feed the SAME mutated array, whose layout is
+    // exactly the harvest's -- the earlier compile's pads and synthesized
+    // lets now read as source names, so the reorder is a no-op skip), or
+    // the program has no synthesized functions at all. In both cases the
+    // incoming cache came from this identical layout; the cross-compile
+    // lane never lands here, because a fresh closure compile always
+    // lowers, always synthesizes, and therefore always reorders.
+    true
+  } else if Array::length(body_cache_in.guard_meta) == 0 {
+    // Guard-less but non-empty under a reordering compile: only hand-built
+    // test caches look like this (a real harvest of a reordering compile
+    // records guards, and codegen_body_cache_filter_src_below empties a
+    // guard-less cache before it can cross compiles). Accept unchanged.
+    true
+  } else {
+    !late_dce_pruned && Array::length(body_cache_in.guard_meta) == 5 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in.guard_meta, 4) == num_generated && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in.guard_unmangled_names, guard_unmangled_now)
+  }
   let fn_indices_list = lc_fresh_int_array()
   let fn_returns_list = lc_fresh_int_array()
   let mut fi = 0
@@ -6457,7 +6590,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
       // This is where a parallel body phase pays off: the whole per-function
       // pipeline below -- Perceus plan, locals analysis, ctx construction,
       // compile_expr -- is skipped, not merely discarded.
-      let __cache_hit = codegen_body_cache_find(body_cache_in, bi)
+      let __cache_hit = if body_cache_in_ok {
+        codegen_body_cache_find(body_cache_in, bi)
+      } else {
+        0 - 1
+      }
       if __cache_hit >= 0 {
         codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used)
       } else {
@@ -7294,7 +7431,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
         // Harvest is unconditional and cheap (it copies references into parallel
         // arrays, it does not re-encode). The cache is only READ when a caller
         // supplies one.
-        codegen_body_cache_record(body_cache_out, bi, bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
+        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
       }
     }
     bi = bi + 1
@@ -8967,6 +9104,16 @@ export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String)
 export fn compile_wasi_module_rc_impl_with_float_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
   compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+}
+
+/// #2388 step 3: compile_wasi_module_rc_impl with the body caches threaded
+/// through -- `body_cache_in` entries replay instead of compiling (the body
+/// loop already consults it, #1259), and `body_cache_out` harvests this
+/// compile's bodies for the caller to persist. Everything else matches the
+/// plain RC lane flag for flag.
+export fn compile_wasi_module_rc_cached_impl(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), body_cache_in, body_cache_out, 0, 0 - 1)
 }
 
 /// Preserve the post-lowering AST for the explicit `no-dce` compile mode.

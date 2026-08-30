@@ -128,19 +128,25 @@ export fn decode_persistent_artifact(env: Bytes) -> Option[Bytes] {
   }
 }
 
-/// #1326: publish atomically — write "<path>.tmp", then Fs::rename over the
-/// final path — so readers never observe a mid-write final file. Racing
-/// writers of the same key produce identical bytes, so rename-over is safe;
-/// any residual torn read is caught by the envelope length check above.
+/// Publish in one host call. `Fs::write_bytes` is ATOMIC on both hosts --
+/// scripts/wasm_vibe_host_runner.js `atomicWriteFileSync` and
+/// runtime/viberun `vibe_atomic_write` each write a pid+nonce-unique
+/// same-directory temporary file and rename it over the target -- so a
+/// concurrent reader never observes a mid-write file and concurrent
+/// writers (identical or differing payloads alike) last-write-win as
+/// complete files. The guest-level tmp+rename this used to layer on top
+/// (#1326) predates that host guarantee and was itself the only shared
+/// mutable temporary in the picture: two guest writers of one key could
+/// rename each other's temporary away and abort an otherwise valid
+/// compile (#2402 review, three escalations of the same race). Any
+/// residual torn read is still caught by the envelope length check above.
 export fn store_persistent_artifact(version_tag: String, kind: String, entry_name: String, fingerprint: String, bytes: Bytes) -> Unit with Exception + Fs {
   let path = persistent_artifact_cache_path(version_tag, kind, entry_name, fingerprint)
   store_artifact_envelope_at(path, bytes)
 }
 
 export fn store_artifact_envelope_at(path: String, bytes: Bytes) -> Unit with Exception + Fs {
-  let tmp = String::concat(path, ".tmp")
-  Fs::write_bytes(tmp, encode_persistent_artifact(bytes))
-  Fs::rename(tmp, path)
+  Fs::write_bytes(path, encode_persistent_artifact(bytes))
 }
 
 export fn load_artifact_envelope_at(path: String) -> Option[Bytes] with Exception + Fs {
