@@ -460,7 +460,17 @@ export fn cc_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
 /// (#678 residual) — e.g. leb128's `eq(val, 0)` trapped under RC (#705).
 fn cc_arg_is_scalarish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let t = expr_tag(e)
-  if t == 0 || t == 1 {
+  // #2424: ask the checker first, exactly as `ts_known_int` does. Without
+  // this the two classifiers disagreed about the same channel: the renderer
+  // consumed the tag-3 table and the `eq` gate did not, so with
+  // `prefer_bound_call` true a call-shaped operand -- which no syntactic arm
+  // below accepts -- sent `eq(Array::get(xs, 0), Array::get(ys, 0))` to the
+  // bound `eq` and its string fallback. Measured: `64 << 32` vs `65 << 32`
+  // trapped on linear while the gc lane, whose classifier already reads the
+  // table, answered correctly.
+  if ts_offset_says_int(e, ctx) {
+    true
+  } else if t == 0 || t == 1 {
     true
   } else if t == 4 {
     // #2422: a bare ident, answered from the same slot log `ts_known_int`
