@@ -1823,6 +1823,36 @@ run_test_block_fixtures_gc() {
   done
 }
 
+# #2426: the same fixtures on the BUMP lane (VIBE_RC=0), the third codegen
+# configuration. `0.0 == -0.0` was false and `nan == nan` true there for the
+# same reason as on gc -- equality compared raw f64 bits -- and neither of the
+# two lanes above could see it: RC diverted floats to f64 comparisons and bump
+# did not. Measured before the fix, this fixture failed here and passed on
+# linear, which is exactly the shape a two-lane gate is blind to.
+run_test_block_fixtures_bump() {
+  local label="$1"; shift
+  local fx fxout
+  [ "$#" -gt 0 ] || { echo "[compiler-gate] FAIL: $label matched no fixtures" >&2; exit 1; }
+  for fx in "$@"; do
+    [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
+    fxout="_build/_gate_tbfbump_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    VIBE_RC=0 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile on the bump lane ($label)" >&2
+      cat "$fxout.diag" 2>/dev/null >&2; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test on the bump lane (assert trapped) ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+  done
+}
+
 # 15b. extended derive(...) regression (#638 / #694): enum `derive(Ord/Show)`,
 #      struct + enum `derive(Default)`, `derive(Eq)`, and `derive(Hash)`
 #      including transparent Map keys — `map_key_to_string = [K: Hash](key) ->
@@ -1986,6 +2016,7 @@ echo '[compiler-gate] bit-not ~ ok'
 echo '[compiler-gate] 15b-3/15 gc-lane scalar parity (#2404/#2405/#2407)'
 run_test_block_fixtures "gc-lane scalar parity (linear)" fixtures/gc_lane_scalar_parity_test.vibe
 run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_parity_test.vibe
+run_test_block_fixtures_bump "gc-lane scalar parity (bump)" fixtures/gc_lane_scalar_parity_test.vibe
 echo '[compiler-gate] gc-lane scalar parity ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a

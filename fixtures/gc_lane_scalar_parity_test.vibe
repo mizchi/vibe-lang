@@ -290,3 +290,111 @@ test "#2407 eq answers on two distinct large Ints" {
   assert(eq(64<<32, 65<<32) == ((64<<32) == (65<<32)))
   assert(eq(3, 3) == (3 == 3))
 }
+
+/// #2426: `Double` equality reached no float comparison on the gc lane.
+/// `emit_gc_eq_value` routes on `gc_expr_is_intish` and otherwise falls
+/// through to the `eq` builtin, and neither consults `gc_expr_is_floatish` --
+/// which the neighbouring `<` `>` `<=` `>=` lowering has consulted all along,
+/// with a comment naming `-0.0` as one of the values a raw bit compare
+/// misranks.
+///
+/// That left two silent wrong answers, and this pair of helpers covers the
+/// second one, where the operand arrives through a parameter rather than as a
+/// literal:
+///
+///   * The `eq` builtin's fallback reads each operand as a `(ptr << 32) | len`
+///     fat pointer. `-0.0` has bit 63 set, so its implied pointer is far out
+///     of bounds, the "both operands look like strings" guard answers no, and
+///     the result is "not equal" -- while IEEE 754 says `+0.0 == -0.0` is
+///     true. The linear lane agrees with IEEE; only gc disagreed.
+///   * `gc_expr_is_intish` answers true for `+ - * /` from the OPERATOR alone,
+///     so two float arithmetic operands took a raw `i64.eq` over their f64
+///     bits instead. `1.5 + 2.5 == 4.0` was right only because equal Doubles
+///     have equal bit patterns -- an accident, not a routing.
+fn dbl_eq(a: Double, b: Double) -> Bool {
+  a == b
+}
+
+fn dbl_ne(a: Double, b: Double) -> Bool {
+  a != b
+}
+
+/// A division the compiler cannot fold, so `dz(0.0, 0.0)` really is a NaN
+/// produced at run time.
+fn dz(a: Double, b: Double) -> Double {
+  a / b
+}
+
+test "#2426 Double equality follows IEEE 754, not the bit pattern" {
+  // The pair whose bit patterns differ ONLY in the sign bit -- which is what a
+  // raw i64 compare distinguishes and an f64 compare does not.
+  assert(0.0 == -0.0)
+  assert(-0.0 == 0.0)
+  assert(!(0.0 != -0.0))
+  // Through names, either side, and both sides at once: the operand shapes
+  // that reach the classifier as a bare ident rather than a literal.
+  let a = 0.0
+  let b = -0.0
+  assert(a == -0.0)
+  assert(0.0 == b)
+  assert(a == b)
+  assert(!(a != b))
+  // Through an annotated parameter, the binding form the slot log seeds
+  // separately from a `let`.
+  assert(dbl_eq(0.0, -0.0))
+  assert(!dbl_ne(0.0, -0.0))
+  // `-0.0` arising from ARITHMETIC rather than from the literal, which is how
+  // it turns up in real code (an underflowing negative product), and the
+  // branch on it that used to be taken wrongly.
+  let z = 0.0 * -1.0
+  assert(z == 0.0)
+  if z == 0.0 {
+    assert(true)
+  } else {
+    assert(false)
+  }
+  // Ordinary Double equality, which was already right and must stay right --
+  // including the arithmetic operands that `gc_expr_is_intish` claimed.
+  assert(1.5 == 1.5)
+  assert(!(1.5 == 2.5))
+  assert(-1.5 == -1.5)
+  assert(!(-1.5 == 1.5))
+  assert(1.5 + 2.5 == 4.0)
+  assert(!(1.5 + 2.5 == 4.5))
+  assert(2.5 * 2.0 == 5.0)
+  assert(1.5 != 2.5)
+  assert(dbl_eq(1.5, 1.5))
+  assert(!dbl_eq(1.5, 2.5))
+  // A `while` condition is a third call site into the same routing, next to
+  // the plain expression and the `if` above.
+  let mut n = 3.0
+  let mut steps = 0
+  while n != 0.0 {
+    n = n - 1.0
+    steps = steps + 1
+  }
+  assert(steps == 3)
+  // NaN is the other value IEEE 754 separates from a bit compare, and in the
+  // opposite direction: two NaNs have IDENTICAL bits and are still not equal.
+  // Measured on main's gc stage2, both inversions were live -- `nan == nan`
+  // answered true and `nan != nan` answered false -- while linear answered
+  // both the IEEE way. `!=` gets this from the callers' `eqz` over the same
+  // `f64.eq`, so it needs no arm of its own.
+  let nan = dz(0.0, 0.0)
+  assert(!(nan == nan))
+  assert(nan != nan)
+  assert(!(nan == 1.5))
+  assert(nan != 1.5)
+  assert(!dbl_eq(nan, nan))
+  assert(dbl_ne(nan, nan))
+  // The Int and String sides of the same routing are untouched: a float guard
+  // that also swallowed these would trade one silent wrong answer for another.
+  assert(0 == 0)
+  assert(!(0 == 1))
+  assert((64<<32) == (64<<32))
+  assert(!((64<<32) == (65<<32)))
+  assert("ab" == "ab")
+  assert(!("ab" == "ac"))
+  assert(true == true)
+  assert(!(true == false))
+}
