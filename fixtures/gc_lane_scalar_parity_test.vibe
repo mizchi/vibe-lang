@@ -1,0 +1,292 @@
+// #2404 / #2405 / #2407: three places the wasm-gc lane answered differently
+// from the linear lane on ORDINARY values. Every assertion here must hold on
+// BOTH lanes, which is the point -- each of these compiled and ran on linear
+// and either trapped, refused to compile, or answered wrongly on gc.
+//
+// Run on both lanes by tests/gates/early/run.sh. A gc-only or linear-only
+// run would miss exactly the divergence this file exists to catch.
+
+// #2404: a labeled parameter is parsed with the marker ON THE NAME (`x~`)
+// while the body says `x`. The gc backend bound the raw name, so this fn
+// reported "internal compiler error: `x` (gc ident) reached code generation
+// unresolved ... please report the source" for a valid program.
+//
+// Subtraction, not addition, so a reordering bug cannot pass (CLAUDE.md).
+fn labeled_sub(x~: Int, y~: Int) -> Int {
+  x - y
+}
+
+// The same for an optional parameter, which carries `x?`.
+fn optional_sub(x?: Int, y?: Int) -> Int {
+  match x {
+    Some(a) => match y {
+      Some(b) => a - b,
+      None => a
+    },
+    None => 0
+  }
+}
+
+//# Misc
+
+test "#2404 a labeled parameter binds the name the body uses" {
+  assert(labeled_sub(x = 10, y = 3) == 7)
+  assert(labeled_sub(y = 3, x = 10) == 7)
+  assert(optional_sub(x = 10, y = 3) == 7)
+  // A lambda is a SEPARATE binding site, and its free-variable scan is a
+  // third. With only the first fixed, the body's `x` became a bogus capture
+  // and the call returned 0 with no diagnostic.
+  let f = (x~: Int, y~: Int) -> Int {
+    x - y
+  }
+  assert(f(x = 10, y = 3) == 7)
+  assert(f(x = 3, y = 10) == 0 - 7)
+}
+
+test "#2422 a let rec lambda binds its labeled parameter" {
+  // The ELetRec branch rescans the body with `collect_free_vars` to find the
+  // self-capture, and it passed the RAW parameter names (`n~`) as the bound
+  // set. The body's `n` was therefore not bound, became a bogus capture, every
+  // later capture shifted, and `self_cap_idx` named the wrong slot -- the
+  // self-closure was stored outside its environment and the call trapped with
+  // "uninitialized element" on gc while running fine on linear.
+  let rec countdown = (n~: Int) -> Int {
+    if n <= 0 {
+      0
+    } else {
+      countdown(n = n - 1)
+    }
+  }
+  assert(countdown(n = 5) == 0)
+  // Subtraction, so a reordering bug cannot pass, and two labels so the
+  // capture list has something to shift.
+  let rec sub_until = (a~: Int, b~: Int) -> Int {
+    if a <= b {
+      a - b
+    } else {
+      sub_until(a = a - 1, b = b)
+    }
+  }
+  assert(sub_until(a = 5, b = 3) == 0)
+  // The unlabeled control, which worked before and must keep working.
+  let rec plain = (n: Int) -> Int {
+    if n <= 0 {
+      0
+    } else {
+      plain(n - 1)
+    }
+  }
+  assert(plain(5) == 0)
+}
+
+test "#2405 a large Int renders as a number, not as an empty string" {
+  // `__to_string` resolves to a builtin that decides Int-vs-String by a
+  // heuristic on the bit pattern. `64 << 32` reads as (ptr 64, len 0), so it
+  // was returned unchanged and rendered as "" on the gc lane.
+  assert(__to_string(274877906944) == "274877906944")
+  assert(__to_string(64<<32) == "274877906944")
+  assert(__to_string(1<<40) == "1099511627776")
+  // A bare ident has no shape to classify, so it needs the slot log rather
+  // than the expression test -- this case survived the first fix.
+  let x = 274877906944
+  assert(__to_string(x) == "274877906944")
+  let y = 0 - 274877906944
+  assert(__to_string(y) == "-274877906944")
+  // Controls: the small values that always worked, and zero.
+  assert(__to_string(123) == "123")
+  assert(__to_string(0) == "0")
+  assert(__to_string(0 - 7) == "-7")
+}
+
+test "#2405 the int slot log does not swallow the other types" {
+  // Bool and Int share this lane's representation, so a boolish binding must
+  // keep its own classification or `true` renders as "1".
+  let b = 1 < 2
+  assert(__to_string(b) == "true")
+  let c = 3 < 2
+  assert(__to_string(c) == "false")
+  let s = "hi"
+  assert(__to_string(s) == "hi")
+  let d = 1.5
+  assert(__to_string(d) == "1.5")
+}
+
+test "#2405 a slot reused by a sibling scope is not read stale" {
+  // The two branches bind DIFFERENT `v`s to the same reused slot. Reading the
+  // else branch through the then branch's log entry would render a string as
+  // a number.
+  let r = if 1 < 2 {
+    let v = 274877906944
+    __to_string(v)
+  } else {
+    let v = "str"
+    __to_string(v)
+  }
+  assert(r == "274877906944")
+  let r2 = if 1 > 2 {
+    let v = 274877906944
+    __to_string(v)
+  } else {
+    let v = "str"
+    __to_string(v)
+  }
+  assert(r2 == "str")
+}
+
+// #2405 follow-up: the integer renderer is emitted ONCE per module as a shared
+// body and called, instead of inlined at every statically-int call site (that
+// cost int_wrap +23% of its wasm). The body is pushed between the 56
+// unconditional builtin bodies and the two conditional region-arena ones, so a
+// module holding BOTH has to resolve all three indices correctly -- and a
+// mis-derived index is a call into someone else's code, which builds fine and
+// only shows up here.
+fn region_len(n: Int) -> Int {
+  region r {
+    let xs = MutList::empty(r)
+    let mut i = 0
+    while i < n {
+      MutList::push(xs, i * 2)
+      i = i + 1
+    }
+    MutList::length(xs)
+  }
+}
+
+/// #2422: a large Int reaching `__to_string` / `eq` through an annotated
+/// parameter rather than a literal. Both lanes classify an ident through a
+/// slot log, and both logs seeded Float and Bool params but not Int ones.
+fn via_param(n: Int) -> String {
+  __to_string(n)
+}
+
+fn eq_params(a: Int, b: Int) -> Bool {
+  eq(a, b)
+}
+
+fn via_string(s: String) -> String {
+  __to_string(s)
+}
+
+fn via_bool(b: Bool) -> String {
+  __to_string(b)
+}
+
+fn via_double(d: Double) -> String {
+  __to_string(d)
+}
+
+test "#2422 a large Int survives every binding form" {
+  // Each of these reached the runtime string-pointer heuristic before, on one
+  // lane or both, and rendered garbage or the empty string. Measured on the
+  // committed seed: every one of them, so none is new here.
+  assert(via_param(274877906944) == "274877906944")
+  assert(!eq_params(64<<32, 65<<32))
+  assert(eq_params(64<<32, 64<<32))
+  let mut m = 64<<32
+  assert(__to_string(m) == "274877906944")
+  m = m + 1
+  assert(__to_string(m) == "274877906945")
+  let x = 64<<32
+  let y = x
+  let z = y
+  assert(__to_string(y) == "274877906944")
+  assert(__to_string(z) == "274877906944")
+  // A LAMBDA parameter is a separate seeding site from a top-level one, on
+  // both lanes.
+  let lam = (n: Int) -> String {
+    __to_string(n)
+  }
+  assert(lam(274877906944) == "274877906944")
+  // The other annotated types must keep their own classification: Bool and
+  // Int share this lane's representation, so a Bool read as an Int prints 1.
+  assert(via_string("hi") == "hi")
+  assert(via_bool(true) == "true")
+  assert(via_double(1.5) == "1.5")
+  let lam_b = (b: Bool) -> String {
+    __to_string(b)
+  }
+  assert(lam_b(true) == "true")
+  let lam_d = (d: Double) -> String {
+    __to_string(d)
+  }
+  assert(lam_d(1.5) == "1.5")
+}
+
+test "#2405 polymorphic arithmetic is not assumed to be Int" {
+  // `+ - * /` are resolved from the OPERANDS by the checker (Int, then Double,
+  // then String for `+`, then a user impl), so the operator alone says
+  // nothing. The gc scalar predicate answered Int for all four when it was
+  // first copied over; the Codex review on #2422 caught it.
+  //
+  // No String `+` reaches codegen today -- `desugar_trait_dicts` rewrites
+  // every measured shape into `String::concat` -- so these are the reachable
+  // half, plus the concat forms as the control that they stay right.
+  assert(__to_string(1.5 + 2.5) == "4")
+  assert(__to_string(2.5 * 2.0) == "5")
+  assert(__to_string(1.5 - 0.5) == "1")
+  assert(eq("a" + "b", "ab"))
+  assert(!eq("a" + "b", "ba"))
+  assert(("a" + "b") == "ab")
+  assert(__to_string("a" + "b") == "ab")
+  let sa = "x"
+  let sb = "y"
+  assert(eq(sa + sb, "xy"))
+  assert(__to_string(sa + sb) == "xy")
+  // Int arithmetic over int-bound locals still resolves, which is what keeps
+  // the shared renderer reachable for the eight sites in bench/exec/int_wrap.
+  let i = 64<<32
+  let j = 1
+  assert(__to_string(i + j) == "274877906945")
+  assert(__to_string(i * 1) == "274877906944")
+}
+
+test "#2405 the shared renderer and the region arena bodies coexist" {
+  assert(region_len(5) == 5)
+  assert(__to_string(64<<32) == "274877906944")
+  assert(__to_string(region_len(3) * 1) == "3")
+  let big = 1<<40
+  assert(__to_string(big) == "1099511627776")
+  assert(region_len(7) == 7)
+}
+
+test "#2407 eq answers on two distinct large Ints" {
+  // The gc `eq` arm sent every non-bit-identical pair to `String::equals`,
+  // which reads its operands as `(ptr << 32) | len` fat pointers -- an
+  // out-of-bounds load for an Int whose high word is a plausible address.
+  assert(!eq(64<<32, 65<<32))
+  assert(eq(64<<32, 64<<32))
+  assert(!eq((0 - (64<<32)) - 1, (0 - (65<<32)) - 1))
+  assert(!eq(0 - 274877906945, 0 - 279172874241))
+  // UNARY negation, which is a different AST node from the binary subtraction
+  // above and slipped through it (#2422 review). `bc_expr_is_intish` answered
+  // `!`/`~` and nothing else for a unary operator, so `-x` fell to the string
+  // fallback even though `bc_expr_is_floatish` had recursed for `-` all along.
+  assert(!eq(-(64<<32), -(65<<32)))
+  assert(eq(-(64<<32), -(64<<32)))
+  // Through a chain, and with the operand itself an int-bound name.
+  assert(!eq(-(-(64<<32)), -(-(65<<32))))
+  let big = 64<<32
+  assert(!eq(-big, -(65<<32)))
+  // Unary `-` over small values, which worked before for the same accidental
+  // reason the small positive ones did.
+  assert(!eq(-5, -6))
+  // Through BINDINGS, which is a separate path: the call-site classifier reads
+  // a bare ident from the slot log, and the log is written by a predicate that
+  // had the same unary gap. `eq` over two let-bound negated Ints reached the
+  // string fallback (#2422 review).
+  let na = -(64<<32)
+  let nb = -(65<<32)
+  assert(!eq(na, nb))
+  assert(eq(na, na))
+  assert(__to_string(na) == "-274877906944")
+  // Small values, which always worked because the bogus address happened to
+  // be in bounds.
+  assert(!eq(1, 2))
+  assert(eq(3, 3))
+  // A genuinely string `eq` still compares content.
+  assert(eq("ab", "ab"))
+  assert(!eq("ab", "ac"))
+  // `eq` and `==` must answer the same on every one of these.
+  assert(eq(64<<32, 65<<32) == ((64<<32) == (65<<32)))
+  assert(eq(3, 3) == (3 == 3))
+}

@@ -1563,6 +1563,24 @@ export struct CompileCtxGc {
   // to_string(b) }` would misclassify the else branch's `b` (a DIFFERENT
   // binding that happens to reuse the same now-freed slot) as boolish too.
   gc_bool_locals: Array[Int];
+  // #2405: the same slot log for INT-bound locals. `__to_string` on this lane
+  // resolves to a builtin that decides Int-vs-String by a heuristic on the bit
+  // pattern, so a local holding a large Int (`64 << 32` reads as ptr 64,
+  // len 0) was returned unchanged and rendered as the EMPTY STRING. A literal
+  // or an arithmetic expression is classified by shape alone; a bare ident is
+  // not, which is why it needs a slot log exactly as boolish and floatish do.
+  // Pruned at the same scope boundaries and for the same reason.
+  gc_int_locals: Array[Int];
+  /// #2405 follow-up: wasm index of the shared integer renderer
+  /// (`gc_gen_to_string_int_body`), or -1 when this module does not carry it.
+  ///
+  /// -1 is not a fallback the call site can get wrong: it emits the renderer
+  /// INLINE instead, which is what it did before this index existed. The two
+  /// can only disagree in that direction -- the pre-pass that decides whether
+  /// to push the body classifies by shape alone, while the call site also
+  /// reads the `gc_int_locals` slot log -- so a call is never emitted to a
+  /// body that was not pushed.
+  gc_to_string_int_func_idx: Int;
   // Native wasm-gc array references are permitted only for a proven-local
   // literal binding. `gc_native_array_locals` is the current lexical set used
   // by call lowering; it is pruned when slots are reused by sibling scopes.

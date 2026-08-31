@@ -12,9 +12,14 @@
 //   show(-5)  ok        show(~5)  invalid wasm before, ok after
 //   show(5)   ok
 //
-// NOTE the gap this does NOT cover: `show(5 + 1)` and `show(5 & 1)` are
-// invalid wasm on both sides of this change -- arithmetic operands have never
-// resolved here, with no `~` involved. #2410.
+// #2410 closed the gap this file used to record as uncovered: `show(5 + 1)`
+// and `show(5 & 1)` were invalid wasm here too, with no `~` involved, because
+// the `EBinOp` arm answered None for every operator except the String-`+`
+// chain. Arithmetic now recurses into both operands (the checker types
+// `+ - * /` from the operands), and the Int-only operators answer Int
+// directly. A user trait's `Add`/`Sub`/... impl still answers None: the
+// checker returns the IMPL's output type there, which a trait may declare
+// different from its input, and a wrong name is worse than no name.
 
 trait Desc {
   describe(Self) -> String
@@ -24,6 +29,26 @@ impl Desc for Int {
   describe(x: Int) -> String {
     "int"
   }
+}
+
+trait Tag {
+  tag(Self) -> String
+}
+
+impl Tag for Bool {
+  tag(b: Bool) -> String {
+    "bool"
+  }
+}
+
+impl Tag for Double {
+  tag(d: Double) -> String {
+    "double"
+  }
+}
+
+fn tag_of[T: Tag](x: T) -> String {
+  T::tag(x)
 }
 
 fn show[T: Desc](x: T) -> String {
@@ -38,4 +63,39 @@ test "#2344 a `~` argument resolves its trait witness" {
   // The two arms that already worked, as the controls that place the fix.
   assert(show(-5) == "int")
   assert(show(5) == "int")
+}
+
+test "#2410 an arithmetic argument resolves its trait witness" {
+  // The two cases this file previously recorded as NOT covered.
+  assert(show(5 + 1) == "int")
+  assert(show(5&1) == "int")
+  // The rest of the operand-typed group, and a nested one -- the arm recurses,
+  // so a chain resolves as long as every leaf agrees.
+  assert(show(5 - 1) == "int")
+  assert(show(5 * 2) == "int")
+  assert(show(6 / 2) == "int")
+  assert(show((5 + 1) * (2 - 1)) == "int")
+  // Int-only operators answer Int without consulting the operands, because
+  // the checker refuses anything else for them.
+  assert(show(5 % 2) == "int")
+  assert(show(5|1) == "int")
+  assert(show(5^1) == "int")
+  assert(show(5<<1) == "int")
+  assert(show(5>>1) == "int")
+  // Through a binding, and through a name whose type was recorded from an
+  // arithmetic value -- extend_var_types runs this same inference.
+  let n = 5 + 1
+  assert(show(n) == "int")
+  assert(show(n * 2) == "int")
+}
+
+test "#2410 comparison and Double arguments resolve too" {
+  // Comparisons and the logical operators are Bool whatever they compare.
+  assert(tag_of(5 < 6) == "bool")
+  assert(tag_of(5 == 6) == "bool")
+  assert(tag_of(5 != 6) == "bool")
+  assert(tag_of(1 < 2 && 3 > 2) == "bool")
+  // Double is resolved by the same recursion, not assumed to be Int.
+  assert(tag_of(1.5 + 2.5) == "double")
+  assert(tag_of(1.5 * 2.0) == "double")
 }
