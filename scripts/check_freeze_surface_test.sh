@@ -68,11 +68,27 @@ expect 0 "a heading plus bare names all resolve"
 doc '- **String**: `length`, `no_such_builtin_here`'
 expect 1 "a frozen name that does not resolve" "no_such_builtin_here"
 
-# 2b. #2275: a real receiver, a real member, and still not a value. Before
-#     the probe observed this population, `Map::get` was certified from
-#     checker silence. The gate must FAIL the name, not report ok.
+# 2b. #2275's case, re-founded by #2433. A real receiver with a NO-SUCH member
+#     must still fail: that is the population `unknown name` covers, and it is
+#     what stops the gate certifying a name from checker output alone.
+doc '- **Map**: `no_such_op`'
+expect 1 "a real receiver with a member that does not exist fails" "Map::no_such_op"
+
+# 2c. #2433: `Map::get` was this case's original exemplar -- a real member
+#     that is not a first-class value. No builtin is one any more (the checker
+#     rejects `let g = String::length` exactly as it rejects `let g = Map::get`),
+#     so "not a value" stopped separating them and now reads as EXISTENCE.
+#     Under the old rule this gate would have reported the whole frozen
+#     surface missing; the case pins the new reading instead.
 doc '- **Map**: `get`'
-expect 1 "a real member that is not a value fails" "Map::get"
+expect 0 "a real call-only operation counts as existing"
+
+# 2d. ...and the frozen surface's own names take the same branch, which is the
+#     half that would have broken. `String::length` is rejected as a value by
+#     the same diagnostic, and must still pass the freeze check.
+doc '- **String**: `length`, `concat`
+- **Array**: `length`, `get`'
+expect 0 "frozen builtin operations pass through the not-a-value branch"
 
 # 3. Already-qualified names are read as-is.
 doc '- **conv**: `Int::to_double`, `Double::to_int`'
