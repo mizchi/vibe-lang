@@ -20,18 +20,25 @@ The grammar is fetched from the `integrations/treesitter-vibe` directory in this
 
 ## Update grammar
 
-After updating `treesitter-vibe`, update the `rev` in `extension.toml`:
+Zed builds the grammar itself from the revision named here, so `grammars/vibe.wasm`
+in this directory is a build artifact Zed never reads — **the `rev` is what Zed
+users actually get.** After a grammar change reaches `main`, point it at a commit
+that contains that change:
 
 ```bash
-# Push changes first
-git push origin main
-
-# Update rev to the latest commit
-git rev-parse HEAD
-# Edit extension.toml [grammars.vibe] rev = "<new-sha>"
+git fetch origin main
+git rev-parse origin/main
+# Edit extension.toml [grammars.vibe] rev = "<that sha>"
 ```
 
 Then reinstall the dev extension in Zed.
+
+This bump can only happen **after** the grammar change is merged, since the SHA
+does not exist before then — which is why it is a separate follow-up and why no
+CI gate enforces it. A gate would have to fail on every PR that touches the
+grammar, for a condition that PR cannot satisfy, and a gate nobody can satisfy is
+a gate that gets disabled. #2409 is the record of what that costs: `~` parsed in
+the corpus suite and stayed a syntax error in Zed, and nothing noticed.
 
 ## Structure
 
