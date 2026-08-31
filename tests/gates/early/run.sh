@@ -356,6 +356,23 @@ echo "[compiler-gate] insert_raw bounded probe ok (terminated, rc=$hm_rc)"
 #     blocks down, MUST resolve in both forms. Without them, a probe harness
 #     that silently failed to compile anything would report all-unreachable and
 #     pass.
+#
+#     #2433 changed what "resolves" looks like in the VALUE form, and the
+#     control had to follow. A builtin used as a value is now a checker error
+#     on every lane -- no builtin has a value form, because the indirect table
+#     is populated from user functions and lambdas only -- so `let _x =
+#     simd_skip_ws` reports "`simd_skip_ws` is a builtin operation, not a
+#     value", where it used to report nothing.
+#
+#     The CLASSIFIER above is unaffected: it counts a name unreachable only
+#     when both forms say `unknown name: <n>`, and "not a value" is not that
+#     string, so a reachable-but-call-only name is still classified reachable.
+#     Only the control's expectation ("no diagnostic at all") was wrong. It now
+#     asserts the property the classifier actually uses -- the name is NOT
+#     `unknown name` -- plus, so that a harness which compiled nothing cannot
+#     pass, that the diagnostic it does get is the "not a value" one NAMING
+#     simd_skip_ws. That is strictly stronger than the old empty-output test,
+#     which an empty `.diag` from a dead runner satisfied.
 echo "[compiler-gate] 4g the WASM-intrinsics block is codegen-internal, as it claims (#2343)"
 dcldir="_build/_gate_declarations_reach"
 rm -rf "$dcldir"; mkdir -p "$dcldir"
@@ -441,7 +458,25 @@ for ctl_form in value call; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$dcldir/ctl.vibe" "$dcldir/ctl.out" __no_entry__ check >/dev/null 2>&1 || true
-  if [ -s "$dcldir/ctl.out.diag" ]; then
+  if grep -qF "unknown name: simd_skip_ws" "$dcldir/ctl.out.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: the #2343 $ctl_form-form control reported simd_skip_ws unknown -- it is declared in $decl_src and must resolve, so this harness is calling everything unreachable" >&2
+    cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
+    rm -rf "$dcldir"
+    exit 1
+  fi
+  if [ "$ctl_form" = "value" ]; then
+    # #2433: the expected answer here is the "not a value" diagnostic, naming
+    # the control. Requiring it (rather than accepting anything that is not
+    # `unknown name`) is what keeps a harness that produced NO output from
+    # passing -- see the header.
+    if ! grep -qF "not a value" "$dcldir/ctl.out.diag" 2>/dev/null \
+       || ! grep -qF "simd_skip_ws" "$dcldir/ctl.out.diag" 2>/dev/null; then
+      echo "[compiler-gate] FAIL: the #2343 value-form control did not produce the expected \"not a value\" diagnostic naming simd_skip_ws -- the probe did not compile, or the diagnostic changed, so this harness is not measuring reachability (#2433)" >&2
+      cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
+      rm -rf "$dcldir"
+      exit 1
+    fi
+  elif [ -s "$dcldir/ctl.out.diag" ]; then
     echo "[compiler-gate] FAIL: the #2343 $ctl_form-form control reported a diagnostic -- simd_skip_ws is declared in $decl_src and must resolve, so this harness is calling everything unreachable" >&2
     cat "$dcldir/ctl.out.diag" >&2 2>/dev/null || true
     rm -rf "$dcldir"
