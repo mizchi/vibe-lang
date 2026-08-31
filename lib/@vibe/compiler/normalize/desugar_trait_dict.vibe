@@ -13783,13 +13783,25 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
 /// the same remedy (a generated `__map_equals__` helper). The name kept its
 /// two original heads for one release too long and said something false about
 /// the third; it is spelled by intent now.
+///
+/// `Double` joined them in #2431, for the same reason and with a remedy that
+/// was already written: `eq_for_typed`'s `Double` arm wraps each side in the
+/// identity `Double::to_float` so the `==` codegen recognises the operands as
+/// floatish and takes the unbox-then-`f64.eq` path. The walk this trigger
+/// diverts from gets a Double field wrong on EVERY lane -- raw bits separate
+/// `0.0` from `-0.0` and equate two NaNs, neither of which IEEE 754 says, and
+/// under RC a Double field is a BOXED value, so the generic `eq` compares box
+/// identity and two structurally equal tuples come out unequal. Note this
+/// cannot re-route a BARE `Double == Double`: `eq_operand_shape_ty` requires a
+/// COMPOSITE shape, and a scalar binding records none. Only a Double reached
+/// as a tuple element, a constructor field or a container payload changes.
 fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
   ty_needs_typed_eq_expanded(eq_expand_alias_ty(subst_scope_formals_ty(t)))
 }
 
 fn ty_needs_typed_eq_expanded(t: TypeExpr) -> Bool {
   match t {
-    TyName(n) => n == "Bytes",
+    TyName(n) => n == "Bytes" || n == "Double" || n == "Float",
     TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) {
       true
     } else {
@@ -13831,6 +13843,59 @@ fn ty_needs_typed_eq_expanded(t: TypeExpr) -> Bool {
 /// last.
 fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match e {
+    // #2431: a tuple LITERAL keeps its element types here. Without this arm it
+    // fell to the `_` arm, whose `infer_shape` has no scalar cases at all --
+    // every element came back "" and `let x = (0.0, 1)` recorded the shape
+    // `(,)`. That reads back as `(__EqUnknown, __EqUnknown)`, which
+    // `eq_operand_shape_ty` refuses, so the comparison dropped to the codegen
+    // walk and compared each field with the generic `eq` builtin: raw bits on
+    // bump and gc (so `0.0 == -0.0` was false and `nan == nan` true), and box
+    // IDENTITY under RC, where a Double field is a boxed heap value -- there
+    // two structurally equal tuples were unequal to each other. Measured on
+    // the production default lane before this change, `let x = (1.5, 1)` and
+    // `let y = (1.5, 1)` compared FALSE.
+    //
+    // The elements recurse through this same function, so a nested tuple, an
+    // array element, a constructor payload and a scalar literal all resolve
+    // exactly as they do at the top level. An element this classifier cannot
+    // name stays "" and becomes `__EqUnknown`, which keeps the whole shape out
+    // of the typed dispatch -- today's behaviour for that tuple, never a
+    // guessed leaf type. Guessing one would be worse than the bug: a leaf
+    // wrongly called Double routes an Int field through `Double::to_float`.
+    ETuple(items) => if Array::length(items) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      while i < Array::length(items) {
+        let item = Array::get(items, i)
+        let sub0 = infer_eq_shape(item, struct_sets, var_types, fn_returns)
+        // Strictly ADDITIVE against what the `_` arm used to do, which was
+        // `infer_shape` on the whole tuple, i.e. `infer_shape` per element.
+        // `infer_eq_shape` answers for more elements than that, but for FEWER
+        // in one place: its `EIdent` arm treats a recorded empty as the answer
+        // "not composite" (the #1465 shadowing rule) and stops, where
+        // `infer_shape` goes on to the element's head TYPE NAME. `let x =
+        // Bytes::new(); let a = (x, 0)` is exactly that shape -- recursing
+        // alone recorded `(,Int)` and dropped the `Bytes`, so a tuple of Bytes
+        // compared by pointer and `fixtures/eq_array_option_fields_test.vibe`
+        // regressed. Falling back keeps the head name. It cannot resurrect the
+        // stale composite #1465 guarded: `infer_shape`'s own EIdent arm applies
+        // the same rule and yields a head name, never a container shape.
+        let sub = if String::length(sub0) > 0 {
+          sub0
+        } else {
+          infer_shape(item, struct_sets, var_types, fn_returns)
+        }
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      String::concat(acc, ")")
+    },
     EIdent(n, _) => {
       match lookup_var_type(var_types, eq_shape_key(n)) {
         Some(s) => s,

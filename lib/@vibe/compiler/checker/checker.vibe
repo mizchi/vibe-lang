@@ -9,7 +9,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   apply_type_constructor,
-  builtin_registry,
+  builtin_ident_has_value_form,
   canonical_builtin_name,
   collect_tvars,
   compiler_owned_type_arity,
@@ -2238,26 +2238,50 @@ fn railway_ident_lookup_name(name: String) -> String {
   }
 }
 
-/// #2274: a builtin ident is a first-class value iff it has a linear func-table
-/// row. Registry names with only a callsite lowering (`Map::get`) and
-/// fallback-only names (`Map::set`) type-check as `CtFn` today, then ICE in
-/// codegen because there is no function pointer to take. `String::length` is
-/// in the table and stays a value.
-fn builtin_is_first_class_value(name: String) -> Bool {
-  let normalized = canonical_builtin_name(name)
-  let rows = builtin_registry()
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(rows) {
-    let (rname, _, _, in_linear, _) = Array::get(rows, i)
-    if rname == normalized && in_linear {
-      found = true
-      i = Array::length(rows)
-    } else {
-      i = i + 1
+/// #2433: a builtin ident is a first-class value iff it is NOT a function.
+///
+/// #2274 keyed this on the linear FUNC-TABLE row (`in_linear`), on the reading
+/// that a builtin with a real emitted body has a pointer to take. It does not.
+/// The two tables are different tables: the func table maps a builtin name to
+/// its function INDEX for direct `call`, while the value produced for a
+/// first-class function is an INDIRECT-table slot, and the indirect table is
+/// populated from user functions and lambdas only (`linked_compile.vibe`:
+/// `tei < num_user_funcs` -> `func_offset + tei`, else a lambda). Builtin
+/// bodies sit in the generated-helper index block BELOW `func_offset`, so
+/// `table_slot = fidx - ctx.func_offset` is negative for every one of them,
+/// and they carry no closure-env parameter, so the `closure_type_base + n`
+/// signature would not match even if a slot existed.
+///
+/// Measured on stage2 before this change, all three failure modes with no
+/// source location: `let f = eq` emitted a module the runtime rejected
+/// (`invalid signature index: 11`, the arity-2 closure type nothing else in
+/// the program registered); with a same-arity lambda present so the type
+/// existed, `let f = eq` and `let h = String::length` -- an `in_linear` row,
+/// so #2274 called it a value -- both trapped with `table index is out of
+/// bounds`; `let g = not` reached codegen as an unresolved ident and asked the
+/// user to report a compiler bug.
+///
+/// So the honest predicate is the type, not the registration: a builtin typed
+/// `CtFn` has no value form on any lane. Everything else does and is
+/// unaffected -- a nullary constructor (`None`, and a user enum's `Red`) is
+/// not a `CtFn` and lowers through the `ctor_table` arm of `compile_expr`,
+/// which is why #2274's bare-name exemption existed and why dropping that
+/// exemption is safe now that the test is the type.
+/// #1733 is the exception, and it is not a taste call: `compile_expr` and
+/// `backend_expr` materialize the two FrozenArray conversions as a one-argument
+/// LAMBDA (`frozen_array_conversion_closure`), which is an ordinary closure
+/// with an ordinary table slot, so those two really are values.
+/// `builtin_ident_has_value_form` in `core/builtin_name.vibe` is the single
+/// source of truth both lanes read, so this cannot drift from the lowering.
+fn builtin_ident_is_value(name: String, t: Type) -> Bool {
+  if builtin_ident_has_value_form(name) {
+    true
+  } else {
+    match t {
+      CtFn(_, _, _) => false,
+      _ => true
     }
   }
-  found
 }
 
 fn call_only_builtin_param_list(n: Int) -> String {
@@ -7993,15 +8017,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         (ti, s1, c1)
       },
       None => match lookup_builtin_in_env(env, railway_ident_lookup_name(name)) {
-        Some(t) => if builtin_is_first_class_value(railway_ident_lookup_name(name)) || !String::contains(name, "::") {
-          // Bare names (`None`) keep the historical lookup: nullary
-          // constructors are values, and rejecting every non-table builtin
-          // silently broke selfhost (`None` is not in the linear func table).
-          // Qualified call-only ops (`Map::get`) are the #2274 hole. Do not
-          // exempt ident_off < 0: the FS compile lane still parses unlocated,
-          // so every user ident is -1. Call sites of those names are typed
-          // by the ECall fallback, which looks up the builtin without this
-          // rejection.
+        Some(t) => if builtin_ident_is_value(railway_ident_lookup_name(name), t) {
+          // A non-function builtin is a value: a nullary constructor (`None`)
+          // lowers through the `ctor_table` arm. This is what #2274's
+          // bare-name exemption was really protecting -- rejecting every
+          // non-table builtin silently broke selfhost on `None`, which is not
+          // in the linear func table. #2433 replaced that exemption with the
+          // type test, so bare `eq` / `not` are rejected here too rather than
+          // reaching codegen. Do not exempt ident_off < 0: the FS compile lane
+          // still parses unlocated, so every user ident is -1. Call sites of
+          // these names are typed by the ECall fallback, which looks up the
+          // builtin without this rejection.
           if ident_off >= 0 {
             tab_identifier_ty(tytab, ident_off, t, capture, lane)
           } else {

@@ -13,12 +13,39 @@
 # row to the freeze list would not reach it. Here, adding a row is immediately
 # checked.
 #
-# Existence probe: a bare reference (`let g = String::length`). It resolves iff
-# the name exists AS A VALUE. A real receiver with a real member that is
-# nonetheless not a value (`Map::get`) used to pass this check because the
-# checker printed nothing (#2274) and this script only looked for the
-# substring `unknown name` (#2275). Any diagnostic -- unknown name, "not a
-# value", or the codegen ICE -- means the name does not resolve as a value.
+# Existence probe: a bare reference (`let g = String::length`). What the probe
+# can conclude from it changed in #2433, so read this before editing it.
+#
+# It used to read "resolves iff the name exists AS A VALUE", and treated the
+# "not a value" diagnostic as a missing name -- #2275's rule, whose exemplar
+# was `Map::get`: a real receiver, a real member, and still not a value.
+#
+# #2433 measured that NO builtin is a value on any lane. The indirect table is
+# populated from user functions and lambdas only; builtin bodies sit below
+# `func_offset` and carry no closure-env parameter. `let f = eq` emitted a
+# module the runtime refused (`invalid signature index`) and
+# `let h = String::length` trapped with `table index is out of bounds` -- so
+# the checker now rejects every builtin used as a value, and "not a value" no
+# longer separates `Map::get` from `String::length`. Under the old rule this
+# gate would report the entire frozen surface missing.
+#
+# So the probe measures what it can still measure honestly: does the name
+# EXIST as a builtin operation. Three answers, and each is positive evidence
+# rather than an absence:
+#
+#   - silence          -- the name resolved as a value (a nullary constructor).
+#   - "not a value"    -- the checker looked the name UP, found a builtin row,
+#     naming the symbol      and refused the value position. Emitted only after
+#                            `lookup_builtin_in_env` succeeded, so it proves
+#                            existence. It must quote the probed symbol: a
+#                            diagnostic about some other name says nothing here.
+#   - anything else    -- missing. `unknown name` is the no-such-member case;
+#                            the codegen ICE is the same hole leaking past the
+#                            checker.
+#
+# The fail-open shape #2275 closed is still closed: silence is only accepted
+# for a name that genuinely produced none, and a name that does not exist
+# produces `unknown name`, never silence.
 #
 # Usage: bash scripts/check_freeze_surface.sh
 #   FREEZE_DOC        override the document (default docs/spec/stable-surface.md)
@@ -170,15 +197,28 @@ is_negated() {
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 [ -f "$RUNNER" ] || { echo "check-freeze-surface: missing host runner: $RUNNER" >&2; exit 1; }
 
-# True when the probe output says this name does not resolve as a value.
-# `unknown name` is the missing-member case. `not a value` is the #2274
-# call-only builtin. The codegen ICE is the same hole if it ever leaks past
-# the checker again -- silence is the only passing answer.
-probe_is_missing() {
-  case "$1" in
-    *"unknown name"*|*"not a value"*|*"internal compiler error"*|*"reached code generation"*) return 0 ;;
-    *) return 1 ;;
+# True when the probe output says this name does not exist as a builtin
+# operation. See the header for why "not a value" is EXISTENCE evidence rather
+# than a missing name (#2433), and why it must quote the probed symbol.
+#
+# Order matters: the missing-name answers are tested FIRST, so a diagnostic
+# that happens to contain both cannot be read as present.
+probe_is_missing() { # probe_is_missing <output> <symbol>
+  local out="$1" sym="$2"
+  case "$out" in
+    *"unknown name"*|*"internal compiler error"*|*"reached code generation"*) return 0 ;;
   esac
+  if [ -z "$out" ]; then
+    return 1
+  fi
+  case "$out" in
+    *"not a value"*)
+      case "$out" in
+        *"$sym"*) return 1 ;;
+        *) return 0 ;;
+      esac ;;
+  esac
+  return 0
 }
 
 probe() { # probe <symbol> -> prints the checker's diagnostics
@@ -193,43 +233,64 @@ probe() { # probe <symbol> -> prints the checker's diagnostics
 
 calib_present="$(probe "String::length")"
 calib_absent="$(probe "String::__no_such_builtin__")"
-calib_not_a_value="$(probe "Map::get")"
-case "$calib_present" in
-  *"unknown name"*|*"not a value"*|*"internal compiler error"*|*"reached code generation"*)
-    echo "check-freeze-surface: FAIL: calibration -- String::length did not resolve, so the probe is not measuring what it claims:" >&2
-    echo "  $calib_present" >&2
-    exit 1 ;;
-esac
-if [ -n "$calib_present" ]; then
-  echo "check-freeze-surface: FAIL: calibration -- probing a valid symbol produced output, so a real failure cannot be told apart:" >&2
-  echo "  $calib_present" >&2
+calib_value="$(probe "None")"
+if probe_is_missing "$calib_present" "String::length"; then
+  echo "check-freeze-surface: FAIL: calibration -- String::length was reported missing, so the probe is not measuring what it claims:" >&2
+  echo "  ${calib_present:-<no output>}" >&2
   exit 1
 fi
-if ! probe_is_missing "$calib_absent"; then
+if ! probe_is_missing "$calib_absent" "String::__no_such_builtin__"; then
   echo "check-freeze-surface: FAIL: calibration -- a symbol that cannot exist was not reported missing, so this check cannot detect anything:" >&2
   echo "  ${calib_absent:-<no output>}" >&2
   exit 1
 fi
-# #2275: a real receiver, a real member, and still not a value. The first two
-# calibration points are outside that population -- String::length is a genuine
-# first-class value, String::__no_such_builtin__ has no such member -- so a
-# gate that only knew those two certified Map::get from checker silence.
-if ! probe_is_missing "$calib_not_a_value"; then
-  echo "check-freeze-surface: FAIL: calibration -- Map::get is a real builtin that is not a value, and the probe did not report it missing, so this check cannot tell a resolving name from a call-only operation:" >&2
-  echo "  ${calib_not_a_value:-<no output>}" >&2
+# The silence branch has to keep working on its own: a nullary constructor is
+# the one population that still resolves as a value, and if it stopped being
+# silent the classifier would be running on a single branch without saying so.
+if [ -n "$calib_value" ] || probe_is_missing "$calib_value" "None"; then
+  echo "check-freeze-surface: FAIL: calibration -- None no longer resolves silently as a value, so the probe's silence branch is untested:" >&2
+  echo "  ${calib_value:-<no output>}" >&2
   exit 1
 fi
+# #2433: "not a value" is accepted only when it QUOTES the probed symbol.
+# Re-read the calibration output against a symbol it does NOT name and require
+# a missing verdict -- otherwise any builtin diagnostic would certify any name.
+#
+# Guarded on the branch actually being live. A compiler that predates #2433
+# answers `String::length` with silence, and asserting this there would fail
+# calibration for a reason that has nothing to do with the document -- the
+# shape where a gate gets exempted because it breaks for an unrelated reason
+# (#2252). Silence is already covered by the None calibration above.
+case "$calib_present" in
+  *"not a value"*)
+    if ! probe_is_missing "$calib_present" "String::__freeze_calibration_other__"; then
+      echo "check-freeze-surface: FAIL: calibration -- a diagnostic naming String::length certified an unrelated symbol, so the probe accepts output it did not ask for:" >&2
+      echo "  ${calib_present:-<no output>}" >&2
+      exit 1
+    fi ;;
+esac
 
 checked=0; missing=()
 for sym in "${syms[@]:-}"; do
+  # `"${syms[@]:-}"` yields ONE EMPTY element when the array is empty, and that
+  # element used to be probed like a symbol: `let __g = ` parses badly, the old
+  # classifier saw no "unknown name" in the output and read it as resolving, so
+  # a document with no frozen names reported `1 frozen symbol(s) resolve`. It
+  # also defeated the vacuity guard below, which was measuring that artifact
+  # rather than the document. The stricter #2433 classifier turned the silent
+  # pass into a failure naming a blank symbol, which is how it was found.
+  [ -n "$sym" ] || continue
   is_negated "$sym" && continue
   checked=$((checked + 1))
-  if probe_is_missing "$(probe "$sym")"; then
+  if probe_is_missing "$(probe "$sym")" "$sym"; then
     missing+=("$sym")
   fi
 done
 
-if [ "$checked" -eq 0 ]; then
+# A section holding ONLY explicitly-not-frozen entries is asserting something
+# real (those names are promised NOT to be frozen), so it is not vacuous. The
+# vacuous case is a section from which nothing at all was extracted.
+if [ "$checked" -eq 0 ] && [ "${#negated[@]}" -eq 0 ]; then
   echo "check-freeze-surface: FAIL: extracted 0 symbols from $DOC section 3 -- the check is asserting nothing" >&2
   exit 1
 fi
@@ -282,7 +343,8 @@ fi
 
 index_missing=()
 for sym in "${index_syms[@]}"; do
-  if probe_is_missing "$(probe "$sym")"; then
+  [ -n "$sym" ] || continue
+  if probe_is_missing "$(probe "$sym")" "$sym"; then
     index_missing+=("$sym")
   fi
 done

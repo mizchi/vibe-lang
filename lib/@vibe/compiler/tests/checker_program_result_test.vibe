@@ -208,11 +208,24 @@ test "check_program_with_env remains compatible with its result variant" {
 // are structural only: they deliberately do not add role/provenance to this
 // legacy artifact.
 test "typed occurrences preserve identifier rows across env builtin and qualified ctor branches" {
-  let concat_type = CtFn([CtString, CtString], CtString, None)
-  assert_typed_occurrences(check_expr_occurrences(ESeq(EIdent("x", 10), EIdent("String::concat", 20)), env_bind(EnvEmpty, "x", CtInt), array_empty()), [
-    (10, CtInt),
-    (20, concat_type)
+  assert_typed_occurrences(check_expr_occurrences(EIdent("x", 10), env_bind(EnvEmpty, "x", CtInt), array_empty()), [
+    (10, CtInt)
   ])
+  // #2433: the env-builtin branch now REPORTS in value position instead of
+  // recording an occurrence. This assertion used to read `(20, CtFn([CtString,
+  // CtString], CtString, None))` -- the registry signature is unchanged, but no
+  // program could use it that way: measured on stage2, `let f = String::concat;
+  // f("a", "b")` compiled and then trapped with `table index is out of bounds`,
+  // because a builtin's function index is below `func_offset` and the indirect
+  // table holds user functions and lambdas only. The branch is still exercised
+  // here, by what it does now.
+  let berrors = array_empty()
+  let btytab = array_empty()
+  let _ = check_expr(EIdent("String::concat", 20), EnvEmpty, array_empty(), SubstEmpty, 0, berrors, btytab)
+  assert(Array::length(berrors) == 1)
+  assert(String::contains(Array::get(berrors, 0), "String::concat"))
+  assert(String::contains(Array::get(berrors, 0), "not a value"))
+  assert(Array::length(btytab) == 0)
   let checked = check_program_result([
     SEnum(false, "Choice", array_empty(), [("Pick", array_empty())], array_empty()),
     SLet(false, false, "picked", None, EIdent("Choice::Pick", 30))

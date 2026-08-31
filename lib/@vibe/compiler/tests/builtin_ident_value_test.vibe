@@ -7,11 +7,29 @@
 // arm was answering "yes, this name exists" for operations that are not
 // first-class values.
 //
-// Rejection is the close: a call-only builtin ident is a checker error that
-// names the call form and the wrap form. First-class func-table builtins
-// (`String::length`) stay values. `Map::new` stays `unknown name` -- it is
-// a parser-only call desugar, not a registry value -- but it is still a
-// checker error, so the two spellings agree about whether the shape is one.
+// Rejection is the close: a builtin ident used as a value is a checker error
+// that names the call form and the wrap form. `Map::new` stays `unknown name`
+// -- it is a parser-only call desugar, not a registry value -- but it is still
+// a checker error, so the two spellings agree about whether the shape is one.
+//
+// #2433 widened that rejection from qualified call-only names to EVERY builtin
+// typed as a function. #2274 had exempted names with a linear func-table row
+// (`String::length`) and every bare name (`eq`, `not`), on the reading that a
+// func-table row means there is a function pointer to take. Measured, there is
+// not: the indirect table is populated from user functions and lambdas only,
+// builtin bodies sit below `func_offset`, and they carry no closure-env
+// parameter. So those spellings did not "stay values" -- they emitted a module
+// the runtime rejected (`invalid signature index`), trapped with `table index
+// is out of bounds`, or reached codegen unresolved and asked the reader to
+// report a compiler bug. The tests below now pin the diagnostic for each.
+//
+// The exception is #1733's two FrozenArray conversions. Those have a REAL value
+// form: both codegen lanes materialize them as a one-argument lambda, which is
+// an ordinary closure with an ordinary table slot, and
+// `fixtures/frozen_array_copies_test.vibe` calls both through a binding and
+// passes. `builtin_ident_has_value_form` (core/builtin_name.vibe) is the single
+// source of truth -- the checker asks it what to admit and both lanes ask it
+// what to eta-expand, so the admission cannot drift from the lowering.
 
 import @vibe/compiler/checker {
   check_program
@@ -87,19 +105,68 @@ test "#2274: the diagnostic names the call form, not an ICE" {
   assert(String::contains(msg, "Map::get("))
 }
 
+test "#2433: String::length as a bare value is rejected, not silently emitted" {
+  // #2274 called this one a first-class value because the registry row says
+  // `in_linear`. Measured on stage2 before #2433: the module compiled, then
+  // `h("abc")` trapped with `table index is out of bounds`.
+  let msg = first_check_error(value_ident_program("String::length"))
+  assert(String::contains(msg, "String::length"))
+  assert(String::contains(msg, "not a value"))
+  assert(String::contains(msg, "wrap it"))
+}
+
+test "#2433: Array::length as a bare value is rejected" {
+  let msg = first_check_error(value_ident_program("Array::length"))
+  assert(String::contains(msg, "Array::length"))
+  assert(String::contains(msg, "not a value"))
+}
+
+test "#2433: a BARE builtin name is rejected too -- eq" {
+  // The `!String::contains(name, "::")` exemption sent every bare builtin
+  // straight through. Measured before #2433: `let f = eq` emitted a module
+  // the runtime refused to compile, `invalid signature index: 11`.
+  let msg = first_check_error(value_ident_program("eq"))
+  assert(String::contains(msg, "`eq`"))
+  assert(String::contains(msg, "not a value"))
+  assert(String::contains(msg, "eq(a, b)"))
+}
+
+test "#2433: a bare builtin with no func-table row is rejected -- not" {
+  // This one used to reach codegen as an unresolved ident: "`not` (ident)
+  // reached code generation unresolved ... this is a bug in the compiler and
+  // not in your program -- please report the source that triggers it."
+  let msg = first_check_error(value_ident_program("not"))
+  assert(String::contains(msg, "`not`"))
+  assert(String::contains(msg, "not a value"))
+  assert(!String::contains(msg, "internal compiler error"))
+  assert(!String::contains(msg, "reached code generation"))
+}
+
+test "#2433: the unlocated parse rejects a bare builtin as well" {
+  let msg = first_check_error_unlocated(value_ident_program("eq"))
+  assert(String::contains(msg, "`eq`"))
+  assert(String::contains(msg, "not a value"))
+}
+
+test "#2433: the diagnostic gives the wrap form the reader can paste" {
+  // The wrap form is the edit that fixes it, and it works: measured,
+  // `let f = (a, b) -> eq(a, b)` compiles and answers on every lane.
+  let msg = first_check_error(value_ident_program("eq"))
+  assert(String::contains(msg, "(a, b) -> eq(a, b)"))
+}
+
+test "#2433: a builtin with no value form names the wrap form, not an ICE" {
+  let msg = first_check_error(value_ident_program("String::concat"))
+  assert(String::contains(msg, "String::concat"))
+  assert(String::contains(msg, "not a value"))
+  assert(!String::contains(msg, "internal compiler error"))
+}
+
 //# Not reported
 
 test "#2274: None as a value is still a constructor" {
   inspect(first_check_error(value_ident_program("None")), content = "")
   inspect(first_check_error_unlocated(value_ident_program("None")), content = "")
-}
-
-test "#2274: String::length remains a first-class value" {
-  inspect(first_check_error(value_ident_program("String::length")), content = "")
-}
-
-test "#2274: Array::length remains a first-class value" {
-  inspect(first_check_error(value_ident_program("Array::length")), content = "")
 }
 
 test "#2274: StringBuilder::new() as a call still type-checks" {
@@ -110,5 +177,53 @@ test "#2274: StringBuilder::new() as a call still type-checks" {
 
 test "#2274: Map::get as a call still type-checks" {
   let src = "fn main() -> Unit {\n  let m = Map::new()\n  let _ = Map::get(m, \"k\")\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2433: eq as a CALL is untouched" {
+  let src = "fn main() -> Unit {\n  let b = eq(1, 2)\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+  inspect(first_check_error_unlocated(src), content = "")
+}
+
+test "#2433: not as a CALL is untouched" {
+  let src = "fn main() -> Unit {\n  let b = not(true)\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2433: String::length as a CALL is untouched" {
+  let src = "fn main() -> Unit {\n  let n = String::length(\"abc\")\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2433: the wrap form the diagnostic recommends type-checks" {
+  let src = "fn main() -> Unit {\n  let f = (a, b) -> eq(a, b)\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2433: a nullary constructor of a USER enum is still a value" {
+  // The type test keeps every non-function builtin, which is what #2274's
+  // bare-name exemption was really protecting.
+  let src = "enum Color { Red; Green }\nfn main() -> Unit {\n  let c = Red\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2433: a user function is still a first-class value" {
+  let src = "fn my_eq(a: Int, b: Int) -> Bool { a == b }\nfn main() -> Unit {\n  let f = my_eq\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#1733: the two FrozenArray conversions keep their value form" {
+  // Measured on stage2 BEFORE #2433, to make sure the exemption is not
+  // cargo-culted: `let f = String::concat; f("a", "b")` trapped with `table
+  // index is out of bounds`, while the same shape over
+  // `FrozenArray::from_array` / `FrozenArray::to_array` ran and answered.
+  inspect(first_check_error(value_ident_program("FrozenArray::from_array")), content = "")
+  inspect(first_check_error(value_ident_program("FrozenArray::to_array")), content = "")
+  inspect(first_check_error_unlocated(value_ident_program("FrozenArray::from_array")), content = "")
+}
+
+test "#1733: an annotated alias of a FrozenArray conversion still checks" {
+  let src = "fn main() -> Unit {\n  let freeze: (Array[Int]) -> FrozenArray[Int] = FrozenArray::from_array\n  let _ = freeze([1, 2])\n  ()\n}\n"
   inspect(first_check_error(src), content = "")
 }
