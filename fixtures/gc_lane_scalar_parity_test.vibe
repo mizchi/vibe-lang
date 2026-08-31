@@ -457,3 +457,121 @@ test "#2426 the eq builtin answers on Doubles, not on their bits" {
   assert(eq(true, true))
   assert(!eq(true, false))
 }
+
+/// #2426 follow-up (Codex review on #2430): a Double that arrives through a
+/// JOIN -- an `if`, a `match`, a block -- was invisible to every float
+/// classifier, so the binding was never logged and `==` fell back to a raw
+/// bit compare. Measured before the fix, on ALL THREE lanes including RC:
+/// the `if`, `match` and block forms each answered `0.0 == -0.0` false and
+/// `nan == nan` true, while the same values written as literals answered
+/// correctly. The linear lane's `expr_is_boolish` has classified joins since
+/// #825; the float twin never got the arms.
+///
+/// `jcond` keeps the condition out of reach of constant folding, so the join
+/// is a real one at run time.
+fn jcond(n: Int) -> Bool {
+  n > 0
+}
+
+fn jpick(n: Int) -> Int {
+  n
+}
+
+test "#2426 a Double keeps its type through a join" {
+  // if
+  let ia = if jcond(1) {
+    0.0
+  } else {
+    1.0
+  }
+  let ib = if jcond(1) {
+    -0.0
+  } else {
+    1.0
+  }
+  assert(ia == ib)
+  assert(eq(ia, ib))
+  assert(!(ia == 1.5))
+  // match
+  let ma = match jpick(1) {
+    1 => 0.0,
+    _ => 1.0
+  }
+  let mb = match jpick(1) {
+    1 => -0.0,
+    _ => 1.0
+  }
+  assert(ma == mb)
+  assert(eq(ma, mb))
+  // A block, which reaches the classifier as a `let` wrapper rather than as a
+  // sequence. `(-0.0)` is parenthesized on purpose: a `-` at the START of a
+  // line continues the previous line's expression, so the bare form here
+  // parses as `jcond(1) - 0.0` and the checker rejects it -- measured, and
+  // exactly what `binop_mismatch_msg`'s Unit-left-operand hint describes.
+  let ba = {
+    let _bu = jcond(1)
+    0.0
+  }
+  let bb = {
+    let _bu2 = jcond(1)
+    (-0.0)
+  }
+  assert(ba == bb)
+  assert(eq(ba, bb))
+  // NaN through a join, the other direction: identical bits, not equal.
+  let na = if jcond(1) {
+    dz(0.0, 0.0)
+  } else {
+    1.0
+  }
+  assert(!(na == na))
+  assert(na != na)
+  assert(!eq(na, na))
+  // Ordinary Doubles through a join still compare as Doubles.
+  let pa = if jcond(1) {
+    1.5
+  } else {
+    2.5
+  }
+  let pb = if jcond(1) {
+    1.5
+  } else {
+    9.5
+  }
+  assert(pa == pb)
+  assert(!(pa == 2.5))
+  // A join whose branches are NOT Doubles must keep its own routing: AND
+  // semantics means one non-float way out leaves the whole join unfloatish,
+  // and a float arm that swallowed these would trade one silent wrong answer
+  // for another.
+  let sa = if jcond(1) {
+    64<<32
+  } else {
+    1
+  }
+  assert(sa == 64<<32)
+  assert(!(sa == 65<<32))
+  let sb = if jcond(1) {
+    "hi"
+  } else {
+    "there"
+  }
+  assert(sb == "hi")
+  assert(!(sb == "there"))
+  let sc = if jcond(1) {
+    true
+  } else {
+    false
+  }
+  assert(sc == true)
+  assert(!(sc == false))
+  // NOT asserted here, deliberately: `__to_string` of a join. Measured on
+  // this compiler, `let sa = if c { 64<<32 } else { 1 }` renders as the
+  // EMPTY STRING on all three lanes, and a Bool join renders as `1` on gc,
+  // because the Int and Bool classifiers have the same missing join arms this
+  // test adds to the float one. Those are #2424's subject -- one classifier
+  // enumerating binding forms -- and closing them means routing on the
+  // checked type, not adding a fourth arm here. Pinning the wrong answer
+  // would be worse than leaving the row out: this file's contract is that
+  // every assertion in it holds on every lane.
+}
