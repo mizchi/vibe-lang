@@ -9204,10 +9204,10 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
 fi
 # Torn/corrupted sidecars must decode as MISSES, not as partial answers
 # (#2425 review round 3): truncate every offsets sidecar in the warm cache to
-# its header line plus at most one row, then compile again. The v2 envelope's
-# declared count/checksum rejects the truncation, the affected modules
-# re-check, and the output stays byte-identical; a decoder that accepted the
-# torn file would drop classifications and change the bytes.
+# its header line plus at most one row, then compile again. The v3 envelope's
+# required end marker rejects the truncation, the affected modules re-check,
+# and the output stays byte-identical; a decoder that accepted the torn file
+# would drop classifications and change the bytes.
 found_sidecar=0
 while IFS= read -r sc_file; do
   found_sidecar=1
