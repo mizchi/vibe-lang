@@ -293,64 +293,87 @@ export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fna
 /// `eq(a, b)` and `a == b` must answer identically: `emit_gc_eq_value` sends
 /// an intish pair to a raw `i64.eq`, and this arm now does too, so the two
 /// spellings of one concept cannot diverge on a value.
-fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+/// #2424: the source offset an expression carries, or -1 -- the three shapes a
+/// render or `eq` argument takes (a name, a call result, a dot projection).
+fn bc_expr_offset(e: Expr) -> Int {
   match e {
-    EInt(_) => true,
-    EBool(_) => true,
-    // Int-only by the checker's own rule (`operands must be Int`), whatever
-    // the operands are.
-    EBinOp(op, l, r) => if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" {
-      true
-    } else if op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
-      // Bool, which shares this lane's Int representation.
-      true
-    } else if op == "+" || op == "-" || op == "*" || op == "/" {
-      // POLYMORPHIC: the checker resolves these from the operands (Int, then
-      // Double, then String for `+`, then a user impl), so the operator alone
-      // says nothing. Recursing is both safer and sharper than the linear
-      // lane's blanket exclusion (`cc_arg_is_scalarish`): `b61 + b61` over
-      // two int-bound locals still answers Int, while `1.5 + 2.5` answers
-      // false at the EFloat leaf and a String `+` answers false at EString.
-      //
-      // Answering `true` unconditionally, as this arm did when it was copied
-      // from `gc_expr_is_intish`, would send a Double pair to a raw `i64.eq`
-      // (bit equality, so -0.0 != 0.0) and a packed string pointer through
-      // the integer renderer. No String `+` reaches codegen today --
-      // `desugar_trait_dicts` rewrites every one measured, literals,
-      // parameters, projections, call results and match bindings alike, into
-      // `String::concat` -- but a predicate that is only correct because
-      // another pass happens to run first is a proxy, not a guarantee.
-      bc_expr_is_intish(l, local_names, ctx) && bc_expr_is_intish(r, local_names, ctx)
-    } else {
-      false
-    },
-    // `!` and `~` are Int/Bool whatever they wrap. `-` is NOT: it carries the
-    // operand's type, exactly as `+ - * /` do above, so it recurses
-    // -- `bc_expr_is_floatish` already recursed for `-` and this arm did not,
-    // and that asymmetry is the bug: `eq(-(64 << 32), -(65 << 32))` answered
-    // false here, fell through to `String::equals`, and read two negative
-    // integers as packed (ptr, len) pairs. Measured, gc lane: it traps, while
-    // the same values without the negation are fine and the same negation over
-    // small values is fine (the invented address happens to land in bounds).
-    // No `+` arm: unary `+` is not vibe syntax -- `+(64 << 32)` is
-    // `unexpected token: +`, measured -- so one would be dead code.
-    EUnaryOp(op, x) => if op == "!" || op == "~" {
-      true
-    } else if op == "-" {
-      bc_expr_is_intish(x, local_names, ctx)
-    } else {
-      false
-    },
-    // #2405: a bare ident has no shape to read, so it is answered from the
-    // slot log `gc_compile_let_i64` writes -- resolved through the CURRENT
-    // slot (find_local_slot) first, exactly as `bc_expr_is_floatish` above
-    // does, so a name rebound in a sibling scope is not read through its
-    // stale entry.
-    EIdent(iname, _) => {
-      let slot = find_local_slot(local_names, iname)
-      slot >= 0 && array_contains_int(ctx.gc_int_locals, slot)
-    },
-    _ => false
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    EDot(_, _, o, _) => o,
+    _ => 0 - 1
+  }
+}
+
+/// #2424: did the CHECKER say this exact node is an `Int`? An extra `||` term,
+/// never a replacement: it can only ADD a classification the slot log missed.
+/// Both ends fail closed, so where it does not fire nothing changes.
+fn bc_offset_says_int(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = bc_expr_offset(e)
+  off >= 0 && array_contains_int(ctx.gc_int_render_offsets, off)
+}
+
+fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  if bc_offset_says_int(e, ctx) {
+    true
+  } else {
+    match e {
+      EInt(_) => true,
+      EBool(_) => true,
+      // Int-only by the checker's own rule (`operands must be Int`), whatever
+      // the operands are.
+      EBinOp(op, l, r) => if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" {
+        true
+      } else if op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+        // Bool, which shares this lane's Int representation.
+        true
+      } else if op == "+" || op == "-" || op == "*" || op == "/" {
+        // POLYMORPHIC: the checker resolves these from the operands (Int, then
+        // Double, then String for `+`, then a user impl), so the operator alone
+        // says nothing. Recursing is both safer and sharper than the linear
+        // lane's blanket exclusion (`cc_arg_is_scalarish`): `b61 + b61` over
+        // two int-bound locals still answers Int, while `1.5 + 2.5` answers
+        // false at the EFloat leaf and a String `+` answers false at EString.
+        //
+        // Answering `true` unconditionally, as this arm did when it was copied
+        // from `gc_expr_is_intish`, would send a Double pair to a raw `i64.eq`
+        // (bit equality, so -0.0 != 0.0) and a packed string pointer through
+        // the integer renderer. No String `+` reaches codegen today --
+        // `desugar_trait_dicts` rewrites every one measured, literals,
+        // parameters, projections, call results and match bindings alike, into
+        // `String::concat` -- but a predicate that is only correct because
+        // another pass happens to run first is a proxy, not a guarantee.
+        bc_expr_is_intish(l, local_names, ctx) && bc_expr_is_intish(r, local_names, ctx)
+      } else {
+        false
+      },
+      // `!` and `~` are Int/Bool whatever they wrap. `-` is NOT: it carries the
+      // operand's type, exactly as `+ - * /` do above, so it recurses
+      // -- `bc_expr_is_floatish` already recursed for `-` and this arm did not,
+      // and that asymmetry is the bug: `eq(-(64 << 32), -(65 << 32))` answered
+      // false here, fell through to `String::equals`, and read two negative
+      // integers as packed (ptr, len) pairs. Measured, gc lane: it traps, while
+      // the same values without the negation are fine and the same negation over
+      // small values is fine (the invented address happens to land in bounds).
+      // No `+` arm: unary `+` is not vibe syntax -- `+(64 << 32)` is
+      // `unexpected token: +`, measured -- so one would be dead code.
+      EUnaryOp(op, x) => if op == "!" || op == "~" {
+        true
+      } else if op == "-" {
+        bc_expr_is_intish(x, local_names, ctx)
+      } else {
+        false
+      },
+      // #2405: a bare ident has no shape to read, so it is answered from the
+      // slot log `gc_compile_let_i64` writes -- resolved through the CURRENT
+      // slot (find_local_slot) first, exactly as `bc_expr_is_floatish` above
+      // does, so a name rebound in a sibling scope is not read through its
+      // stale entry.
+      EIdent(iname, _) => {
+        let slot = find_local_slot(local_names, iname)
+        slot >= 0 && array_contains_int(ctx.gc_int_locals, slot)
+      },
+      _ => false
+    }
   }
 }
 
