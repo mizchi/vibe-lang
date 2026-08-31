@@ -243,6 +243,12 @@ test("balanced-token inventory classifies every production EFn site", () => {
     ["parser_expr_primary.vibe:desugar_loop_body", [1, "slot-preserving reconstruction"]],
     ["parser_expr_primary.vibe:parse_generic_fn_primary", [2, "source-captured"]],
     ["parser_expr_primary.vibe:parse_paren_lambda_primary", [9, "source-captured"]],
+    // #2391 slice 2: the typed String-binop rewrite pass. tl_rewrite_expr
+    // destructures and rebuilds EFn with every slot preserved (the binder
+    // header is untouched; only the body is recursed into), and tl_scan_expr
+    // only pattern-reads the body to decide whether a rebuild is needed.
+    ["parser_expr_primary.vibe:tl_rewrite_expr", [2, "slot-preserving reconstruction"]],
+    ["parser_expr_primary.vibe:tl_scan_expr", [1, "deliberately ineligible"]],
   ]);
   const actual = new Map();
   for (const [file, source] of files) {

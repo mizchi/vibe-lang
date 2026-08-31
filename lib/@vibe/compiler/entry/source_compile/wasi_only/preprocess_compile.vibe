@@ -1,19 +1,15 @@
 //# Imports
 
 import @vibe/compiler/checker {
-  check_program,
-  check_program_double_call_result_located_observation,
-  checked_int_render_offsets,
-  effect_row_contains_label,
-  validate_user_source_stmts
+  check_program, check_program_double_call_result_located_observation, effect_row_contains_label, validate_user_source_stmts
 }
 
 import @vibe/compiler/codegen/wasi {
   compile_wasi_module_coverage_impl,
   compile_wasi_module_impl,
-  compile_wasi_module_impl_with_typed_offsets,
+  compile_wasi_module_impl_with_float_offsets,
   compile_wasi_module_rc_impl,
-  compile_wasi_module_rc_impl_with_typed_offsets,
+  compile_wasi_module_rc_impl_with_float_offsets,
   compile_wasi_module_rc_shadow_impl
 }
 
@@ -207,17 +203,10 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exce
 ///
 /// The observation replaces the `check_program` that already ran on this path,
 /// so no second pass over the program is introduced.
-/// #2424: the Int render-argument table for the single-source lanes, from the
-/// SAME observation. `checked_int_render_offsets` is a pure function of the
-/// CheckedProgram that observation already returns, so the two tables cost one
-/// check between them -- the shape #2391 established for the Double one.
-///
-/// `None` is the observation refusing an unlocated AST, and an empty table
-/// classifies nothing, which leaves the syntactic classifier exactly as it was.
-fn source_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int]) with Exception {
+fn source_float_call_offsets(stmts: Array[Stmt]) -> Array[Int] with Exception {
   match check_program_double_call_result_located_observation(stmts) {
-    Some((checked, offsets)) => (offsets, checked_int_render_offsets(checked)),
-    None => ([], [])
+    Some((_, offsets)) => offsets,
+    None => []
   }
 }
 
@@ -238,10 +227,10 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
-  let (float_call_offsets, int_render_offsets) = source_offsets(stmts)
+  let float_call_offsets = source_float_call_offsets(stmts)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_impl_with_float_offsets(stmts, entry_name, float_call_offsets), wrap_async)
 }
 
 export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
@@ -290,10 +279,10 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
-  let (float_call_offsets, int_render_offsets) = source_offsets(stmts)
+  let float_call_offsets = source_float_call_offsets(stmts)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_float_offsets(stmts, entry_name, float_call_offsets), wrap_async)
 }
 
 export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {

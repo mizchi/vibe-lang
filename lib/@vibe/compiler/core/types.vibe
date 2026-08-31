@@ -2049,6 +2049,44 @@ export fn subst_resolves_to_double(s: Subst, ty: Type) -> Bool {
   result
 }
 
+/// #2391 slice 2: the String sibling of the head query above, with the same
+/// cost contract -- follow the variable chain only, never rebuild the type.
+/// `CtString` takes no arguments, so a type that is not `CtString` at its
+/// head cannot become one by substituting inside it. A String reached only
+/// through a type alias head stays unclassified; the consumer degrades to the
+/// syntactic classifier for that site, which can miss but never answer wrong.
+export fn subst_resolves_to_string(s: Subst, ty: Type) -> Bool {
+  let mut cur = ty
+  let seen = array_empty()
+  let mut done = false
+  let mut result = false
+  while !done {
+    match cur {
+      CtString => {
+        result = true
+        done = true
+      },
+      CtVar(vid) => if int_array_has(seen, vid) {
+        done = true
+      } else {
+        Array::push(seen, vid)
+        match subst_lookup(s, vid) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
 export fn subst_apply(s: Subst, ty: Type) -> Type {
   match ty {
     CtInt => ty,

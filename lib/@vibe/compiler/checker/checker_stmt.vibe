@@ -57,6 +57,7 @@ import @vibe/compiler/core {
   subst_apply,
   subst_lookup,
   subst_resolves_to_double,
+  subst_resolves_to_string,
   trait_defined,
   trait_impl_declared_for_ctor,
   trait_is_marker,
@@ -5495,6 +5496,9 @@ fn direct_expression_return_capture() -> TypedOccurrenceRoleLaneCapture {
   TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
+    binop_offsets: array_empty(),
+    binop_kinds: array_empty(),
+    binop_types: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5539,6 +5543,9 @@ export fn check_program_typed_occurrence_role_lane_observation(stmts: Array[Stmt
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
+    binop_offsets: array_empty(),
+    binop_kinds: array_empty(),
+    binop_types: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5561,6 +5568,9 @@ export fn check_program_typed_occurrence_expression_path_observation(stmts: Arra
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
+    binop_offsets: array_empty(),
+    binop_kinds: array_empty(),
+    binop_types: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5609,6 +5619,9 @@ fn reset_double_call_capture() -> TypedOccurrenceRoleLaneCapture {
   let capture = shared_double_call_capture
   Array::truncate(capture.entries, 0)
   Array::truncate(capture.entries_flags, 0)
+  Array::truncate(capture.binop_offsets, 0)
+  Array::truncate(capture.binop_kinds, 0)
+  Array::truncate(capture.binop_types, 0)
   Array::truncate(capture.provenance_entries, 0)
   Array::truncate(capture.statement_path, 0)
   Array::truncate(capture.frame_paths, 0)
@@ -5625,6 +5638,9 @@ fn double_call_result_role_lane_capture() -> TypedOccurrenceRoleLaneCapture {
   TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
+    binop_offsets: array_empty(),
+    binop_kinds: array_empty(),
+    binop_types: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -5702,6 +5718,78 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
     }
     Some((out, primary_calls, located_primary_calls))
   }
+}
+
+/// #2391 slice 2: extract the String binop tables from the capture's side
+/// arrays. Rows come in consecutive PAIRS -- one binop pushes its left and
+/// right operand types under the same (anchor, kind) -- and a binop
+/// classifies as String when EITHER type resolves to String under the final
+/// substitution: the same either-operand rule as the desugar tracker, but
+/// answered by the checker. Returns (relational anchors, `+` anchors).
+///
+/// An anchor claimed by MORE THAN ONE binop of the same kind is kept only
+/// when every claimant classifies the same way, and POISONED otherwise
+/// (Codex round 1 on #2429): the rewrite pass rewrites every same-kind binop
+/// at a matching anchor, which is correct exactly when the claimants agree.
+/// The channel anchor already refuses to descend into sequence/match
+/// operands, so a disagreeing collision needs a shape the checker tolerates
+/// with mixed types -- the poison turns any such residue into a degrade
+/// (syntactic classifiers), never a wrong rewrite.
+fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[Int]) {
+  let rels: Array[Int] = []
+  let pluses: Array[Int] = []
+  let keys: Array[Int] = []
+  let verdicts: Array[Int] = []
+  let poisoned: Array[Bool] = []
+  let n = Array::length(capture.binop_offsets)
+  let mut i = 0
+  while i + 1 < n {
+    let off = Array::get(capture.binop_offsets, i)
+    let kind = Array::get(capture.binop_kinds, i)
+    let is_string = subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i)) || subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i + 1))
+    let key = off * 4 + kind
+    let verdict = if is_string {
+      1
+    } else {
+      0
+    }
+    let mut idx = 0 - 1
+    let mut k = 0
+    while k < Array::length(keys) {
+      if Array::get(keys, k) == key {
+        idx = k
+        k = Array::length(keys)
+      } else {
+        k = k + 1
+      }
+    }
+    if idx < 0 {
+      Array::push(keys, key)
+      Array::push(verdicts, verdict)
+      Array::push(poisoned, false)
+    } else if Array::get(verdicts, idx) != verdict {
+      Array::set(poisoned, idx, true)
+    } else {
+      ()
+    }
+    i = i + 2
+  }
+  let mut out_i = 0
+  while out_i < Array::length(keys) {
+    if Array::get(verdicts, out_i) == 1 && !Array::get(poisoned, out_i) {
+      let key = Array::get(keys, out_i)
+      let off = key / 4
+      if key - off * 4 == 1 {
+        Array::push(rels, off)
+      } else {
+        Array::push(pluses, off)
+      }
+    } else {
+      ()
+    }
+    out_i = out_i + 1
+  }
+  (rels, pluses)
 }
 
 //# #2424: Int render/equality argument offsets
@@ -5827,6 +5915,11 @@ fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int]) -> Unit {
       SExpr(e) => irc_collect_expr(e, out),
       STest(_, e) => irc_collect_expr(e, out),
       SBench(_, e) => irc_collect_expr(e, out),
+      // A render inside a nested module is checked with the rest of the
+      // program and its occurrences are in the same table, so skipping the
+      // body would leave that code with no classification at all (Codex
+      // review on #2434). `count_call_offsets_stmts` recurses the same way.
+      SModule(_, _, inner) => irc_collect_stmts(inner, out),
       _ => ()
     }
     i = i + 1
@@ -5956,6 +6049,24 @@ export fn checked_int_render_offsets(checked: CheckedProgram) -> Array[Int] {
   }
 }
 
+/// #2391 slice 2: the typed-lowering channel's value encoding. One table
+/// carries all three per-module channels so the memo/sidecar/rebase carrier
+/// stays a flat Array[Int]: enc = offset * 4 + tag, with tag 0 = Double call
+/// result, 1 = String relational binop anchor, 2 = String `+` binop anchor.
+/// Rebasing a module table by a merge base B therefore adds B * 4. The
+/// decoder lives in file_compile's split; keep the two in lockstep.
+export fn typed_lowering_enc(offset: Int, tag: Int) -> Int {
+  offset * 4 + tag
+}
+
+export fn typed_lowering_enc_offset(enc: Int) -> Int {
+  enc / 4
+}
+
+export fn typed_lowering_enc_tag(enc: Int) -> Int {
+  enc - (enc / 4) * 4
+}
+
 /// Check once and retain only source-located primary call results whose
 /// checker-confirmed instantiated type is Double, plus the two counts that say
 /// whether the AST was located at all: how many primary call results the
@@ -5981,20 +6092,22 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
 /// #2391: the modular form of the #2158 observation, for the per-module check
 /// the FS lanes already run (check_module). One checker invocation answers
 /// both questions: the CheckedProgram every consumer of the module check needs,
-/// and this module's source-located Double call-result offsets, in the module's
-/// OWN offset space (the FS merge rebases them per file before codegen).
+/// and this module's typed-lowering table -- Double call-result offsets plus
+/// String relational/`+` binop anchors, tag-encoded per typed_lowering_enc,
+/// in the module's OWN offset space (the FS merge rebases them per file
+/// before consumption).
 ///
-/// The offsets are `None` exactly when the located form below would refuse the
+/// The table is `None` exactly when the located form below would refuse the
 /// channel: the program has primary call results and not one is located (an
 /// unlocated `parse_program(lex(source))` AST), or the capture did not line up.
-/// `Some([])` stays the honest "located, and no call result is a Double".
+/// `Some([])` stays the honest "located, and nothing classifies".
 ///
 /// `initial_env` follows check_module's two production entries: `EnvEmpty`
 /// delegates to the plain whole-program check, anything else takes the
 /// projected-import-env path (`imports_already_projected`), so the checked
 /// program is identical to what check_program_result /
 /// check_program_with_projected_import_env_result produce today.
-export fn check_program_with_projected_import_env_double_call_result_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]]) with Exception {
+export fn check_program_with_projected_import_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]]) with Exception {
   let capture = reset_double_call_capture()
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(capture), true).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
@@ -6002,7 +6115,42 @@ export fn check_program_with_projected_import_env_double_call_result_located_obs
     Some((out, primary_calls, located_primary_calls)) => if primary_calls > 0 && located_primary_calls == 0 {
       (checked, None)
     } else {
-      (checked, Some(out))
+      // #2391 slice 2: one encoded table carries the Double call-result
+      // offsets (tag 0) and the String relational/`+` binop anchors
+      // (tags 1/2) -- see typed_lowering_enc. The located-channel refusal
+      // above is decided by the Double half alone: it observes every module
+      // the same way (a flag per typed occurrence), so "primary calls exist
+      // and none is located" identifies an unlocated AST for the String
+      // half too.
+      let (rels, pluses) = string_binop_offsets_from_capture(checked, capture)
+      let enc: Array[Int] = []
+      let mut fi = 0
+      while fi < Array::length(out) {
+        Array::push(enc, typed_lowering_enc(Array::get(out, fi), 0))
+        fi = fi + 1
+      }
+      let mut ri = 0
+      while ri < Array::length(rels) {
+        Array::push(enc, typed_lowering_enc(Array::get(rels, ri), 1))
+        ri = ri + 1
+      }
+      let mut pi = 0
+      while pi < Array::length(pluses) {
+        Array::push(enc, typed_lowering_enc(Array::get(pluses, pi), 2))
+        pi = pi + 1
+      }
+      // #2424: tag 3 -- render (`__to_string` / `Int::to_string`) and `eq`
+      // ARGUMENT offsets the checker typed as `Int`. Riding this table rather
+      // than a second one is the whole point of the slice-2 encoding: the
+      // memo, the sidecar, the per-file rebase and the reuse arms are already
+      // built and already require the sidecar before skipping a check.
+      let int_renders = checked_int_render_offsets(checked)
+      let mut ii = 0
+      while ii < Array::length(int_renders) {
+        Array::push(enc, typed_lowering_enc(Array::get(int_renders, ii), 3))
+        ii = ii + 1
+      }
+      (checked, Some(enc))
     }
   }
 }
@@ -6186,6 +6334,9 @@ export fn check_program_with_env_typed_occurrence_role_lane_observation(stmts: A
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
+    binop_offsets: array_empty(),
+    binop_kinds: array_empty(),
+    binop_types: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),
@@ -6206,6 +6357,9 @@ export fn check_program_with_env_typed_occurrence_expression_path_observation(st
   let entries = TypedOccurrenceRoleLaneCapture::{
     entries: array_empty(),
     entries_flags: array_empty(),
+    binop_offsets: array_empty(),
+    binop_kinds: array_empty(),
+    binop_types: array_empty(),
     provenance_entries: array_empty(),
     statement_path: array_empty(),
     frame_paths: array_empty(),

@@ -5,8 +5,7 @@ import @vibe/compiler/cache {
   normalize_persistent_cache_text,
   persistent_dep_list_cache_path,
   persistent_leaf_fingerprint_cache_path,
-  persistent_module_float_call_offsets_cache_path,
-  persistent_module_int_render_offsets_cache_path,
+  persistent_module_typed_lowering_offsets_cache_path,
   persistent_type_env_cache_path,
   persistent_typing_dependency_env_reuse_eligibility_path,
   persistent_typing_dependency_env_reuse_sidecar_path
@@ -25,8 +24,7 @@ import @vibe/compiler/checker {
   check_program,
   check_program_type_table,
   check_program_with_env_result,
-  check_program_with_projected_import_env_double_call_result_located_observation,
-  checked_int_render_offsets,
+  check_program_with_projected_import_env_typed_lowering_located_observation,
   detect_redundant_namespace_imports,
   detect_unbound_nonunit_returns,
   detect_unused_imports,
@@ -192,33 +190,33 @@ fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Option[Str
 // sidecar is keyed by the SAME module fingerprint as the TypeEnv cache
 // entry, because both are outputs of the same check. Every reuse arm that
 // skips a module check requires the sidecar too
-// (ensure_module_float_offsets), so which halves of the cache happen to
+// (ensure_module_typed_lowering_offsets), so which halves of the cache happen to
 // exist can never change a compile's OUTPUT -- a missing sidecar re-checks
 // the module once and writes it (self-healing: no semantics-seed bump, old
 // caches migrate on first touch). The #906 worker transport does not publish
 // the sidecar yet, so a worker-checked module is re-checked by the next
 // in-driver compile rather than silently losing its offsets.
 
-let module_float_offsets_memo_paths: Array[String] = []
+let module_typed_lowering_memo_paths: Array[String] = []
 
-let module_float_offsets_memo_fps: Array[String] = []
+let module_typed_lowering_memo_fps: Array[String] = []
 
-let module_float_offsets_memo_offsets: Array[Array[Int]] = []
+let module_typed_lowering_memo_offsets: Array[Array[Int]] = []
 
-fn module_float_offsets_memo_reset() -> Unit {
-  Array::truncate(module_float_offsets_memo_paths, 0)
-  Array::truncate(module_float_offsets_memo_fps, 0)
-  Array::truncate(module_float_offsets_memo_offsets, 0)
+fn module_typed_lowering_memo_reset() -> Unit {
+  Array::truncate(module_typed_lowering_memo_paths, 0)
+  Array::truncate(module_typed_lowering_memo_fps, 0)
+  Array::truncate(module_typed_lowering_memo_offsets, 0)
 }
 
-fn module_float_offsets_memo_put(path: String, fingerprint: String, offsets: Array[Int]) -> Unit {
-  let n = Array::length(module_float_offsets_memo_paths)
+fn module_typed_lowering_memo_put(path: String, fingerprint: String, offsets: Array[Int]) -> Unit {
+  let n = Array::length(module_typed_lowering_memo_paths)
   let mut i = 0
   let mut found = false
   while i < n {
-    if Array::get(module_float_offsets_memo_paths, i) == path {
-      Array::set(module_float_offsets_memo_fps, i, fingerprint)
-      Array::set(module_float_offsets_memo_offsets, i, offsets)
+    if Array::get(module_typed_lowering_memo_paths, i) == path {
+      Array::set(module_typed_lowering_memo_fps, i, fingerprint)
+      Array::set(module_typed_lowering_memo_offsets, i, offsets)
       found = true
       i = n
     } else {
@@ -226,21 +224,21 @@ fn module_float_offsets_memo_put(path: String, fingerprint: String, offsets: Arr
     }
   }
   if !found {
-    Array::push(module_float_offsets_memo_paths, path)
-    Array::push(module_float_offsets_memo_fps, fingerprint)
-    Array::push(module_float_offsets_memo_offsets, offsets)
+    Array::push(module_typed_lowering_memo_paths, path)
+    Array::push(module_typed_lowering_memo_fps, fingerprint)
+    Array::push(module_typed_lowering_memo_offsets, offsets)
   } else {
     ()
   }
 }
 
-fn module_float_offsets_memo_get_by_fp(fingerprint: String) -> Option[Array[Int]] {
-  let n = Array::length(module_float_offsets_memo_fps)
+fn module_typed_lowering_memo_get_by_fp(fingerprint: String) -> Option[Array[Int]] {
+  let n = Array::length(module_typed_lowering_memo_fps)
   let mut i = 0
   let mut found: Option[Array[Int]] = None
   while i < n {
-    if Array::get(module_float_offsets_memo_fps, i) == fingerprint {
-      found = Some(Array::get(module_float_offsets_memo_offsets, i))
+    if Array::get(module_typed_lowering_memo_fps, i) == fingerprint {
+      found = Some(Array::get(module_typed_lowering_memo_offsets, i))
       i = n
     } else {
       i = i + 1
@@ -255,13 +253,13 @@ fn module_float_offsets_memo_get_by_fp(fingerprint: String) -> Option[Array[Int]
 /// the FS lanes treat that file as contributing no offsets, which degrades
 /// that file's calls to the pre-#2158 syntactic classifier rather than to a
 /// wrong answer.
-export fn module_float_call_offsets_for_path(path: String) -> Option[Array[Int]] {
-  let n = Array::length(module_float_offsets_memo_paths)
+export fn module_typed_lowering_offsets_for_path(path: String) -> Option[Array[Int]] {
+  let n = Array::length(module_typed_lowering_memo_paths)
   let mut i = 0
   let mut found: Option[Array[Int]] = None
   while i < n {
-    if Array::get(module_float_offsets_memo_paths, i) == path {
-      found = Some(Array::get(module_float_offsets_memo_offsets, i))
+    if Array::get(module_typed_lowering_memo_paths, i) == path {
+      found = Some(Array::get(module_typed_lowering_memo_offsets, i))
       i = n
     } else {
       i = i + 1
@@ -270,102 +268,7 @@ export fn module_float_call_offsets_for_path(path: String) -> Option[Array[Int]]
   found
 }
 
-fn module_float_offsets_kind() -> String {
-  "module_float_call_offsets"
-}
-
-fn module_int_offsets_kind() -> String {
-  "module_int_render_offsets"
-}
-
-//# #2424: per-module Int render-argument offsets
-//
-// The Double channel's twin, one type over, and it rides the identical
-// lifecycle for the identical reason: check_module retains this module's
-// offsets in its OWN offset space, the FS merge rebases and unions them, and
-// every reuse arm that would skip a module check requires this sidecar as well
-// as the TypeEnv and the Double one -- so which halves of the cache happen to
-// exist can never change a compile's OUTPUT. A missing sidecar re-checks the
-// module once and writes it (self-healing; no semantics-seed bump).
-//
-// Separate memo and separate sidecar file rather than a widened row: the two
-// tables answer different questions, and a single table whose meaning depends
-// on a tag is the shape a consumer gets wrong once and then silently.
-
-let module_int_offsets_memo_paths: Array[String] = []
-
-let module_int_offsets_memo_fps: Array[String] = []
-
-let module_int_offsets_memo_offsets: Array[Array[Int]] = []
-
-fn module_int_offsets_memo_reset() -> Unit {
-  Array::truncate(module_int_offsets_memo_paths, 0)
-  Array::truncate(module_int_offsets_memo_fps, 0)
-  Array::truncate(module_int_offsets_memo_offsets, 0)
-}
-
-fn module_int_offsets_memo_put(path: String, fingerprint: String, offsets: Array[Int]) -> Unit {
-  let n = Array::length(module_int_offsets_memo_paths)
-  let mut i = 0
-  let mut replaced = false
-  while i < n {
-    if Array::get(module_int_offsets_memo_paths, i) == path {
-      Array::set(module_int_offsets_memo_fps, i, fingerprint)
-      Array::set(module_int_offsets_memo_offsets, i, offsets)
-      replaced = true
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  if replaced {
-    ()
-  } else {
-    Array::push(module_int_offsets_memo_paths, path)
-    Array::push(module_int_offsets_memo_fps, fingerprint)
-    Array::push(module_int_offsets_memo_offsets, offsets)
-  }
-}
-
-fn module_int_offsets_memo_get_by_fp(fingerprint: String) -> Option[Array[Int]] {
-  let n = Array::length(module_int_offsets_memo_fps)
-  let mut i = 0
-  let mut found: Option[Array[Int]] = None
-  while i < n {
-    if Array::get(module_int_offsets_memo_fps, i) == fingerprint {
-      found = Some(Array::get(module_int_offsets_memo_offsets, i))
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// The consumer query, mirroring `module_float_call_offsets_for_path`: this
-/// module's Int render-argument offsets in its own offset space. `None` means
-/// the module was never stepped here, which degrades that file's render sites
-/// to the pre-#2424 syntactic classifier rather than to a wrong answer.
-export fn module_int_render_offsets_for_path(path: String) -> Option[Array[Int]] {
-  let n = Array::length(module_int_offsets_memo_paths)
-  let mut i = 0
-  let mut found: Option[Array[Int]] = None
-  while i < n {
-    if Array::get(module_int_offsets_memo_paths, i) == path {
-      found = Some(Array::get(module_int_offsets_memo_offsets, i))
-      i = n
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// #2424: `kind` names the envelope, so the same v5 shape serves both the
-/// Double call-result table and the Int render-argument table. The two live in
-/// separate sidecar files and separate memos; only the header, count and end
-/// markers differ, and they differ by this one string.
-fn module_offsets_text(kind: String, offsets: Array[Int]) -> String {
+fn module_typed_lowering_text(offsets: Array[Int]) -> String {
   let parts = array_empty()
   // v5 (#2425 review rounds 3+5+6): a torn write survives as a PREFIX of
   // the intended file, so the envelope closes with an explicit end marker
@@ -378,7 +281,7 @@ fn module_offsets_text(kind: String, offsets: Array[Int]) -> String {
   // misclassification in the compiler's own build (probed to the call-site
   // offset, not the values -- see the issue linked from PR #2425), so the
   // envelope deliberately adds no new integer-rendering call sites.
-  Array::push(parts, String::concat(kind, "\tv5"))
+  Array::push(parts, "module_typed_lowering_offsets\tv6")
   let count_marks = array_empty()
   let n = Array::length(offsets)
   let mut i = 0
@@ -399,13 +302,13 @@ fn module_offsets_text(kind: String, offsets: Array[Int]) -> String {
   // constraint). Reordering rows is semantically inert -- the table is a
   // SET of offsets -- so size plus per-row duplicate equality plus the end
   // marker covers every corruption that could change what a compile emits.
-  Array::push(parts, String::concat(kind, String::concat("\tcount\t", String::join(count_marks, ""))))
-  Array::push(parts, String::concat(kind, "\tend"))
+  Array::push(parts, String::concat("module_typed_lowering_offsets\tcount\t", String::join(count_marks, "")))
+  Array::push(parts, "module_typed_lowering_offsets\tend")
   String::concat(String::join(parts, "\n"), "\n")
 }
 
 /// Digit-only row decode; any other character poisons the whole parse.
-fn module_float_offsets_parse_nat(line: String) -> Option[Int] {
+fn module_typed_lowering_parse_nat(line: String) -> Option[Int] {
   let len = String::length(line)
   if len == 0 {
     None
@@ -438,9 +341,9 @@ fn module_float_offsets_parse_nat(line: String) -> Option[Int] {
 /// equality (a random digit change cannot hit both copies identically), a
 /// deleted or inserted row fails the count, and a v1..v4 or foreign header
 /// fails outright; none of them can change what a compile emits.
-fn parse_module_offsets_text(kind: String, text: String) -> Option[Array[Int]] {
+fn parse_module_typed_lowering_offsets_text(text: String) -> Option[Array[Int]] {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
-  if Array::length(lines) == 0 || Array::get(lines, 0) != String::concat(kind, "\tv5") {
+  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_typed_lowering_offsets\tv6" {
     None
   } else {
     let out: Array[Int] = []
@@ -455,14 +358,14 @@ fn parse_module_offsets_text(kind: String, text: String) -> Option[Array[Int]] {
       } else if saw_end {
         // Content after the end marker is not a prefix of any valid write.
         ok = false
-      } else if line == String::concat(kind, "\tend") {
+      } else if line == "module_typed_lowering_offsets\tend" {
         saw_end = true
-      } else if String::starts_with(line, String::concat(kind, "\tcount\t")) {
+      } else if String::starts_with(line, "module_typed_lowering_offsets\tcount\t") {
         if declared_count >= 0 {
           // A second count line is not a prefix of any valid write.
           ok = false
         } else {
-          let unary_start = String::length(String::concat(kind, "\tcount\t"))
+          let unary_start = String::length("module_typed_lowering_offsets\tcount\t")
           let line_len = String::length(line)
           let mut mark = unary_start
           let mut marks_ok = true
@@ -484,7 +387,7 @@ fn parse_module_offsets_text(kind: String, text: String) -> Option[Array[Int]] {
         if Array::length(cells) != 2 || Array::get(cells, 0) != Array::get(cells, 1) {
           ok = false
         } else {
-          match module_float_offsets_parse_nat(Array::get(cells, 0)) {
+          match module_typed_lowering_parse_nat(Array::get(cells, 0)) {
             Some(value) => Array::push(out, value),
             None => ok = false
           }
@@ -505,8 +408,8 @@ fn parse_module_offsets_text(kind: String, text: String) -> Option[Array[Int]] {
 /// this module's check calls this alongside `valid_persistent_type_env`; a
 /// `false` makes the arm fall through to a real check, which recomputes AND
 /// republishes both cache halves.
-fn ensure_module_float_offsets(path: String, fingerprint: String) -> Bool with Exception + Fs {
-  match module_float_offsets_memo_get_by_fp(fingerprint) {
+fn ensure_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bool with Exception + Fs {
+  match module_typed_lowering_memo_get_by_fp(fingerprint) {
     // Bind the hit to THIS path too (Codex P1 on #2425): build_fingerprint
     // excludes the module's own path, so two byte-identical modules share a
     // fingerprint, and the consumer lookup is by path -- a hit that only
@@ -515,43 +418,17 @@ fn ensure_module_float_offsets(path: String, fingerprint: String) -> Bool with E
     // means same source and dependency fingerprints, so the offsets are the
     // same table.
     Some(offsets) => {
-      module_float_offsets_memo_put(path, fingerprint, offsets)
+      module_typed_lowering_memo_put(path, fingerprint, offsets)
       true
     },
     None => {
-      let sidecar = persistent_module_float_call_offsets_cache_path(fingerprint)
+      let sidecar = persistent_module_typed_lowering_offsets_cache_path(fingerprint)
       if !(Fs::exists(sidecar)) {
         false
       } else {
-        match parse_module_offsets_text(module_float_offsets_kind(), Fs::read_file(sidecar)) {
+        match parse_module_typed_lowering_offsets_text(Fs::read_file(sidecar)) {
           Some(offsets) => {
-            module_float_offsets_memo_put(path, fingerprint, offsets)
-            true
-          },
-          None => false
-        }
-      }
-    }
-  }
-}
-
-/// #2424: the Int twin. Same contract, same reason: a reuse arm that skips a
-/// module check must have BOTH cache halves, so cache state cannot change what
-/// a compile emits.
-fn ensure_module_int_offsets(path: String, fingerprint: String) -> Bool with Exception + Fs {
-  match module_int_offsets_memo_get_by_fp(fingerprint) {
-    Some(offsets) => {
-      module_int_offsets_memo_put(path, fingerprint, offsets)
-      true
-    },
-    None => {
-      let sidecar = persistent_module_int_render_offsets_cache_path(fingerprint)
-      if !(Fs::exists(sidecar)) {
-        false
-      } else {
-        match parse_module_offsets_text(module_int_offsets_kind(), Fs::read_file(sidecar)) {
-          Some(offsets) => {
-            module_int_offsets_memo_put(path, fingerprint, offsets)
+            module_typed_lowering_memo_put(path, fingerprint, offsets)
             true
           },
           None => false
@@ -4734,19 +4611,15 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // function always produced (EnvEmpty delegates to the plain check, so
       // both former arms are preserved), plus this module's Double
       // call-result offsets for the FS lanes' float_call_offsets channel.
-      let (checked_program, located_offsets) = check_program_with_projected_import_env_double_call_result_located_observation(stmts, import_env)
+      let (checked_program, located_offsets) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
       // `None` (the parse carried no offsets) cannot happen on this lane --
       // parse_program_with_path_impl lexes with offsets -- but if it did, an
       // empty table classifies nothing and leaves the syntactic classifier
       // in charge, deterministically.
-      module_float_offsets_memo_put(job.path, fingerprint, match located_offsets {
+      module_typed_lowering_memo_put(job.path, fingerprint, match located_offsets {
         Some(offsets) => offsets,
         None => array_empty()
       })
-      // #2424: the third output of the SAME check. A pure function of the
-      // CheckedProgram above, so no second pass over the program is
-      // introduced -- the same shape #2391 used for the Double table.
-      module_int_offsets_memo_put(job.path, fingerprint, checked_int_render_offsets(checked_program))
       let full_checked_env = checked_program.final_env
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
@@ -4820,14 +4693,8 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       // an outcome that arrived WITHOUT a memo entry (the #906 worker
       // transport checks in another process) publishes no sidecar, and the
       // reuse arms then re-check that module in-driver next time.
-      match module_float_offsets_memo_get_by_fp(fingerprint) {
-        Some(offsets) => Fs::write_file(persistent_module_float_call_offsets_cache_path(fingerprint), module_offsets_text(module_float_offsets_kind(), offsets)),
-        None => ()
-      }
-      // #2424: the Int render-argument table is the same check's third
-      // output and publishes on the same terms.
-      match module_int_offsets_memo_get_by_fp(fingerprint) {
-        Some(int_offsets) => Fs::write_file(persistent_module_int_render_offsets_cache_path(fingerprint), module_offsets_text(module_int_offsets_kind(), int_offsets)),
+      match module_typed_lowering_memo_get_by_fp(fingerprint) {
+        Some(offsets) => Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(offsets)),
         None => ()
       }
       // Publish in commit order: canonical target first, bound witness second,
@@ -5091,7 +4958,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
   // #2391: reuse requires the float-offsets sidecar alongside the TypeEnv
   // entry, or the arm below runs the real check (which republishes both).
   let reusable_cached_env = match valid_persistent_type_env(fingerprint) {
-    Some(cached_env) => if (ensure_module_float_offsets(path, fingerprint) && ensure_module_int_offsets(path, fingerprint)) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
       Some(cached_env)
     } else {
       None
@@ -5130,7 +4997,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
             // acceptance arm below republishes them under the new
             // conservative fingerprint. Missing offsets decline the reuse,
             // and the one real check republishes both halves.
-            Some((target_fingerprint, target_text, target_env)) => if (ensure_module_float_offsets(path, target_fingerprint) && ensure_module_int_offsets(path, target_fingerprint)) {
+            Some((target_fingerprint, target_text, target_env)) => if ensure_module_typed_lowering_offsets(path, target_fingerprint) {
               Some((input_key, target_fingerprint, target_text, target_env))
             } else {
               None
@@ -5153,21 +5020,10 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
           // conservative fingerprint, so the entry the line above created
           // has both halves and the plain reuse arms accept it. The gate
           // above hydrated the memo from the target fingerprint.
-          match module_float_offsets_memo_get_by_fp(target_fingerprint) {
+          match module_typed_lowering_memo_get_by_fp(target_fingerprint) {
             Some(reused_offsets) => {
-              module_float_offsets_memo_put(path, fingerprint, reused_offsets)
-              Fs::write_file(persistent_module_float_call_offsets_cache_path(fingerprint), module_offsets_text(module_float_offsets_kind(), reused_offsets))
-            },
-            None => ()
-          }
-          // #2424: and its Int twin, so the new entry has ALL the halves the
-          // reuse arms require -- a republished env whose Int table was left
-          // behind would be accepted by the float check and then classify
-          // nothing.
-          match module_int_offsets_memo_get_by_fp(target_fingerprint) {
-            Some(reused_int_offsets) => {
-              module_int_offsets_memo_put(path, fingerprint, reused_int_offsets)
-              Fs::write_file(persistent_module_int_render_offsets_cache_path(fingerprint), module_offsets_text(module_int_offsets_kind(), reused_int_offsets))
+              module_typed_lowering_memo_put(path, fingerprint, reused_offsets)
+              Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(reused_offsets))
             },
             None => ()
           }
@@ -5284,7 +5140,7 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
             // #2391: reuse needs BOTH cache halves -- the TypeEnv and the
             // module's float-offsets sidecar -- or the walk must re-check.
             Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
-              Some(_) => (ensure_module_float_offsets(path, fingerprint) && ensure_module_int_offsets(path, fingerprint)),
+              Some(_) => ensure_module_typed_lowering_offsets(path, fingerprint),
               None => false
             },
             None => false
@@ -5379,7 +5235,7 @@ fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
   // stale/malformed leaf pointer must cold-check rather than become authority.
   // #2391: the float-offsets sidecar is part of that acceptance too.
   match valid_persistent_type_env(leaf_fingerprint) {
-    Some(cached_env) => if (ensure_module_float_offsets(path, leaf_fingerprint) && ensure_module_int_offsets(path, leaf_fingerprint)) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets(path, leaf_fingerprint) {
       if incremental_interface_trace_enabled() {
         incremental_trace_observe_checked_env(path, source, cached_env)
       } else {
@@ -5422,7 +5278,7 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     if cached_fp == fingerprint {
       match valid_persistent_type_env(fingerprint) {
         // #2391: both cache halves, or re-check (which republishes both).
-        Some(_) => if (ensure_module_float_offsets(path, fingerprint) && ensure_module_int_offsets(path, fingerprint)) {
+        Some(_) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
           incremental_typecheck_telemetry_add(7, 1)
           (fingerprint, rdb, env_cache, dep_source_cache, parse_count)
         } else {
@@ -5464,9 +5320,9 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
     Some(source) => {
       let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
         match ripple_get_fingerprint(rdb_loaded, path) {
-          // #2391: both cache halves, or no reuse (see ensure_module_float_offsets).
+          // #2391: both cache halves, or no reuse (see ensure_module_typed_lowering_offsets).
           Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
-            Some(_) => if (ensure_module_float_offsets(path, fingerprint) && ensure_module_int_offsets(path, fingerprint)) {
+            Some(_) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
               Some(fingerprint)
             } else {
               None
@@ -5848,8 +5704,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   // returns. Resetting here is what rules out a row surviving from an
   // earlier compile of a since-edited file, without any eviction policy that
   // could drop a row the ACTIVE compile still needs.
-  module_float_offsets_memo_reset()
-  module_int_offsets_memo_reset()
+  module_typed_lowering_memo_reset()
   let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
   // #1239 step 4(A): an import cycle is rejected HERE -- before a single
   // module is checked, committed, or written to the persistent cache --
