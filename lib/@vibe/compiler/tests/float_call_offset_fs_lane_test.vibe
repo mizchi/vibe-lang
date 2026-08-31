@@ -1,0 +1,133 @@
+//# Imports
+
+import ./float_call_offset_fs_dep.vibe {
+  fs_dep_half
+}
+
+import ./float_call_offset_fs_coll_a.vibe {
+  fs_coll_describe as coll_a_describe
+}
+
+import ./float_call_offset_fs_coll_facade.vibe {
+  fs_coll_describe as coll_facade_describe
+}
+
+import ./float_call_offset_fs_twin_a.vibe {
+  fs_twin_describe as twin_a_describe
+}
+
+import ./float_call_offset_fs_twin_b.vibe {
+  fs_twin_describe as twin_b_describe
+}
+
+//# Functions
+
+// #2391: the checker's per-call-site Double answer reaching the LINEAR
+// backend on the IMPORT-RESOLVING FS lane -- the lane `vibe test` and
+// `vibe run` take by default (compile_file_fs_mode_rc).
+//
+// This is the FS-lane sibling of fixtures/float_call_offset_source_lane.vibe
+// (#2158), which pinned the same shapes on the single-source lane. Here the
+// offsets ride the MODULAR check (check_module records each module's Double
+// call-result offsets in its own offset space; the merge rebases every file
+// into a disjoint range and unions the tables), so this file runs through the
+// ordinary `vibe test` glob on purpose: the unit runner compiles it with
+// VIBE_FS_COMPILE=1, which is exactly the lane under test.
+//
+// Measured on the stage2 before the wiring (2026-08-30), each non-control
+// shape below printed the f64 bits as a plausible integer (e.g. the inferred
+// lambda's 2.5 printed as 584 and Array::get's 1.5 as 306 in the probe that
+// motivated this file).
+
+fn fs_dbl(x: Double) -> Double {
+  x * 2.0
+}
+
+fn fs_id[T](v: T) -> T {
+  v
+}
+
+fn fs_arr() -> Array[Double] {
+  [2.5, 3.5]
+}
+
+fn fs_int_pair() -> (Int, Int) {
+  (3, 4)
+}
+
+//# Tests
+
+test "#2391 fs-lane offsets: an inferred lambda's result" {
+  let f = () -> {
+    2.5
+  }
+  inspect(__to_string(f()), "2.5")
+}
+
+test "#2391 fs-lane offsets: a generic instantiated at Double" {
+  inspect(__to_string(fs_id(2.5)), "2.5")
+  inspect(__to_string(fs_id(1)), "1")
+}
+
+test "#2391 fs-lane offsets: a call through a local alias" {
+  let g = fs_dbl
+  inspect(__to_string(g(1.25)), "2.5")
+}
+
+test "#2391 fs-lane offsets: an annotated lambda binding" {
+  let lam = (v: Double) -> Double {
+    v * 2.5
+  }
+  inspect(__to_string(lam(1.0)), "2.5")
+}
+
+test "#2391 fs-lane offsets: Array::get on an Array[Double]" {
+  inspect(__to_string(Array::get(fs_arr(), 0)), "2.5")
+}
+
+test "#2391 fs-lane offsets: a call to an IMPORTED Double function" {
+  // The shape only the FS lane has: the callee's declaration lives in another
+  // module, so its type reaches this call site through the import environment
+  // the modular check projected -- there is nothing in THIS file for a
+  // declaration scan to read through the lambda-shaped alias below.
+  inspect(__to_string(fs_dep_half(5.0)), "2.5")
+  let h = fs_dep_half
+  inspect(__to_string(h(5.0)), "2.5")
+}
+
+test "#2391 fs-lane offsets: two byte-identical modules both keep their offsets" {
+  // Codex P1 on #2425: the twin files are byte-identical, so they share a
+  // module fingerprint (build_fingerprint excludes the path). The walk
+  // checks one and reuses the other off the just-written cache entry; a
+  // fingerprint-keyed memo hit that did not also bind the second PATH left
+  // that module with no offsets row, and its internal Double printed raw
+  // bits. Both twins must answer, whichever the walk happened to check.
+  inspect(twin_a_describe(), "2.5")
+  inspect(twin_b_describe(), "2.5")
+}
+
+test "#2391 fs-lane offsets: collision-shaped imports keep their offsets" {
+  // Codex round 2 on #2425 flagged the #716 alias-collision fallback
+  // (append_import_alias_collision_defs_from_sources): a fallback CLONE is
+  // provider code shifted into a fresh offset range, so the union now
+  // duplicates the provider's Double call-result offsets with the clone's
+  // delta. An END-TO-END red for that arm was not reproducible: both
+  // collision shapes constructed for it -- the same original name exported
+  // by two providers, and (here) the same original imported directly and
+  // through a re-export facade -- are covered by the export-rename plan
+  // before the fallback would fire, and the executed copies answer from the
+  // ordinary per-file union. This test pins those reachable collision
+  // shapes; the clone-table duplication itself is inert-or-correct by
+  // construction (a clone is a byte-for-byte provider copy at a disjoint
+  // delta, so a duplicated offset lands on the corresponding cloned call
+  // node or on nothing).
+  inspect(coll_a_describe(), "2.5")
+  inspect(coll_facade_describe(), "2.5")
+}
+
+test "#2391 fs-lane offsets: an Int-returning call is NOT reclassified" {
+  // The other direction: the checker records these as Int, so their offsets
+  // never enter the table, and a tagged integer is never read as an f64.
+  inspect(__to_string(fs_int_pair().0 + fs_int_pair().1), "7")
+  inspect(__to_string(fs_int_pair().0), "3")
+}
