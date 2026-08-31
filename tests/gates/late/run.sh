@@ -9231,5 +9231,44 @@ if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/torn.wasm"; then
   echo "[compiler-gate] FAIL: a torn float-offsets sidecar changed the emitted bytes (#2391)" >&2
   exit 1
 fi
+# Digit-level corruption inside an INTACT sidecar must also decode as a miss
+# (#2425 review round 5): the torn compile above re-warmed the cache, so flip
+# one digit of the first offset row's first copy in every sidecar (same
+# length -- the end marker survives) and compile again. The v4 duplicated-row
+# equality rejects the row, the module re-checks, and the bytes stay
+# identical; the v3 decoder accepted this and the emitted bytes CHANGED
+# (red-proven on the PR).
+flipped_rows=0
+while IFS= read -r sc_file; do
+  awk -F'\t' 'BEGIN { OFS = "\t"; done = 0 }
+    done == 0 && NF == 2 && $1 ~ /^[0-9]+$/ {
+      first = substr($1, 1, 1)
+      $1 = (first != "9" ? "9" : "1") substr($1, 2)
+      done = 1
+    }
+    { print }' "$sc_file" > "$sc_file.flip" && mv "$sc_file.flip" "$sc_file"
+  file_mismatches=$(awk -F'\t' 'NF == 2 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $1 != $2 { n += 1 } END { print n + 0 }' "$sc_file")
+  flipped_rows=$((flipped_rows + file_mismatches))
+done < <(grep -rl "^module_float_call_offsets" "$ffsdir/cache" 2>/dev/null)
+# The mutation must actually HIT (gate discipline: a red test that matched
+# nothing proves nothing) -- the lane test's own modules carry offset rows,
+# so at least one sidecar must now hold a mismatched duplicate pair.
+if [ "$flipped_rows" = "0" ]; then
+  echo "[compiler-gate] FAIL: digit-flip mutation matched no sidecar row (#2391) -- the probe went stale" >&2
+  exit 1
+fi
+VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/flipped.wasm" __no_entry__ \
+  >/dev/null 2>&1 || true
+if [ ! -s "$ffsdir/flipped.wasm" ]; then
+  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over digit-flipped sidecars (#2391)" >&2
+  cat "$ffsdir/flipped.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/flipped.wasm"; then
+  echo "[compiler-gate] FAIL: a digit-corrupted float-offsets sidecar changed the emitted bytes (#2391)" >&2
+  exit 1
+fi
 rm -rf "$ffsdir"
 echo "[compiler-gate] FS-lane Double call-result offsets + cache-state byte identity ok (#2391)"
