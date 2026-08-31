@@ -2056,6 +2056,20 @@ run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_
 run_test_block_fixtures_rc "gc-lane scalar parity (linear, RC)" fixtures/gc_lane_scalar_parity_test.vibe
 echo '[compiler-gate] gc-lane scalar parity ok'
 
+# 15b-4. A Double inside an aggregate reached through a NAME (#2431). Three
+#        lanes for the same reason as 15b-3, and here every lane was wrong in a
+#        DIFFERENT place: `let x = (0.0, 1); let y = (-0.0, 1); x == y` was
+#        false on all three, while `let x = (1.5, 1); let y = (1.5, 1); x == y`
+#        was false ONLY under RC -- a Double field is a boxed value there, so
+#        the generic `eq` compared two distinct boxes and two structurally
+#        equal tuples came out unequal on the production default lane. A
+#        single-lane run sees at most one of those.
+echo '[compiler-gate] 15b-4/15 Double inside an aggregate through a name (#2431)'
+run_test_block_fixtures "aggregate Double equality (linear, bump)" fixtures/tuple_double_eq_test.vibe
+run_test_block_fixtures_gc "aggregate Double equality (gc)" fixtures/tuple_double_eq_test.vibe
+run_test_block_fixtures_rc "aggregate Double equality (linear, RC)" fixtures/tuple_double_eq_test.vibe
+echo '[compiler-gate] aggregate Double equality ok'
+
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
 #      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The

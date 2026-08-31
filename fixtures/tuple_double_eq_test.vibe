@@ -1,0 +1,133 @@
+// #2431: a `Double` reached through a NAME inside an aggregate was compared by
+// raw bits -- and under RC, the production default, by box IDENTITY.
+//
+// Measured on stage2 before this change, one row per spelling, on all three
+// lanes (linear/RC, linear with VIBE_RC=0, wasm-gc):
+//
+//   let x = (1.5, 1); let y = (1.5, 1); x == y        RC: FALSE   bump/gc: true
+//   let x = (0.0, 1); let y = (-0.0, 1); x == y       FALSE on ALL THREE
+//   let a = Some(0.0); let b = Some(-0.0); a == b     FALSE on ALL THREE
+//
+// The first row is the sharpest: two structurally equal tuples, no signed zero
+// and no NaN in sight, unequal to each other on the lane every user gets by
+// default. Under RC a Double field is a boxed heap value, so the generic `eq`
+// builtin compared two distinct boxes.
+//
+// The LITERAL spellings were already right (`(0.0, c) == (-0.0, c)` answers
+// true on every lane), because `infer_static_eq_type_binop` reads the element
+// types straight off the literal and dispatches to `eq_for_typed`, whose
+// `Double` arm wraps each side in `Double::to_float` and so reaches the
+// unbox-then-`f64.eq` path. Only the name-reached spellings fell through.
+//
+// The fix is the same channel, two steps: the recorded eq SHAPE keeps its
+// tuple element types (it used to record `(,)` for `(0.0, 1)`, since the shape
+// inferencer has no scalar cases), and `Double` joins `Bytes` / `Array` / `Map`
+// as a head the codegen walk gets wrong.
+//
+// KNOWN LIMIT, deliberately fail-closed: an element whose type this pass
+// cannot name from the binding site -- a computed Double reached through a
+// bare name, `let n = f(); let x = (n, 1)` -- stays `__EqUnknown`, keeps the
+// old comparison, and is NOT guessed. Guessing would be worse than the bug: a
+// leaf wrongly called Double routes an Int field through `Double::to_float`.
+// An ANNOTATION supplies what the syntax does not, exactly as it does for
+// `let xs: Array[Int] = []`, and the NaN case below is written that way.
+
+fn mk_pair() -> (Double, Int) {
+  (1.5, 1)
+}
+
+test "#2431: two structurally equal Double tuples are equal" {
+  let x = (1.5, 1)
+  let y = (1.5, 1)
+  assert(x == y)
+  assert(!(x != y))
+}
+
+test "#2431: +0.0 == -0.0 inside a tuple reached through names" {
+  let x = (0.0, 1)
+  let y = (-0.0, 1)
+  assert(x == y)
+}
+
+test "#2431: distinct Doubles in a tuple stay unequal" {
+  let a = (1.5, 1)
+  let b = (2.5, 1)
+  assert(!(a == b))
+  assert(a != b)
+}
+
+test "#2431: the Double may be in any position" {
+  let x = (1, 1.5)
+  let y = (1, 1.5)
+  assert(x == y)
+  let z = (1, 2.5)
+  assert(!(x == z))
+}
+
+test "#2431: two Doubles in one tuple" {
+  let x = (1.5, 2.5)
+  let y = (1.5, 2.5)
+  assert(x == y)
+  let z = (1.5, 3.5)
+  assert(!(x == z))
+}
+
+test "#2431: a tuple reached through a function's declared return type" {
+  let x = mk_pair()
+  let y = mk_pair()
+  assert(x == y)
+}
+
+test "#2431: Option[Double] through names" {
+  let a = Some(0.0)
+  let b = Some(-0.0)
+  assert(a == b)
+  let c = Some(1.5)
+  assert(!(a == c))
+  let d = Some(1.5)
+  assert(c == d)
+}
+
+test "#2431: NaN in a tuple is not equal to itself" {
+  // IEEE 754: `nan == nan` is false. The raw-bit comparison said true, since
+  // the bits are identical. `0.0 / 0.0` is not a literal, so the element type
+  // comes from the annotation -- the documented way to supply what the
+  // binding's syntax does not say.
+  let n = 0.0 / 0.0
+  let x: (Double, Int) = (n, 1)
+  let y: (Double, Int) = (n, 1)
+  assert(!(x == y))
+  assert(x != y)
+}
+
+test "#2431: an Int tuple is untouched" {
+  let x = (7, 1)
+  let y = (7, 1)
+  assert(x == y)
+  let z = (8, 1)
+  assert(!(x == z))
+}
+
+test "#2431: a String tuple is untouched" {
+  let x = ("a", 1)
+  let y = ("a", 1)
+  assert(x == y)
+  let z = ("b", 1)
+  assert(!(x == z))
+}
+
+test "#2431: a nested tuple holding a Double" {
+  let x = ((1.5, 2), 3)
+  let y = ((1.5, 2), 3)
+  assert(x == y)
+  let z = ((2.5, 2), 3)
+  assert(!(x == z))
+}
+
+test "#2431: a bare Double comparison is unchanged" {
+  let a = 0.0
+  let b = -0.0
+  assert(a == b)
+  let c = 1.5
+  assert(!(a == c))
+}

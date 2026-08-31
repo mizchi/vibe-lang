@@ -194,6 +194,12 @@ The stable symbols listed under "Key Builtins" in the
 > anything the frozen entries do not also say; they stay out of the frozen
 > subset by scope decision, not because they are less of a value than the
 > entries above them.
+>
+> The one exception is `FrozenArray::from_array` / `FrozenArray::to_array`,
+> which #1733 gave a real value form by materializing them as a one-argument
+> lambda in both codegen lanes. That exception is a lowering, not a rule:
+> `builtin_ident_has_value_form` in `lib/@vibe/compiler/core/builtin_name.vibe`
+> is the single source of truth, read by the checker and by both lanes.
 
 - **String** (compiler builtin, no import needed): `length`, `concat`,
   `substring`, `contains`, `index_of`, `split`, `trim`, `starts_with`,

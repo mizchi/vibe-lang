@@ -59,8 +59,32 @@ test "ident from env" {
 }
 
 test "ident builtin" {
-  let ty = check(EIdent("String::concat", -1), EnvEmpty)
-  assert(types_equal(ty, CtFn([CtString, CtString], CtString, None)))
+  // #2433: a builtin ident in VALUE position is rejected. It used to type as
+  // `CtFn` and then break in codegen -- measured on stage2, `let f =
+  // String::concat` compiled and trapped with `table index is out of bounds`,
+  // because a builtin's function index is below `func_offset` and the indirect
+  // table holds user functions and lambdas only. The signature is still what
+  // the registry says; it is only unavailable as a value, and the diagnostic
+  // names the call form and the wrap form.
+  let caught = handle {
+    let _ = check(EIdent("String::concat", -1), EnvEmpty)
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(caught, "String::concat"))
+  assert(String::contains(caught, "not a value"))
+}
+
+test "ident builtin with a value form" {
+  // #1733 gave these two a real value form: both codegen lanes materialize
+  // them as a one-argument lambda, which is an ordinary closure with an
+  // ordinary table slot. `fixtures/frozen_array_copies_test.vibe` calls both
+  // through a binding and passes, so the checker must keep admitting them.
+  let ty = check(EIdent("FrozenArray::from_array", -1), EnvEmpty)
+  let is_fn = match ty {
+    CtFn(_, _, _) => true,
+    _ => false
+  }
+  assert(is_fn)
 }
 
 test "ident unknown" {

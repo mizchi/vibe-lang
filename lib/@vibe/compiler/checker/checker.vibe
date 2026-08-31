@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   apply_type_constructor,
+  builtin_ident_has_value_form,
   canonical_builtin_name,
   collect_tvars,
   compiler_owned_type_arity,
@@ -2266,10 +2267,20 @@ fn railway_ident_lookup_name(name: String) -> String {
 /// not a `CtFn` and lowers through the `ctor_table` arm of `compile_expr`,
 /// which is why #2274's bare-name exemption existed and why dropping that
 /// exemption is safe now that the test is the type.
-fn builtin_ident_is_value_type(t: Type) -> Bool {
-  match t {
-    CtFn(_, _, _) => false,
-    _ => true
+/// #1733 is the exception, and it is not a taste call: `compile_expr` and
+/// `backend_expr` materialize the two FrozenArray conversions as a one-argument
+/// LAMBDA (`frozen_array_conversion_closure`), which is an ordinary closure
+/// with an ordinary table slot, so those two really are values.
+/// `builtin_ident_has_value_form` in `core/builtin_name.vibe` is the single
+/// source of truth both lanes read, so this cannot drift from the lowering.
+fn builtin_ident_is_value(name: String, t: Type) -> Bool {
+  if builtin_ident_has_value_form(name) {
+    true
+  } else {
+    match t {
+      CtFn(_, _, _) => false,
+      _ => true
+    }
   }
 }
 
@@ -7991,7 +8002,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         (ti, s1, c1)
       },
       None => match lookup_builtin_in_env(env, railway_ident_lookup_name(name)) {
-        Some(t) => if builtin_ident_is_value_type(t) {
+        Some(t) => if builtin_ident_is_value(railway_ident_lookup_name(name), t) {
           // A non-function builtin is a value: a nullary constructor (`None`)
           // lowers through the `ctor_table` arm. This is what #2274's
           // bare-name exemption was really protecting -- rejecting every

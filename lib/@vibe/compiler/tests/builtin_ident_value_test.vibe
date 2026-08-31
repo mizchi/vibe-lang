@@ -22,6 +22,14 @@
 // the runtime rejected (`invalid signature index`), trapped with `table index
 // is out of bounds`, or reached codegen unresolved and asked the reader to
 // report a compiler bug. The tests below now pin the diagnostic for each.
+//
+// The exception is #1733's two FrozenArray conversions. Those have a REAL value
+// form: both codegen lanes materialize them as a one-argument lambda, which is
+// an ordinary closure with an ordinary table slot, and
+// `fixtures/frozen_array_copies_test.vibe` calls both through a binding and
+// passes. `builtin_ident_has_value_form` (core/builtin_name.vibe) is the single
+// source of truth -- the checker asks it what to admit and both lanes ask it
+// what to eta-expand, so the admission cannot drift from the lowering.
 
 import @vibe/compiler/checker {
   check_program
@@ -147,6 +155,13 @@ test "#2433: the diagnostic gives the wrap form the reader can paste" {
   assert(String::contains(msg, "(a, b) -> eq(a, b)"))
 }
 
+test "#2433: a builtin with no value form names the wrap form, not an ICE" {
+  let msg = first_check_error(value_ident_program("String::concat"))
+  assert(String::contains(msg, "String::concat"))
+  assert(String::contains(msg, "not a value"))
+  assert(!String::contains(msg, "internal compiler error"))
+}
+
 //# Not reported
 
 test "#2274: None as a value is still a constructor" {
@@ -195,5 +210,20 @@ test "#2433: a nullary constructor of a USER enum is still a value" {
 
 test "#2433: a user function is still a first-class value" {
   let src = "fn my_eq(a: Int, b: Int) -> Bool { a == b }\nfn main() -> Unit {\n  let f = my_eq\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#1733: the two FrozenArray conversions keep their value form" {
+  // Measured on stage2 BEFORE #2433, to make sure the exemption is not
+  // cargo-culted: `let f = String::concat; f("a", "b")` trapped with `table
+  // index is out of bounds`, while the same shape over
+  // `FrozenArray::from_array` / `FrozenArray::to_array` ran and answered.
+  inspect(first_check_error(value_ident_program("FrozenArray::from_array")), content = "")
+  inspect(first_check_error(value_ident_program("FrozenArray::to_array")), content = "")
+  inspect(first_check_error_unlocated(value_ident_program("FrozenArray::from_array")), content = "")
+}
+
+test "#1733: an annotated alias of a FrozenArray conversion still checks" {
+  let src = "fn main() -> Unit {\n  let freeze: (Array[Int]) -> FrozenArray[Int] = FrozenArray::from_array\n  let _ = freeze([1, 2])\n  ()\n}\n"
   inspect(first_check_error(src), content = "")
 }
