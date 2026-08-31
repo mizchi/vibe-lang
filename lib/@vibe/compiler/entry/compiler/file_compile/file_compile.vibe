@@ -61,14 +61,14 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_impl_with_float_offsets,
-  compile_wasi_module_no_dce_impl_with_float_offsets,
-  compile_wasi_module_rc_cached_impl_with_float_offsets,
-  compile_wasi_module_rc_impl_with_float_offsets,
-  compile_wasi_module_rc_shadow_impl_with_float_offsets,
-  compile_wasi_module_with_sources_break_impl_with_float_offsets,
-  compile_wasi_module_with_sources_coverage_impl_with_float_offsets,
-  compile_wasi_module_with_sources_trace_impl_with_float_offsets,
+  compile_wasi_module_impl_with_typed_offsets,
+  compile_wasi_module_no_dce_impl_with_typed_offsets,
+  compile_wasi_module_rc_cached_impl_with_typed_offsets,
+  compile_wasi_module_rc_impl_with_typed_offsets,
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets,
+  compile_wasi_module_with_sources_break_impl_with_typed_offsets,
+  compile_wasi_module_with_sources_coverage_impl_with_typed_offsets,
+  compile_wasi_module_with_sources_trace_impl_with_typed_offsets,
   effect_lowering_prelude
 }
 
@@ -96,6 +96,7 @@ import @vibe/compiler/runtime {
   db_typecheck,
   db_typecheck_fs,
   module_float_call_offsets_for_path,
+  module_int_render_offsets_for_path,
   parse_program_with_path
 }
 
@@ -234,7 +235,7 @@ fn parse_program_for_path(path: String, source: String) -> Array[Stmt] with Exce
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int]) -> Unit with Exception {
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], clone_int_offsets_out: Array[Int]) -> Unit with Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -279,6 +280,24 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
                         while k < Array::length(provider_offsets) {
                           Array::push(clone_float_offsets_out, provider_base + Array::get(provider_offsets, k) + delta)
                           k = k + 1
+                        }
+                      },
+                      None => ()
+                    },
+                    None => ()
+                  }
+                  // #2424: the Int render-argument table's clone entries,
+                  // by the same arithmetic. A clone whose float entries were
+                  // duplicated but whose Int entries were not would render
+                  // its own copies through the syntactic classifier only --
+                  // the exact per-clone divergence #2425 fixed for Double.
+                  match lookup_flat_base(flat_paths, flat_bases, resolved) {
+                    Some(provider_base_i) => match module_int_render_offsets_for_path(resolved) {
+                      Some(provider_int_offsets) => {
+                        let mut ki = 0
+                        while ki < Array::length(provider_int_offsets) {
+                          Array::push(clone_int_offsets_out, provider_base_i + Array::get(provider_int_offsets, ki) + delta)
+                          ki = ki + 1
                         }
                       },
                       None => ()
@@ -343,7 +362,7 @@ fn parse_sources_for_merge(sources: Array[(String, String)]) -> (Array[String], 
 /// statements, `is_entry_source` mirrors the pre-#716 per-group entry rule
 /// (entry keeps its private names), and `plan`/`sources` drive the export-name
 /// rewriting and the collision-def fallback.
-fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int]) -> Unit with Exception {
+fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[Stmt], is_entry_source: Bool, plan: ExportRenamePlan, sources: Array[(String, String)], source_stmts: Array[Array[Stmt]], fallback_clone_offset_delta: Array[Int], fallback_clone_offset_span: Int, flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets_out: Array[Int], clone_int_offsets_out: Array[Int]) -> Unit with Exception {
   // Preserve the proof that an optimized trait namespace came from the
   // standard module. Desugaring consumes this source-local marker before
   // codegen; it is not part of the runtime program.
@@ -373,7 +392,7 @@ fn append_merged_stmts_for_file(merged: Array[Stmt], path: String, stmts: Array[
   }
   if stmts_have_import_deep(stmts) {
     let skipped_locals = collect_import_alias_collision_locals(stmts)
-    append_import_alias_collision_defs_from_sources(merged, path, stmts, sources, source_stmts, plan, fallback_clone_offset_delta, fallback_clone_offset_span, import_value_rename_locals(import_renames), flat_paths, flat_bases, clone_float_offsets_out)
+    append_import_alias_collision_defs_from_sources(merged, path, stmts, sources, source_stmts, plan, fallback_clone_offset_delta, fallback_clone_offset_span, import_value_rename_locals(import_renames), flat_paths, flat_bases, clone_float_offsets_out, clone_int_offsets_out)
     append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
   } else {
     append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
@@ -405,13 +424,13 @@ fn build_merged_stmts_from_sources(entry_path: String, sources: Array[(String, S
     } else {
       path == entry_path
     }
-    append_merged_stmts_for_file(merged, path, Array::get(file_stmts, si), is_entry_source, plan, sources, file_stmts, fallback_clone_offset_delta, 0, array_empty(), array_empty(), array_empty())
+    append_merged_stmts_for_file(merged, path, Array::get(file_stmts, si), is_entry_source, plan, sources, file_stmts, fallback_clone_offset_delta, 0, array_empty(), array_empty(), array_empty(), array_empty())
     si = si + 1
   }
   merged
 }
 
-fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> Array[Stmt] with Exception {
+fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, String)])], disjoint_offset_spaces: Bool, flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], clone_int_offsets_out: Array[Int]) -> Array[Stmt] with Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
@@ -473,7 +492,7 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
       // call-result table is keyed by those offsets, so merging files without
       // rebasing lets one file's Double call classify another file's Int call.
       // Shift before the namespace/import rewrites; they preserve locations.
-      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, flat_paths_out, flat_bases_out, clone_float_offsets_out)
+      append_merged_stmts_for_file(merged, path, stmts, flat_idx == flat_total - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, flat_paths_out, flat_bases_out, clone_float_offsets_out, clone_int_offsets_out)
       flat_idx = flat_idx + 1
       si = si + 1
     }
@@ -483,11 +502,11 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
 }
 
 fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
-  build_grouped_merged_stmts_impl(source_groups, false, array_empty(), array_empty(), array_empty())
+  build_grouped_merged_stmts_impl(source_groups, false, array_empty(), array_empty(), array_empty(), array_empty())
 }
 
 fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
-  build_grouped_merged_stmts_impl(source_groups, true, array_empty(), array_empty(), array_empty())
+  build_grouped_merged_stmts_impl(source_groups, true, array_empty(), array_empty(), array_empty(), array_empty())
 }
 
 /// #2391: shift each file's per-module Double call-result offsets (recorded by
@@ -523,6 +542,39 @@ fn union_module_float_offsets(flat_paths: Array[String], flat_bases: Array[Int])
 /// the per-module offset tables union without collisions. Returns the merged
 /// program plus the unioned float-call-offset table for codegen.
 /// The per-file union plus the alias-collision clones' duplicated entries.
+/// #2424: the Int render-argument twin of union_module_float_offsets, same
+/// rebase, same "a file the modular check never stepped contributes nothing"
+/// degradation.
+fn union_module_int_offsets(flat_paths: Array[String], flat_bases: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(flat_paths) {
+    match module_int_render_offsets_for_path(Array::get(flat_paths, i)) {
+      Some(offsets) => {
+        let base = Array::get(flat_bases, i)
+        let mut j = 0
+        while j < Array::length(offsets) {
+          Array::push(out, base + Array::get(offsets, j))
+          j = j + 1
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn union_module_int_offsets_with_clones(flat_paths: Array[String], flat_bases: Array[Int], clone_int_offsets: Array[Int]) -> Array[Int] {
+  let out = union_module_int_offsets(flat_paths, flat_bases)
+  let mut ci = 0
+  while ci < Array::length(clone_int_offsets) {
+    Array::push(out, Array::get(clone_int_offsets, ci))
+    ci = ci + 1
+  }
+  out
+}
+
 fn union_module_float_offsets_with_clones(flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets: Array[Int]) -> Array[Int] {
   let out = union_module_float_offsets(flat_paths, flat_bases)
   let mut ci = 0
@@ -533,12 +585,13 @@ fn union_module_float_offsets_with_clones(flat_paths: Array[String], flat_bases:
   out
 }
 
-fn merged_stmts_and_float_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int]) with Exception {
+fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int]) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
-  let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, clone_float_offsets)
-  (merged, union_module_float_offsets_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let clone_int_offsets: Array[Int] = []
+  let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, clone_float_offsets, clone_int_offsets)
+  (merged, union_module_float_offsets_with_clones(flat_paths, flat_bases, clone_float_offsets), union_module_int_offsets_with_clones(flat_paths, flat_bases, clone_int_offsets))
 }
 
 /// Interior-line breakpoints (span-arc step5): the basename of a file path (text
@@ -595,7 +648,7 @@ fn file_newline_offsets(src: String) -> Array[Int] {
 /// break lane keeps its per-file line mapping with no codegen change, and
 /// the float-offset union (via the caller-passed sinks, same contract as
 /// build_grouped_merged_stmts_impl) speaks the same offset space.
-fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with Exception {
+fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, String)])], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int], clone_int_offsets_out: Array[Int]) -> (Array[Stmt], Array[String], Array[Array[Int]], Array[Int]) with Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = array_empty()
@@ -645,7 +698,7 @@ fn build_grouped_merged_stmts_prov(source_groups: Array[(String, Array[(String, 
       let before = Array::length(merged)
       // #740: last-of-WHOLE-merge, not last-of-group (see the note in
       // build_grouped_merged_stmts).
-      append_merged_stmts_for_file(merged, path, Array::get(located_file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, flat_paths_out, flat_bases_out, clone_float_offsets_out)
+      append_merged_stmts_for_file(merged, path, Array::get(located_file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, flat_paths_out, flat_bases_out, clone_float_offsets_out, clone_int_offsets_out)
       let after = Array::length(merged)
       let mut k = before
       while k < after {
@@ -720,7 +773,7 @@ export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
 /// by the MODULAR check this lane already runs
 /// (`prepare_file_fs_from_source_groups_persistent_cached`): check_module
 /// retains each module's Double call-result offsets in that module's own
-/// offset space, and `merged_stmts_and_float_offsets` rebases every file into
+/// offset space, and `merged_stmts_and_offsets` rebases every file into
 /// a disjoint offset range (the same rebase the gc lane uses, #2226) and
 /// unions the tables. No whole-program re-check is involved.
 ///
@@ -741,12 +794,12 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
   if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_float_offsets(pruned_stmts, entry_name, float_offsets)
+    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets)
   } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
@@ -779,8 +832,8 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   // `VIBE_RC` unset is `"" != "0"`. The checker's Double call-result offsets
   // ride the modular check; see compile_file_fs_mode above for the design and
   // the measurements.
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
-  compile_wasi_module_rc_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_rc_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
 }
 
 /// #2388 step 3: like the rc lane's merge, but ALSO reports, per flat source
@@ -789,14 +842,15 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
 /// the same technique build_grouped_merged_stmts_prov uses, so the counts
 /// stay aligned however many statements a file contributes -- and (#2391) its
 /// disjoint offset base for the float-offset union. `merged` is identical to
-/// the ordinary rc lane's (merged_stmts_and_float_offsets).
-fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[String], Array[Int], Array[Int], Array[Int]) with Exception {
+/// the ordinary rc lane's (merged_stmts_and_offsets).
+fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[String], Array[Int], Array[Int], Array[Int], Array[Int]) with Exception {
   namespace_rename_originals_reset()
   let merged = array_empty()
   let out_paths = array_empty()
   let out_fps = array_empty()
   let out_counts = array_empty()
   let clone_float_offsets_out: Array[Int] = []
+  let clone_int_offsets_out: Array[Int] = []
   let flat_sources = flatten_source_groups_local(source_groups)
   let (file_paths, file_stmts) = parse_sources_for_merge(flat_sources)
   // #2391: mirror build_grouped_merged_stmts_impl's disjoint-offset rebase,
@@ -836,14 +890,14 @@ fn build_grouped_merged_stmts_counted(source_groups: Array[(String, Array[(Strin
     while si < source_count {
       let (path, _) = Array::get(sources, si)
       let before = Array::length(merged)
-      append_merged_stmts_for_file(merged, path, Array::get(located_file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, out_paths, out_bases, clone_float_offsets_out)
+      append_merged_stmts_for_file(merged, path, Array::get(located_file_stmts, flat_idx), flat_idx == Array::length(file_paths) - 1, plan, flat_sources, located_file_stmts, fallback_clone_offset_delta, fallback_clone_offset_span, out_paths, out_bases, clone_float_offsets_out, clone_int_offsets_out)
       Array::push(out_counts, Array::length(merged) - before)
       flat_idx = flat_idx + 1
       si = si + 1
     }
     gi = gi + 1
   }
-  (merged, out_paths, out_fps, out_counts, out_bases, clone_float_offsets_out)
+  (merged, out_paths, out_fps, out_counts, out_bases, clone_float_offsets_out, clone_int_offsets_out)
 }
 
 //# #2388 step 3: codegen body-cache artifact (wrapper codec)
@@ -1088,8 +1142,9 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, file_paths, file_fps, file_counts, file_bases, clone_float_offsets) = build_grouped_merged_stmts_counted(source_groups)
+  let (merged_stmts, file_paths, file_fps, file_counts, file_bases, clone_float_offsets, clone_int_offsets) = build_grouped_merged_stmts_counted(source_groups)
   let float_offsets = union_module_float_offsets_with_clones(file_paths, file_bases, clone_float_offsets)
+  let int_offsets = union_module_int_offsets_with_clones(file_paths, file_bases, clone_int_offsets)
   // The key is independent of source CONTENT (the point is to hit after an
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
@@ -1101,7 +1156,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   }
   if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
-    let fresh = compile_wasi_module_rc_cached_impl_with_float_offsets(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, float_offsets)
+    let fresh = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, float_offsets, int_offsets)
     if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
       // Guard drift (an edit flipped a whole-program fact the guards pin)
       // is an EXPECTED cache miss, checked above against the fresh
@@ -1113,7 +1168,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
       // replay/sliced gates prove that recompile is byte-identical to the
       // first, so any difference here is attributable to the persisted
       // bodies being replayed.
-      let replayed = compile_wasi_module_rc_cached_impl_with_float_offsets(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), float_offsets)
+      let replayed = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), float_offsets, int_offsets)
       let fresh_n = Bytes::length(fresh)
       let rn = Bytes::length(replayed)
       if fresh_n != rn {
@@ -1142,7 +1197,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
     fresh
   } else {
     let cache_out = codegen_body_cache_new()
-    let bytes = compile_wasi_module_rc_cached_impl_with_float_offsets(merged_stmts, entry_name, cache_in, cache_out, float_offsets)
+    let bytes = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, cache_out, float_offsets, int_offsets)
     // Replayed entries are not re-recorded, so the refreshed artifact is
     // the new harvest plus the entries it replayed -- but ONLY when the
     // cache was actually consumed (its guards match the new harvest's).
@@ -1191,9 +1246,9 @@ export fn compile_file_fs_mode_rc_heap_marked(entry_path: String, entry_name: St
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   fs_heap_mark("prepared_db")
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
   fs_heap_mark("merged_stmts")
-  let bytes = compile_wasi_module_rc_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+  let bytes = compile_wasi_module_rc_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
   fs_heap_mark("codegen_rc")
   bytes
 }
@@ -1210,9 +1265,9 @@ export fn compile_file_fs_mode_bump_heap_marked(entry_path: String, entry_name: 
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   fs_heap_mark("prepared_db")
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
   fs_heap_mark("merged_stmts")
-  let bytes = compile_wasi_module_no_dce_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+  let bytes = compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
   fs_heap_mark("codegen_bump")
   bytes
 }
@@ -1225,8 +1280,8 @@ export fn compile_file_fs_mode_rc_shadow(entry_path: String, entry_name: String)
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
-  compile_wasi_module_rc_shadow_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
 }
 
 /// #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test
@@ -1240,7 +1295,7 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
   // Compute the cacheability verdict BEFORE codegen (it only needs the stmts)
   // but write it only AFTER codegen succeeds, so a failed compile leaves no
   // stale sidecar.
@@ -1251,9 +1306,9 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
   }
   let bytes = if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_float_offsets(pruned_stmts, entry_name, float_offsets)
+    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets)
   } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
@@ -1293,8 +1348,8 @@ export fn compile_file_fs_mode_coverage(entry_path: String, entry_name: String) 
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
-  compile_wasi_module_with_sources_coverage_impl_with_float_offsets(merged_stmts, entry_name, array_empty(), float_offsets)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(merged_stmts, entry_name, array_empty(), float_offsets, int_offsets)
 }
 
 /// Trace (debugger / DAP P1 groundwork): FS-mode compile with function-call
@@ -1306,8 +1361,8 @@ export fn compile_file_fs_mode_trace(entry_path: String, entry_name: String) -> 
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
-  compile_wasi_module_with_sources_trace_impl_with_float_offsets(merged_stmts, entry_name, array_empty(), float_offsets)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_with_sources_trace_impl_with_typed_offsets(merged_stmts, entry_name, array_empty(), float_offsets, int_offsets)
 }
 
 /// Break (debugger / DAP P1): FS-mode compile with `vibe::dbg_break` host-hook
@@ -1327,13 +1382,15 @@ export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> 
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
-  let (merged_stmts, dbg_files, dbg_file_nls, dbg_stmt_file_id) = build_grouped_merged_stmts_prov(source_groups, flat_paths, flat_bases, clone_float_offsets)
+  let clone_int_offsets: Array[Int] = []
+  let (merged_stmts, dbg_files, dbg_file_nls, dbg_stmt_file_id) = build_grouped_merged_stmts_prov(source_groups, flat_paths, flat_bases, clone_float_offsets, clone_int_offsets)
   let float_offsets = union_module_float_offsets_with_clones(flat_paths, flat_bases, clone_float_offsets)
-  compile_wasi_module_with_sources_break_impl_with_float_offsets(merged_stmts, entry_name, array_empty(), DbgProv::{
+  let int_offsets = union_module_int_offsets_with_clones(flat_paths, flat_bases, clone_int_offsets)
+  compile_wasi_module_with_sources_break_impl_with_typed_offsets(merged_stmts, entry_name, array_empty(), DbgProv::{
     files: dbg_files,
     file_nls: dbg_file_nls,
     stmt_file_id: dbg_stmt_file_id
-  }, float_offsets)
+  }, float_offsets, int_offsets)
 }
 
 export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Exception + Fs + Profiler {
@@ -1349,14 +1406,14 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
   let _ = build_source_groups_fingerprint(source_groups)
   let bundle_us = elapsed_us_since(bundle_start)
   let parse_start = profiler_now_us()
-  let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
   let parse_us = elapsed_us_since(parse_start)
   let compile_start = profiler_now_us()
   let bytes = if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_float_offsets(pruned_stmts, entry_name, float_offsets)
+    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets)
   } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
@@ -1396,14 +1453,14 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
         Some(bytes) => (bytes, next_db, load_us, type_us, bundle_us, 0, 0),
         None => {
           let parse_start = profiler_now_us()
-          let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
+          let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
           let parse_us = elapsed_us_since(parse_start)
           let compile_start = profiler_now_us()
           let bytes = if mode == "mvp" {
             let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-            compile_wasi_module_impl_with_float_offsets(pruned_stmts, entry_name, float_offsets)
+            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets)
           } else {
-            compile_wasi_module_no_dce_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
           }
           store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           let compile_us = elapsed_us_since(compile_start)
@@ -1437,12 +1494,12 @@ fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, ent
       match db_load_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
         Some(bytes) => (bytes, next_db, source_groups_fingerprint, persistent_artifact_fingerprint, "miss"),
         None => {
-          let (merged_stmts, float_offsets) = merged_stmts_and_float_offsets(source_groups)
+          let (merged_stmts, float_offsets, int_offsets) = merged_stmts_and_offsets(source_groups)
           let bytes = if mode == "mvp" {
             let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-            compile_wasi_module_impl_with_float_offsets(pruned_stmts, entry_name, float_offsets)
+            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets)
           } else {
-            compile_wasi_module_no_dce_impl_with_float_offsets(merged_stmts, entry_name, float_offsets)
+            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets)
           }
           store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), source_groups_fingerprint, persistent_artifact_fingerprint, "miss")

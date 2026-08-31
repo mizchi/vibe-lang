@@ -639,6 +639,87 @@ fn call_offset_count(counts: MutMap[Int, Int], off: Int) -> Int {
 ///
 /// Empty `candidates` returns immediately without walking, so every lane that
 /// supplies no checker offsets pays nothing at all for this.
+/// #2424: the same count, over the offsets an EXPRESSION carries rather than
+/// only `ECall`. A render or `eq` argument is a name, a call result or a dot
+/// projection, so the Int table's candidates are drawn from all three.
+///
+/// Same descent through `expr_children`, and same reason: the counter is sound
+/// only if it finds EVERY node, because an enumeration that misses a form
+/// UNDER-counts, and under-counting is the dangerous direction -- an offset
+/// that is really shared would survive as "unique" and let a classification
+/// meant for one node answer for the other.
+fn count_expr_offsets_expr(e: Expr, counts: MutMap[Int, Int]) -> Unit {
+  let off = match e {
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    EDot(_, _, o, _) => o,
+    _ => 0 - 1
+  }
+  if off >= 0 {
+    match MutMap::get(counts, off) {
+      Some(n) => MutMap::set(counts, off, n + 1),
+      None => ()
+    }
+  } else {
+    ()
+  }
+  let kids = expr_children(e)
+  let mut i = 0
+  while i < Array::length(kids) {
+    count_expr_offsets_expr(Array::get(kids, i), counts)
+    i = i + 1
+  }
+}
+
+fn count_expr_offsets_stmts(stmts: Array[Stmt], counts: MutMap[Int, Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => count_expr_offsets_expr(expr, counts),
+      SLetMut(_, _, expr) => count_expr_offsets_expr(expr, counts),
+      SLetPat(_, expr) => count_expr_offsets_expr(expr, counts),
+      SExpr(expr) => count_expr_offsets_expr(expr, counts),
+      STest(_, expr) => count_expr_offsets_expr(expr, counts),
+      SBench(_, expr) => count_expr_offsets_expr(expr, counts),
+      SModule(_, _, inner) => count_expr_offsets_stmts(inner, counts),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2424: the candidates that appear EXACTLY ONCE as an expression offset in
+/// the merged program. The checker already refused an offset whose typed
+/// occurrences disagreed; this refuses one that two AST nodes share after the
+/// merge, which is the other way a per-offset answer could be applied to the
+/// wrong node. Both directions fail closed -- a dropped offset classifies
+/// nothing and leaves the syntactic classifier in charge.
+export fn unique_expr_offsets_in_stmts(stmts: Array[Stmt], candidates: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = array_empty()
+  if Array::length(candidates) == 0 {
+    out
+  } else {
+    let counts: MutMap[Int, Int] = MutMap::new_int()
+    let mut i = 0
+    while i < Array::length(candidates) {
+      MutMap::set(counts, Array::get(candidates, i), 0)
+      i = i + 1
+    }
+    count_expr_offsets_stmts(stmts, counts)
+    let mut j = 0
+    while j < Array::length(candidates) {
+      let off = Array::get(candidates, j)
+      if call_offset_count(counts, off) == 1 {
+        Array::push(out, off)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    out
+  }
+}
+
 export fn unique_call_offsets_in_stmts(stmts: Array[Stmt], candidates: Array[Int]) -> Array[Int] {
   let out: Array[Int] = array_empty()
   if Array::length(candidates) == 0 {
