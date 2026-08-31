@@ -1219,9 +1219,36 @@ fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: 
 /// asked. The consequence of not asking was silent: a `let`-bound integer with
 /// a zero low word rendered as the EMPTY STRING while the identical expression
 /// written inline rendered correctly.
+/// #2424: the source offset an expression carries, or -1 -- the three shapes a
+/// render or `eq` argument takes (a name, a call result, a dot projection),
+/// which is exactly the set the checker-side producer collects.
+fn ts_expr_offset(e: Expr) -> Int {
+  match e {
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    EDot(_, _, o, _) => o,
+    _ => 0 - 1
+  }
+}
+
+/// #2424: did the CHECKER say this exact node is an `Int`?
+///
+/// The answer the syntactic classifier below cannot compute. An extra `||`
+/// term, never a replacement: the table can only ADD a classification the
+/// slot log missed, never remove one it made. Both ends fail closed -- the
+/// checker refuses an offset whose typed occurrences disagree, and an offset
+/// that is simply absent classifies nothing -- so this leaves the pre-#2424
+/// behaviour exactly as it was wherever it does not fire.
+fn ts_offset_says_int(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = ts_expr_offset(e)
+  off >= 0 && array_contains_int(ctx.int_render_offsets, off)
+}
+
 fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
-  if tag == 0 {
+  if ts_offset_says_int(e, ctx) {
+    true
+  } else if tag == 0 {
     true
   } else if tag == 4 {
     cc_ident_slot_kind(e, local_names, ctx) == 1
