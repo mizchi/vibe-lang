@@ -160,6 +160,52 @@ test "#2391 string channel: two composite String operands still classify" {
   inspect(r, "xy")
 }
 
+test "#2391 string channel: let-block operands classify through the value tail" {
+  // Codex round 3 (#2429): a block whose statements are lets parses as an
+  // ELet chain, which the first deep walk had no arm for -- both operands
+  // unanchorable, the `+` stayed raw (measured pre-fix: 2181843386369).
+  // The deep walk now follows a let's BODY, landing on the block's value.
+  let id = (x) -> {
+    x
+  }
+  let p = id(String::concat("x", ""))
+  let q = id(String::concat("y", ""))
+  let r = ({
+    let a = p
+    a
+  }) + ({
+    let b = q
+    b
+  })
+  inspect(r, "xy")
+}
+
+test "#2391 string channel: an Int binop in the if CONDITION cannot poison the outer `+`" {
+  // Codex round 3 (#2429): the first deep walk descended into the if
+  // CONDITION, anchoring the outer String `+` on the Int `+` inside
+  // `n + 1 == 2`; the verdict poison then discarded the shared anchor and
+  // the outer stayed raw (measured pre-fix: 2199023255553). The deep walk
+  // now descends into VALUE positions only (then-branch / first arm body /
+  // sequence tail / let body), whose type is the operand's own -- so the
+  // anchor lands on p and never meets the condition's arithmetic.
+  let id = (x) -> {
+    x
+  }
+  let n = id(1)
+  let p = id(String::concat("x", ""))
+  let q = id(String::concat("z", ""))
+  let c = id(true)
+  let r = (if n + 1 == 2 {
+    p
+  } else {
+    q
+  }) + (match c {
+    true => id(String::concat("y", "")),
+    false => q
+  })
+  inspect(r, "xy")
+}
+
 test "#2391 string channel: the Double half of the carrier still answers" {
   let f = () -> {
     2.5

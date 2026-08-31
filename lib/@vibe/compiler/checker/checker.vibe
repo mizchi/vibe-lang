@@ -6454,11 +6454,16 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
 /// no anchor at all and the binop would silently keep its raw lowering --
 /// measured: `(if c { p } else { q }) + (match ...)` on Strings printed
 /// 2181843386369, the i64.add of the two reprs. So the anchor then falls
-/// back to a DEEP walk that does descend (if-condition, match-scrutinee,
-/// sequence-first). A deep anchor may collide with another binop's anchor;
-/// that is exactly what the extraction's verdict poison exists for: agreeing
-/// claimants rewrite together correctly, disagreeing ones drop the anchor
-/// and degrade to the syntactic classifiers, never a wrong rewrite.
+/// back to a DEEP walk -- and the deep walk descends into VALUE positions
+/// only (if THEN-branch, match FIRST-ARM BODY, sequence TAIL, let BODY),
+/// never into control positions (Codex round 3). The node a value-position
+/// walk lands on has the composite operand's own type, so a same-kind binop
+/// that shares the anchor shares the String classification and rewrites
+/// correctly alongside; a control-position walk anchored the outer String
+/// `+` on an Int binop inside the if-CONDITION, where the verdict poison
+/// had to discard the whole anchor and the outer stayed raw (measured
+/// 2199023255553 for "xy"). A residual disagreeing collision still poisons
+/// and degrades to the syntactic classifiers, never a wrong rewrite.
 export fn typed_lowering_binop_anchor(left: Expr, right: Expr) -> Int {
   let loff = typed_lowering_operand_off(left)
   if loff >= 0 {
@@ -6492,9 +6497,17 @@ fn typed_lowering_operand_off_deep(e: Expr) -> Int {
       typed_lowering_operand_off_deep(base)
     },
     EBinOp(_, lhs, _) => typed_lowering_operand_off_deep(lhs),
-    EIf(cond, _, _) => typed_lowering_operand_off_deep(cond),
-    EMatch(scrutinee, _) => typed_lowering_operand_off_deep(scrutinee),
-    ESeq(first, _) => typed_lowering_operand_off_deep(first),
+    EIf(_, then_branch, _) => typed_lowering_operand_off_deep(then_branch),
+    EMatch(_, arms) => if Array::length(arms) > 0 {
+      let (_, first_body) = Array::get(arms, 0)
+      typed_lowering_operand_off_deep(first_body)
+    } else {
+      0 - 1
+    },
+    ESeq(_, tail) => typed_lowering_operand_off_deep(tail),
+    ELet(_, _, body, _) => typed_lowering_operand_off_deep(body),
+    ELetMut(_, _, body, _) => typed_lowering_operand_off_deep(body),
+    ELetRec(_, _, body) => typed_lowering_operand_off_deep(body),
     _ => 0 - 1
   }
 }
