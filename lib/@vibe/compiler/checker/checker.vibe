@@ -6440,24 +6440,62 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
 /// recomputes to find it. Exported for exactly that reason: two
 /// implementations of this walk would be a silent-wrong factory.
 ///
-/// This is the diagnostic anchor's walk MINUS the block descents: a
-/// sequence/match operand answers -1 here (falling back to the right
-/// operand) instead of descending to its first expression, because a
-/// descended anchor is not unique to one binop -- in
+/// The walk prefers anchors that are UNIQUE to this binop -- a
+/// sequence/match/if operand answers -1 in the shallow walk (falling back
+/// to the right operand) instead of descending to its first expression,
+/// because a descended anchor is not unique: in
 /// `(match n + 1 { v => __to_string(v) }) + q` the outer String `+` and the
 /// Int `+` inside the scrutinee would otherwise share n's offset, and the
 /// rewrite corrupted the scrutinee (Codex round 1 on #2429; measured "y"
 /// where content says "4y"). Descent through a call's callee, a dot's base,
-/// or a binop's lhs stays: those chains remain inside the operand, and a
-/// same-anchor nested binop of the same kind shares its classification in a
-/// well-typed program (the extraction's verdict poison drops the anchor
-/// otherwise).
+/// or a binop's lhs stays shallow: those chains remain inside the operand.
+///
+/// When BOTH operands are composite (Codex round 2), the shallow walk has
+/// no anchor at all and the binop would silently keep its raw lowering --
+/// measured: `(if c { p } else { q }) + (match ...)` on Strings printed
+/// 2181843386369, the i64.add of the two reprs. So the anchor then falls
+/// back to a DEEP walk that does descend (if-condition, match-scrutinee,
+/// sequence-first). A deep anchor may collide with another binop's anchor;
+/// that is exactly what the extraction's verdict poison exists for: agreeing
+/// claimants rewrite together correctly, disagreeing ones drop the anchor
+/// and degrade to the syntactic classifiers, never a wrong rewrite.
 export fn typed_lowering_binop_anchor(left: Expr, right: Expr) -> Int {
   let loff = typed_lowering_operand_off(left)
   if loff >= 0 {
     loff
   } else {
-    typed_lowering_operand_off(right)
+    let roff = typed_lowering_operand_off(right)
+    if roff >= 0 {
+      roff
+    } else {
+      let ldeep = typed_lowering_operand_off_deep(left)
+      if ldeep >= 0 {
+        ldeep
+      } else {
+        typed_lowering_operand_off_deep(right)
+      }
+    }
+  }
+}
+
+fn typed_lowering_operand_off_deep(e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 {
+      off
+    } else {
+      typed_lowering_operand_off_deep(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      typed_lowering_operand_off_deep(base)
+    },
+    EBinOp(_, lhs, _) => typed_lowering_operand_off_deep(lhs),
+    EIf(cond, _, _) => typed_lowering_operand_off_deep(cond),
+    EMatch(scrutinee, _) => typed_lowering_operand_off_deep(scrutinee),
+    ESeq(first, _) => typed_lowering_operand_off_deep(first),
+    _ => 0 - 1
   }
 }
 
