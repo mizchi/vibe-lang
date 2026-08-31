@@ -55,6 +55,7 @@ import @vibe/compiler/core {
   rewrite_import_alias_stmt,
   sort_perm_by_names,
   subst_apply,
+  subst_lookup,
   subst_resolves_to_double,
   trait_defined,
   trait_impl_declared_for_ctor,
@@ -5700,6 +5701,258 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
       i = i + 1
     }
     Some((out, primary_calls, located_primary_calls))
+  }
+}
+
+//# #2424: Int render/equality argument offsets
+
+/// #2424: does `ty` resolve to `Int` under `s`, WITHOUT building the
+/// substituted type?
+///
+/// The Double twin (`subst_resolves_to_double`, core/types.vibe) carries the
+/// full argument for why this is a variable-chain walk rather than
+/// `subst_apply`: asked once per candidate on a merged program, the rebuild
+/// dominated everything -- 6.1s to 77.5s measured on the compiler's own import
+/// closure. `CtInt` takes no arguments, so a type that is not already `CtInt`
+/// at its head cannot become one by substituting inside it, and following the
+/// variable chain is the whole job. Cycle handling matches `subst_apply`'s: a
+/// variable already seen ends the walk instead of looping.
+///
+/// Local rather than a sibling export next to `subst_resolves_to_double`: it
+/// has exactly one caller, in this file.
+fn irc_resolves_to_int(s: Subst, ty: Type) -> Bool {
+  let mut cur = ty
+  let seen: Array[Int] = []
+  let mut done = false
+  let mut result = false
+  while !done {
+    match cur {
+      CtInt => {
+        result = true
+        done = true
+      },
+      CtVar(vid) => {
+        let mut sj = 0
+        let mut already = false
+        while sj < Array::length(seen) {
+          if Array::get(seen, sj) == vid {
+            already = true
+          } else {
+            ()
+          }
+          sj = sj + 1
+        }
+        if already {
+          done = true
+        } else {
+          Array::push(seen, vid)
+          match subst_lookup(s, vid) {
+            Some(next) => {
+              cur = next
+            },
+            None => {
+              done = true
+            }
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
+/// The source offset an expression carries, or -1. Only the four
+/// offset-bearing shapes an Int-rendering argument can take are listed --
+/// a name, a call result, and a dot projection cover every open row in #2424
+/// except the erased type variable, which has no type to look up in the first
+/// place.
+fn irc_expr_offset(e: Expr) -> Int {
+  match e {
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    EDot(_, _, o, _) => o,
+    _ => 0 - 1
+  }
+}
+
+/// The builtins whose argument codegen must know is an `Int`: the renderer
+/// (both spellings) and the untyped equality. `\{...}` interpolation is
+/// already `__to_string` HERE -- the parser builds the call
+/// (`parser_expr_primary.vibe`), so a per-module check sees it, which is what
+/// makes this walk usable on the FS lane where interpolation is otherwise
+/// expanded only on the merged program.
+fn irc_is_render_callee(n: String) -> Bool {
+  n == "__to_string" || n == "Int::to_string" || n == "eq"
+}
+
+fn irc_collect_expr(e: Expr, out: Array[Int]) -> Unit {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(cn, _) => if irc_is_render_callee(cn) {
+        let mut ai = 0
+        while ai < Array::length(args) {
+          let aoff = irc_expr_offset(Array::get(args, ai))
+          if aoff >= 0 {
+            Array::push(out, aoff)
+          } else {
+            ()
+          }
+          ai = ai + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    },
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut i = 0
+  while i < Array::length(kids) {
+    irc_collect_expr(Array::get(kids, i), out)
+    i = i + 1
+  }
+}
+
+fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, e) => irc_collect_expr(e, out),
+      SLetMut(_, _, e) => irc_collect_expr(e, out),
+      SLetPat(_, e) => irc_collect_expr(e, out),
+      SExpr(e) => irc_collect_expr(e, out),
+      STest(_, e) => irc_collect_expr(e, out),
+      SBench(_, e) => irc_collect_expr(e, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Insertion-sorted unique copy. The candidate set is one entry per render or
+/// `eq` argument in the module, so it is small enough for an insertion sort
+/// and the sort is what keeps the scan below off a quadratic path: one binary
+/// search per typed occurrence instead of one linear membership test.
+fn irc_sorted_unique(xs: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    let v = Array::get(xs, i)
+    let mut lo = 0
+    let mut hi = Array::length(out)
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if Array::get(out, mid) < v {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    let dup = lo < Array::length(out) && Array::get(out, lo) == v
+    if dup {
+      ()
+    } else {
+      Array::push(out, v)
+      let mut j = Array::length(out) - 1
+      while j > lo {
+        Array::set(out, j, Array::get(out, j - 1))
+        j = j - 1
+      }
+      Array::set(out, lo, v)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn irc_index_of(sorted: Array[Int], v: Int) -> Int {
+  let mut lo = 0
+  let mut hi = Array::length(sorted)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if Array::get(sorted, mid) < v {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  if lo < Array::length(sorted) && Array::get(sorted, lo) == v {
+    lo
+  } else {
+    0 - 1
+  }
+}
+
+/// #2424: the source offsets of expressions that a render (`__to_string` /
+/// `Int::to_string`) or `eq` call takes as an argument AND whose
+/// checker-confirmed type is `Int`.
+///
+/// This is the answer codegen cannot compute for itself. Both lanes classify a
+/// render argument syntactically -- `ts_known_int` on linear,
+/// `bc_expr_is_intish` on gc -- from a slot log seeded at binding sites, so
+/// correctness is exactly the set of binding forms someone remembered to seed,
+/// and everything else renders the empty string with no diagnostic. The type is
+/// already computed right here; this hands it over instead of asking codegen to
+/// re-derive it.
+///
+/// FAIL CLOSED on disagreement. An offset can carry more than one typed
+/// occurrence (a dot-call receiver and its result share one), so an offset is
+/// emitted only when it has at least one occurrence and EVERY occurrence there
+/// resolves to `Int`. A candidate with no occurrence at all -- which is what an
+/// unlocated `parse_program(lex(source))` AST produces for the whole program --
+/// is simply absent, and an absent offset classifies nothing, leaving the
+/// pre-existing syntactic answer exactly as it was.
+export fn checked_int_render_offsets(checked: CheckedProgram) -> Array[Int] {
+  let raw: Array[Int] = []
+  irc_collect_stmts(checked.checked_stmts, raw)
+  let cands = irc_sorted_unique(raw)
+  let n = Array::length(cands)
+  if n == 0 {
+    []
+  } else {
+    let seen_any: Array[Int] = []
+    let all_int: Array[Int] = []
+    let mut k = 0
+    while k < n {
+      Array::push(seen_any, 0)
+      Array::push(all_int, 1)
+      k = k + 1
+    }
+    let mut oi = 0
+    while oi < Array::length(checked.typed_occurrences) {
+      let (ooff, oty) = Array::get(checked.typed_occurrences, oi)
+      if ooff >= 0 {
+        let idx = irc_index_of(cands, ooff)
+        if idx >= 0 {
+          Array::set(seen_any, idx, 1)
+          if irc_resolves_to_int(checked.final_subst, oty) {
+            ()
+          } else {
+            Array::set(all_int, idx, 0)
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      oi = oi + 1
+    }
+    let out: Array[Int] = []
+    let mut m = 0
+    while m < n {
+      if Array::get(seen_any, m) == 1 && Array::get(all_int, m) == 1 {
+        Array::push(out, Array::get(cands, m))
+      } else {
+        ()
+      }
+      m = m + 1
+    }
+    out
   }
 }
 
