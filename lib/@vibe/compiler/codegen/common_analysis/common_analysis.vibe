@@ -123,7 +123,7 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
       }
       0
     },
-    EBinOp(_, lhs, rhs) => {
+    EBinOp(_, lhs, rhs, _) => {
       collect_strings_expr(lhs, out)
       collect_strings_expr(rhs, out)
     },
@@ -327,7 +327,7 @@ export fn get_func_param_names(stmt: Stmt) -> Array[String] with Exception {
 export fn expr_contains_exceptions(expr: Expr) -> Bool {
   match expr {
     EHandle(_, _) => true,
-    EBinOp(_, lhs, rhs) => expr_contains_exceptions(lhs) || expr_contains_exceptions(rhs),
+    EBinOp(_, lhs, rhs, _) => expr_contains_exceptions(lhs) || expr_contains_exceptions(rhs),
     EUnaryOp(_, operand) => expr_contains_exceptions(operand),
     EIf(cond, then_e, else_e) =>
     expr_contains_exceptions(cond) || expr_contains_exceptions(then_e) || expr_contains_exceptions(else_e),
@@ -926,7 +926,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
     EFloat(_) => 0,
     EString(_) => 0,
     EUnit => 0,
-    EBinOp(_, lhs, rhs) => {
+    EBinOp(_, lhs, rhs, _) => {
       collect_free_vars_expr_sc(lhs, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(rhs, bound, fn_names, encl, skip_inlined, out)
     },
     EUnaryOp(_, operand) => collect_free_vars_expr_sc(operand, bound, fn_names, encl, skip_inlined, out),
@@ -1406,7 +1406,7 @@ export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
     EFloat(_) => false,
     EString(_) => false,
     EUnit => false,
-    EBinOp(_, lhs, rhs) => is_mut_captured_in(lhs, name) || is_mut_captured_in(rhs, name),
+    EBinOp(_, lhs, rhs, _) => is_mut_captured_in(lhs, name) || is_mut_captured_in(rhs, name),
     EUnaryOp(_, operand) => is_mut_captured_in(operand, name),
     EIf(cond, then_e, else_e) => is_mut_captured_in(cond, name) || is_mut_captured_in(then_e, name) || is_mut_captured_in(else_e, name),
     ECall(callee, args, _) => if is_mut_captured_in(callee, name) {
@@ -1834,7 +1834,7 @@ fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
       }
       0
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       md_collect_shadow_names(l, out)
       md_collect_shadow_names(r, out)
     },
@@ -2083,7 +2083,7 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> I
       }
       acc
     },
-    EBinOp(_, l, r) => md_cc_go(l, name, bfns, bmasks) + md_cc_go(r, name, bfns, bmasks),
+    EBinOp(_, l, r, _) => md_cc_go(l, name, bfns, bmasks) + md_cc_go(r, name, bfns, bmasks),
     EUnaryOp(_, x) => md_cc_go(x, name, bfns, bmasks),
     EFn(_, _, _, _, _, body) => md_cc_go(body, name, bfns, bmasks),
     EDot(x, _, _, _) => md_cc_go(x, name, bfns, bmasks),
@@ -2192,7 +2192,7 @@ fn typed_alloc_expr_kind(expr: Expr, names: Array[String], kinds: Array[String])
     EString(_) => "String",
     EBool(_) => "Bool",
     EIdent(name, _) => typed_alloc_name_kind(names, kinds, name),
-    EBinOp(op, lhs, _) => if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" || op == "&&" || op == "||" {
+    EBinOp(op, lhs, _, _) => if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" || op == "&&" || op == "||" {
       "Bool"
     } else {
       typed_alloc_expr_kind(lhs, names, kinds)
@@ -2244,7 +2244,7 @@ fn za_lambda_global_index(fn_names: Array[String], ctors: Array[String]) -> Arra
 /// reported rather than silently certified by `#zero_alloc`.
 export fn typed_operator_alloc_kind(expr: Expr, names: Array[String], kinds: Array[String]) -> String {
   match expr {
-    EBinOp(op, lhs, rhs) => if op == "+" || op == "-" || op == "*" || op == "/" {
+    EBinOp(op, lhs, rhs, _) => if op == "+" || op == "-" || op == "*" || op == "/" {
       let left_kind = typed_alloc_expr_kind(lhs, names, kinds)
       let kind = if left_kind == "" || left_kind == "<unknown>" {
         typed_alloc_expr_kind(rhs, names, kinds)
@@ -2528,7 +2528,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
         }
       }
     },
-    EBinOp(_, za, zb) => za_first(za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)), typed_operator_alloc_kind(e, typed_table, typed_subst)),
+    EBinOp(_, za, zb, _) => za_first(za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), za_walk(zb, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst)), typed_operator_alloc_kind(e, typed_table, typed_subst)),
     EUnaryOp(_, za) => za_first(za_walk(za, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst), typed_operator_alloc_kind(e, typed_table, typed_subst)),
     EDot(zobj, _, _, _) => za_walk(zobj, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
     ELabeledArg(_, _, zv) => za_walk(zv, ctors, fn_names, fn_bodies, fn_params, visited, bound, typed_table, typed_subst),
@@ -2931,7 +2931,7 @@ fn ca_collect_valued_idents(e: Expr, out: Array[String]) -> Int {
       let _ = ca_collect_valued_idents(s0, out)
       ca_collect_valued_idents(b0, out)
     },
-    EBinOp(_, a0, b0) => {
+    EBinOp(_, a0, b0, _) => {
       let _ = ca_collect_valued_idents(a0, out)
       ca_collect_valued_idents(b0, out)
     },
@@ -3138,7 +3138,7 @@ fn ca_collect_nonident_args(e: Expr, out: Array[String], out_pos: Array[Int]) ->
       let _ = ca_collect_nonident_args(s0, out, out_pos)
       ca_collect_nonident_args(b0, out, out_pos)
     },
-    EBinOp(_, a0, b0) => {
+    EBinOp(_, a0, b0, _) => {
       let _ = ca_collect_nonident_args(a0, out, out_pos)
       ca_collect_nonident_args(b0, out, out_pos)
     },
@@ -3280,7 +3280,7 @@ fn bp_calls_round0_borrow(e: Expr, round0_names: Array[String]) -> Bool {
       found || bp_calls_round0_borrow(b, round0_names)
     },
     EForIn(_, _, iter, b) => bp_calls_round0_borrow(iter, round0_names) || bp_calls_round0_borrow(b, round0_names),
-    EBinOp(_, a, b) => bp_calls_round0_borrow(a, round0_names) || bp_calls_round0_borrow(b, round0_names),
+    EBinOp(_, a, b, _) => bp_calls_round0_borrow(a, round0_names) || bp_calls_round0_borrow(b, round0_names),
     EUnaryOp(_, a) => bp_calls_round0_borrow(a, round0_names),
     EFn(_, _, _, _, _, body) => bp_calls_round0_borrow(body, round0_names),
     EDot(obj, _, _, _) => bp_calls_round0_borrow(obj, round0_names),
@@ -3815,7 +3815,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
         }
       }
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       let _ = mrv_fresh(l, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       let _ = mrv_fresh(r, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
       true
@@ -4009,7 +4009,7 @@ export fn count_lambda_sites_expr(expr: Expr) -> Int {
     EArray(items) => count_lambda_sites_exprs(items),
     ERecord(_, fields, _) => count_lambda_sites_fields(fields),
     EMap(fields) => count_lambda_sites_fields(fields),
-    EBinOp(_, l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
+    EBinOp(_, l, r, _) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
     ESeq(l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
     // A direct conversion call stays direct; only a value-position identifier
     // is materialized as the synthetic lambda above.
@@ -4098,7 +4098,7 @@ export fn packed_lines_to_array_expr(raw_call: Expr, tmp_name: String) -> Expr {
   let newline = ECall(EIdent("String::from_char_code", -1), [EInt(10)], -1)
   ELet(tmp_name, raw_call, EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
     EIdent(tmp_name, -1)
-  ], -1), EInt(0)), ECall(EIdent("Array::slice", -1), [
+  ], -1), EInt(0), -1), ECall(EIdent("Array::slice", -1), [
     EArray([newline]),
     EInt(0),
     EInt(0)
@@ -4248,7 +4248,7 @@ fn body_is_definitely_int(e: Expr) -> Bool {
 fn tail_is_definitely_int(e: Expr) -> Bool {
   match e {
     EInt(_) => true,
-    EBinOp(op, l, r) => (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && tail_is_definitely_int(l) && tail_is_definitely_int(r),
+    EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") && tail_is_definitely_int(l) && tail_is_definitely_int(r),
     // `~` is Int by construction (a bit pattern), so it is provably Int with
     // no condition on its operand; `-` may be a float negation, so it stays
     // conditional (#2344).

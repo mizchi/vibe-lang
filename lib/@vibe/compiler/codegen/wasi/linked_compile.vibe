@@ -617,7 +617,7 @@ fn lc_has_nonloop_consume(e: Expr, name: String, source_owned_mask: Int) -> Bool
       }
       found
     },
-    EBinOp(_, l, r) => lc_has_nonloop_consume(l, name, source_owned_mask) || lc_has_nonloop_consume(r, name, source_owned_mask),
+    EBinOp(_, l, r, _) => lc_has_nonloop_consume(l, name, source_owned_mask) || lc_has_nonloop_consume(r, name, source_owned_mask),
     EUnaryOp(_, x) => lc_has_nonloop_consume(x, name, source_owned_mask),
     EFn(_, _, _, _, _, fb) => lc_has_nonloop_consume(fb, name, source_owned_mask),
     EDot(x, _, _, _) => lc_has_nonloop_consume(x, name, source_owned_mask),
@@ -1000,26 +1000,27 @@ fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
     let chunk_read = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
       EIdent("__stdin_stream", -1)
     ], -1)
-    let chunk_byte_valid = EBinOp("&&", EBinOp("<=", EInt(0), EIdent("__stdin_chunk_byte", -1)), EBinOp("<=", EIdent("__stdin_chunk_byte", -1), EInt(255)))
+    let chunk_byte_valid = EBinOp("&&", EBinOp("<=", EInt(0), EIdent("__stdin_chunk_byte", -1), -1), EBinOp("<=", EIdent("__stdin_chunk_byte", -1), EInt(255), -1), -1)
     let chunk_push = ESeq(ECall(EIdent("StringBuilder::push", -1), [
       EIdent("__stdin_chunk_builder", -1),
       ECall(EIdent("String::from_char_code", -1), [
         EIdent("__stdin_chunk_byte", -1)
       ], -1)
-    ], -1), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1)), EUnit))
+    ], -1), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1), -1), EUnit))
     let chunk_accept = EIf(chunk_byte_valid, chunk_push, ECall(EIdent("assert_true", -1), [
       EBool(false)
     ], -1))
-    let chunk_step = ELet("__stdin_chunk_byte", chunk_read, EIf(EBinOp("==", EIdent("__stdin_chunk_byte", -1), EInt(0 - 1)), EAssign("__stdin_chunk_eof", EBool(true), EUnit), chunk_accept), -1)
-    let chunk_loop_cond = EBinOp("&&", EBinOp("<", EIdent("__stdin_chunk_len", -1), EIdent("__stdin_chunk_size", -1)), EBinOp("==", EIdent("__stdin_chunk_eof", -1), EBool(false)))
-    let chunk_result = EIf(EBinOp("==", EIdent("__stdin_chunk_len", -1), EInt(0)), ECall(EIdent("None", -1), array_empty(), -1), ECall(EIdent("Some", -1), [
+    let chunk_step = ELet("__stdin_chunk_byte", chunk_read, EIf(EBinOp("==", EIdent("__stdin_chunk_byte", -1), EInt(0 - 1), -1), EAssign("__stdin_chunk_eof", EBool(true), EUnit), chunk_accept), -1)
+    // review-lint: allow-fixed-synthetic-name
+    let chunk_loop_cond = EBinOp("&&", EBinOp("<", EIdent("__stdin_chunk_len", -1), EIdent("__stdin_chunk_size", -1), -1), EBinOp("==", EIdent("__stdin_chunk_eof", -1), EBool(false), -1), -1)
+    let chunk_result = EIf(EBinOp("==", EIdent("__stdin_chunk_len", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1), ECall(EIdent("Some", -1), [
       ECall(EIdent("StringBuilder::freeze", -1), [
         EIdent("__stdin_chunk_builder", -1)
       ], -1)
     ], -1))
     let positive_pull = ELet("__stdin_chunk_builder", ECall(EIdent("StringBuilder::new", -1), array_empty(), -1), ELetMut("__stdin_chunk_len", EInt(0), ELetMut("__stdin_chunk_eof", EBool(false), ESeq(EWhile(chunk_loop_cond, chunk_step), chunk_result), -1), -1), -1)
     let read_chunk_ret = TyApp("Option", [TyName("String")])
-    let read_chunk_body = EIf(EBinOp("<=", EIdent("__stdin_chunk_size", -1), EInt(0)), ECall(EIdent("None", -1), array_empty(), -1), positive_pull)
+    let read_chunk_body = EIf(EBinOp("<=", EIdent("__stdin_chunk_size", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1), positive_pull)
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 0), None, EFn(lc_fresh_string_array(), array_empty(), no_params, Some(TyName("StdinStream")), None, acquire_body)))
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 1), None, EFn(lc_fresh_string_array(), array_empty(), next_param, Some(TyName("Int")), None, next_body)))
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 2), None, EFn(lc_fresh_string_array(), array_empty(), close_param, Some(TyName("Unit")), None, close_body)))
@@ -1239,7 +1240,7 @@ fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
       }
       ELoop(out, lc_rename_sleep_calls(b, inner))
     },
-    EBinOp(op, l, r) => EBinOp(op, lc_rename_sleep_calls(l, active), lc_rename_sleep_calls(r, active)),
+    EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_sleep_calls(l, active), lc_rename_sleep_calls(r, active), boff),
     EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_calls(a, active)),
     EAssign(x, v, b) => EAssign(x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active)),
     EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active)),
@@ -1395,7 +1396,7 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
       }
       ELoop(out, lc_rename_hs_call(b, inner, from_name, to_name))
     },
-    EBinOp(op, l, r) => EBinOp(op, lc_rename_hs_call(l, active, from_name, to_name), lc_rename_hs_call(r, active, from_name, to_name)),
+    EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_hs_call(l, active, from_name, to_name), lc_rename_hs_call(r, active, from_name, to_name), boff),
     EUnaryOp(op, a) => EUnaryOp(op, lc_rename_hs_call(a, active, from_name, to_name)),
     EAssign(x, v, b) => EAssign(x, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
     EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_rename_hs_call(v, active, from_name, to_name), lc_rename_hs_call(b, active, from_name, to_name)),
@@ -1576,7 +1577,7 @@ fn lc_expr_has_async_handle(e: Expr) -> Bool {
       }
       hit
     },
-    EBinOp(_, l, r) => lc_expr_has_async_handle(l) || lc_expr_has_async_handle(r),
+    EBinOp(_, l, r, _) => lc_expr_has_async_handle(l) || lc_expr_has_async_handle(r),
     EUnaryOp(_, a) => lc_expr_has_async_handle(a),
     EAssign(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
     EAssignOp(_, _, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
@@ -1693,7 +1694,7 @@ fn lc_expr_calls_name(e: Expr, target: String) -> Bool {
       }
       hit
     },
-    EBinOp(_, l, r) => lc_expr_calls_name(l, target) || lc_expr_calls_name(r, target),
+    EBinOp(_, l, r, _) => lc_expr_calls_name(l, target) || lc_expr_calls_name(r, target),
     EUnaryOp(_, a) => lc_expr_calls_name(a, target),
     EAssign(_, v, b) => lc_expr_calls_name(v, target) || lc_expr_calls_name(b, target),
     EAssignOp(_, _, v, b) => lc_expr_calls_name(v, target) || lc_expr_calls_name(b, target),
@@ -1873,7 +1874,7 @@ fn lc_expr_collect_hf_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
       }
       lc_expr_collect_hf_names(b, inner, out)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       lc_expr_collect_hf_names(l, active, out)
       lc_expr_collect_hf_names(r, active, out)
     },
@@ -2123,7 +2124,7 @@ fn lc_expr_collect_hs_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
       }
       lc_expr_collect_hs_names(b, inner, out)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       lc_expr_collect_hs_names(l, active, out)
       lc_expr_collect_hs_names(r, active, out)
     },
@@ -2307,7 +2308,7 @@ fn lc_expr_mentions_name(e: Expr, target: String) -> Bool {
     EReturn(a) => lc_expr_mentions_name(a, target),
     EDot(o, _, _, _) => lc_expr_mentions_name(o, target),
     ECall(callee, args, _) => lc_expr_mentions_name(callee, target) || lc_exprs_mention_name(args, target),
-    EBinOp(_, l, r) => lc_expr_mentions_name(l, target) || lc_expr_mentions_name(r, target),
+    EBinOp(_, l, r, _) => lc_expr_mentions_name(l, target) || lc_expr_mentions_name(r, target),
     EUnaryOp(_, a) => lc_expr_mentions_name(a, target),
     ELabeledArg(_, _, v) => lc_expr_mentions_name(v, target),
     EBreak(opt) => match opt {
@@ -2522,7 +2523,7 @@ fn lc_rename_sleep_scoped(e: Expr) -> Expr {
       }
       ECall(lc_rename_sleep_scoped(callee), out, off)
     },
-    EBinOp(op, l, r) => EBinOp(op, lc_rename_sleep_scoped(l), lc_rename_sleep_scoped(r)),
+    EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_sleep_scoped(l), lc_rename_sleep_scoped(r), boff),
     EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_scoped(a)),
     EAssign(x, v, b) => EAssign(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
     EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
@@ -2607,7 +2608,7 @@ fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
     // `TaskGroup::spawn_suspend(..) + n` -- the same program, the call moved
     // into an operand -- compiled. A partial walk is the worst shape for a
     // guard: it reads as "this is checked" while answering a narrower question.
-    EBinOp(_, l, r) => lc_expr_has_spawn_suspend(l) || lc_expr_has_spawn_suspend(r),
+    EBinOp(_, l, r, _) => lc_expr_has_spawn_suspend(l) || lc_expr_has_spawn_suspend(r),
     EUnaryOp(_, a) => lc_expr_has_spawn_suspend(a),
     EAssign(_, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
     EAssignOp(_, _, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
@@ -3151,9 +3152,10 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
     } else {
       let ms = EIdent("__slp_ms", -1)
       let suspend = ECall(EIdent("perform", -1), [
-        ECall(EIdent("Async::Suspend", -1), [EBinOp("-", EInt(0), ms)], -1)
+        ECall(EIdent("Async::Suspend", -1), [EBinOp("-", EInt(0), ms, -1)], -1)
       ], -1)
-      let sleep_body = EIf(EBinOp("<", EInt(0), ms), ELet("__slp_w", suspend, EUnit, -1), EUnit)
+      let sleep_body = EIf(EBinOp("<", EInt(0), ms, -1), ELet("__slp_w", suspend, EUnit, -1), EUnit)
+      // review-lint: allow-fixed-synthetic-name
       let sleep_params: Array[(String, Option[TypeExpr])] = [
         ("__slp_ms", Some(TyName("Int")))
       ]
@@ -3234,13 +3236,14 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let hsn_hnd = ECall(EIdent("Array::get", -1), [hsn_s, EInt(1)], -1)
       let hsn_suspend = ECall(EIdent("perform", -1), [
         ECall(EIdent("Async::Suspend", -1), [
-          EBinOp("+", hsn_hnd, EInt(lc_hs_req_base()))
+          EBinOp("+", hsn_hnd, EInt(lc_hs_req_base()), -1)
         ], -1)
       ], -1)
-      let hsn_body = EIf(EBinOp("==", hsn_state, EInt(3)), ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
+      let hsn_body = EIf(EBinOp("==", hsn_state, EInt(3), -1), ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
+        // review-lint: allow-fixed-synthetic-name
         hsn_s,
         EIdent("__hsn_v", -1)
-      ], -1), -1), EBinOp("-", EInt(0), EInt(1)))
+      ], -1), -1), EBinOp("-", EInt(0), EInt(1), -1))
       let hsn_params: Array[(String, Option[TypeExpr])] = [("__hsn_s", None)]
       Array::push(stmts, SLet(false, false, "__hs_next", None, EFn(lc_fresh_string_array(), array_empty(), hsn_params, Some(TyName("Int")), Some("Async"), hsn_body)))
       // #1955: public source protocol. Authority remains in the Async row and
@@ -3254,16 +3257,16 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
         let hso_suspend = ECall(EIdent("perform", -1), [
           ECall(EIdent("Async::Suspend", -1), [
-            EBinOp("+", hso_hnd, EInt(lc_hs_req_base()))
+            EBinOp("+", hso_hnd, EInt(lc_hs_req_base()), -1)
           ], -1)
         ], -1)
         let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
-        let hso_option = EIf(EBinOp("<", hso_raw, EInt(0)), EIdent("None", -1), ECall(EIdent("Some", -1), [
+        let hso_option = EIf(EBinOp("<", hso_raw, EInt(0), -1), EIdent("None", -1), ECall(EIdent("Some", -1), [
           hso_raw
         ], -1))
         let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
         let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
-        let hso_body = EIf(EBinOp("==", hso_state, EInt(3)), hso_read, EIdent("None", -1))
+        let hso_body = EIf(EBinOp("==", hso_state, EInt(3), -1), hso_read, EIdent("None", -1))
         let hso_params: Array[(String, Option[TypeExpr])] = [("__hso_s", None)]
         let hso_fn = EFn(lc_fresh_string_array(), array_empty(), hso_params, Some(TyApp("Option", [
           TyName("Int")
@@ -3276,7 +3279,7 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let hsf_s = EIdent("__hsf_s", -1)
       let hsf_v = EIdent("__hsf_v", -1)
       let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1)
-      let hsf_body = EIf(EBinOp("<", hsf_v, EInt(0)), ESeq(hsf_close, EBinOp("-", EInt(0), EInt(1))), hsf_v)
+      let hsf_body = EIf(EBinOp("<", hsf_v, EInt(0), -1), ESeq(hsf_close, EBinOp("-", EInt(0), EInt(1), -1)), hsf_v)
       let hsf_params: Array[(String, Option[TypeExpr])] = [
         ("__hsf_s", None),
         ("__hsf_v", None)
@@ -3305,7 +3308,8 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let hsc_hnd = ECall(EIdent("Array::get", -1), [hsc_s, EInt(1)], -1)
       let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [hsc_hnd], -1)
       let hsc_mark = ECall(EIdent("Array::set", -1), [hsc_s, EInt(0), EInt(0)], -1)
-      let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3)), ELet("__hsc_r", hsc_drop, hsc_mark, -1), EUnit)
+      let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3), -1), ELet("__hsc_r", hsc_drop, hsc_mark, -1), EUnit)
+      // review-lint: allow-fixed-synthetic-name
       let hsc_params: Array[(String, Option[TypeExpr])] = [("__hsc_s", None)]
       // Injected ONLY when the source actually closes. `__hs_close`'s body is
       // the sole reference to `vibe_hs_close_raw`, and the import is gated on
@@ -3381,20 +3385,20 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
       let arm = if hf_machinery || hs_machinery {
         let q = EIdent("__entry_hf_q", -1)
         let wait_call = ECall(EIdent("vibe_hf_wait_raw", -1), [
-          EBinOp("-", q, EInt(2))
+          EBinOp("-", q, EInt(2), -1)
         ], -1)
         let trap_zero = ESeq(ECall(EIdent("assert", -1), [
-          EBinOp("==", q, EInt(0))
+          EBinOp("==", q, EInt(0), -1)
         ], -1), EInt(0))
         let low = if sleep_machinery {
-          EIf(EBinOp("<", q, EInt(0)), ESeq(ECall(EIdent("sleep_blocking", -1), [
-            EBinOp("-", EInt(0), q)
+          EIf(EBinOp("<", q, EInt(0), -1), ESeq(ECall(EIdent("sleep_blocking", -1), [
+            EBinOp("-", EInt(0), q, -1)
           ], -1), EInt(0)), trap_zero)
         } else {
           trap_zero
         }
         let mid = if hf_machinery {
-          EIf(EBinOp("<", EInt(1), q), wait_call, low)
+          EIf(EBinOp("<", EInt(1), q, -1), wait_call, low)
         } else {
           low
         }
@@ -3406,9 +3410,9 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         // and sleep-only boundaries keep their bytes.
         let settle_body = if hs_machinery {
           let hs_read_call = ECall(EIdent("vibe_hs_read_raw", -1), [
-            EBinOp("-", q, EInt(lc_hs_req_base()))
+            EBinOp("-", q, EInt(lc_hs_req_base()), -1)
           ], -1)
-          EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), q), hs_read_call, mid)
+          EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), q, -1), hs_read_call, mid)
         } else {
           mid
         }
@@ -3420,9 +3424,9 @@ fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> Str
         let resumed = ECall(EIdent("resume", -1), [EIdent("__entry_slp_v", -1)], -1)
         ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, resumed, -1)
       } else {
-        let settle = EIf(EBinOp("<", req, EInt(0)), ECall(EIdent("sleep_blocking", -1), [
-          EBinOp("-", EInt(0), req)
-        ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1))], -1))
+        let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
+          EBinOp("-", EInt(0), req, -1)
+        ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
         ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1))
       }
       let mut j = 0

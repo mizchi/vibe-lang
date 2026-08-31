@@ -279,7 +279,7 @@ fn opq_expr(e: Expr, resolution: Array[(String, String)], source_names: Array[St
     EWhile(cond, body) => EWhile(opq_expr(cond, resolution, source_names), opq_expr(body, resolution, source_names)),
     ELoop(pairs, body) => ELoop(opq_pairs(pairs, resolution, source_names), opq_expr(body, resolution, source_names)),
     EForIn(name, index, iterable, body) => EForIn(name, index, opq_expr(iterable, resolution, source_names), opq_expr(body, resolution, source_names)),
-    EBinOp(op, left, right) => EBinOp(op, opq_expr(left, resolution, source_names), opq_expr(right, resolution, source_names)),
+    EBinOp(op, left, right, boff) => EBinOp(op, opq_expr(left, resolution, source_names), opq_expr(right, resolution, source_names), boff),
     EUnaryOp(op, value) => EUnaryOp(op, opq_expr(value, resolution, source_names)),
     EFn(tparams, bounds, params, ret, eff, body) => {
       let emitted_eff = match eff {
@@ -446,7 +446,7 @@ fn idp_has_unsafe_construct(expr: Expr) -> Bool {
       },
       _ => idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
     },
-    EBinOp(_, l, r) => idp_has_unsafe_construct(l) || idp_has_unsafe_construct(r),
+    EBinOp(_, l, r, _) => idp_has_unsafe_construct(l) || idp_has_unsafe_construct(r),
     EUnaryOp(_, e2) => idp_has_unsafe_construct(e2),
     EAssign(_, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
     EAssignOp(_, _, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
@@ -882,7 +882,7 @@ fn idp_rewrite(expr: Expr, table: (Array[String], Array[Array[String]], Array[Ex
     EWhile(c, b) => EWhile(idp_rewrite(c, table), idp_rewrite(b, table)),
     EForIn(n, idx, it, b) => EForIn(n, idx, idp_rewrite(it, table), idp_rewrite(b, table)),
     ECall(callee, args, off) => idp_rewrite_call(callee, args, off, table),
-    EBinOp(op, l, r) => EBinOp(op, idp_rewrite(l, table), idp_rewrite(r, table)),
+    EBinOp(op, l, r, boff) => EBinOp(op, idp_rewrite(l, table), idp_rewrite(r, table), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, idp_rewrite(e2, table)),
     EAssign(n, v, c) => EAssign(n, idp_rewrite(v, table), idp_rewrite(c, table)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, idp_rewrite(v, table), idp_rewrite(c, table)),
@@ -2101,7 +2101,7 @@ fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
         },
         _ => edp_rq_after_exprs(q, callee, args)
       },
-      EBinOp(_, left, right) => edp_rq_two(q, left, right),
+      EBinOp(_, left, right, _) => edp_rq_two(q, left, right),
       EUnaryOp(_, value) => edp_rq_fold(q, value),
       EFn(_, _, _, _, _, body) => match q {
         RQLoopControl => 0,
@@ -2194,7 +2194,7 @@ fn edp_body_may_perform(body: Expr, ename: String, perf_fns: Array[String], iner
       EAssignOp(_, _, v, c) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(c, ename, perf_fns, inert, fn_names),
       EReturn(e2) => edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
       EDot(o, _, _, _) => edp_body_may_perform(o, ename, perf_fns, inert, fn_names),
-      EBinOp(_, l, r) => edp_body_may_perform(l, ename, perf_fns, inert, fn_names) || edp_body_may_perform(r, ename, perf_fns, inert, fn_names),
+      EBinOp(_, l, r, _) => edp_body_may_perform(l, ename, perf_fns, inert, fn_names) || edp_body_may_perform(r, ename, perf_fns, inert, fn_names),
       EUnaryOp(_, e2) => edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
       ELabeledArg(_, _, v) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names),
       EBreak(opt) => match opt {
@@ -2460,7 +2460,7 @@ fn edp_erase_effect_handles_expr(expr: Expr, ename: String, analyze: Bool, perf_
     EReturn(e2) => EReturn(edp_erase_effect_handles_expr(e2, ename, analyze, perf_fns, inert, fn_names)),
     EDot(o, f, off1, off2) => EDot(edp_erase_effect_handles_expr(o, ename, analyze, perf_fns, inert, fn_names), f, off1, off2),
     ECall(callee, args, off) => ECall(edp_erase_effect_handles_expr(callee, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_exprs(args, ename, analyze, perf_fns, inert, fn_names), off),
-    EBinOp(op, l, r) => EBinOp(op, edp_erase_effect_handles_expr(l, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(r, ename, analyze, perf_fns, inert, fn_names)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_erase_effect_handles_expr(l, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(r, ename, analyze, perf_fns, inert, fn_names), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_erase_effect_handles_expr(e2, ename, analyze, perf_fns, inert, fn_names)),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_erase_effect_handles_expr(v, ename, analyze, perf_fns, inert, fn_names)),
     EBreak(opt) => EBreak(match opt {
@@ -2723,7 +2723,7 @@ fn edp_collect_prefixed_expr(expr: Expr, prefix: String, out: Array[String]) -> 
       edp_collect_prefixed_expr(callee, prefix, out)
       edp_collect_prefixed_exprs(args, prefix, out)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       edp_collect_prefixed_expr(l, prefix, out)
       edp_collect_prefixed_expr(r, prefix, out)
     },
@@ -2927,7 +2927,7 @@ fn edp_ar_expr(expr: Expr, seed: Array[String], env_names: Array[String], env_re
     EReturn(e2) => EReturn(edp_ar_expr(e2, seed, env_names, env_repl, counter, taken)),
     EDot(o, f, off1, off2) => EDot(edp_ar_expr(o, seed, env_names, env_repl, counter, taken), f, off1, off2),
     ECall(callee, args, off) => ECall(edp_ar_expr(callee, seed, env_names, env_repl, counter, taken), edp_ar_exprs(args, seed, env_names, env_repl, counter, taken), off),
-    EBinOp(op, l, r) => EBinOp(op, edp_ar_expr(l, seed, env_names, env_repl, counter, taken), edp_ar_expr(r, seed, env_names, env_repl, counter, taken)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_ar_expr(l, seed, env_names, env_repl, counter, taken), edp_ar_expr(r, seed, env_names, env_repl, counter, taken), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_ar_expr(e2, seed, env_names, env_repl, counter, taken)),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_ar_expr(v, seed, env_names, env_repl, counter, taken)),
     EBreak(opt) => EBreak(match opt {
@@ -3251,7 +3251,7 @@ fn edp_nonerror_handle_desc_expr(expr: Expr) -> String {
         a
       }
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       let a = edp_nonerror_handle_desc_expr(l)
       if a == "" {
         edp_nonerror_handle_desc_expr(r)
@@ -4848,7 +4848,7 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
       },
       _ => true
     },
-    EBinOp(_, l, r) => edp_has_unsafe_construct_sc(l, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(r, needing, ename, pure_fns, ls_names, ls_flags),
+    EBinOp(_, l, r, _) => edp_has_unsafe_construct_sc(l, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(r, needing, ename, pure_fns, ls_names, ls_flags),
     EUnaryOp(_, e2) => edp_has_unsafe_construct_sc(e2, needing, ename, pure_fns, ls_names, ls_flags),
     EAssign(_, v, c) => edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags),
     EAssignOp(_, _, v, c) => edp_has_unsafe_construct_sc(v, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(c, needing, ename, pure_fns, ls_names, ls_flags),
@@ -5395,7 +5395,7 @@ fn edp_collect_host_raw_callees(expr: Expr, out: Array[String]) -> Unit {
     },
     EReturn(e2) => edp_collect_host_raw_callees(e2, out),
     EDot(o, _, _, _) => edp_collect_host_raw_callees(o, out),
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       edp_collect_host_raw_callees(l, out)
       edp_collect_host_raw_callees(r, out)
     },
@@ -5719,7 +5719,7 @@ fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit 
         i = i + 1
       }
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       edp_collect_handle_effect_names_expr(l, out)
       edp_collect_handle_effect_names_expr(r, out)
     },
@@ -5868,7 +5868,7 @@ fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(Expr, Ar
         ai = ai + 1
       }
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       edp_collect_handle_sites_expr(l, ename, out)
       edp_collect_handle_sites_expr(r, ename, out)
     },
@@ -6426,7 +6426,7 @@ fn edp_collect_poison_expr(e: Expr, ename: String, needing: Array[String], es_na
       }
       edp_collect_poison_expr(b, ename, needing, es_names, es_members_list, poison)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       edp_collect_poison_expr(l, ename, needing, es_names, es_members_list, poison)
       edp_collect_poison_expr(r, ename, needing, es_names, es_members_list, poison)
     },
@@ -6594,7 +6594,7 @@ fn edp_row_lit_scan_expr(e: Expr, ename: String, needing: Array[String], es_name
       }
       edp_row_lit_scan_expr(b, ename, needing, es_names, es_members_list, binds, lits)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       edp_row_lit_scan_expr(l, ename, needing, es_names, es_members_list, binds, lits)
       edp_row_lit_scan_expr(r, ename, needing, es_names, es_members_list, binds, lits)
     },
@@ -6814,7 +6814,7 @@ fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Arr
     ELetMut(_, v, b, _) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
     ELetRec(_, v, b) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
     ESeq(a, b) => edp_needing_escape_or(edp_needing_escape(a, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(b, needing, ename, stmts, fn_defs, es_names, es_members_list)),
-    EBinOp(_, l, r) => edp_needing_escape_or(edp_needing_escape(l, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(r, needing, ename, stmts, fn_defs, es_names, es_members_list)),
+    EBinOp(_, l, r, _) => edp_needing_escape_or(edp_needing_escape(l, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(r, needing, ename, stmts, fn_defs, es_names, es_members_list)),
     EUnaryOp(_, x) => edp_needing_escape(x, needing, ename, stmts, fn_defs, es_names, es_members_list),
     EAssign(_, v, c) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(c, needing, ename, stmts, fn_defs, es_names, es_members_list)),
     EAssignOp(_, _, v, c) => edp_needing_escape_or(edp_needing_escape(v, needing, ename, stmts, fn_defs, es_names, es_members_list), edp_needing_escape(c, needing, ename, stmts, fn_defs, es_names, es_members_list)),
@@ -7076,7 +7076,7 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
     ELetMut(n, v, b, off) => ELetMut(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc), off),
     ELetRec(n, v, b) => ELetRec(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
     ESeq(a, b) => ESeq(edp_etawrap_expr(a, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
-    EBinOp(op, l, r) => EBinOp(op, edp_etawrap_expr(l, in_scope, needing, ename, wc), edp_etawrap_expr(r, in_scope, needing, ename, wc)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_etawrap_expr(l, in_scope, needing, ename, wc), edp_etawrap_expr(r, in_scope, needing, ename, wc), boff),
     EUnaryOp(op, x) => EUnaryOp(op, edp_etawrap_expr(x, in_scope, needing, ename, wc)),
     EAssign(n, v, c) => EAssign(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(c, in_scope, needing, ename, wc)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(c, in_scope, needing, ename, wc)),
@@ -7241,7 +7241,7 @@ fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out
       edp_collect_ecall_arg_idents_expr(a, gname, argpos, out)
       edp_collect_ecall_arg_idents_expr(b, gname, argpos, out)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       edp_collect_ecall_arg_idents_expr(l, gname, argpos, out)
       edp_collect_ecall_arg_idents_expr(r, gname, argpos, out)
     },
@@ -7578,7 +7578,7 @@ fn edp_sweep_row_lits_expr(e: Expr, ename: String, dict_pname: String, call_safe
       let (n, v) = pr
       (n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list))
     }, edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
-    EBinOp(op, l, r) => EBinOp(op, edp_sweep_row_lits_expr(l, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(r, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_sweep_row_lits_expr(l, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(r, ename, dict_pname, call_safe, es_names, es_members_list), boff),
     EUnaryOp(op, x) => EUnaryOp(op, edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
     EAssign(n, v, c) => EAssign(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list)),
@@ -7696,7 +7696,7 @@ fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, di
     ECall(callee, args, off) => ECall(callee, for a in args {
       edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, edp_migrate_closure_binding_expr(l, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(r, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_migrate_closure_binding_expr(l, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(r, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
     EReturn(e2) => EReturn(edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
@@ -8104,7 +8104,7 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
       },
       _ => ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
     },
-    EBinOp(op, l, r) => EBinOp(op, edp_rewrite_needing_body(l, ename, dict_pname, needing), edp_rewrite_needing_body(r, ename, dict_pname, needing)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_needing_body(l, ename, dict_pname, needing), edp_rewrite_needing_body(r, ename, dict_pname, needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_needing_body(v, ename, dict_pname, needing)),
     EBreak(opt) => EBreak(match opt {
@@ -8312,7 +8312,7 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
       },
       _ => ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
     },
-    EBinOp(op, l, r) => EBinOp(op, edp_rewrite_handle_body(l, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(r, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_handle_body(l, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(r, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
     EBreak(opt) => EBreak(match opt {
@@ -8423,7 +8423,7 @@ fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -
     ECall(callee, args, off) => ECall(edp_find_rewrite_handles(callee, ename, needing), for a in args {
       edp_find_rewrite_handles(a, ename, needing)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, edp_find_rewrite_handles(l, ename, needing), edp_find_rewrite_handles(r, ename, needing)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_find_rewrite_handles(l, ename, needing), edp_find_rewrite_handles(r, ename, needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_find_rewrite_handles(e2, ename, needing)),
     EAssign(n, v, c) => EAssign(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
@@ -9264,7 +9264,7 @@ fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
       }
       hit || scps_arm_refs_resume_value(b, loop_sh)
     },
-    EBinOp(_, l, r) => scps_arm_refs_resume_value(l, sh) || scps_arm_refs_resume_value(r, sh),
+    EBinOp(_, l, r, _) => scps_arm_refs_resume_value(l, sh) || scps_arm_refs_resume_value(r, sh),
     EUnaryOp(_, e2) => scps_arm_refs_resume_value(e2, sh),
     EAssign(_, v, c) => scps_arm_refs_resume_value(v, sh) || scps_arm_refs_resume_value(c, sh),
     EAssignOp(_, _, v, c) => scps_arm_refs_resume_value(v, sh) || scps_arm_refs_resume_value(c, sh),
@@ -9708,7 +9708,7 @@ fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
       }
       ok && scps_calls_ok(b, sctx, ctx, scps_scope_bind_names(scope, names, 0))
     },
-    EBinOp(_, l, r) => scps_calls_ok(l, sctx, ctx, scope) && scps_calls_ok(r, sctx, ctx, scope),
+    EBinOp(_, l, r, _) => scps_calls_ok(l, sctx, ctx, scope) && scps_calls_ok(r, sctx, ctx, scope),
     EUnaryOp(_, e2) => scps_calls_ok(e2, sctx, ctx, scope),
     EAssign(_, v, c) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
     EAssignOp(_, _, v, c) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
@@ -9875,7 +9875,7 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
         scps_first_bad_call_info(b, sctx, ctx, scps_scope_bind_names(scope, names, 0))
       }
     },
-    EBinOp(_, l, r) => scps_first_bad_call_info_pair(l, r, sctx, ctx, scope),
+    EBinOp(_, l, r, _) => scps_first_bad_call_info_pair(l, r, sctx, ctx, scope),
     EUnaryOp(_, e2) => scps_first_bad_call_info(e2, sctx, ctx, scope),
     EAssign(_, v, c) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
     EAssignOp(_, _, v, c) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
@@ -10234,7 +10234,7 @@ fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
           (2, e)
         }
       },
-      EBinOp(op, l, r) => if op == "&&" || op == "||" {
+      EBinOp(op, l, r, boff) => if op == "&&" || op == "||" {
         // Only the left operand is unconditionally evaluated.
         if scps_contains_susp(r, sctx) {
           // #1536: the whole short-circuit is nameable for the same reason a
@@ -10256,7 +10256,7 @@ fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
         } else {
           let (s, l2) = scps_anf_walk(l, sctx, probe, site, ctr, bn, bv)
           if s == 1 {
-            (1, EBinOp(op, l2, r))
+            (1, EBinOp(op, l2, r, boff))
           } else {
             (2, e)
           }
@@ -10264,7 +10264,7 @@ fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
       } else if scps_contains_susp(l, sctx) {
         let (s, l2) = scps_anf_walk(l, sctx, probe, site, ctr, bn, bv)
         if s == 1 {
-          (1, EBinOp(op, l2, r))
+          (1, EBinOp(op, l2, r, boff))
         } else {
           (2, e)
         }
@@ -10272,7 +10272,7 @@ fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
         let l2 = scps_anf_name(l, probe, site, ctr, bn, bv)
         let (s, r2) = scps_anf_walk(r, sctx, probe, site, ctr, bn, bv)
         if s == 1 {
-          (1, EBinOp(op, l2, r2))
+          (1, EBinOp(op, l2, r2, boff))
         } else {
           (2, e)
         }
@@ -10574,7 +10574,7 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
         // branch splitting, including exact-once resume behavior. This arm is
         // deliberately tail-only; generic compound ANF still refuses to walk
         // the RHS of && / || in assignments, calls, selections and seq heads.
-        EBinOp(op, l, r) => if op == "&&" {
+        EBinOp(op, l, r, _) => if op == "&&" {
           scps_split_tail(EIf(l, r, EBool(false)), sctx, ctx, st)
         } else if op == "||" {
           scps_split_tail(EIf(l, EBool(true), r), sctx, ctx, st)
@@ -10592,7 +10592,7 @@ fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], Int, Ar
           // continuation into the conditionally evaluated branches. Generic
           // compound ANF remains fail-closed for short-circuit RHS positions.
           let shortcircuit = match v {
-            EBinOp(op, l, r) => if !scps_contains_susp(l, sctx) && scps_contains_susp(r, sctx) {
+            EBinOp(op, l, r, _) => if !scps_contains_susp(l, sctx) && scps_contains_susp(r, sctx) {
               match scps_let_shortcircuit_bind(x, r, b, off, site, sctx, false) {
                 Some(selected) => if op == "&&" {
                   Some(EIf(l, selected, ELet(x, EBool(false), b, off)))
@@ -11152,7 +11152,7 @@ fn scps_cellify(e: Expr, x: String) -> Expr {
     // left writing the raw local while every read of `x` around it had become
     // a cell read, and the write was silently lost across the suspension.
     EAssignOp(nm, op, v, b) => if nm == x {
-      ESeq(scps_cell_set(nm, EBinOp(op, scps_cell_get(nm, -1), scps_cellify(v, x))), scps_cellify(b, x))
+      ESeq(scps_cell_set(nm, EBinOp(op, scps_cell_get(nm, -1), scps_cellify(v, x), -1)), scps_cellify(b, x))
     } else {
       EAssignOp(nm, op, scps_cellify(v, x), scps_cellify(b, x))
     },
@@ -11213,7 +11213,7 @@ fn scps_cellify(e: Expr, x: String) -> Expr {
       })
     },
     ECall(callee, args, off) => ECall(scps_cellify(callee, x), scps_cellify_exprs(args, x), off),
-    EBinOp(op, l, r) => EBinOp(op, scps_cellify(l, x), scps_cellify(r, x)),
+    EBinOp(op, l, r, boff) => EBinOp(op, scps_cellify(l, x), scps_cellify(r, x), boff),
     EUnaryOp(op, a) => EUnaryOp(op, scps_cellify(a, x)),
     EReturn(a) => EReturn(scps_cellify(a, x)),
     EDot(o, f, off, foff) => EDot(scps_cellify(o, x), f, off, foff),
@@ -11503,8 +11503,8 @@ fn scps_string_for_rewrite(name: String, str_nm: String, body: Expr, iname: Stri
     EIdent(str_nm, -1),
     EIdent(iname, -1)
   ], -1)
-  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1)), body)
-  EWhile(EBinOp("<", EIdent(iname, -1), len_call), ELet(name, at_call, step, -1))
+  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
+  EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, at_call, step, -1))
 }
 
 /// Names this walk can prove hold an Array, without asking the checker: a
@@ -11579,8 +11579,8 @@ fn scps_array_for_rewrite(name: String, arr: String, body: Expr, iname: String) 
     EIdent(arr, -1),
     EIdent(iname, -1)
   ], -1)
-  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1)), body)
-  EWhile(EBinOp("<", EIdent(iname, -1), len_call), ELet(name, get_call, step, -1))
+  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
+  EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, get_call, step, -1))
 }
 
 /// Walk the spine, tracking which names are proved arrays, and rewrite the
@@ -12168,7 +12168,7 @@ fn scps_loop_ctl_remains(e: Expr) -> Bool {
     EMatch(s, arms) => scps_loop_ctl_remains(s) || scps_loop_arms_ctl_remain(arms),
     EHandle(b, arms) => scps_loop_ctl_remains(b) || scps_loop_arms_ctl_remain(arms),
     ECall(callee, args, _) => scps_loop_ctl_remains(callee) || scps_loop_exprs_ctl_remain(args),
-    EBinOp(_, l, r) => scps_loop_ctl_remains(l) || scps_loop_ctl_remains(r),
+    EBinOp(_, l, r, _) => scps_loop_ctl_remains(l) || scps_loop_ctl_remains(r),
     EUnaryOp(_, a) => scps_loop_ctl_remains(a),
     EAssign(_, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
     EAssignOp(_, _, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
@@ -12666,7 +12666,7 @@ fn scps_rename_ident(e: Expr, x: String, nx: String) -> Expr {
       })
     },
     ECall(callee, args, off) => ECall(scps_rename_ident(callee, x, nx), scps_rename_ident_exprs(args, x, nx), off),
-    EBinOp(op, l, r) => EBinOp(op, scps_rename_ident(l, x, nx), scps_rename_ident(r, x, nx)),
+    EBinOp(op, l, r, boff) => EBinOp(op, scps_rename_ident(l, x, nx), scps_rename_ident(r, x, nx), boff),
     EUnaryOp(op, a) => EUnaryOp(op, scps_rename_ident(a, x, nx)),
     EReturn(a) => EReturn(scps_rename_ident(a, x, nx)),
     EDot(o, f, off, foff) => EDot(scps_rename_ident(o, x, nx), f, off, foff),
@@ -13110,7 +13110,7 @@ fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[
       }
       hit || scps_inert_taint(b, eff, needing, ext, ctx)
     },
-    EBinOp(_, l, r) => scps_inert_taint(l, eff, needing, locals, ctx) || scps_inert_taint(r, eff, needing, locals, ctx),
+    EBinOp(_, l, r, _) => scps_inert_taint(l, eff, needing, locals, ctx) || scps_inert_taint(r, eff, needing, locals, ctx),
     EUnaryOp(_, a) => scps_inert_taint(a, eff, needing, locals, ctx),
     EAssign(_, v, b) => scps_inert_taint(v, eff, needing, locals, ctx) || scps_inert_taint(b, eff, needing, locals, ctx),
     EAssignOp(_, _, v, b) => scps_inert_taint(v, eff, needing, locals, ctx) || scps_inert_taint(b, eff, needing, locals, ctx),
@@ -13401,7 +13401,7 @@ fn scps_slot_sites_ok(e: Expr, fname: String, slot: Int, has_encl: Bool, encl_pa
       }
       ok && (shadowed || scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting))
     },
-    EBinOp(_, l, r) => scps_slot_sites_ok(l, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(r, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EBinOp(_, l, r, _) => scps_slot_sites_ok(l, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(r, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
     EUnaryOp(_, a) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
     EAssign(_, v, b) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
     EAssignOp(_, _, v, b) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
@@ -13838,7 +13838,7 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
     ECall(callee, args, off) => ECall(scps_rewrite(callee, ctx, st, cps_effs, scope), for a in args {
       scps_rewrite(a, ctx, st, cps_effs, scope)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, scps_rewrite(l, ctx, st, cps_effs, scope), scps_rewrite(r, ctx, st, cps_effs, scope)),
+    EBinOp(op, l, r, boff) => EBinOp(op, scps_rewrite(l, ctx, st, cps_effs, scope), scps_rewrite(r, ctx, st, cps_effs, scope), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, scps_rewrite(e2, ctx, st, cps_effs, scope)),
     EAssign(n, v, c) => EAssign(n, scps_rewrite(v, ctx, st, cps_effs, scope), scps_rewrite(c, ctx, st, cps_effs, scope)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, scps_rewrite(v, ctx, st, cps_effs, scope), scps_rewrite(c, ctx, st, cps_effs, scope)),
@@ -14027,7 +14027,7 @@ fn scps_collect_cps_effs_expr(e: Expr, out: Array[String]) -> Unit {
       }
       scps_collect_cps_effs_expr(b, out)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       scps_collect_cps_effs_expr(l, out)
       scps_collect_cps_effs_expr(r, out)
     },
@@ -14444,7 +14444,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
       let inner = scps_scope_bind_opt(scps_scope_bind(scope, n, 0), idx, 0)
       EForIn(n, idx, scps_prepass_expr(it, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(b, ecfgs, ctx, st, split_effs, inner))
     },
-    EBinOp(op, l, r) => EBinOp(op, scps_prepass_expr(l, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(r, ecfgs, ctx, st, split_effs, scope)),
+    EBinOp(op, l, r, boff) => EBinOp(op, scps_prepass_expr(l, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(r, ecfgs, ctx, st, split_effs, scope), boff),
     EUnaryOp(op, x) => EUnaryOp(op, scps_prepass_expr(x, ecfgs, ctx, st, split_effs, scope)),
     EAssign(n, v, c) => EAssign(n, scps_prepass_expr(v, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(c, ecfgs, ctx, st, split_effs, scope)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, scps_prepass_expr(v, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(c, ecfgs, ctx, st, split_effs, scope)),
@@ -14574,7 +14574,7 @@ fn scps_guard_untriggered(e: Expr, guard_effs: Array[String], errs: Array[String
       }
       scps_guard_untriggered(b, guard_effs, errs)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       scps_guard_untriggered(l, guard_effs, errs)
       scps_guard_untriggered(r, guard_effs, errs)
     },
@@ -14816,7 +14816,7 @@ fn awp_poll_fn_def(host_future: Bool, waiter_hooks: Bool) -> Stmt {
   // callee, so a `while lt(...)` condition makes this fn -- and therefore
   // every handle whose body awaits -- ineligible (measured: reduced case
   // v9 REJECTED with `lt`, identical fn with `<` compiles and runs).
-  let pending = EBinOp("<", EInt(0), state)
+  let pending = EBinOp("<", EInt(0), state, -1)
   let payload = ECall(EIdent("Array::get", -1), [fut, EInt(1)], -1)
   let loop_body = if host_future {
     let suspend = ECall(EIdent("perform", -1), [
@@ -14849,7 +14849,7 @@ fn awp_pay_fn_def() -> Stmt {
   let state = ECall(EIdent("Array::get", -1), [f, EInt(0)], -1)
   // `hnd`, not `handle` -- `handle` is the effect-handler keyword.
   let hnd = ECall(EIdent("Array::get", -1), [f, EInt(1)], -1)
-  let body = EIf(EBinOp("==", state, EInt(2)), EBinOp("+", hnd, EInt(2)), EInt(1))
+  let body = EIf(EBinOp("==", state, EInt(2), -1), EBinOp("+", hnd, EInt(2), -1), EInt(1))
   let params: Array[(String, Option[TypeExpr])] = [("__awp_f", None)]
   SLet(false, false, "__aw_pay", None, EFn(array_empty_str(), array_empty(), params, None, None, body))
 }
@@ -14867,7 +14867,7 @@ fn awp_settle_fn_def() -> Stmt {
     EIdent("__aws_v", -1)
   ], -1)
   let set_state = ECall(EIdent("Array::set", -1), [f, EInt(0), EInt(0)], -1)
-  let body = EIf(EBinOp("==", state, EInt(2)), ESeq(set_payload, ESeq(set_state, EInt(0))), EInt(0))
+  let body = EIf(EBinOp("==", state, EInt(2), -1), ESeq(set_payload, ESeq(set_state, EInt(0))), EInt(0))
   let params: Array[(String, Option[TypeExpr])] = [
     ("__aws_f", None),
     ("__aws_v", None)
@@ -14937,7 +14937,7 @@ fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)]) -> E
         ECall(new_callee, awp_lift_exprs(args, ctr, binds), off)
       }
     },
-    EBinOp(op, l, r) => EBinOp(op, awp_lift(l, ctr, binds), awp_lift(r, ctr, binds)),
+    EBinOp(op, l, r, boff) => EBinOp(op, awp_lift(l, ctr, binds), awp_lift(r, ctr, binds), boff),
     EUnaryOp(op, x) => EUnaryOp(op, awp_lift(x, ctr, binds)),
     EDot(o, f, o1, o2) => EDot(awp_lift(o, ctr, binds), f, o1, o2),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, awp_lift(v, ctr, binds)),
@@ -15297,7 +15297,7 @@ fn fdp_expr_rebuild(e: Expr, discard: Bool) -> Expr {
       }
       ECall(fdp_expr(callee, false), args2, off)
     },
-    EBinOp(op, l, r) => EBinOp(op, fdp_expr(l, false), fdp_expr(r, false)),
+    EBinOp(op, l, r, boff) => EBinOp(op, fdp_expr(l, false), fdp_expr(r, false), boff),
     EUnaryOp(op, x) => EUnaryOp(op, fdp_expr(x, false)),
     EDot(o, f, a, b2) => EDot(fdp_expr(o, false), f, a, b2),
     ELabeledArg(k, n, v) => ELabeledArg(k, n, fdp_expr(v, false)),

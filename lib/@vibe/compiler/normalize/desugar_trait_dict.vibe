@@ -1755,10 +1755,10 @@ export fn wrap_entry_exception_boundary(stmts: Array[Stmt], entry_name: String) 
         ], -1), EBinOp("||", ECall(EIdent("String::equals", -1), [
           kind_ident,
           EString("String")
-        ], -1), ECall(EIdent("String::equals", -1), [kind_ident, EString("Int")], -1)))
+        ], -1), ECall(EIdent("String::equals", -1), [kind_ident, EString("Int")], -1), -1), -1)
         let rendered_ok = EBinOp("!=", ECall(EIdent("String::length", -1), [
           msg_ident
-        ], -1), EInt(0))
+        ], -1), EInt(0), -1)
         let text = EIf(printable, ECall(EIdent("__to_string", -1), [
           EIdent(payload_name, -1)
         ], -1), EIf(rendered_ok, msg_ident, ECall(EIdent("String::concat", -1), [
@@ -2358,7 +2358,7 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // types the concat rewrite below and lets a `let u = a + "x"` binding
     // record u -> String for downstream `u + ...`. Other `+` operands stay
     // None (no behavior change for numeric/unknown).
-    EBinOp(bop, bl, br) => if bop == "+" {
+    EBinOp(bop, bl, br, _) => if bop == "+" {
       let lstr = match infer_arg_type_name(bl, struct_sets, var_types, fn_returns) {
         Some(t) => t == "String",
         None => false
@@ -5867,7 +5867,7 @@ fn dtd_scalar_shape(e: Expr, var_types: Array[(String, String)]) -> String {
       Some(t) => t,
       None => ""
     },
-    EBinOp(bop, bl, br) => if bop == "+" || bop == "-" || bop == "*" || bop == "/" || bop == "%" {
+    EBinOp(bop, bl, br, _) => if bop == "+" || bop == "-" || bop == "*" || bop == "/" || bop == "%" {
       let l = dtd_scalar_shape(bl, var_types)
       let r = dtd_scalar_shape(br, var_types)
       // Both sides must agree. A mixed or unknown pair says nothing rather
@@ -7698,13 +7698,13 @@ fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter
   let len_call = ECall(EIdent(String::concat(ctype, "::iter_length"), -1), [
     EIdent(src_name, -1)
   ], -1)
-  let incr = EAssign(index_name, EBinOp("+", EIdent(index_name, -1), EInt(1)), EUnit)
+  let incr = EAssign(index_name, EBinOp("+", EIdent(index_name, -1), EInt(1), -1), EUnit)
   let bound_body = match idx {
     Some(iname) => ELet(iname, EIdent(index_name, -1), body, -1),
     None => body
   }
   let loop_body = ELet(name, get_call, ESeq(bound_body, incr), -1)
-  ELet(src_name, iter, ELet(len_name, len_call, ELetMut(index_name, EInt(0), EWhile(EBinOp("<", EIdent(index_name, -1), EIdent(len_name, -1)), loop_body), -1), -1), -1)
+  ELet(src_name, iter, ELet(len_name, len_call, ELetMut(index_name, EInt(0), EWhile(EBinOp("<", EIdent(index_name, -1), EIdent(len_name, -1), -1), loop_body), -1), -1), -1)
 }
 
 /// `for` over an async iterator type `C` whose
@@ -7742,7 +7742,7 @@ fn build_host_stream_for(name: String, iter: Expr, body: Expr) -> Expr {
   let read_call = ECall(EIdent("host_stream_next", -1), [EIdent(src_name, -1)], -1)
   let advance = EAssign(byte_name, read_call, EUnit)
   let loop_body = ELet(name, EIdent(byte_name, -1), ESeq(body, advance), -1)
-  ELet(src_name, iter, ELetMut(byte_name, read_call, EWhile(EBinOp("<=", EInt(0), EIdent(byte_name, -1)), loop_body), -1), -1)
+  ELet(src_name, iter, ELetMut(byte_name, read_call, EWhile(EBinOp("<=", EInt(0), EIdent(byte_name, -1), -1), loop_body), -1), -1)
 }
 
 fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
@@ -7759,7 +7759,7 @@ fn build_pull_for_in(value_name: String, index_name: Option[String], iterable: E
   let continue_name = dinsp_fresh_name("__pull_continue", iterable, body)
   let next_name = dinsp_fresh_name("__pull_next", iterable, body)
   let some_arm = match index_name {
-    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1)), EUnit)),
+    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1), -1), EUnit)),
     None => ESeq(body, EUnit)
   }
   let loop_body = EMatch(ECall(EIdent(next_name, -1), array_empty(), -1), [
@@ -8530,7 +8530,7 @@ fn railway_val_off(e: Expr) -> Int {
     } else {
       railway_val_off(base)
     },
-    EBinOp(_, lhs, _) => railway_val_off(lhs),
+    EBinOp(_, lhs, _, _) => railway_val_off(lhs),
     _ => -1
   }
 }
@@ -8728,7 +8728,7 @@ fn railway_rw(expr: Expr, struct_sets: Array[(String, Array[String])], var_types
       (name, railway_rw(init, struct_sets, var_types, fn_returns, changed))
     }, railway_rw(body, struct_sets, var_types, fn_returns, changed)),
     EForIn(name, idx, iter, body) => EForIn(name, idx, railway_rw(iter, struct_sets, var_types, fn_returns, changed), railway_rw(body, struct_sets, var_types, fn_returns, changed)),
-    EBinOp(op, l, r) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns, changed), railway_rw(r, struct_sets, var_types, fn_returns, changed)),
+    EBinOp(op, l, r, boff) => EBinOp(op, railway_rw(l, struct_sets, var_types, fn_returns, changed), railway_rw(r, struct_sets, var_types, fn_returns, changed), boff),
     EUnaryOp(op, e) => EUnaryOp(op, railway_rw(e, struct_sets, var_types, fn_returns, changed)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, railway_rw(body, struct_sets, seed_var_types(ps, tp, var_types), fn_returns, changed)),
     EDot(obj, field, off, fdoff) => {
@@ -8970,7 +8970,7 @@ fn erase_try_none_expr(expr: Expr, changed: Option[Array[Bool]]) -> Expr {
     ECall(callee, args, off) => ECall(erase_try_none_expr(callee, changed), for a in args {
       erase_try_none_expr(a, changed)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, erase_try_none_expr(l, changed), erase_try_none_expr(r, changed)),
+    EBinOp(op, l, r, boff) => EBinOp(op, erase_try_none_expr(l, changed), erase_try_none_expr(r, changed), boff),
     EUnaryOp(op, e) => EUnaryOp(op, erase_try_none_expr(e, changed)),
     EFn(tp, bs, ps, ret, eff, body) => EFn(tp, bs, ps, ret, eff, erase_try_none_expr(body, changed)),
     EDot(obj, field, off, fdoff) => EDot(erase_try_none_expr(obj, changed), field, off, fdoff),
@@ -9515,13 +9515,13 @@ fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[DictGen
     EIdent(name, -1),
     EIdent(iv, -1)
   ], 0, 2), -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
-  let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0)), EString(""), EString(", "))
+  let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0), -1), EString(""), EString(", "))
   let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
-  let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1)), EUnit))
+  let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit))
   let len_call = ECall(EIdent("Array::length", -1), Array::slice([
     EIdent(name, -1)
   ], 0, 1), -1)
-  let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call), body)
+  let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call, -1), body)
   ELetMut(iv, EInt(0), ELetMut(av, EString("["), ESeq(loop_e, concat2(EIdent(av, -1), EString("]"))), -1), -1)
 }
 
@@ -9587,13 +9587,13 @@ fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Arra
       EIdent(nm, -1),
       EIdent(iv, -1)
     ], 0, 2), -1), interp_render_shaped(EIdent(ev, -1), elem_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
-    let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0)), EString(""), EString(", "))
+    let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0), -1), EString(""), EString(", "))
     let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
-    let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1)), EUnit))
+    let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit))
     let len_call = ECall(EIdent("Array::length", -1), Array::slice([
       EIdent(nm, -1)
     ], 0, 1), -1)
-    let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call), body)
+    let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call, -1), body)
     let inner = ELetMut(iv, EInt(0), ELetMut(av, EString("["), ESeq(loop_e, concat2(EIdent(av, -1), EString("]"))), -1), -1)
     match subject {
       EIdent(_, _) => inner,
@@ -10174,7 +10174,7 @@ fn lower_assert_eq(args: Array[Expr], call_off: Int, gens: Array[DictGen], trait
   let fail = ESeq(ECall(EIdent("println", -1), [msg], -1), ECall(EIdent("assert_true", -1), [
     EBool(false)
   ], -1))
-  let cmp = rewrite_expr(EBinOp("==", actual, expected), gens, traits, struct_sets, dict_binds, vars2, fn_returns)
+  let cmp = rewrite_expr(EBinOp("==", actual, expected, -1), gens, traits, struct_sets, dict_binds, vars2, fn_returns)
   ELet(an, a2, ELet(en, b2, EIf(cmp, EUnit, fail), -1), -1)
 }
 
@@ -10695,7 +10695,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
       }
     },
-    EBinOp(op, l, r) => {
+    EBinOp(op, l, r, boff) => {
       let rl = rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       let rr = rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
       // #672: dispatch `a == b` / `a != b` on a struct type to the generated
@@ -10744,7 +10744,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           } else {
             rl
           }
-          let lencmp = EBinOp("==", ECall(EIdent("Array::length", -1), [other], -1), EInt(0))
+          let lencmp = EBinOp("==", ECall(EIdent("Array::length", -1), [other], -1), EInt(0), -1)
           if op == "==" {
             lencmp
           } else {
@@ -10778,8 +10778,8 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // LENGTH rather than to the second array (#2192 review).
           let ln = dinsp_fresh_name("__eqempty_l", rl, rr)
           let rn = dinsp_fresh_name("__eqempty_r", rl, rr)
-          let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0)), EBinOp("==", EIdent(rn, -1), EInt(0)))
-          let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1)), ESeq(ECall(EIdent("assert_true", -1), [
+          let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0), -1), EBinOp("==", EIdent(rn, -1), EInt(0), -1), -1)
+          let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1), -1), ESeq(ECall(EIdent("assert_true", -1), [
             EBool(false)
           ], -1), EBool(false)))
           let guarded = ELet(ln, ECall(EIdent("Array::length", -1), [rl], -1), ELet(rn, ECall(EIdent("Array::length", -1), [
@@ -10903,9 +10903,9 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                           ECall(EIdent("not", -1), [call], -1)
                         }
                       } else {
-                        EBinOp(op, rl, rr)
+                        EBinOp(op, rl, rr, boff)
                       },
-                      None => EBinOp(op, rl, rr)
+                      None => EBinOp(op, rl, rr, boff)
                     }
                   }
                 }
@@ -10929,15 +10929,15 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           None => false
         })
         if rel_stringish {
-          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [rl, rr], -1), EInt(0))
+          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [rl, rr], -1), EInt(0), -1)
         } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
           // #973: neither operand is determinably String, but at least one is
           // the bare name of an in-scope generic type parameter — the
           // concrete runtime type is erased, so dispatch at runtime instead
           // (see is_erased_generic_operand / gen_generic_rel_diff_body).
-          EBinOp(op, ECall(EIdent("__generic_rel_diff", -1), [rl, rr], -1), EInt(0))
+          EBinOp(op, ECall(EIdent("__generic_rel_diff", -1), [rl, rr], -1), EInt(0), -1)
         } else {
-          EBinOp(op, rl, rr)
+          EBinOp(op, rl, rr, boff)
         }
       } else if op == "+" {
         // String `+` lowering: the checker types `String + String` as String,
@@ -10961,10 +10961,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // #973: same erased-`[T: Add]` case as the relational branch above.
           ECall(EIdent("__generic_add", -1), [rl, rr], -1)
         } else {
-          EBinOp(op, rl, rr)
+          EBinOp(op, rl, rr, boff)
         }
       } else {
-        EBinOp(op, rl, rr)
+        EBinOp(op, rl, rr, boff)
       }
     },
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
@@ -11581,14 +11581,14 @@ fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   ], 0, 2), -1)
   let elem_show = show_for_typed(elem_ty, elem_get, known_types)
   // `__as_acc = __as_acc ++ (if i == 0 { "" } else { ", " }) ++ show(a[i])`
-  let sep = EIf(EBinOp("==", EIdent("__as_i", -1), EInt(0)), EString(""), EString(", "))
+  let sep = EIf(EBinOp("==", EIdent("__as_i", -1), EInt(0), -1), EString(""), EString(", "))
   let append = concat2(concat2(EIdent("__as_acc", -1), sep), elem_show)
   let set_acc = EAssign("__as_acc", append, EUnit)
-  let incr = EAssign("__as_i", EBinOp("+", EIdent("__as_i", -1), EInt(1)), EUnit)
+  let incr = EAssign("__as_i", EBinOp("+", EIdent("__as_i", -1), EInt(1), -1), EUnit)
   let loop_body = ESeq(set_acc, incr)
   let while_loop = EWhile(EBinOp("<", EIdent("__as_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
     EIdent("a", -1)
-  ], 0, 1), -1)), loop_body)
+  ], 0, 1), -1), -1), loop_body)
   let closed = concat2(EIdent("__as_acc", -1), EString("]"))
   let body = ELetMut("__as_i", EInt(0), ELetMut("__as_acc", EString("["), ESeq(while_loop, closed), -1), -1)
   let arr_ty = TyApp("Array", Array::slice([elem_ty], 0, 1))
@@ -11922,18 +11922,18 @@ fn gen_map_equals_fn(k_ty: TypeExpr, v_ty: TypeExpr, known_types: Array[String])
     EIdent(n_k, -1)
   ], 0, 2), -1)
   let check_one = EIf(ECall(EIdent("not", -1), Array::slice([has_b], 0, 1), -1), EAssign(n_ok, EBool(false), EUnit), val_bad)
-  let incr = EAssign(n_i, EBinOp("+", EIdent(n_i, -1), EInt(1)), EUnit)
+  let incr = EAssign(n_i, EBinOp("+", EIdent(n_i, -1), EInt(1), -1), EUnit)
   let loop_body = ELet(n_k, ECall(EIdent("Array::get", -1), Array::slice([
     EIdent(n_ks, -1),
     EIdent(n_i, -1)
   ], 0, 2), -1), ESeq(check_one, incr), -1)
   let while_loop = EWhile(EBinOp("<", EIdent(n_i, -1), ECall(EIdent("Array::length", -1), Array::slice([
     EIdent(n_ks, -1)
-  ], 0, 1), -1)), loop_body)
+  ], 0, 1), -1), -1), loop_body)
   let body_eq = ELet(n_ks, ECall(EIdent("Map::keys", -1), Array::slice([
     EIdent("a", -1)
   ], 0, 1), -1), ELetMut(n_i, EInt(0), ELetMut(n_ok, EBool(true), ESeq(while_loop, EIdent(n_ok, -1)), -1), -1), -1)
-  let body = EIf(EBinOp("!=", size_a, size_b), EBool(false), body_eq)
+  let body = EIf(EBinOp("!=", size_a, size_b, -1), EBool(false), body_eq)
   let map_ty = TyApp("Map", Array::slice([k_ty, v_ty], 0, 2))
   let params = Array::slice([("a", Some(map_ty)), ("b", Some(map_ty))], 0, 2)
   let tparams = empty_str_array()
@@ -11980,13 +11980,13 @@ fn emit_recorded_bytes_equals(stmts: Array[Stmt]) -> Unit {
       EIdent("b", -1),
       EIdent("__be_i", -1)
     ], 0, 2), -1)
-    let set_false = EIf(EBinOp("!=", byte_a, byte_b), EAssign("__be_ok", EBool(false), EUnit), EUnit)
-    let incr = EAssign("__be_i", EBinOp("+", EIdent("__be_i", -1), EInt(1)), EUnit)
+    let set_false = EIf(EBinOp("!=", byte_a, byte_b, -1), EAssign("__be_ok", EBool(false), EUnit), EUnit)
+    let incr = EAssign("__be_i", EBinOp("+", EIdent("__be_i", -1), EInt(1), -1), EUnit)
     let while_loop = EWhile(EBinOp("<", EIdent("__be_i", -1), ECall(EIdent("Bytes::length", -1), Array::slice([
       EIdent("a", -1)
-    ], 0, 1), -1)), ESeq(set_false, incr))
+    ], 0, 1), -1), -1), ESeq(set_false, incr))
     let body_eq = ELetMut("__be_i", EInt(0), ELetMut("__be_ok", EBool(true), ESeq(while_loop, EIdent("__be_ok", -1)), -1), -1)
-    let body = EIf(EBinOp("!=", len_a, len_b), EBool(false), body_eq)
+    let body = EIf(EBinOp("!=", len_a, len_b, -1), EBool(false), body_eq)
     let params = Array::slice([
       ("a", Some(TyName("Bytes"))),
       ("b", Some(TyName("Bytes")))
@@ -12399,7 +12399,8 @@ fn eq_tys_all_content_comparable(ts: Array[TypeExpr], tparams: Array[String]) ->
 /// (#695.)
 fn opt_eq_match(lhs: Expr, rhs: Expr) -> Expr {
   let some_inner = EMatch(rhs, Array::slice([
-    (PCtor("Some", Array::slice([PBind("__oeq_r")], 0, 1)), EBinOp("==", EIdent("__oeq_l", -1), EIdent("__oeq_r", -1))),
+    (PCtor("Some", Array::slice([PBind("__oeq_r")], 0, 1)), EBinOp("==", EIdent("__oeq_l", -1), EIdent("__oeq_r", -1), -1)),
+    // review-lint: allow-fixed-synthetic-name
     (PWild, EBool(false))
   ], 0, 2))
   let none_inner = EMatch(rhs, Array::slice([
@@ -12416,11 +12417,13 @@ fn opt_eq_match(lhs: Expr, rhs: Expr) -> Expr {
 /// element types (bare `==` dispatch). (#695.)
 fn result_eq_match(lhs: Expr, rhs: Expr) -> Expr {
   let ok_inner = EMatch(rhs, Array::slice([
-    (PCtor("Ok", Array::slice([PBind("__req_r")], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1))),
+    (PCtor("Ok", Array::slice([PBind("__req_r")], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1), -1)),
+    // review-lint: allow-fixed-synthetic-name
     (PWild, EBool(false))
   ], 0, 2))
   let err_inner = EMatch(rhs, Array::slice([
-    (PCtor("Err", Array::slice([PBind("__req_r")], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1))),
+    (PCtor("Err", Array::slice([PBind("__req_r")], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1), -1)),
+    // review-lint: allow-fixed-synthetic-name
     (PWild, EBool(false))
   ], 0, 2))
   EMatch(lhs, Array::slice([
@@ -12719,7 +12722,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       // the wrapper is identity and the float branch compares raw bits (#704).
       EBinOp("==", ECall(EIdent("Double::to_float", -1), Array::slice([lhs], 0, 1), -1), ECall(EIdent("Double::to_float", -1), Array::slice([
         rhs
-      ], 0, 1), -1))
+      ], 0, 1), -1), -1)
     } else if n == "Bytes" {
       // #1526 (ADR-0097): `Bytes` is byte content, not an address — compare it
       // structurally wherever a declared type says Bytes (struct/enum fields,
@@ -12730,7 +12733,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
     } else {
-      EBinOp("==", lhs, rhs)
+      EBinOp("==", lhs, rhs, -1)
     },
     TyApp("Option", args) => if Array::length(args) == 1 {
       let t = Array::get(args, 0)
@@ -12748,7 +12751,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
         (PCtor("None", array_empty()), none_inner)
       ], 0, 2))
     } else {
-      EBinOp("==", lhs, rhs)
+      EBinOp("==", lhs, rhs, -1)
     },
     TyApp("Result", args) => if Array::length(args) == 2 {
       let t = Array::get(args, 0)
@@ -12768,7 +12771,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
         (PCtor("Err", Array::slice([PBind("__req_l")], 0, 1)), err_inner)
       ], 0, 2))
     } else {
-      EBinOp("==", lhs, rhs)
+      EBinOp("==", lhs, rhs, -1)
     },
     TyTuple(ts) => {
       // #1526: binder names carry a per-expansion uid. A NESTED tuple used to
@@ -12794,7 +12797,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       let mut j = n - 1
       while j >= 0 {
         let cmp = eq_for_typed(Array::get(ts, j), EIdent(String::concat(lpfx, idx_str(j)), -1), EIdent(String::concat(rpfx, idx_str(j)), -1), known_types)
-        conj = EBinOp("&&", cmp, conj)
+        conj = EBinOp("&&", cmp, conj, -1)
         j = j - 1
       }
       let inner = EMatch(rhs, Array::slice([(PTuple(rpats), conj)], 0, 1))
@@ -12808,7 +12811,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
         rhs
       ], 0, 2), -1)
     } else {
-      EBinOp("==", lhs, rhs)
+      EBinOp("==", lhs, rhs, -1)
     },
     TyApp("Map", args) => if Array::length(args) == 2 {
       // #2218: the only site that builds a `__map_equals__` call.
@@ -12818,7 +12821,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
         rhs
       ], 0, 2), -1)
     } else {
-      EBinOp("==", lhs, rhs)
+      EBinOp("==", lhs, rhs, -1)
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
       // #1526: the second (and last) site that references a helper.
@@ -12830,7 +12833,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
         rhs
       ], 0, 2), -1)
     } else {
-      EBinOp("==", lhs, rhs)
+      EBinOp("==", lhs, rhs, -1)
     },
     TyApp(n, args) => if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
       let canonical_args = for arg in args {
@@ -12848,9 +12851,9 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else if str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
     } else {
-      EBinOp("==", lhs, rhs)
+      EBinOp("==", lhs, rhs, -1)
     },
-    _ => EBinOp("==", lhs, rhs)
+    _ => EBinOp("==", lhs, rhs, -1)
   }
 }
 
@@ -12875,13 +12878,13 @@ fn gen_arr_equals_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
   let elem_eq = eq_for_typed(elem_ty, elem_a, elem_b, known_types)
   let not_eq = ECall(EIdent("not", -1), Array::slice([elem_eq], 0, 1), -1)
   let set_false = EIf(not_eq, EAssign("__ae_ok", EBool(false), EUnit), EUnit)
-  let incr = EAssign("__ae_i", EBinOp("+", EIdent("__ae_i", -1), EInt(1)), EUnit)
+  let incr = EAssign("__ae_i", EBinOp("+", EIdent("__ae_i", -1), EInt(1), -1), EUnit)
   let loop_body = ESeq(set_false, incr)
   let while_loop = EWhile(EBinOp("<", EIdent("__ae_i", -1), ECall(EIdent("Array::length", -1), Array::slice([
     EIdent("a", -1)
-  ], 0, 1), -1)), loop_body)
+  ], 0, 1), -1), -1), loop_body)
   let body_eq = ELetMut("__ae_i", EInt(0), ELetMut("__ae_ok", EBool(true), ESeq(while_loop, EIdent("__ae_ok", -1)), -1), -1)
-  let body = EIf(EBinOp("!=", len_a, len_b), EBool(false), body_eq)
+  let body = EIf(EBinOp("!=", len_a, len_b, -1), EBool(false), body_eq)
   let arr_ty = TyApp("Array", Array::slice([elem_ty], 0, 1))
   let params = Array::slice([("a", Some(arr_ty)), ("b", Some(arr_ty))], 0, 2)
   let tparams = arr_helper_tparams(elem_ty)
@@ -12904,7 +12907,7 @@ fn gen_eq_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Arra
   let mut i = Array::length(fields) - 1
   while i >= 0 {
     let (fname, fty) = Array::get(fields, i)
-    body = EBinOp("&&", field_eq_expr(fname, fty, known_types), body)
+    body = EBinOp("&&", field_eq_expr(fname, fty, known_types), body, -1)
     i = i - 1
   }
   let params = Array::slice([
@@ -13066,7 +13069,7 @@ fn gen_specialized_eq_fn(head: String, args: Array[TypeExpr], params0: Array[Str
   let mut i = Array::length(fields) - 1
   while i >= 0 {
     let field = Array::get(fields, i)
-    body = EBinOp("&&", field_eq_expr(field.0, field.1, known_types), body)
+    body = EBinOp("&&", field_eq_expr(field.0, field.1, known_types), body, -1)
     i = i - 1
   }
   let inst = TyApp(head, args)
@@ -13181,7 +13184,7 @@ fn gen_enum_eq_fn(ename: String, variants: Array[(String, Array[TypeExpr])], kno
     let mut bi = nf - 1
     while bi >= 0 {
       let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
-      body = EBinOp("&&", cmp, body)
+      body = EBinOp("&&", cmp, body, -1)
       bi = bi - 1
     }
     let inner_arms = Array::slice([
@@ -13210,7 +13213,7 @@ fn gen_compare_fn(tname: String, fields: Array[(String, TypeExpr)]) -> Stmt {
     let (fname, _) = Array::get(fields, i)
     let af = EDot(EIdent("a", -1), fname, -1, -1)
     let bf = EDot(EIdent("b", -1), fname, -1, -1)
-    body = EIf(EBinOp("<", af, bf), EInt(neg_one), EIf(EBinOp(">", af, bf), EInt(1), body))
+    body = EIf(EBinOp("<", af, bf, -1), EInt(neg_one), EIf(EBinOp(">", af, bf, -1), EInt(1), body))
     i = i - 1
   }
   let params = Array::slice([
@@ -13332,9 +13335,9 @@ fn compare_for_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[Str
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
       ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([lhs, rhs], 0, 2), -1)
     } else {
-      EIf(EBinOp("<", lhs, rhs), EInt(neg_one), EIf(EBinOp(">", lhs, rhs), EInt(1), EInt(0)))
+      EIf(EBinOp("<", lhs, rhs, -1), EInt(neg_one), EIf(EBinOp(">", lhs, rhs, -1), EInt(1), EInt(0)))
     },
-    _ => EIf(EBinOp("<", lhs, rhs), EInt(neg_one), EIf(EBinOp(">", lhs, rhs), EInt(1), EInt(0)))
+    _ => EIf(EBinOp("<", lhs, rhs, -1), EInt(neg_one), EIf(EBinOp(">", lhs, rhs, -1), EInt(1), EInt(0)))
   }
 }
 
@@ -13376,7 +13379,7 @@ fn gen_enum_compare_fn(ename: String, variants: Array[(String, Array[TypeExpr])]
         while pi >= 0 {
           let cmp = compare_for_typed(Array::get(aftypes, pi), EIdent(String::concat("__a", idx_str(pi)), -1), EIdent(String::concat("__b", idx_str(pi)), -1), known_types)
           let prev = body
-          body = EIf(EBinOp("<", cmp, EInt(0)), EInt(neg_one), EIf(EBinOp(">", cmp, EInt(0)), EInt(1), prev))
+          body = EIf(EBinOp("<", cmp, EInt(0), -1), EInt(neg_one), EIf(EBinOp(">", cmp, EInt(0), -1), EInt(1), prev))
           pi = pi - 1
         }
         body
@@ -14198,7 +14201,7 @@ fn static_eq_dispatchable(t: TypeExpr) -> Bool {
 /// `__arr_equals__<key>` helper is generated for the dispatch rewrite to call.
 fn collect_bare_array_eq_keys(e: Expr, acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit {
   match e {
-    EBinOp(op, l, r) => {
+    EBinOp(op, l, r, _) => {
       if op == "==" || op == "!=" {
         let et = match infer_earray_elem_type(l) {
           Some(t) => Some(t),
@@ -14682,7 +14685,7 @@ fn dlh_has_perform(expr: Expr) -> Bool {
         found
       }
     },
-    EBinOp(_, l, r) => dlh_has_perform(l) || dlh_has_perform(r),
+    EBinOp(_, l, r, _) => dlh_has_perform(l) || dlh_has_perform(r),
     EUnaryOp(_, e) => dlh_has_perform(e),
     EIf(c, t, e) => dlh_has_perform(c) || dlh_has_perform(t) || dlh_has_perform(e),
     ELet(_, v, b, _) => dlh_has_perform(v) || dlh_has_perform(b),
@@ -14770,7 +14773,7 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
         i = i + 1
       }
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       dlh_collect_performed_effect_names(l, out)
       dlh_collect_performed_effect_names(r, out)
     },
@@ -14872,7 +14875,7 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
     } else {
       Array::push(bad, n)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       dlh_scan_free(l, bound, bad)
       dlh_scan_free(r, bound, bad)
     },
@@ -15042,7 +15045,7 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
     } else {
       expr
     },
-    EBinOp(op, l, r) => EBinOp(op, dlh_subst(l, from, to), dlh_subst(r, from, to)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dlh_subst(l, from, to), dlh_subst(r, from, to), boff),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_subst(e, from, to)),
     ECall(callee, args, off) => ECall(dlh_subst(callee, from, to), for a in args {
       dlh_subst(a, from, to)
@@ -15227,7 +15230,7 @@ fn dlh_prepend_and_rename_calls(expr: Expr, marker: String, fresh: String, extra
         dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
       }, off)
     },
-    EBinOp(op, l, r) => EBinOp(op, dlh_prepend_and_rename_calls(l, marker, fresh, extra_names), dlh_prepend_and_rename_calls(r, marker, fresh, extra_names)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dlh_prepend_and_rename_calls(l, marker, fresh, extra_names), dlh_prepend_and_rename_calls(r, marker, fresh, extra_names), boff),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
     ETuple(es) => ETuple(for e in es {
       dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)
@@ -15547,7 +15550,7 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
       },
       _ => ELet(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr), soff)
     },
-    EBinOp(op, l, r) => EBinOp(op, dlh_hoist_expr(l, hoisted, ctr), dlh_hoist_expr(r, hoisted, ctr)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dlh_hoist_expr(l, hoisted, ctr), dlh_hoist_expr(r, hoisted, ctr), boff),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_hoist_expr(e, hoisted, ctr)),
     // A bare IIFE -- `(() -> ... { perform ... })()` -- calls an `EFn`
     // literal directly with NO enclosing `ELet` at all. Every hoist/
@@ -16799,7 +16802,7 @@ fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows: Array[
       }
       ECall(rcallee, opt_args, off)
     },
-    EBinOp(op, l, r) => EBinOp(op, relabel_expr(l, tbl, shadows), relabel_expr(r, tbl, shadows)),
+    EBinOp(op, l, r, boff) => EBinOp(op, relabel_expr(l, tbl, shadows), relabel_expr(r, tbl, shadows), boff),
     EUnaryOp(op, e) => EUnaryOp(op, relabel_expr(e, tbl, shadows)),
     ETuple(elems) => ETuple(for e in elems {
       relabel_expr(e, tbl, shadows)
@@ -17140,9 +17143,9 @@ fn relabel_expr_paired(expr: Expr, tbl: Array[(String, Array[String])], shadows:
       paired_poison_surviving_labels(final_args, poisoned)
       ECall(rcallee, final_args, off)
     },
-    EBinOp(op, left, right) => {
+    EBinOp(op, left, right, boff) => {
       paired_expect_node(node, AuthorityExprBinOp, 0, 2, poisoned)
-      EBinOp(op, relabel_expr_paired_child(left, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(right, tbl, shadows, node, 1, poisoned))
+      EBinOp(op, relabel_expr_paired_child(left, tbl, shadows, node, 0, poisoned), relabel_expr_paired_child(right, tbl, shadows, node, 1, poisoned), boff)
     },
     EUnaryOp(op, value) => {
       paired_expect_node(node, AuthorityExprUnaryOp, 0, 1, poisoned)
@@ -17687,7 +17690,7 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       } else {
         dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name)
       },
-      EBinOp(_, l, r) => dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name),
+      EBinOp(_, l, r, _) => dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name),
       EUnaryOp(_, v) => dinsp_scan(v, mode, name),
       EFn(_, _, _, _, _, body) => dinsp_scan(body, mode, name),
       EDot(inner, _, _, _) => dinsp_scan(inner, mode, name),
@@ -17878,7 +17881,7 @@ fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
   let on_mismatch = ESeq(ECall(EIdent("println", 0 - 1), [msg], 0 - 1), ECall(EIdent("assert_true", 0 - 1), [
     EBool(false)
   ], 0 - 1))
-  let check = EIf(EBinOp("==", actual, expected), EUnit, on_mismatch)
+  let check = EIf(EBinOp("==", actual, expected, -1), EUnit, on_mismatch)
   ELet(actual_name, ECall(EIdent("__to_string", 0 - 1), [value], 0 - 1), ELet(expected_name, content, check, 0 - 1), 0 - 1)
 }
 
@@ -17962,7 +17965,7 @@ fn dinsp_children(expr: Expr) -> Expr {
     ELoop(params, b) => ELoop(dinsp_fields(params), dinsp_expr(b)),
     EForIn(v, k, it, b) => EForIn(v, k, dinsp_expr(it), dinsp_expr(b)),
     ECall(callee, args, off) => ECall(dinsp_expr(callee), dinsp_exprs(args), off),
-    EBinOp(op, l, r) => EBinOp(op, dinsp_expr(l), dinsp_expr(r)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dinsp_expr(l), dinsp_expr(r), boff),
     EUnaryOp(op, v) => EUnaryOp(op, dinsp_expr(v)),
     EFn(g, bs, ps, ret, row, body) => EFn(g, bs, ps, ret, row, dinsp_expr(body)),
     EDot(inner, f, off, foff) => EDot(dinsp_expr(inner), f, off, foff),
@@ -18605,7 +18608,7 @@ fn das_expr(expr: Expr) -> Expr {
     ECall(callee, args, off) => ECall(das_expr(callee), for a in args {
       das_expr(a)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, das_expr(l), das_expr(r)),
+    EBinOp(op, l, r, boff) => EBinOp(op, das_expr(l), das_expr(r), boff),
     EUnaryOp(op, e) => EUnaryOp(op, das_expr(e)),
     EFn(tp, tb, params, rt, eff, body) => EFn(tp, tb, params, rt, eff, das_expr(body)),
     EDot(o, f, off, fdoff) => EDot(das_expr(o), f, off, fdoff),
@@ -18750,7 +18753,7 @@ fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
       found
     },
     ECall(callee, args, _) => dtpw_expr_binds_name(callee, name) || dtpw_exprs_bind_name(args, name),
-    EBinOp(_, l, r) => dtpw_expr_binds_name(l, name) || dtpw_expr_binds_name(r, name),
+    EBinOp(_, l, r, _) => dtpw_expr_binds_name(l, name) || dtpw_expr_binds_name(r, name),
     EUnaryOp(_, e) => dtpw_expr_binds_name(e, name),
     ETuple(es) => dtpw_exprs_bind_name(es, name),
     EArray(es) => dtpw_exprs_bind_name(es, name),
@@ -18895,7 +18898,7 @@ fn dtpw_inline_expr(expr: Expr, wrappers: Array[String]) -> Expr {
         dtpw_inline_expr(a, wrappers)
       }, off)
     },
-    EBinOp(op, l, r) => EBinOp(op, dtpw_inline_expr(l, wrappers), dtpw_inline_expr(r, wrappers)),
+    EBinOp(op, l, r, boff) => EBinOp(op, dtpw_inline_expr(l, wrappers), dtpw_inline_expr(r, wrappers), boff),
     EUnaryOp(op, e) => EUnaryOp(op, dtpw_inline_expr(e, wrappers)),
     ETuple(es) => ETuple(for e in es {
       dtpw_inline_expr(e, wrappers)
