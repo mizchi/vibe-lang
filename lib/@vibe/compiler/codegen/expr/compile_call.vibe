@@ -620,6 +620,73 @@ fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> 
     } else {
       false
     }
+  } else if tag == 7 || tag == 9 || tag == 10 || tag == 11 || tag == 14 || tag == 16 {
+    // #2426 follow-up (Codex review on #2430): a Double that arrives through a
+    // JOIN was invisible here, so `let a = if c { 0.0 } else { 1.0 }` left the
+    // slot unclassified and `a == b` fell back to a raw bit compare -- on
+    // every lane, RC included. Measured before this change: the `if`, `match`
+    // and block forms all answered `0.0 == -0.0` false and `nan == nan` true.
+    //
+    // The arms are the ones `cc_expr_is_boolish`, in this same file, has had since #825
+    // -- if / match / the three let wrappers the normalize pass introduces /
+    // sequence -- with the same AND semantics, which is the fail-closed
+    // direction: a join is a Double only when EVERY way out of it is.
+    if tag == 7 {
+      cc_expr_is_floatish(get_eif_then(e), local_names, ctx) && cc_expr_is_floatish(get_eif_else(e), local_names, ctx)
+    } else if tag == 9 {
+      // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
+      // is the shape a bare body recursion misses, because the body is
+      // `EIdent(x)` and `x` has no slot at classification time (Codex review
+      // on #2432). It is answerable WITHOUT an environment: the body is a
+      // single identifier and the `let` immediately above it binds that exact
+      // name, so no inner scope can intervene and no outer binding of the same
+      // name is reachable. Anything further -- `let x = 0.0; let z = x; z` --
+      // is NOT answerable this way and stays open, measured: it still compares
+      // by raw bits on all three lanes. Closing it needs the binding's TYPE,
+      // which is #2424's channel; the alternative, an environment carried
+      // through the descent, is the design CLAUDE.md records going silently
+      // wrong (an outer `let v = 1` read for an inner `v` of another type).
+      let jb9 = get_elet_body(e)
+      if expr_tag(jb9) == 4 && get_eident_name(jb9) == get_elet_name(e) {
+        cc_expr_is_floatish(get_elet_val(e), local_names, ctx)
+      } else {
+        cc_expr_is_floatish(jb9, local_names, ctx)
+      }
+    } else if tag == 10 {
+      let jb10 = get_eletrec_body(e)
+      if expr_tag(jb10) == 4 && get_eident_name(jb10) == get_eletrec_name(e) {
+        cc_expr_is_floatish(get_eletrec_val(e), local_names, ctx)
+      } else {
+        cc_expr_is_floatish(jb10, local_names, ctx)
+      }
+    } else if tag == 11 {
+      let jb11 = get_eletmut_body(e)
+      if expr_tag(jb11) == 4 && get_eident_name(jb11) == get_eletmut_name(e) {
+        cc_expr_is_floatish(get_eletmut_val(e), local_names, ctx)
+      } else {
+        cc_expr_is_floatish(jb11, local_names, ctx)
+      }
+    } else if tag == 14 {
+      cc_expr_is_floatish(get_eseq_second(e), local_names, ctx)
+    } else {
+      let jarms = get_match_arms(e)
+      let jn = Array::length(jarms)
+      if jn == 0 {
+        false
+      } else {
+        let mut jall = true
+        let mut ji = 0
+        while ji < jn {
+          if !cc_expr_is_floatish(get_arm_body(Array::get(jarms, ji)), local_names, ctx) {
+            jall = false
+          } else {
+            ()
+          }
+          ji = ji + 1
+        }
+        jall
+      }
+    }
   } else if tag == 8 {
     let callee = get_ecall_callee(e)
     if array_contains_int(ctx.float_call_offsets, get_ecall_off(e)) {
@@ -1740,28 +1807,43 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         nl_c
       }
     }
-    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && ctx.enable_rc && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
+    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
       // #745: under RC floats are BOXED — the scalar i64.eq below would
       // compare box pointers, so `eq(0.0125, 0.0125)` returned false. Take
-      // the same unbox + f64.eq path the `==` binop uses. Non-RC floats are
-      // raw f64 bits in an i64, where bitwise i64.eq matches the existing
-      // `==` behavior, so this branch is RC-only.
+      // the same unbox + f64.eq path the `==` binop uses.
+      //
+      // #2426: this arm was RC-only, and its reason was explicitly "non-RC
+      // floats are raw f64 bits, where bitwise i64.eq matches the existing
+      // `==` behavior". That justification is gone: `==` now takes a real
+      // f64 comparison on every lane, so keeping `eq` on raw bits under
+      // non-RC would make the two spellings of ONE concept disagree --
+      // measured on `VIBE_RC=0` before this change, `eq(0.0, -0.0)` was
+      // false while `0.0 == -0.0` was true, and `eq(nan, nan)` was true
+      // while `nan == nan` was false. The unbox and the Bool tag below are
+      // the only RC-specific steps, so both are guarded instead.
       //
       // #2309: `local_idx_hint < 0` for the same reason as the scalar arm
       // below -- and this arm had NO guard at all, so it was the sharper of
       // the two: `let eq = (a: Double, b: Double) -> Double { a + b }` then
       // `eq(1.5, 2.5)` printed `0` under RC, which is the production lane.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      emit_unbox_float(buf)
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
       emit_f64_reinterpret_i64(buf)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      emit_unbox_float(buf)
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
       emit_f64_reinterpret_i64(buf)
       emit_f64_eq(buf)
       emit_i64_extend_i32_s(buf)
-      // Tag the Bool like the scalar branch below (ADR-0055).
-      emit_i64_const(buf, 1)
-      emit_i64_shl(buf)
+      // Tag the Bool like the scalar branch below (ADR-0055). Untagged lanes
+      // hold a Bool as a raw 0/1, so the shift is RC-only.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
       nl
     }
     else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0), local_names, ctx) || cc_arg_is_scalarish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {

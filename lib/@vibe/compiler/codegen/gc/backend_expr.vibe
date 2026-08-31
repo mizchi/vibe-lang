@@ -264,6 +264,74 @@ fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -
       EIdent(cn, _) => array_contains_int(ctx.gc_float_call_offsets, call_off) || cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
       _ => false
     },
+    // #2426 follow-up (Codex review on #2430): a Double arriving through a
+    // JOIN. Without these arms `let a = if c { 0.0 } else { 1.0 }` left the
+    // slot unlogged, and `a == b` then took a raw bit compare -- measured
+    // before this change, the `if`, `match` and block forms each answered
+    // `0.0 == -0.0` false and `nan == nan` true, on this lane and on both
+    // linear ones. AND semantics (every way out of the join must be a
+    // Double) is the fail-closed direction, and it matches how the linear
+    // lane's `expr_is_boolish` has treated joins since #825.
+    //
+    // Only the FLOAT classifier gets them here. The gc boolish and intish
+    // predicates have the same gap and are deliberately left alone: they
+    // route `__to_string` and `==`, where widening the answer changes more
+    // than one lowering, and their gap is #2424's subject rather than this
+    // one's.
+    EIf(_, jt, jf) => gc_expr_is_floatish(jt, local_names, ctx) && gc_expr_is_floatish(jf, local_names, ctx),
+    // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
+    // is the shape a bare body recursion misses: the body is `EIdent(x)` and
+    // `x` has no slot at classification time (Codex review on #2432).
+    // Answerable WITHOUT an environment, because the body is a single
+    // identifier and the `let` immediately above binds that exact name, so no
+    // inner scope intervenes and no outer binding of the name is reachable.
+    // One hop further -- `let x = 0.0; let z = x; z` -- is not, and stays
+    // open (measured: still a raw bit compare on all three lanes). That one
+    // needs the binding's TYPE, i.e. #2424's channel.
+    ELet(jlbn, jlbv, jlb, _) => match jlb {
+      EIdent(jlbn2, _) => if jlbn == jlbn2 {
+        gc_expr_is_floatish(jlbv, local_names, ctx)
+      } else {
+        gc_expr_is_floatish(jlb, local_names, ctx)
+      },
+      _ => gc_expr_is_floatish(jlb, local_names, ctx)
+    },
+    ELetRec(jrbn, jrbv, jrb) => match jrb {
+      EIdent(jrbn2, _) => if jrbn == jrbn2 {
+        gc_expr_is_floatish(jrbv, local_names, ctx)
+      } else {
+        gc_expr_is_floatish(jrb, local_names, ctx)
+      },
+      _ => gc_expr_is_floatish(jrb, local_names, ctx)
+    },
+    ELetMut(jmbn, jmbv, jmb, _) => match jmb {
+      EIdent(jmbn2, _) => if jmbn == jmbn2 {
+        gc_expr_is_floatish(jmbv, local_names, ctx)
+      } else {
+        gc_expr_is_floatish(jmb, local_names, ctx)
+      },
+      _ => gc_expr_is_floatish(jmb, local_names, ctx)
+    },
+    ESeq(_, jsb) => gc_expr_is_floatish(jsb, local_names, ctx),
+    EMatch(_, jarms) => {
+      let jn = Array::length(jarms)
+      if jn == 0 {
+        false
+      } else {
+        let mut jall = true
+        let mut ji = 0
+        while ji < jn {
+          let (_, jbody) = Array::get(jarms, ji)
+          if !gc_expr_is_floatish(jbody, local_names, ctx) {
+            jall = false
+          } else {
+            ()
+          }
+          ji = ji + 1
+        }
+        jall
+      }
+    },
     _ => false
   }
 }
