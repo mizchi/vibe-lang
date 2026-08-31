@@ -2142,10 +2142,7 @@ fn arm_body_diverges(body: Expr) -> Bool {
 /// railway desugar (#635) threads the `?`/`let*` operand's offset into its
 /// generated `None` failure-track nodes, so a diagnostic on desugar output
 /// still locates at the offending operand.
-/// Exported (#2391 slice 2) because the FS merge's String-binop rewrite pass
-/// must recompute EXACTLY the anchor this checker recorded a binop under; two
-/// implementations of this walk would be a silent-wrong factory.
-export fn railway_expr_off(e: Expr) -> Int {
+fn railway_expr_off(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
     ECall(callee, _, off) => if off >= 0 {
@@ -6438,16 +6435,65 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
   }
 }
 
+/// #2391 slice 2: the CHANNEL anchor for a relational/`+` binop -- the offset
+/// the checker records a String binop under and the FS merge's rewrite pass
+/// recomputes to find it. Exported for exactly that reason: two
+/// implementations of this walk would be a silent-wrong factory.
+///
+/// This is the diagnostic anchor's walk MINUS the block descents: a
+/// sequence/match operand answers -1 here (falling back to the right
+/// operand) instead of descending to its first expression, because a
+/// descended anchor is not unique to one binop -- in
+/// `(match n + 1 { v => __to_string(v) }) + q` the outer String `+` and the
+/// Int `+` inside the scrutinee would otherwise share n's offset, and the
+/// rewrite corrupted the scrutinee (Codex round 1 on #2429; measured "y"
+/// where content says "4y"). Descent through a call's callee, a dot's base,
+/// or a binop's lhs stays: those chains remain inside the operand, and a
+/// same-anchor nested binop of the same kind shares its classification in a
+/// well-typed program (the extraction's verdict poison drops the anchor
+/// otherwise).
+export fn typed_lowering_binop_anchor(left: Expr, right: Expr) -> Int {
+  let loff = typed_lowering_operand_off(left)
+  if loff >= 0 {
+    loff
+  } else {
+    typed_lowering_operand_off(right)
+  }
+}
+
+fn typed_lowering_operand_off(e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 {
+      off
+    } else {
+      typed_lowering_operand_off(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      typed_lowering_operand_off(base)
+    },
+    EBinOp(_, lhs, _) => typed_lowering_operand_off(lhs),
+    _ => 0 - 1
+  }
+}
+
 /// #2391 slice 2: record a relational/`+` binop's operand types under its
-/// diagnostic anchor, for the typed String-lowering channel. Entries-only
+/// CHANNEL anchor (typed_lowering_binop_anchor above -- deliberately not the
+/// diagnostic anchor), for the typed String-lowering channel. Entries-only
 /// captures only -- a provenance capture (LSP/analysis lanes) records nothing
-/// here, so those consumers see exactly the arrays they saw before. Both
-/// operand types go in under the same anchor; the extraction classifies the
-/// binop as String when EITHER resolves to String, mirroring the desugar
-/// tracker's either-operand rule.
-fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, anchor_off: Int, left_ty: Type, right_ty: Type) -> Unit {
+/// here, so those consumers see exactly the arrays they saw before. Every
+/// located relational/`+` binop is recorded, String or not, two rows (one
+/// per operand type): the extraction classifies a binop as String when
+/// EITHER type resolves to String, and poisons an anchor claimed by binops
+/// of the same kind with DIFFERENT classifications, so a residual anchor
+/// collision degrades to the syntactic classifiers instead of rewriting a
+/// non-String binop.
+fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, left: Expr, right: Expr, left_ty: Type, right_ty: Type) -> Unit {
   match capture {
-    Some(c) => if !c.provenance_enabled && anchor_off >= 0 {
+    Some(c) => if !c.provenance_enabled {
+      let anchor_off = typed_lowering_binop_anchor(left, right)
       let kind = if op == "+" {
         2
       } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
@@ -6455,7 +6501,7 @@ fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture],
       } else {
         0
       }
-      if kind > 0 {
+      if kind > 0 && anchor_off >= 0 {
         Array::push(c.binop_offsets, anchor_off)
         Array::push(c.binop_kinds, kind)
         Array::push(c.binop_types, left_ty)
@@ -9858,8 +9904,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // #2391 slice 2: the typed String-lowering channel. The types recorded
       // here may still be unresolved variables; the extraction resolves them
       // against the FINAL substitution, so a binding unified after this binop
-      // still classifies.
-      record_string_binop_operands(capture, op, bin_off, left_applied, right_applied)
+      // still classifies. The recorder anchors with
+      // typed_lowering_binop_anchor, not this diagnostic bin_off.
+      record_string_binop_operands(capture, op, left, right, left_applied, right_applied)
       let (result_ty, s3) = infer_binop_type(op, left_applied, right_applied, env, s2, errors, tytab, bin_off)
       (subst_apply(s3, result_ty), s3, c2)
     },

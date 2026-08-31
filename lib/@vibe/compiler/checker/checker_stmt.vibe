@@ -5720,46 +5720,73 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
 }
 
 /// #2391 slice 2: extract the String binop tables from the capture's side
-/// arrays. A binop classifies as String when EITHER recorded operand type
-/// resolves to String under the final substitution -- the same either-operand
-/// rule as the desugar tracker, but answered by the checker. Returns
-/// (relational anchors, `+` anchors), deduplicated. Rows come only from
-/// located anchors (the recorder skips `anchor < 0`), so an unlocated AST
-/// contributes nothing here; the caller's located-channel refusal is decided
-/// by the Double half, which observes every module the same way.
+/// arrays. Rows come in consecutive PAIRS -- one binop pushes its left and
+/// right operand types under the same (anchor, kind) -- and a binop
+/// classifies as String when EITHER type resolves to String under the final
+/// substitution: the same either-operand rule as the desugar tracker, but
+/// answered by the checker. Returns (relational anchors, `+` anchors).
+///
+/// An anchor claimed by MORE THAN ONE binop of the same kind is kept only
+/// when every claimant classifies the same way, and POISONED otherwise
+/// (Codex round 1 on #2429): the rewrite pass rewrites every same-kind binop
+/// at a matching anchor, which is correct exactly when the claimants agree.
+/// The channel anchor already refuses to descend into sequence/match
+/// operands, so a disagreeing collision needs a shape the checker tolerates
+/// with mixed types -- the poison turns any such residue into a degrade
+/// (syntactic classifiers), never a wrong rewrite.
 fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[Int]) {
   let rels: Array[Int] = []
   let pluses: Array[Int] = []
+  let keys: Array[Int] = []
+  let verdicts: Array[Int] = []
+  let poisoned: Array[Bool] = []
   let n = Array::length(capture.binop_offsets)
   let mut i = 0
-  while i < n {
-    let ty = Array::get(capture.binop_types, i)
-    if subst_resolves_to_string(checked.final_subst, ty) {
-      let off = Array::get(capture.binop_offsets, i)
-      let out = if Array::get(capture.binop_kinds, i) == 1 {
-        rels
+  while i + 1 < n {
+    let off = Array::get(capture.binop_offsets, i)
+    let kind = Array::get(capture.binop_kinds, i)
+    let is_string = subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i)) || subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i + 1))
+    let key = off * 4 + kind
+    let verdict = if is_string {
+      1
+    } else {
+      0
+    }
+    let mut idx = 0 - 1
+    let mut k = 0
+    while k < Array::length(keys) {
+      if Array::get(keys, k) == key {
+        idx = k
+        k = Array::length(keys)
       } else {
-        pluses
+        k = k + 1
       }
-      let mut seen = false
-      let mut j = 0
-      while j < Array::length(out) {
-        if Array::get(out, j) == off {
-          seen = true
-          j = Array::length(out)
-        } else {
-          j = j + 1
-        }
-      }
-      if !seen {
-        Array::push(out, off)
+    }
+    if idx < 0 {
+      Array::push(keys, key)
+      Array::push(verdicts, verdict)
+      Array::push(poisoned, false)
+    } else if Array::get(verdicts, idx) != verdict {
+      Array::set(poisoned, idx, true)
+    } else {
+      ()
+    }
+    i = i + 2
+  }
+  let mut out_i = 0
+  while out_i < Array::length(keys) {
+    if Array::get(verdicts, out_i) == 1 && !Array::get(poisoned, out_i) {
+      let key = Array::get(keys, out_i)
+      let off = key / 4
+      if key - off * 4 == 1 {
+        Array::push(rels, off)
       } else {
-        ()
+        Array::push(pluses, off)
       }
     } else {
       ()
     }
-    i = i + 1
+    out_i = out_i + 1
   }
   (rels, pluses)
 }

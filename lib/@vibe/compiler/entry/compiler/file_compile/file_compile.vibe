@@ -81,7 +81,7 @@ import @vibe/compiler/loader {
 }
 
 import @vibe/compiler/checker {
-  file_entry_cacheable, file_tests_cacheable, railway_expr_off, typed_lowering_enc_offset, typed_lowering_enc_tag
+  file_entry_cacheable, file_tests_cacheable, typed_lowering_binop_anchor, typed_lowering_enc_offset, typed_lowering_enc_tag
 }
 
 import @vibe/compiler/runtime {
@@ -574,7 +574,8 @@ fn split_typed_lowering_offsets(enc: Array[Int]) -> (Array[Int], Array[Int], Arr
 /// `String::concat(a, b)` exactly where the modular check recorded a String
 /// operand, the same forms the desugar tracker emits for the shapes it can
 /// classify syntactically -- plus the Double call-result offset table for
-/// codegen. The rewrite anchors with the checker's own railway_expr_off, so
+/// codegen. The rewrite anchors with the checker's own channel anchor
+/// (typed_lowering_binop_anchor), so
 /// both sides compute the anchor identically by construction.
 fn merged_stmts_and_float_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int]) with Exception {
   let flat_paths: Array[String] = []
@@ -582,7 +583,7 @@ fn merged_stmts_and_float_offsets(source_groups: Array[(String, Array[(String, S
   let clone_float_offsets: Array[Int] = []
   let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, clone_float_offsets)
   let (floats, rels, pluses) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
-  (rewrite_string_binops_stmts(merged, rels, pluses, railway_expr_off), floats)
+  (rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor), floats)
 }
 
 /// Interior-line breakpoints (span-arc step5): the basename of a file path (text
@@ -1134,7 +1135,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   let _ = next_db
   let (merged_stmts_raw, file_paths, file_fps, file_counts, file_bases, clone_float_offsets) = build_grouped_merged_stmts_counted(source_groups)
   let (float_offsets, tl_rels, tl_pluses) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(file_paths, file_bases, clone_float_offsets))
-  let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, railway_expr_off)
+  let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, typed_lowering_binop_anchor)
   // The key is independent of source CONTENT (the point is to hit after an
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
@@ -1377,7 +1378,7 @@ export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> 
   // The String-binop rewrite keeps every surviving node's offset, so the
   // per-file newline tables and stmt->file mapping stay valid: a rewritten
   // binop's operands keep their offsets and the injected call nodes carry -1.
-  let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, railway_expr_off)
+  let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, typed_lowering_binop_anchor)
   compile_wasi_module_with_sources_break_impl_with_float_offsets(merged_stmts, entry_name, array_empty(), DbgProv::{
     files: dbg_files,
     file_nls: dbg_file_nls,

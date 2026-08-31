@@ -168,10 +168,10 @@ export fn shift_stmts_offsets(stmts: Array[Stmt], delta: Int) -> Array[Stmt] {
 /// on the merged FS program -- `a < b` to `str_lex_diff(a, b) < 0` and
 /// `a + b` to `String::concat(a, b)`, the SAME forms the desugar tracker
 /// emits for the shapes it can classify syntactically. `anchor` must be the
-/// checker's own railway_expr_off (passed in because this package cannot
-/// import the checker); computing the anchor any other way would silently
-/// rewrite the wrong binop. Anchors are computed on the ORIGINAL operands
-/// before their own rewrite, matching what the checker saw. A statement with
+/// checker's own typed_lowering_binop_anchor (passed in because this package
+/// cannot import the checker); computing the anchor any other way would
+/// silently rewrite the wrong binop. Anchors are computed on the ORIGINAL
+/// operands before their own rewrite, matching what the checker saw. A statement with
 /// no anchored binop is returned as-is (no rebuild), so a program without
 /// these shapes pays one scan and no allocation.
 fn tl_offset_hit(table: Array[Int], off: Int) -> Bool {
@@ -193,26 +193,17 @@ fn tl_is_rel_op(op: String) -> Bool {
   op == "<" || op == ">" || op == "<=" || op == ">="
 }
 
-fn tl_binop_anchor(l: Expr, r: Expr, anchor: (Expr) -> Int) -> Int {
-  let loff = anchor(l)
-  if loff >= 0 {
-    loff
-  } else {
-    anchor(r)
-  }
-}
-
-fn tl_binop_is_hit(op: String, l: Expr, r: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Bool {
+fn tl_binop_is_hit(op: String, l: Expr, r: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
   if tl_is_rel_op(op) {
-    tl_offset_hit(rels, tl_binop_anchor(l, r, anchor))
+    tl_offset_hit(rels, anchor(l, r))
   } else if op == "+" {
-    tl_offset_hit(pluses, tl_binop_anchor(l, r, anchor))
+    tl_offset_hit(pluses, anchor(l, r))
   } else {
     false
   }
 }
 
-fn tl_scan_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Bool {
+fn tl_scan_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(items) {
@@ -226,7 +217,7 @@ fn tl_scan_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], ancho
   hit
 }
 
-fn tl_scan_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Bool {
+fn tl_scan_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(fields) {
@@ -241,7 +232,7 @@ fn tl_scan_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: 
   hit
 }
 
-fn tl_scan_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Bool {
+fn tl_scan_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(arms) {
@@ -256,7 +247,7 @@ fn tl_scan_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], 
   hit
 }
 
-fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Bool {
+fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
   match expr {
     EInt(_) => false,
     EFloat(_) => false,
@@ -297,27 +288,27 @@ fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr)
   }
 }
 
-fn tl_rewrite_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Array[Expr] {
+fn tl_rewrite_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[Expr] {
   for it in items {
     tl_rewrite_expr(it, rels, pluses, anchor)
   }
 }
 
-fn tl_rewrite_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Array[(String, Expr)] {
+fn tl_rewrite_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[(String, Expr)] {
   for fld in fields {
     let (n, v) = fld
     (n, tl_rewrite_expr(v, rels, pluses, anchor))
   }
 }
 
-fn tl_rewrite_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Array[(Pat, Expr)] {
+fn tl_rewrite_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, e) = a
     (p, tl_rewrite_expr(e, rels, pluses, anchor))
   }
 }
 
-fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Expr {
+fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -375,7 +366,7 @@ fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Ex
   }
 }
 
-fn tl_scan_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Bool {
+fn tl_scan_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
   match stmt {
     SLet(_, _, _, _, expr) => tl_scan_expr(expr, rels, pluses, anchor),
     SLetMut(_, _, expr) => tl_scan_expr(expr, rels, pluses, anchor),
@@ -402,7 +393,7 @@ fn tl_scan_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr)
   }
 }
 
-fn tl_rewrite_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Stmt {
+fn tl_rewrite_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Stmt {
   match stmt {
     SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, tl_rewrite_expr(expr, rels, pluses, anchor)),
     SLetMut(name, annotation, expr) => SLetMut(name, annotation, tl_rewrite_expr(expr, rels, pluses, anchor)),
@@ -417,7 +408,7 @@ fn tl_rewrite_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Ex
   }
 }
 
-export fn rewrite_string_binops_stmts(stmts: Array[Stmt], rels: Array[Int], pluses: Array[Int], anchor: (Expr) -> Int) -> Array[Stmt] {
+export fn rewrite_string_binops_stmts(stmts: Array[Stmt], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[Stmt] {
   if Array::length(rels) == 0 && Array::length(pluses) == 0 {
     stmts
   } else {
