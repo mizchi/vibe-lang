@@ -270,20 +270,27 @@ export fn module_float_call_offsets_for_path(path: String) -> Option[Array[Int]]
 
 fn module_float_offsets_text(offsets: Array[Int]) -> String {
   let parts = array_empty()
-  // v3 (#2425 review round 3): a torn write survives as a PREFIX of the
+  // v4 (#2425 review rounds 3+5): a torn write survives as a PREFIX of the
   // intended file, so the envelope closes with an explicit end marker the
   // strict decoder requires -- truncation loses the marker and decodes as a
-  // miss, and a corrupted row already fails the digit parse. The earlier v2
+  // miss -- and every row is duplicated so a digit-level corruption breaks
+  // the duplicate equality instead of being accepted. The earlier v2
   // shape declared a count and checksum instead; rendering those Int call
   // results through __to_string trips a latent bundle-lane float-offset
   // misclassification in the compiler's own build (probed to the call-site
   // offset, not the values -- see the issue linked from PR #2425), so the
   // envelope deliberately adds no new integer-rendering call sites.
-  Array::push(parts, "module_float_call_offsets\tv3")
+  Array::push(parts, "module_float_call_offsets\tv4")
   let n = Array::length(offsets)
   let mut i = 0
   while i < n {
-    Array::push(parts, __to_string(Array::get(offsets, i)))
+    // Each row carries the SAME rendered value twice (#2425 round 5): a
+    // digit-level corruption inside an otherwise-intact file breaks the
+    // duplicate equality and decodes as a miss, without introducing any new
+    // integer-rendering call site (one __to_string, reused -- see the
+    // header note on why a rendered checksum is off the table).
+    let row_text = __to_string(Array::get(offsets, i))
+    Array::push(parts, String::concat(row_text, String::concat("\t", row_text)))
     i = i + 1
   }
   Array::push(parts, "module_float_call_offsets\tend")
@@ -316,14 +323,16 @@ fn module_float_offsets_parse_nat(line: String) -> Option[Int] {
   }
 }
 
-/// Strict v3 decode: the header line, digit-only rows, and the closing end
-/// marker must all be present, or the answer is `None` -- an ordinary
-/// cold-cache miss that re-checks the module. A truncated file loses the end
-/// marker, a corrupted row fails the digit parse, and a v1/v2 or foreign
-/// header fails outright; none of them can change what a compile emits.
+/// Strict v4 decode: the header line, duplicated digit-only rows, and the
+/// closing end marker must all be present, or the answer is `None` -- an
+/// ordinary cold-cache miss that re-checks the module. A truncated file
+/// loses the end marker, a corrupted row fails the digit parse or the
+/// duplicate equality (a random digit change cannot hit both copies
+/// identically), and a v1/v2/v3 or foreign header fails outright; none of
+/// them can change what a compile emits.
 fn parse_module_float_offsets_text(text: String) -> Option[Array[Int]] {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
-  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_float_call_offsets\tv3" {
+  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_float_call_offsets\tv4" {
     None
   } else {
     let out: Array[Int] = []
@@ -340,9 +349,14 @@ fn parse_module_float_offsets_text(text: String) -> Option[Array[Int]] {
       } else if line == "module_float_call_offsets\tend" {
         saw_end = true
       } else {
-        match module_float_offsets_parse_nat(line) {
-          Some(value) => Array::push(out, value),
-          None => ok = false
+        let cells = String::split(line, "\t")
+        if Array::length(cells) != 2 || Array::get(cells, 0) != Array::get(cells, 1) {
+          ok = false
+        } else {
+          match module_float_offsets_parse_nat(Array::get(cells, 0)) {
+            Some(value) => Array::push(out, value),
+            None => ok = false
+          }
         }
       }
       i = i + 1
