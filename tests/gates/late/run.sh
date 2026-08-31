@@ -9204,7 +9204,7 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
 fi
 # Torn/corrupted sidecars must decode as MISSES, not as partial answers
 # (#2425 review round 3): truncate every offsets sidecar in the warm cache to
-# its header line plus at most one row, then compile again. The v4 envelope's
+# its header line plus at most one row, then compile again. The v5 envelope's
 # required end marker rejects the truncation, the affected modules re-check,
 # and the output stays byte-identical; a decoder that accepted the torn file
 # would drop classifications and change the bytes. (Digit-level corruption is
@@ -9234,7 +9234,7 @@ fi
 # Digit-level corruption inside an INTACT sidecar must also decode as a miss
 # (#2425 review round 5): the torn compile above re-warmed the cache, so flip
 # one digit of the first offset row's first copy in every sidecar (same
-# length -- the end marker survives) and compile again. The v4 duplicated-row
+# length -- the end marker survives) and compile again. The v5 duplicated-row
 # equality rejects the row, the module re-checks, and the bytes stay
 # identical; the v3 decoder accepted this and the emitted bytes CHANGED
 # (red-proven on the PR).
@@ -9268,6 +9268,39 @@ if [ ! -s "$ffsdir/flipped.wasm" ]; then
 fi
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/flipped.wasm"; then
   echo "[compiler-gate] FAIL: a digit-corrupted float-offsets sidecar changed the emitted bytes (#2391)" >&2
+  exit 1
+fi
+# Whole-row deletion inside an intact sidecar must also decode as a miss
+# (#2425 review round 6): the flipped compile re-warmed the cache, so delete
+# the first duplicated row from every sidecar (header, remaining pairs,
+# count line, and end marker all survive) and compile again. The v5 unary
+# count line no longer matches the row set, the module re-checks, and the
+# bytes stay identical.
+deleted_rows=0
+while IFS= read -r sc_file; do
+  before_rows=$(awk -F'\t' 'NF == 2 && $1 ~ /^[0-9]+$/ && $1 == $2 { n += 1 } END { print n + 0 }' "$sc_file")
+  awk -F'\t' 'BEGIN { done = 0 }
+    done == 0 && NF == 2 && $1 ~ /^[0-9]+$/ && $1 == $2 { done = 1; next }
+    { print }' "$sc_file" > "$sc_file.del" && mv "$sc_file.del" "$sc_file"
+  if [ "$before_rows" -gt 0 ]; then
+    deleted_rows=$((deleted_rows + 1))
+  fi
+done < <(grep -rl "^module_float_call_offsets" "$ffsdir/cache" 2>/dev/null)
+if [ "$deleted_rows" = "0" ]; then
+  echo "[compiler-gate] FAIL: row-deletion mutation matched no sidecar row (#2391) -- the probe went stale" >&2
+  exit 1
+fi
+VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/rowdel.wasm" __no_entry__ \
+  >/dev/null 2>&1 || true
+if [ ! -s "$ffsdir/rowdel.wasm" ]; then
+  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over row-deleted sidecars (#2391)" >&2
+  cat "$ffsdir/rowdel.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/rowdel.wasm"; then
+  echo "[compiler-gate] FAIL: a row-deleted float-offsets sidecar changed the emitted bytes (#2391)" >&2
   exit 1
 fi
 rm -rf "$ffsdir"

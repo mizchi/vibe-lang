@@ -270,17 +270,19 @@ export fn module_float_call_offsets_for_path(path: String) -> Option[Array[Int]]
 
 fn module_float_offsets_text(offsets: Array[Int]) -> String {
   let parts = array_empty()
-  // v4 (#2425 review rounds 3+5): a torn write survives as a PREFIX of the
-  // intended file, so the envelope closes with an explicit end marker the
-  // strict decoder requires -- truncation loses the marker and decodes as a
-  // miss -- and every row is duplicated so a digit-level corruption breaks
-  // the duplicate equality instead of being accepted. The earlier v2
+  // v5 (#2425 review rounds 3+5+6): a torn write survives as a PREFIX of
+  // the intended file, so the envelope closes with an explicit end marker
+  // the strict decoder requires -- truncation loses the marker and decodes
+  // as a miss -- every row is duplicated so a digit-level corruption breaks
+  // the duplicate equality, and a unary count line binds the row-set size
+  // so deleting or inserting a whole row fails too. The earlier v2
   // shape declared a count and checksum instead; rendering those Int call
   // results through __to_string trips a latent bundle-lane float-offset
   // misclassification in the compiler's own build (probed to the call-site
   // offset, not the values -- see the issue linked from PR #2425), so the
   // envelope deliberately adds no new integer-rendering call sites.
-  Array::push(parts, "module_float_call_offsets\tv4")
+  Array::push(parts, "module_float_call_offsets\tv5")
+  let count_marks = array_empty()
   let n = Array::length(offsets)
   let mut i = 0
   while i < n {
@@ -291,8 +293,16 @@ fn module_float_offsets_text(offsets: Array[Int]) -> String {
     // header note on why a rendered checksum is off the table).
     let row_text = __to_string(Array::get(offsets, i))
     Array::push(parts, String::concat(row_text, String::concat("\t", row_text)))
+    Array::push(count_marks, "#")
     i = i + 1
   }
+  // The count line binds the ROW SET's size in UNARY (#2425 round 6): one
+  // '#' per row, so deleting or inserting a whole duplicated row breaks the
+  // count without rendering any integer through __to_string (the #2427
+  // constraint). Reordering rows is semantically inert -- the table is a
+  // SET of offsets -- so size plus per-row duplicate equality plus the end
+  // marker covers every corruption that could change what a compile emits.
+  Array::push(parts, String::concat("module_float_call_offsets\tcount\t", String::join(count_marks, "")))
   Array::push(parts, "module_float_call_offsets\tend")
   String::concat(String::join(parts, "\n"), "\n")
 }
@@ -323,21 +333,23 @@ fn module_float_offsets_parse_nat(line: String) -> Option[Int] {
   }
 }
 
-/// Strict v4 decode: the header line, duplicated digit-only rows, and the
-/// closing end marker must all be present, or the answer is `None` -- an
-/// ordinary cold-cache miss that re-checks the module. A truncated file
-/// loses the end marker, a corrupted row fails the digit parse or the
-/// duplicate equality (a random digit change cannot hit both copies
-/// identically), and a v1/v2/v3 or foreign header fails outright; none of
-/// them can change what a compile emits.
+/// Strict v5 decode: the header line, duplicated digit-only rows, exactly
+/// one unary count line whose length equals the row count, and the closing
+/// end marker must all be present, or the answer is `None` -- an ordinary
+/// cold-cache miss that re-checks the module. A truncated file loses the
+/// end marker, a corrupted row fails the digit parse or the duplicate
+/// equality (a random digit change cannot hit both copies identically), a
+/// deleted or inserted row fails the count, and a v1..v4 or foreign header
+/// fails outright; none of them can change what a compile emits.
 fn parse_module_float_offsets_text(text: String) -> Option[Array[Int]] {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
-  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_float_call_offsets\tv4" {
+  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_float_call_offsets\tv5" {
     None
   } else {
     let out: Array[Int] = []
     let mut ok = true
     let mut saw_end = false
+    let mut declared_count = 0 - 1
     let mut i = 1
     while i < Array::length(lines) && ok {
       let line = Array::get(lines, i)
@@ -348,6 +360,28 @@ fn parse_module_float_offsets_text(text: String) -> Option[Array[Int]] {
         ok = false
       } else if line == "module_float_call_offsets\tend" {
         saw_end = true
+      } else if String::starts_with(line, "module_float_call_offsets\tcount\t") {
+        if declared_count >= 0 {
+          // A second count line is not a prefix of any valid write.
+          ok = false
+        } else {
+          let unary_start = String::length("module_float_call_offsets\tcount\t")
+          let line_len = String::length(line)
+          let mut mark = unary_start
+          let mut marks_ok = true
+          while mark < line_len && marks_ok {
+            if String::char_code_at(line, mark) == 35 {
+              mark = mark + 1
+            } else {
+              marks_ok = false
+            }
+          }
+          if marks_ok {
+            declared_count = line_len - unary_start
+          } else {
+            ok = false
+          }
+        }
       } else {
         let cells = String::split(line, "\t")
         if Array::length(cells) != 2 || Array::get(cells, 0) != Array::get(cells, 1) {
@@ -361,7 +395,7 @@ fn parse_module_float_offsets_text(text: String) -> Option[Array[Int]] {
       }
       i = i + 1
     }
-    if ok && saw_end {
+    if ok && saw_end && declared_count == Array::length(out) {
       Some(out)
     } else {
       None
