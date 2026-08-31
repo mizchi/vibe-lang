@@ -2155,7 +2155,7 @@ fn railway_expr_off(e: Expr) -> Int {
     } else {
       railway_expr_off(base)
     },
-    EBinOp(_, lhs, _) => railway_expr_off(lhs),
+    EBinOp(_, lhs, _, _) => railway_expr_off(lhs),
     EMatch(scrut, _) => railway_expr_off(scrut),
     ESeq(first, _) => railway_expr_off(first),
     _ => 0 - 1
@@ -6464,7 +6464,22 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
 /// had to discard the whole anchor and the outer stayed raw (measured
 /// 2199023255553 for "xy"). A residual disagreeing collision still poisons
 /// and degrades to the syntactic classifiers, never a wrong rewrite.
-export fn typed_lowering_binop_anchor(left: Expr, right: Expr) -> Int {
+/// #2435: a binop parsed from source now carries its OPERATOR token's offset
+/// and that IS the anchor -- exact identity, no walk, no collisions, and the
+/// shapes no operand walk could name (literal-valued composite operands,
+/// measured 281320357889 for "xy" on the walk-only form) classify too. The
+/// operand walks below remain only for desugar-SYNTHESIZED binops (own
+/// offset -1), where the verdict poison still guards the residual
+/// collisions.
+export fn typed_lowering_binop_anchor(own_off: Int, left: Expr, right: Expr) -> Int {
+  if own_off >= 0 {
+    own_off
+  } else {
+    typed_lowering_binop_walk_anchor(left, right)
+  }
+}
+
+fn typed_lowering_binop_walk_anchor(left: Expr, right: Expr) -> Int {
   let loff = typed_lowering_operand_off(left)
   if loff >= 0 {
     loff
@@ -6496,7 +6511,7 @@ fn typed_lowering_operand_off_deep(e: Expr) -> Int {
     } else {
       typed_lowering_operand_off_deep(base)
     },
-    EBinOp(_, lhs, _) => typed_lowering_operand_off_deep(lhs),
+    EBinOp(_, lhs, _, _) => typed_lowering_operand_off_deep(lhs),
     EIf(_, then_branch, _) => typed_lowering_operand_off_deep(then_branch),
     EMatch(_, arms) => if Array::length(arms) > 0 {
       let (_, first_body) = Array::get(arms, 0)
@@ -6525,7 +6540,7 @@ fn typed_lowering_operand_off(e: Expr) -> Int {
     } else {
       typed_lowering_operand_off(base)
     },
-    EBinOp(_, lhs, _) => typed_lowering_operand_off(lhs),
+    EBinOp(_, lhs, _, _) => typed_lowering_operand_off(lhs),
     _ => 0 - 1
   }
 }
@@ -6541,10 +6556,10 @@ fn typed_lowering_operand_off(e: Expr) -> Int {
 /// of the same kind with DIFFERENT classifications, so a residual anchor
 /// collision degrades to the syntactic classifiers instead of rewriting a
 /// non-String binop.
-fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, left: Expr, right: Expr, left_ty: Type, right_ty: Type) -> Unit {
+fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, own_off: Int, left: Expr, right: Expr, left_ty: Type, right_ty: Type) -> Unit {
   match capture {
     Some(c) => if !c.provenance_enabled {
-      let anchor_off = typed_lowering_binop_anchor(left, right)
+      let anchor_off = typed_lowering_binop_anchor(own_off, left, right)
       let kind = if op == "+" {
         2
       } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
@@ -7337,7 +7352,7 @@ fn reject_resume_in_error_arm(e: Expr, errors: Array[String]) -> Unit {
       reject_resume_in_error_arm(it, errors)
       reject_resume_in_error_arm(b, errors)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       reject_resume_in_error_arm(l, errors)
       reject_resume_in_error_arm(r, errors)
     },
@@ -7600,7 +7615,7 @@ fn check_arm_resume_tail(e: Expr, tail: Bool, sh: Bool, errors: Array[String]) -
       })
       check_arm_resume_tail(b, false, sh || for_sh, errors)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       check_arm_resume_tail(l, false, sh, errors)
       check_arm_resume_tail(r, false, sh, errors)
     },
@@ -7767,7 +7782,7 @@ export fn reject_resume_outside_handler(e: Expr, sh: Bool, errors: Array[String]
       })
       reject_resume_outside_handler(b, sh || for_sh, errors)
     },
-    EBinOp(_, l, r) => {
+    EBinOp(_, l, r, _) => {
       reject_resume_outside_handler(l, sh, errors)
       reject_resume_outside_handler(r, sh, errors)
     },
@@ -7909,7 +7924,7 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       }
       check_resume_values(b, ret_ty, fenv, defs, check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture)
     },
-    EBinOp(_, l, r) => check_resume_values(r, ret_ty, env, defs, check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EBinOp(_, l, r, _) => check_resume_values(r, ret_ty, env, defs, check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
     EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
     EAssign(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
     EAssignOp(_, _, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
@@ -9937,13 +9952,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       }
     },
-    EBinOp(op, left, right) => {
+    EBinOp(op, left, right, boff) => {
       let (left_ty, s1, c1) = check_expr_capture(left, env, defs, s, c, errors, tytab, capture, lane)
       let (right_ty, s2, c2) = check_expr_capture(right, env, defs, s1, c1, errors, tytab, capture, lane)
-      // EBinOp carries no offset of its own, so anchor the diagnostic on an
-      // operand: the left one reads as the start of the offending expression,
-      // and the right is the fallback for `1 + x` (a literal left operand has
-      // no offset to give).
+      // The DIAGNOSTIC anchor stays on an operand (the left reads as the
+      // start of the offending expression, the right is the fallback for
+      // `1 + x`) -- moving diagnostics to the #2435 operator offset is a
+      // separate, deliberately isolated change because pinned diagnostic
+      // expectations reference these positions.
       let bin_left_off = railway_expr_off(left)
       let bin_off = if bin_left_off >= 0 {
         bin_left_off
@@ -9952,12 +9968,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let left_applied = subst_apply(s2, left_ty)
       let right_applied = subst_apply(s2, right_ty)
-      // #2391 slice 2: the typed String-lowering channel. The types recorded
-      // here may still be unresolved variables; the extraction resolves them
-      // against the FINAL substitution, so a binding unified after this binop
-      // still classifies. The recorder anchors with
-      // typed_lowering_binop_anchor, not this diagnostic bin_off.
-      record_string_binop_operands(capture, op, left, right, left_applied, right_applied)
+      // #2391 slice 2 / #2435: the typed String-lowering channel. The types
+      // recorded here may still be unresolved variables; the extraction
+      // resolves them against the FINAL substitution, so a binding unified
+      // after this binop still classifies. The recorder anchors on the
+      // binop's OWN operator offset (exact identity), with the operand walk
+      // only as the fallback for desugar-synthesized binops.
+      record_string_binop_operands(capture, op, boff, left, right, left_applied, right_applied)
       let (result_ty, s3) = infer_binop_type(op, left_applied, right_applied, env, s2, errors, tytab, bin_off)
       (subst_apply(s3, result_ty), s3, c2)
     },

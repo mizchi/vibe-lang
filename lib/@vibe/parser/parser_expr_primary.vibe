@@ -87,7 +87,7 @@ fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderCon
       ELoop(params, b) => ELoop(map_named_exprs(params, f, context), map_expr_offsets(b, f, context)),
       EForIn(n, idx, it, b) => EForIn(n, idx, map_expr_offsets(it, f, context), map_expr_offsets(b, f, context)),
       ECall(callee, args, off) => ECall(map_expr_offsets(callee, f, context), map_exprs(args, f, context), map_located_off(off, f)),
-      EBinOp(op, l, r) => EBinOp(op, map_expr_offsets(l, f, context), map_expr_offsets(r, f, context)),
+      EBinOp(op, l, r, boff) => EBinOp(op, map_expr_offsets(l, f, context), map_expr_offsets(r, f, context), map_located_off(boff, f)),
       EUnaryOp(op, e) => EUnaryOp(op, map_expr_offsets(e, f, context)),
       EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, map_expr_offsets(body, f, context)),
       EDot(e, field, off, fdoff) => EDot(map_expr_offsets(e, f, context), field, map_located_off(off, f), map_located_off(fdoff, f)),
@@ -193,17 +193,17 @@ fn tl_is_rel_op(op: String) -> Bool {
   op == "<" || op == ">" || op == "<=" || op == ">="
 }
 
-fn tl_binop_is_hit(op: String, l: Expr, r: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
+fn tl_binop_is_hit(op: String, own_off: Int, l: Expr, r: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Bool {
   if tl_is_rel_op(op) {
-    tl_offset_hit(rels, anchor(l, r))
+    tl_offset_hit(rels, anchor(own_off, l, r))
   } else if op == "+" {
-    tl_offset_hit(pluses, anchor(l, r))
+    tl_offset_hit(pluses, anchor(own_off, l, r))
   } else {
     false
   }
 }
 
-fn tl_scan_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
+fn tl_scan_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(items) {
@@ -217,7 +217,7 @@ fn tl_scan_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], ancho
   hit
 }
 
-fn tl_scan_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
+fn tl_scan_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(fields) {
@@ -232,7 +232,7 @@ fn tl_scan_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: 
   hit
 }
 
-fn tl_scan_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
+fn tl_scan_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Bool {
   let mut i = 0
   let mut hit = false
   while i < Array::length(arms) {
@@ -247,7 +247,7 @@ fn tl_scan_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], 
   hit
 }
 
-fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
+fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Bool {
   match expr {
     EInt(_) => false,
     EFloat(_) => false,
@@ -271,7 +271,7 @@ fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr,
     ELoop(params, b) => tl_scan_named_exprs(params, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     EForIn(_, _, it, b) => tl_scan_expr(it, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     ECall(callee, args, _) => tl_scan_expr(callee, rels, pluses, anchor) || tl_scan_exprs(args, rels, pluses, anchor),
-    EBinOp(op, l, r) => tl_binop_is_hit(op, l, r, rels, pluses, anchor) || tl_scan_expr(l, rels, pluses, anchor) || tl_scan_expr(r, rels, pluses, anchor),
+    EBinOp(op, l, r, boff) => tl_binop_is_hit(op, boff, l, r, rels, pluses, anchor) || tl_scan_expr(l, rels, pluses, anchor) || tl_scan_expr(r, rels, pluses, anchor),
     EUnaryOp(_, e) => tl_scan_expr(e, rels, pluses, anchor),
     EFn(_, _, _, _, _, body) => tl_scan_expr(body, rels, pluses, anchor),
     EDot(e, _, _, _) => tl_scan_expr(e, rels, pluses, anchor),
@@ -288,27 +288,27 @@ fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr,
   }
 }
 
-fn tl_rewrite_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[Expr] {
+fn tl_rewrite_exprs(items: Array[Expr], rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Array[Expr] {
   for it in items {
     tl_rewrite_expr(it, rels, pluses, anchor)
   }
 }
 
-fn tl_rewrite_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[(String, Expr)] {
+fn tl_rewrite_named_exprs(fields: Array[(String, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Array[(String, Expr)] {
   for fld in fields {
     let (n, v) = fld
     (n, tl_rewrite_expr(v, rels, pluses, anchor))
   }
 }
 
-fn tl_rewrite_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[(Pat, Expr)] {
+fn tl_rewrite_arms(arms: Array[(Pat, Expr)], rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, e) = a
     (p, tl_rewrite_expr(e, rels, pluses, anchor))
   }
 }
 
-fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Expr {
+fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
@@ -332,22 +332,22 @@ fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Ex
     ELoop(params, b) => ELoop(tl_rewrite_named_exprs(params, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
     EForIn(n, idx, it, b) => EForIn(n, idx, tl_rewrite_expr(it, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
     ECall(callee, args, off) => ECall(tl_rewrite_expr(callee, rels, pluses, anchor), tl_rewrite_exprs(args, rels, pluses, anchor), off),
-    EBinOp(op, l, r) => {
+    EBinOp(op, l, r, boff) => {
       // The anchor is computed on the ORIGINAL operands (the offsets the
       // checker recorded); the rewrite then applies to the recursively
       // rewritten operands, so a nested hit inside an operand is handled
       // first and this binop's own rewrite wraps the result.
-      let is_hit = tl_binop_is_hit(op, l, r, rels, pluses, anchor)
+      let is_hit = tl_binop_is_hit(op, boff, l, r, rels, pluses, anchor)
       let rl = tl_rewrite_expr(l, rels, pluses, anchor)
       let rr = tl_rewrite_expr(r, rels, pluses, anchor)
       if is_hit {
         if op == "+" {
           ECall(EIdent("String::concat", -1), [rl, rr], -1)
         } else {
-          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [rl, rr], -1), EInt(0))
+          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [rl, rr], -1), EInt(0), -1)
         }
       } else {
-        EBinOp(op, rl, rr)
+        EBinOp(op, rl, rr, boff)
       }
     },
     EUnaryOp(op, e) => EUnaryOp(op, tl_rewrite_expr(e, rels, pluses, anchor)),
@@ -366,7 +366,7 @@ fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Ex
   }
 }
 
-fn tl_scan_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Bool {
+fn tl_scan_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Bool {
   match stmt {
     SLet(_, _, _, _, expr) => tl_scan_expr(expr, rels, pluses, anchor),
     SLetMut(_, _, expr) => tl_scan_expr(expr, rels, pluses, anchor),
@@ -393,7 +393,7 @@ fn tl_scan_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr,
   }
 }
 
-fn tl_rewrite_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Stmt {
+fn tl_rewrite_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Stmt {
   match stmt {
     SLet(exported, recursive, name, annotation, expr) => SLet(exported, recursive, name, annotation, tl_rewrite_expr(expr, rels, pluses, anchor)),
     SLetMut(name, annotation, expr) => SLetMut(name, annotation, tl_rewrite_expr(expr, rels, pluses, anchor)),
@@ -408,7 +408,7 @@ fn tl_rewrite_stmt(stmt: Stmt, rels: Array[Int], pluses: Array[Int], anchor: (Ex
   }
 }
 
-export fn rewrite_string_binops_stmts(stmts: Array[Stmt], rels: Array[Int], pluses: Array[Int], anchor: (Expr, Expr) -> Int) -> Array[Stmt] {
+export fn rewrite_string_binops_stmts(stmts: Array[Stmt], rels: Array[Int], pluses: Array[Int], anchor: (Int, Expr, Expr) -> Int) -> Array[Stmt] {
   if Array::length(rels) == 0 && Array::length(pluses) == 0 {
     stmts
   } else {
@@ -619,7 +619,7 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String], context: Option[Par
       let (p, ex) = a
       (p, desugar_loop_body(ex, param_names, context))
     }),
-    EBinOp(op, l, r) => EBinOp(op, desugar_loop_body(l, param_names, context), desugar_loop_body(r, param_names, context)),
+    EBinOp(op, l, r, boff) => EBinOp(op, desugar_loop_body(l, param_names, context), desugar_loop_body(r, param_names, context), boff),
     ECall(callee, args, off) => ECall(desugar_loop_body(callee, param_names, context), for arg in args {
       desugar_loop_body(arg, param_names, context)
     }, off),

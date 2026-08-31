@@ -72,7 +72,7 @@ fn is_eloop(e: Expr) -> Bool {
 
 fn ebinop_op(e: Expr) -> String {
   match e {
-    EBinOp(op, _, _) => op,
+    EBinOp(op, _, _, _) => op,
     _ => ""
   }
 }
@@ -93,7 +93,7 @@ fn is_earray(e: Expr) -> Bool {
 
 fn is_ebinop(e: Expr) -> Bool {
   match e {
-    EBinOp(_, _, _) => true,
+    EBinOp(_, _, _, _) => true,
     _ => false
   }
 }
@@ -171,7 +171,7 @@ fn eassignop_val(e: Expr) -> Expr {
 //# Misc
 
 test "pipe simple: x |> f => f(x)" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), EIdent("f", -1)))
+  let result = desugar_expr(EBinOp("|>", EInt(1), EIdent("f", -1), -1))
   assert(is_ecall(result))
   assert(is_eident(ecall_callee(result)))
   assert(eident_name(ecall_callee(result)) == "f")
@@ -182,7 +182,7 @@ test "pipe simple: x |> f => f(x)" {
 test "pipe with args: x |> f(y) => f(x, y)" {
   let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EIdent("f", -1), [
     EInt(2)
-  ], -1)))
+  ], -1), -1))
   assert(is_ecall(result))
   assert(eident_name(ecall_callee(result)) == "f")
   assert(eq(Array::length(ecall_args(result)), 2))
@@ -212,7 +212,7 @@ test "method call with args: obj.push(1) preserved" {
 }
 
 test "non-pipe binop passes through" {
-  let result = desugar_expr(EBinOp("+", EInt(1), EInt(2)))
+  let result = desugar_expr(EBinOp("+", EInt(1), EInt(2), -1))
   assert(is_ebinop(result))
   assert(ebinop_op(result) == "+")
 }
@@ -225,7 +225,7 @@ test "EDot without call passes through" {
 }
 
 test "nested: pipe inside let body" {
-  let result = desugar_expr(ELet("x", EInt(1), EBinOp("|>", EIdent("x", -1), EIdent("f", -1)), -1))
+  let result = desugar_expr(ELet("x", EInt(1), EBinOp("|>", EIdent("x", -1), EIdent("f", -1), -1), -1))
   assert(is_elet(result))
   let body = elet_body(result)
   assert(is_ecall(body))
@@ -234,7 +234,7 @@ test "nested: pipe inside let body" {
 
 test "SLet body gets desugared" {
   let stmts = [
-    SLet(false, false, "x", None, EBinOp("|>", EInt(1), EIdent("f", -1)))
+    SLet(false, false, "x", None, EBinOp("|>", EInt(1), EIdent("f", -1), -1))
   ]
   let result = desugar_stmts(stmts)
   assert(eq(Array::length(result), 1))
@@ -249,7 +249,7 @@ test "SLet body gets desugared" {
 }
 
 test "chained pipe: x |> f |> g => g(f(x))" {
-  let result = desugar_expr(EBinOp("|>", EBinOp("|>", EInt(1), EIdent("f", -1)), EIdent("g", -1)))
+  let result = desugar_expr(EBinOp("|>", EBinOp("|>", EInt(1), EIdent("f", -1), -1), EIdent("g", -1), -1))
   assert(is_ecall(result))
   assert(is_eident(ecall_callee(result)))
   assert(eident_name(ecall_callee(result)) == "g")
@@ -262,7 +262,7 @@ test "chained pipe: x |> f |> g => g(f(x))" {
 }
 
 test "pipe into method call: 1 |> obj.method() preserved EDot" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "method", -1, -1), array_empty(), -1)))
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "method", -1, -1), array_empty(), -1), -1))
   // pipe prepends 1 to args of ECall(EDot(obj, method), [])
   assert(is_ecall(result))
   let callee = ecall_callee(result)
@@ -287,7 +287,7 @@ test "chained method: x.a().b() preserved as nested EDot" {
 }
 
 test "pipe into obj.push(): 1 |> obj.push() preserved EDot" {
-  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "push", -1, -1), array_empty(), -1)))
+  let result = desugar_expr(EBinOp("|>", EInt(1), ECall(EDot(EIdent("obj", -1), "push", -1, -1), array_empty(), -1), -1))
   assert(is_ecall(result))
   let callee = ecall_callee(result)
   assert(is_edot(callee))
@@ -297,7 +297,7 @@ test "pipe into obj.push(): 1 |> obj.push() preserved EDot" {
 }
 
 test "EAssignOp desugars val: x += (1 |> f) => x += f(1)" {
-  let result = desugar_expr(EAssignOp("x", "+", EBinOp("|>", EInt(1), EIdent("f", -1)), EUnit))
+  let result = desugar_expr(EAssignOp("x", "+", EBinOp("|>", EInt(1), EIdent("f", -1), -1), EUnit))
   assert(is_eassignop(result))
   let val = eassignop_val(result)
   assert(is_ecall(val))
@@ -308,8 +308,8 @@ test "EAssignOp desugars val: x += (1 |> f) => x += f(1)" {
 
 test "desugar_stmts handles multiple SLet with pipes" {
   let stmts = [
-    SLet(false, false, "a", None, EBinOp("|>", EInt(1), EIdent("f", -1))),
-    SLet(false, false, "b", None, EBinOp("|>", EInt(2), EIdent("g", -1)))
+    SLet(false, false, "a", None, EBinOp("|>", EInt(1), EIdent("f", -1), -1)),
+    SLet(false, false, "b", None, EBinOp("|>", EInt(2), EIdent("g", -1), -1))
   ]
   let result = desugar_stmts(stmts)
   assert(eq(Array::length(result), 2))
@@ -349,7 +349,7 @@ test "array spread flushes buffered elems without Array::pop" {
 
 test "parameterized loop desugars init exprs" {
   let result = desugar_expr(ELoop([
-    ("i", EBinOp("|>", EInt(1), EIdent("f", -1)))
+    ("i", EBinOp("|>", EInt(1), EIdent("f", -1), -1))
   ], EIdent("body", -1)))
   assert(is_eloop(result))
   let params = eloop_params(result)

@@ -552,18 +552,18 @@ fn fold_expr(expr: Expr) -> Expr {
     ECall(callee, args, off) => ECall(fold_expr(callee), for a in args {
       fold_expr(a)
     }, off),
-    EBinOp(op, l, r) => {
+    EBinOp(op, l, r, boff) => {
       let fl = fold_expr(l)
       let fr = fold_expr(r)
       match fl {
         EInt(a) => match fr {
           EInt(b) => match fold_int_binop(op, a, b) {
             Some(v) => EInt(v),
-            None => EBinOp(op, fl, fr)
+            None => EBinOp(op, fl, fr, boff)
           },
-          _ => EBinOp(op, fl, fr)
+          _ => EBinOp(op, fl, fr, boff)
         },
-        _ => EBinOp(op, fl, fr)
+        _ => EBinOp(op, fl, fr, boff)
       }
     },
     EUnaryOp(op, e) => EUnaryOp(op, fold_expr(e)),
@@ -934,7 +934,7 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
     ECall(callee, args, off) => ECall(uniquify_shadowed_bindings(callee, env, counter, seen), for a in args {
       uniquify_shadowed_bindings(a, env, counter, seen)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, uniquify_shadowed_bindings(l, env, counter, seen), uniquify_shadowed_bindings(r, env, counter, seen)),
+    EBinOp(op, l, r, boff) => EBinOp(op, uniquify_shadowed_bindings(l, env, counter, seen), uniquify_shadowed_bindings(r, env, counter, seen), boff),
     EUnaryOp(op, e) => EUnaryOp(op, uniquify_shadowed_bindings(e, env, counter, seen)),
     EFn(tp, bounds, params, ret, eff, body) => {
       let mark = Array::length(env.names)
@@ -1031,7 +1031,7 @@ export fn lift_match_scrutinees(expr: Expr, counter: Array[Int]) -> Expr {
     ECall(callee, args, off) => ECall(lift_match_scrutinees(callee, counter), for a in args {
       lift_match_scrutinees(a, counter)
     }, off),
-    EBinOp(op, l, r) => EBinOp(op, lift_match_scrutinees(l, counter), lift_match_scrutinees(r, counter)),
+    EBinOp(op, l, r, boff) => EBinOp(op, lift_match_scrutinees(l, counter), lift_match_scrutinees(r, counter), boff),
     EUnaryOp(op, e) => EUnaryOp(op, lift_match_scrutinees(e, counter)),
     EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, lift_match_scrutinees(body, counter)),
     EDot(e, field, off, fdoff) => EDot(lift_match_scrutinees(e, counter), field, off, fdoff),
@@ -1489,7 +1489,7 @@ fn normalize_dot_calls_expr(expr: Expr, struct_sets: Array[(String, Array[String
         _ => ECall(normalize_dot_calls_expr(callee, struct_sets, var_types, fn_returns), rargs, off)
       }
     },
-    EBinOp(op, l, r) => EBinOp(op, normalize_dot_calls_expr(l, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(r, struct_sets, var_types, fn_returns)),
+    EBinOp(op, l, r, boff) => EBinOp(op, normalize_dot_calls_expr(l, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(r, struct_sets, var_types, fn_returns), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, normalize_dot_calls_expr(e2, struct_sets, var_types, fn_returns)),
     EFn(tp, bounds, params, ret, eff, body) => {
       let var_types2 = ndc_seed_var_types(params, var_types)

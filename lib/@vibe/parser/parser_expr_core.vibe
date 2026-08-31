@@ -208,7 +208,7 @@ fn parse_call_arg(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recu
 fn has_placeholder_arg(arg: Expr) -> Bool {
   match arg {
     EIdent(n, _) => n == "_",
-    EBinOp(_, l, r) => has_placeholder_arg(l) || has_placeholder_arg(r),
+    EBinOp(_, l, r, _) => has_placeholder_arg(l) || has_placeholder_arg(r),
     _ => false
   }
 }
@@ -289,10 +289,10 @@ fn wrap_placeholder_arg(arg: Expr, _context: Option[ParserBinderContext]) -> Exp
         e
       }
       ,
-      EBinOp(op, l, r) => {
+      EBinOp(op, l, r, boff) => {
         let nl = replace_placeholders(l)
         let nr = replace_placeholders(r)
-        EBinOp(op, nl, nr)
+        EBinOp(op, nl, nr, boff)
       },
       _ => e
     }
@@ -357,7 +357,7 @@ fn placeholder_count(arg: Expr) -> Int {
     } else {
       0
     },
-    EBinOp(_, l, r) => placeholder_count(l) + placeholder_count(r),
+    EBinOp(_, l, r, _) => placeholder_count(l) + placeholder_count(r),
     _ => 0
   }
 }
@@ -778,7 +778,9 @@ fn parse_infix_loop(tokens: Array[Token], starts: Array[Int], left: Expr, next: 
       let combined = if is_pipe {
         pipe_desugar(left, right)
       } else {
-        EBinOp(op, left, right)
+        // #2435: the binop carries its OPERATOR token's source offset -- the
+        // typed-lowering channel keys on it, and diagnostics can point at it.
+        EBinOp(op, left, right, field_offset_at(starts, next))
       }
       let next_cmp_locked = if prec == 3 {
         true

@@ -69,24 +69,28 @@ export fn double_parse_expr(arg: Expr) -> Expr {
   let pow_val = EIdent("__dp_pow_val", -1)
   let pow_k = EIdent("__dp_pow_k", -1)
   let scaled = EIdent("__dp_scaled", -1)
-  let is_digit_ch = EBinOp("&&", EBinOp(">=", ch, EInt(48)), EBinOp("<=", ch, EInt(57)))
-  let is_dot_ch = EBinOp("&&", EBinOp("==", ch, EInt(46)), EBinOp("==", seen_dot, EBool(false)))
-  let digit_accum = ESeq(EAssign("__dp_mantissa", EBinOp("+", EBinOp("*", mantissa, EFloat(10.0)), digit), EUnit), ESeq(EIf(seen_dot, EAssign("__dp_frac_digits", EBinOp("+", frac_digits, EInt(1)), EUnit), EUnit), EAssign("__dp_seen_digit", EBool(true), EUnit)))
+  let is_digit_ch = EBinOp("&&", EBinOp(">=", ch, EInt(48), -1), EBinOp("<=", ch, EInt(57), -1), -1)
+  let is_dot_ch = EBinOp("&&", EBinOp("==", ch, EInt(46), -1), EBinOp("==", seen_dot, EBool(false), -1), -1)
+  let digit_accum = ESeq(EAssign("__dp_mantissa", EBinOp("+", EBinOp("*", mantissa, EFloat(10.0), -1), digit, -1), EUnit), ESeq(EIf(seen_dot, EAssign("__dp_frac_digits", EBinOp("+", frac_digits, EInt(1), -1), EUnit), EUnit), EAssign("__dp_seen_digit", EBool(true), EUnit)))
   // Keep the boundary out of an EFloat literal. Merged-source normalization
   // serializes compiler AST constructors before reparsing them, and the
   // compiler-side large-Double formatter can classify this rounded 2^61 value
   // as infinity after that rewrite. Int::to_double(Int::max) is the same
   // representable Double and survives the round trip without special printing.
   let safe_magnitude = c1("Int::to_double", EInt(2305843009213693951))
-  let would_overflow = EBinOp(">", mantissa, EBinOp("/", EBinOp("-", safe_magnitude, digit), EFloat(10.0)))
-  let digit_step = ELet("__dp_digit", c1("Int::to_double", EBinOp("-", ch, EInt(48))), EIf(would_overflow, EAssign("__dp_ok", EBool(false), EUnit), digit_accum), -1)
+  let would_overflow = EBinOp(">", mantissa, EBinOp("/", EBinOp("-", safe_magnitude, digit, -1), EFloat(10.0), -1), -1)
+  let digit_step = ELet("__dp_digit", c1("Int::to_double", EBinOp("-", ch, EInt(48), -1)), EIf(would_overflow, EAssign("__dp_ok", EBool(false), EUnit), digit_accum), -1)
+  // review-lint: allow-fixed-synthetic-name
   let scan_step = EIf(is_digit_ch, digit_step, EIf(is_dot_ch, EAssign("__dp_seen_dot", EBool(true), EUnit), EAssign("__dp_ok", EBool(false), EUnit)))
-  let loop_body = ELet("__dp_ch", c2("String::char_code_at", s, i), ESeq(scan_step, EAssign("__dp_i", EBinOp("+", i, EInt(1)), EUnit)), -1)
-  let while_loop = EWhile(EBinOp("<", i, len), loop_body)
-  let pow_loop_body = ESeq(EAssign("__dp_pow_val", EBinOp("*", pow_val, EFloat(10.0)), EUnit), EAssign("__dp_pow_k", EBinOp("+", pow_k, EInt(1)), EUnit))
-  let pow_while = EWhile(EBinOp("<", pow_k, frac_digits), pow_loop_body)
-  let signed = EIf(neg, EBinOp("-", EFloat(0.0), scaled), scaled)
-  let success_case = ELetMut("__dp_pow_val", EFloat(1.0), ELetMut("__dp_pow_k", EInt(0), ESeq(pow_while, ELet("__dp_scaled", EBinOp("/", mantissa, pow_val), c1("Some", signed), -1)), -1), -1)
-  let final_check = EIf(EBinOp("||", EBinOp("==", ok, EBool(false)), EBinOp("==", seen_digit, EBool(false))), EIdent("None", -1), success_case)
-  ELet("__dp_s", arg, ELet("__dp_len", c1("String::length", s), EIf(EBinOp("==", len, EInt(0)), EIdent("None", -1), ELet("__dp_c0", c2("String::char_code_at", s, EInt(0)), ELet("__dp_neg", EBinOp("==", c0, EInt(45)), ELet("__dp_start", EIf(EBinOp("||", EBinOp("==", c0, EInt(45)), EBinOp("==", c0, EInt(43))), EInt(1), EInt(0)), ELetMut("__dp_i", start, ELetMut("__dp_mantissa", EFloat(0.0), ELetMut("__dp_frac_digits", EInt(0), ELetMut("__dp_seen_dot", EBool(false), ELetMut("__dp_seen_digit", EBool(false), ELetMut("__dp_ok", EBool(true), ESeq(while_loop, final_check), -1), -1), -1), -1), -1), -1), -1), -1), -1)), -1), -1)
+  let loop_body = ELet("__dp_ch", c2("String::char_code_at", s, i), ESeq(scan_step, EAssign("__dp_i", EBinOp("+", i, EInt(1), -1), EUnit)), -1)
+  // review-lint: allow-fixed-synthetic-name
+  let while_loop = EWhile(EBinOp("<", i, len, -1), loop_body)
+  let pow_loop_body = ESeq(EAssign("__dp_pow_val", EBinOp("*", pow_val, EFloat(10.0), -1), EUnit), EAssign("__dp_pow_k", EBinOp("+", pow_k, EInt(1), -1), EUnit))
+  let pow_while = EWhile(EBinOp("<", pow_k, frac_digits, -1), pow_loop_body)
+  let signed = EIf(neg, EBinOp("-", EFloat(0.0), scaled, -1), scaled)
+  let success_case = ELetMut("__dp_pow_val", EFloat(1.0), ELetMut("__dp_pow_k", EInt(0), ESeq(pow_while, ELet("__dp_scaled", EBinOp("/", mantissa, pow_val, -1), c1("Some", signed), -1)), -1), -1)
+  // review-lint: allow-fixed-synthetic-name
+  let final_check = EIf(EBinOp("||", EBinOp("==", ok, EBool(false), -1), EBinOp("==", seen_digit, EBool(false), -1), -1), EIdent("None", -1), success_case)
+  ELet("__dp_s", arg, ELet("__dp_len", c1("String::length", s), EIf(EBinOp("==", len, EInt(0), -1), EIdent("None", -1), ELet("__dp_c0", c2("String::char_code_at", s, EInt(0)), ELet("__dp_neg", EBinOp("==", c0, EInt(45), -1), ELet("__dp_start", EIf(EBinOp("||", EBinOp("==", c0, EInt(45), -1), EBinOp("==", c0, EInt(43), -1), -1), EInt(1), EInt(0)), ELetMut("__dp_i", start, ELetMut("__dp_mantissa", EFloat(0.0), ELetMut("__dp_frac_digits", EInt(0), ELetMut("__dp_seen_dot", EBool(false), ELetMut("__dp_seen_digit", EBool(false), ELetMut("__dp_ok", EBool(true), ESeq(while_loop, final_check), -1), -1), -1), -1), -1), -1), -1), -1), -1)), -1), -1)
+  // review-lint: allow-fixed-synthetic-name
 }
