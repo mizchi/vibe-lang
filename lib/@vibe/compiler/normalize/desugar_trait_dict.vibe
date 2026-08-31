@@ -13865,7 +13865,25 @@ fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_type
       let mut acc = "("
       let mut i = 0
       while i < Array::length(items) {
-        let sub = infer_eq_shape(Array::get(items, i), struct_sets, var_types, fn_returns)
+        let item = Array::get(items, i)
+        let sub0 = infer_eq_shape(item, struct_sets, var_types, fn_returns)
+        // Strictly ADDITIVE against what the `_` arm used to do, which was
+        // `infer_shape` on the whole tuple, i.e. `infer_shape` per element.
+        // `infer_eq_shape` answers for more elements than that, but for FEWER
+        // in one place: its `EIdent` arm treats a recorded empty as the answer
+        // "not composite" (the #1465 shadowing rule) and stops, where
+        // `infer_shape` goes on to the element's head TYPE NAME. `let x =
+        // Bytes::new(); let a = (x, 0)` is exactly that shape -- recursing
+        // alone recorded `(,Int)` and dropped the `Bytes`, so a tuple of Bytes
+        // compared by pointer and `fixtures/eq_array_option_fields_test.vibe`
+        // regressed. Falling back keeps the head name. It cannot resurrect the
+        // stale composite #1465 guarded: `infer_shape`'s own EIdent arm applies
+        // the same rule and yields a head name, never a container shape.
+        let sub = if String::length(sub0) > 0 {
+          sub0
+        } else {
+          infer_shape(item, struct_sets, var_types, fn_returns)
+        }
         acc = if i == 0 {
           String::concat(acc, sub)
         } else {
