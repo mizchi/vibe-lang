@@ -2289,7 +2289,26 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // in compile_call.vibe); it was never ported here. One operand is
         // enough: `==` already routes that way (`emit_gc_eq_value`), and a
         // scalar can only be equal to another scalar's bit pattern.
-        if bc_expr_is_intish(Array::get(args, 0), local_names, ctx) || bc_expr_is_intish(Array::get(args, 1), local_names, ctx) {
+        if bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || bc_expr_is_floatish(Array::get(args, 1), local_names, ctx) {
+          // #2426: a provably Double operand takes a real f64 comparison,
+          // like `==` does (emit_gc_eq_value) and like the linear lane's own
+          // `eq` arm has since #745. Without it BOTH remaining arms answer on
+          // raw bits, and the content fall-back below is the sharper of the
+          // two: it reads each operand as `(ptr << 32) | len`, and a Double's
+          // low 32 bits are its mantissa tail, which is ZERO for every
+          // round value. Two zero-length "strings" compare EQUAL, so
+          // `eq(0.0, 1.5)` answered **true** -- measured on 978ccefc4, gc
+          // lane, for two ordinary distinct Doubles with no diagnostic. The
+          // `i64.eq` arm below is wrong for Doubles in the other direction:
+          // `-0.0` and `nan` (identical bits, and IEEE 754 says not equal).
+          let mut fnl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+          emit_f64_reinterpret_i64(buf)
+          fnl = ce(buf, Array::get(args, 1), local_names, fnl, ld)
+          emit_f64_reinterpret_i64(buf)
+          emit_f64_eq(buf)
+          emit_i64_extend_i32_s(buf)
+          fnl
+        } else if bc_expr_is_intish(Array::get(args, 0), local_names, ctx) || bc_expr_is_intish(Array::get(args, 1), local_names, ctx) {
           let mut snl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
           snl = ce(buf, Array::get(args, 1), local_names, snl, ld)
           emit_i64_eq(buf)

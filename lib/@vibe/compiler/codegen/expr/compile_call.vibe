@@ -1740,28 +1740,43 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         nl_c
       }
     }
-    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && ctx.enable_rc && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
+    else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
       // #745: under RC floats are BOXED — the scalar i64.eq below would
       // compare box pointers, so `eq(0.0125, 0.0125)` returned false. Take
-      // the same unbox + f64.eq path the `==` binop uses. Non-RC floats are
-      // raw f64 bits in an i64, where bitwise i64.eq matches the existing
-      // `==` behavior, so this branch is RC-only.
+      // the same unbox + f64.eq path the `==` binop uses.
+      //
+      // #2426: this arm was RC-only, and its reason was explicitly "non-RC
+      // floats are raw f64 bits, where bitwise i64.eq matches the existing
+      // `==` behavior". That justification is gone: `==` now takes a real
+      // f64 comparison on every lane, so keeping `eq` on raw bits under
+      // non-RC would make the two spellings of ONE concept disagree --
+      // measured on `VIBE_RC=0` before this change, `eq(0.0, -0.0)` was
+      // false while `0.0 == -0.0` was true, and `eq(nan, nan)` was true
+      // while `nan == nan` was false. The unbox and the Bool tag below are
+      // the only RC-specific steps, so both are guarded instead.
       //
       // #2309: `local_idx_hint < 0` for the same reason as the scalar arm
       // below -- and this arm had NO guard at all, so it was the sharper of
       // the two: `let eq = (a: Double, b: Double) -> Double { a + b }` then
       // `eq(1.5, 2.5)` printed `0` under RC, which is the production lane.
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
-      emit_unbox_float(buf)
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
       emit_f64_reinterpret_i64(buf)
       nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
-      emit_unbox_float(buf)
+      if ctx.enable_rc {
+        emit_unbox_float(buf)
+      }
       emit_f64_reinterpret_i64(buf)
       emit_f64_eq(buf)
       emit_i64_extend_i32_s(buf)
-      // Tag the Bool like the scalar branch below (ADR-0055).
-      emit_i64_const(buf, 1)
-      emit_i64_shl(buf)
+      // Tag the Bool like the scalar branch below (ADR-0055). Untagged lanes
+      // hold a Bool as a raw 0/1, so the shift is RC-only.
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shl(buf)
+      }
       nl
     }
     else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (!prefer_bound_call || cc_arg_is_scalarish(Array::get(args, 0), local_names, ctx) || cc_arg_is_scalarish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {

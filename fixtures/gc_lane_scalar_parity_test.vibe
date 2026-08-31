@@ -398,3 +398,62 @@ test "#2426 Double equality follows IEEE 754, not the bit pattern" {
   assert(true == true)
   assert(!(true == false))
 }
+
+/// #2426 follow-up (Codex review on #2430): the BUILTIN `eq` is the other
+/// spelling of `==`, and it was routed on raw bits after `==` stopped being.
+/// Two operands, one concept -- the repository's rule is that these may not
+/// answer differently.
+fn eq_dbl(a: Double, b: Double) -> Bool {
+  eq(a, b)
+}
+
+test "#2426 the eq builtin answers on Doubles, not on their bits" {
+  // The sharpest case, and it is NOT signed zero: on the gc lane `eq` fell
+  // through to the content fall-back, which reads each operand as
+  // `(ptr << 32) | len`. A Double's low 32 bits are its mantissa TAIL, which
+  // is zero for every round value -- so `0.0` and `1.5` both decoded as
+  // zero-length strings and `String::equals` called them EQUAL. Measured on
+  // 978ccefc4, gc: `eq(0.0, 1.5)` answered true, for two ordinary distinct
+  // Doubles, with no diagnostic.
+  assert(!eq(0.0, 1.5))
+  assert(!eq(2.0, 4.0))
+  assert(!eq(1.0, 8.0))
+  // Signed zero, where the linear lane's arm was RC-only: its own comment
+  // gave the reason as "non-RC matches the existing `==` behavior", and `==`
+  // had just stopped behaving that way.
+  assert(eq(0.0, -0.0))
+  assert(eq(-0.0, 0.0))
+  // NaN, the opposite direction: identical bits, and still not equal.
+  let nan2 = dz(0.0, 0.0)
+  assert(!eq(nan2, nan2))
+  assert(!eq(nan2, 1.5))
+  // Ordinary equal Doubles, which must keep answering true.
+  assert(eq(1.5, 1.5))
+  let da = 1.5
+  let db = 1.5
+  assert(eq(da, db))
+  let dz1 = 0.0
+  let dz2 = -0.0
+  assert(eq(dz1, dz2))
+  assert(!eq(dz1, 1.5))
+  // Through annotated parameters, the binding form each lane seeds
+  // separately from a `let`.
+  assert(eq_dbl(0.0, -0.0))
+  assert(!eq_dbl(0.0, 1.5))
+  assert(eq_dbl(1.5, 1.5))
+  // The two spellings must agree, which is the property this test exists for.
+  assert(eq(0.0, -0.0) == (0.0 == -0.0))
+  assert(eq(0.0, 1.5) == (0.0 == 1.5))
+  assert(eq(2.0, 4.0) == (2.0 == 4.0))
+  assert(eq(1.5, 1.5) == (1.5 == 1.5))
+  assert(eq(nan2, nan2) == (nan2 == nan2))
+  assert(eq(da, db) == (da == db))
+  // And the Int and String sides of `eq` keep their own routing: a float arm
+  // that swallowed them would trade one silent wrong answer for another.
+  assert(eq(3, 3) == (3 == 3))
+  assert(eq(64<<32, 65<<32) == ((64<<32) == (65<<32)))
+  assert(eq("ab", "ab"))
+  assert(!eq("ab", "ac"))
+  assert(eq(true, true))
+  assert(!eq(true, false))
+}
