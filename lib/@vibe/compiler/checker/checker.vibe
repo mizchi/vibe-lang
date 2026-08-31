@@ -2142,7 +2142,10 @@ fn arm_body_diverges(body: Expr) -> Bool {
 /// railway desugar (#635) threads the `?`/`let*` operand's offset into its
 /// generated `None` failure-track nodes, so a diagnostic on desugar output
 /// still locates at the offending operand.
-fn railway_expr_off(e: Expr) -> Int {
+/// Exported (#2391 slice 2) because the FS merge's String-binop rewrite pass
+/// must recompute EXACTLY the anchor this checker recorded a binop under; two
+/// implementations of this walk would be a silent-wrong factory.
+export fn railway_expr_off(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
     ECall(callee, _, off) => if off >= 0 {
@@ -6137,6 +6140,17 @@ export struct TypedOccurrenceRoleLaneCapture {
   // ceiling (tests/gates/bootstrap/stage2_oracles.sh), so the per-module
   // capture has to stay allocation-free beyond this one flat array.
   entries_flags: Array[Int];
+  // #2391 slice 2: String binop operand observations, recorded ONLY by
+  // entries-only captures (provenance_enabled = false). Two rows per
+  // relational/`+` binop with a located anchor -- one per operand -- so the
+  // extraction can ask "does either operand resolve to String" against the
+  // final substitution. Kind: 1 = relational (`<` `>` `<=` `>=`),
+  // 2 = `+`. Anchored on the same offset the diagnostic anchor uses
+  // (railway_expr_off of the left operand, right as fallback), which the
+  // FS merge's rewrite pass recomputes identically on the merged AST.
+  binop_offsets: Array[Int];
+  binop_kinds: Array[Int];
+  binop_types: Array[Type];
   provenance_entries: Array[(Array[Int], Array[Int], String, String, Type)];
   mut statement_path: Array[Int];
   frame_paths: Array[Array[Int]];
@@ -6419,6 +6433,40 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
         let expression_path = Array::get(capture_entries.frame_paths, capture_entries.frame_depth - 1)
         Array::push(capture_entries.provenance_entries, (Array::slice(capture_entries.statement_path, 0, Array::length(capture_entries.statement_path)), Array::slice(expression_path, 0, Array::length(expression_path)), role, lane, ty))
       }
+    },
+    None => ()
+  }
+}
+
+/// #2391 slice 2: record a relational/`+` binop's operand types under its
+/// diagnostic anchor, for the typed String-lowering channel. Entries-only
+/// captures only -- a provenance capture (LSP/analysis lanes) records nothing
+/// here, so those consumers see exactly the arrays they saw before. Both
+/// operand types go in under the same anchor; the extraction classifies the
+/// binop as String when EITHER resolves to String, mirroring the desugar
+/// tracker's either-operand rule.
+fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, anchor_off: Int, left_ty: Type, right_ty: Type) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled && anchor_off >= 0 {
+      let kind = if op == "+" {
+        2
+      } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+        1
+      } else {
+        0
+      }
+      if kind > 0 {
+        Array::push(c.binop_offsets, anchor_off)
+        Array::push(c.binop_kinds, kind)
+        Array::push(c.binop_types, left_ty)
+        Array::push(c.binop_offsets, anchor_off)
+        Array::push(c.binop_kinds, kind)
+        Array::push(c.binop_types, right_ty)
+      } else {
+        ()
+      }
+    } else {
+      ()
     },
     None => ()
   }
@@ -9805,7 +9853,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       } else {
         railway_expr_off(right)
       }
-      let (result_ty, s3) = infer_binop_type(op, subst_apply(s2, left_ty), subst_apply(s2, right_ty), env, s2, errors, tytab, bin_off)
+      let left_applied = subst_apply(s2, left_ty)
+      let right_applied = subst_apply(s2, right_ty)
+      // #2391 slice 2: the typed String-lowering channel. The types recorded
+      // here may still be unresolved variables; the extraction resolves them
+      // against the FINAL substitution, so a binding unified after this binop
+      // still classifies.
+      record_string_binop_operands(capture, op, bin_off, left_applied, right_applied)
+      let (result_ty, s3) = infer_binop_type(op, left_applied, right_applied, env, s2, errors, tytab, bin_off)
       (subst_apply(s3, result_ty), s3, c2)
     },
     EUnaryOp(op, operand) => {

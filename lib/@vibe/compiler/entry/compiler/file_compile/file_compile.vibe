@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, parse_program, parse_program_located, shift_stmt_offsets, shift_stmts_offsets
+  lex, lex_with_offsets, parse_program, parse_program_located, rewrite_string_binops_stmts, shift_stmt_offsets, shift_stmts_offsets
 }
 
 // #897: this used to also import `empty_stmt_array` via a leaf path into
@@ -81,7 +81,7 @@ import @vibe/compiler/loader {
 }
 
 import @vibe/compiler/checker {
-  file_entry_cacheable, file_tests_cacheable
+  file_entry_cacheable, file_tests_cacheable, railway_expr_off, typed_lowering_enc_offset, typed_lowering_enc_tag
 }
 
 import @vibe/compiler/runtime {
@@ -95,7 +95,7 @@ import @vibe/compiler/runtime {
   db_store_artifact,
   db_typecheck,
   db_typecheck_fs,
-  module_float_call_offsets_for_path,
+  module_typed_lowering_offsets_for_path,
   parse_program_with_path
 }
 
@@ -273,11 +273,15 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
                   // clone's delta; entries for provider statements the clone
                   // does not contain match no call node and stay inert.
                   match lookup_flat_base(flat_paths, flat_bases, resolved) {
-                    Some(provider_base) => match module_float_call_offsets_for_path(resolved) {
+                    Some(provider_base) => match module_typed_lowering_offsets_for_path(resolved) {
                       Some(provider_offsets) => {
                         let mut k = 0
                         while k < Array::length(provider_offsets) {
-                          Array::push(clone_float_offsets_out, provider_base + Array::get(provider_offsets, k) + delta)
+                          // The table is tag-encoded (offset * 4 + tag, see
+                          // typed_lowering_enc), so shifting a row by the
+                          // clone's merge-space delta adds (base + delta) * 4
+                          // -- the tag bits stay untouched.
+                          Array::push(clone_float_offsets_out, Array::get(provider_offsets, k) + (provider_base + delta) * 4)
                           k = k + 1
                         }
                       },
@@ -431,7 +435,7 @@ fn build_grouped_merged_stmts_impl(source_groups: Array[(String, Array[(String, 
     while source_idx < Array::length(flat_sources) {
       Array::push(out, shift_stmts_offsets(Array::get(file_stmts, source_idx), offset_base))
       // #2391: report each flat file's offset base so a caller can shift
-      // per-module offset tables (module_float_call_offsets_for_path, keyed
+      // per-module offset tables (module_typed_lowering_offsets_for_path, keyed
       // in each file's OWN offset space) into this merge's space.
       Array::push(flat_paths_out, Array::get(file_paths, source_idx))
       Array::push(flat_bases_out, offset_base)
@@ -490,24 +494,25 @@ fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, St
   build_grouped_merged_stmts_impl(source_groups, true, array_empty(), array_empty(), array_empty())
 }
 
-/// #2391: shift each file's per-module Double call-result offsets (recorded by
-/// the modular check in the file's OWN offset space) by that file's base in a
-/// disjoint-offset merge, and union them into one table for
-/// `CompileCtx.float_call_offsets`. A file the modular check never stepped in
-/// this process contributes nothing, which degrades ITS calls to the
-/// pre-#2158 syntactic classifier -- deterministically, because the reuse
+/// #2391: shift each file's per-module typed-lowering table (recorded by the
+/// modular check in the file's OWN offset space) by that file's base in a
+/// disjoint-offset merge, and union them into one table. Rows are tag-encoded
+/// (offset * 4 + tag, see typed_lowering_enc in the checker), so the rebase
+/// adds base * 4 and leaves the tag bits untouched. A file the modular check
+/// never stepped in this process contributes nothing, which degrades ITS
+/// sites to the syntactic classifiers -- deterministically, because the reuse
 /// arms in runtime/typecheck_fs.vibe re-check a module whose offsets sidecar
 /// is missing rather than reusing half a cache entry.
-fn union_module_float_offsets(flat_paths: Array[String], flat_bases: Array[Int]) -> Array[Int] {
+fn union_module_typed_lowering_offsets(flat_paths: Array[String], flat_bases: Array[Int]) -> Array[Int] {
   let out: Array[Int] = []
   let mut i = 0
   while i < Array::length(flat_paths) {
-    match module_float_call_offsets_for_path(Array::get(flat_paths, i)) {
+    match module_typed_lowering_offsets_for_path(Array::get(flat_paths, i)) {
       Some(offsets) => {
         let base = Array::get(flat_bases, i)
         let mut j = 0
         while j < Array::length(offsets) {
-          Array::push(out, base + Array::get(offsets, j))
+          Array::push(out, Array::get(offsets, j) + base * 4)
           j = j + 1
         }
       },
@@ -518,13 +523,10 @@ fn union_module_float_offsets(flat_paths: Array[String], flat_bases: Array[Int])
   out
 }
 
-/// #2391: the merge every offsets-consuming linear FS lane shares -- each file
-/// rebased into a disjoint offset range (same rebase as the gc lane, #2226) so
-/// the per-module offset tables union without collisions. Returns the merged
-/// program plus the unioned float-call-offset table for codegen.
-/// The per-file union plus the alias-collision clones' duplicated entries.
-fn union_module_float_offsets_with_clones(flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets: Array[Int]) -> Array[Int] {
-  let out = union_module_float_offsets(flat_paths, flat_bases)
+/// The per-file union plus the alias-collision clones' duplicated entries
+/// (already in merge space and encoded, see the clone emission above).
+fn union_module_typed_lowering_with_clones(flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets: Array[Int]) -> Array[Int] {
+  let out = union_module_typed_lowering_offsets(flat_paths, flat_bases)
   let mut ci = 0
   while ci < Array::length(clone_float_offsets) {
     Array::push(out, Array::get(clone_float_offsets, ci))
@@ -533,12 +535,54 @@ fn union_module_float_offsets_with_clones(flat_paths: Array[String], flat_bases:
   out
 }
 
+/// #2391 slice 2: decode one merged typed-lowering table into its three
+/// channels -- Double call-result offsets (tag 0) for
+/// `CompileCtx.float_call_offsets`, String relational anchors (tag 1) and
+/// String `+` anchors (tag 2) for the rewrite pass. The encoding is the
+/// checker's typed_lowering_enc; the enc/dec pair lives on the checker
+/// boundary so the two sides cannot drift.
+fn split_typed_lowering_offsets(enc: Array[Int]) -> (Array[Int], Array[Int], Array[Int]) {
+  let floats: Array[Int] = []
+  let rels: Array[Int] = []
+  let pluses: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(enc) {
+    let value = Array::get(enc, i)
+    let tag = typed_lowering_enc_tag(value)
+    let off = typed_lowering_enc_offset(value)
+    if tag == 0 {
+      Array::push(floats, off)
+    } else if tag == 1 {
+      Array::push(rels, off)
+    } else if tag == 2 {
+      Array::push(pluses, off)
+    } else {
+      // Tag 3 is unassigned; dropping such a row degrades its site to the
+      // syntactic classifiers rather than misclassifying another offset.
+      ()
+    }
+    i = i + 1
+  }
+  (floats, rels, pluses)
+}
+
+/// #2391: the merge every offsets-consuming linear FS lane shares -- each file
+/// rebased into a disjoint offset range (same rebase as the gc lane, #2226) so
+/// the per-module offset tables union without collisions. Returns the merged
+/// program -- with the typed String-binop rewrite (slice 2) already applied:
+/// `a < b` becomes `str_lex_diff(a, b) < 0` and `a + b` becomes
+/// `String::concat(a, b)` exactly where the modular check recorded a String
+/// operand, the same forms the desugar tracker emits for the shapes it can
+/// classify syntactically -- plus the Double call-result offset table for
+/// codegen. The rewrite anchors with the checker's own railway_expr_off, so
+/// both sides compute the anchor identically by construction.
 fn merged_stmts_and_float_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int]) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
   let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, clone_float_offsets)
-  (merged, union_module_float_offsets_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let (floats, rels, pluses) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  (rewrite_string_binops_stmts(merged, rels, pluses, railway_expr_off), floats)
 }
 
 /// Interior-line breakpoints (span-arc step5): the basename of a file path (text
@@ -1088,8 +1132,9 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, file_paths, file_fps, file_counts, file_bases, clone_float_offsets) = build_grouped_merged_stmts_counted(source_groups)
-  let float_offsets = union_module_float_offsets_with_clones(file_paths, file_bases, clone_float_offsets)
+  let (merged_stmts_raw, file_paths, file_fps, file_counts, file_bases, clone_float_offsets) = build_grouped_merged_stmts_counted(source_groups)
+  let (float_offsets, tl_rels, tl_pluses) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(file_paths, file_bases, clone_float_offsets))
+  let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, railway_expr_off)
   // The key is independent of source CONTENT (the point is to hit after an
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
@@ -1327,8 +1372,12 @@ export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> 
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
-  let (merged_stmts, dbg_files, dbg_file_nls, dbg_stmt_file_id) = build_grouped_merged_stmts_prov(source_groups, flat_paths, flat_bases, clone_float_offsets)
-  let float_offsets = union_module_float_offsets_with_clones(flat_paths, flat_bases, clone_float_offsets)
+  let (merged_stmts_raw, dbg_files, dbg_file_nls, dbg_stmt_file_id) = build_grouped_merged_stmts_prov(source_groups, flat_paths, flat_bases, clone_float_offsets)
+  let (float_offsets, tl_rels, tl_pluses) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  // The String-binop rewrite keeps every surviving node's offset, so the
+  // per-file newline tables and stmt->file mapping stay valid: a rewritten
+  // binop's operands keep their offsets and the injected call nodes carry -1.
+  let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, railway_expr_off)
   compile_wasi_module_with_sources_break_impl_with_float_offsets(merged_stmts, entry_name, array_empty(), DbgProv::{
     files: dbg_files,
     file_nls: dbg_file_nls,

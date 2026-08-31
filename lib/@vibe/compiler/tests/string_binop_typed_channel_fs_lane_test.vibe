@@ -1,0 +1,109 @@
+//# Imports
+
+import ./string_binop_typed_channel_fs_dep.vibe {
+  sb_dep_tag
+}
+
+//# Functions
+
+// #2391 slice 2: the typed String-binop channel on the FS lane -- the lane
+// `vibe test` and `vibe run` take by default. The desugar tracker rewrites
+// `a < b` to `str_lex_diff(a, b) < 0` and `a + b` to `String::concat(a, b)`
+// only for operands it can classify syntactically; an operand it cannot
+// classify used to keep the raw binop, which on the (ptr<<32)|len string
+// repr compares POINTERS for `<` and adds the lengths for `+`.
+//
+// Measured on the stage2 before the wiring (2026-08-31, gen_main3 at
+// 978ccef): each non-control shape below answered by address or garbled --
+// the inferred lambda's and alias call's `p < q` printed `true` where
+// content says `false` (allocation order), and the lambda `+` printed an
+// empty string for "ab".
+//
+// The fix rides the same per-module carrier as the Double channel (#2425):
+// the modular check records each String relational/`+` binop's anchor
+// offset, the FS merge rebases and unions the tables, and
+// rewrite_string_binops_stmts rewrites exactly those binops into the same
+// forms the tracker emits. Every value below is built so allocation order
+// disagrees with content order -- an address compare cannot pass by luck.
+
+fn sb_mk(s: String) -> String {
+  String::concat(s, "x")
+}
+
+fn sb_id[T](v: T) -> T {
+  v
+}
+
+//# Tests
+
+test "#2391 string channel: an inferred lambda's results compare by content" {
+  let id = (x) -> {
+    x
+  }
+  let p = id(String::concat("b", "x"))
+  let q = id(String::concat("a", "x"))
+  inspect(__to_string(p < q), "false")
+  inspect(__to_string(p > q), "true")
+  inspect(__to_string(p <= q), "false")
+  inspect(__to_string(q >= p), "false")
+}
+
+test "#2391 string channel: a call through a local alias" {
+  let f = sb_mk
+  let p = f("b")
+  let q = f("a")
+  inspect(__to_string(p < q), "false")
+}
+
+test "#2391 string channel: `+` through an inferred lambda" {
+  let id = (x) -> {
+    x
+  }
+  let p = id(String::concat("a", ""))
+  let q = id(String::concat("b", ""))
+  inspect(p + q, "ab")
+}
+
+test "#2391 string channel: an IMPORTED function through an alias" {
+  // The shape only the FS lane has: the callee's declaration lives in
+  // another module, and the alias hides its name from the merged-program
+  // tracker, so the result type reaches this comparison only through the
+  // checker's import environment.
+  let f = sb_dep_tag
+  let p = f("b")
+  let q = f("a")
+  inspect(__to_string(p < q), "false")
+}
+
+test "#2391 string channel: shapes the pre-channel lowering already classified stay right" {
+  // Tracked literals, a generic instantiated at String, and Array::get on an
+  // annotated Array[String] all answered by content BEFORE this channel
+  // (tracker, erased-generic dispatch, and element-shape recording
+  // respectively); the rewrite must not disturb them.
+  inspect(__to_string("aaa" < "bbb"), "true")
+  let p = sb_id(String::concat("b", "x"))
+  let q = sb_id(String::concat("a", "x"))
+  inspect(__to_string(p < q), "false")
+  let xs: Array[String] = []
+  Array::push(xs, String::concat("b", "x"))
+  Array::push(xs, String::concat("a", "x"))
+  inspect(__to_string(Array::get(xs, 0) < Array::get(xs, 1)), "false")
+}
+
+test "#2391 string channel: Int comparisons and sums are not reclassified" {
+  let id = (x) -> {
+    x
+  }
+  let a = id(20)
+  let b = id(3)
+  inspect(__to_string(a < b), "false")
+  inspect(__to_string(a + b), "23")
+  inspect(__to_string(2 < 10), "true")
+}
+
+test "#2391 string channel: the Double half of the carrier still answers" {
+  let f = () -> {
+    2.5
+  }
+  inspect(__to_string(f()), "2.5")
+}

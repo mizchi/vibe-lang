@@ -9213,7 +9213,7 @@ found_sidecar=0
 while IFS= read -r sc_file; do
   found_sidecar=1
   head -2 "$sc_file" > "$sc_file.torn" && mv "$sc_file.torn" "$sc_file"
-done < <(grep -rl "^module_float_call_offsets" "$ffsdir/cache" 2>/dev/null)
+done < <(grep -rl "^module_typed_lowering_offsets" "$ffsdir/cache" 2>/dev/null)
 if [ "$found_sidecar" != "1" ]; then
   echo "[compiler-gate] FAIL: no float-offsets sidecars found to corrupt (#2391) -- the probe went stale" >&2
   exit 1
@@ -9234,7 +9234,7 @@ fi
 # Digit-level corruption inside an INTACT sidecar must also decode as a miss
 # (#2425 review round 5): the torn compile above re-warmed the cache, so flip
 # one digit of the first offset row's first copy in every sidecar (same
-# length -- the end marker survives) and compile again. The v5 duplicated-row
+# length -- the end marker survives) and compile again. The duplicated-row
 # equality rejects the row, the module re-checks, and the bytes stay
 # identical; the v3 decoder accepted this and the emitted bytes CHANGED
 # (red-proven on the PR).
@@ -9249,7 +9249,7 @@ while IFS= read -r sc_file; do
     { print }' "$sc_file" > "$sc_file.flip" && mv "$sc_file.flip" "$sc_file"
   file_mismatches=$(awk -F'\t' 'NF == 2 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $1 != $2 { n += 1 } END { print n + 0 }' "$sc_file")
   flipped_rows=$((flipped_rows + file_mismatches))
-done < <(grep -rl "^module_float_call_offsets" "$ffsdir/cache" 2>/dev/null)
+done < <(grep -rl "^module_typed_lowering_offsets" "$ffsdir/cache" 2>/dev/null)
 # The mutation must actually HIT (gate discipline: a red test that matched
 # nothing proves nothing) -- the lane test's own modules carry offset rows,
 # so at least one sidecar must now hold a mismatched duplicate pair.
@@ -9273,7 +9273,7 @@ fi
 # Whole-row deletion inside an intact sidecar must also decode as a miss
 # (#2425 review round 6): the flipped compile re-warmed the cache, so delete
 # the first duplicated row from every sidecar (header, remaining pairs,
-# count line, and end marker all survive) and compile again. The v5 unary
+# count line, and end marker all survive) and compile again. The unary
 # count line no longer matches the row set, the module re-checks, and the
 # bytes stay identical.
 deleted_rows=0
@@ -9285,7 +9285,7 @@ while IFS= read -r sc_file; do
   if [ "$before_rows" -gt 0 ]; then
     deleted_rows=$((deleted_rows + 1))
   fi
-done < <(grep -rl "^module_float_call_offsets" "$ffsdir/cache" 2>/dev/null)
+done < <(grep -rl "^module_typed_lowering_offsets" "$ffsdir/cache" 2>/dev/null)
 if [ "$deleted_rows" = "0" ]; then
   echo "[compiler-gate] FAIL: row-deletion mutation matched no sidecar row (#2391) -- the probe went stale" >&2
   exit 1
@@ -9305,3 +9305,52 @@ if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/rowdel.wasm"; then
 fi
 rm -rf "$ffsdir"
 echo "[compiler-gate] FS-lane Double call-result offsets + cache-state byte identity ok (#2391)"
+
+# 126. #2391 slice 2: FS-lane String relational/`+` binops ride the SAME
+#      modular check. The desugar tracker rewrites `a < b` / `a + b` to
+#      str_lex_diff / String::concat only for operands it can classify
+#      syntactically; the checker records every String binop's anchor in the
+#      typed-lowering sidecar (tags 1/2 of the enc encoding) and the FS merge
+#      rewrites exactly those binops. Red-proven against the pre-channel
+#      stage2: the lane test's inferred-lambda `<` answered `true` (address
+#      order) where content says `false`, and the lambda `+` printed an empty
+#      string. Cold vs warm byte identity pins cache-state independence for
+#      the String half the same way block 125 pins it for the Double half.
+echo "[compiler-gate] 126/126 FS-lane String binop channel rides the modular check (#2391)"
+sbdir="_build/_gate_string_binop_fs"
+rm -rf "$sbdir"; mkdir -p "$sbdir/cache"
+for pass in cold warm; do
+  VIBE_BUILD_CACHE_DIR="$sbdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    lib/@vibe/compiler/tests/string_binop_typed_channel_fs_lane_test.vibe "$sbdir/$pass.wasm" __no_entry__ \
+    >/dev/null 2>&1 || true
+  if [ ! -s "$sbdir/$pass.wasm" ]; then
+    echo "[compiler-gate] FAIL: FS-lane String binop channel test did not compile ($pass, #2391)" >&2
+    cat "$sbdir/$pass.wasm.diag" 2>/dev/null >&2 || true
+    exit 1
+  fi
+done
+if ! cmp -s "$sbdir/cold.wasm" "$sbdir/warm.wasm"; then
+  echo "[compiler-gate] FAIL: FS-lane String binop output depends on persistent-cache state (#2391)" >&2
+  exit 1
+fi
+# The warm cache's sidecars must actually carry String rows (enc tag 1 or 2),
+# or the channel went inert and the run below proves nothing about it (gate
+# discipline: assert the probe hit, not just that the answer looked right).
+string_rows=0
+while IFS= read -r sc_file; do
+  file_rows=$(awk -F'\t' 'NF == 2 && $1 ~ /^[0-9]+$/ && $1 == $2 { if ($1 % 4 == 1 || $1 % 4 == 2) n += 1 } END { print n + 0 }' "$sc_file")
+  string_rows=$((string_rows + file_rows))
+done < <(grep -rl "^module_typed_lowering_offsets" "$sbdir/cache" 2>/dev/null)
+if [ "$string_rows" = "0" ]; then
+  echo "[compiler-gate] FAIL: no String binop rows in any typed-lowering sidecar (#2391) -- the channel went inert" >&2
+  exit 1
+fi
+if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$sbdir/warm.wasm" >"$sbdir/run.log" 2>&1; then
+  echo "[compiler-gate] FAIL: a String binop the tracker cannot classify answered by address on the FS lane (#2391)" >&2
+  cat "$sbdir/run.log" >&2 || true
+  exit 1
+fi
+rm -rf "$sbdir"
+echo "[compiler-gate] FS-lane String binop typed channel + cache-state byte identity ok (#2391)"
