@@ -4491,7 +4491,7 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String) -> Array[String] {
 /// `compile_wasi_module_linked_impl` below forwards an empty one, which is the
 /// fail-closed default: an empty table classifies nothing, so those lanes keep
 /// the pre-#2158 syntactic answer byte for byte.
-export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
+export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
   // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
   // error there is exactly the throw each pass used to raise inline here.
@@ -4670,6 +4670,12 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
   // rather than against whatever the entry handed the checker. Empty in, empty
   // out, without a walk.
   let float_call_offsets = unique_call_offsets_in_stmts(stmts, checker_float_call_offsets)
+  // #2424: the Int render-argument table needs no uniqueness filter of its
+  // own. The checker already refuses an offset whose typed occurrences
+  // disagree, and #2429's per-file rebase (`+ base * 4` on the encoded value)
+  // keeps the merged offset spaces disjoint, so what arrives here is already
+  // the fail-closed set.
+  let int_render_offsets = checker_int_render_offsets
   let fn_param_counts = lc_fresh_int_array()
   let fn_needs_env_list = lc_fresh_bool_array()
   let fn_stmt_indices = lc_fresh_int_array()
@@ -7686,6 +7692,7 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
           ctor_float_fields: ctor_float_fields_list,
           float_ret_fns: float_ret_fn_names,
           float_call_offsets: float_call_offsets,
+          int_render_offsets: int_render_offsets,
           // Sorted copy for compile_expr.vibe's per-identifier membership check
           // (bsearch_leftmost) -- keep `thunk_names_list` itself unsorted, its
           // POSITION is load-bearing for the per-thunk global-slot index lookup
@@ -9866,11 +9873,11 @@ export fn compile_wasi_module_linked_impl_with_float_offsets(stmts: Array[Stmt],
 }
 
 /// #2158: the historical signature. Every caller that has no checker offsets to
-/// give -- which is every caller but the two `*_with_float_offsets` entries
+/// give -- which is every caller but the two `*_with_typed_offsets` entries
 /// below -- goes through here and gets an empty table, so its output is
 /// unchanged.
 export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, array_empty())
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, array_empty(), array_empty())
 }
 
 export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
@@ -9886,9 +9893,9 @@ export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String)
 /// `elaborate_heap_params` rewrites the statements before codegen sees them;
 /// the offsets are filtered for uniqueness inside the linked impl, AFTER that
 /// rewrite, so its output is what the guarantee is proven against.
-export fn compile_wasi_module_rc_impl_with_float_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
+export fn compile_wasi_module_rc_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }
 
 /// #2388 step 3: compile_wasi_module_rc_impl with the body caches threaded
@@ -9904,9 +9911,9 @@ export fn compile_wasi_module_rc_cached_impl(stmts_in: Array[Stmt], entry_name: 
 /// #2391: `compile_wasi_module_rc_cached_impl` plus the checker's Double
 /// call-result offsets (#2158), so the body-cached FS lane compiles the same
 /// program the ordinary rc lane does and their outputs stay byte-comparable.
-export fn compile_wasi_module_rc_cached_impl_with_float_offsets(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
+export fn compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets)
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }
 
 /// Preserve the post-lowering AST for the explicit `no-dce` compile mode.
@@ -9917,8 +9924,8 @@ export fn compile_wasi_module_no_dce_impl(stmts: Array[Stmt], entry_name: String
 /// #2158: `compile_wasi_module_no_dce_impl` plus the checker's Double
 /// call-result offsets. This is the `vibe test` / `vibe run` FS lane
 /// (`compile_file_fs_mode`, entry/compiler/file_compile/file_compile.vibe).
-export fn compile_wasi_module_no_dce_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+export fn compile_wasi_module_no_dce_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }
 
 /// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
@@ -9930,9 +9937,9 @@ export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: 
 /// #2391 (#2425 review round 4): shadow-instrumented RC with the checker's
 /// Double call-result offsets, so VIBE_RC=shadow compiles the same program
 /// the production rc lane does.
-export fn compile_wasi_module_rc_shadow_impl_with_float_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
+export fn compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }
 
 /// #1259 step 7: compile the module twice -- once compiling every body and
@@ -10043,8 +10050,8 @@ export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: 
 /// call-result offsets. This is the single-source lane
 /// (`compile_source_wasi_only`, entry/source_compile/wasi_only/preprocess_compile.vibe),
 /// where one text means one offset space with nothing to collide.
-export fn compile_wasi_module_with_sources_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+export fn compile_wasi_module_with_sources_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }
 
 /// Coverage build (#cov): compile with function-level hit instrumentation +
@@ -10073,14 +10080,14 @@ export fn compile_wasi_module_with_sources_break_impl(stmts: Array[Stmt], entry_
 /// call-result offsets -- otherwise a coverage/trace/shadow/break build of a
 /// program whose Doubles need the channel silently renders raw f64 bits
 /// where the ordinary build renders numbers.
-export fn compile_wasi_module_with_sources_coverage_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+export fn compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }
 
-export fn compile_wasi_module_with_sources_trace_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+export fn compile_wasi_module_with_sources_trace_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }
 
-export fn compile_wasi_module_with_sources_break_impl_with_float_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv, checker_float_call_offsets: Array[Int]) -> Bytes with Exception {
-  compile_wasi_module_linked_impl_with_float_offsets(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, true, prov, codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets)
+export fn compile_wasi_module_with_sources_break_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, true, prov, codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets)
 }

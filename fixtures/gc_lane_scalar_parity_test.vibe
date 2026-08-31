@@ -604,3 +604,75 @@ test "#2426 a Double keeps its type through a join" {
   // would be worse than leaving the row out: this file's contract is that
   // every assertion in it holds on every lane.
 }
+
+/// #2424: the render channel. `__to_string` decides Int-vs-String from a
+/// HEURISTIC ON THE BIT PATTERN, because no type reaches its lowering, and
+/// both lanes rescued it by classifying the argument syntactically from a slot
+/// log seeded at binding sites. Correctness was therefore exactly the set of
+/// binding forms someone remembered to seed; everything else rendered the
+/// EMPTY STRING with no diagnostic. Every row below did, on both lanes,
+/// measured on `7f7fa8a57`.
+///
+/// They answer now because the checker hands codegen the type it already
+/// computed: render / `eq` argument offsets whose checked type is `Int`, on
+/// #2429's typed-lowering channel as tag 3.
+fn irc_ret_big() -> Int {
+  64<<32
+}
+
+test "#2424 a large Int survives the binding forms the slot log never seeded" {
+  // A match binding: the type comes from the scrutinee's enum, which the slot
+  // log never sees.
+  let o = Some(64<<32)
+  match o {
+    Some(v) => assert(__to_string(v) == "274877906944"),
+    None => assert(false)
+  }
+  // A for-in element: from the iterable.
+  let xs: Array[Int] = [64<<32]
+  for x in xs {
+    assert(__to_string(x) == "274877906944")
+  }
+  // A closure capture: the binding is in the enclosing frame, and a lambda
+  // compiles into its own.
+  let big = 64<<32
+  let f = () -> String {
+    __to_string(big)
+  }
+  assert(f() == "274877906944")
+  // A call result -- `Array::get` from the array's element type, a user
+  // function from its declared return type.
+  assert(__to_string(Array::get(xs, 0)) == "274877906944")
+  assert(__to_string(irc_ret_big()) == "274877906944")
+  // Through `eq`, the other spelling that reads the same classifier.
+  assert(!eq(Array::get(xs, 0), 65<<32))
+  assert(eq(Array::get(xs, 0), 64<<32))
+  // BOTH operands call-shaped. The two lines above cannot reach this case:
+  // the linear `eq` gate is a disjunction, so a literal `65<<32` operand
+  // satisfies it on its own and the call-shaped one is never asked about.
+  // With both sides calls, the syntactic classifier answers false for each,
+  // the bound `eq` and its string fallback take over, and two DISTINCT large
+  // Ints compared equal (measured: this assertion trapped on linear while gc,
+  // whose classifier already read the checked offsets, answered correctly).
+  let ys: Array[Int] = [65<<32]
+  assert(!eq(Array::get(xs, 0), Array::get(ys, 0)))
+  assert(eq(Array::get(xs, 0), irc_ret_big()))
+  // The controls: the classifier must not start answering Int for everything.
+  let s = "hi"
+  assert(__to_string(s) == "hi")
+  let b = 1 < 2
+  assert(__to_string(b) == "true")
+  let d = 1.5
+  assert(__to_string(d) == "1.5")
+  assert(__to_string(123) == "123")
+  assert(__to_string(0) == "0")
+  // NOT asserted, deliberately, and measured: a tuple PROJECTION
+  // (`__to_string(t.0)`) still renders the empty string. `parse_postfix`
+  // gives the `EDot` node its receiver's offset, so the checker records two
+  // occurrences there -- the tuple and the `Int` -- and the producer refuses
+  // an offset whose occurrences disagree. That refusal is the correctness
+  // condition for a consumer keyed on offset alone, not conservatism: emitting
+  // it would make `__to_string(t)` render a tuple through the integer
+  // renderer. Closing the row needs the key to carry the node kind as well as
+  // the offset, which the two-bit tag has no room for. #2424.
+}
