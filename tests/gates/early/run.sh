@@ -1823,6 +1823,38 @@ run_test_block_fixtures_gc() {
   done
 }
 
+# #2426: the same fixtures on the RC lane, which this gate never reached.
+# `tests/gates/lib.sh` pins `VIBE_RC=0` for every lane, so the plain
+# `run_test_block_fixtures` above compiles on the BUMP allocator despite its
+# "linear" label -- and RC, the production default, was not exercised here at
+# all. Adding a second bump invocation would have run the identical
+# configuration twice (Codex review on #2430 caught exactly that). Selecting RC
+# inline in the command, per the #2248 rule that a selector is never routed
+# through a variable.
+run_test_block_fixtures_rc() {
+  local label="$1"; shift
+  local fx fxout
+  [ "$#" -gt 0 ] || { echo "[compiler-gate] FAIL: $label matched no fixtures" >&2; exit 1; }
+  for fx in "$@"; do
+    [ -f "$fx" ] || { echo "[compiler-gate] FAIL: $label: no such fixture '$fx'" >&2; exit 1; }
+    fxout="_build/_gate_tbfrc_$(basename "${fx%.vibe}").wasm"
+    rm -f "$fxout" "$fxout.diag"
+    VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+      "$fx" "$fxout" __no_entry__ >/dev/null 2>&1 || true
+    if [ ! -s "$fxout" ]; then
+      echo "[compiler-gate] FAIL: $fx did not compile on the RC lane ($label)" >&2
+      cat "$fxout.diag" 2>/dev/null >&2; exit 1
+    fi
+    if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+        --invoke _start "$fxout" >/dev/null 2>&1; then
+      echo "[compiler-gate] FAIL: $fx has a failing test on the RC lane (assert trapped) ($label)" >&2
+      exit 1
+    fi
+    rm -f "$fxout" "$fxout.diag" "$fxout.funcmap"
+  done
+}
+
 # 15b. extended derive(...) regression (#638 / #694): enum `derive(Ord/Show)`,
 #      struct + enum `derive(Default)`, `derive(Eq)`, and `derive(Hash)`
 #      including transparent Map keys — `map_key_to_string = [K: Hash](key) ->
@@ -1984,8 +2016,9 @@ echo '[compiler-gate] bit-not ~ ok'
 #        rendered as the empty string, and `eq` on two distinct large Ints
 #        trapped. A single-lane run cannot see any of them.
 echo '[compiler-gate] 15b-3/15 gc-lane scalar parity (#2404/#2405/#2407)'
-run_test_block_fixtures "gc-lane scalar parity (linear)" fixtures/gc_lane_scalar_parity_test.vibe
+run_test_block_fixtures "gc-lane scalar parity (linear, bump)" fixtures/gc_lane_scalar_parity_test.vibe
 run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_parity_test.vibe
+run_test_block_fixtures_rc "gc-lane scalar parity (linear, RC)" fixtures/gc_lane_scalar_parity_test.vibe
 echo '[compiler-gate] gc-lane scalar parity ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a

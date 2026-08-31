@@ -1062,20 +1062,29 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_end(buf)
         nl2
       }
-    } else if op == "==" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
-      // #704: float `==`/`!=` under RC must NOT go through emit_eq_value — under
-      // RC a float is a BOXED heap value, so the generic eq compares box
-      // pointers (always unequal for two distinct boxes), making `0.0 == 0.0`
-      // false. Divert floatish RC `==`/`!=` to the float branch below, which
-      // unboxes and compares values with f64_eq/f64_ne. (Non-RC keeps the raw
-      // i64-bits compare here, so the default path is byte-identical.)
+    } else if op == "==" && !(expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx)) {
+      // #704: float `==`/`!=` must NOT go through emit_eq_value. Under RC a
+      // float is a BOXED heap value, so the generic eq compares box pointers
+      // (always unequal for two distinct boxes), making `0.0 == 0.0` false.
+      // Divert a floatish `==`/`!=` to the float branch below, which unboxes
+      // when RC is on and compares values with f64_eq/f64_ne.
+      //
+      // #2426: this used to divert only `ctx.enable_rc`, on the ground that
+      // leaving non-RC on the raw i64-bits compare kept that path
+      // byte-identical. Byte-identity was preserving two wrong answers, and
+      // they are the same two the gc lane had: raw bits separate `0.0` from
+      // `-0.0`, which IEEE 754 does not, and they equate two NaNs, which IEEE
+      // 754 also does not. Measured on `VIBE_RC=0` before this change:
+      // `0.0 == -0.0` false, `nan == nan` true. The float branch below has
+      // been non-RC-aware since #704 (every unbox is already guarded), so the
+      // diversion is all that was missing.
       let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       if ctx.enable_rc {
         emit_i64_const(buf, 1)
         emit_i64_shl(buf)
       }
       nle
-    } else if op == "!=" && !(ctx.enable_rc && (expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx))) {
+    } else if op == "!=" && !(expr_is_floatish(lhs, local_names, ctx) || expr_is_floatish(rhs, local_names, ctx)) {
       let nle = emit_eq_value(buf, lhs, rhs, local_names, next_local, ctx, ld, compile_expr)
       emit_i64_eqz(buf)
       emit_i64_extend_i32_s(buf)
@@ -1263,11 +1272,11 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       if cop == "==" || cop == "!=" || cop == "<" || cop == ">" || cop == "<=" || cop == ">=" {
         let clhs = get_ebinop_lhs(cond)
         let crhs = get_ebinop_rhs(cond)
-        if cop == "==" && !(ctx.enable_rc && (expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx))) {
+        if cop == "==" && !(expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx)) {
           let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           cnl2
-        } else if cop == "!=" && !(ctx.enable_rc && (expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx))) {
+        } else if cop == "!=" && !(expr_is_floatish(clhs, local_names, ctx) || expr_is_floatish(crhs, local_names, ctx)) {
           let cnl2 = emit_eq_value(buf, clhs, crhs, local_names, next_local, ctx, ld, compile_expr)
           emit_i32_wrap_i64(buf)
           emit_i32_eqz(buf)
@@ -1349,12 +1358,12 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
           if iop == "==" || iop == "!=" || iop == "<" || iop == ">" || iop == "<=" || iop == ">=" {
             let ilhs = get_ebinop_lhs(uoperand)
             let irhs = get_ebinop_rhs(uoperand)
-            if iop == "==" && !(ctx.enable_rc && (expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx))) {
+            if iop == "==" && !(expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx)) {
               let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)
               inl2
-            } else if iop == "!=" && !(ctx.enable_rc && (expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx))) {
+            } else if iop == "!=" && !(expr_is_floatish(ilhs, local_names, ctx) || expr_is_floatish(irhs, local_names, ctx)) {
               let inl2 = emit_eq_value(buf, ilhs, irhs, local_names, next_local, ctx, ld, compile_expr)
               emit_i32_wrap_i64(buf)
               emit_i32_eqz(buf)

@@ -486,9 +486,16 @@ fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names
 }
 
 /// The equality value for `lhs == rhs` (raw i64 0/1 on the stack): tuple / ctor
-/// literals get structural comparison, provably-scalar operands a raw i64.eq,
-/// everything else the generic `eq` builtin (bit-equal fast path + string
-/// content fall-back). Mirrors the linear lane's emit_eq_value routing.
+/// literals get structural comparison, floatish operands an `f64.eq` (#2426 --
+/// raw bits separate `0.0` from `-0.0`, IEEE 754 does not), provably-scalar
+/// operands a raw i64.eq, everything else the generic `eq` builtin (bit-equal
+/// fast path + string content fall-back). Mirrors the linear lane's
+/// emit_eq_value routing, including which operands it declines to take.
+///
+/// `!=` is the callers' `eqz` over this value, so it needs no arm of its own
+/// and stays IEEE-correct through the same one: `f64.eq(NaN, NaN)` is 0, and
+/// its negation is the `true` that `NaN != NaN` owes. The raw i64 compare
+/// answered `true` for `NaN == NaN`, since the bits are identical.
 fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let lhs_is_tuple = match lhs {
     ETuple(_) => true,
@@ -549,6 +556,32 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
       rfc
     }
     emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, cefn)
+  } else if gc_expr_is_floatish(lhs, local_names, ctx) || gc_expr_is_floatish(rhs, local_names, ctx) {
+    // #2426: Double equality, which reached no float comparison at all before.
+    // Both arms below answer on the RAW BITS -- `gc_expr_is_intish` claims
+    // `+ - * /` from the operator alone and emits `i64.eq`, and the `eq`
+    // builtin's fall-back reads each operand as a `(ptr << 32) | len` fat
+    // pointer -- and `0.0` and `-0.0` differ in exactly the sign bit. So
+    // `i64.eq` said "not equal", and the builtin agreed for a different
+    // reason: bit 63 makes `-0.0`'s implied pointer far out of bounds, its
+    // "both operands look like strings" guard answers no, and the fall-back
+    // returns 0. IEEE 754 says `+0.0 == -0.0` is true, and the linear lane
+    // says so too (`compile_expr`'s `==` arm diverts a floatish operand away
+    // from `emit_eq_value` for the same reason, one lane over).
+    //
+    // The `<` `>` `<=` `>=` lowering in compile_expr_gc has routed through
+    // f64 since #538, and its comment already names -0.0 as a value raw bits
+    // misrank; equality was simply never given the same arm. Placed AFTER the
+    // structural arms so a tuple or constructor holding Doubles keeps its
+    // field-wise comparison, and before the scalar ones so a float never
+    // reaches a bit compare.
+    let nlf1 = cefn(buf, lhs, local_names, next_local, ctx, ld)
+    emit_f64_reinterpret_i64(buf)
+    let nlf2 = cefn(buf, rhs, local_names, nlf1, ctx, ld)
+    emit_f64_reinterpret_i64(buf)
+    emit_f64_eq(buf)
+    emit_i64_extend_i32_s(buf)
+    nlf2
   } else if gc_expr_is_intish(lhs) || gc_expr_is_intish(rhs) {
     let nl1 = cefn(buf, lhs, local_names, next_local, ctx, ld)
     let nl2 = cefn(buf, rhs, local_names, nl1, ctx, ld)
