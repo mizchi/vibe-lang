@@ -672,11 +672,38 @@ export fn expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx)
     if tag == 7 {
       expr_is_floatish(get_eif_then(e), local_names, ctx) && expr_is_floatish(get_eif_else(e), local_names, ctx)
     } else if tag == 9 {
-      expr_is_floatish(get_elet_body(e), local_names, ctx)
+      // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
+      // is the shape a bare body recursion misses, because the body is
+      // `EIdent(x)` and `x` has no slot at classification time (Codex review
+      // on #2432). It is answerable WITHOUT an environment: the body is a
+      // single identifier and the `let` immediately above it binds that exact
+      // name, so no inner scope can intervene and no outer binding of the same
+      // name is reachable. Anything further -- `let x = 0.0; let z = x; z` --
+      // is NOT answerable this way and stays open, measured: it still compares
+      // by raw bits on all three lanes. Closing it needs the binding's TYPE,
+      // which is #2424's channel; the alternative, an environment carried
+      // through the descent, is the design CLAUDE.md records going silently
+      // wrong (an outer `let v = 1` read for an inner `v` of another type).
+      let jb9 = get_elet_body(e)
+      if expr_tag(jb9) == 4 && get_eident_name(jb9) == get_elet_name(e) {
+        expr_is_floatish(get_elet_val(e), local_names, ctx)
+      } else {
+        expr_is_floatish(jb9, local_names, ctx)
+      }
     } else if tag == 10 {
-      expr_is_floatish(get_eletrec_body(e), local_names, ctx)
+      let jb10 = get_eletrec_body(e)
+      if expr_tag(jb10) == 4 && get_eident_name(jb10) == get_eletrec_name(e) {
+        expr_is_floatish(get_eletrec_val(e), local_names, ctx)
+      } else {
+        expr_is_floatish(jb10, local_names, ctx)
+      }
     } else if tag == 11 {
-      expr_is_floatish(get_eletmut_body(e), local_names, ctx)
+      let jb11 = get_eletmut_body(e)
+      if expr_tag(jb11) == 4 && get_eident_name(jb11) == get_eletmut_name(e) {
+        expr_is_floatish(get_eletmut_val(e), local_names, ctx)
+      } else {
+        expr_is_floatish(jb11, local_names, ctx)
+      }
     } else if tag == 14 {
       expr_is_floatish(get_eseq_second(e), local_names, ctx)
     } else {

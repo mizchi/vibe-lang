@@ -382,9 +382,39 @@ fn bc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -
     // than one lowering, and their gap is #2424's subject rather than this
     // one's.
     EIf(_, jt, jf) => bc_expr_is_floatish(jt, local_names, ctx) && bc_expr_is_floatish(jf, local_names, ctx),
-    ELet(_, _, jlb, _) => bc_expr_is_floatish(jlb, local_names, ctx),
-    ELetRec(_, _, jrb) => bc_expr_is_floatish(jrb, local_names, ctx),
-    ELetMut(_, _, jmb, _) => bc_expr_is_floatish(jmb, local_names, ctx),
+    // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
+    // is the shape a bare body recursion misses: the body is `EIdent(x)` and
+    // `x` has no slot at classification time (Codex review on #2432).
+    // Answerable WITHOUT an environment, because the body is a single
+    // identifier and the `let` immediately above binds that exact name, so no
+    // inner scope intervenes and no outer binding of the name is reachable.
+    // One hop further -- `let x = 0.0; let z = x; z` -- is not, and stays
+    // open (measured: still a raw bit compare on all three lanes). That one
+    // needs the binding's TYPE, i.e. #2424's channel.
+    ELet(jlbn, jlbv, jlb, _) => match jlb {
+      EIdent(jlbn2, _) => if jlbn == jlbn2 {
+        bc_expr_is_floatish(jlbv, local_names, ctx)
+      } else {
+        bc_expr_is_floatish(jlb, local_names, ctx)
+      },
+      _ => bc_expr_is_floatish(jlb, local_names, ctx)
+    },
+    ELetRec(jrbn, jrbv, jrb) => match jrb {
+      EIdent(jrbn2, _) => if jrbn == jrbn2 {
+        bc_expr_is_floatish(jrbv, local_names, ctx)
+      } else {
+        bc_expr_is_floatish(jrb, local_names, ctx)
+      },
+      _ => bc_expr_is_floatish(jrb, local_names, ctx)
+    },
+    ELetMut(jmbn, jmbv, jmb, _) => match jmb {
+      EIdent(jmbn2, _) => if jmbn == jmbn2 {
+        bc_expr_is_floatish(jmbv, local_names, ctx)
+      } else {
+        bc_expr_is_floatish(jmb, local_names, ctx)
+      },
+      _ => bc_expr_is_floatish(jmb, local_names, ctx)
+    },
     ESeq(_, jsb) => bc_expr_is_floatish(jsb, local_names, ctx),
     EMatch(_, jarms) => {
       let jn = Array::length(jarms)

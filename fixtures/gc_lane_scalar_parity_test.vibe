@@ -518,6 +518,35 @@ test "#2426 a Double keeps its type through a join" {
   }
   assert(ba == bb)
   assert(eq(ba, bb))
+  // A join arm that ends in its OWN binder. The body is a bare `EIdent`, so a
+  // plain body recursion answers "not a Double" -- the name has no slot at
+  // classification time. Answered without an environment: the `let`
+  // immediately above the identifier binds that exact name, so no inner scope
+  // intervenes and no outer binding of the name is reachable (Codex review on
+  // #2432).
+  let la = if jcond(1) {
+    let lx = 0.0
+    lx
+  } else {
+    let lx = 1.0
+    lx
+  }
+  let lb2 = if jcond(1) {
+    let ly = (-0.0)
+    ly
+  } else {
+    let ly = 1.0
+    ly
+  }
+  assert(la == lb2)
+  assert(eq(la, lb2))
+  assert(!(la == 1.5))
+  // NOT asserted, deliberately, and measured: ONE HOP FURTHER
+  // (`let x = 0.0; let z = x; z` in each arm) still compares by raw bits on
+  // all three lanes. That shape cannot be answered from syntax alone -- it
+  // needs the binding's TYPE -- and carrying an environment through the
+  // descent instead is the design CLAUDE.md records going silently wrong (an
+  // outer `let v = 1` read for an inner `v` of another type). #2424.
   // NaN through a join, the other direction: identical bits, not equal.
   let na = if jcond(1) {
     dz(0.0, 0.0)
