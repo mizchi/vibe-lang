@@ -7242,6 +7242,27 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // base is now known before the first body is compiled, so a body no longer
   // depends on its predecessors having been compiled. That is the property
   // step 7's WholeProgramPlan needs.
+  // #2448 (Codex review): the one piece of scope the plan walk needs. A user
+  // program may declare `fn Array::get(...)`, and the checker resolves that
+  // name to the DECLARATION -- so codegen emits the user function's table slot
+  // rather than an eta-expansion of the builtin, and the plan must not reserve
+  // a slot for one.
+  //
+  // Only the FIRST `num_user_funcs` entries: the builtin names are appended to
+  // `fn_names_list` further up (the all-functions table), and `num_user_funcs`
+  // is the length captured before that. Measured on the whole list instead,
+  // EVERY value form planned 0 while the walk emitted 1 -- the guard matched
+  // the builtin's own row, so `let sub = String::substring` failed with
+  // `lambda plan over-count: planned through 0, walk stopped at 1`. The
+  // prefix is the same set codegen tests through the func table, where a user
+  // function is an entry at or above `func_offset`.
+  let user_fn_names_only: Array[String] = []
+  let mut ufn_i = 0
+  while ufn_i < num_user_funcs {
+    Array::push(user_fn_names_only, Array::get(fn_names_list, ufn_i))
+    ufn_i = ufn_i + 1
+  }
+  let user_fn_names_sorted = sorted_names_of(user_fn_names_only)
   let planned_bodies: Array[Expr] = []
   let lambda_bases = lc_fresh_int_array()
   let mut lambda_base_acc = 0
@@ -7273,9 +7294,9 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
     // routes it through compile_lambda. Counting it would reserve a dead slot
     // per user function.
     lambda_base_acc = lambda_base_acc + (if is_efn(pb_expr) {
-      count_lambda_sites_expr(get_efn_body(pb_expr))
+      count_lambda_sites_expr(get_efn_body(pb_expr), user_fn_names_sorted)
     } else {
-      count_lambda_sites_expr(pb_expr)
+      count_lambda_sites_expr(pb_expr, user_fn_names_sorted)
     })
     pbi = pbi + 1
   }

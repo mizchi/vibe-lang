@@ -31,6 +31,16 @@
 //     indirect call, and until that exists `let f = Fs::read_file` launders
 //     authority (ADR-0075/0084/0088);
 //   * a name with NO registry row (`Map::set`) -- there is no arity to expand;
+//   * a POLYMORPHIC row (`Array::get`, `Array::length`) -- the registry spells
+//     an open position as `reg_any()`, and every occurrence is independent, so
+//     a value form hands out a signature that does not relate the argument to
+//     the result. Measured: `let get = Array::get` then
+//     `let s: String = get([1], 0)` checked CLEAN and printed garbage, while
+//     `Array::get([1], 0)` in the same position was correctly rejected. The
+//     two #1733 conversions are the one carve-out -- polymorphic, but shipped
+//     with a value form since then and pinned by an ANNOTATED binding in
+//     `fixtures/frozen_array_copies_test.vibe`, which is sound; their
+//     unannotated hole predates this and is measured on `aeccc0c97` too;
 //   * a BARE name (`eq`, `not`) -- a compiler limitation, not a decision about
 //     the language, and the one row of #2442 left open. `count_lambda_sites_expr`
 //     predicts for the whole program how many lambda table slots the codegen
@@ -90,8 +100,13 @@ test "#2442: the value form is decided by arity and effect, not by a name list" 
   // Pure registry rows report the parameter count the eta-expansion emits.
   inspect(builtin_value_form_arity("String::length"), "1")
   inspect(builtin_value_form_arity("String::concat"), "2")
-  inspect(builtin_value_form_arity("Array::length"), "1")
-  inspect(builtin_value_form_arity("Map::get"), "2")
+  inspect(builtin_value_form_arity("String::substring"), "3")
+  // A POLYMORPHIC row is refused: the registry writes an open position as
+  // `reg_any()` and every occurrence is independent, so a value form cannot
+  // say the element in the parameter and the result are the same type.
+  inspect(builtin_value_form_arity("Array::length"), "-1")
+  inspect(builtin_value_form_arity("Array::get"), "-1")
+  inspect(builtin_value_form_arity("Map::get"), "-1")
   // Bare names are pure two-argument rows and are still refused, for the
   // planner reason above rather than anything about the builtins themselves.
   inspect(builtin_value_form_arity("eq"), "-1")
@@ -208,30 +223,52 @@ test "#2442: `not` is refused the same way" {
   assert(String::contains(msg, "unqualified"))
 }
 
+let no_user_fns: Array[String] = []
+
 test "#2442: the planner reserves a slot for exactly the names with a value form" {
   // `count_lambda_sites_expr` is the whole-program prediction the codegen walk
   // is checked against, per function body, and the walk THROWS when the two
   // disagree. It used to carry its own copy of #1733's two names -- the third
   // copy of that list -- so it now reads the same predicate the checker and
   // both backends do.
-  inspect(count_lambda_sites_expr(EIdent("String::concat", -1)), "1")
-  inspect(count_lambda_sites_expr(EIdent("FrozenArray::from_array", -1)), "1")
+  inspect(count_lambda_sites_expr(EIdent("String::concat", -1), no_user_fns), "1")
+  inspect(count_lambda_sites_expr(EIdent("FrozenArray::from_array", -1), no_user_fns), "1")
   // No value form, so no slot: an effectful builtin, a name with no registry
   // row, an ordinary name, and a bare builtin.
-  inspect(count_lambda_sites_expr(EIdent("Fs::read_file", -1)), "0")
-  inspect(count_lambda_sites_expr(EIdent("Map::set", -1)), "0")
-  inspect(count_lambda_sites_expr(EIdent("some_local", -1)), "0")
-  inspect(count_lambda_sites_expr(EIdent("eq", -1)), "0")
+  inspect(count_lambda_sites_expr(EIdent("Fs::read_file", -1), no_user_fns), "0")
+  inspect(count_lambda_sites_expr(EIdent("Map::set", -1), no_user_fns), "0")
+  inspect(count_lambda_sites_expr(EIdent("some_local", -1), no_user_fns), "0")
+  inspect(count_lambda_sites_expr(EIdent("eq", -1), no_user_fns), "0")
   // A DIRECT call stays direct: only a value-position identifier becomes the
   // synthetic lambda, so the callee must not be counted.
   inspect(count_lambda_sites_expr(ECall(EIdent("String::concat", -1), [
     EIdent("a", -1),
     EIdent("b", -1)
-  ], -1)), "0")
+  ], -1), no_user_fns), "0")
+  // #2448: a USER function that declares the name owns it, so no slot is
+  // reserved -- codegen emits that function's table slot instead. This is the
+  // one piece of scope the walk is given, and the set is the same one codegen
+  // tests through the func table.
+  inspect(count_lambda_sites_expr(EIdent("String::concat", -1), [
+    "String::concat"
+  ]), "0")
 }
 
-test "#2442: a generic pure builtin -- Array::length" {
-  inspect(first_check_error(value_ident_program("Array::length")), content = "")
+test "#2442: a polymorphic builtin is refused, and says why" {
+  // Codex review on #2448. The refusal is the fail-closed direction: measured
+  // before it, `let get = Array::get; let s: String = get([1], 0)` compiled
+  // and printed garbage while `Array::get([1], 0)` in the same position was
+  // rejected with `expected String, got Int`.
+  let msg = first_check_error(value_ident_program("Array::get"))
+  assert(String::contains(msg, "Array::get"))
+  assert(String::contains(msg, "not a value"))
+  assert(String::contains(msg, "positions the registry leaves open"))
+  let msg2 = first_check_error(value_ident_program("Array::length"))
+  assert(String::contains(msg2, "not a value"))
+}
+
+test "#2442: a builtin with a CONCRETE signature is a value -- String::substring" {
+  inspect(first_check_error(value_ident_program("String::substring")), content = "")
 }
 
 test "#2442: the binding is typed as a function, so it can be called" {

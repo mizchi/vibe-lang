@@ -2469,6 +2469,74 @@ export fn is_builtin_type_name(name: String) -> Bool {
   }
 }
 
+/// #2442: does this type mention `CtUnknown` anywhere?
+///
+/// The registry spells a polymorphic builtin's type with `reg_any()`, which is
+/// `CtUnknown`, and every occurrence is INDEPENDENT -- the registry has no way
+/// to say that the element in `Array::get`'s parameter and its result are the
+/// same type. Direct calls survive that because they have dedicated
+/// refinements; a first-class VALUE exposes the raw row and loses the
+/// relationship. Measured on this compiler, `let get = Array::get` then
+/// `let s: String = get([1], 0)` checked CLEAN and printed garbage, while the
+/// direct `Array::get([1], 0)` was correctly rejected with `expected String,
+/// got Int`. So a row that mentions an unknown has no sound value form, and
+/// `registry_builtin_pure_arity` refuses it.
+///
+/// Arms are enumerated with no wildcard on purpose: a new `Type` constructor
+/// must fail this match rather than default to "no unknown here", which would
+/// admit a row silently. Same arm list as `type_clone` below.
+export fn type_has_unknown(ty: Type) -> Bool {
+  match ty {
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtUnit => false,
+    CtBytes => false,
+    CtUnknown => true,
+    CtVar(_) => false,
+    CtConstructor(_, _) => false,
+    CtApplied(head, args) => type_has_unknown(head) || types_have_unknown(args),
+    CtEnum(_) => false,
+    CtStruct(_) => false,
+    CtArray(e) => type_has_unknown(e),
+    CtOption(e) => type_has_unknown(e),
+    CtTuple(es) => types_have_unknown(es),
+    CtFn(ps, ret, _) => types_have_unknown(ps) || type_has_unknown(ret),
+    CtNamed(_, ts) => types_have_unknown(ts),
+    CtForAll(_, _, body) => type_has_unknown(body),
+    CtRecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, t) = Array::get(fields, i)
+        if type_has_unknown(t) {
+          found = true
+          i = Array::length(fields)
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    }
+  }
+}
+
+fn types_have_unknown(ts: Array[Type]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) {
+    if type_has_unknown(Array::get(ts, i)) {
+      found = true
+      i = Array::length(ts)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 /// Deep copy of a `Type` tree. Every composite arm allocates a fresh node;
 /// leaves are rebuilt rather than returned by identity. Needed because a
 /// shared child is dropped by Perceus when the result is consumed, and the

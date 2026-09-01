@@ -3999,7 +3999,7 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
 /// against the live length at every allocation rather than trusted -- see
 /// CompileCtx.lambda_plan_next. A silent mismatch would key a body's emitted
 /// constants to a table slot nothing installs.
-export fn count_lambda_sites_expr(expr: Expr) -> Int {
+export fn count_lambda_sites_expr(expr: Expr, user_fn_names: Array[String]) -> Int {
   match expr {
     // #1733 / #2442: a builtin with a value form lives before func_offset, so
     // both backends materialize it as a tiny ordinary lambda with a valid table
@@ -4011,7 +4011,14 @@ export fn count_lambda_sites_expr(expr: Expr) -> Int {
     // walk is not a wrong answer, it is a thrown `lambda plan over-count`.
     // That the shared predicate admits only QUALIFIED names is what makes this
     // scope-free walk able to agree with codegen at all; see its doc comment.
-    EIdent(name, _) => if builtin_value_form_arity(name) >= 0 {
+    //
+    // `user_fn_names` is the one piece of scope this walk needs and can have
+    // (Codex review on #2448). A user program may declare `fn Array::get(...)`,
+    // and the checker resolves that name to the DECLARATION -- so codegen must
+    // emit the user function's table slot, not an eta-expansion, and this walk
+    // must not reserve a slot for one. Locals still cannot be seen here, which
+    // is why a bare name has no value form at all.
+    EIdent(name, _) => if builtin_value_form_arity(name) >= 0 && bsearch_leftmost(user_fn_names, name) < 0 {
       1
     } else {
       0
@@ -4024,17 +4031,17 @@ export fn count_lambda_sites_expr(expr: Expr) -> Int {
     EStringInterp(_) => 0,
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EReturn(e) => count_lambda_sites_expr(e),
-    EUnaryOp(_, e) => count_lambda_sites_expr(e),
-    ESpread(e) => count_lambda_sites_expr(e),
-    EDot(obj, _, _, _) => count_lambda_sites_expr(obj),
-    ELabeledArg(_, _, e) => count_lambda_sites_expr(e),
-    ETuple(items) => count_lambda_sites_exprs(items),
-    EArray(items) => count_lambda_sites_exprs(items),
-    ERecord(_, fields, _) => count_lambda_sites_fields(fields),
-    EMap(fields) => count_lambda_sites_fields(fields),
-    EBinOp(_, l, r, _) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
-    ESeq(l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
+    EReturn(e) => count_lambda_sites_expr(e, user_fn_names),
+    EUnaryOp(_, e) => count_lambda_sites_expr(e, user_fn_names),
+    ESpread(e) => count_lambda_sites_expr(e, user_fn_names),
+    EDot(obj, _, _, _) => count_lambda_sites_expr(obj, user_fn_names),
+    ELabeledArg(_, _, e) => count_lambda_sites_expr(e, user_fn_names),
+    ETuple(items) => count_lambda_sites_exprs(items, user_fn_names),
+    EArray(items) => count_lambda_sites_exprs(items, user_fn_names),
+    ERecord(_, fields, _) => count_lambda_sites_fields(fields, user_fn_names),
+    EMap(fields) => count_lambda_sites_fields(fields, user_fn_names),
+    EBinOp(_, l, r, _) => count_lambda_sites_expr(l, user_fn_names) + count_lambda_sites_expr(r, user_fn_names),
+    ESeq(l, r) => count_lambda_sites_expr(l, user_fn_names) + count_lambda_sites_expr(r, user_fn_names),
     // A direct conversion call stays direct; only a value-position identifier
     // is materialized as the synthetic lambda above.
     ECall(callee, args, _) => {
@@ -4042,60 +4049,60 @@ export fn count_lambda_sites_expr(expr: Expr) -> Int {
         EIdent(name, _) => if builtin_value_form_arity(name) >= 0 {
           0
         } else {
-          count_lambda_sites_expr(callee)
+          count_lambda_sites_expr(callee, user_fn_names)
         },
-        _ => count_lambda_sites_expr(callee)
+        _ => count_lambda_sites_expr(callee, user_fn_names)
       }
-      callee_count + count_lambda_sites_exprs(args)
+      callee_count + count_lambda_sites_exprs(args, user_fn_names)
     },
     EIf(cond, then_e, else_e) =>
-    count_lambda_sites_expr(cond) + count_lambda_sites_expr(then_e) + count_lambda_sites_expr(else_e),
-    ELet(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    ELetRec(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    ELetMut(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EAssign(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EWhile(cond, body) => count_lambda_sites_expr(cond) + count_lambda_sites_expr(body),
-    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter) + count_lambda_sites_expr(body),
-    ELoop(params, body) => count_lambda_sites_fields(params) + count_lambda_sites_expr(body),
-    EMatch(scr, arms) => count_lambda_sites_expr(scr) + count_lambda_sites_arms(arms),
-    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr) + count_lambda_sites_arms(arms),
+    count_lambda_sites_expr(cond, user_fn_names) + count_lambda_sites_expr(then_e, user_fn_names) + count_lambda_sites_expr(else_e, user_fn_names),
+    ELet(_, val, body, _) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    ELetRec(_, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    ELetMut(_, val, body, _) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EAssign(_, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EWhile(cond, body) => count_lambda_sites_expr(cond, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    ELoop(params, body) => count_lambda_sites_fields(params, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EMatch(scr, arms) => count_lambda_sites_expr(scr, user_fn_names) + count_lambda_sites_arms(arms, user_fn_names),
+    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr, user_fn_names) + count_lambda_sites_arms(arms, user_fn_names),
     // The one arm that counts: this node IS a table entry, and its body may
     // hold more.
-    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body)
+    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body, user_fn_names)
   }
 }
 
-fn count_lambda_sites_exprs(items: Array[Expr]) -> Int {
+fn count_lambda_sites_exprs(items: Array[Expr], user_fn_names: Array[String]) -> Int {
   let n = Array::length(items)
   let mut i = 0
   let mut total = 0
   while i < n {
-    total = total + count_lambda_sites_expr(Array::get(items, i))
+    total = total + count_lambda_sites_expr(Array::get(items, i), user_fn_names)
     i = i + 1
   }
   total
 }
 
-fn count_lambda_sites_fields(fields: Array[(String, Expr)]) -> Int {
+fn count_lambda_sites_fields(fields: Array[(String, Expr)], user_fn_names: Array[String]) -> Int {
   let n = Array::length(fields)
   let mut i = 0
   let mut total = 0
   while i < n {
     let (_, val) = Array::get(fields, i)
-    total = total + count_lambda_sites_expr(val)
+    total = total + count_lambda_sites_expr(val, user_fn_names)
     i = i + 1
   }
   total
 }
 
-fn count_lambda_sites_arms(arms: Array[(Pat, Expr)]) -> Int {
+fn count_lambda_sites_arms(arms: Array[(Pat, Expr)], user_fn_names: Array[String]) -> Int {
   let n = Array::length(arms)
   let mut i = 0
   let mut total = 0
   while i < n {
     let (_, body) = Array::get(arms, i)
-    total = total + count_lambda_sites_expr(body)
+    total = total + count_lambda_sites_expr(body, user_fn_names)
     i = i + 1
   }
   total

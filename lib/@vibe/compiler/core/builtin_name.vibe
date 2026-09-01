@@ -1,7 +1,7 @@
 //# Imports
 
 import ./builtin_registry.vibe {
-  registry_builtin_pure_arity
+  registry_builtin_arity, registry_builtin_pure_arity
 }
 
 //# Functions
@@ -98,12 +98,26 @@ export fn canonical_builtin_name(name: String) -> String {
 /// `collect_refs_into` in dce.vibe, which threads a bound set) -- that is the
 /// remaining half of #2442, and it is a real change to that walk rather than
 /// another name here.
+/// #1733's two conversions are an explicit LEGACY exception, and they are the
+/// one place this is a name list rather than a property. Their rows are
+/// polymorphic (`Array[?] -> FrozenArray[?]`), so the unknown test below would
+/// refuse them -- but they have shipped with a value form since #1733 and
+/// `fixtures/frozen_array_copies_test.vibe` binds one through an ANNOTATED
+/// `let`, which is a sound and useful spelling. Refusing them would take that
+/// away. Measured on `aeccc0c97` and on this branch, identically: the
+/// UNANNOTATED `let freeze = FrozenArray::from_array` then
+/// `let fz: FrozenArray[String] = freeze([1, 2])` checks clean and reads the
+/// Ints as Strings. That hole predates this function; it is not widened here,
+/// and closing it means giving the registry a way to say two positions are the
+/// same type.
 export fn builtin_value_form_arity(name: String) -> Int {
   let n = canonical_builtin_name(name)
-  if String::contains(n, "::") {
-    registry_builtin_pure_arity(n)
-  } else {
+  if !String::contains(n, "::") {
     0 - 1
+  } else if n == "FrozenArray::from_array" || n == "FrozenArray::to_array" {
+    registry_builtin_arity(n)
+  } else {
+    registry_builtin_pure_arity(n)
   }
 }
 

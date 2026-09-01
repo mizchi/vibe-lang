@@ -1,7 +1,7 @@
 //# Imports
 
 import ./types.vibe {
-  Type
+  Type, type_has_unknown
 }
 
 // Standard host-provider and entry-execution policy is a sibling in this
@@ -528,12 +528,26 @@ export fn registry_builtin_arity(name: String) -> Int {
 /// lowering reading the same number: a value form is emitted with exactly the
 /// parameter count this reports.
 ///
-/// The effect row is the deliberate boundary, not an omission. A direct call to
-/// `Fs::read_file` has its row checked at the call site against the capability
-/// the caller holds; as a VALUE the row would have to be carried by the
-/// binding's function type and demanded again at the indirect call, or
-/// `let f = Fs::read_file` launders authority (ADR-0075/0084/0088). Until that
-/// is built, an effectful builtin keeps the positioned diagnostic.
+/// Two boundaries, and neither is an omission.
+///
+/// The EFFECT row: a direct call to `Fs::read_file` has its row checked at the
+/// call site against the capability the caller holds; as a VALUE the row would
+/// have to be carried by the binding's function type and demanded again at the
+/// indirect call, or `let f = Fs::read_file` launders authority
+/// (ADR-0075/0084/0088). Until that is built, an effectful builtin keeps the
+/// positioned diagnostic.
+///
+/// An UNKNOWN anywhere in the signature (Codex review on #2448): the registry
+/// spells a polymorphic row with `reg_any()` = `CtUnknown`, and every
+/// occurrence is independent -- nothing says the element in `Array::get`'s
+/// parameter and its result are the same type. A direct call survives that
+/// through its dedicated refinements; a value exposes the raw row and the
+/// relationship is gone. Measured: `let get = Array::get` then
+/// `let s: String = get([1], 0)` checked CLEAN and printed garbage, while
+/// `Array::get([1], 0)` in the same position was correctly rejected with
+/// `expected String, got Int`. `Array::push` through a binding loses the same
+/// way. So an unknown-bearing row has no sound value form until the registry
+/// can express the relationship, which is a change to the registry, not here.
 export fn registry_builtin_pure_arity(name: String) -> Int {
   let rows = builtin_registry_typed()
   let mut i = 0
@@ -542,13 +556,31 @@ export fn registry_builtin_pure_arity(name: String) -> Int {
     let (rname, ty, _, _, visible) = Array::get(rows, i)
     if rname == name && visible {
       found = match ty {
-        CtFn(params, _, eff) => match eff {
+        CtFn(params, ret, eff) => match eff {
           Some(_) => 0 - 1,
-          None => Array::length(params)
+          None => if types_mention_unknown(params) || type_has_unknown(ret) {
+            0 - 1
+          } else {
+            Array::length(params)
+          }
         },
         _ => 0 - 1
       }
       i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn types_mention_unknown(ts: Array[Type]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) {
+    if type_has_unknown(Array::get(ts, i)) {
+      found = true
+      i = Array::length(ts)
     } else {
       i = i + 1
     }

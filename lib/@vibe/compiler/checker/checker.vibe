@@ -2333,19 +2333,27 @@ fn call_only_builtin_ident_error(name: String, ty: Type, ident_off: Int) -> Stri
 }
 
 /// #2442: say WHY this name has no value form, so the reader can tell a
-/// permanent boundary from a gap. Two reasons, and they call for different
+/// permanent boundary from a gap. Four reasons, and they call for different
 /// things: an effect row means the wrap form is the ANSWER (it puts the call
 /// back at a site where the row is checked against the caller's capability),
-/// while an unknown arity means the compiler has no registry row to expand and
-/// the wrap form is a workaround.
+/// while the other three mean the wrap form is a workaround for something the
+/// compiler cannot express yet.
 fn builtin_value_form_refusal_reason(name: String, ty: Type) -> String {
+  let canonical = canonical_builtin_name(name)
   match ty {
     CtFn(_, _, eff) => match eff {
       Some(row) => String::concat(" (it performs `", String::concat(row, "`, and an effect row is only checked where the call is written)")),
-      None => if String::contains(canonical_builtin_name(name), "::") {
-        " (the compiler has no registry row for it, so it has no arity to expand)"
-      } else {
+      None => if !String::contains(canonical, "::") {
         " (an unqualified builtin name has no value form yet: a local of the same name would be indistinguishable to the lambda-site planner)"
+      } else if registry_builtin_arity(canonical) >= 0 {
+        // Codex review on #2448. The registry writes a polymorphic position as
+        // `reg_any()`, and each occurrence is independent -- so a value form
+        // would hand out a signature that does not relate the argument to the
+        // result, and `let get = Array::get; let s: String = get([1], 0)`
+        // would check clean. The direct call keeps its refinements.
+        " (its signature has positions the registry leaves open, and a value form cannot say they are the same type)"
+      } else {
+        " (the compiler has no registry row for it, so it has no arity to expand)"
       }
     },
     _ => ""

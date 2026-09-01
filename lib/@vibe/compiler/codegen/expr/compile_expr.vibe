@@ -249,6 +249,16 @@ import ./compile_match.vibe {
 /// to grant the value form, so the emitted parameter count cannot disagree with
 /// the type the caller was given. #1733 hardcoded 1 for the two FrozenArray
 /// conversions; nothing else about the shape changed.
+/// #2448: does a USER function own this name? Builtin bodies are emitted below
+/// `func_offset` and user functions at or above it, so the func table answers
+/// both questions and this reads the half that matters. The plan walk is handed
+/// the same set (`fn_names_list` in linked_compile), because a disagreement
+/// between the two is a thrown `lambda plan over-count`, not a wrong answer.
+fn user_fn_owns_name(ctx: CompileCtx, name: String) -> Bool {
+  let i = func_table_index_of(ctx.func_table, name)
+  i >= 0 && Array::get(ctx.func_table.indices, i) - ctx.func_offset >= 0
+}
+
 fn builtin_value_closure(name: String, arity: Int) -> Expr {
   let params: Array[(String, Option[TypeExpr])] = []
   let args: Array[Expr] = []
@@ -925,7 +935,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_local_get(buf, local_idx)
       }
       next_local
-    } else if builtin_value_form_arity(name) >= 0 {
+    } else if builtin_value_form_arity(name) >= 0 && !user_fn_owns_name(ctx, name) {
       // #2442: a pure builtin in value position, eta-expanded.
       //
       // Placed HERE, above the func table, and that placement is load-bearing:
@@ -941,6 +951,15 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       // form (see `builtin_value_form_arity`), so nothing this arm can shadow
       // reaches it -- which is also why the scope-free lambda-site planner can
       // agree with this walk.
+      //
+      // A USER FUNCTION that declares a registry name is the one thing that
+      // can still own it (Codex review on #2448), and it wins: the checker
+      // resolved the name to the declaration, so this must fall through to the
+      // func-table slot below. Measured before this guard, with
+      // `fn String::concat(a: Int) -> Int` in scope, `let f = String::concat`
+      // emitted an arity-2 eta-expansion against the checker's arity-1 type
+      // and the runtime refused to compile the module. The plan walk is given
+      // the same name set so the two agree.
       compile_expr(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ctx, ld)
     } else {
       let mut __ci_idx = -1

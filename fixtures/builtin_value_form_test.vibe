@@ -5,14 +5,21 @@
 // value form. That left the language answering the same question two ways
 // depending on which name you wrote, and the rule a reader had to learn was a
 // two-element list rather than a property. It is now a property: a builtin has
-// a value form exactly when it is QUALIFIED, the registry knows its arity, and
-// its effect row is empty (`builtin_value_form_arity`, core/builtin_name.vibe).
+// a value form exactly when it is QUALIFIED, its registry signature is
+// CONCRETE, and its effect row is empty (`builtin_value_form_arity`,
+// core/builtin_name.vibe).
 //
-// The qualification is a compiler limitation with a measured reason, recorded
-// on that function and pinned in the unit test beside this file: the whole-
-// program lambda-site planner is scope-free, so it cannot tell a use of the
-// builtin `eq` from a use of a local named `eq`, and the walk THROWS on a
-// disagreement. Admitting bare names needs the planner to learn scope.
+// Both restrictions are compiler limitations with measured reasons, recorded on
+// that function and pinned in the unit test beside this file:
+//
+//   * QUALIFIED, because the whole-program lambda-site planner is scope-free
+//     and cannot tell a use of the builtin `eq` from a use of a local named
+//     `eq`, and the walk THROWS on a disagreement;
+//   * CONCRETE, because the registry writes a polymorphic position as "any
+//     type" with every occurrence independent -- a value form would hand out a
+//     signature that does not relate the argument to the result, and
+//     `let get = Array::get; let s: String = get([1], 0)` checked clean and
+//     printed garbage while the direct call was correctly rejected.
 //
 // The lowering is an ETA-EXPANSION, not a function pointer to the builtin: a
 // builtin's index is below `func_offset` and its body has no closure-env
@@ -42,12 +49,6 @@ test "#2442 a one-argument pure builtin answers through a binding" {
   inspect(String::length("abcde"), "5")
 }
 
-test "#2442 a generic builtin through a binding" {
-  let alen = Array::length
-  inspect(alen([1, 2, 3]), "3")
-  inspect(Array::length([1, 2, 3]), "3")
-}
-
 test "#2442 a builtin whose result is a value, not a scalar" {
   let sub = String::substring
   inspect(sub("abcdef", 1, 4), "bcd")
@@ -61,6 +62,22 @@ test "#2442 a builtin passed directly as an argument" {
 test "#2442 an annotated binding of a builtin" {
   let cat: (String, String) -> String = String::concat
   inspect(cat("p", "q"), "pq")
+}
+
+fn String::last_index_of(a: Int) -> Int {
+  a + 1
+}
+
+test "#2448 a user function that declares a registry name wins" {
+  // `String::last_index_of` is a concrete arity-2 registry row, so it has a
+  // value form -- but this file declares its own arity-1 function with that
+  // name, and the checker resolves the name to the DECLARATION. Codegen has to
+  // agree: measured before the guard, this emitted an arity-2 eta-expansion of
+  // the builtin against the checker's arity-1 type and the runtime refused to
+  // compile the module (`failed to compile: wasm[0]::function[7]`).
+  inspect(String::last_index_of(1), "2")
+  let f = String::last_index_of
+  inspect(f(1), "2")
 }
 
 test "#1733 the two FrozenArray conversions keep answering" {

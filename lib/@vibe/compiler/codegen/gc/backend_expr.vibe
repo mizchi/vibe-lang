@@ -217,6 +217,24 @@ import ./backend_match.vibe {
 /// a tiny ordinary lambda with a valid table slot, eta-expanded to the arity
 /// `builtin_value_form_arity` reports -- the same number the checker used to
 /// grant the value form (#1733 / #2442).
+/// #2448: the gc twin of `user_fn_owns_name`. Same rule, same reason: a user
+/// function that declares a registry name is what the checker resolved the name
+/// to, so the eta-expansion must not pre-empt its table slot.
+fn gc_user_fn_owns_name(ctx: CompileCtxGc, name: String) -> Bool {
+  let names = ctx.func_table.names
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = Array::get(ctx.func_table.indices, i) - ctx.func_offset >= 0
+      i = Array::length(names)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 fn builtin_value_closure(name: String, arity: Int) -> Expr {
   let params: Array[(String, Option[TypeExpr])] = []
   let args: Array[Expr] = []
@@ -1282,10 +1300,11 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           emit_local_get(buf, local_idx)
         }
         next_local
-      } else if builtin_value_form_arity(name) >= 0 {
+      } else if builtin_value_form_arity(name) >= 0 && !gc_user_fn_owns_name(ctx, name) {
         // #2442: see the linear twin in codegen/expr/compile_expr.vibe -- the
         // placement above the func table is what keeps a builtin's negative
         // table slot from being emitted, and only qualified names get here.
+        // A user function that declares a registry name still wins (#2448).
         ce(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ld)
       } else {
         let ctor_idx = ctor_table_index_of(ctx.gc_ctor_table, name)
