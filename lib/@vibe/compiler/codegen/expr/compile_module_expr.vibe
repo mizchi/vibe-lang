@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  compute_float_returning_names
+  compute_float_returning_names, unique_call_offsets_in_stmts
 }
 
 import @vibe/compiler/core {
@@ -22,7 +22,50 @@ import ./compile_expr.vibe {
 
 //# Functions
 
+/// #2437: the no-offsets spelling, kept so the test, bench and probe callers
+/// that have no checked program stay unchanged. Empty tables classify nothing
+/// and leave the syntactic answer exactly as it was.
 export fn compile_module_expr(stmts: Array[Stmt]) -> Bytes with Exception {
+  let no_floats: Array[Int] = []
+  let no_int_renders: Array[Int] = []
+  compile_module_expr_with_typed_offsets(stmts, no_floats, no_int_renders)
+}
+
+/// #2437: the same lane, told what the checker found. Both typed-lowering
+/// channels used to be hardcoded empty here -- the Double call-result one
+/// since #2158, the Int render / `eq` one since #2434 -- so this lane
+/// classified from syntax alone while the linked and gc lanes read the checked
+/// type. That was not a regression (it is the pre-#2158 behaviour) but it made
+/// "route on the checked type" untrue of one lane, which is worse than it
+/// sounds: the lane and the others then disagree about the same program.
+///
+/// WHO PASSES A NON-EMPTY TABLE, and who deliberately does not. Only a caller
+/// that ALREADY runs a whole-program check may fill these in -- CLAUDE.md's
+/// rule for this channel, from #2158's measurement of 6.12s -> 77.55s when it
+/// was added where none ran. `compile_source` qualifies: it already checked
+/// and discarded the result, so the observation replaces that check.
+///
+/// The three FS module callers (`compile_with_modules_cached` and the two
+/// `compile_file_fs_module_cached_slow`) do NOT, and keep the no-offsets
+/// spelling. `prepare_*` has already checked their closure module by module;
+/// a check here would be a SECOND, whole-program one over the reprinted merge,
+/// and it cannot reuse the modular answers because `build_module_source`
+/// reprints (`print_program`), so per-module offsets name positions in the
+/// original files. Measured, synthetic module functions, `vibe bench`:
+///
+///   n=120   8.33ms -> 26.36ms   (+18.0ms)
+///   n=480  70.16ms -> 193.73ms  (+123.6ms)
+///   n=960 233.50ms -> 563.13ms  (+329.6ms)
+///
+/// The ADDED time is superlinear -- 8x the functions for 18x the addition --
+/// so a compiler-sized closure pays seconds per cold compile. Closing those
+/// three needs a source map out of `print_program` (or the merge to stop
+/// reprinting), not a second check; tracked on #2437.
+///
+/// The float table is passed through `unique_call_offsets_in_stmts`, exactly
+/// as the linked lane does, so an offset that names more than one call node in
+/// the statements CODEGEN walks is dropped rather than guessed at.
+export fn compile_module_expr_with_typed_offsets(stmts: Array[Stmt], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int]) -> Bytes with Exception {
   let fresh_int_array: () -> Array[Int] = () -> {
     ArrayBuilder::freeze(ArrayBuilder::new())
   }
@@ -44,6 +87,10 @@ export fn compile_module_expr(stmts: Array[Stmt]) -> Bytes with Exception {
   let fresh_bool_matrix: () -> Array[Array[Bool]] = () -> {
     ArrayBuilder::freeze(ArrayBuilder::new())
   }
+  // #2437: same fail-closed filter the linked lane applies (#2158). An offset
+  // that names more than one call node in the statements codegen walks is
+  // dropped rather than guessed at; an empty candidate list stays empty.
+  let module_float_call_offsets = unique_call_offsets_in_stmts(stmts, checker_float_call_offsets)
   let fn_names_list = fresh_string_array()
   let fn_param_counts = fresh_int_array()
   let export_names = fresh_string_array()
@@ -193,12 +240,12 @@ export fn compile_module_expr(stmts: Array[Stmt]) -> Bytes with Exception {
         // test/bench module lane, see compile_module) still took the raw-bit
         // path while both other lanes were fixed. Third lane, same omission.
         float_ret_fns: compute_float_returning_names(stmts),
-        // #2158: this lane (`compile_module`, the test/bench module entry) runs
-        // no whole-program check, so it has no checker offsets to consult.
-        // Empty is the fail-closed default -- it classifies nothing, leaving
-        // the syntactic answer above exactly as it was.
-        float_call_offsets: fresh_int_array(),
-        int_render_offsets: fresh_int_array(),
+        // #2437: the checker's answer, when the caller ran one. A caller with
+        // no checked program passes empty tables, which classify nothing and
+        // leave the syntactic answer above exactly as it was -- the same
+        // fail-closed default this lane had before.
+        float_call_offsets: module_float_call_offsets,
+        int_render_offsets: checker_int_render_offsets,
         thunk_names: empty_thunk_names,
         const_int_names: empty_const_int_names,
         const_int_values: empty_const_int_values,

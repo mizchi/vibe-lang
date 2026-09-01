@@ -15,7 +15,8 @@ import @vibe/compiler/core {
   is_exception_operation_name,
   is_exception_throw_operation,
   leb128_encode_s64,
-  leb128_encode_u32
+  leb128_encode_u32,
+  typed_lowering_arg_offset
 }
 
 import @vibe/core {
@@ -293,22 +294,16 @@ export fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fna
 /// `eq(a, b)` and `a == b` must answer identically: `emit_gc_eq_value` sends
 /// an intish pair to a raw `i64.eq`, and this arm now does too, so the two
 /// spellings of one concept cannot diverge on a value.
-/// #2424: the source offset an expression carries, or -1 -- the three shapes a
-/// render or `eq` argument takes (a name, a call result, a dot projection).
-fn bc_expr_offset(e: Expr) -> Int {
-  match e {
-    EIdent(_, o) => o,
-    ECall(_, _, o) => o,
-    EDot(_, _, o, _) => o,
-    _ => 0 - 1
-  }
-}
-
 /// #2424: did the CHECKER say this exact node is an `Int`? An extra `||` term,
 /// never a replacement: it can only ADD a classification the slot log missed.
 /// Both ends fail closed, so where it does not fire nothing changes.
+///
+/// The key comes from `typed_lowering_arg_offset` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection is keyed by its
+/// FIELD-NAME offset, and a consumer that spelled that rule for itself would
+/// read a key the producer never wrote and classify nothing, silently.
 fn bc_offset_says_int(e: Expr, ctx: CompileCtxGc) -> Bool {
-  let off = bc_expr_offset(e)
+  let off = typed_lowering_arg_offset(e)
   off >= 0 && array_contains_int(ctx.gc_int_render_offsets, off)
 }
 

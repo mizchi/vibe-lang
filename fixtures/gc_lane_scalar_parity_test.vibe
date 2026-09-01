@@ -666,13 +666,65 @@ test "#2424 a large Int survives the binding forms the slot log never seeded" {
   assert(__to_string(d) == "1.5")
   assert(__to_string(123) == "123")
   assert(__to_string(0) == "0")
-  // NOT asserted, deliberately, and measured: a tuple PROJECTION
-  // (`__to_string(t.0)`) still renders the empty string. `parse_postfix`
-  // gives the `EDot` node its receiver's offset, so the checker records two
-  // occurrences there -- the tuple and the `Int` -- and the producer refuses
-  // an offset whose occurrences disagree. That refusal is the correctness
-  // condition for a consumer keyed on offset alone, not conservatism: emitting
-  // it would make `__to_string(t)` render a tuple through the integer
-  // renderer. Closing the row needs the key to carry the node kind as well as
-  // the offset, which the two-bit tag has no room for. #2424.
+}
+
+/// #2424, the projection row -- the last one an offset table can reach at all
+/// (the erased type variable goes through a witness, not an offset). It stayed
+/// open for a reason worth stating: the key was wrong, not missing.
+///
+/// `parse_postfix` builds `EDot(expr, field, callee_offset(expr), field_off)`,
+/// so the node offset of `t.0` is the RECEIVER's start -- the same offset the
+/// name `t` already owns. Keyed on that, the checker sees two typed
+/// occurrences (the tuple and the `Int`) and the producer refuses an offset
+/// whose occurrences disagree; that refusal was correct, because a consumer
+/// keyed on offset alone would then have rendered the TUPLE `t` through the
+/// integer renderer.
+///
+/// The fix is the fourth field, which `EDot` has carried since #645: the
+/// field-name token's own offset, unique to the projection, and already
+/// carrying the projection's type in the occurrence table (it was added for
+/// hover on a field name). Producer and both consumers now agree that this is
+/// the key -- one function, `typed_lowering_arg_offset` in
+/// @vibe/compiler/core, because a key the producer writes and a consumer does
+/// not read is not a diagnostic, it is silence.
+fn irc_ret_pair() -> (Int, Int) {
+  (64<<32, 1)
+}
+
+struct IrcBox {
+  big: Int;
+  label: String;
+  small: Int
+}
+
+test "#2424 a large Int survives a projection out of a tuple or a struct" {
+  let t = (64<<32, 1)
+  assert(__to_string(t.0) == "274877906944")
+  // Second position, so an implementation that always read element 0 fails.
+  let u = (1, 64<<32)
+  assert(__to_string(u.1) == "274877906944")
+  // A projection off a CALL: the receiver is an ECall, whose own offset is in
+  // the table under a different key, and the projection still answers.
+  assert(__to_string(irc_ret_pair().0) == "274877906944")
+  // Nested: both `EDot` nodes share the receiver's node offset and differ only
+  // in the field-name offset, which is exactly what the key has to separate.
+  let n = ((64<<32, 1), 2)
+  assert(__to_string(n.0.0) == "274877906944")
+  // A declared struct field, the other projection spelling.
+  let b = IrcBox::{ big: 64<<32, label: "hi", small: 7 }
+  assert(__to_string(b.big) == "274877906944")
+  // Through `eq`, with BOTH operands projections -- the gate is a disjunction,
+  // so a case where only one side is a projection cannot reach this.
+  let v = (65<<32, 1)
+  assert(!eq(t.0, v.0))
+  assert(eq(t.0, irc_ret_pair().0))
+  // The controls: a projection must not be classified `Int` for being one.
+  assert(__to_string(b.label) == "hi")
+  assert(__to_string(t.1) == "1")
+  assert(__to_string(b.small) == "7")
+  // A Double field is deliberately absent: `__to_string` of a Double-typed
+  // STRUCT field does not render the Double, measured on this same lane both
+  // before and after this change, and it is a separate row (the float
+  // classifier has no projection arm either). Asserting it here would fail for
+  // a reason this change is not about.
 }
