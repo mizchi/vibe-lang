@@ -1,0 +1,54 @@
+//# #2437: the module lane (`compile_module`) and its typed-lowering tables.
+//
+// The lane installed both tables EMPTY -- the Double call-result one since
+// #2158, the Int render / `eq` one since #2434 -- so it classified a render
+// argument from syntax alone while the linked and gc lanes read the checked
+// type. Two answers for one program.
+//
+// Two halves are pinned here, each for what it actually shows:
+//
+//   1. The tables now REACH codegen and change what it emits. Compiling the
+//      same source through the lane's new entry (`compile_module_source`, a
+//      located parse plus the observation) and through the old one
+//      (`compile_source` in codegen_test_support: `parse_program(lex(src))`
+//      plus the no-offsets `compile_module`) must produce DIFFERENT bytes for
+//      a program whose render argument no syntactic arm classifies.
+//   2. It is inert where it should be. For a program with no render at all,
+//      the two must be byte-identical -- an offsets channel that changed
+//      unrelated output would be a regression, not a fix.
+//
+// That the classification is CORRECT is pinned separately, and behaviourally,
+// by fixtures/gc_lane_scalar_parity_test.vibe on all three lanes: the table
+// lands in the same `CompileCtx.int_render_offsets` field those lanes read,
+// through the same consumers.
+
+import @vibe/compiler/entry/source_compile {
+  compile_module_source
+}
+
+import ./codegen_test_support.vibe {
+  compile_source
+}
+
+/// A projection is the sharpest argument to use here: `ts_known_int` has no
+/// `EDot` arm at all, so without the table the render falls through to
+/// `__to_string`'s runtime string-pointer heuristic -- which for `64 << 32`
+/// (a zero low word, an in-bounds high word) answers with the EMPTY STRING.
+/// With the table it takes the integer path, and the emitted code differs.
+let module_lane_projection_source: String = "let render: () -> String = () -> {\n  let t = (64 << 32, 1)\n  __to_string(t.0)\n}\n"
+
+/// No render, no `eq`, no Double call result: nothing for either table to
+/// carry, so the located parse must not move a single byte.
+let module_lane_plain_source: String = "let sub: (Int, Int) -> Int = (a, b) -> {\n  a - b\n}\n"
+
+test "#2437 the module lane's typed-lowering tables reach codegen" {
+  let with_tables = compile_module_source(module_lane_projection_source)
+  let without_tables = compile_source(module_lane_projection_source)
+  assert(!(with_tables == without_tables))
+}
+
+test "#2437 a program with nothing to classify compiles byte-identically" {
+  let with_tables = compile_module_source(module_lane_plain_source)
+  let without_tables = compile_source(module_lane_plain_source)
+  assert(with_tables == without_tables)
+}
