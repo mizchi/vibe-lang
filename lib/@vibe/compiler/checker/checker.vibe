@@ -5344,6 +5344,45 @@ export fn is_array_builder_ty(t: Type) -> Bool {
   }
 }
 
+/// #2447 value-restriction predicate, the Array sibling of
+/// `is_array_builder_ty` above: true when an ARRAY whose element type is
+/// still an unresolved var occurs anywhere in the value's type reachable
+/// without crossing a function boundary. `let xs = []` -- and `([], 0)`,
+/// `Some([])`, `[[]]` -- alias ONE live mutable array, so the element var
+/// must stay un-quantified: generalizing it re-instantiates a fresh slot
+/// at every use, and pushes at different types can then never disagree,
+/// which is exactly the CtUnknown hole the empty-literal element slot
+/// replaced. CtFn is deliberately NOT descended: a function value creates
+/// a NEW array per call, so generalizing `() -> Array[v]` stays sound.
+export fn ty_has_open_array_elem(t: Type) -> Bool {
+  match t {
+    CtArray(e) => match e {
+      CtVar(_) => true,
+      _ => ty_has_open_array_elem(e)
+    },
+    CtOption(e) => ty_has_open_array_elem(e),
+    CtTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) && !found {
+        found = ty_has_open_array_elem(Array::get(elems, i))
+        i = i + 1
+      }
+      found
+    },
+    CtNamed(_, targs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(targs) && !found {
+        found = ty_has_open_array_elem(Array::get(targs, i))
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
 fn direct_builtin_return(name: String) -> Option[Type] {
   if name == "Bytes::length" {
     Some(CtInt)
@@ -6590,7 +6629,9 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // every use and pushes could never constrain each other (the exact
         // hole this issue is about). Bind the monotype instead.
         let vt_resolved = subst_apply(ns, vt)
-        let gen = if is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) {
+        // #2447: a still-open Array element var gets the same treatment as
+        // a builder's -- see ty_has_open_array_elem.
+        let gen = if is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved) {
           vt
         } else {
           generalize(ns, vt)
@@ -11585,48 +11626,63 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     },
     EArray(items) => {
       let ilen = Array::length(items)
-      let mut s1 = s
-      let mut c1 = c
-      let mut elem_ty = CtUnknown
-      // Cross-check elements only when the first element is a simple scalar, or
-      // a one-level array of scalars (`[[1], ["x"]]` — `Array[Int]` vs
-      // `Array[String]`) — see EMatch: this catches the cheap, bounded cases
-      // while skipping the per-element `subst_apply` for arrays of large
-      // struct/tuple values that pressure the self-compile heap.
-      let mut check_elems = false
-      let mut ai = 0
-      while ai < ilen {
-        let (it, ns, nc) = check_expr_capture(Array::get(items, ai), env, defs, s1, c1, errors, tytab, capture, lane)
-        s1 = ns
-        c1 = nc
-        if ai == 0 {
-          elem_ty = it
-          check_elems = match subst_apply(s1, it) {
-            CtInt => true,
-            CtDouble => true,
-            CtBool => true,
-            CtString => true,
-            CtChar => true,
-            CtArray(inner) => match inner {
+      // #2447: an EMPTY literal gets a REAL element slot, the same fix #938
+      // gave `ArrayBuilder::new`. It used to type as `CtArray(CtUnknown)`,
+      // and CtUnknown absorbs every later unification -- so one binding
+      // could be pushed `Int` here and `String` there and check clean, while
+      // every type-directed consumer (a selected comparator, the typed-`==`
+      // channel) saw no type at all. The fresh var is bound by the first
+      // use and every later use must unify with it; ELet's generalize
+      // deliberately skips the still-unresolved shape (the value
+      // restriction below), or each use would re-instantiate the var and
+      // the uses could never disagree.
+      if ilen == 0 {
+        let (ev, c1e) = fresh_var(c)
+        (CtArray(ev), s, c1e)
+      } else {
+        let mut s1 = s
+        let mut c1 = c
+        let mut elem_ty = CtUnknown
+        // Cross-check elements only when the first element is a simple scalar, or
+        // a one-level array of scalars (`[[1], ["x"]]` — `Array[Int]` vs
+        // `Array[String]`) — see EMatch: this catches the cheap, bounded cases
+        // while skipping the per-element `subst_apply` for arrays of large
+        // struct/tuple values that pressure the self-compile heap.
+        let mut check_elems = false
+        let mut ai = 0
+        while ai < ilen {
+          let (it, ns, nc) = check_expr_capture(Array::get(items, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+          s1 = ns
+          c1 = nc
+          if ai == 0 {
+            elem_ty = it
+            check_elems = match subst_apply(s1, it) {
               CtInt => true,
               CtDouble => true,
               CtBool => true,
               CtString => true,
               CtChar => true,
+              CtArray(inner) => match inner {
+                CtInt => true,
+                CtDouble => true,
+                CtBool => true,
+                CtString => true,
+                CtChar => true,
+                _ => false
+              },
               _ => false
-            },
-            _ => false
-          }
-        } else {
-          if check_elems {
-            s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
+            }
           } else {
-            ()
+            if check_elems {
+              s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
+            } else {
+              ()
+            }
           }
+          ai = ai + 1
         }
-        ai = ai + 1
+        (CtArray(elem_ty), s1, c1)
       }
-      (CtArray(elem_ty), s1, c1)
     },
     EReturn(e) => {
       let (et, s1, c1) = check_expr_capture(e, env, defs, s, c, errors, tytab, capture, lane)

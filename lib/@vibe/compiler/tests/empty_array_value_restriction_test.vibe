@@ -1,0 +1,81 @@
+//# #2447: an empty array literal gets a real element slot, and a binding
+//# whose Array element var is still open is NOT generalized (the #938
+//# builder value restriction, applied to `Array`). Before this, `[]` typed
+//# as `CtArray(CtUnknown)` and CtUnknown absorbed every later unification,
+//# so ONE mutable binding could be used at two element types and check
+//# clean -- the runtime array then held both, and every type-directed
+//# consumer was checked against a homogeneous type that was a lie.
+
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+//# Functions
+
+fn check_ok(source: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+fn check_err(source: String) -> Bool {
+  not(check_ok(source))
+}
+
+let fill_prelude: String = "fn fill(xs: Array[Int], v: Int) -> Unit { Array::push(xs, v) }\nfn fill_s(xs: Array[String], v: String) -> Unit { Array::push(xs, v) }\n"
+
+test "direct heterogeneous pushes are rejected" {
+  let src = "fn main() -> Unit { let xs = []\nArray::push(xs, 1)\nArray::push(xs, \"s\") }"
+  inspect(check_err(src), content = "true")
+}
+
+test "heterogeneous fills through functions are rejected" {
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nfill(xs, 1)\nfill_s(xs, \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+test "let mut spelling is rejected the same way" {
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let mut xs = []\nfill(xs, 1)\nfill_s(xs, \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+test "a generic call result with an open element var is monomorphic" {
+  // The ELet skip covers any still-open Array element var, not only the
+  // literal: `mk()` instantiates `Array[?t]`, and generalizing that var
+  // would reopen the same hole one call away.
+  let src = String::concat("fn mk[T]() -> Array[T] { [] }\n", String::concat(fill_prelude, "fn main() -> Unit { let xs = mk()\nfill(xs, 1)\nfill_s(xs, \"s\") }"))
+  inspect(check_err(src), content = "true")
+}
+
+test "homogeneous pushes still check" {
+  let src = "fn main() -> Unit { let xs = []\nArray::push(xs, 1)\nArray::push(xs, 2) }"
+  inspect(check_ok(src), content = "true")
+}
+
+test "homogeneous fills still check" {
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nfill(xs, 1)\nfill(xs, 2) }")
+  inspect(check_ok(src), content = "true")
+}
+
+test "annotated bindings are untouched" {
+  let src = "fn main() -> Unit { let xs: Array[Int] = []\nArray::push(xs, 1) }"
+  inspect(check_ok(src), content = "true")
+}
+
+test "a function value returning an empty array still generalizes" {
+  // The restriction stops at CtFn: each call creates a NEW array, so one
+  // lambda may serve two element types.
+  let src = "fn main() -> Unit { let mkf = () -> { [] }\nlet a: Array[Int] = mkf()\nlet b: Array[String] = mkf()\nArray::push(a, 1)\nArray::push(b, \"s\") }"
+  inspect(check_ok(src), content = "true")
+}
+
+test "empty-vs-empty comparison still checks" {
+  let src = "fn main() -> Bool { let a = []\nlet b = []\na == b }"
+  inspect(check_ok(src), content = "true")
+}
