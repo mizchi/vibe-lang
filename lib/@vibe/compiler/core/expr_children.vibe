@@ -13,6 +13,36 @@ import ./ast.vibe {
   Expr, Pat
 }
 
+/// #2424: the source offset that identifies an expression node to the
+/// typed-lowering channel -- the key the checker files a render / `eq`
+/// argument under and the key both codegen lanes look it up by. `-1` for a
+/// shape that carries no offset, which classifies nothing.
+///
+/// Three shapes reach it: a name, a call result, and a dot projection. The
+/// first two answer with their own offset. **A projection answers with its
+/// FIELD-NAME offset**, not the node offset `parse_postfix` gave it -- that
+/// one is the RECEIVER's start (`callee_offset(expr)`), which the receiver
+/// itself already owns, so `t.0` and `t` would share a key and the channel
+/// would have to choose between refusing the projection (it did, #2424's open
+/// tuple-projection row) and rendering the tuple `t` through the integer
+/// renderer. The field-name offset is unique to the projection, and the
+/// checker has recorded the projection's type there since #645
+/// (`tab_dot_field_name_ty`, for hover on the field name), so no new
+/// occurrence is needed -- only the agreement that this is the key.
+///
+/// Single source of truth on purpose: the producer lives in the checker and
+/// the consumers in two codegen lanes, and an offset the producer files under
+/// one key and a consumer reads under another is not a diagnostic, it is
+/// silence.
+export fn typed_lowering_arg_offset(expr: Expr) -> Int {
+  match expr {
+    EIdent(_, off) => off,
+    ECall(_, _, off) => off,
+    EDot(_, _, _, field_off) => field_off,
+    _ => 0 - 1
+  }
+}
+
 export fn expr_children(expr: Expr) -> Array[Expr] {
   let children = array_empty()
   match expr {
