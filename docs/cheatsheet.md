@@ -485,12 +485,17 @@ test "an unannotated empty binding answers by content after a push" {
 }
 ```
 
-A pushed **name** or **call result** does not resolve, and that is deliberate:
-reading the value's type out of an environment means deciding scope, shadowing,
-annotations and type formals in a pass that has no types, which produced a
-silently wrong answer (an outer `let v = 1` read for an inner `v` of another
-type, so `==` said `false` for two equal `[1, 2]` arrays). With no environment
-the element type can be absent but never wrong.
+A pushed **name** or **call result** does not resolve syntactically, and that is
+deliberate: reading the value's type out of an environment means deciding
+scope, shadowing, annotations and type formals in a pass that has no types,
+which produced a silently wrong answer (an outer `let v = 1` read for an inner
+`v` of another type, so `==` said `false` for two equal `[1, 2]` arrays). With
+no environment the element type can be absent but never wrong. What the scan
+leaves absent, the checker supplies on the lane `vibe test` / `vibe run` use
+(#2391, after #2447): it types the binding, records the `==` site's operand
+type, and the comparison dispatches by content where the allow-list below
+admits the element — so a pushed name, and pushes made inside a function the
+array is merely passed to, answer.
 
 A **generic** struct literal preserves its concrete type arguments in the
 equality shape (#2195): the compiler emits a comparator per concrete
@@ -522,7 +527,10 @@ comparator; any head nobody has measured still costs its owner a trap rather
 than the benefit of the doubt.
 
 **What does not resolve fails at run time** once BOTH sides are non-empty —
-it does not fall back to reference equality or to a length-only answer. Annotate
+it does not fall back to reference equality or to a length-only answer. On the
+`vibe test` / `vibe run` lane that is an element the allow-list rejects (a
+closure field, an opaque nominal field); a lane without the checker's rows
+(the flat single-source lane) fails for the syntactic residual too. Annotate
 those bindings (`let xs: Array[Int] = []`). While either side is still empty the
 lengths decide the answer, annotation or not.
 

@@ -1,0 +1,29 @@
+//# ADR-0097, the shape #2192 narrowed back to a trap and the typed-`==`
+//# channel (#2391, after #2447) now answers.
+//#
+//# `pushed_value_shape` reads only the value's own syntax, with empty
+//# environments, so a pushed IDENTIFIER resolves to nothing syntactically:
+//# reading its type from the scan's environment is what leaked an outer
+//# binding's type into a shadowing scope and answered `false` for two equal
+//# arrays. Both bindings keep the `[__EqEmpty]` sentinel. On the FS lane the
+//# checker types the binding (`Array[Array[Int]]`, an empty literal carries a
+//# real element slot since #2447) and records the `==` site's operand type,
+//# so the comparison dispatches by CONTENT -- never by identity and never by
+//# length alone. Every assert below traps on a wrong answer: `left` and
+//# `right` are distinct outer allocations (an identity answer says false),
+//# and `other` has the same length with different elements (a length-only
+//# answer says true).
+
+export fn _start() -> Int {
+  let v = [1, 2]
+  let w = [1, 3]
+  let left = []
+  Array::push(left, v)
+  let right = []
+  Array::push(right, v)
+  let other = []
+  Array::push(other, w)
+  assert(left == right)
+  assert(left != other)
+  0
+}

@@ -1,0 +1,109 @@
+//# Functions
+
+// #2391 (after #2447): the typed-`==` channel reaches the untyped-empty arm
+// of the `==` desugar ladder on the FS lane -- the lane `vibe test` and
+// `vibe run` take by default.
+//
+// An unannotated `let xs = []` takes its element type from the
+// `Array::push(xs, v)` calls in its own scope, read from `v`'s own syntax
+// only (#2157/#2192). A pushed NAME or a push that happens inside a function
+// the array is merely passed to leaves the `[__EqEmpty]` sentinel, and once
+// both sides were non-empty the comparison trapped (fail-closed, never
+// identity, never length-only).
+//
+// Since #2447 an empty literal carries a real element slot, so the checker
+// types these bindings, and the per-module carrier (#2443) records each
+// `==`/`!=` site's operand type. The untyped-empty arm now consults that row
+// before trapping, gated by the same declared-field allow-list the push scan
+// applies (`adoptable_eq_ty`): a type it admits dispatches through
+// `eq_for_typed`; anything else still traps, and a lane with no typed rows
+// (rc_query, the flat single-source lane) is unchanged.
+//
+// Measured on the stage2 at ed1089a (2026-09-01), before this slice: every
+// `==` below trapped once both sides were non-empty.
+
+fn fill(xs: Array[Int], v: Int) -> Unit {
+  Array::push(xs, v)
+}
+
+fn fill_pairs(xs: Array[(Int, String)], v: Int) -> Unit {
+  Array::push(xs, (v, "x"))
+}
+
+struct EqUePt {
+  x: Int;
+  y: Int
+} derive (Eq)
+
+fn fill_pt(xs: Array[EqUePt], v: Int) -> Unit {
+  Array::push(xs, EqUePt::{ x: v, y: v })
+}
+
+//# Tests
+
+test "#2391: arrays filled through a function compare by content" {
+  let left = []
+  fill(left, 1)
+  let right = []
+  fill(right, 1)
+  inspect(left == right, content = "true")
+}
+
+test "#2391: same length, different content answers false" {
+  let left = []
+  fill(left, 1)
+  let right = []
+  fill(right, 2)
+  inspect(left == right, content = "false")
+}
+
+test "#2391: != through the same typed dispatch" {
+  let mut left = []
+  fill(left, 1)
+  let mut right = []
+  fill(right, 2)
+  inspect(left != right, content = "true")
+  let mut same = []
+  fill(same, 1)
+  inspect(left != same, content = "false")
+}
+
+test "#2391: a pushed name resolves through the checker's type" {
+  let v = [1, 2]
+  let w = [1, 3]
+  let left = []
+  Array::push(left, v)
+  let right = []
+  Array::push(right, v)
+  let other = []
+  Array::push(other, w)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2391: tuple elements filled through a function" {
+  let left = []
+  fill_pairs(left, 3)
+  let right = []
+  fill_pairs(right, 3)
+  inspect(left == right, content = "true")
+}
+
+test "#2391: derive(Eq) struct elements filled through a function" {
+  let left = []
+  fill_pt(left, 4)
+  let right = []
+  fill_pt(right, 4)
+  let other = []
+  fill_pt(other, 5)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2391: one side still empty keeps the length answer" {
+  let left = []
+  fill(left, 1)
+  let right = []
+  inspect(left == right, content = "false")
+  inspect(right == left, content = "false")
+}

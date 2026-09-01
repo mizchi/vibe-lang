@@ -40,13 +40,20 @@ itself** (#2157, narrowed by #2192): the element type comes from the
 own syntax only — a literal, an array / tuple / struct of such values, or a
 conditional whose branches agree. Those answer exactly like the annotated
 `let xs: Array[Int] = []`.
-A pushed **name** or **call result** does NOT resolve. That is deliberate: the
-scan used to read the value's type out of an environment, which meant deciding
-scope, shadowing, annotations and type formals for itself — six review findings
-came from that one decision, the first of them silently wrong (an outer
-`let v = 1` was read for an inner `v` of another type, so `==` answered `false`
-for two equal `[1, 2]` arrays). With no environment the classification can be
-absent but never wrong.
+A pushed **name** or **call result** does NOT resolve syntactically. That is
+deliberate: the scan used to read the value's type out of an environment, which
+meant deciding scope, shadowing, annotations and type formals for itself — six
+review findings came from that one decision, the first of them silently wrong
+(an outer `let v = 1` was read for an inner `v` of another type, so `==`
+answered `false` for two equal `[1, 2]` arrays). With no environment the
+classification can be absent but never wrong. **What the scan leaves absent,
+the checker's typed-`==` channel supplies on the FS lane** (#2391, after #2447
+gave an empty literal a real element slot): the per-module carrier records
+each `==` site's operand type, and the untyped-empty arm dispatches through it
+where the declared-field allow-list below admits the element — a pushed name,
+and pushes made inside a function the array is merely passed to, answer by
+content (`fixtures/structural_eq_untyped_empty_*_typed.vibe`). A lane with no
+typed rows (`rc_query`, the flat single-source lane) still traps there.
 Generic struct literals preserve concrete type arguments in the equality
 shape. The compiler emits a comparator for each concrete instantiation and
 substitutes those arguments into its field types, so `Box[Double]`,
@@ -63,8 +70,10 @@ content-compared and keeps answering. `Map` joined them once #2218 gave
 trap.
 **What does not resolve traps** once both sides are
 non-empty, rather than answering by length or by identity, and an annotation
-fixes it. While either side is still empty the lengths decide, annotation or
-not.
+fixes it. On the FS lane that is now only an element the allow-list rejects (a
+closure field, an opaque nominal field — the remaining
+`structural_eq_untyped_empty_*_trap.vibe` fixtures). While either side is
+still empty the lengths decide, annotation or not.
 The typed replacement is not available here yet: #2158 built it and measured
 the FS lane — the one `vibe test` and `vibe run` use — at 6.12s → 77.55s on a
 compiler-sized closure, so it ships only where a whole-program check already

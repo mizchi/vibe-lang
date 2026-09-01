@@ -10756,39 +10756,63 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // operand with a known element type takes the monomorphic comparator
           // below, which handles an empty array like any other).
           //
-          // The lengths still decide the answer whenever EITHER side is empty:
-          // two arrays cannot be equal unless their lengths are, and a length
-          // of zero on one side leaves nothing to compare element-wise. That
-          // covers every program in which one of the two never grew, which is
-          // the shape this residual is usually reached by.
-          //
-          // Only two arrays that BOTH grew, with no element type on either
-          // side, are genuinely undecidable here, and that case still traps
-          // rather than falling back to length-only or identity equality --
-          // answering wrongly is worse than falling over. An annotation
-          // (`let xs: Array[Int] = []`) supplies the missing static shape.
-          //
-          // The lengths are bound rather than re-spelled: an operand may be an
-          // arbitrary expression, and it must be evaluated exactly once.
-          // Minted FRESH against both operands, the way assert_eq and inspect
-          // mint theirs: an operand is arbitrary user code, and a fixed name is
-          // capturable. `let __eqempty_ln = []; xs == __eqempty_ln` bound the
-          // outer temporary over the right operand while the inner one was
-          // still being initialized, so `Array::length` was applied to the left
-          // LENGTH rather than to the second array (#2192 review).
-          let ln = dinsp_fresh_name("__eqempty_l", rl, rr)
-          let rn = dinsp_fresh_name("__eqempty_r", rl, rr)
-          let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0), -1), EBinOp("==", EIdent(rn, -1), EInt(0), -1), -1)
-          let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1), -1), ESeq(ECall(EIdent("assert_true", -1), [
-            EBool(false)
-          ], -1), EBool(false)))
-          let guarded = ELet(ln, ECall(EIdent("Array::length", -1), [rl], -1), ELet(rn, ECall(EIdent("Array::length", -1), [
-            rr
-          ], -1), decided, -1), -1)
-          if op == "==" {
-            guarded
-          } else {
-            ECall(EIdent("not", -1), [guarded], -1)
+          // #2391 (after #2447): before failing closed, ask the typed-`==`
+          // channel. The scan cannot read a pushed NAME, or pushes that all
+          // happen inside a function the array is merely passed to, but the
+          // checker types the binding (an empty literal carries a real element
+          // slot since #2447) and the per-module carrier (#2443) records the
+          // operand type at this operator offset. Where that row exists AND
+          // the push scan's own allow-list admits the type (`adoptable_eq_ty`
+          // -- a closure field or an opaque nominal field is still refused,
+          // because a `::equals` that answers by reference is worse than the
+          // trap), dispatch through the same `eq_for_typed` the shape rungs
+          // use. A lane with no typed rows (rc_query, the flat single-source
+          // lane) falls through unchanged: absent, never wrong.
+          match dtd_typed_eq_admitted_ty(boff) {
+            Some(te) => {
+              let call = eq_for_typed(te, rl, rr, dtd_eq_known_types)
+              if op == "==" {
+                call
+              } else {
+                ECall(EIdent("not", -1), [call], -1)
+              }
+            },
+            None => {
+              // The lengths still decide the answer whenever EITHER side is empty:
+              // two arrays cannot be equal unless their lengths are, and a length
+              // of zero on one side leaves nothing to compare element-wise. That
+              // covers every program in which one of the two never grew, which is
+              // the shape this residual is usually reached by.
+              //
+              // Only two arrays that BOTH grew, with no element type on either
+              // side, are genuinely undecidable here, and that case still traps
+              // rather than falling back to length-only or identity equality --
+              // answering wrongly is worse than falling over. An annotation
+              // (`let xs: Array[Int] = []`) supplies the missing static shape.
+              //
+              // The lengths are bound rather than re-spelled: an operand may be an
+              // arbitrary expression, and it must be evaluated exactly once.
+              // Minted FRESH against both operands, the way assert_eq and inspect
+              // mint theirs: an operand is arbitrary user code, and a fixed name is
+              // capturable. `let __eqempty_ln = []; xs == __eqempty_ln` bound the
+              // outer temporary over the right operand while the inner one was
+              // still being initialized, so `Array::length` was applied to the left
+              // LENGTH rather than to the second array (#2192 review).
+              let ln = dinsp_fresh_name("__eqempty_l", rl, rr)
+              let rn = dinsp_fresh_name("__eqempty_r", rl, rr)
+              let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0), -1), EBinOp("==", EIdent(rn, -1), EInt(0), -1), -1)
+              let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1), -1), ESeq(ECall(EIdent("assert_true", -1), [
+                EBool(false)
+              ], -1), EBool(false)))
+              let guarded = ELet(ln, ECall(EIdent("Array::length", -1), [rl], -1), ELet(rn, ECall(EIdent("Array::length", -1), [
+                rr
+              ], -1), decided, -1), -1)
+              if op == "==" {
+                guarded
+              } else {
+                ECall(EIdent("not", -1), [guarded], -1)
+              }
+            }
           }
         } else {
           match arr_elem {
@@ -19110,6 +19134,27 @@ fn dtd_typed_eq_residual(op: String, rl: Expr, rr: Expr, boff: Int) -> Expr {
         }
       },
       None => EBinOp(op, rl, rr, boff)
+    }
+  }
+}
+
+/// #2391: the typed-`==` row at this operator offset as a TypeExpr the
+/// untyped-empty arm may dispatch on, or None. Unlike `dtd_typed_eq_residual`
+/// this applies the push scan's admission test (`adoptable_eq_ty`): that arm
+/// replaces a fail-closed TRAP, not a raw binop, so a type whose comparator
+/// would answer by reference for some field must keep trapping.
+fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
+  let key = dtd_typed_eq_key_for(boff)
+  if String::length(key) == 0 {
+    None
+  } else {
+    match impl_target_from_key(key) {
+      Some(te) => if adoptable_eq_ty(te) {
+        Some(te)
+      } else {
+        None
+      },
+      None => None
     }
   }
 }
