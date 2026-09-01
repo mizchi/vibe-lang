@@ -41,7 +41,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker {
-  check_program_with_env, typing_semantics_seed
+  check_program_with_env_typed_lowering_located_observation, typing_semantics_seed
 }
 
 import @vibe/compiler/runtime/eval_loader {
@@ -55,9 +55,11 @@ import ./typecheck_fs.vibe {
   load_persistent_dep_list,
   load_persistent_leaf_fingerprint,
   load_persistent_type_env,
+  parse_program_with_path,
   persistent_dep_list_text,
   persistent_leaf_fingerprint_text,
-  persistent_type_env_cache_text
+  persistent_type_env_cache_text,
+  publish_module_typed_lowering_offsets
 }
 
 import @vibe/compiler/syntax {
@@ -103,7 +105,14 @@ export ./escape_spans.vibe {
 }
 
 export ./typecheck_fs.vibe {
-  collect_all_diagnostics, module_plan_manifest_fs, module_typed_eq_rows_for_path, module_typed_lowering_offsets_for_path
+  collect_all_diagnostics,
+  module_plan_manifest_fs,
+  module_typed_eq_rows_for_path,
+  module_typed_lowering_offsets_for_path,
+  split_typed_lowering_offsets,
+  union_module_typed_eq_rows,
+  union_module_typed_lowering_offsets,
+  union_module_typed_lowering_with_clones
 }
 
 // Note: `eval_loader/` has its own `index.vibe` and is already its own
@@ -139,12 +148,6 @@ fn unwrap_db(db: TypeDb) -> TypeDbState {
 
 fn wrap_db(state: TypeDbState) -> TypeDb {
   TypeDb(state)
-}
-
-fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
-  handle {
-    parse_program(lex(source))
-  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), msg)) }
 }
 
 fn add_dep(acc: Array[String], raw_path: String, base_dir: String) -> Array[String] {
@@ -482,6 +485,27 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
   }
 }
 
+/// #2449: the in-memory module walk's check, with the typed-lowering tables
+/// published per module the way the FS lane publishes them
+/// (`check_module_impl` in typecheck_fs.vibe).
+///
+/// Before this the walk called `check_program_with_env`, which reports only a
+/// TypeEnv, so every module of the "sources passed in memory" family recorded
+/// NO table -- and the inline merge downstream therefore compiled with each
+/// typed-lowering channel empty, on the linked lane included. The observation
+/// entry runs the same check with the same `imports_already_projected = false`
+/// this lane has always used; the only addition is the capture.
+///
+/// A module whose parse carried no offsets publishes the empty table, which
+/// classifies nothing and leaves the syntactic classifiers in charge -- the
+/// same degradation `module_typed_lowering_offsets_for_path` answering `None`
+/// produces, and never a wrong classification.
+fn check_module_publishing_typed_lowering_offsets(path: String, fingerprint: String, stmts: Array[Stmt], import_env: TypeEnv) -> TypeEnv with Exception {
+  let (checked, offsets, eq_offs, eq_keys) = check_program_with_env_typed_lowering_located_observation(stmts, import_env)
+  publish_module_typed_lowering_offsets(path, fingerprint, offsets, eq_offs, eq_keys)
+  checked.final_env
+}
+
 fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception {
   if contains_str(stack, path) {
     throw(String::concat("type_db: import cycle detected at ", path))
@@ -527,7 +551,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps)
-            let full_checked_env = check_program_with_env(stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, stmts, import_env)
             let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
             let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
@@ -537,7 +561,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps)
-            let full_checked_env = check_program_with_env(stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, stmts, import_env)
             let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
             let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)

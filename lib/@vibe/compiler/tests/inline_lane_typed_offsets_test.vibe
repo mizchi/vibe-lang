@@ -1,0 +1,81 @@
+//# #2449: the inline-source merge (`build_merged_stmts_inline`) and its
+// typed-lowering tables.
+//
+// The merge parsed with `parse_program(lex(source))` -- unlocated, every node
+// offset -1 -- and computed no per-file bases, so there was no offset space to
+// rebase a per-module table into. Every entry built on it therefore compiled
+// with each typed-lowering channel EMPTY, including two on the LINKED lane,
+// which is the lane those tables exist to feed.
+//
+// Two halves are pinned here, the same pair `module_lane_typed_offsets_test`
+// uses for #2437's lane, and for the same reasons:
+//
+//   1. The tables now REACH codegen and change what it emits. The CHECKED
+//      entry (`compile_with_closure_sources_wasi_cached`, which runs
+//      `prepare_modules_cached` and so has per-module rows to rebase) and the
+//      UNCHECKED one (`compile_with_closure_sources_wasi_unchecked_cached`,
+//      which deliberately runs no check and therefore keeps empty tables) must
+//      produce DIFFERENT bytes for a program whose render argument no
+//      syntactic arm classifies. Both reach the SAME codegen entry, so the
+//      tables are the only difference between them.
+//   2. It is inert where it should be. For a program with nothing to classify,
+//      the two must be byte-identical -- a channel that moved unrelated output
+//      would be a regression, not a fix.
+//
+// That the classification is CORRECT is pinned behaviourally by
+// fixtures/gc_lane_scalar_parity_test.vibe, which runs the same
+// `CompileCtx.int_render_offsets` / `float_call_offsets` consumers.
+
+//# Imports
+
+import @vibe/compiler/entry/compiler/fs_compile {
+  compile_with_closure_sources_wasi_cached, compile_with_closure_sources_wasi_unchecked_cached
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ../type_db.vibe {
+  db_new
+}
+
+//# Functions
+
+fn no_extra_sources() -> Array[(String, String)] {
+  array_empty()
+}
+
+/// A projection is the sharpest argument to use here: the render's argument is
+/// an `EDot`, which no syntactic arm classifies, so without the table
+/// `__to_string` falls through to its runtime string-pointer heuristic -- which
+/// for `64 << 32` (a zero low word, an in-bounds high word) answers with the
+/// EMPTY STRING. With the table it takes the integer path, and the emitted code
+/// differs.
+let inline_projection_source: String = "fn main() -> Unit with Stdout {\n  let t = (64 << 32, 1)\n  println(__to_string(t.0))\n}\n"
+
+/// No render, no `eq`, no Double call result: nothing for either table to
+/// carry, so the located parse and the per-file rebase must not move a byte.
+let inline_plain_source: String = "fn main() -> Unit with Stdout {\n  let a = 7\n  let b = 4\n  let _ = a - b\n  println(\"x\")\n}\n"
+
+fn compile_checked(source: String) -> Bytes with Exception {
+  let (bytes, _) = compile_with_closure_sources_wasi_cached(db_new(), source, "main.vibe", no_extra_sources(), "main")
+  bytes
+}
+
+fn compile_unchecked(source: String) -> Bytes with Exception {
+  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db_new(), source, "main.vibe", no_extra_sources(), "main")
+  bytes
+}
+
+test "#2449 the inline merge's typed-lowering tables reach codegen" {
+  let with_tables = compile_checked(inline_projection_source)
+  let without_tables = compile_unchecked(inline_projection_source)
+  assert(!(with_tables == without_tables))
+}
+
+test "#2449 a program with nothing to classify compiles byte-identically" {
+  let with_tables = compile_checked(inline_plain_source)
+  let without_tables = compile_unchecked(inline_plain_source)
+  assert(with_tables == without_tables)
+}
