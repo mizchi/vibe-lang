@@ -14,7 +14,8 @@ import @vibe/compiler/core {
   bytebuf_to_bytes,
   is_borrow_ret_builtin,
   leb128_encode_s64,
-  leb128_encode_u32
+  leb128_encode_u32,
+  typed_lowering_float_key
 }
 
 import @vibe/core {
@@ -570,7 +571,35 @@ export fn expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) 
 /// ctx.float_local_slots as `let`s compile). This lets `let x = 1.5; x + y`
 /// take the f64 path. Shared by compile_expr (binop/unary instruction choice)
 /// and the `let` handler below (which populates float_local_slots).
+/// #2424: did the CHECKER say this exact node is a `Double`?
+///
+/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
+/// ends: an extra term in FRONT of the syntactic classifier, never a
+/// replacement, so the table can only add a classification the shape rules
+/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection answers with its
+/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
+/// is its callee identifier's offset and this array carries call results. Its
+/// doc comment carries the whole argument.
+///
+/// This is what closes the row `float_call_offsets` structurally could not: a
+/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
+/// projection arm at all, and measured before this change `b.ratio` on a
+/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
+/// gc, while the same Double through a tuple element or a plain `let` answered
+/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
+/// because both answer one question, and they agree on calls: a call node's
+/// `typed_lowering_arg_offset` IS its call offset.
+fn tail_offset_says_float(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_float_key(e)
+  off >= 0 && array_contains_int(ctx.float_call_offsets, off)
+}
+
 export fn expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  tail_offset_says_float(e, ctx) || expr_is_floatish_syntactic(e, local_names, ctx)
+}
+
+fn expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   // fbox (#797): `t.N` tuple projection survives to codegen as EDot (expr_tag
   // -1), NOT as __rec_field (that lowering is only produced for tuple
   // DESTRUCTURING and record-pattern desugars). Heap fields store floats as

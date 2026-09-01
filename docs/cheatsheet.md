@@ -1037,6 +1037,11 @@ let nv = {                            // destructure also works in fn/block body
 let m = Map::from_pairs([("key", 42)])
 let e = Map::new()                    // empty map
 let mv = m["key"]
+// `Map::set` is FUNCTIONAL: it returns a new map and leaves the receiver
+// alone. Measured on the RC lane -- `Map::set(m, "b", 2)` as a statement is a
+// silent no-op (`Map::size(m)` stays 1, `Map::has_key(m, "b")` is false), and
+// nothing warns about the discarded result. Bind it.
+let m2 = Map::set(m, "b", 2)
 let sized: (StringMap[Int]) -> Int = (mm) -> { Map::size(mm) }
 
 // Builders (mutable construction)
@@ -1130,7 +1135,9 @@ let w_check = {
 >   binds any field name and works in fn/block bodies too.
 > - **`Map::from_pairs([...])` / `Map::new()` + `Map::*` builtins + `m[k]`
 >   indexing** work standalone (#760/#960): `Map::get` / `has_key` / `set` /
->   `keys` and the `m["k"]` index sugar all lower correctly. The old
+>   `keys` and the `m["k"]` index sugar all lower correctly -- but `set` is
+>   FUNCTIONAL (`let m2 = Map::set(m, k, v)`), so writing it as a statement
+>   updates nothing and nothing warns. The old
 >   `map { ... }` literal was removed in #960 (it now reports a located parse
 >   error naming the replacement API). (`lib/@vibe/core`'s `get`/`get_or`/
 >   `has_key`/`keys`/`values` remain available for a richer Map API, #766.)

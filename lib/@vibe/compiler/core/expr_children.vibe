@@ -43,6 +43,31 @@ export fn typed_lowering_arg_offset(expr: Expr) -> Int {
   }
 }
 
+/// #2424: the same key, restricted to the shapes the DOUBLE channel may use --
+/// a call result or a dot projection. A bare name answers `-1`.
+///
+/// The restriction is not caution, it is the one collision this encoding has.
+/// The Double channel's array carries two producers: tag 0, the primary CALL
+/// RESULTS whose type is Double, and tag 4, the render/`eq` ARGUMENTS whose
+/// type is Double. A call node's own offset IS its callee identifier's offset
+/// (`parse_postfix` passes `callee_offset(expr)`), so for `f()` returning a
+/// Double the array holds the offset that `EIdent("f")` also answers with.
+/// Reading that array with `typed_lowering_arg_offset` would therefore classify
+/// the function VALUE `f` as a Double wherever a classifier is asked about it,
+/// and lower it through f64 -- silently.
+///
+/// The Int channel does not have this problem and does not use this key: its
+/// producer emits an offset only when EVERY typed occurrence there resolves to
+/// `Int`, so a call offset shared with its callee's `CtFn` occurrence is
+/// dropped on disagreement. Tag 0's producer is the call-result capture
+/// instead, which has no such agreement rule, so the restriction lives here.
+export fn typed_lowering_float_key(expr: Expr) -> Int {
+  match expr {
+    EIdent(_, _) => 0 - 1,
+    _ => typed_lowering_arg_offset(expr)
+  }
+}
+
 export fn expr_children(expr: Expr) -> Array[Expr] {
   let children = array_empty()
   match expr {

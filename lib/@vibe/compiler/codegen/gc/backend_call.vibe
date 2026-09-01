@@ -16,7 +16,8 @@ import @vibe/compiler/core {
   is_exception_throw_operation,
   leb128_encode_s64,
   leb128_encode_u32,
-  typed_lowering_arg_offset
+  typed_lowering_arg_offset,
+  typed_lowering_float_key
 }
 
 import @vibe/core {
@@ -372,7 +373,35 @@ fn bc_expr_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> 
   }
 }
 
+/// #2424: did the CHECKER say this exact node is a `Double`?
+///
+/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
+/// ends: an extra term in FRONT of the syntactic classifier, never a
+/// replacement, so the table can only add a classification the shape rules
+/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection answers with its
+/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
+/// is its callee identifier's offset and this array carries call results. Its
+/// doc comment carries the whole argument.
+///
+/// This is what closes the row `float_call_offsets` structurally could not: a
+/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
+/// projection arm at all, and measured before this change `b.ratio` on a
+/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
+/// gc, while the same Double through a tuple element or a plain `let` answered
+/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
+/// because both answer one question, and they agree on calls: a call node's
+/// `typed_lowering_arg_offset` IS its call offset.
+fn bc_offset_says_float(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_float_key(e)
+  off >= 0 && array_contains_int(ctx.gc_float_call_offsets, off)
+}
+
 fn bc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  bc_offset_says_float(e, ctx) || bc_expr_is_floatish_syntactic(e, local_names, ctx)
+}
+
+fn bc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
     EIdent(fname, _) => {

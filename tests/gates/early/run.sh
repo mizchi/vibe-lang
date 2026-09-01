@@ -2056,6 +2056,16 @@ run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_
 run_test_block_fixtures_rc "gc-lane scalar parity (linear, RC)" fixtures/gc_lane_scalar_parity_test.vibe
 echo '[compiler-gate] gc-lane scalar parity ok'
 
+# 15b-3b. #2442: a pure builtin bound to a name and called through the binding
+#         must answer exactly as the direct call does. The lowering is an
+#         eta-expanded lambda emitted independently by each backend, so the
+#         three lanes are three separate implementations of the same contract.
+echo '[compiler-gate] 15b-3b/15 builtin value form (#2442)'
+run_test_block_fixtures "builtin value form (linear, bump)" fixtures/builtin_value_form_test.vibe
+run_test_block_fixtures_gc "builtin value form (gc)" fixtures/builtin_value_form_test.vibe
+run_test_block_fixtures_rc "builtin value form (linear, RC)" fixtures/builtin_value_form_test.vibe
+echo '[compiler-gate] builtin value form ok'
+
 # 15b-4. A Double inside an aggregate reached through a NAME (#2431). Three
 #        lanes for the same reason as 15b-3, and here every lane was wrong in a
 #        DIFFERENT place: `let x = (0.0, 1); let y = (-0.0, 1); x == y` was

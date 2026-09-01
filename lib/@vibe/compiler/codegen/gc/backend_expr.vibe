@@ -5,7 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
-  builtin_ident_has_value_form,
+  builtin_value_form_arity,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
@@ -16,7 +16,8 @@ import @vibe/compiler/core {
   is_exception_throw_handler_name,
   leb128_encode_s64,
   leb128_encode_u32,
-  typed_lowering_arg_offset
+  typed_lowering_arg_offset,
+  typed_lowering_float_key
 }
 
 import @vibe/core {
@@ -211,22 +212,40 @@ import ./backend_match.vibe {
 
 //# Functions
 
-/// #2433: the name list moved to `core/builtin_name.vibe`. The checker rejects
-/// a builtin ident in value position, and it must exempt exactly the names this
-/// lane eta-expands below -- two copies of the list would drift into either a
-/// spurious error or the load-time failure #2433 removed.
-fn is_frozen_array_conversion_name(name: String) -> Bool {
-  builtin_ident_has_value_form(name)
+/// See the linear twin (`builtin_value_closure` in codegen/expr/compile_expr):
+/// generated builtins precede `func_offset`, so expose a first-class builtin as
+/// a tiny ordinary lambda with a valid table slot, eta-expanded to the arity
+/// `builtin_value_form_arity` reports -- the same number the checker used to
+/// grant the value form (#1733 / #2442).
+/// #2448: the gc twin of `user_fn_owns_name`. Same rule, same reason: a user
+/// function that declares a registry name is what the checker resolved the name
+/// to, so the eta-expansion must not pre-empt its table slot.
+fn gc_user_fn_owns_name(ctx: CompileCtxGc, name: String) -> Bool {
+  let names = ctx.func_table.names
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = Array::get(ctx.func_table.indices, i) - ctx.func_offset >= 0
+      i = Array::length(names)
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
-/// See the linear twin: generated builtins precede `func_offset`, so expose a
-/// first-class conversion as a tiny ordinary lambda with a valid table slot.
-fn frozen_array_conversion_closure(name: String) -> Expr {
-  let param = "__frozen_array_value"
-  let params: Array[(String, Option[TypeExpr])] = [(param, None)]
-  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), [
-    EIdent(param, -1)
-  ], -1))
+fn builtin_value_closure(name: String, arity: Int) -> Expr {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let args: Array[Expr] = []
+  let mut i = 0
+  while i < arity {
+    let param = String::concat("__builtin_value_arg", Int::to_string(i))
+    Array::push(params, (param, None))
+    Array::push(args, EIdent(param, -1))
+    i = i + 1
+  }
+  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1))
 }
 
 /// #538 P4.5: shape-based "definitely scalar" test for `==`/`!=` operands,
@@ -257,7 +276,35 @@ fn gc_expr_is_intish(e: Expr) -> Bool {
 /// checking ctx.gc_float_locals -- mirrors gc_expr_is_boolish below, so a
 /// name reused with a non-float binding in a sibling scope is not
 /// misclassified via its old, now-stale slot entry.
+/// #2424: did the CHECKER say this exact node is a `Double`?
+///
+/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
+/// ends: an extra term in FRONT of the syntactic classifier, never a
+/// replacement, so the table can only add a classification the shape rules
+/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection answers with its
+/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
+/// is its callee identifier's offset and this array carries call results. Its
+/// doc comment carries the whole argument.
+///
+/// This is what closes the row `float_call_offsets` structurally could not: a
+/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
+/// projection arm at all, and measured before this change `b.ratio` on a
+/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
+/// gc, while the same Double through a tuple element or a plain `let` answered
+/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
+/// because both answer one question, and they agree on calls: a call node's
+/// `typed_lowering_arg_offset` IS its call offset.
+fn gc_offset_says_float(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_float_key(e)
+  off >= 0 && array_contains_int(ctx.gc_float_call_offsets, off)
+}
+
 fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  gc_offset_says_float(e, ctx) || gc_expr_is_floatish_syntactic(e, local_names, ctx)
+}
+
+fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
   match e {
     EFloat(_) => true,
     EIdent(fname, _) => {
@@ -1253,8 +1300,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           emit_local_get(buf, local_idx)
         }
         next_local
-      } else if is_frozen_array_conversion_name(name) {
-        ce(buf, frozen_array_conversion_closure(name), local_names, next_local, ld)
+      } else if builtin_value_form_arity(name) >= 0 && !gc_user_fn_owns_name(ctx, name) {
+        // #2442: see the linear twin in codegen/expr/compile_expr.vibe -- the
+        // placement above the func table is what keeps a builtin's negative
+        // table slot from being emitted, and only qualified names get here.
+        // A user function that declares a registry name still wins (#2448).
+        ce(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ld)
       } else {
         let ctor_idx = ctor_table_index_of(ctx.gc_ctor_table, name)
         if ctor_idx >= 0 {

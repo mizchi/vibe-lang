@@ -9,7 +9,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   apply_type_constructor,
-  builtin_ident_has_value_form,
+  builtin_value_form_arity,
   canonical_builtin_name,
   collect_tvars,
   compiler_owned_type_arity,
@@ -2267,20 +2267,29 @@ fn railway_ident_lookup_name(name: String) -> String {
 /// not a `CtFn` and lowers through the `ctor_table` arm of `compile_expr`,
 /// which is why #2274's bare-name exemption existed and why dropping that
 /// exemption is safe now that the test is the type.
-/// #1733 is the exception, and it is not a taste call: `compile_expr` and
-/// `backend_expr` materialize the two FrozenArray conversions as a one-argument
-/// LAMBDA (`frozen_array_conversion_closure`), which is an ordinary closure
-/// with an ordinary table slot, so those two really are values.
-/// `builtin_ident_has_value_form` in `core/builtin_name.vibe` is the single
-/// source of truth both lanes read, so this cannot drift from the lowering.
+/// #1733 / #2442 is the exception, and it is not a taste call: both lanes
+/// materialize a PURE builtin as an eta-expanded LAMBDA
+/// (`builtin_value_closure`), which is an ordinary closure with an ordinary
+/// table slot, so those really are values.
+/// `builtin_value_form_arity` in `core/builtin_name.vibe` is the single source
+/// of truth both lanes read, so this cannot drift from the lowering.
+///
+/// Two conditions, and each is decided by the side that owns it. The EFFECT
+/// row is read off the type the checker itself inferred, because that is the
+/// authority for effects: an effectful builtin materialized as a value would
+/// carry its row on the binding's function type and would have to be demanded
+/// again at the indirect call, and until that exists `let f = Fs::read_file`
+/// launders authority (ADR-0075/0084/0088). The ARITY must AGREE between the
+/// registry and that same type -- a value form is emitted with the registry's
+/// parameter count, so granting one the checker types differently would move a
+/// check-time error into a runtime signature mismatch.
 fn builtin_ident_is_value(name: String, t: Type) -> Bool {
-  if builtin_ident_has_value_form(name) {
-    true
-  } else {
-    match t {
-      CtFn(_, _, _) => false,
-      _ => true
-    }
+  match t {
+    CtFn(params, _, eff) => match eff {
+      Some(_) => false,
+      None => builtin_value_form_arity(name) == Array::length(params)
+    },
+    _ => true
   }
 }
 
@@ -2317,7 +2326,38 @@ fn call_only_builtin_ident_error(name: String, ty: Type, ident_off: Int) -> Stri
   } else {
     String::concat("(", String::concat(params, String::concat(") -> ", call_form)))
   }
-  String::concat(String::concat("`", name), String::concat("` is a builtin operation, not a value -- call it (`", String::concat(call_form, String::concat("`), or wrap it (`", String::concat(wrap_form, String::concat("`) to pass it as a function", off_marker_len(ident_off, String::length(name))))))))
+  let head = String::concat(String::concat("`", name), "` is a builtin operation, not a value")
+  let why = builtin_value_form_refusal_reason(name, ty)
+  let how = String::concat(" -- call it (`", String::concat(call_form, String::concat("`), or wrap it (`", String::concat(wrap_form, "`) to pass it as a function"))))
+  String::concat(head, String::concat(why, String::concat(how, off_marker_len(ident_off, String::length(name)))))
+}
+
+/// #2442: say WHY this name has no value form, so the reader can tell a
+/// permanent boundary from a gap. Four reasons, and they call for different
+/// things: an effect row means the wrap form is the ANSWER (it puts the call
+/// back at a site where the row is checked against the caller's capability),
+/// while the other three mean the wrap form is a workaround for something the
+/// compiler cannot express yet.
+fn builtin_value_form_refusal_reason(name: String, ty: Type) -> String {
+  let canonical = canonical_builtin_name(name)
+  match ty {
+    CtFn(_, _, eff) => match eff {
+      Some(row) => String::concat(" (it performs `", String::concat(row, "`, and an effect row is only checked where the call is written)")),
+      None => if !String::contains(canonical, "::") {
+        " (an unqualified builtin name has no value form yet: a local of the same name would be indistinguishable to the lambda-site planner)"
+      } else if registry_builtin_arity(canonical) >= 0 {
+        // Codex review on #2448. The registry writes a polymorphic position as
+        // `reg_any()`, and each occurrence is independent -- so a value form
+        // would hand out a signature that does not relate the argument to the
+        // result, and `let get = Array::get; let s: String = get([1], 0)`
+        // would check clean. The direct call keeps its refinements.
+        " (its signature has positions the registry leaves open, and a value form cannot say they are the same type)"
+      } else {
+        " (the compiler has no registry row for it, so it has no arity to expand)"
+      }
+    },
+    _ => ""
+  }
 }
 
 fn railway_is_return_none(e: Expr) -> Bool {

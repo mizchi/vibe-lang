@@ -10,6 +10,7 @@ import @vibe/compiler/core {
   bsearch_leftmost,
   builtin_allocates,
   builtin_registry,
+  builtin_value_form_arity,
   bytebuf_push,
   canonical_builtin_name,
   expr_children,
@@ -557,89 +558,105 @@ export fn collect_strings_stmts(stmts: Array[Stmt]) -> Array[String] {
 /// is really shared would survive as "unique" and classify the wrong call).
 /// Nested `EFn` bodies are descended into as well: a lambda's calls are
 /// compiled by this same program and share its offset space.
-fn count_call_offsets_expr(e: Expr, counts: MutMap[Int, Int]) -> Unit {
+fn count_one_offset(counts: MutMap[Int, Int], off: Int) -> Unit {
+  if off >= 0 {
+    match MutMap::get(counts, off) {
+      Some(n) => MutMap::set(counts, off, n + 1),
+      None => ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn count_typed_lowering_offsets_expr(e: Expr, counts: MutMap[Int, Int]) -> Unit {
+  // #2424: count by `typed_lowering_arg_offset`'s key, not by "is an ECall".
+  // The Double channel now carries PROJECTION rows alongside call-result rows,
+  // and a projection is keyed by its field-name offset -- counting only calls
+  // scored every such row 0 and dropped it, which is the fail-closed direction
+  // and therefore silent: the channel would have been wired up and inert.
+  //
+  // EIdent is deliberately NOT counted. A call's own offset is its callee's
+  // start (`parse_postfix` passes `callee_offset(expr)`), so an ordinary
+  // `f(x)` carries an EIdent and an ECall at ONE offset; counting both would
+  // score 2 and drop every call-result row in the table.
   match e {
-    ECall(_, _, off) => if off >= 0 {
-      match MutMap::get(counts, off) {
-        Some(n) => MutMap::set(counts, off, n + 1),
-        None => ()
-      }
-    } else {
-      ()
-    },
+    ECall(_, _, off) => count_one_offset(counts, off),
+    EDot(_, _, _, field_off) => count_one_offset(counts, field_off),
     _ => ()
   }
   let kids = expr_children(e)
   let mut i = 0
   while i < Array::length(kids) {
-    count_call_offsets_expr(Array::get(kids, i), counts)
+    count_typed_lowering_offsets_expr(Array::get(kids, i), counts)
     i = i + 1
   }
 }
 
-fn count_call_offsets_stmts(stmts: Array[Stmt], counts: MutMap[Int, Int]) -> Unit {
+fn count_typed_lowering_offsets_stmts(stmts: Array[Stmt], counts: MutMap[Int, Int]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => count_call_offsets_expr(expr, counts),
-      SLetMut(_, _, expr) => count_call_offsets_expr(expr, counts),
-      SLetPat(_, expr) => count_call_offsets_expr(expr, counts),
-      SExpr(expr) => count_call_offsets_expr(expr, counts),
-      STest(_, expr) => count_call_offsets_expr(expr, counts),
-      SBench(_, expr) => count_call_offsets_expr(expr, counts),
-      SExample(_, expr) => count_call_offsets_expr(expr, counts),
+      SLet(_, _, _, _, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SLetMut(_, _, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SLetPat(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SExpr(expr) => count_typed_lowering_offsets_expr(expr, counts),
+      STest(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SBench(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SExample(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
       SFnDecl(_, _, decl_expr, pre_exprs, post_exprs) => {
-        count_call_offsets_expr(decl_expr, counts)
+        count_typed_lowering_offsets_expr(decl_expr, counts)
         let mut pi = 0
         while pi < Array::length(pre_exprs) {
-          count_call_offsets_expr(Array::get(pre_exprs, pi), counts)
+          count_typed_lowering_offsets_expr(Array::get(pre_exprs, pi), counts)
           pi = pi + 1
         }
         let mut qi = 0
         while qi < Array::length(post_exprs) {
-          count_call_offsets_expr(Array::get(post_exprs, qi), counts)
+          count_typed_lowering_offsets_expr(Array::get(post_exprs, qi), counts)
           qi = qi + 1
         }
       },
-      SModule(_, _, inner) => count_call_offsets_stmts(inner, counts),
+      SModule(_, _, inner) => count_typed_lowering_offsets_stmts(inner, counts),
       _ => ()
     }
     i = i + 1
   }
 }
 
-/// How many `ECall` nodes were counted at `off`; 0 when it was never a
-/// candidate. A named reader rather than an inline match at the use site: the
+/// How many nodes were counted at `off`; 0 when it was never a candidate. A named reader rather than an inline match at the use site: the
 /// answer is a number to compare, not a membership test, and reading it out
 /// here keeps the caller's condition an ordinary numeric comparison.
-fn call_offset_count(counts: MutMap[Int, Int], off: Int) -> Int {
+fn typed_lowering_offset_count(counts: MutMap[Int, Int], off: Int) -> Int {
   match MutMap::get(counts, off) {
     Some(n) => n,
     None => 0
   }
 }
 
-/// #2158: of `candidates`, keep only the offsets that identify EXACTLY ONE
-/// `ECall` node in `stmts`.
+/// #2158 / #2424: of `candidates`, keep only the offsets that identify EXACTLY
+/// ONE typed-lowering node in `stmts` -- one `ECall` (keyed by its own offset)
+/// or one `EDot` (keyed by its field-name offset), which is what
+/// `typed_lowering_arg_offset` reads at the consumer.
 ///
-/// The checker hands codegen a set of source offsets whose call result it
-/// typed as `Double`, and codegen looks an offset up on an `ECall` node. That
-/// is sound only while an offset names one call and one call only, and it is
-/// NOT free: the FS lanes merge many files into a single statement array, and
-/// each file's offsets are relative to its own text -- file A's offset 100 and
-/// file B's offset 100 are the same key. A collision that lands a `Double`
-/// classification on an Int-valued call is silently wrong, which is worse than
-/// the bug the table exists to fix.
+/// The checker hands codegen a set of source offsets whose value it typed as
+/// `Double`, and codegen looks an offset up on a node. That is sound only while
+/// an offset names one node and one node only, and it is NOT free: the FS lanes
+/// merge many files into a single statement array, and each file's offsets are
+/// relative to its own text -- file A's offset 100 and file B's offset 100 are
+/// the same key. A collision that lands a `Double` classification on an
+/// Int-valued node is silently wrong, which is worse than the bug the table
+/// exists to fix.
 ///
 /// So the disjointness is ESTABLISHED here, on exactly the statements codegen
 /// is about to walk, instead of being assumed from how some entry parsed. An
-/// offset survives only when the whole program carries one call node at it; two
+/// offset survives only when the whole program carries one node at it; two
 /// files colliding makes the count 2 and drops it. Fail closed: a dropped
 /// offset classifies nothing and the syntactic answer stands.
 ///
 /// Empty `candidates` returns immediately without walking, so every lane that
 /// supplies no checker offsets pays nothing at all for this.
-export fn unique_call_offsets_in_stmts(stmts: Array[Stmt], candidates: Array[Int]) -> Array[Int] {
+export fn unique_typed_lowering_offsets_in_stmts(stmts: Array[Stmt], candidates: Array[Int]) -> Array[Int] {
   let out: Array[Int] = array_empty()
   if Array::length(candidates) == 0 {
     out
@@ -650,11 +667,11 @@ export fn unique_call_offsets_in_stmts(stmts: Array[Stmt], candidates: Array[Int
       MutMap::set(counts, Array::get(candidates, i), 0)
       i = i + 1
     }
-    count_call_offsets_stmts(stmts, counts)
+    count_typed_lowering_offsets_stmts(stmts, counts)
     let mut j = 0
     while j < Array::length(candidates) {
       let off = Array::get(candidates, j)
-      if call_offset_count(counts, off) == 1 {
+      if typed_lowering_offset_count(counts, off) == 1 {
         Array::push(out, off)
       } else {
         ()
@@ -3982,12 +3999,26 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
 /// against the live length at every allocation rather than trusted -- see
 /// CompileCtx.lambda_plan_next. A silent mismatch would key a body's emitted
 /// constants to a table slot nothing installs.
-export fn count_lambda_sites_expr(expr: Expr) -> Int {
+export fn count_lambda_sites_expr(expr: Expr, user_fn_names: Array[String]) -> Int {
   match expr {
-    // #1733: these generated builtins live before func_offset, so their value
-    // form is materialized by both backends as a tiny ordinary lambda with a
-    // valid table slot. Count that synthetic site in the frozen plan.
-    EIdent(name, _) => if name == "FrozenArray::from_array" || name == "FrozenArray::to_array" {
+    // #1733 / #2442: a builtin with a value form lives before func_offset, so
+    // both backends materialize it as a tiny ordinary lambda with a valid table
+    // slot. Count that synthetic site in the frozen plan.
+    //
+    // The predicate is `builtin_value_form_arity`, shared with the checker and
+    // both backends rather than restated as a name list here -- this walk was
+    // the THIRD copy of #1733's two names, and a plan that disagrees with the
+    // walk is not a wrong answer, it is a thrown `lambda plan over-count`.
+    // That the shared predicate admits only QUALIFIED names is what makes this
+    // scope-free walk able to agree with codegen at all; see its doc comment.
+    //
+    // `user_fn_names` is the one piece of scope this walk needs and can have
+    // (Codex review on #2448). A user program may declare `fn Array::get(...)`,
+    // and the checker resolves that name to the DECLARATION -- so codegen must
+    // emit the user function's table slot, not an eta-expansion, and this walk
+    // must not reserve a slot for one. Locals still cannot be seen here, which
+    // is why a bare name has no value form at all.
+    EIdent(name, _) => if builtin_value_form_arity(name) >= 0 && bsearch_leftmost(user_fn_names, name) < 0 {
       1
     } else {
       0
@@ -4000,78 +4031,78 @@ export fn count_lambda_sites_expr(expr: Expr) -> Int {
     EStringInterp(_) => 0,
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EReturn(e) => count_lambda_sites_expr(e),
-    EUnaryOp(_, e) => count_lambda_sites_expr(e),
-    ESpread(e) => count_lambda_sites_expr(e),
-    EDot(obj, _, _, _) => count_lambda_sites_expr(obj),
-    ELabeledArg(_, _, e) => count_lambda_sites_expr(e),
-    ETuple(items) => count_lambda_sites_exprs(items),
-    EArray(items) => count_lambda_sites_exprs(items),
-    ERecord(_, fields, _) => count_lambda_sites_fields(fields),
-    EMap(fields) => count_lambda_sites_fields(fields),
-    EBinOp(_, l, r, _) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
-    ESeq(l, r) => count_lambda_sites_expr(l) + count_lambda_sites_expr(r),
+    EReturn(e) => count_lambda_sites_expr(e, user_fn_names),
+    EUnaryOp(_, e) => count_lambda_sites_expr(e, user_fn_names),
+    ESpread(e) => count_lambda_sites_expr(e, user_fn_names),
+    EDot(obj, _, _, _) => count_lambda_sites_expr(obj, user_fn_names),
+    ELabeledArg(_, _, e) => count_lambda_sites_expr(e, user_fn_names),
+    ETuple(items) => count_lambda_sites_exprs(items, user_fn_names),
+    EArray(items) => count_lambda_sites_exprs(items, user_fn_names),
+    ERecord(_, fields, _) => count_lambda_sites_fields(fields, user_fn_names),
+    EMap(fields) => count_lambda_sites_fields(fields, user_fn_names),
+    EBinOp(_, l, r, _) => count_lambda_sites_expr(l, user_fn_names) + count_lambda_sites_expr(r, user_fn_names),
+    ESeq(l, r) => count_lambda_sites_expr(l, user_fn_names) + count_lambda_sites_expr(r, user_fn_names),
     // A direct conversion call stays direct; only a value-position identifier
     // is materialized as the synthetic lambda above.
     ECall(callee, args, _) => {
       let callee_count = match callee {
-        EIdent(name, _) => if name == "FrozenArray::from_array" || name == "FrozenArray::to_array" {
+        EIdent(name, _) => if builtin_value_form_arity(name) >= 0 {
           0
         } else {
-          count_lambda_sites_expr(callee)
+          count_lambda_sites_expr(callee, user_fn_names)
         },
-        _ => count_lambda_sites_expr(callee)
+        _ => count_lambda_sites_expr(callee, user_fn_names)
       }
-      callee_count + count_lambda_sites_exprs(args)
+      callee_count + count_lambda_sites_exprs(args, user_fn_names)
     },
     EIf(cond, then_e, else_e) =>
-    count_lambda_sites_expr(cond) + count_lambda_sites_expr(then_e) + count_lambda_sites_expr(else_e),
-    ELet(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    ELetRec(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    ELetMut(_, val, body, _) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EAssign(_, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val) + count_lambda_sites_expr(body),
-    EWhile(cond, body) => count_lambda_sites_expr(cond) + count_lambda_sites_expr(body),
-    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter) + count_lambda_sites_expr(body),
-    ELoop(params, body) => count_lambda_sites_fields(params) + count_lambda_sites_expr(body),
-    EMatch(scr, arms) => count_lambda_sites_expr(scr) + count_lambda_sites_arms(arms),
-    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr) + count_lambda_sites_arms(arms),
+    count_lambda_sites_expr(cond, user_fn_names) + count_lambda_sites_expr(then_e, user_fn_names) + count_lambda_sites_expr(else_e, user_fn_names),
+    ELet(_, val, body, _) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    ELetRec(_, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    ELetMut(_, val, body, _) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EAssign(_, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EAssignOp(_, _, val, body) => count_lambda_sites_expr(val, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EWhile(cond, body) => count_lambda_sites_expr(cond, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EForIn(_, _, iter, body) => count_lambda_sites_expr(iter, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    ELoop(params, body) => count_lambda_sites_fields(params, user_fn_names) + count_lambda_sites_expr(body, user_fn_names),
+    EMatch(scr, arms) => count_lambda_sites_expr(scr, user_fn_names) + count_lambda_sites_arms(arms, user_fn_names),
+    EHandle(body_expr, arms) => count_lambda_sites_expr(body_expr, user_fn_names) + count_lambda_sites_arms(arms, user_fn_names),
     // The one arm that counts: this node IS a table entry, and its body may
     // hold more.
-    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body)
+    EFn(_, _, _, _, _, body) => 1 + count_lambda_sites_expr(body, user_fn_names)
   }
 }
 
-fn count_lambda_sites_exprs(items: Array[Expr]) -> Int {
+fn count_lambda_sites_exprs(items: Array[Expr], user_fn_names: Array[String]) -> Int {
   let n = Array::length(items)
   let mut i = 0
   let mut total = 0
   while i < n {
-    total = total + count_lambda_sites_expr(Array::get(items, i))
+    total = total + count_lambda_sites_expr(Array::get(items, i), user_fn_names)
     i = i + 1
   }
   total
 }
 
-fn count_lambda_sites_fields(fields: Array[(String, Expr)]) -> Int {
+fn count_lambda_sites_fields(fields: Array[(String, Expr)], user_fn_names: Array[String]) -> Int {
   let n = Array::length(fields)
   let mut i = 0
   let mut total = 0
   while i < n {
     let (_, val) = Array::get(fields, i)
-    total = total + count_lambda_sites_expr(val)
+    total = total + count_lambda_sites_expr(val, user_fn_names)
     i = i + 1
   }
   total
 }
 
-fn count_lambda_sites_arms(arms: Array[(Pat, Expr)]) -> Int {
+fn count_lambda_sites_arms(arms: Array[(Pat, Expr)], user_fn_names: Array[String]) -> Int {
   let n = Array::length(arms)
   let mut i = 0
   let mut total = 0
   while i < n {
     let (_, body) = Array::get(arms, i)
-    total = total + count_lambda_sites_expr(body)
+    total = total + count_lambda_sites_expr(body, user_fn_names)
     i = i + 1
   }
   total

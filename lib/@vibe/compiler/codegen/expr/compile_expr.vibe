@@ -6,7 +6,7 @@ import @vibe/compiler/core {
   Stmt,
   TypeExpr,
   bsearch_leftmost,
-  builtin_ident_has_value_form,
+  builtin_value_form_arity,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
@@ -240,24 +240,36 @@ import ./compile_match.vibe {
 
 //# Functions
 
-/// #2433: the name list moved to `core/builtin_name.vibe`. The checker rejects
-/// a builtin ident in value position, and it must exempt exactly the names this
-/// lane eta-expands below -- two copies of the list would drift into either a
-/// spurious error or the load-time failure #2433 removed.
-fn is_frozen_array_conversion_name(name: String) -> Bool {
-  builtin_ident_has_value_form(name)
+/// #1733 / #2442: builtin indices live before `func_offset`, while ordinary
+/// closure table slots are relative to it. Materialize a first-class builtin as
+/// an eta-expanded lambda so its value form uses the same direct runtime body
+/// as a source call instead of encoding a negative table slot.
+///
+/// The arity is `builtin_value_form_arity` -- the same number the checker used
+/// to grant the value form, so the emitted parameter count cannot disagree with
+/// the type the caller was given. #1733 hardcoded 1 for the two FrozenArray
+/// conversions; nothing else about the shape changed.
+/// #2448: does a USER function own this name? Builtin bodies are emitted below
+/// `func_offset` and user functions at or above it, so the func table answers
+/// both questions and this reads the half that matters. The plan walk is handed
+/// the same set (`fn_names_list` in linked_compile), because a disagreement
+/// between the two is a thrown `lambda plan over-count`, not a wrong answer.
+fn user_fn_owns_name(ctx: CompileCtx, name: String) -> Bool {
+  let i = func_table_index_of(ctx.func_table, name)
+  i >= 0 && Array::get(ctx.func_table.indices, i) - ctx.func_offset >= 0
 }
 
-/// Builtin indices live before `func_offset`, while ordinary closure table
-/// slots are relative to it. Materialize these two first-class builtins as a
-/// one-argument lambda so their value form uses the same direct runtime body
-/// as a source call instead of encoding a negative table slot (#1733).
-fn frozen_array_conversion_closure(name: String) -> Expr {
-  let param = "__frozen_array_value"
-  let params: Array[(String, Option[TypeExpr])] = [(param, None)]
-  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), [
-    EIdent(param, -1)
-  ], -1))
+fn builtin_value_closure(name: String, arity: Int) -> Expr {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let args: Array[Expr] = []
+  let mut i = 0
+  while i < arity {
+    let param = String::concat("__builtin_value_arg", Int::to_string(i))
+    Array::push(params, (param, None))
+    Array::push(args, EIdent(param, -1))
+    i = i + 1
+  }
+  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1))
 }
 
 /// #672: emit structural equality for two tuples (non-rc layout: element i at
@@ -923,8 +935,32 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
         emit_local_get(buf, local_idx)
       }
       next_local
-    } else if is_frozen_array_conversion_name(name) {
-      compile_expr(buf, frozen_array_conversion_closure(name), local_names, next_local, ctx, ld)
+    } else if builtin_value_form_arity(name) >= 0 && !user_fn_owns_name(ctx, name) {
+      // #2442: a pure builtin in value position, eta-expanded.
+      //
+      // Placed HERE, above the func table, and that placement is load-bearing:
+      // `ctx.func_table` holds the BUILTIN bodies too, so a builtin name
+      // resolves there and emits `(table_slot<<2)|2` with
+      // `table_slot = fidx - ctx.func_offset` NEGATIVE -- the #2433 failure this
+      // eta-expansion exists to avoid. Measured while writing this: with the
+      // check below the func table instead, `let cat = String::concat` compiled
+      // to zero lambdas and the module was rejected with `lambda plan
+      // over-count: planned through 1, walk stopped at 0`.
+      //
+      // It sits below the LOCALS lookup, and only qualified names have a value
+      // form (see `builtin_value_form_arity`), so nothing this arm can shadow
+      // reaches it -- which is also why the scope-free lambda-site planner can
+      // agree with this walk.
+      //
+      // A USER FUNCTION that declares a registry name is the one thing that
+      // can still own it (Codex review on #2448), and it wins: the checker
+      // resolved the name to the declaration, so this must fall through to the
+      // func-table slot below. Measured before this guard, with
+      // `fn String::concat(a: Int) -> Int` in scope, `let f = String::concat`
+      // emitted an arity-2 eta-expansion against the checker's arity-1 type
+      // and the runtime refused to compile the module. The plan walk is given
+      // the same name set so the two agree.
+      compile_expr(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ctx, ld)
     } else {
       let mut __ci_idx = -1
       let __ci_len = Array::length(ctx.const_int_names)

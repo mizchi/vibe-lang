@@ -58,33 +58,45 @@ test "ident from env" {
   assert(types_equal(check(EIdent("x", -1), env), CtInt))
 }
 
-test "ident builtin" {
-  // #2433: a builtin ident in VALUE position is rejected. It used to type as
-  // `CtFn` and then break in codegen -- measured on stage2, `let f =
-  // String::concat` compiled and trapped with `table index is out of bounds`,
-  // because a builtin's function index is below `func_offset` and the indirect
-  // table holds user functions and lambdas only. The signature is still what
-  // the registry says; it is only unavailable as a value, and the diagnostic
-  // names the call form and the wrap form.
+test "ident builtin without a value form" {
+  // #2433 rejected a builtin ident in VALUE position; #2442 made the rejection
+  // a property instead of a blanket rule, so this case has to be a builtin
+  // that still has none. An EFFECTFUL one is the permanent member of that set:
+  // as a value its row would have to be carried by the binding's function type
+  // and demanded again at the indirect call, and until that exists
+  // `let f = Fs::read_file` launders authority (ADR-0075/0084/0088). The
+  // signature is still what the registry says; it is only unavailable as a
+  // value, and the diagnostic names the call form and the wrap form.
+  //
+  // `String::concat` used to be this case's subject and is now a value, which
+  // is exactly what #2442 changed.
   let caught = handle {
-    let _ = check(EIdent("String::concat", -1), EnvEmpty)
+    let _ = check(EIdent("Fs::read_file", -1), EnvEmpty)
     ""
   } with { Exception::Throw(msg) => msg }
-  assert(String::contains(caught, "String::concat"))
+  assert(String::contains(caught, "Fs::read_file"))
   assert(String::contains(caught, "not a value"))
 }
 
 test "ident builtin with a value form" {
-  // #1733 gave these two a real value form: both codegen lanes materialize
-  // them as a one-argument lambda, which is an ordinary closure with an
-  // ordinary table slot. `fixtures/frozen_array_copies_test.vibe` calls both
-  // through a binding and passes, so the checker must keep admitting them.
+  // #1733 gave the two FrozenArray conversions a real value form and #2442
+  // generalized it: both codegen lanes materialize any QUALIFIED pure builtin
+  // as an eta-expanded lambda, which is an ordinary closure with an ordinary
+  // table slot. `fixtures/frozen_array_copies_test.vibe` and
+  // `fixtures/builtin_value_form_test.vibe` call them through a binding and
+  // pass, so the checker must keep admitting them.
   let ty = check(EIdent("FrozenArray::from_array", -1), EnvEmpty)
   let is_fn = match ty {
     CtFn(_, _, _) => true,
     _ => false
   }
   assert(is_fn)
+  let ty2 = check(EIdent("String::concat", -1), EnvEmpty)
+  let is_fn2 = match ty2 {
+    CtFn(_, _, _) => true,
+    _ => false
+  }
+  assert(is_fn2)
 }
 
 test "ident unknown" {
