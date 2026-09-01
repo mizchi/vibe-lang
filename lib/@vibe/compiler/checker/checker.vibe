@@ -5346,19 +5346,37 @@ export fn is_array_builder_ty(t: Type) -> Bool {
 
 /// #2447 value-restriction predicate, the Array sibling of
 /// `is_array_builder_ty` above: true when an ARRAY whose element type is
-/// still an unresolved var occurs anywhere in the value's type reachable
-/// without crossing a function boundary. `let xs = []` -- and `([], 0)`,
-/// `Some([])`, `[[]]` -- alias ONE live mutable array, so the element var
-/// must stay un-quantified: generalizing it re-instantiates a fresh slot
-/// at every use, and pushes at different types can then never disagree,
-/// which is exactly the CtUnknown hole the empty-literal element slot
-/// replaced. CtFn is deliberately NOT descended: a function value creates
-/// a NEW array per call, so generalizing `() -> Array[v]` stays sound.
+/// not yet fully determined occurs anywhere in the value's type.
+/// `let xs = []` -- and `([], 0)`, `Some([])`, `[[]]` -- alias ONE live
+/// mutable array, so the element var must stay un-quantified: generalizing
+/// it re-instantiates a fresh slot at every use, and pushes at different
+/// types can then never disagree, which is exactly the CtUnknown hole the
+/// empty-literal element slot replaced.
+///
+/// Codex round 2 on #2450, both measured real:
+/// - The element test is "mentions ANY unresolved var", not "is
+///   immediately a var" -- `Array[Option[v]]` from a generic producer is
+///   as open as `Array[v]` (ty_elem_mentions_open_var below).
+/// - CtFn IS descended, conservatively. A function value does not
+///   necessarily create a new array per call: `let xs = []` then
+///   `let get = () -> { xs }` returns the SAME captured array, and
+///   `generalize` is environment-blind, so quantifying the return's
+///   element var lets two calls disagree about one runtime array. The
+///   type alone cannot tell a captured var from a body-fresh one, so a
+///   lambda whose type mentions an open array element binds as a monotype
+///   too; a polymorphic array factory keeps one spelling, the named
+///   generic `fn mk[T]() -> Array[T]` form.
 export fn ty_has_open_array_elem(t: Type) -> Bool {
   match t {
-    CtArray(e) => match e {
-      CtVar(_) => true,
-      _ => ty_has_open_array_elem(e)
+    CtArray(e) => ty_elem_mentions_open_var(e),
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = ty_has_open_array_elem(ret)
+      while i < Array::length(params) && !found {
+        found = ty_has_open_array_elem(Array::get(params, i))
+        i = i + 1
+      }
+      found
     },
     CtOption(e) => ty_has_open_array_elem(e),
     CtTuple(elems) => {
@@ -5392,6 +5410,57 @@ export fn ty_has_open_array_elem(t: Type) -> Bool {
       while i < Array::length(fields) && !found {
         let (_, field_ty) = Array::get(fields, i)
         found = ty_has_open_array_elem(field_ty)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Inside an array ELEMENT position the question changes: not "does a new
+/// array get created per call" but "is this element type fully
+/// determined". Any unresolved var beneath -- through Option, tuples,
+/// nested arrays, named applications, records, and function types alike --
+/// leaves the element open, so the walk descends everything.
+fn ty_elem_mentions_open_var(t: Type) -> Bool {
+  match t {
+    CtVar(_) => true,
+    CtArray(e) => ty_elem_mentions_open_var(e),
+    CtOption(e) => ty_elem_mentions_open_var(e),
+    CtTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) && !found {
+        found = ty_elem_mentions_open_var(Array::get(elems, i))
+        i = i + 1
+      }
+      found
+    },
+    CtNamed(_, targs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(targs) && !found {
+        found = ty_elem_mentions_open_var(Array::get(targs, i))
+        i = i + 1
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, field_ty) = Array::get(fields, i)
+        found = ty_elem_mentions_open_var(field_ty)
+        i = i + 1
+      }
+      found
+    },
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = ty_elem_mentions_open_var(ret)
+      while i < Array::length(params) && !found {
+        found = ty_elem_mentions_open_var(Array::get(params, i))
         i = i + 1
       }
       found

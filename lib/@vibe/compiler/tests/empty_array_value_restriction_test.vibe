@@ -74,10 +74,34 @@ test "annotated bindings are untouched" {
   inspect(check_ok(src), content = "true")
 }
 
-test "a function value returning an empty array still generalizes" {
-  // The restriction stops at CtFn: each call creates a NEW array, so one
-  // lambda may serve two element types.
+test "a closure returning a captured array is monomorphic" {
+  // Codex round 2 on #2450: `get` returns the SAME captured array every
+  // call, and `generalize` is environment-blind, so quantifying the
+  // return's element var would let two calls disagree about one runtime
+  // array.
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nlet get = () -> { xs }\nfill(get(), 1)\nfill_s(get(), \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+test "a generic producer with a composite element is monomorphic" {
+  // Codex round 2 on #2450: `Array[Option[T]]` instantiates to an element
+  // that MENTIONS an open var rather than being one -- as open as
+  // `Array[v]` itself.
+  let src = "fn mk[T]() -> Array[Option[T]] { [] }\nfn fill(xs: Array[Option[Int]]) -> Unit { Array::push(xs, Some(1)) }\nfn fill_s(xs: Array[Option[String]]) -> Unit { Array::push(xs, Some(\"s\")) }\nfn main() -> Unit { let xs = mk()\nfill(xs)\nfill_s(xs) }"
+  inspect(check_err(src), content = "true")
+}
+
+test "a lambda array factory binds as a monotype" {
+  // The type alone cannot tell a body-fresh `[]` from a captured one, so
+  // the CtFn arm is conservative: this lambda serves ONE element type.
+  // The polymorphic factory keeps a spelling -- the named generic form
+  // below.
   let src = "fn main() -> Unit { let mkf = () -> { [] }\nlet a: Array[Int] = mkf()\nlet b: Array[String] = mkf()\nArray::push(a, 1)\nArray::push(b, \"s\") }"
+  inspect(check_err(src), content = "true")
+}
+
+test "a named generic array factory stays polymorphic" {
+  let src = "fn mk[T]() -> Array[T] { [] }\nfn main() -> Unit { let a: Array[Int] = mk()\nlet b: Array[String] = mk()\nArray::push(a, 1)\nArray::push(b, \"s\") }"
   inspect(check_ok(src), content = "true")
 }
 
