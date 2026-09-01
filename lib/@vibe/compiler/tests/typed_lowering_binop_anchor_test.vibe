@@ -1,0 +1,45 @@
+//# Imports
+
+import @vibe/ast {
+  Expr
+}
+
+import @vibe/compiler/checker {
+  typed_lowering_binop_anchor
+}
+
+//# Tests
+
+// #2391: the channel anchor is EXACT identity -- the operator token's own
+// offset (#2435), nothing else. A synthesized binop (own offset -1) answers
+// -1: the record site drops it and the rewrite's lookup misses, so it is
+// absent from the channel but can never be wrongly rewritten. The operand
+// walk that used to fill in -1 anchors from operand offsets was measured
+// reached only by compiler-synthesized non-String binops and was deleted;
+// these tests pin the replacement contract.
+
+test "#2391: a parsed binop's anchor is its operator offset" {
+  let got = typed_lowering_binop_anchor(7, EIdent("a", 3), EIdent("b", 9))
+  inspect(got, content = "7")
+}
+
+test "#2391: a synthesized binop has no anchor, whatever its operands carry" {
+  // Under the deleted operand walk this answered 42 (the left operand's
+  // offset) -- a junk anchor that could collide with a recorded source
+  // binop and had to be guarded by the verdict poison.
+  let got = typed_lowering_binop_anchor(0 - 1, EIdent("a", 42), EInt(0))
+  inspect(got, content = "-1")
+}
+
+test "#2391: the syntactic tracker's str_lex_diff wrapper stays anchorless" {
+  // The shape the tracker emits for a classified String `<`:
+  // `str_lex_diff(a, b) < 0`, every synthesized node at -1. This is the
+  // shape the reachability probe caught in the walk during a selfhost
+  // build.
+  let wrapper = ECall(EIdent("str_lex_diff", 0 - 1), [
+    EIdent("a", 12),
+    EIdent("b", 20)
+  ], 0 - 1)
+  let got = typed_lowering_binop_anchor(0 - 1, wrapper, EInt(0))
+  inspect(got, content = "-1")
+}

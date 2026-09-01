@@ -6462,111 +6462,24 @@ fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Ty
 /// #2391 slice 2: the CHANNEL anchor for a relational/`+` binop -- the offset
 /// the checker records a String binop under and the FS merge's rewrite pass
 /// recomputes to find it. Exported for exactly that reason: two
-/// implementations of this walk would be a silent-wrong factory.
+/// implementations of this anchor would be a silent-wrong factory.
 ///
-/// The walk prefers anchors that are UNIQUE to this binop -- a
-/// sequence/match/if operand answers -1 in the shallow walk (falling back
-/// to the right operand) instead of descending to its first expression,
-/// because a descended anchor is not unique: in
-/// `(match n + 1 { v => __to_string(v) }) + q` the outer String `+` and the
-/// Int `+` inside the scrutinee would otherwise share n's offset, and the
-/// rewrite corrupted the scrutinee (Codex round 1 on #2429; measured "y"
-/// where content says "4y"). Descent through a call's callee, a dot's base,
-/// or a binop's lhs stays shallow: those chains remain inside the operand.
-///
-/// When BOTH operands are composite (Codex round 2), the shallow walk has
-/// no anchor at all and the binop would silently keep its raw lowering --
-/// measured: `(if c { p } else { q }) + (match ...)` on Strings printed
-/// 2181843386369, the i64.add of the two reprs. So the anchor then falls
-/// back to a DEEP walk -- and the deep walk descends into VALUE positions
-/// only (if THEN-branch, match FIRST-ARM BODY, sequence TAIL, let BODY),
-/// never into control positions (Codex round 3). The node a value-position
-/// walk lands on has the composite operand's own type, so a same-kind binop
-/// that shares the anchor shares the String classification and rewrites
-/// correctly alongside; a control-position walk anchored the outer String
-/// `+` on an Int binop inside the if-CONDITION, where the verdict poison
-/// had to discard the whole anchor and the outer stayed raw (measured
-/// 2199023255553 for "xy"). A residual disagreeing collision still poisons
-/// and degrades to the syntactic classifiers, never a wrong rewrite.
-/// #2435: a binop parsed from source now carries its OPERATOR token's offset
-/// and that IS the anchor -- exact identity, no walk, no collisions, and the
-/// shapes no operand walk could name (literal-valued composite operands,
-/// measured 281320357889 for "xy" on the walk-only form) classify too. The
-/// operand walks below remain only for desugar-SYNTHESIZED binops (own
-/// offset -1), where the verdict poison still guards the residual
-/// collisions.
+/// #2435 made this exact identity: a binop parsed from source carries its
+/// OPERATOR token's offset, every desugar rebuild threads it through, and
+/// that offset IS the anchor -- no walk, no collisions. A binop the
+/// compiler SYNTHESIZES (own offset -1, e.g. the `str_lex_diff(..) < 0`
+/// wrapper the syntactic tracker emits) answers -1: the record site's
+/// `anchor_off >= 0` guard drops it and the rewrite's table lookup misses,
+/// so a synthesized binop is absent from the channel but never wrongly
+/// rewritten. The operand walk that used to fill in -1 anchors (three
+/// Codex rounds of collision guards on #2429) was measured reached ONLY by
+/// synthesized non-String binops, where its answer was -1 or a junk anchor
+/// the verdict poison then had to discard -- so it was deleted rather than
+/// guarded. The poison in string_binop_offsets_from_capture stays: two
+/// checks of the SAME source binop (generic instantiations) can still
+/// classify differently and must degrade, never rewrite.
 export fn typed_lowering_binop_anchor(own_off: Int, left: Expr, right: Expr) -> Int {
-  if own_off >= 0 {
-    own_off
-  } else {
-    typed_lowering_binop_walk_anchor(left, right)
-  }
-}
-
-fn typed_lowering_binop_walk_anchor(left: Expr, right: Expr) -> Int {
-  let loff = typed_lowering_operand_off(left)
-  if loff >= 0 {
-    loff
-  } else {
-    let roff = typed_lowering_operand_off(right)
-    if roff >= 0 {
-      roff
-    } else {
-      let ldeep = typed_lowering_operand_off_deep(left)
-      if ldeep >= 0 {
-        ldeep
-      } else {
-        typed_lowering_operand_off_deep(right)
-      }
-    }
-  }
-}
-
-fn typed_lowering_operand_off_deep(e: Expr) -> Int {
-  match e {
-    EIdent(_, off) => off,
-    ECall(callee, _, off) => if off >= 0 {
-      off
-    } else {
-      typed_lowering_operand_off_deep(callee)
-    },
-    EDot(base, _, off, _) => if off >= 0 {
-      off
-    } else {
-      typed_lowering_operand_off_deep(base)
-    },
-    EBinOp(_, lhs, _, _) => typed_lowering_operand_off_deep(lhs),
-    EIf(_, then_branch, _) => typed_lowering_operand_off_deep(then_branch),
-    EMatch(_, arms) => if Array::length(arms) > 0 {
-      let (_, first_body) = Array::get(arms, 0)
-      typed_lowering_operand_off_deep(first_body)
-    } else {
-      0 - 1
-    },
-    ESeq(_, tail) => typed_lowering_operand_off_deep(tail),
-    ELet(_, _, body, _) => typed_lowering_operand_off_deep(body),
-    ELetMut(_, _, body, _) => typed_lowering_operand_off_deep(body),
-    ELetRec(_, _, body) => typed_lowering_operand_off_deep(body),
-    _ => 0 - 1
-  }
-}
-
-fn typed_lowering_operand_off(e: Expr) -> Int {
-  match e {
-    EIdent(_, off) => off,
-    ECall(callee, _, off) => if off >= 0 {
-      off
-    } else {
-      typed_lowering_operand_off(callee)
-    },
-    EDot(base, _, off, _) => if off >= 0 {
-      off
-    } else {
-      typed_lowering_operand_off(base)
-    },
-    EBinOp(_, lhs, _, _) => typed_lowering_operand_off(lhs),
-    _ => 0 - 1
-  }
+  own_off
 }
 
 /// #2391 slice 2: record a relational/`+` binop's operand types under its
