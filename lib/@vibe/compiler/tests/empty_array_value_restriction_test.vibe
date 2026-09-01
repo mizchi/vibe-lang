@@ -100,6 +100,22 @@ test "a lambda array factory binds as a monotype" {
   inspect(check_err(src), content = "true")
 }
 
+test "a recursive closure returning a captured array is monomorphic" {
+  // Codex round 3 on #2450: ELetRec generalized unconditionally, so the
+  // `let rec` spelling of the captured-closure case slipped past the
+  // restriction the plain `let` already had.
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nlet rec get = () -> { xs }\nfill(get(), 1)\nfill_s(get(), \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+test "an HKT producer's applied element is open" {
+  // Codex round 3 on #2450: `Array[F[T]]` instantiates the element to
+  // CtApplied(var, [var]) -- unnormalized while the head is an inference
+  // var, and as open as a bare var.
+  let src = "fn mk[F[_], T]() -> Array[F[T]] { [] }\nfn fill(xs: Array[Option[Int]]) -> Unit { Array::push(xs, Some(1)) }\nfn fill_s(xs: Array[Option[String]]) -> Unit { Array::push(xs, Some(\"s\")) }\nfn main() -> Unit { let xs = mk()\nfill(xs)\nfill_s(xs) }"
+  inspect(check_err(src), content = "true")
+}
+
 test "a named generic array factory stays polymorphic" {
   let src = "fn mk[T]() -> Array[T] { [] }\nfn main() -> Unit { let a: Array[Int] = mk()\nlet b: Array[String] = mk()\nArray::push(a, 1)\nArray::push(b, \"s\") }"
   inspect(check_ok(src), content = "true")
