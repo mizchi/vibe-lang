@@ -11,8 +11,8 @@ import @vibe/compiler/checker {
   check_program_double_call_result_observation, checked_int_render_offsets, validate_user_source_stmts
 }
 
-import @vibe/compiler/codegen {
-  desugar_trait_dicts
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_with_typed_eq
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -349,7 +349,13 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // `lowered_test_ambient_effects` recognizes these two prefixes, so the
   // grant survives the lowering without changing what CODEGEN sees.
   let (effective_entry, generated_test_artifact) = lower_test_blocks_gc(stmts, entry_name)
-  let (checked, gc_float_call_offsets) = match check_program_double_call_result_observation(stmts) {
+  // #2441: the same observation carries the typed-`==` rows. On this lane
+  // they need no rename mapping (the check runs on the POST-merge,
+  // post-rename statements, so the keys already name the merged
+  // declarations) and no uniqueness filter (the extraction poisons an
+  // offset claimed by binops of different types; with the same type,
+  // rewriting both is correct).
+  let (checked, gc_float_call_offsets, gc_eq_offsets, gc_eq_keys) = match check_program_double_call_result_observation(stmts) {
     Some(observation) => observation,
     None => throw("internal compiler error: incomplete GC call-result type observation")
   }
@@ -374,7 +380,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // rank-1 witness field such as `map[A, B]` as a monomorphic struct field.
   // Constructor-indexed pipeline calls then rejected `Array[Int]` against the
   // generated `Array[A]`, despite the original source checking cleanly.
-  desugar_trait_dicts(stmts)
+  desugar_trait_dicts_with_typed_eq(stmts, gc_eq_offsets, gc_eq_keys)
   // Trait-dict desugaring hoists capture-free effectful lambdas after the
   // pre-erasure snapshot. Add only those generated declarations; ordinary
   // declarations must keep the binder-aware pre-erasure answer.

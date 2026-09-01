@@ -6320,12 +6320,25 @@ export fn typed_lowering_enc_tag(enc: Int) -> Int {
 /// has no Double call results. A caller that cannot tell those apart wires the
 /// channel up green and inert; `check_program_double_call_result_located_observation`
 /// below is the caller-facing form that refuses the first case.
-fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int)] with Exception {
+fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int, Array[Int], Array[String])] with Exception {
   let capture = reset_double_call_capture()
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
     None => None,
-    Some((out, primary_calls, located_primary_calls)) => Some((checked, union_double_render_arg_offsets(checked, out), primary_calls, located_primary_calls))
+    Some((out, primary_calls, located_primary_calls)) => {
+      // #2441: the typed-`==` rows from the SAME capture the Double
+      // observation already filled -- one check answers both. Unlike the
+      // Double table, these need no located-refusal ambiguity handling OR a
+      // downstream uniqueness filter: an unlocated binop records nothing
+      // (the record site's `anchor_off >= 0` guard), and an offset claimed
+      // by two binops with different types is poisoned at extraction --
+      // with the SAME type, rewriting both is correct.
+      let (eq_offs, eq_keys) = eq_binop_type_keys_from_capture(checked, capture)
+      // #2424: the Double table is the union of the call results above and
+      // the render/`eq` ARGUMENTS the checker typed Double (tag 4 on the
+      // modular channel) -- see union_double_render_arg_offsets.
+      Some((checked, union_double_render_arg_offsets(checked, out), primary_calls, located_primary_calls, eq_offs, eq_keys))
+    }
   }
 }
 
@@ -6334,7 +6347,7 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
 ///
 /// The two sets answer the same consumer question -- "is the value at this
 /// offset a Double?" -- and reach the same array, `CompileCtx.float_call_offsets`
-/// and its gc twin, which the classifiers read with `typed_lowering_arg_offset`.
+/// and its gc twin, which the classifiers read with `typed_lowering_float_key`.
 /// They are collected separately because their producers are: one comes from
 /// the primary-call-result capture, the other from the render/`eq` argument
 /// walk, and a projection has no call result to capture.
@@ -6460,10 +6473,10 @@ export fn check_program_with_projected_import_env_typed_lowering_located_observa
 /// Check once and retain only source-located primary call results whose
 /// checker-confirmed instantiated type is Double. Offset alone is not enough:
 /// a dot-call receiver and its non-Double result can share the same offset.
-export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int])] with Exception {
+export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Array[Int], Array[String])] with Exception {
   match check_program_double_call_result_observation_impl(stmts) {
     None => None,
-    Some((checked, out, _, _)) => Some((checked, out))
+    Some((checked, out, _, _, eq_offs, eq_keys)) => Some((checked, out, eq_offs, eq_keys))
   }
 }
 
@@ -6477,13 +6490,13 @@ export fn check_program_double_call_result_observation(stmts: Array[Stmt]) -> Op
 /// honest "located, and no call result is a Double". A program with no calls at
 /// all is located-vacuously and answers `Some((checked, []))` too; an empty set
 /// classifies nothing either way, so that direction cannot be wrong.
-export fn check_program_double_call_result_located_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int])] with Exception {
+export fn check_program_double_call_result_located_observation(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Array[Int], Array[String])] with Exception {
   match check_program_double_call_result_observation_impl(stmts) {
     None => None,
-    Some((checked, out, primary_calls, located_primary_calls)) => if primary_calls > 0 && located_primary_calls == 0 {
+    Some((checked, out, primary_calls, located_primary_calls, eq_offs, eq_keys)) => if primary_calls > 0 && located_primary_calls == 0 {
       None
     } else {
-      Some((checked, out))
+      Some((checked, out, eq_offs, eq_keys))
     }
   }
 }

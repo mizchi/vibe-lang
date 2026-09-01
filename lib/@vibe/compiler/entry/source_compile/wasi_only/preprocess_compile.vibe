@@ -215,10 +215,14 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exce
 /// is a pure function of the CheckedProgram it already returns, so the two
 /// cost one check between them. `None` is the observation refusing an
 /// unlocated AST, and an empty table classifies nothing.
-fn source_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int]) with Exception {
+/// #2441: the typed-`==` rows ride the same observation. One text, one
+/// offset space, no merge and no renames -- the rows apply as-is, and an
+/// unlocated AST yields no rows by construction (the record site's
+/// `anchor_off >= 0` guard).
+fn source_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
   match check_program_double_call_result_located_observation(stmts) {
-    Some((checked, offsets)) => (offsets, checked_int_render_offsets(checked)),
-    None => ([], [])
+    Some((checked, offsets, eq_offs, eq_keys)) => (offsets, checked_int_render_offsets(checked), eq_offs, eq_keys),
+    None => ([], [], [], [])
   }
 }
 
@@ -239,10 +243,10 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
-  let (float_call_offsets, int_render_offsets) = source_offsets(stmts)
+  let (float_call_offsets, int_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, array_empty(), array_empty()), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, eq_offsets, eq_keys), wrap_async)
 }
 
 export fn compile_source_wasi_only(source: String, entry_name: String) -> Bytes with Exception {
@@ -291,10 +295,10 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
-  let (float_call_offsets, int_render_offsets) = source_offsets(stmts)
+  let (float_call_offsets, int_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, array_empty(), array_empty()), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, eq_offsets, eq_keys), wrap_async)
 }
 
 export fn compile_source_wasi_only_rc(source: String, entry_name: String) -> Bytes with Exception {
