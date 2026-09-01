@@ -139,3 +139,43 @@ test "#2456: Map elements filled through a function" {
   inspect(left == right, content = "true")
   inspect(left == other, content = "false")
 }
+
+//# Codex round 2 on #2456: a source declaration owns the `Map` spelling
+
+// `fixtures/typecheck/map_local_shadow_ok.vibe` (#2263): a program may declare
+// its own generic `Map`. The typed channel must then dispatch to the DECLARED
+// comparator (the per-instantiation `Map[String, Int]` one), never to the
+// builtin `__map_equals__`, which reads a struct as a map and trapped with
+// `memory access out of bounds` on this PR's first stage2.
+
+struct Map[K, V] {
+  k: K;
+  v: V
+} derive (Eq)
+
+fn fill_owned_map(xs: Array[Map[String, Int]], v: Int) -> Unit {
+  Array::push(xs, Map::{ k: "k", v: v })
+}
+
+struct HoldsOwnedMap {
+  m: Map[String, Int]
+} derive (Eq)
+
+test "#2456 r2: source-owned Map elements filled through a function" {
+  let left = []
+  fill_owned_map(left, 1)
+  let right = []
+  fill_owned_map(right, 1)
+  let other = []
+  fill_owned_map(other, 2)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2456 r2: source-owned Map as a declared field" {
+  let a = HoldsOwnedMap::{ m: Map::{ k: "k", v: 1 } }
+  let b = HoldsOwnedMap::{ m: Map::{ k: "k", v: 1 } }
+  let c = HoldsOwnedMap::{ m: Map::{ k: "k", v: 2 } }
+  inspect(a == b, content = "true")
+  inspect(a == c, content = "false")
+}

@@ -12286,9 +12286,19 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
       false
     } else {
       let args_ok = eq_tys_all_content_comparable(args, tparams)
+      // Codex round 2 on #2456: a source declaration owns the `Map` spelling
+      // (`dtd_eq_type_owners`, the rule `builtin_string_map_applied` already
+      // applies). A program-declared `Map[K, V]` is a generic struct and takes
+      // the declared branch below, never the builtin arm -- `eq_for_typed`
+      // makes the same decision, so this predicate and that dispatch agree.
+      // `Option` / `Result` are NOT ownership-gated: their `eq_for_typed` arms
+      // are constructor matches over `Some`/`None` and `Ok`/`Err` that hold
+      // for a declared enum of that shape (`Result` is always declared, #1324;
+      // its aggregate payloads compare structurally through that arm, #825).
+      let builtin_head = head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 || head == "Map" && Array::length(args) == 2 && !str_array_contains(dtd_eq_type_owners, head)
       if eq_tparams_contain_name(tparams, head) {
         args_ok
-      } else if head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 || head == "Map" && Array::length(args) == 2 || builtin_string_map_applied(head, args) {
+      } else if builtin_head || builtin_string_map_applied(head, args) {
         // The heads `eq_for_typed` has a structural arm for. The arity is part
         // of the condition: a head applied to the wrong number of arguments is
         // not the builtin this admits.
@@ -12779,6 +12789,12 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
+    // `Result` is always a declared enum (#1324) and this arm is ITS
+    // comparator: a constructor match over `Ok`/`Err` whose payloads recurse
+    // through eq_for_typed (#825 -- an aggregate payload compares by content,
+    // which a derived `::equals` does not give). Not ownership-gated for that
+    // reason; `Map` below is, because `__map_equals__` reads runtime map
+    // internals that a declared struct does not have.
     TyApp("Result", args) => if Array::length(args) == 2 {
       let t = Array::get(args, 0)
       let e = Array::get(args, 1)
@@ -12837,9 +12853,14 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
         rhs
       ], 0, 2), -1)
     } else {
-      EBinOp("==", lhs, rhs, -1)
+      eq_for_typed_declared_app(fty, "StringMap", args, lhs, rhs, known_types)
     },
-    TyApp("Map", args) => if Array::length(args) == 2 {
+    // Codex round 2 on #2456: a source declaration owns the `Map` spelling
+    // (#2263, `fixtures/typecheck/map_local_shadow_ok.vibe`). The builtin
+    // `__map_equals__` reads its operands as runtime maps, so handing it a
+    // program-declared `Map[K, V]` struct read past the value (measured:
+    // `memory access out of bounds`). Same ownership rule as StringMap above.
+    TyApp("Map", args) => if Array::length(args) == 2 && !str_array_contains(dtd_eq_type_owners, "Map") {
       // #2218: the only site that builds a `__map_equals__` call.
       map_eq_needed_record(Array::get(args, 0), Array::get(args, 1))
       ECall(EIdent(map_equals_name(Array::get(args, 0), Array::get(args, 1)), -1), Array::slice([
@@ -12847,7 +12868,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
         rhs
       ], 0, 2), -1)
     } else {
-      EBinOp("==", lhs, rhs, -1)
+      eq_for_typed_declared_app(fty, "Map", args, lhs, rhs, known_types)
     },
     TyApp("Array", args) => if Array::length(args) == 1 {
       // #1526: the second (and last) site that references a helper.
@@ -12861,25 +12882,35 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
-    TyApp(n, args) => if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
-      let canonical_args = for arg in args {
-        eq_expand_alias_ty(arg)
-      }
-      if generic_eq_is_expanding_recursion(n, canonical_args) {
-        ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
-      } else {
-        generic_eq_record(n, canonical_args)
-        ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
-          lhs,
-          rhs
-        ], 0, 2), -1)
-      }
-    } else if str_array_contains(known_types, n) {
-      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
-    } else {
-      EBinOp("==", lhs, rhs, -1)
-    },
+    TyApp(n, args) => eq_for_typed_declared_app(fty, n, args, lhs, rhs, known_types),
     _ => EBinOp("==", lhs, rhs, -1)
+  }
+}
+
+/// The declared-type dispatch of `eq_for_typed` for an applied head: a
+/// generic struct's per-instantiation comparator, else a declared name's
+/// `::equals`, else the raw binop. Also the fallback of every builtin-head
+/// arm above whose spelling a source declaration owns (Codex round 2 on
+/// #2456), so a program-declared `Map` / `StringMap` is compared by ITS
+/// comparator and never by the builtin's.
+fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+  if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
+    let canonical_args = for arg in args {
+      eq_expand_alias_ty(arg)
+    }
+    if generic_eq_is_expanding_recursion(n, canonical_args) {
+      ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+    } else {
+      generic_eq_record(n, canonical_args)
+      ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    }
+  } else if str_array_contains(known_types, n) {
+    ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
+  } else {
+    EBinOp("==", lhs, rhs, -1)
   }
 }
 
