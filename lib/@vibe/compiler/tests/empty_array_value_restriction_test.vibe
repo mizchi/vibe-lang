@@ -1,0 +1,127 @@
+//# #2447: an empty array literal gets a real element slot, and a binding
+//# whose Array element var is still open is NOT generalized (the #938
+//# builder value restriction, applied to `Array`). Before this, `[]` typed
+//# as `CtArray(CtUnknown)` and CtUnknown absorbed every later unification,
+//# so ONE mutable binding could be used at two element types and check
+//# clean -- the runtime array then held both, and every type-directed
+//# consumer was checked against a homogeneous type that was a lie.
+
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+//# Functions
+
+fn check_ok(source: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+fn check_err(source: String) -> Bool {
+  not(check_ok(source))
+}
+
+let fill_prelude: String = "fn fill(xs: Array[Int], v: Int) -> Unit { Array::push(xs, v) }\nfn fill_s(xs: Array[String], v: String) -> Unit { Array::push(xs, v) }\n"
+
+test "direct heterogeneous pushes are rejected" {
+  let src = "fn main() -> Unit { let xs = []\nArray::push(xs, 1)\nArray::push(xs, \"s\") }"
+  inspect(check_err(src), content = "true")
+}
+
+test "heterogeneous fills through functions are rejected" {
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nfill(xs, 1)\nfill_s(xs, \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+test "let mut spelling is rejected the same way" {
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let mut xs = []\nfill(xs, 1)\nfill_s(xs, \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+// A `record { xs: [] }` case is deliberately NOT pinned here: anonymous-record
+// projections are loosely typed independently of empty arrays (#2452 -- even
+// `let s: String = r.n` on an Int field checks clean), so the rejection cannot
+// hold until that is fixed. `ty_has_open_array_elem` already descends CtRecord
+// fields, so the restriction side is in place when it does.
+
+test "a generic call result with an open element var is monomorphic" {
+  // The ELet skip covers any still-open Array element var, not only the
+  // literal: `mk()` instantiates `Array[?t]`, and generalizing that var
+  // would reopen the same hole one call away.
+  let src = String::concat("fn mk[T]() -> Array[T] { [] }\n", String::concat(fill_prelude, "fn main() -> Unit { let xs = mk()\nfill(xs, 1)\nfill_s(xs, \"s\") }"))
+  inspect(check_err(src), content = "true")
+}
+
+test "homogeneous pushes still check" {
+  let src = "fn main() -> Unit { let xs = []\nArray::push(xs, 1)\nArray::push(xs, 2) }"
+  inspect(check_ok(src), content = "true")
+}
+
+test "homogeneous fills still check" {
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nfill(xs, 1)\nfill(xs, 2) }")
+  inspect(check_ok(src), content = "true")
+}
+
+test "annotated bindings are untouched" {
+  let src = "fn main() -> Unit { let xs: Array[Int] = []\nArray::push(xs, 1) }"
+  inspect(check_ok(src), content = "true")
+}
+
+test "a closure returning a captured array is monomorphic" {
+  // Codex round 2 on #2450: `get` returns the SAME captured array every
+  // call, and `generalize` is environment-blind, so quantifying the
+  // return's element var would let two calls disagree about one runtime
+  // array.
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nlet get = () -> { xs }\nfill(get(), 1)\nfill_s(get(), \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+test "a generic producer with a composite element is monomorphic" {
+  // Codex round 2 on #2450: `Array[Option[T]]` instantiates to an element
+  // that MENTIONS an open var rather than being one -- as open as
+  // `Array[v]` itself.
+  let src = "fn mk[T]() -> Array[Option[T]] { [] }\nfn fill(xs: Array[Option[Int]]) -> Unit { Array::push(xs, Some(1)) }\nfn fill_s(xs: Array[Option[String]]) -> Unit { Array::push(xs, Some(\"s\")) }\nfn main() -> Unit { let xs = mk()\nfill(xs)\nfill_s(xs) }"
+  inspect(check_err(src), content = "true")
+}
+
+test "a lambda array factory binds as a monotype" {
+  // The type alone cannot tell a body-fresh `[]` from a captured one, so
+  // the CtFn arm is conservative: this lambda serves ONE element type.
+  // The polymorphic factory keeps a spelling -- the named generic form
+  // below.
+  let src = "fn main() -> Unit { let mkf = () -> { [] }\nlet a: Array[Int] = mkf()\nlet b: Array[String] = mkf()\nArray::push(a, 1)\nArray::push(b, \"s\") }"
+  inspect(check_err(src), content = "true")
+}
+
+test "a recursive closure returning a captured array is monomorphic" {
+  // Codex round 3 on #2450: ELetRec generalized unconditionally, so the
+  // `let rec` spelling of the captured-closure case slipped past the
+  // restriction the plain `let` already had.
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nlet rec get = () -> { xs }\nfill(get(), 1)\nfill_s(get(), \"s\") }")
+  inspect(check_err(src), content = "true")
+}
+
+test "an HKT producer's applied element is open" {
+  // Codex round 3 on #2450: `Array[F[T]]` instantiates the element to
+  // CtApplied(var, [var]) -- unnormalized while the head is an inference
+  // var, and as open as a bare var.
+  let src = "fn mk[F[_], T]() -> Array[F[T]] { [] }\nfn fill(xs: Array[Option[Int]]) -> Unit { Array::push(xs, Some(1)) }\nfn fill_s(xs: Array[Option[String]]) -> Unit { Array::push(xs, Some(\"s\")) }\nfn main() -> Unit { let xs = mk()\nfill(xs)\nfill_s(xs) }"
+  inspect(check_err(src), content = "true")
+}
+
+test "a named generic array factory stays polymorphic" {
+  let src = "fn mk[T]() -> Array[T] { [] }\nfn main() -> Unit { let a: Array[Int] = mk()\nlet b: Array[String] = mk()\nArray::push(a, 1)\nArray::push(b, \"s\") }"
+  inspect(check_ok(src), content = "true")
+}
+
+test "empty-vs-empty comparison still checks" {
+  let src = "fn main() -> Bool { let a = []\nlet b = []\na == b }"
+  inspect(check_ok(src), content = "true")
+}

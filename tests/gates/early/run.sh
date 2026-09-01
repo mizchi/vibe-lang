@@ -1957,6 +1957,37 @@ done
 rm -rf "$eqtrapdir"
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
 
+# #2447: one mutable binding used at two element types must be REJECTED at
+# check time ON THIS LANE. The single-source lane's builtin `Array::push` arm
+# already rejected these; the import-resolving lane resolved `Array::push`
+# through the registry signature, where the empty literal's `CtArray(CtUnknown)`
+# absorbed both uses -- two lanes, two answers. The empty literal now carries
+# a real element slot (the #938 builder fix applied to `Array`), so the first
+# use binds it and the second must fail to unify.
+echo "[compiler-gate] empty-array heterogeneous use is rejected on the import lane (#2447)"
+heterodir="_build/_gate_empty_array_hetero"
+rm -rf "$heterodir"; mkdir -p "$heterodir"
+for hetero_src in fixtures/empty_array_hetero_*_reject.vibe; do
+  hetero_name="$(basename "${hetero_src%.vibe}")"
+  hetero_wasm="$heterodir/$hetero_name.wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$hetero_src" "$hetero_wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$hetero_wasm" ]; then
+    echo "[compiler-gate] FAIL: $hetero_src compiled; expected a check rejection" >&2
+    exit 1
+  fi
+  # Not any failure: the rejection must be the ELEMENT-TYPE mismatch, so a
+  # fixture broken some other way (syntax, missing name) cannot green this.
+  if ! grep -q "type mismatch" "$hetero_wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $hetero_src was rejected without the expected type mismatch diagnostic" >&2
+    cat "$hetero_wasm.diag" 2>/dev/null >&2
+    exit 1
+  fi
+done
+rm -rf "$heterodir"
+echo "[compiler-gate] empty-array heterogeneous use rejected ok"
+
 # A non-regular recursive generic can transform its own argument on every
 # recursive edge (`Loop[T]` -> `Loop[Array[T]]`). Comparator generation must
 # terminate and retain the fail-closed boundary instead of exhausting compiler
