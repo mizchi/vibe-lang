@@ -722,9 +722,42 @@ test "#2424 a large Int survives a projection out of a tuple or a struct" {
   assert(__to_string(b.label) == "hi")
   assert(__to_string(t.1) == "1")
   assert(__to_string(b.small) == "7")
-  // A Double field is deliberately absent: `__to_string` of a Double-typed
-  // STRUCT field does not render the Double, measured on this same lane both
-  // before and after this change, and it is a separate row (the float
-  // classifier has no projection arm either). Asserting it here would fail for
-  // a reason this change is not about.
+}
+
+/// #2424, the Double half of the same row. The float classifier had no
+/// projection arm either, for the same structural reason: `float_call_offsets`
+/// is keyed by CALL offsets, so a projection had no key in it at all.
+///
+/// Measured before this change, one file per row, on the stage2 that closed the
+/// Int half: `__to_string(b.ratio)` on `DblBox::{ ratio: 1.5 }` printed `256`
+/// on the RC lane and TRAPPED on gc, while the identical Double reached through
+/// a tuple element, a plain `let` or a call result printed `1.5`. It answers now
+/// through tag 4 -- the render/`eq` argument offsets the checker typed `Double`,
+/// keyed by the same `typed_lowering_arg_offset` the Int half uses.
+struct DblBox {
+  ratio: Double;
+  label: String;
+  count: Int
+}
+
+fn dbl_ret_box() -> DblBox {
+  DblBox::{ ratio: 1.5, label: "hi", count: 7 }
+}
+
+test "#2424 a Double survives a projection out of a struct or a tuple" {
+  let b = DblBox::{ ratio: 1.5, label: "hi", count: 7 }
+  assert(__to_string(b.ratio) == "1.5")
+  // Off a CALL result, so the receiver's own offset is a different key.
+  assert(__to_string(dbl_ret_box().ratio) == "1.5")
+  // The tuple spelling, which already answered and must keep answering.
+  let t = (1.5, 2)
+  assert(__to_string(t.0) == "1.5")
+  // Through `eq`, with both operands projections.
+  let c = DblBox::{ ratio: 2.5, label: "hi", count: 7 }
+  assert(!eq(b.ratio, c.ratio))
+  assert(eq(b.ratio, dbl_ret_box().ratio))
+  // The controls: a projection must not be classified `Double` for being one.
+  assert(__to_string(b.label) == "hi")
+  assert(__to_string(b.count) == "7")
+  assert(__to_string(t.1) == "2")
 }

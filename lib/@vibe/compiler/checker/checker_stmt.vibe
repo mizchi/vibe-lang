@@ -64,7 +64,8 @@ import @vibe/compiler/core {
   type_constructor_name,
   type_implements_trait,
   type_to_string,
-  typed_lowering_arg_offset
+  typed_lowering_arg_offset,
+  typed_lowering_float_key
 }
 
 import ./checker.vibe {
@@ -6054,13 +6055,25 @@ fn irc_is_render_callee(n: String) -> Bool {
   n == "__to_string" || n == "Int::to_string" || n == "eq"
 }
 
-fn irc_collect_expr(e: Expr, out: Array[Int]) -> Unit {
+/// `want_double` picks the KEY, not just the type filter. The Int channel keys
+/// an argument by `typed_lowering_arg_offset`, which answers for a bare name
+/// too; the Double channel must not, because its table also carries call-result
+/// rows and a call node's offset is its callee identifier's offset -- see
+/// `typed_lowering_float_key` (@vibe/compiler/core) for the whole argument.
+/// Collecting under the key the consumer reads is the point: a candidate filed
+/// under a key nobody looks up is not a wrong answer, it is silence.
+fn irc_collect_expr(e: Expr, out: Array[Int], want_double: Bool) -> Unit {
   match e {
     ECall(callee, args, _) => match callee {
       EIdent(cn, _) => if irc_is_render_callee(cn) {
         let mut ai = 0
         while ai < Array::length(args) {
-          let aoff = typed_lowering_arg_offset(Array::get(args, ai))
+          let arg = Array::get(args, ai)
+          let aoff = if want_double {
+            typed_lowering_float_key(arg)
+          } else {
+            typed_lowering_arg_offset(arg)
+          }
           if aoff >= 0 {
             Array::push(out, aoff)
           } else {
@@ -6078,33 +6091,33 @@ fn irc_collect_expr(e: Expr, out: Array[Int]) -> Unit {
   let kids = expr_children(e)
   let mut i = 0
   while i < Array::length(kids) {
-    irc_collect_expr(Array::get(kids, i), out)
+    irc_collect_expr(Array::get(kids, i), out, want_double)
     i = i + 1
   }
 }
 
-fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int]) -> Unit {
+fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int], want_double: Bool) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, e) => irc_collect_expr(e, out),
-      SLetMut(_, _, e) => irc_collect_expr(e, out),
-      SLetPat(_, e) => irc_collect_expr(e, out),
-      SExpr(e) => irc_collect_expr(e, out),
-      STest(_, e) => irc_collect_expr(e, out),
-      SBench(_, e) => irc_collect_expr(e, out),
+      SLet(_, _, _, _, e) => irc_collect_expr(e, out, want_double),
+      SLetMut(_, _, e) => irc_collect_expr(e, out, want_double),
+      SLetPat(_, e) => irc_collect_expr(e, out, want_double),
+      SExpr(e) => irc_collect_expr(e, out, want_double),
+      STest(_, e) => irc_collect_expr(e, out, want_double),
+      SBench(_, e) => irc_collect_expr(e, out, want_double),
       // `parse_program` lowers `SExample` to `STest` before anything checks
       // the program, so this arm is inert on every compile path today
       // (measured: a render of an `Array::get` result inside an `example`
       // block already answers correctly). It is here so the walk does not
       // depend on that ordering -- `parse_program_preserving` keeps the
       // variant, and an executable block form must not be silently skipped.
-      SExample(_, e) => irc_collect_expr(e, out),
+      SExample(_, e) => irc_collect_expr(e, out, want_double),
       // A render inside a nested module is checked with the rest of the
       // program and its occurrences are in the same table, so skipping the
       // body would leave that code with no classification at all (Codex
-      // review on #2434). `count_call_offsets_stmts` recurses the same way.
-      SModule(_, _, inner) => irc_collect_stmts(inner, out),
+      // review on #2434). `count_typed_lowering_offsets_stmts` recurses the same way.
+      SModule(_, _, inner) => irc_collect_stmts(inner, out, want_double),
       _ => ()
     }
     i = i + 1
@@ -6167,7 +6180,7 @@ fn irc_index_of(sorted: Array[Int], v: Int) -> Int {
 
 /// #2424: the source offsets of expressions that a render (`__to_string` /
 /// `Int::to_string`) or `eq` call takes as an argument AND whose
-/// checker-confirmed type is `Int`.
+/// checker-confirmed type is the one asked for.
 ///
 /// This is the answer codegen cannot compute for itself. Both lanes classify a
 /// render argument syntactically -- `ts_known_int` on linear,
@@ -6180,24 +6193,31 @@ fn irc_index_of(sorted: Array[Int], v: Int) -> Int {
 /// FAIL CLOSED on disagreement. An offset can carry more than one typed
 /// occurrence (a dot-call receiver and its result share one), so an offset is
 /// emitted only when it has at least one occurrence and EVERY occurrence there
-/// resolves to `Int`. A candidate with no occurrence at all -- which is what an
+/// resolves to it. A candidate with no occurrence at all -- which is what an
 /// unlocated `parse_program(lex(source))` AST produces for the whole program --
 /// is simply absent, and an absent offset classifies nothing, leaving the
 /// pre-existing syntactic answer exactly as it was.
-export fn checked_int_render_offsets(checked: CheckedProgram) -> Array[Int] {
+///
+/// #2424: the shared core of the two render/eq ARGUMENT channels. `want_double`
+/// picks which type head an offset must resolve to; everything else -- the
+/// candidate walk, the fail-closed agreement rule, the binary search -- is the
+/// same question asked twice, so it is written once. Reading a candidate set
+/// under one rule and a type under another is how a producer and a consumer
+/// drift into silence.
+fn irc_render_arg_offsets(checked: CheckedProgram, want_double: Bool) -> Array[Int] {
   let raw: Array[Int] = []
-  irc_collect_stmts(checked.checked_stmts, raw)
+  irc_collect_stmts(checked.checked_stmts, raw, want_double)
   let cands = irc_sorted_unique(raw)
   let n = Array::length(cands)
   if n == 0 {
     []
   } else {
     let seen_any: Array[Int] = []
-    let all_int: Array[Int] = []
+    let all_wanted: Array[Int] = []
     let mut k = 0
     while k < n {
       Array::push(seen_any, 0)
-      Array::push(all_int, 1)
+      Array::push(all_wanted, 1)
       k = k + 1
     }
     let mut oi = 0
@@ -6207,10 +6227,15 @@ export fn checked_int_render_offsets(checked: CheckedProgram) -> Array[Int] {
         let idx = irc_index_of(cands, ooff)
         if idx >= 0 {
           Array::set(seen_any, idx, 1)
-          if irc_resolves_to_int(checked.final_subst, oty) {
+          let wanted = if want_double {
+            subst_resolves_to_double(checked.final_subst, oty)
+          } else {
+            irc_resolves_to_int(checked.final_subst, oty)
+          }
+          if wanted {
             ()
           } else {
-            Array::set(all_int, idx, 0)
+            Array::set(all_wanted, idx, 0)
           }
         } else {
           ()
@@ -6223,7 +6248,7 @@ export fn checked_int_render_offsets(checked: CheckedProgram) -> Array[Int] {
     let out: Array[Int] = []
     let mut m = 0
     while m < n {
-      if Array::get(seen_any, m) == 1 && Array::get(all_int, m) == 1 {
+      if Array::get(seen_any, m) == 1 && Array::get(all_wanted, m) == 1 {
         Array::push(out, Array::get(cands, m))
       } else {
         ()
@@ -6234,22 +6259,52 @@ export fn checked_int_render_offsets(checked: CheckedProgram) -> Array[Int] {
   }
 }
 
+/// #2424 tag 3: render/eq argument offsets the checker typed as `Int`.
+export fn checked_int_render_offsets(checked: CheckedProgram) -> Array[Int] {
+  irc_render_arg_offsets(checked, false)
+}
+
+/// #2424 tag 4: the Double half of the same question.
+///
+/// Split out from tag 3 rather than folded into it because the two answers go
+/// to DIFFERENT consumers -- `ts_known_int` / `bc_expr_is_intish` read one and
+/// the four `*_expr_is_floatish` copies read the other -- and an offset that
+/// classified as both would force each consumer to re-derive which half it was
+/// looking at.
+///
+/// The row it closes: a Double-typed STRUCT FIELD through `__to_string`.
+/// `float_call_offsets` (#2158) is keyed by CALL offsets only, so it has no
+/// projection arm, exactly as `ts_known_int` had none before the tag-3 channel;
+/// measured before this change, `DBox::{ ratio: 1.5 }` rendered `b.ratio` as
+/// `256` on the RC lane and trapped on gc, while the same Double reached
+/// through a tuple element or a plain `let` answered `1.5`.
+export fn checked_double_render_offsets(checked: CheckedProgram) -> Array[Int] {
+  irc_render_arg_offsets(checked, true)
+}
+
 /// #2391 slice 2: the typed-lowering channel's value encoding. One table
-/// carries all three per-module channels so the memo/sidecar/rebase carrier
-/// stays a flat Array[Int]: enc = offset * 4 + tag, with tag 0 = Double call
-/// result, 1 = String relational binop anchor, 2 = String `+` binop anchor.
-/// Rebasing a module table by a merge base B therefore adds B * 4. The
-/// decoder lives in file_compile's split; keep the two in lockstep.
+/// carries every per-module channel so the memo/sidecar/rebase carrier stays a
+/// flat Array[Int]: enc = offset * 8 + tag, with tag 0 = Double call result,
+/// 1 = String relational binop anchor, 2 = String `+` binop anchor, 3 = Int
+/// render/`eq` argument, 4 = Double render/`eq` argument. Rebasing a module
+/// table by a merge base B therefore adds B * 8. The decoder lives in
+/// file_compile's split; keep the two in lockstep.
+///
+/// #2424 widened the tag from 2 bits to 3 when tag 4 arrived. Nothing has to be
+/// migrated for that: the persistent artifact key is
+/// `persistent_cache_version_tag()` = "v23|cg-" + `codegen_fingerprint()`, and
+/// the fingerprint hashes every compiler source, so a stale sidecar written
+/// under the old encoding cannot be read back under the new one.
 export fn typed_lowering_enc(offset: Int, tag: Int) -> Int {
-  offset * 4 + tag
+  offset * 8 + tag
 }
 
 export fn typed_lowering_enc_offset(enc: Int) -> Int {
-  enc / 4
+  enc / 8
 }
 
 export fn typed_lowering_enc_tag(enc: Int) -> Int {
-  enc - (enc / 4) * 4
+  enc - (enc / 8) * 8
 }
 
 /// Check once and retain only source-located primary call results whose
@@ -6270,8 +6325,54 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
     None => None,
-    Some((out, primary_calls, located_primary_calls)) => Some((checked, out, primary_calls, located_primary_calls))
+    Some((out, primary_calls, located_primary_calls)) => Some((checked, union_double_render_arg_offsets(checked, out), primary_calls, located_primary_calls))
   }
+}
+
+/// #2424: fold the Double render/`eq` ARGUMENT offsets (tag 4 on the modular
+/// channel) into a whole-program Double offset table.
+///
+/// The two sets answer the same consumer question -- "is the value at this
+/// offset a Double?" -- and reach the same array, `CompileCtx.float_call_offsets`
+/// and its gc twin, which the classifiers read with `typed_lowering_arg_offset`.
+/// They are collected separately because their producers are: one comes from
+/// the primary-call-result capture, the other from the render/`eq` argument
+/// walk, and a projection has no call result to capture.
+///
+/// Unioning HERE rather than at each entry lane is deliberate. Every
+/// non-modular consumer of the observation (`compile_source`, the two
+/// `preprocess_compile` entries, the gc entry) goes through this one function,
+/// so none of them can be the caller that forgot -- which is exactly how the
+/// float channel stayed inert on the module lane for three releases (#2437).
+fn union_double_render_arg_offsets(checked: CheckedProgram, call_results: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(call_results) {
+    Array::push(out, Array::get(call_results, i))
+    i = i + 1
+  }
+  let args = checked_double_render_offsets(checked)
+  let mut j = 0
+  while j < Array::length(args) {
+    let off = Array::get(args, j)
+    let mut seen = false
+    let mut k = 0
+    while k < Array::length(out) {
+      if Array::get(out, k) == off {
+        seen = true
+        k = Array::length(out)
+      } else {
+        k = k + 1
+      }
+    }
+    if seen {
+      ()
+    } else {
+      Array::push(out, off)
+    }
+    j = j + 1
+  }
+  out
 }
 
 /// #2391: the modular form of the #2158 observation, for the per-module check
@@ -6334,6 +6435,17 @@ export fn check_program_with_projected_import_env_typed_lowering_located_observa
       while ii < Array::length(int_renders) {
         Array::push(enc, typed_lowering_enc(Array::get(int_renders, ii), 3))
         ii = ii + 1
+      }
+      // #2424: tag 4 -- the same argument offsets the checker typed as
+      // `Double`. It rides the SAME table for the same reason tag 3 does, and
+      // it is a separate tag rather than more tag-0 rows because tag 0 is keyed
+      // by CALL offsets and this is keyed by `typed_lowering_arg_offset`; the
+      // decoder unions them only once it has read both keys correctly.
+      let double_renders = checked_double_render_offsets(checked)
+      let mut di = 0
+      while di < Array::length(double_renders) {
+        Array::push(enc, typed_lowering_enc(Array::get(double_renders, di), 4))
+        di = di + 1
       }
       // #2441: the typed-`==` rows carry a String payload (the operand
       // TypeExpr's impl_target_key), so they cannot ride the Int-encoded

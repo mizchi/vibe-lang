@@ -1,0 +1,72 @@
+// #2442: a PURE builtin may be bound to a name and called through the binding.
+//
+// #2433 removed a silent load-time failure by REJECTING every builtin in value
+// position, exempting the two FrozenArray conversions #1733 had given a real
+// value form. That left the language answering the same question two ways
+// depending on which name you wrote, and the rule a reader had to learn was a
+// two-element list rather than a property. It is now a property: a builtin has
+// a value form exactly when it is QUALIFIED, the registry knows its arity, and
+// its effect row is empty (`builtin_value_form_arity`, core/builtin_name.vibe).
+//
+// The qualification is a compiler limitation with a measured reason, recorded
+// on that function and pinned in the unit test beside this file: the whole-
+// program lambda-site planner is scope-free, so it cannot tell a use of the
+// builtin `eq` from a use of a local named `eq`, and the walk THROWS on a
+// disagreement. Admitting bare names needs the planner to learn scope.
+//
+// The lowering is an ETA-EXPANSION, not a function pointer to the builtin: a
+// builtin's index is below `func_offset` and its body has no closure-env
+// parameter, so both lanes emit `(a, b) -> name(a, b)` -- an ordinary lambda
+// with an ordinary table slot whose body is the same direct call. Everything
+// below therefore has to answer exactly as the direct call does, which is what
+// each `inspect` pins.
+//
+// Effectful builtins are deliberately still rejected, and the check-time half
+// of that contract (the diagnostic, and the reason it gives) lives in
+// lib/@vibe/compiler/tests/builtin_ident_value_test.vibe -- a rejected program
+// cannot be a runtime fixture.
+
+fn apply_pair(f: (String, String) -> String, a: String, b: String) -> String {
+  f(a, b)
+}
+
+test "#2442 a two-argument pure builtin answers through a binding" {
+  let cat = String::concat
+  inspect(cat("ab", "cd"), "abcd")
+  inspect(String::concat("ab", "cd"), "abcd")
+}
+
+test "#2442 a one-argument pure builtin answers through a binding" {
+  let len = String::length
+  inspect(len("abcde"), "5")
+  inspect(String::length("abcde"), "5")
+}
+
+test "#2442 a generic builtin through a binding" {
+  let alen = Array::length
+  inspect(alen([1, 2, 3]), "3")
+  inspect(Array::length([1, 2, 3]), "3")
+}
+
+test "#2442 a builtin whose result is a value, not a scalar" {
+  let sub = String::substring
+  inspect(sub("abcdef", 1, 4), "bcd")
+  inspect(String::substring("abcdef", 1, 4), "bcd")
+}
+
+test "#2442 a builtin passed directly as an argument" {
+  inspect(apply_pair(String::concat, "x", "y"), "xy")
+}
+
+test "#2442 an annotated binding of a builtin" {
+  let cat: (String, String) -> String = String::concat
+  inspect(cat("p", "q"), "pq")
+}
+
+test "#1733 the two FrozenArray conversions keep answering" {
+  let freeze = FrozenArray::from_array
+  let thaw = FrozenArray::to_array
+  let fz = freeze([1, 2, 3])
+  inspect(FrozenArray::length(fz), "3")
+  inspect(Array::length(thaw(fz)), "3")
+}

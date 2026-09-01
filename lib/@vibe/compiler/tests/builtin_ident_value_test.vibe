@@ -7,32 +7,56 @@
 // arm was answering "yes, this name exists" for operations that are not
 // first-class values.
 //
-// Rejection is the close: a builtin ident used as a value is a checker error
-// that names the call form and the wrap form. `Map::new` stays `unknown name`
-// -- it is a parser-only call desugar, not a registry value -- but it is still
-// a checker error, so the two spellings agree about whether the shape is one.
+// #2433 turned that into a rejection of EVERY builtin typed as a function.
+// Measured, the exemptions #2274 had kept did not work: a func-table row
+// (`String::length`) or a bare name (`eq`, `not`) emitted a module the runtime
+// rejected (`invalid signature index`), trapped with `table index is out of
+// bounds`, or reached codegen unresolved and asked the reader to report a
+// compiler bug. The indirect table is populated from user functions and
+// lambdas only, builtin bodies sit below `func_offset`, and they carry no
+// closure-env parameter.
 //
-// #2433 widened that rejection from qualified call-only names to EVERY builtin
-// typed as a function. #2274 had exempted names with a linear func-table row
-// (`String::length`) and every bare name (`eq`, `not`), on the reading that a
-// func-table row means there is a function pointer to take. Measured, there is
-// not: the indirect table is populated from user functions and lambdas only,
-// builtin bodies sit below `func_offset`, and they carry no closure-env
-// parameter. So those spellings did not "stay values" -- they emitted a module
-// the runtime rejected (`invalid signature index`), trapped with `table index
-// is out of bounds`, or reached codegen unresolved and asked the reader to
-// report a compiler bug. The tests below now pin the diagnostic for each.
+// #2442 replaced the rejection with support wherever it can be given. The
+// value form is an ETA-EXPANSION -- both lanes emit `(a, b) -> name(a, b)`,
+// an ordinary lambda with an ordinary table slot -- so none of the failure
+// modes above apply to it, and #1733 had already shipped exactly this shape
+// for the two FrozenArray conversions with the arity hardcoded to 1.
 //
-// The exception is #1733's two FrozenArray conversions. Those have a REAL value
-// form: both codegen lanes materialize them as a one-argument lambda, which is
-// an ordinary closure with an ordinary table slot, and
-// `fixtures/frozen_array_copies_test.vibe` calls both through a binding and
-// passes. `builtin_ident_has_value_form` (core/builtin_name.vibe) is the single
-// source of truth -- the checker asks it what to admit and both lanes ask it
-// what to eta-expand, so the admission cannot drift from the lowering.
+// So the rule is now a PROPERTY, not a list: a builtin has a value form when
+// it is QUALIFIED, the registry knows its arity, and its effect row is empty.
+// Three refusals remain, and each says why:
+//
+//   * an EFFECTFUL builtin (`Fs::read_file`) -- as a value its row would have
+//     to be carried by the binding's function type and demanded again at the
+//     indirect call, and until that exists `let f = Fs::read_file` launders
+//     authority (ADR-0075/0084/0088);
+//   * a name with NO registry row (`Map::set`) -- there is no arity to expand;
+//   * a BARE name (`eq`, `not`) -- a compiler limitation, not a decision about
+//     the language, and the one row of #2442 left open. `count_lambda_sites_expr`
+//     predicts for the whole program how many lambda table slots the codegen
+//     walk will allocate, and the walk THROWS when the two disagree. It is
+//     scope-free by construction, so it decides the value form from the name
+//     alone, while codegen decides it only after the locals, constructors,
+//     constants and func table have failed. Those agree for a name nothing
+//     else can bind and disagree for one that can -- the count test below
+//     measures the disagreement on an ordinary `let eq = ...`.
+//
+// `builtin_value_form_arity` (core/builtin_name.vibe) is the single source of
+// truth: the checker asks it what to admit and both lanes ask it what to
+// eta-expand, so the admission cannot drift from the lowering. The RUNTIME
+// half -- that a builtin called through a binding answers exactly as the
+// direct call does, on all three lanes -- is `fixtures/builtin_value_form_test.vibe`.
 
 import @vibe/compiler/checker {
   check_program
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  count_lambda_sites_expr
+}
+
+import @vibe/compiler/core {
+  Expr, builtin_value_form_arity
 }
 
 import @vibe/compiler/syntax {
@@ -60,37 +84,71 @@ fn value_ident_program(name: String) -> String {
   String::concat(String::concat("fn main() -> Unit {\n  let g = ", name), "\n  ()\n}\n")
 }
 
-//# Reported
+//# The property
 
-test "#2274: Map::get as a bare value is a checker error, not a silent pass" {
-  let msg = first_check_error(value_ident_program("Map::get"))
-  assert(String::contains(msg, "Map::get"))
+test "#2442: the value form is decided by arity and effect, not by a name list" {
+  // Pure registry rows report the parameter count the eta-expansion emits.
+  inspect(builtin_value_form_arity("String::length"), "1")
+  inspect(builtin_value_form_arity("String::concat"), "2")
+  inspect(builtin_value_form_arity("Array::length"), "1")
+  inspect(builtin_value_form_arity("Map::get"), "2")
+  // Bare names are pure two-argument rows and are still refused, for the
+  // planner reason above rather than anything about the builtins themselves.
+  inspect(builtin_value_form_arity("eq"), "-1")
+  inspect(builtin_value_form_arity("not"), "-1")
+  // #1733's two are no longer special-cased; they are just arity-1 rows.
+  inspect(builtin_value_form_arity("FrozenArray::from_array"), "1")
+  inspect(builtin_value_form_arity("FrozenArray::to_array"), "1")
+  // An effect row refuses, and so does a name with no row at all.
+  inspect(builtin_value_form_arity("Fs::read_file"), "-1")
+  inspect(builtin_value_form_arity("Env::get"), "-1")
+  inspect(builtin_value_form_arity("Map::set"), "-1")
+  inspect(builtin_value_form_arity("no_such_builtin_at_all"), "-1")
+}
+
+test "#2442: a legacy spelling answers as its canonical name does" {
+  // `canonical_builtin_name` runs first, so the deprecated spelling of an
+  // effectful builtin is refused for the effect, not for being unknown.
+  inspect(builtin_value_form_arity("Fs::ReadFile"), "-1")
+  inspect(builtin_value_form_arity("String::byte_at"), "2")
+  inspect(builtin_value_form_arity("String::char_code_at"), "2")
+}
+
+//# Still rejected -- and the diagnostic says why
+
+test "#2442: an effectful builtin as a bare value is rejected" {
+  let msg = first_check_error(value_ident_program("Fs::read_file"))
+  assert(String::contains(msg, "Fs::read_file"))
   assert(String::contains(msg, "not a value"))
   assert(String::contains(msg, "call it"))
   assert(String::contains(msg, "wrap it"))
 }
 
-test "#2274: unlocated parse still rejects Map::get as a value" {
-  // FS compile uses parse_program(lex(source)), so every ident_off is -1.
-  // The rejection must not be gated on ident_off >= 0.
-  let msg = first_check_error_unlocated(value_ident_program("Map::get"))
-  assert(String::contains(msg, "Map::get"))
-  assert(String::contains(msg, "not a value"))
+test "#2442: the effect refusal names the effect, not just 'no'" {
+  let msg = first_check_error(value_ident_program("Fs::read_file"))
+  assert(String::contains(msg, "performs `Fs`"))
+  assert(String::contains(msg, "only checked where the call is written"))
 }
 
-test "#2274: Map::set as a bare value is the same class of error" {
+test "#2442: Env::get is refused for its effect too" {
+  let msg = first_check_error(value_ident_program("Env::get"))
+  assert(String::contains(msg, "performs `Env`"))
+}
+
+test "#2274: Map::set has no registry row, so it has no arity to expand" {
   let msg = first_check_error(value_ident_program("Map::set"))
   assert(String::contains(msg, "Map::set"))
   assert(String::contains(msg, "not a value"))
+  assert(String::contains(msg, "no registry row"))
 }
 
-test "#2274: Map::delete as a bare value is the same class of error" {
+test "#2274: Map::delete is the same class of refusal" {
   let msg = first_check_error(value_ident_program("Map::delete"))
   assert(String::contains(msg, "Map::delete"))
   assert(String::contains(msg, "not a value"))
 }
 
-test "#2274: Map::new as a bare value is still a checker error" {
+test "#2274: Map::new is still a checker error" {
   // Parser-only call desugar: `Map::new()` becomes EMap, so the ident has
   // no builtin row. The important half is that it does not pass the checker.
   let msg = first_check_error(value_ident_program("Map::new"))
@@ -98,71 +156,111 @@ test "#2274: Map::new as a bare value is still a checker error" {
   assert(String::contains(msg, "Map::new"))
 }
 
-test "#2274: the diagnostic names the call form, not an ICE" {
-  let msg = first_check_error(value_ident_program("Map::get"))
+test "#2274: a refusal names the call form, not an ICE" {
+  let msg = first_check_error(value_ident_program("Map::set"))
   assert(!String::contains(msg, "internal compiler error"))
   assert(!String::contains(msg, "reached code generation"))
-  assert(String::contains(msg, "Map::get("))
+  assert(String::contains(msg, "Map::set("))
 }
 
-test "#2433: String::length as a bare value is rejected, not silently emitted" {
-  // #2274 called this one a first-class value because the registry row says
-  // `in_linear`. Measured on stage2 before #2433: the module compiled, then
-  // `h("abc")` trapped with `table index is out of bounds`.
-  let msg = first_check_error(value_ident_program("String::length"))
-  assert(String::contains(msg, "String::length"))
+test "#2442: the wrap form the diagnostic recommends type-checks" {
+  // The wrap form is the ANSWER for an effectful builtin, not a workaround:
+  // it puts the call back where the row is checked against the capability
+  // the caller holds.
+  let src = "fn read2(p: String) -> String with Fs {\n  let f = (a) -> Fs::read_file(a)\n  f(p)\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2274: the unlocated parse refuses an effectful builtin as well" {
+  // FS compile uses parse_program(lex(source)), so every ident_off is -1.
+  // The rejection must not be gated on ident_off >= 0.
+  let msg = first_check_error_unlocated(value_ident_program("Fs::read_file"))
+  assert(String::contains(msg, "Fs::read_file"))
   assert(String::contains(msg, "not a value"))
-  assert(String::contains(msg, "wrap it"))
 }
 
-test "#2433: Array::length as a bare value is rejected" {
-  let msg = first_check_error(value_ident_program("Array::length"))
-  assert(String::contains(msg, "Array::length"))
-  assert(String::contains(msg, "not a value"))
+//# Now accepted
+
+test "#2442: a pure builtin is a value -- String::length" {
+  // #2274 called this a value because the registry row says `in_linear`, and
+  // #2433 measured that reading wrong and rejected it. It is a value again,
+  // for a different reason: the eta-expansion, not a pointer to the builtin.
+  inspect(first_check_error(value_ident_program("String::length")), content = "")
+  inspect(first_check_error_unlocated(value_ident_program("String::length")), content = "")
 }
 
-test "#2433: a BARE builtin name is rejected too -- eq" {
-  // The `!String::contains(name, "::")` exemption sent every bare builtin
-  // straight through. Measured before #2433: `let f = eq` emitted a module
-  // the runtime refused to compile, `invalid signature index: 11`.
+test "#2442: a pure builtin is a value -- String::concat" {
+  inspect(first_check_error(value_ident_program("String::concat")), content = "")
+}
+
+test "#2442: a bare builtin name is still refused, and says why" {
   let msg = first_check_error(value_ident_program("eq"))
   assert(String::contains(msg, "`eq`"))
   assert(String::contains(msg, "not a value"))
+  assert(String::contains(msg, "unqualified"))
   assert(String::contains(msg, "eq(a, b)"))
+  assert(!String::contains(msg, "internal compiler error"))
 }
 
-test "#2433: a bare builtin with no func-table row is rejected -- not" {
-  // This one used to reach codegen as an unresolved ident: "`not` (ident)
-  // reached code generation unresolved ... this is a bug in the compiler and
-  // not in your program -- please report the source that triggers it."
+test "#2442: `not` is refused the same way" {
   let msg = first_check_error(value_ident_program("not"))
   assert(String::contains(msg, "`not`"))
-  assert(String::contains(msg, "not a value"))
-  assert(!String::contains(msg, "internal compiler error"))
-  assert(!String::contains(msg, "reached code generation"))
+  assert(String::contains(msg, "unqualified"))
 }
 
-test "#2433: the unlocated parse rejects a bare builtin as well" {
-  let msg = first_check_error_unlocated(value_ident_program("eq"))
-  assert(String::contains(msg, "`eq`"))
-  assert(String::contains(msg, "not a value"))
+test "#2442: the planner reserves a slot for exactly the names with a value form" {
+  // `count_lambda_sites_expr` is the whole-program prediction the codegen walk
+  // is checked against, per function body, and the walk THROWS when the two
+  // disagree. It used to carry its own copy of #1733's two names -- the third
+  // copy of that list -- so it now reads the same predicate the checker and
+  // both backends do.
+  inspect(count_lambda_sites_expr(EIdent("String::concat", -1)), "1")
+  inspect(count_lambda_sites_expr(EIdent("FrozenArray::from_array", -1)), "1")
+  // No value form, so no slot: an effectful builtin, a name with no registry
+  // row, an ordinary name, and a bare builtin.
+  inspect(count_lambda_sites_expr(EIdent("Fs::read_file", -1)), "0")
+  inspect(count_lambda_sites_expr(EIdent("Map::set", -1)), "0")
+  inspect(count_lambda_sites_expr(EIdent("some_local", -1)), "0")
+  inspect(count_lambda_sites_expr(EIdent("eq", -1)), "0")
+  // A DIRECT call stays direct: only a value-position identifier becomes the
+  // synthetic lambda, so the callee must not be counted.
+  inspect(count_lambda_sites_expr(ECall(EIdent("String::concat", -1), [
+    EIdent("a", -1),
+    EIdent("b", -1)
+  ], -1)), "0")
 }
 
-test "#2433: the diagnostic gives the wrap form the reader can paste" {
-  // The wrap form is the edit that fixes it, and it works: measured,
-  // `let f = (a, b) -> eq(a, b)` compiles and answers on every lane.
-  let msg = first_check_error(value_ident_program("eq"))
-  assert(String::contains(msg, "(a, b) -> eq(a, b)"))
+test "#2442: a generic pure builtin -- Array::length" {
+  inspect(first_check_error(value_ident_program("Array::length")), content = "")
 }
 
-test "#2433: a builtin with no value form names the wrap form, not an ICE" {
-  let msg = first_check_error(value_ident_program("String::concat"))
-  assert(String::contains(msg, "String::concat"))
-  assert(String::contains(msg, "not a value"))
-  assert(!String::contains(msg, "internal compiler error"))
+test "#2442: the binding is typed as a function, so it can be called" {
+  let src = "fn main() -> Unit {\n  let cat = String::concat\n  let _ = cat(\"a\", \"b\")\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
 }
 
-//# Not reported
+test "#2442: an annotated binding of a pure builtin agrees with its type" {
+  let src = "fn main() -> Unit {\n  let cat: (String, String) -> String = String::concat\n  let _ = cat(\"a\", \"b\")\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#2442: a builtin passed directly as an argument checks" {
+  let src = "fn ap(f: (String, String) -> String, a: String, b: String) -> String {\n  f(a, b)\n}\nfn main() -> Unit {\n  let _ = ap(String::concat, \"x\", \"y\")\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#1733: the two FrozenArray conversions keep their value form" {
+  inspect(first_check_error(value_ident_program("FrozenArray::from_array")), content = "")
+  inspect(first_check_error(value_ident_program("FrozenArray::to_array")), content = "")
+  inspect(first_check_error_unlocated(value_ident_program("FrozenArray::from_array")), content = "")
+}
+
+test "#1733: an annotated alias of a FrozenArray conversion still checks" {
+  let src = "fn main() -> Unit {\n  let freeze: (Array[Int]) -> FrozenArray[Int] = FrozenArray::from_array\n  let _ = freeze([1, 2])\n  ()\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+//# Unchanged
 
 test "#2274: None as a value is still a constructor" {
   inspect(first_check_error(value_ident_program("None")), content = "")
@@ -196,11 +294,6 @@ test "#2433: String::length as a CALL is untouched" {
   inspect(first_check_error(src), content = "")
 }
 
-test "#2433: the wrap form the diagnostic recommends type-checks" {
-  let src = "fn main() -> Unit {\n  let f = (a, b) -> eq(a, b)\n  ()\n}\n"
-  inspect(first_check_error(src), content = "")
-}
-
 test "#2433: a nullary constructor of a USER enum is still a value" {
   // The type test keeps every non-function builtin, which is what #2274's
   // bare-name exemption was really protecting.
@@ -210,20 +303,5 @@ test "#2433: a nullary constructor of a USER enum is still a value" {
 
 test "#2433: a user function is still a first-class value" {
   let src = "fn my_eq(a: Int, b: Int) -> Bool { a == b }\nfn main() -> Unit {\n  let f = my_eq\n  ()\n}\n"
-  inspect(first_check_error(src), content = "")
-}
-
-test "#1733: the two FrozenArray conversions keep their value form" {
-  // Measured on stage2 BEFORE #2433, to make sure the exemption is not
-  // cargo-culted: `let f = String::concat; f("a", "b")` trapped with `table
-  // index is out of bounds`, while the same shape over
-  // `FrozenArray::from_array` / `FrozenArray::to_array` ran and answered.
-  inspect(first_check_error(value_ident_program("FrozenArray::from_array")), content = "")
-  inspect(first_check_error(value_ident_program("FrozenArray::to_array")), content = "")
-  inspect(first_check_error_unlocated(value_ident_program("FrozenArray::from_array")), content = "")
-}
-
-test "#1733: an annotated alias of a FrozenArray conversion still checks" {
-  let src = "fn main() -> Unit {\n  let freeze: (Array[Int]) -> FrozenArray[Int] = FrozenArray::from_array\n  let _ = freeze([1, 2])\n  ()\n}\n"
   inspect(first_check_error(src), content = "")
 }

@@ -23,7 +23,8 @@ import @vibe/compiler/core {
   leb128_encode_s64,
   leb128_encode_u32,
   namespace_exported_name,
-  typed_lowering_arg_offset
+  typed_lowering_arg_offset,
+  typed_lowering_float_key
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -553,7 +554,35 @@ export fn cc_fn_returns_float(local_names: Array[String], ctx: CompileCtx, fname
   }
 }
 
+/// #2424: did the CHECKER say this exact node is a `Double`?
+///
+/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
+/// ends: an extra term in FRONT of the syntactic classifier, never a
+/// replacement, so the table can only add a classification the shape rules
+/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection answers with its
+/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
+/// is its callee identifier's offset and this array carries call results. Its
+/// doc comment carries the whole argument.
+///
+/// This is what closes the row `float_call_offsets` structurally could not: a
+/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
+/// projection arm at all, and measured before this change `b.ratio` on a
+/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
+/// gc, while the same Double through a tuple element or a plain `let` answered
+/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
+/// because both answer one question, and they agree on calls: a call node's
+/// `typed_lowering_arg_offset` IS its call offset.
+fn cc_offset_says_float(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_float_key(e)
+  off >= 0 && array_contains_int(ctx.float_call_offsets, off)
+}
+
 fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  cc_offset_says_float(e, ctx) || cc_expr_is_floatish_syntactic(e, local_names, ctx)
+}
+
+fn cc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   // fbox (#797): mirror of expr_is_floatish's EDot tuple-projection case --
   // `t.N` on a tracked tuple-literal binding recurses into the backing
   // ETuple element via the #724 agg log.

@@ -1,3 +1,9 @@
+//# Imports
+
+import ./builtin_registry.vibe {
+  registry_builtin_pure_arity
+}
+
 //# Functions
 
 export fn canonical_builtin_name(name: String) -> String {
@@ -42,33 +48,63 @@ export fn canonical_builtin_name(name: String) -> String {
   }
 }
 
-/// #1733 / #2433: the builtins that have a VALUE form, i.e. that may be bound
-/// to a name and called later rather than only called directly.
+/// #1733 / #2433 / #2442: the arity at which a builtin may be materialized as
+/// a VALUE -- bound to a name and called later rather than only called
+/// directly -- or -1 when it has no value form.
 ///
-/// The set is small and it is not a matter of taste: a builtin's function index
-/// lives BELOW `func_offset`, while a first-class function value is an index
-/// into the indirect call table, which holds user functions and lambdas only.
-/// `table_slot = fidx - func_offset` is therefore negative for every builtin,
-/// and builtin bodies carry no closure-env parameter, so the closure signature
-/// would not match even if a slot existed. Measured on stage2: `let f = eq`
-/// emitted a module the runtime refused (`invalid signature index`), and
-/// `let h = String::concat` compiled and then trapped with `table index is out
-/// of bounds`.
+/// A builtin's function index lives BELOW `func_offset`, while a first-class
+/// function value is an index into the indirect call table, which holds user
+/// functions and lambdas only. `table_slot = fidx - func_offset` is therefore
+/// negative for every builtin, and builtin bodies carry no closure-env
+/// parameter, so the closure signature would not match even if a slot existed.
+/// Measured on stage2 before #2433: `let f = eq` emitted a module the runtime
+/// refused (`invalid signature index`), and `let h = String::concat` compiled
+/// and then trapped with `table index is out of bounds`.
 ///
-/// The two names below are exempt because #1733 gave them a real value form:
-/// `compile_expr` / `backend_expr` materialize them as a one-argument LAMBDA
-/// (`frozen_array_conversion_closure`), which is an ordinary closure with an
-/// ordinary table slot. `fixtures/frozen_array_copies_test.vibe` calls both
-/// through a binding and passes.
+/// The value form is therefore not the builtin itself but an ETA-EXPANSION:
+/// both codegen lanes emit `(a, b) -> name(a, b)`, an ordinary lambda with an
+/// ordinary table slot and an ordinary closure env, whose body is the same
+/// direct call a source call site would have written. #1733 built that for the
+/// two FrozenArray conversions and hardcoded arity 1; this is the same
+/// lowering with the arity read from the registry, so the answer is a PROPERTY
+/// of the name rather than a two-element list a reader has to memorize.
 ///
-/// This is the single source of truth for that set: the checker rejects a
-/// builtin ident in value position unless this says yes, and both codegen
-/// lanes ask it which names to eta-expand. Adding a name here without the
-/// matching lowering would move a load-time failure into a runtime trap, so
-/// the two must be decided in one place.
-export fn builtin_ident_has_value_form(name: String) -> Bool {
+/// `registry_builtin_pure_arity` is the single source of truth: the checker
+/// grants the value form only when it agrees with the arity of the type the
+/// checker itself inferred, and both lanes emit exactly that many parameters.
+/// Two copies of the decision would drift into either a spurious error or the
+/// load-time failure #2433 removed.
+///
+/// An EFFECTFUL builtin is refused by `registry_builtin_pure_arity` -- see
+/// that function. A BARE (unqualified) builtin name is refused here, and that
+/// one is a compiler limitation rather than a language decision:
+///
+/// `count_lambda_sites_expr` (codegen/common_analysis) predicts, for the whole
+/// program, exactly how many lambda table slots the codegen walk will allocate,
+/// and the walk THROWS when the two disagree. It is a purely syntactic walk
+/// with no scope -- its own comment says "binding structure is irrelevant here"
+/// -- so it can only decide the value form from the name. Codegen decides it
+/// after the locals, constructors, constants and the func table have all
+/// failed, which is the order the checker resolves names in. Those two agree
+/// for a name nothing else can bind, and disagree for one that can: with a
+/// bare name admitted, an ordinary `let eq = (a, b) -> ...` would make the
+/// planner reserve a slot for a use codegen resolves to the local, and a
+/// program that compiles today would fail with `lambda plan over-count`.
+/// `lib/@vibe/compiler/tests/builtin_ident_value_test.vibe` measures that count.
+///
+/// A qualified name cannot be bound by `let`, by a parameter, by a pattern or
+/// by a constructor, so the two answers cannot diverge. Admitting the bare
+/// names needs the planner to learn scope (its arms already mirror
+/// `collect_refs_into` in dce.vibe, which threads a bound set) -- that is the
+/// remaining half of #2442, and it is a real change to that walk rather than
+/// another name here.
+export fn builtin_value_form_arity(name: String) -> Int {
   let n = canonical_builtin_name(name)
-  n == "FrozenArray::from_array" || n == "FrozenArray::to_array"
+  if String::contains(n, "::") {
+    registry_builtin_pure_arity(n)
+  } else {
+    0 - 1
+  }
 }
 
 //# Builtin deprecation table (ADR-0098 / ADR-0101).

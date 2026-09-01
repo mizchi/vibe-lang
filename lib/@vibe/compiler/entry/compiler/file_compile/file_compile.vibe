@@ -285,11 +285,11 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
                       Some(provider_offsets) => {
                         let mut k = 0
                         while k < Array::length(provider_offsets) {
-                          // The table is tag-encoded (offset * 4 + tag, see
+                          // The table is tag-encoded (offset * 8 + tag, see
                           // typed_lowering_enc), so shifting a row by the
-                          // clone's merge-space delta adds (base + delta) * 4
+                          // clone's merge-space delta adds (base + delta) * 8
                           // -- the tag bits stay untouched.
-                          Array::push(clone_float_offsets_out, Array::get(provider_offsets, k) + (provider_base + delta) * 4)
+                          Array::push(clone_float_offsets_out, Array::get(provider_offsets, k) + (provider_base + delta) * 8)
                           k = k + 1
                         }
                       },
@@ -505,8 +505,8 @@ fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, St
 /// #2391: shift each file's per-module typed-lowering table (recorded by the
 /// modular check in the file's OWN offset space) by that file's base in a
 /// disjoint-offset merge, and union them into one table. Rows are tag-encoded
-/// (offset * 4 + tag, see typed_lowering_enc in the checker), so the rebase
-/// adds base * 4 and leaves the tag bits untouched. A file the modular check
+/// (offset * 8 + tag, see typed_lowering_enc in the checker), so the rebase
+/// adds base * 8 and leaves the tag bits untouched. A file the modular check
 /// never stepped in this process contributes nothing, which degrades ITS
 /// sites to the syntactic classifiers -- deterministically, because the reuse
 /// arms in runtime/typecheck_fs.vibe re-check a module whose offsets sidecar
@@ -520,7 +520,7 @@ fn union_module_typed_lowering_offsets(flat_paths: Array[String], flat_bases: Ar
         let base = Array::get(flat_bases, i)
         let mut j = 0
         while j < Array::length(offsets) {
-          Array::push(out, Array::get(offsets, j) + base * 4)
+          Array::push(out, Array::get(offsets, j) + base * 8)
           j = j + 1
         }
       },
@@ -639,8 +639,17 @@ fn split_typed_lowering_offsets(enc: Array[Int]) -> (Array[Int], Array[Int], Arr
       // #2424: render (`__to_string` / `Int::to_string`) and `eq` ARGUMENT
       // offsets the checker typed as `Int`.
       Array::push(int_renders, off)
+    } else if tag == 4 {
+      // #2424: the Double half of the same argument set, unioned into the
+      // Double channel. The two tags stay distinct through the encoding
+      // because their KEYS differ -- tag 0 is a call node's own offset, tag 4
+      // is `typed_lowering_arg_offset` (a projection answers with its
+      // field-name offset) -- and they can share one array here because the
+      // consumers read it with `typed_lowering_arg_offset`, which agrees with
+      // the call offset on a call node.
+      Array::push(floats, off)
     } else {
-      // No tag above 3 exists; dropping an unknown row degrades its site to
+      // No tag above 4 exists; dropping an unknown row degrades its site to
       // the syntactic classifiers rather than misclassifying another offset.
       ()
     }
@@ -864,7 +873,7 @@ export fn check_file_fs_mode(entry_path: String) -> Int with Exception + Fs {
 /// per-module capture inside a check that was already running, and the
 /// persistent halves (TypeEnv + offsets sidecar) are required TOGETHER by
 /// every reuse arm, so cache state can never change what a compile emits.
-/// `unique_call_offsets_in_stmts` (codegen/common_analysis) still drops any
+/// `unique_typed_lowering_offsets_in_stmts` (codegen/common_analysis) still drops any
 /// offset that names more than one call node, so a partial answer degrades to
 /// the pre-#2158 syntactic classifier rather than to a wrong one.
 export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: String) -> Bytes with Exception + Fs {
