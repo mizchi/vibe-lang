@@ -96,7 +96,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_name, type_param_arity, type_param_name
+  impl_target_key, trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -5746,29 +5746,36 @@ fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: TypedOccu
   while i + 1 < n {
     let off = Array::get(capture.binop_offsets, i)
     let kind = Array::get(capture.binop_kinds, i)
-    let is_string = subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i)) || subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i + 1))
-    let key = off * 4 + kind
-    let verdict = if is_string {
-      1
-    } else {
-      0
-    }
-    let mut idx = 0 - 1
-    let mut k = 0
-    while k < Array::length(keys) {
-      if Array::get(keys, k) == key {
-        idx = k
-        k = Array::length(keys)
+    // Kind 3 (`==` / `!=`, #2441) shares the capture arrays but has its own
+    // extraction (eq_binop_type_keys_from_capture below); the String tables
+    // read only the relational/`+` kinds.
+    if kind == 1 || kind == 2 {
+      let is_string = subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i)) || subst_resolves_to_string(checked.final_subst, Array::get(capture.binop_types, i + 1))
+      let key = off * 4 + kind
+      let verdict = if is_string {
+        1
       } else {
-        k = k + 1
+        0
       }
-    }
-    if idx < 0 {
-      Array::push(keys, key)
-      Array::push(verdicts, verdict)
-      Array::push(poisoned, false)
-    } else if Array::get(verdicts, idx) != verdict {
-      Array::set(poisoned, idx, true)
+      let mut idx = 0 - 1
+      let mut k = 0
+      while k < Array::length(keys) {
+        if Array::get(keys, k) == key {
+          idx = k
+          k = Array::length(keys)
+        } else {
+          k = k + 1
+        }
+      }
+      if idx < 0 {
+        Array::push(keys, key)
+        Array::push(verdicts, verdict)
+        Array::push(poisoned, false)
+      } else if Array::get(verdicts, idx) != verdict {
+        Array::set(poisoned, idx, true)
+      } else {
+        ()
+      }
     } else {
       ()
     }
@@ -5790,6 +5797,190 @@ fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: TypedOccu
     out_i = out_i + 1
   }
   (rels, pluses)
+}
+
+/// #2441: the checker `Type` of a `==`/`!=` operand, lowered to the surface
+/// `TypeExpr` grammar the `==` desugar's `eq_for_typed` consumes. `None`
+/// means the type cannot ride the channel -- a variable, a function, a
+/// forall, a record, a compiler-internal `#hkt`/`#ctor.` spelling -- and the
+/// row is simply absent (the syntactic classifiers stay in charge, which is
+/// today's behavior; absent, never wrong).
+fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
+  match ty {
+    CtInt => Some(TyName("Int")),
+    CtDouble => Some(TyName("Double")),
+    CtBool => Some(TyName("Bool")),
+    CtString => Some(TyName("String")),
+    CtChar => Some(TyName("Char")),
+    CtBytes => Some(TyName("Bytes")),
+    CtUnit => Some(TyUnit),
+    CtTuple(items) => match eq_channel_type_exprs(items) {
+      Some(out) => Some(TyTuple(out)),
+      None => None
+    },
+    CtArray(t) => match eq_channel_type_expr(t) {
+      Some(inner) => Some(TyApp("Array", [inner])),
+      None => None
+    },
+    CtOption(t) => match eq_channel_type_expr(t) {
+      Some(inner) => Some(TyApp("Option", [inner])),
+      None => None
+    },
+    CtEnum(n) => if String::starts_with(n, "#") {
+      None
+    } else {
+      Some(TyName(n))
+    },
+    CtStruct(n) => if String::starts_with(n, "#") {
+      None
+    } else {
+      Some(TyName(n))
+    },
+    CtNamed(n, args) => if String::starts_with(n, "#") {
+      None
+    } else if Array::length(args) == 0 {
+      Some(TyName(n))
+    } else {
+      match eq_channel_type_exprs(args) {
+        Some(out) => Some(TyApp(n, out)),
+        None => None
+      }
+    },
+    CtApplied(head, args) => {
+      let head_name = match head {
+        CtEnum(n) => n,
+        CtStruct(n) => n,
+        CtNamed(n, hargs) => if Array::length(hargs) == 0 {
+          n
+        } else {
+          ""
+        },
+        _ => ""
+      }
+      if String::length(head_name) == 0 || String::starts_with(head_name, "#") {
+        None
+      } else {
+        match eq_channel_type_exprs(args) {
+          Some(out) => Some(TyApp(head_name, out)),
+          None => None
+        }
+      }
+    },
+    _ => None
+  }
+}
+
+fn eq_channel_type_exprs(items: Array[Type]) -> Option[Array[TypeExpr]] {
+  let out: Array[TypeExpr] = []
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(items) {
+    match eq_channel_type_expr(Array::get(items, i)) {
+      Some(te) => Array::push(out, te),
+      None => {
+        ok = false
+        i = Array::length(items)
+      }
+    }
+    i = i + 1
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+/// #2441: a channel row is worth carrying only for aggregates (and Double,
+/// whose `eq_for_typed` form routes codegen onto the f64 unbox-compare
+/// path). Scalars answer correctly on the raw lowering already -- `Int`/
+/// `Bool`/`Char` compare by value, `String` content-compares in the runtime
+/// `eq` -- and a function type never compares.
+fn eq_channel_type_expr_is_scalar(te: TypeExpr) -> Bool {
+  match te {
+    TyUnit => true,
+    TyFn(_, _, _) => true,
+    TyName(n) => n == "Int" || n == "Bool" || n == "Char" || n == "String" || n == "Unit",
+    _ => false
+  }
+}
+
+/// #2441: extract the typed-`==` rows from the capture's kind-3 pairs --
+/// `(anchor offset, impl_target_key of the resolved operand TypeExpr)`, in
+/// this module's own offset space. A row survives only when BOTH operand
+/// types resolve (against the final substitution) to the SAME serializable
+/// aggregate TypeExpr; an anchor claimed twice with different keys is
+/// poisoned and dropped, mirroring the String extraction above -- a
+/// generic function checked at two instantiations legitimately disagrees
+/// with itself, and the degrade is the syntactic classifiers, never a
+/// wrong comparator.
+fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: TypedOccurrenceRoleLaneCapture) -> (Array[Int], Array[String]) {
+  let offs: Array[Int] = []
+  let keys: Array[String] = []
+  let poisoned: Array[Bool] = []
+  let n = Array::length(capture.binop_offsets)
+  let mut i = 0
+  while i + 1 < n {
+    let off = Array::get(capture.binop_offsets, i)
+    let kind = Array::get(capture.binop_kinds, i)
+    if kind == 3 {
+      let lte = eq_channel_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i)))
+      let rte = eq_channel_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i + 1)))
+      let row_key = match (lte, rte) {
+        (Some(lt), Some(rt)) => if eq_channel_type_expr_is_scalar(lt) {
+          ""
+        } else {
+          let lk = impl_target_key(lt)
+          let rk = impl_target_key(rt)
+          if lk == rk {
+            lk
+          } else {
+            ""
+          }
+        },
+        _ => ""
+      }
+      // An unresolvable pair records an EMPTY key rather than being skipped:
+      // the rewrite lowers a shared (possibly generic) body exactly once, so
+      // an anchor that resolves in one check and not in another must degrade
+      // to the syntactic classifiers, exactly like two different keys.
+      let mut idx = 0 - 1
+      let mut k = 0
+      while k < Array::length(offs) {
+        if Array::get(offs, k) == off {
+          idx = k
+          k = Array::length(offs)
+        } else {
+          k = k + 1
+        }
+      }
+      if idx < 0 {
+        Array::push(offs, off)
+        Array::push(keys, row_key)
+        Array::push(poisoned, false)
+      } else if Array::get(keys, idx) == row_key {
+        ()
+      } else {
+        Array::set(poisoned, idx, true)
+      }
+    } else {
+      ()
+    }
+    i = i + 2
+  }
+  let out_offs: Array[Int] = []
+  let out_keys: Array[String] = []
+  let mut out_i = 0
+  while out_i < Array::length(offs) {
+    if !Array::get(poisoned, out_i) && String::length(Array::get(keys, out_i)) > 0 {
+      Array::push(out_offs, Array::get(offs, out_i))
+      Array::push(out_keys, Array::get(keys, out_i))
+    } else {
+      ()
+    }
+    out_i = out_i + 1
+  }
+  (out_offs, out_keys)
 }
 
 //# #2424: Int render/equality argument offsets
@@ -6114,13 +6305,13 @@ fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Opti
 /// projected-import-env path (`imports_already_projected`), so the checked
 /// program is identical to what check_program_result /
 /// check_program_with_projected_import_env_result produce today.
-export fn check_program_with_projected_import_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]]) with Exception {
+export fn check_program_with_projected_import_env_typed_lowering_located_observation(stmts: Array[Stmt], initial_env: TypeEnv) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
   let capture = reset_double_call_capture()
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(capture), true).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
-    None => (checked, None),
+    None => (checked, None, array_empty(), array_empty()),
     Some((out, primary_calls, located_primary_calls)) => if primary_calls > 0 && located_primary_calls == 0 {
-      (checked, None)
+      (checked, None, array_empty(), array_empty())
     } else {
       // #2391 slice 2: one encoded table carries the Double call-result
       // offsets (tag 0) and the String relational/`+` binop anchors
@@ -6157,7 +6348,12 @@ export fn check_program_with_projected_import_env_typed_lowering_located_observa
         Array::push(enc, typed_lowering_enc(Array::get(int_renders, ii), 3))
         ii = ii + 1
       }
-      (checked, Some(enc))
+      // #2441: the typed-`==` rows carry a String payload (the operand
+      // TypeExpr's impl_target_key), so they cannot ride the Int-encoded
+      // table -- they come back as their own pair of parallel arrays, under
+      // the same located-channel refusal as the tables above.
+      let (eq_offs, eq_keys) = eq_binop_type_keys_from_capture(checked, capture)
+      (checked, Some(enc), eq_offs, eq_keys)
     }
   }
 }

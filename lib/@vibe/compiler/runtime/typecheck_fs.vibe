@@ -203,13 +203,22 @@ let module_typed_lowering_memo_fps: Array[String] = []
 
 let module_typed_lowering_memo_offsets: Array[Array[Int]] = []
 
+// #2441: the typed-`==` rows ride the same memo lifecycle as the Int table
+// above -- same reset, same put/lookup keys -- as two parallel per-module
+// arrays: anchor offsets and the impl_target_key of the operand TypeExpr.
+let module_typed_lowering_memo_eq_offs: Array[Array[Int]] = []
+
+let module_typed_lowering_memo_eq_keys: Array[Array[String]] = []
+
 fn module_typed_lowering_memo_reset() -> Unit {
   Array::truncate(module_typed_lowering_memo_paths, 0)
   Array::truncate(module_typed_lowering_memo_fps, 0)
   Array::truncate(module_typed_lowering_memo_offsets, 0)
+  Array::truncate(module_typed_lowering_memo_eq_offs, 0)
+  Array::truncate(module_typed_lowering_memo_eq_keys, 0)
 }
 
-fn module_typed_lowering_memo_put(path: String, fingerprint: String, offsets: Array[Int]) -> Unit {
+fn module_typed_lowering_memo_put(path: String, fingerprint: String, offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> Unit {
   let n = Array::length(module_typed_lowering_memo_paths)
   let mut i = 0
   let mut found = false
@@ -217,6 +226,8 @@ fn module_typed_lowering_memo_put(path: String, fingerprint: String, offsets: Ar
     if Array::get(module_typed_lowering_memo_paths, i) == path {
       Array::set(module_typed_lowering_memo_fps, i, fingerprint)
       Array::set(module_typed_lowering_memo_offsets, i, offsets)
+      Array::set(module_typed_lowering_memo_eq_offs, i, eq_offs)
+      Array::set(module_typed_lowering_memo_eq_keys, i, eq_keys)
       found = true
       i = n
     } else {
@@ -227,18 +238,20 @@ fn module_typed_lowering_memo_put(path: String, fingerprint: String, offsets: Ar
     Array::push(module_typed_lowering_memo_paths, path)
     Array::push(module_typed_lowering_memo_fps, fingerprint)
     Array::push(module_typed_lowering_memo_offsets, offsets)
+    Array::push(module_typed_lowering_memo_eq_offs, eq_offs)
+    Array::push(module_typed_lowering_memo_eq_keys, eq_keys)
   } else {
     ()
   }
 }
 
-fn module_typed_lowering_memo_get_by_fp(fingerprint: String) -> Option[Array[Int]] {
+fn module_typed_lowering_memo_get_by_fp(fingerprint: String) -> Option[(Array[Int], Array[Int], Array[String])] {
   let n = Array::length(module_typed_lowering_memo_fps)
   let mut i = 0
-  let mut found: Option[Array[Int]] = None
+  let mut found: Option[(Array[Int], Array[Int], Array[String])] = None
   while i < n {
     if Array::get(module_typed_lowering_memo_fps, i) == fingerprint {
-      found = Some(Array::get(module_typed_lowering_memo_offsets, i))
+      found = Some((Array::get(module_typed_lowering_memo_offsets, i), Array::get(module_typed_lowering_memo_eq_offs, i), Array::get(module_typed_lowering_memo_eq_keys, i)))
       i = n
     } else {
       i = i + 1
@@ -268,7 +281,50 @@ export fn module_typed_lowering_offsets_for_path(path: String) -> Option[Array[I
   found
 }
 
-fn module_typed_lowering_text(offsets: Array[Int]) -> String {
+/// #2441: the typed-`==` sibling of the query above -- this module's
+/// `(anchor offset, operand TypeExpr key)` rows, in its own offset space.
+/// `None` degrades that file's `==` sites to the syntactic classifiers,
+/// exactly like the Int table's consumer.
+export fn module_typed_eq_rows_for_path(path: String) -> Option[(Array[Int], Array[String])] {
+  let n = Array::length(module_typed_lowering_memo_paths)
+  let mut i = 0
+  let mut found: Option[(Array[Int], Array[String])] = None
+  while i < n {
+    if Array::get(module_typed_lowering_memo_paths, i) == path {
+      found = Some((Array::get(module_typed_lowering_memo_eq_offs, i), Array::get(module_typed_lowering_memo_eq_keys, i)))
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2427-safe decimal renderer for the eq rows below: the v6 envelope's
+/// documented constraint is "no new `__to_string` integer-rendering call
+/// sites in this codec", so the eq rows spell their offsets digit by digit
+/// through char codes instead.
+fn module_typed_lowering_render_nat(v: Int) -> String {
+  if v <= 0 {
+    "0"
+  } else {
+    let digits = array_empty()
+    let mut rest = v
+    while rest > 0 {
+      Array::push(digits, String::from_char_code(48 + (rest - rest / 10 * 10)))
+      rest = rest / 10
+    }
+    let out = StringBuilder::new()
+    let mut i = Array::length(digits) - 1
+    while i >= 0 {
+      StringBuilder::push(out, Array::get(digits, i))
+      i = i - 1
+    }
+    StringBuilder::freeze(out)
+  }
+}
+
+fn module_typed_lowering_text(offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> String {
   let parts = array_empty()
   // v5 (#2425 review rounds 3+5+6): a torn write survives as a PREFIX of
   // the intended file, so the envelope closes with an explicit end marker
@@ -281,7 +337,7 @@ fn module_typed_lowering_text(offsets: Array[Int]) -> String {
   // misclassification in the compiler's own build (probed to the call-site
   // offset, not the values -- see the issue linked from PR #2425), so the
   // envelope deliberately adds no new integer-rendering call sites.
-  Array::push(parts, "module_typed_lowering_offsets\tv6")
+  Array::push(parts, "module_typed_lowering_offsets\tv7")
   let count_marks = array_empty()
   let n = Array::length(offsets)
   let mut i = 0
@@ -303,6 +359,24 @@ fn module_typed_lowering_text(offsets: Array[Int]) -> String {
   // SET of offsets -- so size plus per-row duplicate equality plus the end
   // marker covers every corruption that could change what a compile emits.
   Array::push(parts, String::concat("module_typed_lowering_offsets\tcount\t", String::join(count_marks, "")))
+  // #2441 (v7): the typed-`==` rows, same envelope discipline -- each row
+  // renders its (offset, TypeExpr key) pair TWICE and a separate unary
+  // count binds the eq-row set's size. Offsets render through the
+  // char-code renderer above (the #2427 constraint); keys are
+  // impl_target_key strings, whose charset (digits, '_', structure
+  // letters) can never contain a tab or newline.
+  let eq_count_marks = array_empty()
+  let eq_n = Array::length(eq_offs)
+  let mut ei = 0
+  while ei < eq_n {
+    let eoff_text = module_typed_lowering_render_nat(Array::get(eq_offs, ei))
+    let ekey_text = Array::get(eq_keys, ei)
+    let half = String::concat(eoff_text, String::concat("\t", ekey_text))
+    Array::push(parts, String::concat("module_typed_lowering_offsets\teqrow\t", String::concat(half, String::concat("\t", half))))
+    Array::push(eq_count_marks, "#")
+    ei = ei + 1
+  }
+  Array::push(parts, String::concat("module_typed_lowering_offsets\teqcount\t", String::join(eq_count_marks, "")))
   Array::push(parts, "module_typed_lowering_offsets\tend")
   String::concat(String::join(parts, "\n"), "\n")
 }
@@ -341,15 +415,18 @@ fn module_typed_lowering_parse_nat(line: String) -> Option[Int] {
 /// equality (a random digit change cannot hit both copies identically), a
 /// deleted or inserted row fails the count, and a v1..v4 or foreign header
 /// fails outright; none of them can change what a compile emits.
-fn parse_module_typed_lowering_offsets_text(text: String) -> Option[Array[Int]] {
+fn parse_module_typed_lowering_offsets_text(text: String) -> Option[(Array[Int], Array[Int], Array[String])] {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
-  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_typed_lowering_offsets\tv6" {
+  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_typed_lowering_offsets\tv7" {
     None
   } else {
     let out: Array[Int] = []
+    let eq_offs: Array[Int] = []
+    let eq_keys: Array[String] = []
     let mut ok = true
     let mut saw_end = false
     let mut declared_count = 0 - 1
+    let mut declared_eq_count = 0 - 1
     let mut i = 1
     while i < Array::length(lines) && ok {
       let line = Array::get(lines, i)
@@ -360,6 +437,43 @@ fn parse_module_typed_lowering_offsets_text(text: String) -> Option[Array[Int]] 
         ok = false
       } else if line == "module_typed_lowering_offsets\tend" {
         saw_end = true
+      } else if String::starts_with(line, "module_typed_lowering_offsets\teqrow\t") {
+        // #2441 (v7): `eqrow<TAB>off<TAB>key<TAB>off<TAB>key`, both halves
+        // identical -- a digit- or letter-level corruption breaks the
+        // duplicate equality, exactly like the Int rows above.
+        let cells = String::split(line, "\t")
+        if Array::length(cells) != 6 || Array::get(cells, 2) != Array::get(cells, 4) || Array::get(cells, 3) != Array::get(cells, 5) || String::length(Array::get(cells, 3)) == 0 {
+          ok = false
+        } else {
+          match module_typed_lowering_parse_nat(Array::get(cells, 2)) {
+            Some(value) => {
+              Array::push(eq_offs, value)
+              Array::push(eq_keys, Array::get(cells, 3))
+            },
+            None => ok = false
+          }
+        }
+      } else if String::starts_with(line, "module_typed_lowering_offsets\teqcount\t") {
+        if declared_eq_count >= 0 {
+          ok = false
+        } else {
+          let unary_start = String::length("module_typed_lowering_offsets\teqcount\t")
+          let line_len = String::length(line)
+          let mut mark = unary_start
+          let mut marks_ok = true
+          while mark < line_len && marks_ok {
+            if String::char_code_at(line, mark) == 35 {
+              mark = mark + 1
+            } else {
+              marks_ok = false
+            }
+          }
+          if marks_ok {
+            declared_eq_count = line_len - unary_start
+          } else {
+            ok = false
+          }
+        }
       } else if String::starts_with(line, "module_typed_lowering_offsets\tcount\t") {
         if declared_count >= 0 {
           // A second count line is not a prefix of any valid write.
@@ -395,8 +509,8 @@ fn parse_module_typed_lowering_offsets_text(text: String) -> Option[Array[Int]] 
       }
       i = i + 1
     }
-    if ok && saw_end && declared_count == Array::length(out) {
-      Some(out)
+    if ok && saw_end && declared_count == Array::length(out) && declared_eq_count == Array::length(eq_offs) {
+      Some((out, eq_offs, eq_keys))
     } else {
       None
     }
@@ -417,8 +531,8 @@ fn ensure_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bo
     // Double calls degrading to the syntactic classifier). Same fingerprint
     // means same source and dependency fingerprints, so the offsets are the
     // same table.
-    Some(offsets) => {
-      module_typed_lowering_memo_put(path, fingerprint, offsets)
+    Some((offsets, eq_offs, eq_keys)) => {
+      module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
       true
     },
     None => {
@@ -427,8 +541,8 @@ fn ensure_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bo
         false
       } else {
         match parse_module_typed_lowering_offsets_text(Fs::read_file(sidecar)) {
-          Some(offsets) => {
-            module_typed_lowering_memo_put(path, fingerprint, offsets)
+          Some((offsets, eq_offs, eq_keys)) => {
+            module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
             true
           },
           None => false
@@ -4611,7 +4725,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       // function always produced (EnvEmpty delegates to the plain check, so
       // both former arms are preserved), plus this module's Double
       // call-result offsets for the FS lanes' float_call_offsets channel.
-      let (checked_program, located_offsets) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+      let (checked_program, located_offsets, eq_offs, eq_keys) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
       // `None` (the parse carried no offsets) cannot happen on this lane --
       // parse_program_with_path_impl lexes with offsets -- but if it did, an
       // empty table classifies nothing and leaves the syntactic classifier
@@ -4619,7 +4733,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       module_typed_lowering_memo_put(job.path, fingerprint, match located_offsets {
         Some(offsets) => offsets,
         None => array_empty()
-      })
+      }, eq_offs, eq_keys)
       let full_checked_env = checked_program.final_env
       // #1533: what leaves this function is the module's PUBLISHED
       // environment -- restricted to its export surface -- because every
@@ -4694,7 +4808,7 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       // transport checks in another process) publishes no sidecar, and the
       // reuse arms then re-check that module in-driver next time.
       match module_typed_lowering_memo_get_by_fp(fingerprint) {
-        Some(offsets) => Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(offsets)),
+        Some((offsets, eq_offs, eq_keys)) => Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(offsets, eq_offs, eq_keys)),
         None => ()
       }
       // Publish in commit order: canonical target first, bound witness second,
@@ -5021,9 +5135,9 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
           // has both halves and the plain reuse arms accept it. The gate
           // above hydrated the memo from the target fingerprint.
           match module_typed_lowering_memo_get_by_fp(target_fingerprint) {
-            Some(reused_offsets) => {
-              module_typed_lowering_memo_put(path, fingerprint, reused_offsets)
-              Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(reused_offsets))
+            Some((reused_offsets, reused_eq_offs, reused_eq_keys)) => {
+              module_typed_lowering_memo_put(path, fingerprint, reused_offsets, reused_eq_offs, reused_eq_keys)
+              Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(reused_offsets, reused_eq_offs, reused_eq_keys))
             },
             None => ()
           }
