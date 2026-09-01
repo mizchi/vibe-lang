@@ -18,9 +18,14 @@ import @vibe/core {
   array_empty
 }
 
+import @vibe/ast {
+  impl_target_from_key, impl_target_key
+}
+
 import @vibe/compiler/core {
   ExportRenamePlan,
   Stmt,
+  TypeExpr,
   append_builtin_iterator_plan_operation_markers,
   append_import_alias_rewritten_non_import_stmts_with_renames,
   append_non_import_stmts_without_alias_rewrite,
@@ -34,7 +39,9 @@ import @vibe/compiler/core {
   export_plan_renames_for,
   import_value_rename_locals,
   merged_source_boundary_names,
+  namespace_private_name,
   namespace_private_value_stmts,
+  namespace_rename_original,
   namespace_rename_originals_reset,
   resolution_env_seed,
   resolve_import_path,
@@ -536,13 +543,48 @@ fn union_module_typed_lowering_with_clones(flat_paths: Array[String], flat_bases
   out
 }
 
+/// #2441 (Codex round 1 on #2443): a module-PRIVATE nominal type in an eq
+/// row must follow the merge's private-type rename, or the row still names
+/// the source spelling while the merged declarations name the mangled one.
+/// Measured before this mapping: a dependency's private `Point` row, with
+/// the ENTRY declaring a different `Point`, dispatched the entry's
+/// `Point::equals` on the dependency's values -- `true` for content-unequal
+/// pairs. The mapping consults the SAME rename record the merge populated
+/// (#2205): a name is rewritten to `namespace_private_name(path, name)`
+/// exactly when that mangled spelling is recorded as a rename of this name,
+/// so an exported (unrenamed) type, a builtin head, and the entry file's
+/// own types all pass through unchanged.
+fn eq_key_rename_name(path: String, name: String) -> String {
+  let candidate = namespace_private_name(path, name)
+  if namespace_rename_original(candidate) == name {
+    candidate
+  } else {
+    name
+  }
+}
+
+fn eq_key_rename_ty(path: String, te: TypeExpr) -> TypeExpr {
+  match te {
+    TyName(n) => TyName(eq_key_rename_name(path, n)),
+    TyApp(n, args) => TyApp(eq_key_rename_name(path, n), for a in args {
+      eq_key_rename_ty(path, a)
+    }),
+    TyTuple(items) => TyTuple(for a in items {
+      eq_key_rename_ty(path, a)
+    }),
+    _ => te
+  }
+}
+
 /// #2441: the typed-`==` union -- the same per-file walk as
 /// union_module_typed_lowering_offsets, but the rows are (offset, TypeExpr
 /// key) pairs, so the rebase adds the plain byte base (no tag bits to
-/// preserve). Alias-collision clone statements contribute no eq rows -- a
-/// cloned definition's `==` sites simply degrade to the syntactic
-/// classifiers, which is today's behavior for every site, never a wrong
-/// comparator.
+/// preserve) and each key's nominal names are rebased through the merge's
+/// rename record (eq_key_rename_ty above). A key that does not parse is
+/// dropped rather than passed through -- fail closed. Alias-collision clone
+/// statements contribute no eq rows -- a cloned definition's `==` sites
+/// simply degrade to the syntactic classifiers, which is today's behavior
+/// for every site, never a wrong comparator.
 fn union_module_typed_eq_rows(flat_paths: Array[String], flat_bases: Array[Int]) -> (Array[Int], Array[String]) {
   let out_offs: Array[Int] = []
   let out_keys: Array[String] = []
@@ -550,11 +592,17 @@ fn union_module_typed_eq_rows(flat_paths: Array[String], flat_bases: Array[Int])
   while i < Array::length(flat_paths) {
     match module_typed_eq_rows_for_path(Array::get(flat_paths, i)) {
       Some((eq_offs, eq_keys)) => {
+        let path = Array::get(flat_paths, i)
         let base = Array::get(flat_bases, i)
         let mut j = 0
         while j < Array::length(eq_offs) {
-          Array::push(out_offs, Array::get(eq_offs, j) + base)
-          Array::push(out_keys, Array::get(eq_keys, j))
+          match impl_target_from_key(Array::get(eq_keys, j)) {
+            Some(te) => {
+              Array::push(out_offs, Array::get(eq_offs, j) + base)
+              Array::push(out_keys, impl_target_key(eq_key_rename_ty(path, te)))
+            },
+            None => ()
+          }
           j = j + 1
         }
       },
