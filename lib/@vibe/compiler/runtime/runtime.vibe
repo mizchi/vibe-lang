@@ -59,7 +59,8 @@ import ./typecheck_fs.vibe {
   persistent_dep_list_text,
   persistent_leaf_fingerprint_text,
   persistent_type_env_cache_text,
-  publish_module_typed_lowering_offsets
+  publish_module_typed_lowering_offsets,
+  rebind_module_typed_lowering_offsets
 }
 
 import @vibe/compiler/syntax {
@@ -109,6 +110,7 @@ export ./typecheck_fs.vibe {
   module_plan_manifest_fs,
   module_typed_eq_rows_for_path,
   module_typed_lowering_offsets_for_path,
+  rebind_module_typed_lowering_offsets,
   split_typed_lowering_offsets,
   union_module_typed_eq_rows,
   union_module_typed_lowering_offsets,
@@ -545,7 +547,15 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
         let fingerprint = build_fingerprint(source, dep_fps)
         match ripple_get_fingerprint(db_after_deps, path) {
           Some(cached_fp) =>
-          if cached_fp == fingerprint {
+          // #2449 (Codex review on #2453): a cache hit skips the check, and a
+          // skip publishes no typed-lowering rows -- so the hit must also
+          // REBIND this module's rows from the memo, and must fall through to
+          // a real check when it cannot. Without the second half the merge
+          // downstream reads whatever another compile in this process left at
+          // this path: measured, rows went 1 -> 0 across a warm-db re-prepare.
+          // Same fail-closed rule the FS lane's reuse arms follow
+          // (`ensure_module_typed_lowering_offsets`).
+          if cached_fp == fingerprint && rebind_module_typed_lowering_offsets(path, fingerprint) {
             (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
           } else {
             let stmts = parse_program_with_path(path, source)

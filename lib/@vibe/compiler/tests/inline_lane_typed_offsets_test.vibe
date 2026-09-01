@@ -29,7 +29,11 @@
 //# Imports
 
 import @vibe/compiler/entry/compiler/fs_compile {
-  compile_with_closure_sources_wasi_cached, compile_with_closure_sources_wasi_unchecked_cached
+  compile_with_closure_sources_wasi_cached, compile_with_closure_sources_wasi_unchecked_cached, prepare_modules_cached
+}
+
+import @vibe/compiler/runtime {
+  module_typed_lowering_offsets_for_path, publish_module_typed_lowering_offsets
 }
 
 import @vibe/core {
@@ -37,7 +41,7 @@ import @vibe/core {
 }
 
 import ../type_db.vibe {
-  db_new
+  TypeDb, db_new
 }
 
 //# Functions
@@ -59,12 +63,12 @@ let inline_projection_source: String = "fn main() -> Unit with Stdout {\n  let t
 let inline_plain_source: String = "fn main() -> Unit with Stdout {\n  let a = 7\n  let b = 4\n  let _ = a - b\n  println(\"x\")\n}\n"
 
 fn compile_checked(source: String) -> Bytes with Exception {
-  let (bytes, _) = compile_with_closure_sources_wasi_cached(db_new(), source, "main.vibe", no_extra_sources(), "main")
+  let (bytes, _) = compile_checked_with(db_new(), source)
   bytes
 }
 
 fn compile_unchecked(source: String) -> Bytes with Exception {
-  let (bytes, _) = compile_with_closure_sources_wasi_unchecked_cached(db_new(), source, "main.vibe", no_extra_sources(), "main")
+  let (bytes, _) = compile_unchecked_with(db_new(), source)
   bytes
 }
 
@@ -78,4 +82,54 @@ test "#2449 a program with nothing to classify compiles byte-identically" {
   let with_tables = compile_checked(inline_plain_source)
   let without_tables = compile_unchecked(inline_plain_source)
   assert(with_tables == without_tables)
+}
+
+//# Codex review on #2453 -- the two ways this channel could be filled and then
+// silently bypassed. Each was measured on the fix's own branch before the fix.
+
+test "#2449 the checked entry's bytes do not depend on a shared TypeDb" {
+  // The artifact fingerprint is derived from the SOURCES alone, so an artifact
+  // kind shared with an entry that emits different bytes hands the second
+  // caller the first one's lowering. Before the `wasi-typed` split, measured
+  // on one db with the unchecked entry first: the checked call returned the
+  // UNCHECKED bytes, and they differed from what it produces on a fresh db --
+  // the caller asked for the typed lowering and silently got the other one.
+  let (unchecked, shared_db) = compile_unchecked_with(db_new(), inline_projection_source)
+  let (checked_after, _) = compile_checked_with(shared_db, inline_projection_source)
+  let (checked_alone, _) = compile_checked_with(db_new(), inline_projection_source)
+  assert(!(unchecked == checked_after))
+  assert(checked_after == checked_alone)
+}
+
+test "#2449 a warm TypeDb still leaves this module's rows bound" {
+  // `ensure_fingerprint` skips the check when the db already holds the
+  // module's fingerprint, and a skip publishes nothing. Measured before the
+  // rebind: with another compile in the same process having overwritten this
+  // path's memo row, the rows went 1 -> 0 across a warm re-prepare, and the
+  // merge downstream then read an empty (or another source's) table.
+  let warm_path = "warm_rebind_probe.vibe"
+  let db1 = prepare_modules_cached(db_new(), warm_path, inline_projection_source, no_extra_sources())
+  assert(row_count(warm_path) > 0)
+  // Stand in for that other compile: rebind the path to an unrelated
+  // fingerprint with no rows.
+  let emptied: Array[Int] = []
+  let no_keys: Array[String] = []
+  publish_module_typed_lowering_offsets(warm_path, "#2453-unrelated-fingerprint", Some(emptied), emptied, no_keys)
+  let _ = prepare_modules_cached(db1, warm_path, inline_projection_source, no_extra_sources())
+  assert(row_count(warm_path) > 0)
+}
+
+fn row_count(path: String) -> Int {
+  match module_typed_lowering_offsets_for_path(path) {
+    Some(rows) => Array::length(rows),
+    None => 0 - 1
+  }
+}
+
+fn compile_checked_with(db: TypeDb, source: String) -> (Bytes, TypeDb) with Exception {
+  compile_with_closure_sources_wasi_cached(db, source, "main.vibe", no_extra_sources(), "main")
+}
+
+fn compile_unchecked_with(db: TypeDb, source: String) -> (Bytes, TypeDb) with Exception {
+  compile_with_closure_sources_wasi_unchecked_cached(db, source, "main.vibe", no_extra_sources(), "main")
 }

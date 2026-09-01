@@ -586,12 +586,20 @@ export fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path
   }
 }
 
+/// #2449 (Codex review on #2453): the artifact kind is `wasi-typed`, not
+/// `wasi`. The `wasi` kind is what an entry that compiles WITHOUT the
+/// typed-lowering tables writes, and this one now emits different bytes for the
+/// same sources -- the fingerprint is derived from the sources alone, so
+/// sharing the kind means the second of two entries called on one `TypeDb`
+/// silently gets the first's lowering. Measured before the split, unchecked
+/// then checked on a shared db: the checked call returned the UNCHECKED bytes,
+/// which differed from what it produces on a fresh db.
 export fn compile_with_modules_wasi_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with Exception {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
   let artifact_fingerprint = artifact_fingerprint_from_source(String::concat(merge_fingerprint, String::concat("|", entry_name)))
-  match db_load_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+  match db_load_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint) {
     Some(bytes) => (bytes, next_db),
     None => {
       // #2449: `next_db` is `prepare_modules_cached`'s, so every module of this
@@ -601,7 +609,7 @@ export fn compile_with_modules_wasi_cached(db: TypeDb, main_source: String, main
       let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
       let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
-      (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+      (bytes, db_store_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint, bytes))
     }
   }
 }
@@ -611,7 +619,7 @@ export fn compile_with_closure_sources_wasi_cached(db: TypeDb, main_source: Stri
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
   let artifact_fingerprint = artifact_fingerprint_from_source(String::concat(merge_fingerprint, String::concat("|", entry_name)))
-  match db_load_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+  match db_load_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint) {
     Some(bytes) => (bytes, next_db),
     None => {
       // #2449: `next_db` is `prepare_modules_cached`'s, so every module of this
@@ -621,7 +629,7 @@ export fn compile_with_closure_sources_wasi_cached(db: TypeDb, main_source: Stri
       let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
       let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
-      (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+      (bytes, db_store_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint, bytes))
     }
   }
 }
@@ -630,10 +638,13 @@ export fn compile_with_closure_sources_wasi_mode_cached(db: TypeDb, main_source:
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
+  // #2449 (Codex review on #2453): `-typed` for the same reason the two
+  // entries above carry it -- this entry now compiles WITH the typed-lowering
+  // tables, so it must not share a cache key with one that does not.
   let artifact_kind = if mode == "mvp" {
-    "wasi-mvp"
+    "wasi-mvp-typed"
   } else if mode == "no-dce" {
-    "wasi"
+    "wasi-typed"
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }

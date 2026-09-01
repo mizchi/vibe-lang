@@ -710,6 +710,36 @@ export fn split_typed_lowering_offsets(enc: Array[Int]) -> (Array[Int], Array[In
   (floats, rels, pluses, int_renders)
 }
 
+/// #2449 (Codex review on #2453): rebind `path`'s typed-lowering rows from the
+/// memo BY FINGERPRINT, and report whether it could.
+///
+/// The in-memory module walk (`ensure_fingerprint`, runtime.vibe) skips the
+/// check when the `TypeDb` already holds this module's fingerprint, and a skip
+/// publishes nothing -- so the merge downstream reads whatever
+/// `module_typed_lowering_offsets_for_path` happens to hold for that path,
+/// which another compile in the same process may have overwritten. Measured
+/// before this: rows for a path went 1 -> 0 across a warm-db re-prepare.
+///
+/// `false` means the rows are not available for this fingerprint, and the
+/// caller must fall through to a real check rather than proceed -- the same
+/// fail-closed rule `ensure_module_typed_lowering_offsets` gives the FS lane.
+/// This is the memo-only sibling of that function: the in-memory walk carries
+/// no `Fs` effect, so there is no sidecar to fall back on.
+///
+/// Binding the hit to THIS path (not just proving the fingerprint) is the
+/// #2425 rule: `build_fingerprint` excludes the module's own path, so two
+/// byte-identical modules share a fingerprint and the consumer looks up by
+/// path.
+export fn rebind_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bool {
+  match module_typed_lowering_memo_get_by_fp(fingerprint) {
+    Some((offsets, eq_offs, eq_keys)) => {
+      module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
+      true
+    },
+    None => false
+  }
+}
+
 /// True when `path`'s offsets for `fingerprint` are available (memo, else the
 /// persistent sidecar, loaded into the memo). Every reuse arm that would skip
 /// this module's check calls this alongside `valid_persistent_type_env`; a
