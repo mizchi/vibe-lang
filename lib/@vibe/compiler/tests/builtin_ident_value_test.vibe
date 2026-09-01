@@ -31,9 +31,12 @@
 //     indirect call, and until that exists `let f = Fs::read_file` launders
 //     authority (ADR-0075/0084/0088);
 //   * a name with NO registry row (`Map::set`) -- there is no arity to expand;
-//   * a row with an OPAQUE HANDLE position (`Map::get`'s map, a builder
-//     object) -- `reg_opaque` has no checker type at all, so a value form
-//     would hand out a signature that relates nothing;
+//   * a row with a position still spelled as an unconstrained unknown -- an
+//     internal handle (`Map::get`'s map) or a relationship nobody has written
+//     as a variable yet (the `FixedArray::*` rows) -- so a value form would
+//     hand out a signature that relates nothing. The refusal deliberately does
+//     not claim WHICH of the two it is: the registry draws that distinction in
+//     its source only, and both spellings produce `CtUnknown`;
 //
 // #2451 removed a fourth refusal and the last name list with it. A row whose
 // openness is a real type VARIABLE (`reg_var`: `Array::get` is
@@ -264,15 +267,30 @@ test "#2442: the planner reserves a slot for exactly the names with a value form
   ]), "0")
 }
 
-test "#2451: a row with an opaque handle position is refused, and says why" {
+test "#2451: a row with an unconstrained position is refused, and says why" {
   // What is left of #2448's blanket polymorphic refusal. `Map::get`'s receiver
-  // is `reg_opaque("Map")` -- an internal handle with no checker type -- so
-  // there is no variable that could relate it to anything, and the value form
-  // would hand out a signature that says nothing.
+  // is an internal handle and `FixedArray::get`'s element is a relationship
+  // nobody has written as a variable; both reach this arm.
   let msg = first_check_error(value_ident_program("Map::get"))
   assert(String::contains(msg, "Map::get"))
   assert(String::contains(msg, "not a value"))
-  assert(String::contains(msg, "no checker type"))
+  assert(String::contains(msg, "a position the compiler leaves open"))
+}
+
+test "#2453: the refusal does not claim a cause the compiler cannot observe" {
+  // Codex review on #2453. An earlier spelling said "an internal handle" for
+  // every unconstrained row, which reported `FixedArray::get` -- whose
+  // positions are ordinary unknowns, not a handle -- as something it is not.
+  // The registry draws that distinction in its SOURCE only; both spellings
+  // produce `CtUnknown`, so no message keyed off the row can tell them apart.
+  let fixed = first_check_error(value_ident_program("FixedArray::get"))
+  assert(String::contains(fixed, "FixedArray::get"))
+  assert(String::contains(fixed, "not a value"))
+  assert(!String::contains(fixed, "an internal handle -- so"))
+  assert(String::contains(fixed, "a position the compiler leaves open"))
+  // Both classes get the same sentence, because the compiler sees one thing.
+  let opaque = first_check_error(value_ident_program("Map::get"))
+  assert(String::contains(opaque, "a position the compiler leaves open"))
 }
 
 test "#2451: a polymorphic builtin's value form answers as its direct call does" {

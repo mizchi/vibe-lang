@@ -2416,14 +2416,14 @@ let bad: String = g([1], 0)          // expected String, got Int
 ```
 
 A builtin has a value form exactly when it is **qualified**, the registry knows
-its **arity**, its signature has no **opaque handle** position, and its **effect
-row is empty**. The three refusals each say why, and they are not the same kind
+its **arity**, every position in its signature is either concrete or a real
+type variable, and its **effect row is empty**. The three refusals each say why, and they are not the same kind
 of thing:
 
 | refused | why | what to write instead |
 |---|---|---|
 | `Fs::read_file`, `Env::get` | an effect row is only checked where the call is written, so a value form would launder authority | `(p) -> Fs::read_file(p)` — the wrap form is the answer, not a workaround |
-| `Map::get`, `ArrayBuilder::push` | an internal handle has no checker type, so the value form could not say what it takes or returns | call it directly |
+| `Map::get`, `FixedArray::get` | a position is still an unconstrained unknown — an internal handle, or an element type nothing relates to the result | call it directly |
 | `eq`, `not` (bare names) | the whole-program lambda-site planner is scope-free and cannot tell the builtin from a local of the same name | `(a, b) -> eq(a, b)`, or qualify it |
 
 Being polymorphic is **not** a refusal: `Array::get` is `(Array[T], Int) -> T`
