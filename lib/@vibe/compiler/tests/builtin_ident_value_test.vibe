@@ -31,16 +31,21 @@
 //     indirect call, and until that exists `let f = Fs::read_file` launders
 //     authority (ADR-0075/0084/0088);
 //   * a name with NO registry row (`Map::set`) -- there is no arity to expand;
-//   * a POLYMORPHIC row (`Array::get`, `Array::length`) -- the registry spells
-//     an open position as `reg_any()`, and every occurrence is independent, so
-//     a value form hands out a signature that does not relate the argument to
-//     the result. Measured: `let get = Array::get` then
-//     `let s: String = get([1], 0)` checked CLEAN and printed garbage, while
-//     `Array::get([1], 0)` in the same position was correctly rejected. The
-//     two #1733 conversions are the one carve-out -- polymorphic, but shipped
-//     with a value form since then and pinned by an ANNOTATED binding in
-//     `fixtures/frozen_array_copies_test.vibe`, which is sound; their
-//     unannotated hole predates this and is measured on `aeccc0c97` too;
+//   * a row with an OPAQUE HANDLE position (`Map::get`'s map, a builder
+//     object) -- `reg_opaque` has no checker type at all, so a value form
+//     would hand out a signature that relates nothing;
+//
+// #2451 removed a fourth refusal and the last name list with it. A row whose
+// openness is a real type VARIABLE (`reg_var`: `Array::get` is
+// `(Array[T], Int) -> T`) says which positions are the same type, so the
+// checker instantiates the row per occurrence and the value form is sound.
+// Measured before that, and the reason the whole class was refused:
+// `let get = Array::get` then `let s: String = get([1], 0)` checked CLEAN and
+// printed garbage, while `Array::get([1], 0)` in the same position was
+// rejected with `expected String, got Int`. Both now give that same message.
+// #1733's two FrozenArray conversions were the carve-out kept through that
+// refusal (polymorphic, but shipped with a value form since #1733); they are
+// ordinary rows again, and their unannotated hole is closed with the rest.
 //   * a BARE name (`eq`, `not`) -- a compiler limitation, not a decision about
 //     the language, and the one row of #2442 left open. `count_lambda_sites_expr`
 //     predicts for the whole program how many lambda table slots the codegen
@@ -101,17 +106,22 @@ test "#2442: the value form is decided by arity and effect, not by a name list" 
   inspect(builtin_value_form_arity("String::length"), "1")
   inspect(builtin_value_form_arity("String::concat"), "2")
   inspect(builtin_value_form_arity("String::substring"), "3")
-  // A POLYMORPHIC row is refused: the registry writes an open position as
-  // `reg_any()` and every occurrence is independent, so a value form cannot
-  // say the element in the parameter and the result are the same type.
-  inspect(builtin_value_form_arity("Array::length"), "-1")
-  inspect(builtin_value_form_arity("Array::get"), "-1")
+  // #2451: a row spelled with `reg_var` relates its positions, so it reports
+  // its arity like any other.
+  inspect(builtin_value_form_arity("Array::length"), "1")
+  inspect(builtin_value_form_arity("Array::get"), "2")
+  inspect(builtin_value_form_arity("Array::push"), "2")
+  inspect(builtin_value_form_arity("Array::slice"), "3")
+  // A row with an OPAQUE handle position is still refused: `reg_opaque` has no
+  // checker type, so there is nothing for a variable to relate.
   inspect(builtin_value_form_arity("Map::get"), "-1")
+  inspect(builtin_value_form_arity("ArrayBuilder::push"), "-1")
   // Bare names are pure two-argument rows and are still refused, for the
   // planner reason above rather than anything about the builtins themselves.
   inspect(builtin_value_form_arity("eq"), "-1")
   inspect(builtin_value_form_arity("not"), "-1")
-  // #1733's two are no longer special-cased; they are just arity-1 rows.
+  // #1733's two are no longer special-cased anywhere: #2442 removed the name
+  // list in the codegen planner and #2451 removed the last one here.
   inspect(builtin_value_form_arity("FrozenArray::from_array"), "1")
   inspect(builtin_value_form_arity("FrozenArray::to_array"), "1")
   // An effect row refuses, and so does a name with no row at all.
@@ -254,17 +264,41 @@ test "#2442: the planner reserves a slot for exactly the names with a value form
   ]), "0")
 }
 
-test "#2442: a polymorphic builtin is refused, and says why" {
-  // Codex review on #2448. The refusal is the fail-closed direction: measured
-  // before it, `let get = Array::get; let s: String = get([1], 0)` compiled
-  // and printed garbage while `Array::get([1], 0)` in the same position was
-  // rejected with `expected String, got Int`.
-  let msg = first_check_error(value_ident_program("Array::get"))
-  assert(String::contains(msg, "Array::get"))
+test "#2451: a row with an opaque handle position is refused, and says why" {
+  // What is left of #2448's blanket polymorphic refusal. `Map::get`'s receiver
+  // is `reg_opaque("Map")` -- an internal handle with no checker type -- so
+  // there is no variable that could relate it to anything, and the value form
+  // would hand out a signature that says nothing.
+  let msg = first_check_error(value_ident_program("Map::get"))
+  assert(String::contains(msg, "Map::get"))
   assert(String::contains(msg, "not a value"))
-  assert(String::contains(msg, "positions the registry leaves open"))
-  let msg2 = first_check_error(value_ident_program("Array::length"))
-  assert(String::contains(msg2, "not a value"))
+  assert(String::contains(msg, "no checker type"))
+}
+
+test "#2451: a polymorphic builtin's value form answers as its direct call does" {
+  // The measurement this issue exists for. Both spellings must give the SAME
+  // message; before the registry could relate two positions, the left column
+  // checked clean and printed garbage.
+  let through_value = first_check_error("let get = Array::get\nlet s: String = get([1], 0)\n")
+  let direct = first_check_error("let s2: String = Array::get([1], 0)\n")
+  assert(String::contains(through_value, "expected String, got Int"))
+  assert(String::contains(direct, "expected String, got Int"))
+  // The other direction, and the other row: an element the array cannot hold.
+  let pushed = first_check_error("let p = Array::push\nlet xs: Array[Int] = []\nlet u = p(xs, \"nope\")\n")
+  assert(String::contains(pushed, "expected Int, got String"))
+  // A correct use still checks.
+  inspect(first_check_error("let g = Array::get\nlet n: Int = g([1], 0)\n"), content = "")
+  inspect(first_check_error("let len = Array::length\nlet n2: Int = len([1, 2])\n"), content = "")
+}
+
+test "#2451: the unannotated FrozenArray binding is rejected, the annotated one is not" {
+  // #1733's hole, and the last silently-wrong value form in the language: the
+  // row said `Array[?] -> FrozenArray[?]`, so this read Ints as Strings with a
+  // clean check.
+  let unannotated = first_check_error("let freeze = FrozenArray::from_array\nlet fz: FrozenArray[String] = freeze([1, 2])\n")
+  assert(String::contains(unannotated, "expected FrozenArray[String], got FrozenArray[Int]"))
+  // The spelling `fixtures/frozen_array_copies_test.vibe` uses is unaffected.
+  inspect(first_check_error("let freeze2: (Array[String]) -> FrozenArray[String] = FrozenArray::from_array\nlet fz2 = freeze2([\"a\"])\n"), content = "")
 }
 
 test "#2442: a builtin with a CONCRETE signature is a value -- String::substring" {

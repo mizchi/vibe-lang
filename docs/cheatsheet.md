@@ -2397,6 +2397,47 @@ defining it — a bodyless declaration on the export surface, the shape
 `String::utf8_length` uses — so `import @vibe/builtin { String::split }`
 resolves without anything shadowing the builtin.
 
+### A builtin can be a value, and the rule is one property
+
+`String::concat` / `Array::get` / `FrozenArray::from_array` can be bound to a
+name and called through it. The lowering is an eta-expansion (`(a, b) -> f(a, b)`),
+so the binding is an ordinary closure and answers exactly as the direct call does.
+
+```vibe skip
+// -- accepted
+let get = Array::get
+let n: Int = get([1, 2], 0)          // 1
+let cat = String::concat
+let s = cat("ab", "cd")              // "abcd"
+
+// -- rejected, with the SAME message the direct call gives
+let g = Array::get
+let bad: String = g([1], 0)          // expected String, got Int
+```
+
+A builtin has a value form exactly when it is **qualified**, the registry knows
+its **arity**, its signature has no **opaque handle** position, and its **effect
+row is empty**. The three refusals each say why, and they are not the same kind
+of thing:
+
+| refused | why | what to write instead |
+|---|---|---|
+| `Fs::read_file`, `Env::get` | an effect row is only checked where the call is written, so a value form would launder authority | `(p) -> Fs::read_file(p)` — the wrap form is the answer, not a workaround |
+| `Map::get`, `ArrayBuilder::push` | an internal handle has no checker type, so the value form could not say what it takes or returns | call it directly |
+| `eq`, `not` (bare names) | the whole-program lambda-site planner is scope-free and cannot tell the builtin from a local of the same name | `(a, b) -> eq(a, b)`, or qualify it |
+
+Being polymorphic is **not** a refusal: `Array::get` is `(Array[T], Int) -> T`
+in the registry and each use instantiates its own `T` (#2451). Before that it
+was refused as a class, and #1733's two `FrozenArray` conversions were carved
+out of the refusal by name — with the hole that made the carve-out visible:
+`let freeze = FrozenArray::from_array` then
+`let fz: FrozenArray[String] = freeze([1, 2])` checked clean and read the Ints
+as Strings. That is now rejected.
+
+Pinned by `fixtures/builtin_value_form_test.vibe` (the runtime answers, all
+three lanes) and `lib/@vibe/compiler/tests/builtin_ident_value_test.vibe` (the
+admission rule and every diagnostic quoted above).
+
 ### A `handle` that type-checks can still fail to compile
 
 Eligibility is not part of the type system, so this failure is invisible to

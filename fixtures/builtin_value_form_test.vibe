@@ -15,11 +15,16 @@
 //   * QUALIFIED, because the whole-program lambda-site planner is scope-free
 //     and cannot tell a use of the builtin `eq` from a use of a local named
 //     `eq`, and the walk THROWS on a disagreement;
-//   * CONCRETE, because the registry writes a polymorphic position as "any
-//     type" with every occurrence independent -- a value form would hand out a
-//     signature that does not relate the argument to the result, and
-//     `let get = Array::get; let s: String = get([1], 0)` checked clean and
-//     printed garbage while the direct call was correctly rejected.
+//   * a row with an OPAQUE HANDLE position (`Map::get`'s map), because
+//     `reg_opaque` has no checker type at all, so nothing could relate what
+//     the value form takes to what it returns.
+//
+// #2451 removed the third restriction, which used to read "CONCRETE". A row
+// whose openness is a real type VARIABLE (`reg_var`: `Array::get` is
+// `(Array[T], Int) -> T`) relates its positions, and the checker instantiates
+// the row per occurrence, so those builtins have value forms too. Measured
+// before that: `let get = Array::get; let s: String = get([1], 0)` checked
+// clean and printed garbage while the direct call was correctly rejected.
 //
 // The lowering is an ETA-EXPANSION, not a function pointer to the builtin: a
 // builtin's index is below `func_offset` and its body has no closure-env
@@ -86,4 +91,33 @@ test "#1733 the two FrozenArray conversions keep answering" {
   let fz = freeze([1, 2, 3])
   inspect(FrozenArray::length(fz), "3")
   inspect(Array::length(thaw(fz)), "3")
+}
+
+test "#2451 a polymorphic builtin answers through a binding" {
+  // The eta-expansion is the same shape as a concrete builtin's, so the point
+  // here is that the runtime answer is the direct call's. The check-time half
+  // -- that a WRONG element type through the binding is now rejected with the
+  // direct call's own message -- is in the unit test beside this file, since a
+  // rejected program cannot be a runtime fixture.
+  let get = Array::get
+  let len = Array::length
+  let push = Array::push
+  let xs: Array[Int] = [10, 20, 30]
+  inspect(get(xs, 1), "20")
+  inspect(Array::get(xs, 1), "20")
+  inspect(len(xs), "3")
+  let _ = push(xs, 40)
+  inspect(len(xs), "4")
+  inspect(get(xs, 3), "40")
+}
+
+test "#2451 a polymorphic builtin value form over Strings" {
+  // The SAME binding shape at a different element type. Each occurrence
+  // instantiates the row's variable on its own, so this cannot be answering by
+  // accident of the Int case above.
+  let get = Array::get
+  let ss: Array[String] = ["a", "b"]
+  inspect(get(ss, 0), "a")
+  let slice = Array::slice
+  inspect(Array::length(slice(ss, 0, 1)), "1")
 }
