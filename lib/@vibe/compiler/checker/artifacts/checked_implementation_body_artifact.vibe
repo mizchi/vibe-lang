@@ -1221,9 +1221,11 @@ fn normalized_expr_bytes(expr: Expr, depth: Int) -> Option[String] {
       },
       None => None
     },
-    EBinOp(op, left, right, _) => match (normalized_expr_bytes(left, depth + 1), normalized_expr_bytes(right, depth + 1)) {
+    EBinOp(op, left, right, boff) => match (normalized_expr_bytes(left, depth + 1), normalized_expr_bytes(right, depth + 1)) {
       (Some(l), Some(r)) => {
-        let out = StringBuilder::new(); StringBuilder::push(out, "o"); body_push_piece(out, op); body_push_piece(out, l); body_push_piece(out, r); Some(StringBuilder::freeze(out))
+        // #2435: the operator offset is typed-channel identity, retained
+        // exactly as ECall / EDot retain theirs above.
+        let out = StringBuilder::new(); StringBuilder::push(out, "o"); body_push_piece(out, op); body_push_piece(out, __to_string(boff)); body_push_piece(out, l); body_push_piece(out, r); Some(StringBuilder::freeze(out))
       },
       _ => None
     },
@@ -1532,8 +1534,11 @@ fn normalized_expr_valid(text: String, depth: Int) -> Bool {
     else if tag == 111 {
       match body_piece(text, 1) {
         Some((op, p1)) => match body_piece(text, p1) {
-          Some((left, p2)) => match body_piece(text, p2) {
-            Some((right, end)) => String::length(op) > 0 && normalized_expr_valid(left, depth + 1) && normalized_expr_valid(right, depth + 1) && end == String::length(text),
+          Some((boff, p2)) => match body_piece(text, p2) {
+            Some((left, p3)) => match body_piece(text, p3) {
+              Some((right, end)) => String::length(op) > 0 && normalized_decimal_piece_valid(boff) && normalized_expr_valid(left, depth + 1) && normalized_expr_valid(right, depth + 1) && end == String::length(text),
+              None => false
+            },
             None => false
           },
           None => false
