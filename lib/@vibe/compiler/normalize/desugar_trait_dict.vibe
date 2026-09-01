@@ -10762,11 +10762,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // checker types the binding (an empty literal carries a real element
           // slot since #2447) and the per-module carrier (#2443) records the
           // operand type at this operator offset. Where that row exists AND
-          // the push scan's own allow-list admits the type (`adoptable_eq_ty`
-          // -- a closure field or an opaque nominal field is still refused,
-          // because a `::equals` that answers by reference is worse than the
-          // trap), dispatch through the same `eq_for_typed` the shape rungs
-          // use. A lane with no typed rows (rc_query, the flat single-source
+          // the declared-field allow-list admits the type (a closure field or
+          // an opaque nominal field is still refused, because a `::equals`
+          // that answers by reference is worse than the trap), dispatch
+          // through the same `eq_for_typed` the shape rungs use. A lane with no typed rows (rc_query, the flat single-source
           // lane) falls through unchanged: absent, never wrong.
           match dtd_typed_eq_admitted_ty(boff) {
             Some(te) => {
@@ -19140,16 +19139,25 @@ fn dtd_typed_eq_residual(op: String, rl: Expr, rr: Expr, boff: Int) -> Expr {
 
 /// #2391: the typed-`==` row at this operator offset as a TypeExpr the
 /// untyped-empty arm may dispatch on, or None. Unlike `dtd_typed_eq_residual`
-/// this applies the push scan's admission test (`adoptable_eq_ty`): that arm
-/// replaces a fail-closed TRAP, not a raw binop, so a type whose comparator
-/// would answer by reference for some field must keep trapping.
+/// this applies an admission test: that arm replaces a fail-closed TRAP, not
+/// a raw binop, so a type whose comparator would answer by reference for
+/// some field must keep trapping. The test is the declared-field allow-list
+/// itself (`eq_ty_field_is_content_comparable`, the one `dtd_eq_unsafe_types`
+/// is built from) rather than the push scan's `adoptable_pushed_elem_shape`:
+/// the scan leaves `Option` / `Result` out because a SHAPE string carries
+/// `__EqUnknown` positions, while a checker-typed TypeExpr has none, and
+/// `eq_for_typed` has a structural arm for every head the field test admits
+/// (Codex P2 on #2456 -- `Array[Option[Int]]` filled through a function
+/// trapped under the scan's test although the documented allow-list admits
+/// it). No formals are in scope here: a row is only recorded for a fully
+/// concrete operand type.
 fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
   let key = dtd_typed_eq_key_for(boff)
   if String::length(key) == 0 {
     None
   } else {
     match impl_target_from_key(key) {
-      Some(te) => if adoptable_eq_ty(te) {
+      Some(te) => if eq_ty_field_is_content_comparable(te, empty_str_array()) {
         Some(te)
       } else {
         None
