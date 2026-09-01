@@ -6482,17 +6482,19 @@ export fn typed_lowering_binop_anchor(own_off: Int, left: Expr, right: Expr) -> 
   own_off
 }
 
-/// #2391 slice 2: record a relational/`+` binop's operand types under its
-/// CHANNEL anchor (typed_lowering_binop_anchor above -- deliberately not the
-/// diagnostic anchor), for the typed String-lowering channel. Entries-only
-/// captures only -- a provenance capture (LSP/analysis lanes) records nothing
-/// here, so those consumers see exactly the arrays they saw before. Every
-/// located relational/`+` binop is recorded, String or not, two rows (one
-/// per operand type): the extraction classifies a binop as String when
-/// EITHER type resolves to String, and poisons an anchor claimed by binops
-/// of the same kind with DIFFERENT classifications, so a residual anchor
-/// collision degrades to the syntactic classifiers instead of rewriting a
-/// non-String binop.
+/// #2391 slice 2: record a relational/`+`/equality binop's operand types
+/// under its CHANNEL anchor (typed_lowering_binop_anchor above --
+/// deliberately not the diagnostic anchor), for the typed String-lowering
+/// and typed-`==` channels. Entries-only captures only -- a provenance
+/// capture (LSP/analysis lanes) records nothing here, so those consumers see
+/// exactly the arrays they saw before. Every located binop of a recorded
+/// kind is pushed as two rows (one per operand type): the String extraction
+/// classifies a kind-1/2 binop as String when EITHER type resolves to
+/// String; the `==` extraction (kind 3, #2441) keeps a row only when BOTH
+/// operand types resolve to the same serializable TypeExpr. Both poison an
+/// anchor claimed by binops of the same kind with DIFFERENT classifications,
+/// so a residual anchor collision degrades to the syntactic classifiers
+/// instead of a wrong rewrite.
 fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, own_off: Int, left: Expr, right: Expr, left_ty: Type, right_ty: Type) -> Unit {
   match capture {
     Some(c) => if !c.provenance_enabled {
@@ -6501,6 +6503,8 @@ fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture],
         2
       } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
         1
+      } else if op == "==" || op == "!=" {
+        3
       } else {
         0
       }

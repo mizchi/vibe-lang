@@ -10903,9 +10903,12 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                           ECall(EIdent("not", -1), [call], -1)
                         }
                       } else {
-                        EBinOp(op, rl, rr, boff)
+                        // #2441: an inferred head name with no actionable
+                        // rung (e.g. `Array` with an unknown element) falls
+                        // to the typed channel before staying raw.
+                        dtd_typed_eq_residual(op, rl, rr, boff)
                       },
-                      None => EBinOp(op, rl, rr, boff)
+                      None => dtd_typed_eq_residual(op, rl, rr, boff)
                     }
                   }
                 }
@@ -19050,6 +19053,78 @@ fn dtpw_inline_trivial_wrappers(stmts: Array[Stmt]) -> Unit {
 /// the same stmts after) finds the bounds already stripped (so no function is
 /// re-threaded) and skips dict structs that already exist.
 export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
+  desugar_trait_dicts_with_typed_eq(stmts, array_empty(), array_empty())
+}
+
+/// #2441: the typed-`==` rows for THIS merged program -- (operator-offset,
+/// operand TypeExpr key) pairs the FS lanes union from the per-module
+/// carrier. Unconditionally re-populated (usually to empty) at every entry
+/// below, so a row can never outlive the one program it describes: a later
+/// run through the plain `desugar_trait_dicts` entry truncates the table
+/// before any rewrite reads it.
+let dtd_typed_eq_offs: Array[Int] = []
+
+let dtd_typed_eq_keys: Array[String] = []
+
+fn dtd_typed_eq_key_for(boff: Int) -> String {
+  if boff < 0 {
+    ""
+  } else {
+    let n = Array::length(dtd_typed_eq_offs)
+    let mut i = 0
+    let mut found = ""
+    while i < n {
+      if Array::get(dtd_typed_eq_offs, i) == boff {
+        found = Array::get(dtd_typed_eq_keys, i)
+        i = n
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+/// #2441: the residual rung of the `==`/`!=` ladder. Every syntactic rung
+/// has already missed (no literal, no recorded shape, no head name), which
+/// until this channel meant the raw binop survived to codegen and the
+/// runtime `eq` identity-compared aggregates -- `false` for content-equal
+/// arrays from a lambda's call result. When the checker recorded this
+/// operator offset's operand type, dispatch through the same
+/// `eq_for_typed` the shape rungs use; otherwise keep the raw binop
+/// (today's behavior). By construction this ADDS a comparator only where
+/// the ladder found none, so no answer the syntactic rungs produce
+/// changes.
+fn dtd_typed_eq_residual(op: String, rl: Expr, rr: Expr, boff: Int) -> Expr {
+  let key = dtd_typed_eq_key_for(boff)
+  if String::length(key) == 0 {
+    EBinOp(op, rl, rr, boff)
+  } else {
+    match impl_target_from_key(key) {
+      Some(te) => {
+        let call = eq_for_typed(te, rl, rr, dtd_eq_known_types)
+        if op == "==" {
+          call
+        } else {
+          ECall(EIdent("not", -1), [call], -1)
+        }
+      },
+      None => EBinOp(op, rl, rr, boff)
+    }
+  }
+}
+
+export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+  // #2441: (re)populate the typed-`==` table for THIS program before any
+  // rewrite can read it.
+  Array::truncate(dtd_typed_eq_offs, 0)
+  Array::truncate(dtd_typed_eq_keys, 0)
+  let mut teq_i = 0
+  while teq_i < Array::length(typed_eq_offsets) {
+    Array::push(dtd_typed_eq_offs, Array::get(typed_eq_offsets, teq_i))
+    Array::push(dtd_typed_eq_keys, Array::get(typed_eq_keys, teq_i))
+    teq_i = teq_i + 1
+  }
   // #2286: the record describes THIS program. The unit-test batch compiles
   // many files in one long-lived daemon, so a table left standing would
   // relabel a later program's struct after an earlier program's trait.

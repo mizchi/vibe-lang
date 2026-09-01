@@ -1,0 +1,83 @@
+//# Functions
+
+// #2441: the typed-`==` channel on the FS lane -- the lane `vibe test` and
+// `vibe run` take by default. The `==` desugar ladder is syntactic; a call
+// result of anything but a named top-level function (a lambda-valued `let`,
+// a function value returned from another function) has no recorded shape,
+// every rung misses, and the raw binop used to survive to codegen where the
+// runtime `eq` identity-compares aggregates.
+//
+// Measured on the stage2 at 94c28f5 (2026-09-01), before the channel:
+// every `== ` below answered `false` for content-equal aggregates (and the
+// `!=` answered `true`) -- fresh allocations per call, so an address
+// compare can never pass these by luck.
+//
+// The fix rides the per-module carrier (#2425/#2391): the modular check
+// records each `==`/`!=` operator offset whose operand type resolves to a
+// serializable aggregate TypeExpr, the FS merge rebases and unions the
+// rows, and the ladder's RESIDUAL rung -- only where every syntactic rung
+// already missed -- dispatches through the same eq_for_typed the shape
+// rungs use.
+
+fn mk_ints(n: Int) -> Array[Int] {
+  [n, n + 1]
+}
+
+struct EqTcPt {
+  x: Int;
+  y: Int
+} derive (Eq)
+
+fn pick_maker(flag: Bool) -> (Int) -> Array[Int] {
+  if flag {
+    (n: Int) -> [n, n + 1]
+  } else {
+    (n: Int) -> [n + n]
+  }
+}
+
+//# Tests
+
+test "#2441: array from a lambda's call result compares by content" {
+  let mk = (n: Int) -> [n, n + 1]
+  inspect(mk(1) == mk(1), content = "true")
+}
+
+test "#2441: content difference still answers false" {
+  let mk = (n: Int) -> [n, n + 1]
+  inspect(mk(1) == mk(9), content = "false")
+}
+
+test "#2441: != on content-equal lambda call results" {
+  let mk = (n: Int) -> [n, n + 1]
+  inspect(mk(1) != mk(1), content = "false")
+}
+
+test "#2441: tuple-array from a lambda's call result" {
+  let mk = (n: Int) -> [(n, "x")]
+  inspect(mk(2) == mk(2), content = "true")
+}
+
+test "#2441: bare tuple from a lambda's call result" {
+  let mk = (n: Int) -> (n, n + 1)
+  inspect(mk(1) == mk(1), content = "true")
+}
+
+test "#2441: derive(Eq) struct from a lambda's call result" {
+  let mk = (n: Int) -> EqTcPt::{ x: n, y: n }
+  inspect(mk(1) == mk(1), content = "true")
+}
+
+test "#2441: option-wrapped array from a lambda's call result" {
+  let mk = (n: Int) -> Some([n])
+  inspect(mk(1) == mk(1), content = "true")
+}
+
+test "#2441: call through a function value returned by a named function" {
+  let f = pick_maker(true)
+  inspect(f(3) == f(3), content = "true")
+}
+
+test "#2441: named top-level function results keep answering (regression)" {
+  inspect(mk_ints(4) == mk_ints(4), content = "true")
+}
