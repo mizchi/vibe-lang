@@ -39,6 +39,29 @@ export fn compile_module_expr(stmts: Array[Stmt]) -> Bytes with Exception {
 /// "route on the checked type" untrue of one lane, which is worse than it
 /// sounds: the lane and the others then disagree about the same program.
 ///
+/// WHO PASSES A NON-EMPTY TABLE, and who deliberately does not. Only a caller
+/// that ALREADY runs a whole-program check may fill these in -- CLAUDE.md's
+/// rule for this channel, from #2158's measurement of 6.12s -> 77.55s when it
+/// was added where none ran. `compile_source` qualifies: it already checked
+/// and discarded the result, so the observation replaces that check.
+///
+/// The three FS module callers (`compile_with_modules_cached` and the two
+/// `compile_file_fs_module_cached_slow`) do NOT, and keep the no-offsets
+/// spelling. `prepare_*` has already checked their closure module by module;
+/// a check here would be a SECOND, whole-program one over the reprinted merge,
+/// and it cannot reuse the modular answers because `build_module_source`
+/// reprints (`print_program`), so per-module offsets name positions in the
+/// original files. Measured, synthetic module functions, `vibe bench`:
+///
+///   n=120   8.33ms -> 26.36ms   (+18.0ms)
+///   n=480  70.16ms -> 193.73ms  (+123.6ms)
+///   n=960 233.50ms -> 563.13ms  (+329.6ms)
+///
+/// The ADDED time is superlinear -- 8x the functions for 18x the addition --
+/// so a compiler-sized closure pays seconds per cold compile. Closing those
+/// three needs a source map out of `print_program` (or the merge to stop
+/// reprinting), not a second check; tracked on #2437.
+///
 /// The float table is passed through `unique_call_offsets_in_stmts`, exactly
 /// as the linked lane does, so an offset that names more than one call node in
 /// the statements CODEGEN walks is dropped rather than guessed at.

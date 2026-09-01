@@ -8,11 +8,12 @@
 // Two halves are pinned here, each for what it actually shows:
 //
 //   1. The tables now REACH codegen and change what it emits. Compiling the
-//      same source through the lane's new entry (`compile_module_source`, a
-//      located parse plus the observation) and through the old one
-//      (`compile_source` in codegen_test_support: `parse_program(lex(src))`
-//      plus the no-offsets `compile_module`) must produce DIFFERENT bytes for
-//      a program whose render argument no syntactic arm classifies.
+//      same source through `entry/source_compile`'s `compile_source` (a
+//      located parse plus the observation that REPLACED the `check_program`
+//      it already ran) and through codegen_test_support's same-named helper
+//      (`parse_program(lex(src))` plus the no-offsets `compile_module`) must
+//      produce DIFFERENT bytes for a program whose render argument no
+//      syntactic arm classifies.
 //   2. It is inert where it should be. For a program with no render at all,
 //      the two must be byte-identical -- an offsets channel that changed
 //      unrelated output would be a regression, not a fix.
@@ -21,9 +22,14 @@
 // by fixtures/gc_lane_scalar_parity_test.vibe on all three lanes: the table
 // lands in the same `CompileCtx.int_render_offsets` field those lanes read,
 // through the same consumers.
+//
+// The three FS module callers deliberately keep the no-offsets spelling and
+// are NOT covered here -- they run no whole-program check, so filling their
+// tables would add a second one over the reprinted merged closure. The
+// measurement and the reason are on `compile_module_expr_with_typed_offsets`.
 
 import @vibe/compiler/entry/source_compile {
-  compile_module_source
+  compile_source as compile_source_with_offsets
 }
 
 import ./codegen_test_support.vibe {
@@ -42,13 +48,13 @@ let module_lane_projection_source: String = "let render: () -> String = () -> {\
 let module_lane_plain_source: String = "let sub: (Int, Int) -> Int = (a, b) -> {\n  a - b\n}\n"
 
 test "#2437 the module lane's typed-lowering tables reach codegen" {
-  let with_tables = compile_module_source(module_lane_projection_source)
+  let with_tables = compile_source_with_offsets(module_lane_projection_source)
   let without_tables = compile_source(module_lane_projection_source)
   assert(!(with_tables == without_tables))
 }
 
 test "#2437 a program with nothing to classify compiles byte-identically" {
-  let with_tables = compile_module_source(module_lane_plain_source)
+  let with_tables = compile_source_with_offsets(module_lane_plain_source)
   let without_tables = compile_source(module_lane_plain_source)
   assert(with_tables == without_tables)
 }

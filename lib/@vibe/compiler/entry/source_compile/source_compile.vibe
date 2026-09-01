@@ -37,49 +37,19 @@ export fn compile_source(source: String) -> Bytes with Exception {
   compile_module_with_typed_offsets(stmts, float_call_offsets, int_render_offsets)
 }
 
-/// #2437: the fail-closed answer -- two empty tables, which classify nothing.
-fn no_typed_offsets() -> (Array[Int], Array[Int]) {
-  ([], [])
-}
-
 /// #2437: the Double call-result table and the Int render / `eq` table from
 /// ONE check. `checked_int_render_offsets` is a pure function of the
 /// CheckedProgram the observation already returns, so the two cost one check
-/// between them; `None` is the observation refusing an unlocated AST.
+/// between them.
+///
+/// `None` is the observation refusing an unlocated AST, and two empty tables
+/// are the fail-closed answer: they classify nothing, leaving the syntactic
+/// answer in codegen exactly as it was.
 fn module_typed_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int]) with Exception {
   match check_program_double_call_result_located_observation(stmts) {
     Some((checked, offsets)) => (offsets, checked_int_render_offsets(checked)),
-    None => no_typed_offsets()
+    None => ([], [])
   }
-}
-
-/// #2437: the module lane's parse-and-compile, in ONE place, for the three FS
-/// callers that re-parse a merged, flattened `module_source`.
-///
-/// They used `parse_program(lex(module_source))`, which leaves every node
-/// offset at -1, and then `compile_module`, which installed both
-/// typed-lowering tables empty -- so this lane classified a render / `eq`
-/// argument from syntax alone while the linked and gc lanes read the checked
-/// type. Same program, two answers.
-///
-/// The offsets have to come from a check of THIS text: `module_source` is a
-/// REPRINT (`build_module_source` keeps the top-level function definitions and
-/// prints them), so a per-module check's offsets name positions in the
-/// original files and would land on unrelated nodes here. That is why this
-/// runs its own check rather than reusing the sidecars the linked lane
-/// rebases.
-///
-/// Fail closed twice over. A check that throws -- this lane never type-checked
-/// before, so a program it compiled with errors must keep compiling -- falls
-/// back to empty tables, and so does the observation's own `None`. Empty
-/// classifies nothing and leaves the syntactic answer exactly as it was.
-export fn compile_module_source(module_source: String) -> Bytes with Exception {
-  let (tokens, starts, _ends) = lex_with_offsets(module_source)
-  let stmts = parse_program_located(tokens, starts, module_source)
-  let (float_call_offsets, int_render_offsets) = handle {
-    module_typed_offsets(stmts)
-  } with { Exception::Throw(_) => no_typed_offsets() }
-  compile_module_with_typed_offsets(stmts, float_call_offsets, int_render_offsets)
 }
 
 export fn compile_source_wasi(source: String, entry_name: String) -> Bytes with Exception {
