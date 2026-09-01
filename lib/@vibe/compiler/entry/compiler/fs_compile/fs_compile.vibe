@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, parse_program, rewrite_string_binops_stmts, shift_stmt_offsets, shift_stmts_offsets
 }
 
 import @vibe/core {
@@ -13,11 +13,15 @@ import @vibe/compiler/codegen {
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_impl, compile_wasi_module_no_dce_impl, compile_wasi_module_rc_impl
+  compile_wasi_module_impl,
+  compile_wasi_module_impl_with_typed_offsets,
+  compile_wasi_module_no_dce_impl,
+  compile_wasi_module_no_dce_impl_with_typed_offsets,
+  compile_wasi_module_rc_impl
 }
 
 import @vibe/compiler/checker {
-  check_program
+  check_program, typed_lowering_binop_anchor
 }
 
 import @vibe/compiler/core {
@@ -58,7 +62,12 @@ import @vibe/compiler/runtime {
   db_store_artifact,
   db_typecheck,
   db_typecheck_count,
-  db_typecheck_fs
+  db_typecheck_fs,
+  module_typed_lowering_offsets_for_path,
+  parse_program_with_path,
+  split_typed_lowering_offsets,
+  union_module_typed_eq_rows,
+  union_module_typed_lowering_with_clones
 }
 
 import @vibe/compiler/cache {
@@ -212,7 +221,19 @@ fn string_array_contains_local(items: Array[String], target: String) -> Bool {
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Exception {
+/// #716: collision-def fallback. `excluded_locals` are the locals the
+/// export-rename plan already rewrites.
+///
+/// #2449: the provider body comes from the merge's own authoritative parsed
+/// copy (already rebased into the provider file's offset range), not from a
+/// second `parse_program(lex(source))` of the same text. A clone is a real
+/// second copy of provider CODE, so it gets an offset range of its own past
+/// every file's -- and, with it, a second copy of the provider's
+/// typed-lowering rows, or a Double-returning call inside the clone's body
+/// would fall back to the syntactic classifier and print raw bits. Entries for
+/// provider statements the clone does not contain match no node and stay
+/// inert.
+fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], file_paths: Array[String], located_file_stmts: Array[Array[Stmt]], plan: ExportRenamePlan, excluded_locals: Array[String], flat_paths: Array[String], flat_bases: Array[Int], clone_offset_delta: Array[Int], clone_offset_span: Int, clone_float_offsets_out: Array[Int]) -> Unit with Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -221,14 +242,33 @@ fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: 
     let (raw_path, original, local) = Array::get(refs, i)
     if !string_array_contains_local(emitted, local) && !string_array_contains_local(excluded_locals, local) {
       let resolved = resolve_import_path(base_dir, raw_path)
-      let source = source_lookup_or_throw(sources, resolved)
-      let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(parse_program(lex(source)), export_plan_renames_for(plan, resolved)))
+      let provider_index = index_of_path_or_throw(file_paths, resolved)
+      let source_stmts = namespace_private_value_stmts(resolved, apply_export_renames_stmts(Array::get(located_file_stmts, provider_index), export_plan_renames_for(plan, resolved)))
       let mut j = 0
       let mut done = false
       while j < Array::length(source_stmts) && !done {
         match rewrite_imported_value_stmt_to_local(Array::get(source_stmts, j), original, local) {
           Some(local_stmt) => {
-            Array::push(merged, local_stmt)
+            let delta = Array::get(clone_offset_delta, 0)
+            Array::set(clone_offset_delta, 0, delta + clone_offset_span)
+            match lookup_inline_flat_base(flat_paths, flat_bases, resolved) {
+              Some(provider_base) => match module_typed_lowering_offsets_for_path(resolved) {
+                Some(provider_offsets) => {
+                  let mut k = 0
+                  while k < Array::length(provider_offsets) {
+                    // The table is tag-encoded (offset * 8 + tag, see
+                    // typed_lowering_enc), so shifting a row by the clone's
+                    // merge-space delta adds (base + delta) * 8 -- the tag
+                    // bits stay untouched.
+                    Array::push(clone_float_offsets_out, Array::get(provider_offsets, k) + (provider_base + delta) * 8)
+                    k = k + 1
+                  }
+                },
+                None => ()
+              },
+              None => ()
+            }
+            Array::push(merged, shift_stmt_offsets(local_stmt, delta))
             Array::push(emitted, local)
             done = true
           },
@@ -239,6 +279,46 @@ fn append_inline_import_alias_collision_defs(merged: Array[Stmt], current_path: 
     }
     i = i + 1
   }
+}
+
+/// The index of `path` in the merge's flat file list. A collision ref names an
+/// import this merge already resolved, so a miss is an internal inconsistency,
+/// not a user error -- it throws rather than skipping the clone silently,
+/// which is what `source_lookup_or_throw` did for the same reason.
+fn index_of_path_or_throw(file_paths: Array[String], path: String) -> Int with Exception {
+  let n = Array::length(file_paths)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < n {
+    if Array::get(file_paths, i) == path {
+      found = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  if found < 0 {
+    throw(String::concat("inline merge: no source for import target ", path))
+  } else {
+    ()
+  }
+  found
+}
+
+/// The disjoint-merge offset base recorded for `path`.
+fn lookup_inline_flat_base(flat_paths: Array[String], flat_bases: Array[Int], path: String) -> Option[Int] {
+  let n = Array::length(flat_paths)
+  let mut i = 0
+  let mut found: Option[Int] = None
+  while i < n {
+    if Array::get(flat_paths, i) == path {
+      found = Some(Array::get(flat_bases, i))
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 export fn prepare_modules_cached(db: TypeDb, main_path: String, main_source: String, sources: Array[(String, String)]) -> TypeDb with Exception {
@@ -316,7 +396,32 @@ fn build_merge_fingerprint_inline(sources: Array[(String, String)]) -> String {
   acc
 }
 
+/// The merge WITHOUT the offset tables: statement counts, and the entries that
+/// deliberately skip the per-module check. Both merges are the same program --
+/// this one just discards the bases, so nothing downstream can read rows that
+/// were not proven for these sources (see merged_stmts_and_offsets_inline).
 fn build_merged_stmts_inline(sources: Array[(String, String)]) -> Array[Stmt] with Exception {
+  build_merged_stmts_inline_impl(sources, array_empty(), array_empty(), array_empty())
+}
+
+/// #2449: the inline-source merge, with each file rebased into its own
+/// disjoint offset range and its base reported -- the same shape
+/// `build_grouped_merged_stmts_impl` (entry/compiler/file_compile) has had
+/// since #2391, one layer down.
+///
+/// Before this the merge parsed with `parse_program(lex(source))`, so every
+/// node offset was -1 and there was no offset space at all: every entry built
+/// on this merge compiled with each typed-lowering channel EMPTY, the linked
+/// lane included. An empty table classifies nothing, so what those entries got
+/// was the pre-#2158 syntactic answer -- a large `Int` rendering as the empty
+/// string, a `Double` reached through a projection not rendering as a Double,
+/// `a < b` on Strings comparing pointers wherever the desugar tracker cannot
+/// see the shape syntactically.
+///
+/// The parse is now `parse_program_with_path`, which is BOTH located and the
+/// same memoized parse the per-module check already performed, so this reads
+/// one merge's worth of parsing rather than adding a second one.
+fn build_merged_stmts_inline_impl(sources: Array[(String, String)], flat_paths_out: Array[String], flat_bases_out: Array[Int], clone_float_offsets_out: Array[Int]) -> Array[Stmt] with Exception {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let merged = empty_stmt_array()
@@ -329,9 +434,30 @@ fn build_merged_stmts_inline(sources: Array[(String, String)]) -> Array[Stmt] wi
   while pi < source_count {
     let (path, source) = Array::get(sources, pi)
     Array::push(file_paths, path)
-    Array::push(file_stmts, parse_program(lex(source)))
+    Array::push(file_stmts, parse_program_with_path(path, source))
     pi = pi + 1
   }
+  // Every parser offset is relative to one file. The typed-lowering tables are
+  // keyed by those offsets, so merging files without rebasing would let one
+  // file's Double call classify another file's Int call. Shift before the
+  // namespace/import rewrites; they preserve locations.
+  let located_file_stmts = array_empty()
+  let mut offset_base = 0
+  let mut li = 0
+  while li < source_count {
+    Array::push(located_file_stmts, shift_stmts_offsets(Array::get(file_stmts, li), offset_base))
+    Array::push(flat_paths_out, Array::get(file_paths, li))
+    Array::push(flat_bases_out, offset_base)
+    let (_, source) = Array::get(sources, li)
+    // A source of N bytes occupies [base, base + N). The extra byte keeps
+    // even an offset exactly at EOF disjoint from the following file.
+    offset_base = offset_base + String::length(source) + 1
+    li = li + 1
+  }
+  // Alias-collision clones are second copies of provider code, so they get
+  // offset ranges of their own past every file's range.
+  let clone_offset_span = offset_base
+  let clone_offset_delta = [offset_base]
   let plan_entry = if source_count > 0 {
     Array::get(file_paths, source_count - 1)
   } else {
@@ -341,7 +467,7 @@ fn build_merged_stmts_inline(sources: Array[(String, String)]) -> Array[Stmt] wi
   let mut si = 0
   while si < source_count {
     let path = Array::get(file_paths, si)
-    let stmts = Array::get(file_stmts, si)
+    let stmts = Array::get(located_file_stmts, si)
     let is_entry_source = si == source_count - 1
     let import_renames = collect_import_value_renames(plan, path, stmts)
     let (boundary_locals, boundary_surface_only) = merged_source_boundary_names(stmts)
@@ -364,11 +490,30 @@ fn build_merged_stmts_inline(sources: Array[(String, String)]) -> Array[Stmt] wi
       namespace_private_value_stmts(path, export_renamed)
     }
     let skipped_locals = collect_import_alias_collision_locals(stmts)
-    append_inline_import_alias_collision_defs(merged, path, stmts, sources, plan, import_value_rename_locals(import_renames))
+    append_inline_import_alias_collision_defs(merged, path, stmts, file_paths, located_file_stmts, plan, import_value_rename_locals(import_renames), flat_paths_out, flat_bases_out, clone_offset_delta, clone_offset_span, clone_float_offsets_out)
     append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
     si = si + 1
   }
   merged
+}
+
+/// #2449: the inline merge plus the typed-lowering tables the per-module check
+/// recorded, rebased into the merge's offset space -- the inline-source
+/// sibling of `merged_stmts_and_offsets` (entry/compiler/file_compile).
+///
+/// Only entries that actually ran `prepare_modules_cached` may use this. The
+/// memo is process-global and keyed by PATH, so an entry that deliberately
+/// skips the check (the `*_unchecked_*` family) must keep the empty tables:
+/// reading rows an earlier compile of a DIFFERENT source at the same path left
+/// behind is exactly the silently-wrong shape these tables exist to remove.
+fn merged_stmts_and_offsets_inline(sources: Array[(String, String)]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+  let flat_paths: Array[String] = []
+  let flat_bases: Array[Int] = []
+  let clone_float_offsets: Array[Int] = []
+  let merged = build_merged_stmts_inline_impl(sources, flat_paths, flat_bases, clone_float_offsets)
+  let (floats, rels, pluses, int_renders) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
+  (rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor), floats, int_renders, eq_offs, eq_keys)
 }
 
 fn prune_entry_stmts(stmts: Array[Stmt], entry_name: String) -> Array[Stmt] {
@@ -428,6 +573,12 @@ export fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path
   match db_load_artifact(codegen_db, main_path, "module", "", artifact_fingerprint) {
     Some(bytes) => (bytes, codegen_db),
     None => {
+      // #2437: this entry does NOT go through the statement merge -- it
+      // reprints the program to `module_source` and reparses that text, so the
+      // per-module offsets have no space to be rebased into and the tables stay
+      // empty here. Routing this lane onto `merged_stmts_and_offsets_inline` is
+      // #2437's remaining work; it changes cache identity and output bytes, so
+      // it is not folded in here.
       let stmts = parse_program(lex(module_source))
       let bytes = compile_module(stmts)
       (bytes, db_store_artifact(codegen_db, main_path, "module", "", artifact_fingerprint, bytes))
@@ -435,18 +586,30 @@ export fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path
   }
 }
 
+/// #2449 (Codex review on #2453): the artifact kind is `wasi-typed`, not
+/// `wasi`. The `wasi` kind is what an entry that compiles WITHOUT the
+/// typed-lowering tables writes, and this one now emits different bytes for the
+/// same sources -- the fingerprint is derived from the sources alone, so
+/// sharing the kind means the second of two entries called on one `TypeDb`
+/// silently gets the first's lowering. Measured before the split, unchecked
+/// then checked on a shared db: the checked call returned the UNCHECKED bytes,
+/// which differed from what it produces on a fresh db.
 export fn compile_with_modules_wasi_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)], entry_name: String) -> (Bytes, TypeDb) with Exception {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
   let artifact_fingerprint = artifact_fingerprint_from_source(String::concat(merge_fingerprint, String::concat("|", entry_name)))
-  match db_load_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+  match db_load_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint) {
     Some(bytes) => (bytes, next_db),
     None => {
-      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      // #2449: `next_db` is `prepare_modules_cached`'s, so every module of this
+      // program has been checked in this process and published its
+      // typed-lowering rows. The merge rebases them into one offset space and
+      // hands them to codegen -- the tables the linked lane exists to consume.
+      let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-      let bytes = compile_wasi_module(pruned_stmts, entry_name)
-      (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+      let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+      (bytes, db_store_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint, bytes))
     }
   }
 }
@@ -456,13 +619,17 @@ export fn compile_with_closure_sources_wasi_cached(db: TypeDb, main_source: Stri
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
   let artifact_fingerprint = artifact_fingerprint_from_source(String::concat(merge_fingerprint, String::concat("|", entry_name)))
-  match db_load_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint) {
+  match db_load_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint) {
     Some(bytes) => (bytes, next_db),
     None => {
-      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      // #2449: `next_db` is `prepare_modules_cached`'s, so every module of this
+      // program has been checked in this process and published its
+      // typed-lowering rows. The merge rebases them into one offset space and
+      // hands them to codegen -- the tables the linked lane exists to consume.
+      let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-      let bytes = compile_wasi_module(pruned_stmts, entry_name)
-      (bytes, db_store_artifact(next_db, main_path, "wasi", entry_name, artifact_fingerprint, bytes))
+      let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+      (bytes, db_store_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint, bytes))
     }
   }
 }
@@ -471,10 +638,13 @@ export fn compile_with_closure_sources_wasi_mode_cached(db: TypeDb, main_source:
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let next_db = prepare_modules_cached(db, main_path, main_source, ordered_sources)
   let merge_fingerprint = build_merge_fingerprint_inline(ordered_sources)
+  // #2449 (Codex review on #2453): `-typed` for the same reason the two
+  // entries above carry it -- this entry now compiles WITH the typed-lowering
+  // tables, so it must not share a cache key with one that does not.
   let artifact_kind = if mode == "mvp" {
-    "wasi-mvp"
+    "wasi-mvp-typed"
   } else if mode == "no-dce" {
-    "wasi"
+    "wasi-typed"
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
@@ -482,12 +652,13 @@ export fn compile_with_closure_sources_wasi_mode_cached(db: TypeDb, main_source:
   match db_load_artifact(next_db, main_path, artifact_kind, entry_name, artifact_fingerprint) {
     Some(bytes) => (bytes, next_db),
     None => {
-      let merged_stmts = build_merged_stmts_inline(ordered_sources)
+      // #2449: checked entry -- see compile_with_modules_wasi_cached above.
+      let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let bytes = if mode == "mvp" {
         let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-        compile_wasi_module_impl(pruned_stmts, entry_name)
+        compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
       } else {
-        compile_wasi_module_no_dce_impl(merged_stmts, entry_name)
+        compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
       }
       (bytes, db_store_artifact(next_db, main_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
     }

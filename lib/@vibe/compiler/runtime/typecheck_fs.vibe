@@ -16,7 +16,15 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  TypeExpr, TypeExpr::is_array_of_int, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
+  TypeExpr,
+  TypeExpr::is_array_of_int,
+  impl_target_from_key,
+  impl_target_key,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
 }
 
 import @vibe/compiler/checker {
@@ -30,6 +38,8 @@ import @vibe/compiler/checker {
   detect_unused_imports,
   import_item_kind_errors,
   report_unknown_type_names_deferred_validation,
+  typed_lowering_enc_offset,
+  typed_lowering_enc_tag,
   typing_semantics_seed,
   validate_derives
 }
@@ -64,6 +74,8 @@ import @vibe/compiler/core {
   is_builtin_iterator_serialized_boundary_path,
   is_contract_ext,
   lookup_registry_builtin,
+  namespace_private_name,
+  namespace_rename_original,
   normalize_path,
   resolution_env_seed,
   resolve_builtin,
@@ -243,6 +255,22 @@ fn module_typed_lowering_memo_put(path: String, fingerprint: String, offsets: Ar
   } else {
     ()
   }
+}
+
+/// #2449: the in-memory module walk's publication point. `ensure_fingerprint`
+/// (runtime.vibe) checks each module of the "sources passed in memory" family
+/// with the same observation the FS lane uses, and this is where its table
+/// reaches the memo the merge consumers read by path.
+///
+/// It is a thin wrapper rather than an exported `module_typed_lowering_memo_put`
+/// so the `None` case -- the parse carried no offsets, which the located-channel
+/// refusal reports -- is normalized HERE, in the file that owns the memo, to the
+/// empty table that classifies nothing.
+export fn publish_module_typed_lowering_offsets(path: String, fingerprint: String, offsets: Option[Array[Int]], eq_offs: Array[Int], eq_keys: Array[String]) -> Unit {
+  module_typed_lowering_memo_put(path, fingerprint, match offsets {
+    Some(table) => table,
+    None => array_empty()
+  }, eq_offs, eq_keys)
 }
 
 fn module_typed_lowering_memo_get_by_fp(fingerprint: String) -> Option[(Array[Int], Array[Int], Array[String])] {
@@ -514,6 +542,201 @@ fn parse_module_typed_lowering_offsets_text(text: String) -> Option[(Array[Int],
     } else {
       None
     }
+  }
+}
+
+/// #2391: shift each file's per-module typed-lowering table (recorded by the
+/// modular check in the file's OWN offset space) by that file's base in a
+/// disjoint-offset merge, and union them into one table. Rows are tag-encoded
+/// (offset * 8 + tag, see typed_lowering_enc in the checker), so the rebase
+/// adds base * 8 and leaves the tag bits untouched. A file the modular check
+/// never stepped in this process contributes nothing, which degrades ITS
+/// sites to the syntactic classifiers -- deterministically, because the reuse
+/// arms in typecheck_fs.vibe re-check a module whose offsets sidecar is
+/// missing rather than reusing half a cache entry.
+///
+/// #2449: this lives beside the memo it reads rather than in one merge's
+/// file, because BOTH merges need it -- the grouped file merge
+/// (entry/compiler/file_compile) and the inline-source merge
+/// (entry/compiler/fs_compile). A second copy of the decoder below is the
+/// shape that goes wrong quietly: a tag added on one side classifies nothing
+/// on the other, and an empty channel looks exactly like "nothing to
+/// classify".
+export fn union_module_typed_lowering_offsets(flat_paths: Array[String], flat_bases: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(flat_paths) {
+    match module_typed_lowering_offsets_for_path(Array::get(flat_paths, i)) {
+      Some(offsets) => {
+        let base = Array::get(flat_bases, i)
+        let mut j = 0
+        while j < Array::length(offsets) {
+          Array::push(out, Array::get(offsets, j) + base * 8)
+          j = j + 1
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The per-file union plus the alias-collision clones' duplicated entries
+/// (already in merge space and encoded, see the clone emission in each merge).
+export fn union_module_typed_lowering_with_clones(flat_paths: Array[String], flat_bases: Array[Int], clone_float_offsets: Array[Int]) -> Array[Int] {
+  let out = union_module_typed_lowering_offsets(flat_paths, flat_bases)
+  let mut ci = 0
+  while ci < Array::length(clone_float_offsets) {
+    Array::push(out, Array::get(clone_float_offsets, ci))
+    ci = ci + 1
+  }
+  out
+}
+
+/// #2441 (Codex round 1 on #2443): a module-PRIVATE nominal type in an eq
+/// row must follow the merge's private-type rename, or the row still names
+/// the source spelling while the merged declarations name the mangled one.
+/// Measured before this mapping: a dependency's private `Point` row, with
+/// the ENTRY declaring a different `Point`, dispatched the entry's
+/// `Point::equals` on the dependency's values -- `true` for content-unequal
+/// pairs. The mapping consults the SAME rename record the merge populated
+/// (#2205): a name is rewritten to `namespace_private_name(path, name)`
+/// exactly when that mangled spelling is recorded as a rename of this name,
+/// so an exported (unrenamed) type, a builtin head, and the entry file's
+/// own types all pass through unchanged.
+fn eq_key_rename_name(path: String, name: String) -> String {
+  let candidate = namespace_private_name(path, name)
+  if namespace_rename_original(candidate) == name {
+    candidate
+  } else {
+    name
+  }
+}
+
+fn eq_key_rename_ty(path: String, te: TypeExpr) -> TypeExpr {
+  match te {
+    TyName(n) => TyName(eq_key_rename_name(path, n)),
+    TyApp(n, args) => TyApp(eq_key_rename_name(path, n), for a in args {
+      eq_key_rename_ty(path, a)
+    }),
+    TyTuple(items) => TyTuple(for a in items {
+      eq_key_rename_ty(path, a)
+    }),
+    _ => te
+  }
+}
+
+/// #2441: the typed-`==` union -- the same per-file walk as
+/// union_module_typed_lowering_offsets, but the rows are (offset, TypeExpr
+/// key) pairs, so the rebase adds the plain byte base (no tag bits to
+/// preserve) and each key's nominal names are rebased through the merge's
+/// rename record (eq_key_rename_ty above). A key that does not parse is
+/// dropped rather than passed through -- fail closed. Alias-collision clone
+/// statements contribute no eq rows -- a cloned definition's `==` sites
+/// simply degrade to the syntactic classifiers, which is today's behavior
+/// for every site, never a wrong comparator.
+export fn union_module_typed_eq_rows(flat_paths: Array[String], flat_bases: Array[Int]) -> (Array[Int], Array[String]) {
+  let out_offs: Array[Int] = []
+  let out_keys: Array[String] = []
+  let mut i = 0
+  while i < Array::length(flat_paths) {
+    match module_typed_eq_rows_for_path(Array::get(flat_paths, i)) {
+      Some((eq_offs, eq_keys)) => {
+        let path = Array::get(flat_paths, i)
+        let base = Array::get(flat_bases, i)
+        let mut j = 0
+        while j < Array::length(eq_offs) {
+          match impl_target_from_key(Array::get(eq_keys, j)) {
+            Some(te) => {
+              Array::push(out_offs, Array::get(eq_offs, j) + base)
+              Array::push(out_keys, impl_target_key(eq_key_rename_ty(path, te)))
+            },
+            None => ()
+          }
+          j = j + 1
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  (out_offs, out_keys)
+}
+
+/// #2391 slice 2: decode one merged typed-lowering table into its channels --
+/// Double call-result offsets (tag 0) for `CompileCtx.float_call_offsets`,
+/// String relational anchors (tag 1) and String `+` anchors (tag 2) for the
+/// rewrite pass, and the render/`eq` argument offsets the checker typed as
+/// `Int` (tag 3) or `Double` (tag 4). The encoding is the checker's
+/// typed_lowering_enc; the enc/dec pair lives on the checker boundary so the
+/// two sides cannot drift.
+export fn split_typed_lowering_offsets(enc: Array[Int]) -> (Array[Int], Array[Int], Array[Int], Array[Int]) {
+  let floats: Array[Int] = []
+  let rels: Array[Int] = []
+  let pluses: Array[Int] = []
+  let int_renders: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(enc) {
+    let value = Array::get(enc, i)
+    let tag = typed_lowering_enc_tag(value)
+    let off = typed_lowering_enc_offset(value)
+    if tag == 0 {
+      Array::push(floats, off)
+    } else if tag == 1 {
+      Array::push(rels, off)
+    } else if tag == 2 {
+      Array::push(pluses, off)
+    } else if tag == 3 {
+      // #2424: render (`__to_string` / `Int::to_string`) and `eq` ARGUMENT
+      // offsets the checker typed as `Int`.
+      Array::push(int_renders, off)
+    } else if tag == 4 {
+      // #2424: the Double half of the same argument set, unioned into the
+      // Double channel. The two tags stay distinct through the encoding
+      // because their KEYS differ -- tag 0 is a call node's own offset, tag 4
+      // is `typed_lowering_arg_offset` (a projection answers with its
+      // field-name offset) -- and they can share one array here because the
+      // consumers read it with `typed_lowering_arg_offset`, which agrees with
+      // the call offset on a call node.
+      Array::push(floats, off)
+    } else {
+      // No tag above 4 exists; dropping an unknown row degrades its site to
+      // the syntactic classifiers rather than misclassifying another offset.
+      ()
+    }
+    i = i + 1
+  }
+  (floats, rels, pluses, int_renders)
+}
+
+/// #2449 (Codex review on #2453): rebind `path`'s typed-lowering rows from the
+/// memo BY FINGERPRINT, and report whether it could.
+///
+/// The in-memory module walk (`ensure_fingerprint`, runtime.vibe) skips the
+/// check when the `TypeDb` already holds this module's fingerprint, and a skip
+/// publishes nothing -- so the merge downstream reads whatever
+/// `module_typed_lowering_offsets_for_path` happens to hold for that path,
+/// which another compile in the same process may have overwritten. Measured
+/// before this: rows for a path went 1 -> 0 across a warm-db re-prepare.
+///
+/// `false` means the rows are not available for this fingerprint, and the
+/// caller must fall through to a real check rather than proceed -- the same
+/// fail-closed rule `ensure_module_typed_lowering_offsets` gives the FS lane.
+/// This is the memo-only sibling of that function: the in-memory walk carries
+/// no `Fs` effect, so there is no sidecar to fall back on.
+///
+/// Binding the hit to THIS path (not just proving the fingerprint) is the
+/// #2425 rule: `build_fingerprint` excludes the module's own path, so two
+/// byte-identical modules share a fingerprint and the consumer looks up by
+/// path.
+export fn rebind_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bool {
+  match module_typed_lowering_memo_get_by_fp(fingerprint) {
+    Some((offsets, eq_offs, eq_keys)) => {
+      module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
+      true
+    },
+    None => false
   }
 }
 

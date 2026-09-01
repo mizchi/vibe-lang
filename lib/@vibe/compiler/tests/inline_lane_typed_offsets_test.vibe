@@ -1,0 +1,135 @@
+//# #2449: the inline-source merge (`build_merged_stmts_inline`) and its
+// typed-lowering tables.
+//
+// The merge parsed with `parse_program(lex(source))` -- unlocated, every node
+// offset -1 -- and computed no per-file bases, so there was no offset space to
+// rebase a per-module table into. Every entry built on it therefore compiled
+// with each typed-lowering channel EMPTY, including two on the LINKED lane,
+// which is the lane those tables exist to feed.
+//
+// Two halves are pinned here, the same pair `module_lane_typed_offsets_test`
+// uses for #2437's lane, and for the same reasons:
+//
+//   1. The tables now REACH codegen and change what it emits. The CHECKED
+//      entry (`compile_with_closure_sources_wasi_cached`, which runs
+//      `prepare_modules_cached` and so has per-module rows to rebase) and the
+//      UNCHECKED one (`compile_with_closure_sources_wasi_unchecked_cached`,
+//      which deliberately runs no check and therefore keeps empty tables) must
+//      produce DIFFERENT bytes for a program whose render argument no
+//      syntactic arm classifies. Both reach the SAME codegen entry, so the
+//      tables are the only difference between them.
+//   2. It is inert where it should be. For a program with nothing to classify,
+//      the two must be byte-identical -- a channel that moved unrelated output
+//      would be a regression, not a fix.
+//
+// That the classification is CORRECT is pinned behaviourally by
+// fixtures/gc_lane_scalar_parity_test.vibe, which runs the same
+// `CompileCtx.int_render_offsets` / `float_call_offsets` consumers.
+
+//# Imports
+
+import @vibe/compiler/entry/compiler/fs_compile {
+  compile_with_closure_sources_wasi_cached, compile_with_closure_sources_wasi_unchecked_cached, prepare_modules_cached
+}
+
+import @vibe/compiler/runtime {
+  module_typed_lowering_offsets_for_path, publish_module_typed_lowering_offsets
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ../type_db.vibe {
+  TypeDb, db_new
+}
+
+//# Functions
+
+fn no_extra_sources() -> Array[(String, String)] {
+  array_empty()
+}
+
+/// A projection is the sharpest argument to use here: the render's argument is
+/// an `EDot`, which no syntactic arm classifies, so without the table
+/// `__to_string` falls through to its runtime string-pointer heuristic -- which
+/// for `64 << 32` (a zero low word, an in-bounds high word) answers with the
+/// EMPTY STRING. With the table it takes the integer path, and the emitted code
+/// differs.
+let inline_projection_source: String = "fn main() -> Unit with Stdout {\n  let t = (64 << 32, 1)\n  println(__to_string(t.0))\n}\n"
+
+/// No render, no `eq`, no Double call result: nothing for either table to
+/// carry, so the located parse and the per-file rebase must not move a byte.
+let inline_plain_source: String = "fn main() -> Unit with Stdout {\n  let a = 7\n  let b = 4\n  let _ = a - b\n  println(\"x\")\n}\n"
+
+fn compile_checked(source: String) -> Bytes with Exception {
+  let (bytes, _) = compile_checked_with(db_new(), source)
+  bytes
+}
+
+fn compile_unchecked(source: String) -> Bytes with Exception {
+  let (bytes, _) = compile_unchecked_with(db_new(), source)
+  bytes
+}
+
+test "#2449 the inline merge's typed-lowering tables reach codegen" {
+  let with_tables = compile_checked(inline_projection_source)
+  let without_tables = compile_unchecked(inline_projection_source)
+  assert(!(with_tables == without_tables))
+}
+
+test "#2449 a program with nothing to classify compiles byte-identically" {
+  let with_tables = compile_checked(inline_plain_source)
+  let without_tables = compile_unchecked(inline_plain_source)
+  assert(with_tables == without_tables)
+}
+
+//# Codex review on #2453 -- the two ways this channel could be filled and then
+// silently bypassed. Each was measured on the fix's own branch before the fix.
+
+test "#2449 the checked entry's bytes do not depend on a shared TypeDb" {
+  // The artifact fingerprint is derived from the SOURCES alone, so an artifact
+  // kind shared with an entry that emits different bytes hands the second
+  // caller the first one's lowering. Before the `wasi-typed` split, measured
+  // on one db with the unchecked entry first: the checked call returned the
+  // UNCHECKED bytes, and they differed from what it produces on a fresh db --
+  // the caller asked for the typed lowering and silently got the other one.
+  let (unchecked, shared_db) = compile_unchecked_with(db_new(), inline_projection_source)
+  let (checked_after, _) = compile_checked_with(shared_db, inline_projection_source)
+  let (checked_alone, _) = compile_checked_with(db_new(), inline_projection_source)
+  assert(!(unchecked == checked_after))
+  assert(checked_after == checked_alone)
+}
+
+test "#2449 a warm TypeDb still leaves this module's rows bound" {
+  // `ensure_fingerprint` skips the check when the db already holds the
+  // module's fingerprint, and a skip publishes nothing. Measured before the
+  // rebind: with another compile in the same process having overwritten this
+  // path's memo row, the rows went 1 -> 0 across a warm re-prepare, and the
+  // merge downstream then read an empty (or another source's) table.
+  let warm_path = "warm_rebind_probe.vibe"
+  let db1 = prepare_modules_cached(db_new(), warm_path, inline_projection_source, no_extra_sources())
+  assert(row_count(warm_path) > 0)
+  // Stand in for that other compile: rebind the path to an unrelated
+  // fingerprint with no rows.
+  let emptied: Array[Int] = []
+  let no_keys: Array[String] = []
+  publish_module_typed_lowering_offsets(warm_path, "#2453-unrelated-fingerprint", Some(emptied), emptied, no_keys)
+  let _ = prepare_modules_cached(db1, warm_path, inline_projection_source, no_extra_sources())
+  assert(row_count(warm_path) > 0)
+}
+
+fn row_count(path: String) -> Int {
+  match module_typed_lowering_offsets_for_path(path) {
+    Some(rows) => Array::length(rows),
+    None => 0 - 1
+  }
+}
+
+fn compile_checked_with(db: TypeDb, source: String) -> (Bytes, TypeDb) with Exception {
+  compile_with_closure_sources_wasi_cached(db, source, "main.vibe", no_extra_sources(), "main")
+}
+
+fn compile_unchecked_with(db: TypeDb, source: String) -> (Bytes, TypeDb) with Exception {
+  compile_with_closure_sources_wasi_unchecked_cached(db, source, "main.vibe", no_extra_sources(), "main")
+}

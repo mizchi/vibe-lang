@@ -2523,6 +2523,127 @@ export fn type_has_unknown(ty: Type) -> Bool {
   }
 }
 
+/// #2451: the type with every `CtVar` replaced by `CtUnknown`.
+///
+/// The builtin registry writes an open position as `reg_var(n)` when the row
+/// really means "this position and that position are the SAME type"
+/// (`Array::get`'s element and result), and `reg_any()` when it means "any
+/// value type is legal here and nothing relates it to anything else". Only the
+/// value-form path reads the variables; every other consumer of a registry row
+/// -- the direct-call fast path, the effect walk, the contract checker, the
+/// codegen lookups -- reads the ERASED view, which is byte-for-byte the row
+/// those consumers saw before variables existed. That is what keeps a change
+/// to the registry's expressiveness from being a change to what the compiler
+/// accepts.
+///
+/// Arms are enumerated with no wildcard for the same reason `type_has_unknown`
+/// above does it: a new `Type` constructor must fail this match rather than
+/// pass a variable through unerased.
+export fn type_erase_vars(ty: Type) -> Type {
+  match ty {
+    CtInt => ty,
+    CtDouble => ty,
+    CtBool => ty,
+    CtString => ty,
+    CtChar => ty,
+    CtUnit => ty,
+    CtBytes => ty,
+    CtUnknown => ty,
+    CtVar(_) => CtUnknown,
+    CtConstructor(_, _) => ty,
+    CtApplied(head, args) => CtApplied(type_erase_vars(head), types_erase_vars(args)),
+    CtEnum(_) => ty,
+    CtStruct(_) => ty,
+    CtArray(e) => CtArray(type_erase_vars(e)),
+    CtOption(e) => CtOption(type_erase_vars(e)),
+    CtTuple(es) => CtTuple(types_erase_vars(es)),
+    CtFn(ps, ret, eff) => CtFn(types_erase_vars(ps), type_erase_vars(ret), eff),
+    CtNamed(n, ts) => CtNamed(n, types_erase_vars(ts)),
+    // A scheme's variables are BOUND by its own binder, not open positions, so
+    // erasing them would destroy the scheme rather than hide a relationship.
+    // Registry rows are never schemes -- `registry_builtin_scheme` is what
+    // BUILDS one, from a row this has already left alone.
+    CtForAll(_, _, _) => ty,
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (fname, ft) = field
+      (fname, type_erase_vars(ft))
+    })
+  }
+}
+
+fn types_erase_vars(ts: Array[Type]) -> Array[Type] {
+  for t in ts {
+    type_erase_vars(t)
+  }
+}
+
+/// #2451: every distinct `CtVar` id mentioned by a type, in first-occurrence
+/// order. Used to close a registry row into a `CtForAll` scheme, so each use
+/// site instantiates its own copy of the row's variables.
+export fn collect_type_var_ids(ty: Type, out: Array[Int]) -> Unit {
+  match ty {
+    CtInt => (),
+    CtDouble => (),
+    CtBool => (),
+    CtString => (),
+    CtChar => (),
+    CtUnit => (),
+    CtBytes => (),
+    CtUnknown => (),
+    CtVar(id) => if int_array_contains(out, id) {
+      ()
+    } else {
+      Array::push(out, id)
+    },
+    CtConstructor(_, _) => (),
+    CtApplied(head, args) => {
+      collect_type_var_ids(head, out)
+      collect_types_var_ids(args, out)
+    },
+    CtEnum(_) => (),
+    CtStruct(_) => (),
+    CtArray(e) => collect_type_var_ids(e, out),
+    CtOption(e) => collect_type_var_ids(e, out),
+    CtTuple(es) => collect_types_var_ids(es, out),
+    CtFn(ps, ret, _) => {
+      collect_types_var_ids(ps, out)
+      collect_type_var_ids(ret, out)
+    },
+    CtNamed(_, ts) => collect_types_var_ids(ts, out),
+    CtForAll(_, _, body) => collect_type_var_ids(body, out),
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, ft) = Array::get(fields, i)
+        collect_type_var_ids(ft, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn collect_types_var_ids(ts: Array[Type], out: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(ts) {
+    collect_type_var_ids(Array::get(ts, i), out)
+    i = i + 1
+  }
+}
+
+fn int_array_contains(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == v {
+      found = true
+      i = Array::length(xs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 fn types_have_unknown(ts: Array[Type]) -> Bool {
   let mut i = 0
   let mut found = false
