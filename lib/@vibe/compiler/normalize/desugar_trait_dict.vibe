@@ -12046,6 +12046,17 @@ let dtd_eq_generic_types: Array[String] = empty_str_array()
 // aggregate, so call sites record `Box[... ]` and a typed comparator is emitted
 // after the rewrite, like the recorded Array comparators.
 let dtd_eq_generic_structs: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
+
+/// Codex round 7 on #2456: every declared enum -- (name, formals, variants
+/// with their payload types) -- so a generic enum's payloads can be read
+/// when deciding whether its derived comparator is structural (see
+/// `eq_generic_enum_payloads_concrete_comparable`).
+let dtd_eq_enum_decls: Array[(String, Array[String], Array[(String, Array[TypeExpr])])] = array_empty()
+
+/// Recursion guard for `eq_generic_enum_payloads_concrete_comparable`: an
+/// enum whose payload names itself (or another enum that names it) is
+/// answered `false` at the second visit rather than looping.
+let dtd_eq_enum_payload_check_stack: Array[String] = empty_str_array()
 let dtd_eq_type_aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
 // Source declarations that own a type spelling. This is deliberately
 // separate from `dtd_eq_known_types`: effects do not have generated
@@ -12171,16 +12182,17 @@ fn eq_generic_enum_declared(name: String) -> Bool {
   str_array_contains(dtd_eq_generic_types, name) && !generic_eq_struct_declared(name)
 }
 
-/// A `Result` / `Option` head admitted by the allow-list as an ENUM: only the
-/// special arm's exact shape (see `dtd_eq_nonstandard_builtin_enums`). A
-/// nonstandard shape is an ordinary generic enum and is refused like every
-/// other one; a struct-owned spelling is not admitted here at all -- it is a
-/// generic struct and the declared branch of the predicate decides it.
+/// A `Result` / `Option` head admitted by the allow-list as an ENUM: the
+/// special arm's exact shape (see `dtd_eq_nonstandard_builtin_enums`), or a
+/// nonstandard shape that is an ordinary generic enum and is decided like
+/// every other one (no payload typed by a formal). A struct-owned spelling
+/// is not admitted here at all -- it is a generic struct and the declared
+/// branch of the predicate decides it.
 fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
   if eq_builtin_head_owned_by_nonenum(head) {
     false
   } else {
-    eq_builtin_enum_arm_applies(head)
+    eq_builtin_enum_arm_applies(head) || eq_generic_enum_payloads_concrete_comparable(head)
   }
 }
 
@@ -12189,6 +12201,8 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_generic_types, 0)
   Array::truncate(dtd_eq_unsafe_types, 0)
   Array::truncate(dtd_eq_generic_structs, 0)
+  Array::truncate(dtd_eq_enum_decls, 0)
+  Array::truncate(dtd_eq_enum_payload_check_stack, 0)
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
   Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
@@ -12221,6 +12235,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       },
       SEnum(_, ename, decl_tparams, variants, _) => {
         Array::push(dtd_eq_type_owners, ename)
+        Array::push(dtd_eq_enum_decls, (ename, decl_tparams, variants))
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, ename)
         } else {
@@ -12426,8 +12441,8 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
       // `Some`/`None` and `Ok`/`Err` that hold for a declared enum of that
       // shape (`Result` is always declared, #1324; its aggregate payloads
       // compare structurally through that arm, #825). A declaration of
-      // another shape is an ordinary generic enum and is refused like every
-      // other one (Codex rounds 3-6; see eq_for_typed_nonstandard_enum).
+      // another shape is an ordinary generic enum and is decided like every
+      // other one (Codex rounds 3-7; see eq_for_typed_nonstandard_enum).
       let builtin_head = head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 && eq_nonstandard_enum_admitted(head, args) || head == "Result" && Array::length(args) == 2 && eq_nonstandard_enum_admitted(head, args) || head == "Map" && Array::length(args) == 2 && !str_array_contains(dtd_eq_type_owners, head)
       if eq_tparams_contain_name(tparams, head) {
         args_ok
@@ -12439,13 +12454,14 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
       } else if str_array_contains(dtd_eq_known_types, head) && !str_array_contains(dtd_eq_generic_types, head) {
         args_ok
       } else if eq_generic_enum_declared(head) {
-        // Codex rounds 5-6 on #2456: a generic ENUM has only its derived
+        // Codex rounds 5-7 on #2456: a generic ENUM has only its derived
         // comparator, which compares a formal-typed payload with the raw
         // word `==` -- reference equality for an aggregate and, through the
         // generic `eq` builtin's string fallback, not even exact for an
-        // `Int` (`64 << 32` vs `65 << 32` compared equal). Never admitted;
-        // `eq_for_typed_declared_app` fails closed for the same head.
-        false
+        // `Int` (`64 << 32` vs `65 << 32` compared equal). Admitted exactly
+        // when no payload is typed by a formal, the condition under which
+        // `eq_for_typed_declared_app` dispatches to that comparator.
+        eq_generic_enum_payloads_concrete_comparable(head)
       } else {
         // Concrete declared generic instantiations get a comparator specialized
         // with these arguments. Unknown heads (Map included) remain fail-closed.
@@ -13052,19 +13068,68 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   }
 }
 
-/// Codex rounds 3-6 on #2456: a source-owned generic ENUM -- a `Result` /
+/// Codex round 7 on #2456: whether a declared enum's derived `::equals`
+/// (`gen_enum_eq_fn`) is a content comparison. That comparator compares each
+/// payload through `eq_for_typed` on the payload's DECLARED type, so it is
+/// exact exactly when every payload type is content-comparable with no
+/// formal in scope: a payload spelled as a formal (`W(T)`) reaches the raw
+/// word `==` -- reference equality for an aggregate, and not even exact for
+/// an `Int` (Codex round 6) -- while a concrete payload (`Mark(Int)`,
+/// `Pair(Array[Int], String)`) or a nullary constructor does not. A phantom
+/// parameter therefore costs nothing. An enum that names itself in a
+/// payload is refused at the second visit (conservative; the declared-field
+/// walk keys such recursion the same way).
+fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
+  if str_array_contains(dtd_eq_enum_payload_check_stack, name) {
+    false
+  } else {
+    Array::push(dtd_eq_enum_payload_check_stack, name)
+    let mut found = false
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(dtd_eq_enum_decls) {
+      let decl = Array::get(dtd_eq_enum_decls, i)
+      if decl.0 == name {
+        found = true
+        let mut vi = 0
+        while vi < Array::length(decl.2) {
+          let payload = Array::get(decl.2, vi).1
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            if !eq_ty_field_is_content_comparable(Array::get(payload, pi), empty_str_array()) {
+              ok = false
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    Array::truncate(dtd_eq_enum_payload_check_stack, Array::length(dtd_eq_enum_payload_check_stack) - 1)
+    found && ok
+  }
+}
+
+/// Codex rounds 3-7 on #2456: a source-owned generic ENUM -- a `Result` /
 /// `Option` declared with constructors other than the special arm's shape,
-/// an `enum Map[K, V]`, any `enum Wrap[T]`. Its derived `::equals`
-/// (`gen_enum_eq_fn`) compares a payload typed by a FORMAL with the raw
-/// word `==`: reference equality for an aggregate, a boxed `Double`, or
-/// `Bytes`, and through the generic `eq` builtin's string fallback not even
-/// exact for an `Int` (`64 << 32` vs `65 << 32` compared equal, measured).
-/// There is no argument for which that comparator is provably content
-/// equality, so the comparison fails closed -- the same trap the
-/// untyped-empty arm and the expanding-recursion case use -- until generic
-/// enums get a per-instantiation comparator like generic structs (#2195).
+/// an `enum Map[K, V]`, any `enum Wrap[T]`. Generic enums have no
+/// per-instantiation comparator (only generic structs do, #2195); the
+/// derived `::equals` answers when every payload is a concrete
+/// content-comparable type (`eq_generic_enum_payloads_concrete_comparable`),
+/// and otherwise the comparison fails closed -- the same trap the
+/// untyped-empty arm and the expanding-recursion case use -- rather than
+/// comparing a formal-typed payload through the erased `==`.
 fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr) -> Expr {
-  ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+  if eq_generic_enum_payloads_concrete_comparable(head) {
+    ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
+  } else {
+    ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+  }
 }
 
 /// The declared-type dispatch of `eq_for_typed` for an applied head: a
@@ -13075,12 +13140,11 @@ fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr,
 /// comparator and never by the builtin's.
 fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
   if eq_generic_enum_declared(n) && Array::length(args) > 0 {
-    // Codex rounds 5-6 on #2456: a source-owned generic ENUM (`enum Map[K, V]
+    // Codex rounds 5-7 on #2456: a source-owned generic ENUM (`enum Map[K, V]
     // { Entry(K, V) }`, or any `enum Wrap[T]`) has no per-instantiation
-    // comparator -- only generic structs get one (#2195) -- and its derived
-    // `::equals` compares a formal-typed payload with the raw word `==`,
-    // which is not content equality for any argument (see
-    // eq_for_typed_nonstandard_enum). Fails closed.
+    // comparator -- only generic structs get one (#2195). Its derived
+    // `::equals` answers only when no payload is typed by a formal (see
+    // eq_for_typed_nonstandard_enum); otherwise this fails closed.
     eq_for_typed_nonstandard_enum(n, args, lhs, rhs)
   } else if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
     let canonical_args = for arg in args {
