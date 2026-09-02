@@ -1,0 +1,165 @@
+//# #2455: an explicit generic binder may not quantify a slot that belongs to a
+//# CAPTURED binding. `[T]() -> Array[T] { xs }` unifies `T` with the element
+//# variable of the enclosing `let xs = []`, and the scheme the checker then
+//# builds lets every call instantiate that ONE runtime array at a different
+//# type -- the #2447 silent-wrong class, one quantifier away.
+//#
+//# #2450's value restriction cannot reach it: `ty_has_open_array_elem` does not
+//# descend `CtForAll`, and descending while excluding the bound vars still
+//# misses it, because after unification the captured slot and the bound var are
+//# one id. The fact that separates them lives in the ENVIRONMENT, not in the
+//# type, so the check reads it from there.
+
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn checks_clean(source: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+fn first_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    "CLEAN"
+  } with { Exception::Throw(message) => message }
+}
+
+let fill_prelude: String = "fn fill(xs: Array[Int], v: Int) -> Unit { Array::push(xs, v) }\nfn fill_s(xs: Array[String], v: String) -> Unit { Array::push(xs, v) }\n"
+
+test "2455: a binder quantifying a captured array slot is rejected" {
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nlet get = [T]() -> Array[T] { xs }\nfill(get(), 1)\nfill_s(get(), \"s\") }")
+  assert_eq(checks_clean(src), false)
+}
+
+test "2455: the diagnostic names the capture, the binder and the edit" {
+  // Diagnostics lead with the edit that fixes it, not with an internal term.
+  let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nlet get = [T]() -> Array[T] { xs }\nfill(get(), 1) }")
+  inspect(first_error(src), content = "move `xs` inside the lambda, or drop `[T]` and every `T` in its signature: the captured `xs` fixes `T`, so every call would use one value at a different type")
+}
+
+test "2455: both edits the diagnostic offers actually work" {
+  // Codex P2 on #2458: the wording said "drop the `[T]` binder", and doing
+  // exactly that leaves `T` in the return annotation -- so the advertised fix
+  // answered `unknown type `T`` instead of fixing anything. A diagnostic that
+  // names an edit has to name one that works, so the message now says to drop
+  // the signature's `T`s with it.
+  //
+  // Dropping ONLY the binder is still an error, and this pins WHY the wording
+  // has to mention the signature.
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet get = () -> Array[T] { xs }\n1 }"), false)
+  // Edit 1, as the message now spells it: the binder and its `T`s go together.
+  // The lambda is monomorphic, and the array it serves is the captured one.
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet get = () -> { xs }\nlet a: Array[Int] = get()\n1 }"), true)
+  // Edit 2: move the value inside, and the binder is sound to keep.
+  assert_eq(checks_clean("fn main() -> Int { let get = [T]() -> Array[T] { [] }\nlet a: Array[Int] = get()\nlet b: Array[String] = get()\n1 }"), true)
+}
+
+test "2455: the rejection does not need the two conflicting calls" {
+  // The binder is rejected at its own declaration (rank-1), so no call site
+  // has to carry the provenance -- and a single-call program, which is not
+  // yet wrong, is still reported as the unsound generalization it is.
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet get = [T]() -> Array[T] { xs }\n1 }"), false)
+}
+
+test "2455: an array created inside the lambda stays polymorphic" {
+  // The whole point of the environment lookup: a body-local `[]` is a fresh
+  // array per call, so quantifying its element variable is sound.
+  let src = "fn main() -> Int { let mk = [T]() -> Array[T] { [] }\nlet a: Array[Int] = mk()\nlet b: Array[String] = mk()\n1 }"
+  assert_eq(checks_clean(src), true)
+}
+
+test "2455: an ordinary generic lambda is untouched" {
+  assert_eq(checks_clean("fn main() -> Int { let idf = [T](v: T) -> T { v }\nlet a = idf(1)\nlet b = idf(\"s\")\n1 }"), true)
+}
+
+test "2455: capturing a concrete binding is not an escape" {
+  // `n` has no open variable, so it fixes nothing.
+  assert_eq(checks_clean("fn main() -> Int { let n = 1\nlet f = [T](v: T) -> T { let _ = n\nv }\nf(1) }"), true)
+  // Nor does an annotated array, whose element slot is already closed.
+  assert_eq(checks_clean("fn main() -> Int { let xs: Array[Int] = []\nlet g = [T](v: T) -> T { let n = Array::length(xs)\nv }\n1 }"), true)
+}
+
+test "2455: capturing an open array is fine while the binder is unrelated" {
+  // `T` does not touch `xs`'s element slot here, so there is nothing to fix.
+  assert_eq(checks_clean("fn main() -> Int { let xs = [1]\nlet g = [T](v: T) -> Int { Array::length(xs) }\ng(1) }"), true)
+}
+
+test "2455: capturing a generic function is not an escape" {
+  // A captured SCHEME contributes no free variable: `mk` is instantiated
+  // fresh at the call, so the lambda really is generic in `T`.
+  let src = "fn mk[T]() -> Array[T] { [] }\nfn main() -> Int { let g = [T]() -> Array[T] { mk() }\nlet a: Array[Int] = g()\nlet b: Array[String] = g()\n1 }"
+  assert_eq(checks_clean(src), true)
+}
+
+test "2455: a recursive generic binding is not read as its own capture" {
+  // Measured both spellings and both uses. An unannotated recursive name is
+  // bound to a placeholder that is unified with the signature only AFTER the
+  // body is checked, so it shares no id with the binders while this runs; an
+  // annotated one is a `CtForAll`, which the walk does not descend. A sentinel
+  // excluding the name being defined was written first and deleted: no input
+  // could be found that made it change an answer.
+  assert_eq(checks_clean("fn main() -> Int { let rec go = [T](n: Int, v: T) -> T { if n == 0 { v } else { go(n - 1, v) } }\ngo(2, 1) }"), true)
+  assert_eq(checks_clean("fn go[T](n: Int, v: T) -> T { if n == 0 { v } else { go(n - 1, v) } }\nfn main() -> Int { go(2, 1) }"), true)
+  assert_eq(checks_clean("fn main() -> Int { let rec f = [T](v: T) -> T { let g = f\nv }\nf(1) }"), true)
+  assert_eq(checks_clean("fn go[T](v: T) -> T { let g = go\nv }\nfn main() -> Int { go(1) }"), true)
+}
+
+test "2455: a generic lambda passed to a higher-order function still checks" {
+  let src = "fn ap[A, B](f: (A) -> B, x: A) -> B { f(x) }\nfn main() -> Int { ap([T](v: T) -> T { v }, 1) }"
+  assert_eq(checks_clean(src), true)
+}
+
+test "2455: the escape is found however the capture is spelled" {
+  // The issue describes one shape (a bare captured name in RETURN position).
+  // The check is on the binder, not on that shape, so these are caught too --
+  // each measured, and each the same unsoundness.
+  //
+  // A `let mut` binding:
+  assert_eq(checks_clean("fn main() -> Int { let mut xs = []\nlet get = [T]() -> Array[T] { xs }\n1 }"), false)
+  // Reached through a nested closure rather than named directly:
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet get = [T]() -> Array[T] { let inner = () -> { xs }\ninner() }\n1 }"), false)
+  // Projected out of a captured tuple:
+  assert_eq(checks_clean("fn main() -> Int { let p = ([], 1)\nlet get = [T]() -> Array[T] { p.0 }\n1 }"), false)
+  // The binder in PARAMETER position only -- nothing is returned, and the
+  // capture is still fixed by every call.
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet put = [T](v: T) -> Unit { Array::push(xs, v) }\n1 }"), false)
+}
+
+test "2455: a DIRECTLY CALLED capture is a capture" {
+  // Codex P1 on #2458. `closure_free_names` skips the callee of an
+  // `ECall(EIdent(..))`, so the binder laundered the escape exactly when the
+  // captured value was spelled as a call rather than named. Three-way
+  // measurement, one program, before the fix:
+  //
+  //   [T](v: T) -> Array[T] { put(v) }        CLEAN      <- laundered
+  //   (v) -> { put(v) }                       rejected   <- no binder
+  //   [T](v: T) -> Array[T] { let p = put; p(v) }  rejected  <- named value
+  //
+  // `put` is monomorphic here because `(v) -> { Array::push(xs, v); xs }`
+  // returns an open Array, which is #2450's CtFn arm of the value
+  // restriction -- that is what makes the two calls share one slot.
+  let put = "let put = (v) -> { Array::push(xs, v)\nxs }\n"
+  let called = String::concat(fill_prelude, String::concat("fn main() -> Unit { let xs = []\n", String::concat(put, "let w = [T](v: T) -> Array[T] { put(v) }\nfill(w(1), 1)\nfill_s(w(\"s\"), \"s\") }")))
+  assert_eq(checks_clean(called), false)
+  // The same capture named as a value -- caught before the fix too, and the
+  // control that proves the two spellings now agree.
+  let named = String::concat(fill_prelude, String::concat("fn main() -> Unit { let xs = []\n", String::concat(put, "let w = [T](v: T) -> Array[T] { let p = put\np(v) }\nfill(w(1), 1)\nfill_s(w(\"s\"), \"s\") }")))
+  assert_eq(checks_clean(named), false)
+  // A top-level function called from the body is NOT a capture: its type is
+  // ground, so the callee scan adds a name that contributes no variable.
+  assert_eq(checks_clean("fn idn(v: Int) -> Int { v }\nfn main() -> Int { let w = [T](v: T) -> T { let _ = idn(1)\nv }\nw(1) }"), true)
+  // Nor is the closure's own parameter, called as a function.
+  assert_eq(checks_clean("fn main() -> Int { let w = [T](v: T, f: (T) -> T) -> T { f(v) }\nw(1, (x) -> x) }"), true)
+}

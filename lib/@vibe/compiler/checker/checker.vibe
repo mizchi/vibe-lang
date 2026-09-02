@@ -3032,6 +3032,185 @@ fn append_row_label(labels: Array[String], label: String) -> Unit {
   }
 }
 
+/// #2455: the type variables reachable from a value, WITHOUT descending
+/// `CtForAll`. A quantified scheme's bound ids belong to another scope's
+/// counter domain -- `instantiate` renames them precisely because they can
+/// collide with locally fresh ids (#743) -- and a scheme's FREE ids carry the
+/// same hazard, since #829 records that those are NOT renamed at all. Reading
+/// either as an environment variable can reject a valid program, so the walk
+/// stops at a scheme. It is the conservative direction: this check only ever
+/// reports fewer binders, never more.
+///
+/// Codex P1 on #2458 asked for the body to be walked, excluding the binder
+/// array, and gave a captured
+/// `let g = [U](u: U, k) -> U { Array::push(xs, k)\nu }` as the exploit. The
+/// walk was implemented that way and MEASURED: it does surface the scheme's
+/// free id, and the answer does not change, because the exploit does not run
+/// through a binder at all. Removing the second closure's `[T]` leaves the
+/// program equally accepted, and both spellings put an `Int` and a `String`
+/// into one array at runtime (`1 | s`). What leaks there is `g`'s own scheme,
+/// built from an unannotated parameter that no longer constrains its callers
+/// -- filed separately. Walking the body would therefore add the #829
+/// false-positive risk and close nothing, so it was reverted.
+fn escape_tvars_into(ty: Type, out: Array[Int]) -> Unit {
+  match ty {
+    CtVar(id) => if !esc_int_has(out, id) {
+      Array::push(out, id)
+    } else {
+      ()
+    },
+    CtFn(ps, r, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        escape_tvars_into(Array::get(ps, i), out)
+        i = i + 1
+      }
+      escape_tvars_into(r, out)
+    },
+    CtArray(elem) => escape_tvars_into(elem, out),
+    CtOption(elem) => escape_tvars_into(elem, out),
+    CtTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        escape_tvars_into(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    CtRecord(rfields) => {
+      let mut i = 0
+      while i < Array::length(rfields) {
+        let (_, rft) = Array::get(rfields, i)
+        escape_tvars_into(rft, out)
+        i = i + 1
+      }
+    },
+    CtNamed(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        escape_tvars_into(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    CtApplied(head, args) => {
+      escape_tvars_into(head, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        escape_tvars_into(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn esc_int_has(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn esc_ids_intersect(a: Array[Int], b: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(a) && !hit {
+    if esc_int_has(b, Array::get(a, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// #2455: a closure's own parameter, under either optional-argument spelling
+/// (`x~` / `x?`), is not a capture. `closure_free_names` strips these itself;
+/// the bare-callee scan beside it does not, so the same normalization is
+/// applied here.
+fn esc_name_is_param(name: String, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    let (raw_name, _) = Array::get(params, i)
+    let nlen = String::length(raw_name)
+    let pname = if nlen > 0 {
+      let last = String::char_code_at(raw_name, nlen - 1)
+      if last == '~' || last == '?' {
+        raw_name[0: nlen - 1]
+      } else {
+        raw_name
+      }
+    } else {
+      raw_name
+    }
+    if pname == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2455: each name this closure CAPTURES from an enclosing scope, paired with
+/// the still-open type variables of the value bound to it.
+///
+/// A RECURSIVE binding does not need excluding here, measured both spellings
+/// (`let rec f = [T](..)` and a top-level `fn f[T](..)`) and both uses (a call
+/// and a bare value reference): an unannotated recursive name is bound to a
+/// placeholder variable that is unified with the signature only AFTER the body
+/// is checked, so while this runs it shares no id with the binders; an
+/// annotated one is a `CtForAll`, which the walk above does not descend. The
+/// controls are pinned in tests/generic_binder_escape_test.vibe -- a sentinel
+/// excluding the name being defined was written first and deleted, because no
+/// input could be found that made it change an answer.
+fn captured_escape_tvars(body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Array[(String, Array[Int])] {
+  let out = array_empty()
+  let names = closure_free_names(body, params)
+  // A DIRECTLY CALLED capture is a capture. `closure_free_names` skips the
+  // callee of an `ECall(EIdent(..))`, so `put(v)` recorded nothing while
+  // `let p = put\np(v)` recorded `put` -- the binder laundered the escape
+  // exactly when the value was spelled as a call. Codex P1 on #2458;
+  // measured, all three of `[T](v: T) -> Array[T] { put(v) }` (clean),
+  // the same closure without the binder (rejected), and the value spelling
+  // with the binder (rejected). `closure_capture_row` reads the same two
+  // sources for the same reason.
+  for callee in closure_bare_callee_names(body) {
+    if esc_name_is_param(callee, params) || string_array_has(names, callee) {
+      ()
+    } else {
+      Array::push(names, callee)
+    }
+  }
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    match env_lookup(env, name) {
+      Some(raw_ty) => {
+        let ids = array_empty()
+        escape_tvars_into(subst_apply(s, raw_ty), ids)
+        if Array::length(ids) == 0 {
+          ()
+        } else {
+          Array::push(out, (name, ids))
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Add closure-capture provenance to the checked row. The labels beginning
 /// with `#` are not effects and cannot be written by source; core/types keeps
 /// them through ordinary substitution while excluding them from effect-set
@@ -8616,6 +8795,63 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+        } else if name == "__rec_field" && Array::length(args) == 2 {
+          // #2452: `r.field` on an anonymous-record BINDING never reaches the
+          // `EDot` arm below -- the desugar rewrites it to
+          // `__rec_field(r, slot)` first (`anon_dot_rewrite`,
+          // normalize/desugar_trait_dict.vibe), and the builtin table types
+          // that call `(CtUnknown, Int) -> CtUnknown`. Its own comment called
+          // that "lenient ... only needs to resolve, not constrain", which was
+          // true while it served only the record-PATTERN desugar; #1839 routed
+          // EVERY dot access on an anonymous record through it and the
+          // leniency became a silent-wrong hole.
+          //
+          // Measured before this, all clean: `let r = record { n: 1 }` then
+          // `let s: String = r.n`, `String::length(r.n)`, `if r.n { .. }`,
+          // `r.n(1)`, and `let r = record { xs: [1] }` then
+          // `Array::push(r.xs, "s")`. An INLINE `(record { n: 1 }).n` was
+          // strict the whole time -- with no binding there is no sentinel, so
+          // it keeps its `EDot` and reaches the record arm there. Two
+          // spellings of one read disagreed, and the loose one is the one
+          // people write.
+          //
+          // Resolve the slot against the receiver's own field list, the same
+          // way the `EDot` `CtTuple` arm resolves `.N`. A non-record receiver
+          // keeps the tolerant answer: this call is also emitted for record
+          // PATTERNS over receivers this pass cannot resolve, and the fix is
+          // to stop losing a type that IS known, not to start rejecting types
+          // that are not.
+          //
+          // The index KEEPS its `Int` constraint. Refining the result is the
+          // only thing this arm adds; taking the call over from the builtin
+          // table would otherwise drop the one thing the old signature did
+          // check. Source can write `__rec_field(r, "bad")` directly -- the
+          // name is not reserved from expressions -- and codegen requires an
+          // `EInt` index, so dropping the constraint made `vibe check` answer
+          // "clean" for a program that then throws. Found by Codex on #2458;
+          // measured on `ed1089a9f`, a `String` and a `Bool` index were both
+          // rejected before and both clean after, which is why the red test
+          // for this is a direct call rather than a desugared one.
+          let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (idx_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, idx_ty), s2, errors, "__rec_field index must be Int", call_off)
+          let result = match subst_apply(s2b, obj_ty) {
+            CtRecord(rfields) => match Array::get(args, 1) {
+              // Both producers emit a literal `EInt`. A non-literal index is
+              // left tolerant rather than rejected: it cannot be resolved to a
+              // field here, and the `Int` constraint above already covers the
+              // type. An out-of-range literal keeps the pre-#2452 answer too.
+              EInt(slot) => if slot >= 0 && slot < Array::length(rfields) {
+                let (_, fty) = Array::get(rfields, slot)
+                fty
+              } else {
+                CtUnknown
+              },
+              _ => CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s2b, c2)
         } else if name == "__slice" && Array::length(args) == 3 {
           // #1682: the old fallback signature was
           // `(CtUnknown, Int, Int) -> CtUnknown`, so both the receiver and
@@ -11499,6 +11735,55 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           enum_dependency_effect
         }
+      }
+      // #2455: a declared binder that has unified with a type variable
+      // reachable from a CAPTURED binding is not generic -- it IS the
+      // enclosing binding's own slot. `[T]() -> Array[T] { xs }` makes `T` the
+      // element variable of the enclosing `let xs = []`, and the `CtForAll`
+      // below then lets every call instantiate that ONE runtime array at a
+      // different type: #2447's silent-wrong class, one quantifier away.
+      //
+      // #2450's value restriction cannot reach this. `ty_has_open_array_elem`
+      // does not descend `CtForAll`, and a refined walk that descends while
+      // excluding the bound vars still misses it, because after unification
+      // the captured slot and the bound var ARE one id. The distinguishing
+      // fact -- "this variable originated in an enclosing binding's type" --
+      // is provenance, so it is read from the environment here rather than
+      // from the type. Rank-1: the binder is rejected at its own declaration,
+      // so no call site has to carry the provenance.
+      //
+      // Both edits in the message are spelled so that following them
+      // literally works. Codex P2 on #2458: an earlier wording said "drop the
+      // `[T]` binder", and doing exactly that to the demonstrated case leaves
+      // `T` in the return annotation, so the next answer is
+      // `unknown type `T`` -- a fix that does not fix, which is the one thing
+      // a diagnostic may not be. Measured, all three: dropping only `[T]`
+      // fails that way, dropping it WITH the signature `T`s checks clean, and
+      // moving the value inside checks clean.
+      let escaping = if tplen == 0 {
+        array_empty()
+      } else {
+        captured_escape_tvars(body, params, env, s3)
+      }
+      let mut esi = 0
+      while esi < tplen {
+        let evid = Array::get(tparam_ids, esi)
+        let binder_ids = array_empty()
+        escape_tvars_into(subst_apply(s3, CtVar(evid)), binder_ids)
+        let etpname = type_param_name(Array::get(tparams, esi))
+        let mut eci = 0
+        let mut ereported = false
+        while eci < Array::length(escaping) {
+          let (ecname, ecids) = Array::get(escaping, eci)
+          if !ereported && esc_ids_intersect(binder_ids, ecids) {
+            ereported = true
+            Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("move `", ecname), "` inside the lambda, or drop `["), etpname), "]` and every `"), etpname), "` in its signature: the captured `"), String::concat(String::concat(String::concat(String::concat(ecname, "` fixes `"), etpname), "`, so every call would use one value at a different type"), off_marker(railway_expr_off(body)))))
+          } else {
+            ()
+          }
+          eci = eci + 1
+        }
+        esi = esi + 1
       }
       let keep_ids = array_empty()
       let mut ki0 = 0
