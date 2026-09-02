@@ -12154,7 +12154,13 @@ fn eq_effect_row_is_empty(eff: Option[String]) -> Bool {
 fn eq_explicit_equals_signature_ty(a: Option[TypeExpr], b: Option[TypeExpr], ret_ty: Option[TypeExpr]) -> Option[TypeExpr] {
   let ret_is_bool = match ret_ty {
     Some(r) => match eq_expand_alias_ty(r) {
-      TyName(rn) => rn == "Bool",
+      // Codex round 18 on #2456: the spelling must be the compiler's `Bool`;
+      // a source-owned `struct Bool` (which `dtd_eq_type_owners` records)
+      // would hand `if` a struct word. Measured: the checker already rejects
+      // such a comparator ("return type mismatch"), so this guard is the
+      // desugar's own statement of the same rule, not a fix for a program
+      // that compiles.
+      TyName(rn) => rn == "Bool" && !str_array_contains(dtd_eq_type_owners, "Bool"),
       _ => false
     },
     None => false
@@ -13386,12 +13392,15 @@ let dtd_eq_enum_formal_visit_stack: Array[String] = empty_str_array()
 /// formal: some payload, with the declaration's formals renamed to sentinels
 /// and aliases expanded, still mentions it in an observed position. A pair
 /// met again while its own payloads are being walked (`enum Loop[T] {
-/// L(Loop[T]) }`) counts as observed -- fail closed, never "unobserved" by
-/// construction.
+/// End(Int); Next(Loop[T]) }`) is answered coinductively (Codex round 18 on
+/// #2456): the recursive occurrence is compared by the very comparator being
+/// examined, which reads the formal only if some OTHER payload does -- and
+/// that payload is still walked. Measured: a finite `Loop[String]` compared
+/// correctly on the baseline and trapped when the revisit counted as observed.
 fn eq_generic_enum_formal_is_observed(head: String, formal: String) -> Bool {
   let key = String::concat(head, String::concat("::", formal))
   if str_array_contains(dtd_eq_enum_formal_visit_stack, key) {
-    true
+    false
   } else {
     Array::push(dtd_eq_enum_formal_visit_stack, key)
     let mut observed = false
@@ -13427,7 +13436,12 @@ fn eq_generic_enum_formal_is_observed(head: String, formal: String) -> Bool {
 
 fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
   if str_array_contains(dtd_eq_enum_payload_check_stack, name) {
-    false
+    // Codex round 18 on #2456: an enum met again inside its own payload walk
+    // (`Next(Loop[T])`) is compared by the comparator under examination, so
+    // the recursive occurrence is as good as that comparator's other payloads
+    // -- which this walk still checks. Answering `false` here made every
+    // recursive generic enum fail closed, phantom formal or not.
+    true
   } else {
     Array::push(dtd_eq_enum_payload_check_stack, name)
     let mut found = false
