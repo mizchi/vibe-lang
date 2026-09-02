@@ -2438,6 +2438,52 @@ Pinned by `fixtures/builtin_value_form_test.vibe` (the runtime answers, all
 three lanes) and `lib/@vibe/compiler/tests/builtin_ident_value_test.vibe` (the
 admission rule and every diagnostic quoted above).
 
+### A generic binder may not quantify a slot the lambda CAPTURED
+
+An explicit binder (`[T]`) makes a lambda generic per call. That is only sound
+when the thing the binder describes is created per call too. A binder that ends
+up naming a slot of an ENCLOSING binding is rejected at its declaration:
+
+```vibe skip
+fn main() -> Unit {
+  let xs = []
+
+  // -- rejected
+  let get = [T]() -> Array[T] { xs }
+  // move `xs` inside the lambda, or drop the `[T]` binder: the captured `xs`
+  // fixes `T`, so every call would use one value at a different type
+
+  // -- accepted: a fresh array per call, so `T` really does vary
+  let mk = [T]() -> Array[T] { [] }
+  let a: Array[Int] = mk()
+  let b: Array[String] = mk()
+}
+```
+
+Checking `-> Array[T]` unifies `xs`'s element slot with the binder, so without
+the check `fill(get(), 1)` and `fill_s(get(), "s")` both pass and ONE runtime
+array holds an Int and a String (#2455). It is the same silent-wrong class as
+the empty-array value restriction (#2447: `let xs = []` used at two element
+types), one quantifier away — the restriction cannot see it, because after
+unification the captured slot and the bound variable are literally one
+variable.
+
+The two edits in the message are the whole fix, and which one is right depends
+on what you meant: **move the value inside** if each call should get its own,
+**drop the binder** if they should share one (the lambda is then monomorphic,
+and its element type is decided by the first use).
+
+Only an OPEN slot is an escape. These all stay clean, measured:
+
+| captured | why it is fine |
+|---|---|
+| `let n = 1`, `let xs: Array[Int] = []` | no open variable to fix |
+| `let xs = [1]` with `[T](v: T) -> Int` | the binder does not touch `xs`'s slot |
+| a generic `fn mk[T]()` | a scheme, instantiated fresh at the call |
+| the lambda's own recursive name | unified with its signature only after the body is checked |
+
+Pinned by `lib/@vibe/compiler/tests/generic_binder_escape_test.vibe`.
+
 ### A `handle` that type-checks can still fail to compile
 
 Eligibility is not part of the type system, so this failure is invisible to
