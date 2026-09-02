@@ -212,6 +212,150 @@ test "#2422 a large Int survives every binding form" {
   assert(lam_d(1.5) == "1.5")
 }
 
+/// #2423: a `let mut` CAPTURED BY A CLOSURE is the one binding form neither
+/// test above reaches. `#2422 a large Int survives every binding form` pins an
+/// uncaptured `let mut`, and `#2424 .. the binding forms the slot log never
+/// seeded` pins a captured plain `let` -- this is the intersection, and it is
+/// the shape #2423 was filed about.
+///
+/// It is different in kind, not just in spelling. A captured `let mut` does
+/// not hold its value in a local at all: it becomes a heap ref cell and the
+/// local holds the cell's ADDRESS, so every read is a load. That is why the
+/// slot log could never classify it -- the thing in the slot is a pointer, and
+/// calling a pointer an Int is the confusion the log exists to prevent. #2423
+/// proposed a second log keyed on "slot holds a cell whose CONTENT is an Int".
+///
+/// What actually closed it is #2424's channel: the checker hands codegen the
+/// type it already computed for the render argument, so where the value LIVES
+/// stops mattering. Measured on the committed seed, both reads below render
+/// the EMPTY STRING on linear and on gc; on the current compiler both answer,
+/// on all three lanes this file runs.
+test "#2423 a large Int survives a let mut captured by a closure" {
+  let mut c = 64<<32
+  let f = () -> Int {
+    c
+  }
+  // Through the closure, and directly -- the seed rendered both as "".
+  // Spelled with `inspect` per the snapshot policy: it desugars to the same
+  // `__to_string` this test is about, so the oracle is unchanged, and the
+  // expectations become refreshable by `vibe test --update`.
+  //
+  // NO TWO `inspect` rows in this test may share an expected literal.
+  // `find_content_arg_span` (compiler/inspect_update.vibe) scans from offset
+  // 0 and patches the FIRST `inspect(` whose content argument equals the
+  // diagnosed expected text -- it has no idea which call failed. Two rows
+  // with the same literal therefore cannot converge under
+  // `vibe test --update`: the patcher rewrites the first, the next run fails
+  // on the row it just broke, and the two ping-pong. So the closure read and
+  // the direct read are taken at DIFFERENT values, and a second cell carries
+  // the two orderings the first cannot.
+  inspect(f(), content = "274877906944")
+  // After a mutation, so the cell is read back rather than folded.
+  c = c + 1
+  inspect(c, content = "274877906945")
+  // The second cell: direct read first, closure read after ITS mutation, so
+  // both shapes are covered on both sides of a write.
+  let mut k = 100<<32
+  let fk = () -> Int {
+    k
+  }
+  inspect(k, content = "429496729600")
+  k = k + 2
+  inspect(fk(), content = "429496729602")
+  // The same capture through `eq`, the other spelling of the classifier. Two
+  // conditions have to hold at once for these rows to be able to FAIL, and
+  // each was measured by running the rows alone against the committed seed.
+  //
+  // (1) NEITHER operand may be a literal. The linear `eq` gate is a
+  //     disjunction (the reason is spelled out at the `irc_ret_big` block
+  //     below), so `eq(f(), 274877906945)` is satisfied by the literal alone
+  //     and never asks about the captured cell.
+  // (2) The two values must have the SAME low 32 bits. With the
+  //     classification lost, `eq` falls back to the string comparison, which
+  //     reads a value as (ptr<<32)|len -- so unequal low words are unequal
+  //     "lengths" and it returns false immediately, which is the answer these
+  //     rows want. Measured: with both low words 1 the fallback goes on to
+  //     compare one byte at two different addresses and gets the right answer
+  //     by luck, so only low word 0 on both sides is reliably red -- there the
+  //     fallback compares two EMPTY strings, calls them equal, and `!eq`
+  //     traps.
+  //
+  // Hence the second mutation: it puts `c` back on a zero low word while
+  // still leaving the cell read back rather than folded, and the render
+  // assertions above already cover the sharper low-word-1 case.
+  c = c + ((1<<32) - 1)
+  inspect(c, content = "279172874240")
+  let mut c2 = 66<<32
+  let g = () -> Int {
+    c2
+  }
+  // Each `eq` is snapshotted through a String-valued branch rather than
+  // handed to `inspect` directly. `inspect(eq(..), content = ..)` renders the
+  // Bool, and `__to_string` of an `eq` RESULT answers "false" on linear and
+  // "0" on gc -- measured on this compiler, both lanes, and the gc side is a
+  // regression against the committed seed, which answers "false" there too
+  // (`gc_expr_is_boolish` has no ECall arm, so it classifies none of the
+  // Bool-returning builtins the linear `cc_builtin_call_ret_kind` lists;
+  // that is #2464). The branch renders a String instead, so the row is a
+  // snapshot on this lane-divergent compiler and still asks about `eq` and
+  // nothing else. Each pair of branch strings is unique for the
+  // no-shared-literal reason above.
+  // Both call-shaped.
+  inspect(if eq(f(), g()) {
+    "f=g"
+  } else {
+    "f!=g"
+  }, content = "f!=g")
+  inspect(if eq(f(), f()) {
+    "f=f"
+  } else {
+    "f!=f"
+  }, content = "f=f")
+  // One call-shaped, one a bare ref-cell read.
+  inspect(if eq(f(), c) {
+    "f=c"
+  } else {
+    "f!=c"
+  }, content = "f=c")
+  inspect(if eq(f(), c2) {
+    "f=c2"
+  } else {
+    "f!=c2"
+  }, content = "f!=c2")
+  // Both bare ref-cell reads.
+  inspect(if eq(c, c2) {
+    "c=c2"
+  } else {
+    "c!=c2"
+  }, content = "c!=c2")
+  inspect(if eq(c, c) {
+    "c=c"
+  } else {
+    "c!=c"
+  }, content = "c=c")
+  // Controls: the classifier must not start answering Int for every captured
+  // cell. A captured `let mut` of another type keeps its own rendering.
+  let mut s = "hi"
+  let fs = () -> String {
+    s
+  }
+  inspect(fs(), content = "hi")
+  let mut d = 1.5
+  let fd = () -> Double {
+    d
+  }
+  inspect(fd(), content = "1.5")
+  // A captured `let mut` Bool is NOT asserted here, and the omission is the
+  // point. Measured: `__to_string` of a Bool produced by a lambda whose `let`
+  // is INSIDE a function body renders "1" rather than "true" -- on both lanes
+  // and on the committed seed alike, so it is not this fix's doing. The same
+  // lambda bound at TOP LEVEL, and any named `fn`, answer correctly, because
+  // `collect_fn_returns` walks statements and an inner `let` is an expression.
+  // That is #2462, a separate defect, filed rather than pinned: this file's
+  // contract is that every assertion in it holds on every lane, and pinning
+  // the wrong answer would be worse than leaving the row out.
+}
+
 test "#2405 polymorphic arithmetic is not assumed to be Int" {
   // `+ - * /` are resolved from the OPERANDS by the checker (Int, then Double,
   // then String for `+`, then a user impl), so the operator alone says
