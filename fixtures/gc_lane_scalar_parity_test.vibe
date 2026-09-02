@@ -243,8 +243,26 @@ test "#2423 a large Int survives a let mut captured by a closure" {
   assert(__to_string(f()) == "274877906945")
   assert(__to_string(c) == "274877906945")
   // The same capture through `eq`, the other spelling of the classifier.
-  assert(eq(f(), 274877906945))
-  assert(!eq(f(), 274877906944))
+  // NEITHER operand may be a literal. The linear `eq` gate is a disjunction
+  // (the reason is spelled out at the `irc_ret_big` block below), so an
+  // `eq(f(), 274877906945)` is satisfied by the literal alone and never asks
+  // about the captured cell -- it would re-check `f()`'s VALUE, which the
+  // renders above already pin, and pin nothing about `eq`. So: a second
+  // captured cell, and comparisons where every operand is either a call or a
+  // ref-cell read.
+  let mut c2 = 65<<32
+  let g = () -> Int {
+    c2
+  }
+  // Both call-shaped.
+  assert(!eq(f(), g()))
+  assert(eq(f(), f()))
+  // One call-shaped, one a bare ref-cell read.
+  assert(eq(f(), c))
+  assert(!eq(f(), c2))
+  // Both bare ref-cell reads.
+  assert(!eq(c, c2))
+  assert(eq(c, c))
   // Controls: the classifier must not start answering Int for every captured
   // cell. A captured `let mut` of another type keeps its own rendering.
   let mut s = "hi"
