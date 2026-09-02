@@ -2450,8 +2450,9 @@ fn main() -> Unit {
 
   // -- rejected
   let get = [T]() -> Array[T] { xs }
-  // move `xs` inside the lambda, or drop the `[T]` binder: the captured `xs`
-  // fixes `T`, so every call would use one value at a different type
+  // move `xs` inside the lambda, or drop `[T]` and every `T` in its
+  // signature: the captured `xs` fixes `T`, so every call would use one
+  // value at a different type
 
   // -- accepted: a fresh array per call, so `T` really does vary
   let mk = [T]() -> Array[T] { [] }
@@ -2472,6 +2473,19 @@ The two edits in the message are the whole fix, and which one is right depends
 on what you meant: **move the value inside** if each call should get its own,
 **drop the binder** if they should share one (the lambda is then monomorphic,
 and its element type is decided by the first use).
+
+Drop the binder's `T`s along with the binder. `[T]` and the `T` in
+`-> Array[T]` are one declaration and one use, so removing only the first
+leaves `unknown type `T`` behind:
+
+```vibe skip
+// -- still an error: the binder is gone, its use is not
+let get = () -> Array[T] { xs }
+
+// -- accepted
+let get = () -> { xs }
+let a: Array[Int] = get()
+```
 
 Only an OPEN slot is an escape. These all stay clean, measured:
 

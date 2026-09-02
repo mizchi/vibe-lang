@@ -46,7 +46,24 @@ test "2455: a binder quantifying a captured array slot is rejected" {
 test "2455: the diagnostic names the capture, the binder and the edit" {
   // Diagnostics lead with the edit that fixes it, not with an internal term.
   let src = String::concat(fill_prelude, "fn main() -> Unit { let xs = []\nlet get = [T]() -> Array[T] { xs }\nfill(get(), 1) }")
-  inspect(first_error(src), content = "move `xs` inside the lambda, or drop the `[T]` binder: the captured `xs` fixes `T`, so every call would use one value at a different type")
+  inspect(first_error(src), content = "move `xs` inside the lambda, or drop `[T]` and every `T` in its signature: the captured `xs` fixes `T`, so every call would use one value at a different type")
+}
+
+test "2455: both edits the diagnostic offers actually work" {
+  // Codex P2 on #2458: the wording said "drop the `[T]` binder", and doing
+  // exactly that leaves `T` in the return annotation -- so the advertised fix
+  // answered `unknown type `T`` instead of fixing anything. A diagnostic that
+  // names an edit has to name one that works, so the message now says to drop
+  // the signature's `T`s with it.
+  //
+  // Dropping ONLY the binder is still an error, and this pins WHY the wording
+  // has to mention the signature.
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet get = () -> Array[T] { xs }\n1 }"), false)
+  // Edit 1, as the message now spells it: the binder and its `T`s go together.
+  // The lambda is monomorphic, and the array it serves is the captured one.
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet get = () -> { xs }\nlet a: Array[Int] = get()\n1 }"), true)
+  // Edit 2: move the value inside, and the binder is sound to keep.
+  assert_eq(checks_clean("fn main() -> Int { let get = [T]() -> Array[T] { [] }\nlet a: Array[Int] = get()\nlet b: Array[String] = get()\n1 }"), true)
 }
 
 test "2455: the rejection does not need the two conflicting calls" {
