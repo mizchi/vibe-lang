@@ -45,11 +45,20 @@ test "let mut spelling is rejected the same way" {
   inspect(check_err(src), content = "true")
 }
 
-// A `record { xs: [] }` case is deliberately NOT pinned here: anonymous-record
-// projections are loosely typed independently of empty arrays (#2452 -- even
-// `let s: String = r.n` on an Int field checks clean), so the rejection cannot
-// hold until that is fixed. `ty_has_open_array_elem` already descends CtRecord
-// fields, so the restriction side is in place when it does.
+test "a record field holding an empty array is monomorphic too" {
+  // Restored now that #2452 has landed. The restriction side was always in
+  // place -- `ty_has_open_array_elem` descends `CtRecord` fields -- but the
+  // rejection could not hold, because `r.xs` on a record BINDING never reached
+  // the checker's `EDot` arm: the desugar rewrites it to
+  // `__rec_field(r, slot)`, which the builtin table typed
+  // `(CtUnknown, Int) -> CtUnknown`. The projection was the only thing losing
+  // the type.
+  let src = "fn main() -> Unit { let r = record { xs: [] }\nlet u1 = Array::push(r.xs, 1)\nlet u2 = Array::push(r.xs, \"s\")\n() }"
+  inspect(check_err(src), content = "true")
+  // Homogeneous pushes through the same projection still check.
+  let ok = "fn main() -> Unit { let r = record { xs: [] }\nlet u1 = Array::push(r.xs, 1)\nlet u2 = Array::push(r.xs, 2)\n() }"
+  inspect(check_ok(ok), content = "true")
+}
 
 test "a generic call result with an open element var is monomorphic" {
   // The ELet skip covers any still-open Array element var, not only the
