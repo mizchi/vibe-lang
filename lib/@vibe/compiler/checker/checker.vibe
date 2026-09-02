@@ -8642,14 +8642,26 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // PATTERNS over receivers this pass cannot resolve, and the fix is
           // to stop losing a type that IS known, not to start rejecting types
           // that are not.
+          //
+          // The index KEEPS its `Int` constraint. Refining the result is the
+          // only thing this arm adds; taking the call over from the builtin
+          // table would otherwise drop the one thing the old signature did
+          // check. Source can write `__rec_field(r, "bad")` directly -- the
+          // name is not reserved from expressions -- and codegen requires an
+          // `EInt` index, so dropping the constraint made `vibe check` answer
+          // "clean" for a program that then throws. Found by Codex on #2458;
+          // measured on `ed1089a9f`, a `String` and a `Bool` index were both
+          // rejected before and both clean after, which is why the red test
+          // for this is a direct call rather than a desugared one.
           let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
-          let (_, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let result = match subst_apply(s2, obj_ty) {
+          let (idx_ty, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, idx_ty), s2, errors, "__rec_field index must be Int", call_off)
+          let result = match subst_apply(s2b, obj_ty) {
             CtRecord(rfields) => match Array::get(args, 1) {
-              // The index is always a literal here (both producers emit
-              // `EInt`). Anything else, or out of range, stays tolerant --
-              // the desugar cannot emit it, so an error would be unreachable
-              // and this is not the place to invent a new rejection.
+              // Both producers emit a literal `EInt`. A non-literal index is
+              // left tolerant rather than rejected: it cannot be resolved to a
+              // field here, and the `Int` constraint above already covers the
+              // type. An out-of-range literal keeps the pre-#2452 answer too.
               EInt(slot) => if slot >= 0 && slot < Array::length(rfields) {
                 let (_, fty) = Array::get(rfields, slot)
                 fty
@@ -8660,7 +8672,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             },
             _ => CtUnknown
           }
-          (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+          (tab_call_ty(tytab, call_off, result, capture, lane), s2b, c2)
         } else if name == "__slice" && Array::length(args) == 3 {
           // #1682: the old fallback signature was
           // `(CtUnknown, Int, Int) -> CtUnknown`, so both the receiver and
