@@ -12165,6 +12165,12 @@ fn eq_builtin_head_owned_by_nonenum(head: String) -> Bool {
   str_array_contains(dtd_eq_nonenum_builtin_heads, head)
 }
 
+/// A source-declared generic type that is an ENUM: in `dtd_eq_generic_types`
+/// (every generic struct or enum) but not in `dtd_eq_generic_structs`.
+fn eq_generic_enum_declared(name: String) -> Bool {
+  str_array_contains(dtd_eq_generic_types, name) && !generic_eq_struct_declared(name)
+}
+
 /// Whether every argument is a word-sized scalar the raw `==` compares by
 /// content: the one case in which a nonstandard `Result` / `Option`'s derived
 /// `::equals` (payloads typed by formals, compared with the raw word) is a
@@ -12459,6 +12465,11 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
         args_ok
       } else if str_array_contains(dtd_eq_known_types, head) && !str_array_contains(dtd_eq_generic_types, head) {
         args_ok
+      } else if eq_generic_enum_declared(head) {
+        // Codex round 5 on #2456: a generic ENUM has only its derived
+        // comparator, which is content equality exactly for word-scalar
+        // arguments (`eq_for_typed_declared_app` makes the same decision).
+        eq_args_all_word_scalar(args)
       } else {
         // Concrete declared generic instantiations get a comparator specialized
         // with these arguments. Unknown heads (Map included) remain fail-closed.
@@ -13074,7 +13085,15 @@ fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr,
 /// #2456), so a program-declared `Map` / `StringMap` is compared by ITS
 /// comparator and never by the builtin's.
 fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
-  if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
+  if eq_generic_enum_declared(n) && Array::length(args) > 0 {
+    // Codex round 5 on #2456: a source-owned generic ENUM (`enum Map[K, V]
+    // { Entry(K, V) }`, or any `enum Wrap[T]`) has no per-instantiation
+    // comparator -- only generic structs get one (#2195) -- and its derived
+    // `::equals` compares a formal-typed payload with the raw word `==`.
+    // Same rule as a nonstandard-shape `Result`: word-scalar arguments
+    // answer through that comparator, anything else fails closed.
+    eq_for_typed_nonstandard_enum(n, args, lhs, rhs)
+  } else if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
     let canonical_args = for arg in args {
       eq_expand_alias_ty(arg)
     }
