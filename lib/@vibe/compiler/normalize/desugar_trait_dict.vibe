@@ -12057,6 +12057,20 @@ let dtd_eq_enum_decls: Array[(String, Array[String], Array[(String, Array[TypeEx
 /// enum whose payload names itself (or another enum that names it) is
 /// answered `false` at the second visit rather than looping.
 let dtd_eq_enum_payload_check_stack: Array[String] = empty_str_array()
+
+/// Codex round 11 on #2456: declared types whose `::equals` the PROGRAM
+/// wrote (`fn Wrap::equals(..)`, the `Type::method` spelling), collected
+/// before `desugar_derives` runs -- which is what makes the distinction
+/// possible: at `eq_known_types_reset` time a `<name>::equals` in the
+/// statement list is the author's, because derives skips a name that
+/// already exists and has not run yet. An explicit comparator is the
+/// author's contract and is dispatched to as the pre-#2456 `known_types`
+/// path did; the payload gate applies only to the derived one.
+let dtd_eq_explicit_equals: Array[String] = empty_str_array()
+
+fn eq_has_explicit_equals(name: String) -> Bool {
+  str_array_contains(dtd_eq_explicit_equals, name)
+}
 let dtd_eq_type_aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
 // Source declarations that own a type spelling. This is deliberately
 // separate from `dtd_eq_known_types`: effects do not have generated
@@ -12192,7 +12206,7 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
   if eq_builtin_head_owned_by_nonenum(head) {
     false
   } else {
-    eq_builtin_enum_arm_applies(head) || eq_generic_enum_payloads_concrete_comparable(head)
+    eq_builtin_enum_arm_applies(head) || eq_has_explicit_equals(head) || eq_generic_enum_payloads_concrete_comparable(head)
   }
 }
 
@@ -12203,6 +12217,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_generic_structs, 0)
   Array::truncate(dtd_eq_enum_decls, 0)
   Array::truncate(dtd_eq_enum_payload_check_stack, 0)
+  Array::truncate(dtd_eq_explicit_equals, 0)
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
   Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
@@ -12236,6 +12251,11 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       SEnum(_, ename, decl_tparams, variants, _) => {
         Array::push(dtd_eq_type_owners, ename)
         Array::push(dtd_eq_enum_decls, (ename, decl_tparams, variants))
+        if top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
+          Array::push(dtd_eq_explicit_equals, ename)
+        } else {
+          ()
+        }
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, ename)
         } else {
@@ -12460,8 +12480,9 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
         // generic `eq` builtin's string fallback, not even exact for an
         // `Int` (`64 << 32` vs `65 << 32` compared equal). Admitted exactly
         // when no payload is typed by a formal, the condition under which
-        // `eq_for_typed_declared_app` dispatches to that comparator.
-        eq_generic_enum_payloads_concrete_comparable(head)
+        // `eq_for_typed_declared_app` dispatches to that comparator -- or
+        // when the program wrote its own `::equals` (round 11).
+        eq_has_explicit_equals(head) || eq_generic_enum_payloads_concrete_comparable(head)
       } else {
         // Concrete declared generic instantiations get a comparator specialized
         // with these arguments. Unknown heads (Map included) remain fail-closed.
@@ -13243,7 +13264,7 @@ fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
 /// untyped-empty arm and the expanding-recursion case use -- rather than
 /// comparing a formal-typed payload through the erased `==`.
 fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr) -> Expr {
-  if eq_generic_enum_payloads_concrete_comparable(head) {
+  if eq_has_explicit_equals(head) || eq_generic_enum_payloads_concrete_comparable(head) {
     ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
   } else {
     ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
